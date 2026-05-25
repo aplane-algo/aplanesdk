@@ -1,0 +1,7 @@
+{
+  "key_type": "aplane.timelock.v1",
+  "parameters": {
+    "unlock_round": "123456",
+    "beneficiary": "BENEFICIARYADDR000000000000000000000000000000000000000000"
+  }
+}

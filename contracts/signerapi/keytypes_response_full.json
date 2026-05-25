@@ -1,0 +1,90 @@
+{
+  "key_types": [
+    {
+      "key_type": "ed25519",
+      "family": "ed25519",
+      "display_name": "Ed25519",
+      "description": "Native Algorand signing key",
+      "requires_logicsig": false,
+      "mnemonic_word_count": 25,
+      "mnemonic_import": true,
+      "mnemonic_scheme": "algorand",
+      "creation_params": [],
+      "runtime_args": []
+    },
+    {
+      "key_type": "aplane.timelock.v1",
+      "family": "generic",
+      "display_name": "Timelock",
+      "description": "Generic LogicSig with creation and runtime arguments",
+      "requires_logicsig": true,
+      "mnemonic_word_count": 0,
+      "mnemonic_import": false,
+      "mnemonic_scheme": "",
+      "creation_params": [
+        {
+          "name": "beneficiary",
+          "label": "Beneficiary",
+          "description": "Address allowed to spend after unlock",
+          "type": "address",
+          "required": true,
+          "example": "BENEFICIARYADDR000000000000000000000000000000000000000000",
+          "placeholder": "Paste Algorand address"
+        },
+        {
+          "name": "guardians",
+          "label": "Guardians",
+          "description": "Guardian allow-list",
+          "type": "address[]",
+          "required": true,
+          "min_items": 1,
+          "max_items": 8,
+          "example": "ADDR1,ADDR2",
+          "placeholder": "Comma-separated addresses"
+        },
+        {
+          "name": "unlock_round",
+          "label": "Unlock Round",
+          "description": "Minimum round for spend",
+          "type": "uint64",
+          "required": true,
+          "min": 1,
+          "max": 999999999,
+          "default": "1"
+        },
+        {
+          "name": "note_prefix",
+          "label": "Note Prefix",
+          "description": "Optional note prefix",
+          "type": "string",
+          "required": false,
+          "max_length": 32,
+          "input_modes": [
+            {
+              "name": "text",
+              "label": "Text"
+            },
+            {
+              "name": "sha256",
+              "label": "SHA-256",
+              "transform": "sha256",
+              "byte_length": 32,
+              "input_type": "bytes"
+            }
+          ],
+          "default": "aplane"
+        }
+      ],
+      "runtime_args": [
+        {
+          "name": "preimage",
+          "type": "bytes",
+          "label": "Preimage",
+          "description": "Hash preimage used by the LogicSig",
+          "required": true,
+          "byte_length": 32
+        }
+      ]
+    }
+  ]
+}

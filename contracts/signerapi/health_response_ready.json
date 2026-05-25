@@ -1,0 +1,8 @@
+{
+  "status": "healthy",
+  "service": "apsigner",
+  "signer_locked": false,
+  "ready_for_signing": true,
+  "ssh_enabled": true,
+  "ipc_enabled": true
+}

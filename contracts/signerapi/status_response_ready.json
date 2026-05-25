@@ -1,0 +1,9 @@
+{
+  "identity_id": "default",
+  "state": "unlocked",
+  "signer_locked": false,
+  "ready_for_signing": true,
+  "key_count": 37,
+  "keyset_revision": 4,
+  "approval_wait_seconds": 60
+}

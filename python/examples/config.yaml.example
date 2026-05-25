@@ -1,0 +1,12 @@
+# APlane Python SDK client configuration
+# Copy this file to your data directory as config.yaml
+
+# Signer REST API port (local port for tunnel)
+signer_port: 11270
+
+# SSH tunnel settings (required — use localhost for same-machine signer)
+ssh:
+  host: localhost            # Change to remote host if signer is on another machine
+  port: 1127
+  identity_file: .ssh/id_ed25519      # Relative to data directory
+  known_hosts_path: .ssh/known_hosts  # Relative to data directory

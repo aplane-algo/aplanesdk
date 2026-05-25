@@ -1,0 +1,98 @@
+{
+  "name": "aplanesdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for signing Algorand transactions via apsigner",
+  "license": "MIT",
+  "author": "APlane Project LLC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aplane-algo/aplanesdk.git",
+    "directory": "typescript"
+  },
+  "homepage": "https://github.com/aplane-algo/aplanesdk#readme",
+  "bugs": {
+    "url": "https://github.com/aplane-algo/aplanesdk/issues"
+  },
+  "keywords": [
+    "algorand",
+    "blockchain",
+    "signing",
+    "crypto",
+    "typescript"
+  ],
+  "type": "module",
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/esm/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/esm/index.d.ts",
+        "default": "./dist/esm/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/index.d.ts",
+        "default": "./dist/cjs/index.js"
+      }
+    },
+    "./algokit": {
+      "import": {
+        "types": "./dist/esm/algokit.d.ts",
+        "default": "./dist/esm/algokit.js"
+      },
+      "require": {
+        "types": "./dist/cjs/algokit.d.ts",
+        "default": "./dist/cjs/algokit.js"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "examples",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "npm run build:esm && npm run build:cjs && npm run build:cjs-package",
+    "build:esm": "tsc -p tsconfig.esm.json",
+    "build:cjs": "tsc -p tsconfig.cjs.json",
+    "build:cjs-package": "echo '{\"type\": \"commonjs\"}' > dist/cjs/package.json",
+    "clean": "rm -rf dist",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "lint": "eslint src",
+    "typecheck": "tsc --noEmit",
+    "prepack": "npm run clean && npm run build",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "dependencies": {
+    "yaml": "^2.8.3"
+  },
+  "optionalDependencies": {
+    "ssh2": "^1.15.0"
+  },
+  "peerDependencies": {
+    "@algorandfoundation/algokit-utils": "^10.0.0-beta.2",
+    "algosdk": "^3.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@algorandfoundation/algokit-utils": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@algorandfoundation/algokit-utils": "^10.0.0-beta.2",
+    "@types/node": "^20.0.0",
+    "@types/ssh2": "^1.15.0",
+    "algosdk": "^3.0.0",
+    "eslint": "^9.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.4.0"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=10.0.0"
+  },
+  "overrides": {
+    "flatted": "^3.4.2",
+    "brace-expansion": "^1.1.13"
+  }
+}

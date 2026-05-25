@@ -1,0 +1,24 @@
+{
+  "requests": [
+    {
+      "auth_address": "AUTHADDR00000000000000000000000000000000000000000000000",
+      "txn_sender": "SENDERADDR0000000000000000000000000000000000000000000",
+      "txn_bytes_hex": "545801",
+      "lsig_args": {
+        "preimage": "736563726574",
+        "recipient": "aabbccdd"
+      },
+      "app_call_info": {
+        "mode": "abi",
+        "method": "transfer(address,uint64)void"
+      }
+    },
+    {
+      "signed_txn_hex": "82a3736967c440"
+    },
+    {
+      "txn_bytes_hex": "545802",
+      "lsig_size": 3035
+    }
+  ]
+}

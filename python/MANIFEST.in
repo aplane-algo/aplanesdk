@@ -1,0 +1,17 @@
+# Include documentation
+include README.md
+include LICENSE
+
+# Include examples
+recursive-include examples *.py *.yaml.example
+
+# Exclude build artifacts
+global-exclude __pycache__
+global-exclude *.py[cod]
+global-exclude *.so
+global-exclude .DS_Store
+prune *.egg-info
+prune build
+prune dist
+prune .pytest_cache
+prune .mypy_cache

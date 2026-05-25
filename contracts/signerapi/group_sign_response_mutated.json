@@ -1,0 +1,20 @@
+{
+  "signed": [
+    "82a3736967c401",
+    "82a3736967c402",
+    ""
+  ],
+  "mutations": {
+    "dummies_added": 1,
+    "group_id_changed": true,
+    "fees_modified": [
+      0
+    ],
+    "total_fees_delta": 1000,
+    "original_count": 2,
+    "final_count": 3,
+    "passthrough_count": 1,
+    "foreign_count": 1,
+    "reason": "passthrough_foreign_lsig_budget"
+  }
+}

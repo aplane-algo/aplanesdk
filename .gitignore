@@ -1,0 +1,25 @@
+.DS_Store
+
+# Go
+*.test
+coverage.out
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+build/
+dist/
+
+# TypeScript
+node_modules/
+typescript/dist/
+*.tgz
+
+# Local environment
+.env
+.env.*
+!.env.example
+.ssh/
