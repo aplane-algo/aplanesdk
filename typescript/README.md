@@ -38,7 +38,7 @@ npm pack
 
 # In your consuming project
 npm init -y   # if needed
-npm install ../path/to/aplanesdk-0.1.0.tgz algosdk
+npm install ../path/to/aplanesdk-0.20.0.tgz algosdk
 ```
 
 ### Troubleshooting

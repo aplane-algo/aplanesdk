@@ -1,6 +1,6 @@
 {
   "name": "aplanesdk",
-  "version": "0.1.0",
+  "version": "0.20.0",
   "description": "TypeScript SDK for signing Algorand transactions via apsigner",
   "license": "MIT",
   "author": "APlane Project LLC",
