@@ -27,6 +27,7 @@ from .signer import (
     # Submission helpers
     send_raw_transaction,
     assemble_group,
+    sign_guarded_group,
 
     # Token provisioning
     request_token,
@@ -74,6 +75,9 @@ from .signer import (
     AdminSyncSentryReferencesRequest,
     SyncedSentryReferenceInfo,
     AdminSyncSentryReferencesResponse,
+    GuardedSignTarget,
+    GuardedPrimarySignTarget,
+    GuardedSignResult,
     COMPONENT_SIGN_ROLE_USER,
     COMPONENT_SIGN_ROLE_SENTRY,
     KEY_TYPE_SENTRY_ED25519,
@@ -89,6 +93,7 @@ __all__ = [
     # Submission helpers
     "send_raw_transaction",
     "assemble_group",
+    "sign_guarded_group",
 
     # Token provisioning
     "request_token",
@@ -136,6 +141,9 @@ __all__ = [
     "AdminSyncSentryReferencesRequest",
     "SyncedSentryReferenceInfo",
     "AdminSyncSentryReferencesResponse",
+    "GuardedSignTarget",
+    "GuardedPrimarySignTarget",
+    "GuardedSignResult",
     "COMPONENT_SIGN_ROLE_USER",
     "COMPONENT_SIGN_ROLE_SENTRY",
     "KEY_TYPE_SENTRY_ED25519",

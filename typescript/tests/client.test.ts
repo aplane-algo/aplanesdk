@@ -3,7 +3,7 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { SignerClient } from "../src/client.js";
+import { SignerClient, signGuardedGroup } from "../src/client.js";
 import {
   COMPONENT_SIGN_ROLE_SENTRY,
   KEY_TYPE_SENTRY_ED25519,
@@ -562,6 +562,134 @@ describe("SignerClient", () => {
       assert.equal(mockFetch.mock.calls[0][0], "http://localhost:11270/admin/sentries/sync");
       const body = JSON.parse(mockFetch.mock.calls[0][1].body);
       assert.equal(body.candidates[0].component_key, "COMPONENT");
+    });
+  });
+
+  describe("signGuardedGroup", () => {
+    it("signs one guarded target", async () => {
+      const user = new SignerClient("http://localhost:11270", "test-token");
+      const sentry = new SignerClient("http://sentry:11270", "sentry-token");
+
+      (user as any).requestComponentSign = async (request: any) => {
+        assert.equal(request.role, "user");
+        assert.equal(request.component_key, "GUARDED");
+        return {
+          request_id: "user-id",
+          signatures: [
+            { target_index: 0, signature: "user-sig", signature_scheme: KEY_TYPE_SENTRY_ED25519 },
+          ],
+        };
+      };
+      (sentry as any).requestComponentSign = async (request: any) => {
+        assert.equal(request.role, COMPONENT_SIGN_ROLE_SENTRY);
+        assert.equal(request.component_key, "SENTRY_COMPONENT");
+        return {
+          request_id: "sentry-id",
+          signatures: [
+            { target_index: 0, signature: "sentry-sig", signature_scheme: KEY_TYPE_SENTRY_ED25519 },
+          ],
+        };
+      };
+      (user as any).requestGuardedAssemble = async (request: any) => {
+        assert.equal(request.targets[0].user_signature, "user-sig");
+        assert.equal(request.targets[0].sentry_signature, "sentry-sig");
+        return { request_id: "assembly-id", signed_group: ["signed-guarded"] };
+      };
+
+      const result = await signGuardedGroup({
+        userClient: user,
+        sentryClient: sentry,
+        sentryComponentKey: "SENTRY_COMPONENT",
+        groupBytesHex: ["5458aa"],
+        guardedTargets: [{ targetIndex: 0, guardedAccount: "GUARDED" }],
+      });
+
+      assert.deepEqual(result.signedGroup, ["signed-guarded"]);
+    });
+
+    it("batches targets for a shared sentry key", async () => {
+      const user = new SignerClient("http://localhost:11270", "test-token");
+      const sentry = new SignerClient("http://sentry:11270", "sentry-token");
+      let sentryCalls = 0;
+
+      (user as any).requestComponentSign = async (request: any) => {
+        assert.deepEqual(request.target_indices, [0, 1]);
+        return {
+          request_id: "user-id",
+          signatures: [
+            { target_index: 0, signature: "user-0", signature_scheme: KEY_TYPE_SENTRY_ED25519 },
+            { target_index: 1, signature: "user-1", signature_scheme: KEY_TYPE_SENTRY_ED25519 },
+          ],
+        };
+      };
+      (sentry as any).requestComponentSign = async (request: any) => {
+        sentryCalls += 1;
+        assert.deepEqual(request.target_indices, [0, 1]);
+        return {
+          request_id: "sentry-id",
+          signatures: [
+            { target_index: 0, signature: "sentry-0", signature_scheme: KEY_TYPE_SENTRY_ED25519 },
+            { target_index: 1, signature: "sentry-1", signature_scheme: KEY_TYPE_SENTRY_ED25519 },
+          ],
+        };
+      };
+      (user as any).requestGuardedAssemble = async () => ({
+        request_id: "assembly-id",
+        signed_group: ["signed-0", "signed-1"],
+      });
+
+      await signGuardedGroup({
+        userClient: user,
+        sentryClient: sentry,
+        sentryComponentKey: "SENTRY_COMPONENT",
+        groupBytesHex: ["5458aa", "5458bb"],
+        guardedTargets: [
+          { targetIndex: 0, guardedAccount: "GUARDED" },
+          { targetIndex: 1, guardedAccount: "GUARDED" },
+        ],
+      });
+
+      assert.equal(sentryCalls, 1);
+    });
+
+    it("handles mixed primary and guarded groups", async () => {
+      const user = new SignerClient("http://localhost:11270", "test-token");
+      const sentry = new SignerClient("http://sentry:11270", "sentry-token");
+
+      (user as any).requestComponentSign = async () => ({
+        request_id: "user-id",
+        signatures: [
+          { target_index: 1, signature: "user-sig", signature_scheme: KEY_TYPE_SENTRY_ED25519 },
+        ],
+      });
+      (sentry as any).requestComponentSign = async () => ({
+        request_id: "sentry-id",
+        signatures: [
+          { target_index: 1, signature: "sentry-sig", signature_scheme: KEY_TYPE_SENTRY_ED25519 },
+        ],
+      });
+      (user as any).signRequests = async (requests: any[]) => {
+        assert.equal(requests[0].auth_address, "AUTH");
+        assert.equal(requests[1].auth_address, undefined);
+        return { signed: ["primary-signed", ""] };
+      };
+      (user as any).requestGuardedAssemble = async (request: any) => {
+        assert.equal(request.passthrough[0].target_index, 0);
+        assert.equal(request.passthrough[0].signed_txn_hex, "primary-signed");
+        return { request_id: "assembly-id", signed_group: ["primary-signed", "guarded-signed"] };
+      };
+
+      const result = await signGuardedGroup({
+        userClient: user,
+        sentryClient: sentry,
+        sentryComponentKey: "SENTRY_COMPONENT",
+        groupBytesHex: ["5458aa", "5458bb"],
+        primaryTargets: [{ targetIndex: 0, authAddress: "AUTH" }],
+        guardedTargets: [{ targetIndex: 1, guardedAccount: "GUARDED" }],
+      });
+
+      assert.equal(result.signedGroup[1], "guarded-signed");
+      assert.ok(result.primarySignResponse);
     });
   });
 

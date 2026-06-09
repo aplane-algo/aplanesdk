@@ -32,6 +32,7 @@ import type {
   ComponentSignResponse,
   GuardedAssemblyRequest,
   GuardedAssemblyResponse,
+  GuardedPassthroughItem,
   SentryReferenceCandidate,
   AdminSyncSentryReferencesRequest,
   AdminSyncSentryReferencesResponse,
@@ -97,6 +98,232 @@ function validateSignRequestId(requestId: string, required = false): void {
     }
     throw new SignerError(`request_id contains invalid character ${JSON.stringify(ch)}`);
   }
+}
+
+type ComponentSignatureByIndex = Map<number, { signature: string; requestId: string }>;
+
+function componentSignaturesByIndex(response: ComponentSignResponse): ComponentSignatureByIndex {
+  const signatures: ComponentSignatureByIndex = new Map();
+  for (const signature of response.signatures) {
+    signatures.set(signature.target_index, {
+      signature: signature.signature,
+      requestId: response.request_id,
+    });
+  }
+  return signatures;
+}
+
+async function resolveSentryForTarget(
+  target: GuardedSignTarget,
+  options: GuardedSignOptions,
+): Promise<GuardedSentryResolution> {
+  if (options.sentryResolver) {
+    const resolved = await options.sentryResolver(target);
+    if (!resolved.client) {
+      throw new SignerError("sentry resolver returned no client");
+    }
+    return resolved;
+  }
+  if (!options.sentryClient) {
+    throw new SignerError("sentryClient or sentryResolver is required");
+  }
+  return {
+    client: options.sentryClient,
+    componentKey: target.sentryComponentKey || options.sentryComponentKey || "",
+  };
+}
+
+async function requestPrimaryGuardedPassthrough(
+  userClient: SignerClient,
+  groupBytesHex: string[],
+  guardedIndices: Set<number>,
+  primaryTargets: GuardedPrimarySignTarget[],
+  signal?: AbortSignal,
+): Promise<{ response: GroupSignResponse; passthrough: GuardedPassthroughItem[] }> {
+  const primaryByIndex = new Map<number, GuardedPrimarySignTarget>();
+  for (const target of primaryTargets) {
+    if (!Number.isInteger(target.targetIndex) || target.targetIndex < 0 || target.targetIndex >= groupBytesHex.length) {
+      throw new SignerError(`primary target ${target.targetIndex} out of range`);
+    }
+    if (guardedIndices.has(target.targetIndex)) {
+      throw new SignerError(`primary target ${target.targetIndex} overlaps guarded target`);
+    }
+    if (primaryByIndex.has(target.targetIndex)) {
+      throw new SignerError(`duplicate primary target index ${target.targetIndex}`);
+    }
+    if (!target.authAddress) {
+      throw new SignerError(`primary target ${target.targetIndex} missing authAddress`);
+    }
+    primaryByIndex.set(target.targetIndex, target);
+  }
+
+  const requests: SignRequest[] = groupBytesHex.map((txnHex, index) => {
+    const target = primaryByIndex.get(index);
+    if (!target) {
+      return { txn_bytes_hex: txnHex };
+    }
+    const request: SignRequest = {
+      txn_bytes_hex: txnHex,
+      auth_address: target.authAddress,
+    };
+    if (target.txnSender) {
+      request.txn_sender = target.txnSender;
+    }
+    if (target.lsigArgs) {
+      request.lsig_args = target.lsigArgs;
+    }
+    if (target.lsigSize) {
+      request.lsig_size = target.lsigSize;
+    }
+    if (target.appCallInfo) {
+      request.app_call_info = target.appCallInfo;
+    }
+    return request;
+  });
+
+  const response = await userClient.signRequests(requests, { signal });
+  const passthrough: GuardedPassthroughItem[] = [];
+  for (const index of Array.from(primaryByIndex.keys()).sort((a, b) => a - b)) {
+    if (!response.signed || !response.signed[index]) {
+      throw new SignerError(`primary signer returned no signed transaction for target ${index}`);
+    }
+    passthrough.push({
+      target_index: index,
+      signed_txn_hex: response.signed[index],
+    });
+  }
+  return { response, passthrough };
+}
+
+/**
+ * Sign and assemble a guarded group using explicit signer clients.
+ *
+ * The helper expects canonical TX-prefixed group bytes. Planning and endpoint
+ * discovery stay caller-owned.
+ */
+export async function signGuardedGroup(options: GuardedSignOptions): Promise<GuardedSignResult> {
+  if (!options.userClient) {
+    throw new SignerError("userClient is required");
+  }
+  if (!options.guardedTargets || options.guardedTargets.length === 0) {
+    throw new SignerError("at least one guarded target is required");
+  }
+  validateComponentGroupBytes(options.groupBytesHex);
+
+  const targets = [...options.guardedTargets].sort((a, b) => a.targetIndex - b.targetIndex);
+  const guardedIndices = new Set<number>();
+  const userGroups = new Map<string, number[]>();
+  for (const target of targets) {
+    if (!Number.isInteger(target.targetIndex) || target.targetIndex < 0 || target.targetIndex >= options.groupBytesHex.length) {
+      throw new SignerError(`guarded target ${target.targetIndex} out of range`);
+    }
+    if (guardedIndices.has(target.targetIndex)) {
+      throw new SignerError(`duplicate guarded target index ${target.targetIndex}`);
+    }
+    if (!target.guardedAccount) {
+      throw new SignerError(`guarded target ${target.targetIndex} missing guardedAccount`);
+    }
+    guardedIndices.add(target.targetIndex);
+    const indices = userGroups.get(target.guardedAccount) || [];
+    indices.push(target.targetIndex);
+    userGroups.set(target.guardedAccount, indices);
+  }
+
+  const userComponentResponses: ComponentSignResponse[] = [];
+  const userSignatures: ComponentSignatureByIndex = new Map();
+  for (const guardedAccount of Array.from(userGroups.keys()).sort()) {
+    const response = await options.userClient.requestComponentSign({
+      role: COMPONENT_SIGN_ROLE_USER,
+      component_key: guardedAccount,
+      group_bytes_hex: options.groupBytesHex,
+      target_indices: (userGroups.get(guardedAccount) || []).sort((a, b) => a - b),
+    }, { signal: options.signal });
+    userComponentResponses.push(response);
+    for (const [index, signature] of componentSignaturesByIndex(response)) {
+      userSignatures.set(index, signature);
+    }
+  }
+
+  const sentryGroups: Array<{
+    client: SignerClient;
+    componentKey: string;
+    indices: number[];
+  }> = [];
+  for (const target of targets) {
+    const resolved = await resolveSentryForTarget(target, options);
+    let group = sentryGroups.find(
+      (item) => item.client === resolved.client && item.componentKey === (resolved.componentKey || "")
+    );
+    if (!group) {
+      group = { client: resolved.client, componentKey: resolved.componentKey || "", indices: [] };
+      sentryGroups.push(group);
+    }
+    group.indices.push(target.targetIndex);
+  }
+
+  const sentryComponentResponses: ComponentSignResponse[] = [];
+  const sentrySignatures: ComponentSignatureByIndex = new Map();
+  for (const group of sentryGroups) {
+    const response = await group.client.requestComponentSign({
+      role: COMPONENT_SIGN_ROLE_SENTRY,
+      component_key: group.componentKey,
+      group_bytes_hex: options.groupBytesHex,
+      target_indices: group.indices.sort((a, b) => a - b),
+    }, { signal: options.signal });
+    sentryComponentResponses.push(response);
+    for (const [index, signature] of componentSignaturesByIndex(response)) {
+      sentrySignatures.set(index, signature);
+    }
+  }
+
+  let primarySignResponse: GroupSignResponse | undefined;
+  const passthrough = [...(options.passthrough || [])];
+  if (options.primaryTargets && options.primaryTargets.length > 0) {
+    const primary = await requestPrimaryGuardedPassthrough(
+      options.userClient,
+      options.groupBytesHex,
+      guardedIndices,
+      options.primaryTargets,
+      options.signal,
+    );
+    primarySignResponse = primary.response;
+    passthrough.push(...primary.passthrough);
+  }
+
+  const assemblyTargets = targets.map((target) => {
+    const userSignature = userSignatures.get(target.targetIndex);
+    const sentrySignature = sentrySignatures.get(target.targetIndex);
+    if (!userSignature) {
+      throw new SignerError(`missing user component signature for target ${target.targetIndex}`);
+    }
+    if (!sentrySignature) {
+      throw new SignerError(`missing sentry component signature for target ${target.targetIndex}`);
+    }
+    return {
+      target_index: target.targetIndex,
+      guarded_account: target.guardedAccount,
+      user_signature: userSignature.signature,
+      user_source_request_id: userSignature.requestId,
+      sentry_signature: sentrySignature.signature,
+      sentry_source_request_id: sentrySignature.requestId,
+      runtime_args: target.runtimeArgs,
+    };
+  });
+
+  const assemblyResponse = await options.userClient.requestGuardedAssemble({
+    request_id: options.assemblyRequestId,
+    group_bytes_hex: options.groupBytesHex,
+    targets: assemblyTargets,
+    passthrough,
+  }, { signal: options.signal });
+
+  return {
+    signedGroup: assemblyResponse.signed_group,
+    userComponentResponses,
+    sentryComponentResponses,
+    primarySignResponse,
+    assemblyResponse,
+  };
 }
 
 function validateComponentGroupBytes(items: string[]): void {
@@ -434,6 +661,54 @@ class SSHTunnel {
 
     await Promise.all([closeServer, closeSSH]);
   }
+}
+
+export interface GuardedSignTarget {
+  targetIndex: number;
+  guardedAccount: string;
+  sentryPublicKeyHex?: string;
+  sentryComponentKeyType?: string;
+  sentryComponentKey?: string;
+  runtimeArgs?: string[];
+}
+
+export interface GuardedPrimarySignTarget {
+  targetIndex: number;
+  authAddress: string;
+  txnSender?: string;
+  lsigArgs?: Record<string, string>;
+  lsigSize?: number;
+  appCallInfo?: { mode?: string; method?: string };
+}
+
+export interface GuardedSentryResolution {
+  client: SignerClient;
+  componentKey?: string;
+}
+
+export type GuardedSentryResolver = (
+  target: GuardedSignTarget
+) => GuardedSentryResolution | Promise<GuardedSentryResolution>;
+
+export interface GuardedSignOptions {
+  userClient: SignerClient;
+  sentryClient?: SignerClient;
+  sentryResolver?: GuardedSentryResolver;
+  sentryComponentKey?: string;
+  groupBytesHex: string[];
+  guardedTargets: GuardedSignTarget[];
+  primaryTargets?: GuardedPrimarySignTarget[];
+  passthrough?: GuardedPassthroughItem[];
+  assemblyRequestId?: string;
+  signal?: AbortSignal;
+}
+
+export interface GuardedSignResult {
+  signedGroup: string[];
+  userComponentResponses: ComponentSignResponse[];
+  sentryComponentResponses: ComponentSignResponse[];
+  primarySignResponse?: GroupSignResponse;
+  assemblyResponse: GuardedAssemblyResponse;
 }
 
 /**

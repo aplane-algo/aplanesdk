@@ -19,12 +19,19 @@ from aplanesdk.signer import (
     KeyNotFoundError,
     KeyDeletionError,
     assemble_group,
+    sign_guarded_group,
     load_config,
     SSHConfig,
     ClientConfig,
     ComponentSignRequest,
+    ComponentSignature,
+    ComponentSignResponse,
+    GroupSignResponse,
     GuardedAssemblyRequest,
     GuardedAssemblyTarget,
+    GuardedAssemblyResponse,
+    GuardedSignTarget,
+    GuardedPrimarySignTarget,
     SentryReferenceCandidate,
     COMPONENT_SIGN_ROLE_SENTRY,
     KEY_TYPE_SENTRY_ED25519,
@@ -480,6 +487,124 @@ class TestSentryLowLevelEndpoints:
         assert mock_post.call_args.args[0] == "http://localhost:11270/admin/sentries/sync"
         body = mock_post.call_args.kwargs["json"]
         assert body["candidates"][0]["component_key"] == "COMPONENT"
+
+
+class TestSignGuardedGroup:
+    def test_signs_one_guarded_target(self):
+        user = make_client()
+        sentry = make_client("http://sentry:11270")
+
+        user.request_component_sign = MagicMock(return_value=ComponentSignResponse(
+            request_id="user-id",
+            signatures=[ComponentSignature(0, "user-sig", KEY_TYPE_SENTRY_ED25519)],
+        ))
+        sentry.request_component_sign = MagicMock(return_value=ComponentSignResponse(
+            request_id="sentry-id",
+            signatures=[ComponentSignature(0, "sentry-sig", KEY_TYPE_SENTRY_ED25519)],
+        ))
+
+        def assemble(req):
+            assert req.targets[0].user_signature == "user-sig"
+            assert req.targets[0].sentry_signature == "sentry-sig"
+            return GuardedAssemblyResponse(
+                request_id=req.request_id or "assembly-id",
+                signed_group=["signed-guarded"],
+            )
+
+        user.request_guarded_assemble = MagicMock(side_effect=assemble)
+
+        result = sign_guarded_group(
+            user_client=user,
+            sentry_client=sentry,
+            sentry_component_key="SENTRY_COMPONENT",
+            group_bytes_hex=["5458aa"],
+            guarded_targets=[GuardedSignTarget(target_index=0, guarded_account="GUARDED")],
+        )
+
+        assert result.signed_group == ["signed-guarded"]
+        user_req = user.request_component_sign.call_args.args[0]
+        assert user_req.role == "user"
+        assert user_req.component_key == "GUARDED"
+        sentry_req = sentry.request_component_sign.call_args.args[0]
+        assert sentry_req.role == COMPONENT_SIGN_ROLE_SENTRY
+        assert sentry_req.component_key == "SENTRY_COMPONENT"
+
+    def test_batches_targets_for_shared_sentry_key(self):
+        user = make_client()
+        sentry = make_client("http://sentry:11270")
+        user.request_component_sign = MagicMock(return_value=ComponentSignResponse(
+            request_id="user-id",
+            signatures=[
+                ComponentSignature(0, "user-0", KEY_TYPE_SENTRY_ED25519),
+                ComponentSignature(1, "user-1", KEY_TYPE_SENTRY_ED25519),
+            ],
+        ))
+        sentry.request_component_sign = MagicMock(return_value=ComponentSignResponse(
+            request_id="sentry-id",
+            signatures=[
+                ComponentSignature(0, "sentry-0", KEY_TYPE_SENTRY_ED25519),
+                ComponentSignature(1, "sentry-1", KEY_TYPE_SENTRY_ED25519),
+            ],
+        ))
+        user.request_guarded_assemble = MagicMock(return_value=GuardedAssemblyResponse(
+            request_id="assembly-id",
+            signed_group=["signed-0", "signed-1"],
+        ))
+
+        sign_guarded_group(
+            user_client=user,
+            sentry_client=sentry,
+            sentry_component_key="SENTRY_COMPONENT",
+            group_bytes_hex=["5458aa", "5458bb"],
+            guarded_targets=[
+                GuardedSignTarget(target_index=0, guarded_account="GUARDED"),
+                GuardedSignTarget(target_index=1, guarded_account="GUARDED"),
+            ],
+        )
+
+        assert sentry.request_component_sign.call_count == 1
+        assert sentry.request_component_sign.call_args.args[0].target_indices == [0, 1]
+
+    def test_mixed_primary_and_guarded_group(self):
+        user = make_client()
+        sentry = make_client("http://sentry:11270")
+        user.request_component_sign = MagicMock(return_value=ComponentSignResponse(
+            request_id="user-id",
+            signatures=[ComponentSignature(1, "user-sig", KEY_TYPE_SENTRY_ED25519)],
+        ))
+        sentry.request_component_sign = MagicMock(return_value=ComponentSignResponse(
+            request_id="sentry-id",
+            signatures=[ComponentSignature(1, "sentry-sig", KEY_TYPE_SENTRY_ED25519)],
+        ))
+        user.sign_requests = MagicMock(return_value=GroupSignResponse(
+            signed=["primary-signed", ""],
+        ))
+
+        def assemble(req):
+            assert req.passthrough[0].target_index == 0
+            assert req.passthrough[0].signed_txn_hex == "primary-signed"
+            return GuardedAssemblyResponse(
+                request_id="assembly-id",
+                signed_group=["primary-signed", "guarded-signed"],
+            )
+
+        user.request_guarded_assemble = MagicMock(side_effect=assemble)
+
+        result = sign_guarded_group(
+            user_client=user,
+            sentry_client=sentry,
+            sentry_component_key="SENTRY_COMPONENT",
+            group_bytes_hex=["5458aa", "5458bb"],
+            primary_targets=[
+                GuardedPrimarySignTarget(target_index=0, auth_address="AUTH"),
+            ],
+            guarded_targets=[GuardedSignTarget(target_index=1, guarded_account="GUARDED")],
+        )
+
+        assert result.signed_group[1] == "guarded-signed"
+        sign_requests = user.sign_requests.call_args.args[0]
+        assert sign_requests[0]["auth_address"] == "AUTH"
+        assert "auth_address" not in sign_requests[1]
 
 
 # ---------------------------------------------------------------------------

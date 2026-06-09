@@ -400,6 +400,38 @@ class AdminSyncSentryReferencesResponse:
 
 
 @dataclass
+class GuardedSignTarget:
+    """One guarded-account slot for the high-level guarded signing helper"""
+    target_index: int
+    guarded_account: str
+    sentry_public_key_hex: str = ""
+    sentry_component_key_type: str = ""
+    sentry_component_key: str = ""
+    runtime_args: Optional[List[str]] = None
+
+
+@dataclass
+class GuardedPrimarySignTarget:
+    """One non-guarded slot signed by the primary/user signer before assembly"""
+    target_index: int
+    auth_address: str
+    txn_sender: str = ""
+    lsig_args: Optional[Dict[str, str]] = None
+    lsig_size: int = 0
+    app_call_info: Optional[Dict[str, str]] = None
+
+
+@dataclass
+class GuardedSignResult:
+    """Result from sign_guarded_group"""
+    signed_group: List[str]
+    user_component_responses: List[ComponentSignResponse]
+    sentry_component_responses: List[ComponentSignResponse]
+    assembly_response: GuardedAssemblyResponse
+    primary_sign_response: Optional[GroupSignResponse] = None
+
+
+@dataclass
 class ErrorResponse:
     """Standard signer HTTP error body for non-2xx responses"""
     error: str
@@ -2180,6 +2212,218 @@ class SignerClient:
         return self._sign_request(
             txns, auth_addresses, lsig_args_map, passthrough, lsig_sizes, request_id=request_id
         )
+
+
+def _component_signatures_by_index(
+    response: ComponentSignResponse,
+) -> Dict[int, Dict[str, str]]:
+    return {
+        item.target_index: {
+            "signature": item.signature,
+            "request_id": response.request_id,
+        }
+        for item in response.signatures
+    }
+
+
+def _resolve_sentry_for_target(
+    target: Dict[str, Any],
+    sentry_client: Optional[SignerClient],
+    sentry_component_key: str,
+    sentry_resolver: Optional[Any],
+) -> tuple:
+    if sentry_resolver is not None:
+        resolved = sentry_resolver(target)
+        if isinstance(resolved, dict):
+            client = resolved.get("client")
+            component_key = resolved.get("component_key", "")
+        else:
+            client, component_key = resolved
+        if client is None:
+            raise SignerError("sentry resolver returned no client")
+        return client, component_key or ""
+    if sentry_client is None:
+        raise SignerError("sentry_client or sentry_resolver is required")
+    return sentry_client, target.get("sentry_component_key") or sentry_component_key
+
+
+def _request_primary_guarded_passthrough(
+    user_client: SignerClient,
+    group_bytes_hex: List[str],
+    guarded_indices: set,
+    primary_targets: List[Dict[str, Any]],
+) -> tuple:
+    primary_by_index: Dict[int, Dict[str, Any]] = {}
+    for target in primary_targets:
+        index = target.get("target_index")
+        if not isinstance(index, int) or index < 0 or index >= len(group_bytes_hex):
+            raise ValueError(f"primary target {index} out of range")
+        if index in guarded_indices:
+            raise ValueError(f"primary target {index} overlaps guarded target")
+        if index in primary_by_index:
+            raise ValueError(f"duplicate primary target index {index}")
+        if not target.get("auth_address"):
+            raise ValueError(f"primary target {index} missing auth_address")
+        primary_by_index[index] = target
+
+    requests = []
+    for index, txn_hex in enumerate(group_bytes_hex):
+        target = primary_by_index.get(index)
+        if target:
+            request = {
+                "txn_bytes_hex": txn_hex,
+                "auth_address": target["auth_address"],
+            }
+            if target.get("txn_sender"):
+                request["txn_sender"] = target["txn_sender"]
+            if target.get("lsig_args"):
+                request["lsig_args"] = target["lsig_args"]
+            if target.get("lsig_size"):
+                request["lsig_size"] = target["lsig_size"]
+            if target.get("app_call_info"):
+                request["app_call_info"] = target["app_call_info"]
+            requests.append(request)
+        else:
+            requests.append({"txn_bytes_hex": txn_hex})
+
+    response = user_client.sign_requests(requests)
+    passthrough = []
+    for index in sorted(primary_by_index):
+        if index >= len(response.signed) or not response.signed[index]:
+            raise SignerError(
+                f"primary signer returned no signed transaction for target {index}"
+            )
+        passthrough.append(
+            GuardedPassthroughItem(
+                target_index=index,
+                signed_txn_hex=response.signed[index],
+            )
+        )
+    return response, passthrough
+
+
+def sign_guarded_group(
+    *,
+    user_client: SignerClient,
+    group_bytes_hex: List[str],
+    guarded_targets: List[Any],
+    sentry_client: Optional[SignerClient] = None,
+    sentry_resolver: Optional[Any] = None,
+    sentry_component_key: str = "",
+    primary_targets: Optional[List[Any]] = None,
+    passthrough: Optional[List[Any]] = None,
+    assembly_request_id: str = "",
+) -> GuardedSignResult:
+    """
+    Sign and assemble a guarded group using explicit signer clients.
+
+    The helper expects canonical TX-prefixed group bytes. Planning and endpoint
+    discovery stay caller-owned.
+    """
+    if user_client is None:
+        raise SignerError("user_client is required")
+    _validate_component_group_bytes(group_bytes_hex)
+    targets = [_compact_payload(target) for target in guarded_targets]
+    if not targets:
+        raise ValueError("at least one guarded target is required")
+    targets.sort(key=lambda item: item["target_index"])
+
+    guarded_indices = set()
+    user_groups: Dict[str, List[int]] = {}
+    for target in targets:
+        index = target.get("target_index")
+        if not isinstance(index, int) or index < 0 or index >= len(group_bytes_hex):
+            raise ValueError(f"guarded target {index} out of range")
+        if index in guarded_indices:
+            raise ValueError(f"duplicate guarded target index {index}")
+        if not target.get("guarded_account"):
+            raise ValueError(f"guarded target {index} missing guarded_account")
+        guarded_indices.add(index)
+        user_groups.setdefault(target["guarded_account"], []).append(index)
+
+    user_component_responses = []
+    user_signatures: Dict[int, Dict[str, str]] = {}
+    for guarded_account in sorted(user_groups):
+        response = user_client.request_component_sign(ComponentSignRequest(
+            role=COMPONENT_SIGN_ROLE_USER,
+            component_key=guarded_account,
+            group_bytes_hex=group_bytes_hex,
+            target_indices=sorted(user_groups[guarded_account]),
+        ))
+        user_component_responses.append(response)
+        user_signatures.update(_component_signatures_by_index(response))
+
+    sentry_groups: Dict[tuple, Dict[str, Any]] = {}
+    for target in targets:
+        client, component_key = _resolve_sentry_for_target(
+            target, sentry_client, sentry_component_key, sentry_resolver
+        )
+        key = (id(client), component_key)
+        if key not in sentry_groups:
+            sentry_groups[key] = {
+                "client": client,
+                "component_key": component_key,
+                "indices": [],
+            }
+        sentry_groups[key]["indices"].append(target["target_index"])
+
+    sentry_component_responses = []
+    sentry_signatures: Dict[int, Dict[str, str]] = {}
+    for group in sentry_groups.values():
+        response = group["client"].request_component_sign(ComponentSignRequest(
+            role=COMPONENT_SIGN_ROLE_SENTRY,
+            component_key=group["component_key"],
+            group_bytes_hex=group_bytes_hex,
+            target_indices=sorted(group["indices"]),
+        ))
+        sentry_component_responses.append(response)
+        sentry_signatures.update(_component_signatures_by_index(response))
+
+    primary_sign_response = None
+    assembly_passthrough = [
+        item if isinstance(item, GuardedPassthroughItem)
+        else GuardedPassthroughItem(**_compact_payload(item))
+        for item in (passthrough or [])
+    ]
+    if primary_targets:
+        primary_sign_response, primary_passthrough = _request_primary_guarded_passthrough(
+            user_client,
+            group_bytes_hex,
+            guarded_indices,
+            [_compact_payload(target) for target in primary_targets],
+        )
+        assembly_passthrough.extend(primary_passthrough)
+
+    assembly_targets = []
+    for target in targets:
+        index = target["target_index"]
+        if index not in user_signatures:
+            raise SignerError(f"missing user component signature for target {index}")
+        if index not in sentry_signatures:
+            raise SignerError(f"missing sentry component signature for target {index}")
+        assembly_targets.append(GuardedAssemblyTarget(
+            target_index=index,
+            guarded_account=target["guarded_account"],
+            user_signature=user_signatures[index]["signature"],
+            user_source_request_id=user_signatures[index]["request_id"],
+            sentry_signature=sentry_signatures[index]["signature"],
+            sentry_source_request_id=sentry_signatures[index]["request_id"],
+            runtime_args=target.get("runtime_args"),
+        ))
+
+    assembly_response = user_client.request_guarded_assemble(GuardedAssemblyRequest(
+        request_id=assembly_request_id,
+        group_bytes_hex=group_bytes_hex,
+        targets=assembly_targets,
+        passthrough=assembly_passthrough,
+    ))
+    return GuardedSignResult(
+        signed_group=assembly_response.signed_group,
+        user_component_responses=user_component_responses,
+        sentry_component_responses=sentry_component_responses,
+        primary_sign_response=primary_sign_response,
+        assembly_response=assembly_response,
+    )
 
 
 def assemble_group(signed_lists: List[List[str]]) -> str:

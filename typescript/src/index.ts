@@ -27,7 +27,15 @@
  */
 
 // Main client
-export { SignerClient } from "./client.js";
+export { SignerClient, signGuardedGroup } from "./client.js";
+export type {
+  GuardedSignTarget,
+  GuardedPrimarySignTarget,
+  GuardedSentryResolution,
+  GuardedSentryResolver,
+  GuardedSignOptions,
+  GuardedSignResult,
+} from "./client.js";
 export {
   ApsignerAlgoKitAccount,
   createApsignerAccount,
