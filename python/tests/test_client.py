@@ -22,6 +22,12 @@ from aplanesdk.signer import (
     load_config,
     SSHConfig,
     ClientConfig,
+    ComponentSignRequest,
+    GuardedAssemblyRequest,
+    GuardedAssemblyTarget,
+    SentryReferenceCandidate,
+    COMPONENT_SIGN_ROLE_SENTRY,
+    KEY_TYPE_SENTRY_ED25519,
     request_token,
     request_token_to_file,
     _validate_sign_request_id,
@@ -364,6 +370,116 @@ class TestDeleteKey:
         with patch.object(client.session, "delete", return_value=mock_response(200, {})) as mock_delete:
             client.delete_key("ADDR")
         assert mock_delete.call_args.kwargs["timeout"] == 10
+
+
+# ---------------------------------------------------------------------------
+# sentry low-level endpoints
+# ---------------------------------------------------------------------------
+
+class TestSentryLowLevelEndpoints:
+    def test_request_component_sign_posts_to_component_endpoint(self):
+        client = make_client()
+        resp = mock_response(200, {
+            "request_id": "sdk-generated",
+            "signatures": [
+                {
+                    "target_index": 0,
+                    "signature": "aabb",
+                    "signature_scheme": KEY_TYPE_SENTRY_ED25519,
+                },
+            ],
+        })
+
+        with patch.object(client.session, "post", return_value=resp) as mock_post:
+            result = client.request_component_sign(ComponentSignRequest(
+                role=COMPONENT_SIGN_ROLE_SENTRY,
+                component_key="COMPONENT",
+                group_bytes_hex=["5458aa"],
+                target_indices=[0],
+            ))
+
+        assert result.signatures[0].signature == "aabb"
+        assert mock_post.call_args.args[0] == "http://localhost:11270/sign/component"
+        body = mock_post.call_args.kwargs["json"]
+        assert body["request_id"].startswith("sdk-")
+        assert body["role"] == COMPONENT_SIGN_ROLE_SENTRY
+        assert body["component_key"] == "COMPONENT"
+
+    def test_request_component_sign_rejects_malformed_response(self):
+        client = make_client()
+        resp = mock_response(200, {"request_id": "sdk-test"})
+
+        with patch.object(client.session, "post", return_value=resp):
+            with pytest.raises(SignerError, match="invalid component sign response"):
+                client.request_component_sign({
+                    "role": COMPONENT_SIGN_ROLE_SENTRY,
+                    "group_bytes_hex": ["5458aa"],
+                    "target_indices": [0],
+                })
+
+    def test_request_guarded_assemble_posts_to_assemble_endpoint(self):
+        client = make_client()
+        resp = mock_response(200, {
+            "request_id": "sdk-assembly",
+            "signed_group": ["ccdd"],
+        })
+
+        with patch.object(client.session, "post", return_value=resp) as mock_post:
+            result = client.request_guarded_assemble(GuardedAssemblyRequest(
+                group_bytes_hex=["5458aa"],
+                targets=[
+                    GuardedAssemblyTarget(
+                        target_index=0,
+                        guarded_account="GUARDED",
+                        user_signature="aabb",
+                        sentry_signature="bbcc",
+                    ),
+                ],
+            ))
+
+        assert result.signed_group == ["ccdd"]
+        assert mock_post.call_args.args[0] == "http://localhost:11270/sign/assemble"
+        body = mock_post.call_args.kwargs["json"]
+        assert body["request_id"].startswith("sdk-")
+        assert body["targets"][0]["guarded_account"] == "GUARDED"
+
+    def test_request_guarded_assemble_rejects_missing_coverage(self):
+        client = make_client()
+        with patch.object(client.session, "post") as mock_post:
+            with pytest.raises(ValueError, match="not covered"):
+                client.request_guarded_assemble(GuardedAssemblyRequest(
+                    group_bytes_hex=["5458aa", "5458bb"],
+                    targets=[
+                        GuardedAssemblyTarget(
+                            target_index=0,
+                            guarded_account="GUARDED",
+                            user_signature="aabb",
+                            sentry_signature="bbcc",
+                        ),
+                    ],
+                ))
+
+        mock_post.assert_not_called()
+
+    def test_admin_sync_sentry_references_posts_to_admin_endpoint(self):
+        client = make_client()
+        resp = mock_response(200, {"added": 1, "updated": 0, "removed": 0, "count": 1})
+
+        with patch.object(client.session, "post", return_value=resp) as mock_post:
+            result = client.admin_sync_sentry_references([
+                SentryReferenceCandidate(
+                    endpoint_alias="sentry-local",
+                    component_key="COMPONENT",
+                    key_type=KEY_TYPE_SENTRY_ED25519,
+                    public_key_hex="aabb",
+                ),
+            ])
+
+        assert result.added == 1
+        assert result.count == 1
+        assert mock_post.call_args.args[0] == "http://localhost:11270/admin/sentries/sync"
+        body = mock_post.call_args.kwargs["json"]
+        assert body["candidates"][0]["component_key"] == "COMPONENT"
 
 
 # ---------------------------------------------------------------------------

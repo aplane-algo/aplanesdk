@@ -28,6 +28,13 @@ import type {
   SigningArg,
   MutationReport,
   CancelSignResponse,
+  ComponentSignRequest,
+  ComponentSignResponse,
+  GuardedAssemblyRequest,
+  GuardedAssemblyResponse,
+  SentryReferenceCandidate,
+  AdminSyncSentryReferencesRequest,
+  AdminSyncSentryReferencesResponse,
   ErrorResponse,
 } from "./types.js";
 import {
@@ -58,12 +65,17 @@ const STATUS_TIMEOUT = 5000;
 const INVENTORY_TIMEOUT = 30000;
 const MUTATION_TIMEOUT = 60000;
 const GROUP_PLAN_TIMEOUT = 60000;
+const COMPONENT_SIGN_TIMEOUT = 120000;
+const GUARDED_ASSEMBLY_TIMEOUT = 120000;
 const SIGN_CANCEL_TIMEOUT = 5000;
 const SIGN_APPROVAL_SLACK = 30000;
 const DEFAULT_SIGN_REQUEST_TIMEOUT = 360000;
 const MAX_DISCOVERED_APPROVAL_WAIT = 1800000;
 const APPROVAL_WAIT_REFRESH = 300000;
 const MAX_SIGN_REQUEST_ID_LENGTH = 128;
+const MAX_COMPONENT_GROUP_SIZE = 16;
+const COMPONENT_SIGN_ROLE_USER = "user";
+const COMPONENT_SIGN_ROLE_SENTRY = "sentry";
 
 function newSignRequestId(): string {
   return `sdk-${randomBytes(16).toString("hex")}`;
@@ -85,6 +97,145 @@ function validateSignRequestId(requestId: string, required = false): void {
     }
     throw new SignerError(`request_id contains invalid character ${JSON.stringify(ch)}`);
   }
+}
+
+function validateComponentGroupBytes(items: string[]): void {
+  if (!items || items.length === 0) {
+    throw new SignerError("group_bytes_hex is empty");
+  }
+  if (items.length > MAX_COMPONENT_GROUP_SIZE) {
+    throw new SignerError(
+      `group_bytes_hex length ${items.length} exceeds max ${MAX_COMPONENT_GROUP_SIZE}`
+    );
+  }
+  items.forEach((item, index) => {
+    if (!item) {
+      throw new SignerError(`group_bytes_hex ${index} is empty`);
+    }
+  });
+}
+
+function validateComponentTargetIndices(indices: number[], groupLen: number): void {
+  if (!indices || indices.length === 0) {
+    throw new SignerError("target_indices is empty");
+  }
+  const seen = new Set<number>();
+  for (const index of indices) {
+    if (!Number.isInteger(index) || index < 0 || index >= groupLen) {
+      throw new SignerError(`target_indices ${index} out of range`);
+    }
+    if (seen.has(index)) {
+      throw new SignerError(`target_indices contains duplicate ${index}`);
+    }
+    seen.add(index);
+  }
+}
+
+function validateComponentSignRequest(request: ComponentSignRequest): void {
+  validateSignRequestId(request.request_id || "");
+  if (request.role === COMPONENT_SIGN_ROLE_USER) {
+    if (!request.component_key) {
+      throw new SignerError("component_key is required for user role");
+    }
+  } else if (request.role !== COMPONENT_SIGN_ROLE_SENTRY) {
+    throw new SignerError(
+      `role must be ${JSON.stringify(COMPONENT_SIGN_ROLE_USER)} or ${JSON.stringify(COMPONENT_SIGN_ROLE_SENTRY)}`
+    );
+  }
+  validateComponentGroupBytes(request.group_bytes_hex);
+  validateComponentTargetIndices(request.target_indices, request.group_bytes_hex.length);
+}
+
+function validateComponentSignResponse(response: ComponentSignResponse): void {
+  if (!response.request_id) {
+    throw new SignerError("request_id is required");
+  }
+  validateSignRequestId(response.request_id);
+  if (!response.signatures || response.signatures.length === 0) {
+    throw new SignerError("signatures array is empty");
+  }
+  const seen = new Set<number>();
+  response.signatures.forEach((signature, index) => {
+    const item = index + 1;
+    if (!Number.isInteger(signature.target_index) || signature.target_index < 0) {
+      throw new SignerError(`signature ${item}: target_index must be non-negative`);
+    }
+    if (seen.has(signature.target_index)) {
+      throw new SignerError(`signature ${item}: duplicate target_index ${signature.target_index}`);
+    }
+    seen.add(signature.target_index);
+    if (!signature.signature) {
+      throw new SignerError(`signature ${item}: signature is required`);
+    }
+    if (!signature.signature_scheme) {
+      throw new SignerError(`signature ${item}: signature_scheme is required`);
+    }
+  });
+}
+
+function validateAssemblyIndex(index: number, groupLen: number, covered: Set<number>): void {
+  if (!Number.isInteger(index) || index < 0 || index >= groupLen) {
+    throw new SignerError(`target_index ${index} out of range`);
+  }
+  if (covered.has(index)) {
+    throw new SignerError(`duplicate target_index ${index}`);
+  }
+  covered.add(index);
+}
+
+function validateGuardedAssemblyRequest(request: GuardedAssemblyRequest): void {
+  validateSignRequestId(request.request_id || "");
+  validateComponentGroupBytes(request.group_bytes_hex);
+  const targets = request.targets || [];
+  const passthrough = request.passthrough || [];
+  if (targets.length === 0 && passthrough.length === 0) {
+    throw new SignerError("targets or passthrough is required");
+  }
+
+  const covered = new Set<number>();
+  targets.forEach((target, index) => {
+    const item = index + 1;
+    validateAssemblyIndex(target.target_index, request.group_bytes_hex.length, covered);
+    if (!target.guarded_account) {
+      throw new SignerError(`target ${item}: guarded_account is required`);
+    }
+    if (!target.user_signature) {
+      throw new SignerError(`target ${item}: user_signature is required`);
+    }
+    if (!target.sentry_signature) {
+      throw new SignerError(`target ${item}: sentry_signature is required`);
+    }
+    validateSignRequestId(target.user_source_request_id || "");
+    validateSignRequestId(target.sentry_source_request_id || "");
+  });
+
+  passthrough.forEach((item, index) => {
+    validateAssemblyIndex(item.target_index, request.group_bytes_hex.length, covered);
+    if (!item.signed_txn_hex) {
+      throw new SignerError(`passthrough ${index + 1}: signed_txn_hex is required`);
+    }
+  });
+
+  for (let index = 0; index < request.group_bytes_hex.length; index++) {
+    if (!covered.has(index)) {
+      throw new SignerError(`group position ${index} is not covered by targets or passthrough`);
+    }
+  }
+}
+
+function validateGuardedAssemblyResponse(response: GuardedAssemblyResponse): void {
+  if (!response.request_id) {
+    throw new SignerError("request_id is required");
+  }
+  validateSignRequestId(response.request_id);
+  if (!response.signed_group || response.signed_group.length === 0) {
+    throw new SignerError("signed_group is empty");
+  }
+  response.signed_group.forEach((signed, index) => {
+    if (!signed) {
+      throw new SignerError(`signed_group ${index} is empty`);
+    }
+  });
 }
 
 /**
@@ -891,6 +1042,182 @@ export class SignerClient {
     if (data.error) {
       throw new SignerError(data.error);
     }
+    return data;
+  }
+
+  /**
+   * Send a raw role-specific component signing request to /sign/component.
+   *
+   * This is a low-level building block for guarded-account flows. The SDK
+   * validates request and response shape but does not assemble transactions.
+   */
+  async requestComponentSign(
+    request: ComponentSignRequest,
+    options?: { signal?: AbortSignal },
+  ): Promise<ComponentSignResponse> {
+    const requestBody: ComponentSignRequest = {
+      ...request,
+      request_id: request.request_id || newSignRequestId(),
+    };
+    try {
+      validateComponentSignRequest(requestBody);
+    } catch (error) {
+      throw new SignerError(
+        `invalid component sign request: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+
+    const response = await this.fetch("/sign/component", {
+      method: "POST",
+      body: JSON.stringify(requestBody),
+      timeout: this.timeoutFor(COMPONENT_SIGN_TIMEOUT),
+      signal: options?.signal,
+    });
+
+    if (response.status === 401) {
+      throw new AuthenticationError();
+    }
+
+    if (response.status === 403) {
+      const error = await this.errorMessage(response, "Component signing request rejected");
+      throw new SigningRejectedError(error);
+    }
+
+    if (response.status === 503) {
+      throw new SignerUnavailableError(await this.errorMessage(response, "Signer unavailable"));
+    }
+
+    if (response.status !== 200) {
+      throw new SignerError(
+        await this.errorMessage(response, `Component signing failed: HTTP ${response.status}`)
+      );
+    }
+
+    let data: ComponentSignResponse & { error?: string };
+    try {
+      data = (await response.json()) as ComponentSignResponse & { error?: string };
+    } catch {
+      throw new SignerError("Server returned invalid JSON");
+    }
+
+    if (data.error) {
+      throw new SignerError(data.error);
+    }
+
+    try {
+      validateComponentSignResponse(data);
+    } catch (error) {
+      throw new SignerError(
+        `invalid component sign response: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+
+    return data;
+  }
+
+  /**
+   * Send a raw guarded transaction assembly request to /sign/assemble.
+   */
+  async requestGuardedAssemble(
+    request: GuardedAssemblyRequest,
+    options?: { signal?: AbortSignal },
+  ): Promise<GuardedAssemblyResponse> {
+    const requestBody: GuardedAssemblyRequest = {
+      ...request,
+      request_id: request.request_id || newSignRequestId(),
+    };
+    try {
+      validateGuardedAssemblyRequest(requestBody);
+    } catch (error) {
+      throw new SignerError(
+        `invalid guarded assembly request: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+
+    const response = await this.fetch("/sign/assemble", {
+      method: "POST",
+      body: JSON.stringify(requestBody),
+      timeout: this.timeoutFor(GUARDED_ASSEMBLY_TIMEOUT),
+      signal: options?.signal,
+    });
+
+    if (response.status === 401) {
+      throw new AuthenticationError();
+    }
+
+    if (response.status === 403) {
+      const error = await this.errorMessage(response, "Guarded assembly request rejected");
+      throw new SigningRejectedError(error);
+    }
+
+    if (response.status === 503) {
+      throw new SignerUnavailableError(await this.errorMessage(response, "Signer unavailable"));
+    }
+
+    if (response.status !== 200) {
+      throw new SignerError(
+        await this.errorMessage(response, `Guarded assembly failed: HTTP ${response.status}`)
+      );
+    }
+
+    let data: GuardedAssemblyResponse & { error?: string };
+    try {
+      data = (await response.json()) as GuardedAssemblyResponse & { error?: string };
+    } catch {
+      throw new SignerError("Server returned invalid JSON");
+    }
+
+    if (data.error) {
+      throw new SignerError(data.error);
+    }
+
+    try {
+      validateGuardedAssemblyResponse(data);
+    } catch (error) {
+      throw new SignerError(
+        `invalid guarded assembly response: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+
+    return data;
+  }
+
+  /**
+   * Sync public sentry reference candidates into the connected signer.
+   */
+  async adminSyncSentryReferences(
+    candidates: SentryReferenceCandidate[],
+  ): Promise<AdminSyncSentryReferencesResponse> {
+    const requestBody: AdminSyncSentryReferencesRequest = { candidates };
+    const response = await this.fetch("/admin/sentries/sync", {
+      method: "POST",
+      body: JSON.stringify(requestBody),
+      timeout: this.timeoutFor(MUTATION_TIMEOUT),
+    });
+
+    if (response.status === 401) {
+      throw new AuthenticationError();
+    }
+    if (response.status === 403) {
+      throw new SignerUnavailableError("Signer is locked");
+    }
+    if (response.status !== 200) {
+      throw new SignerError(
+        await this.errorMessage(response, `Sentry reference sync failed: HTTP ${response.status}`)
+      );
+    }
+
+    let data: AdminSyncSentryReferencesResponse;
+    try {
+      data = (await response.json()) as AdminSyncSentryReferencesResponse;
+    } catch {
+      throw new SignerError("Server returned invalid JSON");
+    }
+
+    if (data.error) {
+      throw new SignerError(data.error);
+    }
+
     return data;
   }
 

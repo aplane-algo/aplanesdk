@@ -45,6 +45,8 @@ const (
 	inventoryTimeout          = 30 * time.Second
 	mutationTimeout           = 60 * time.Second
 	groupPlanTimeout          = 60 * time.Second
+	componentSignTimeout      = 2 * time.Minute
+	guardedAssemblyTimeout    = 2 * time.Minute
 	signCancelTimeout         = 5 * time.Second
 	signApprovalSlack         = 30 * time.Second
 	defaultSignRequestTimeout = 6 * time.Minute
@@ -453,6 +455,12 @@ func (c *SignerClient) ListKeyTypes() ([]KeyTypeInfo, error) {
 	if resp.StatusCode == 401 {
 		return nil, ErrAuthentication
 	}
+	if resp.StatusCode == 403 {
+		return nil, ErrSigningRejected
+	}
+	if resp.StatusCode == 503 {
+		return nil, ErrSignerUnavailable
+	}
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("signer error (%d): %s", resp.StatusCode, readErrorBody(resp))
 	}
@@ -548,6 +556,185 @@ func (c *SignerClient) DeleteKey(address string) error {
 	c.keyMu.Unlock()
 
 	return nil
+}
+
+// RequestComponentSign sends a role-specific component signing request to
+// /sign/component.
+func (c *SignerClient) RequestComponentSign(req ComponentSignRequest) (*ComponentSignResponse, error) {
+	return c.RequestComponentSignWithContext(context.Background(), req)
+}
+
+// RequestComponentSignWithContext sends a role-specific component signing
+// request to /sign/component.
+func (c *SignerClient) RequestComponentSignWithContext(ctx context.Context, reqBody ComponentSignRequest) (*ComponentSignResponse, error) {
+	if reqBody.RequestID == "" {
+		requestID, err := newSignRequestID()
+		if err != nil {
+			return nil, fmt.Errorf("failed to create component sign request ID: %w", err)
+		}
+		reqBody.RequestID = requestID
+	}
+	if err := reqBody.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid component sign request: %w", err)
+	}
+
+	jsonBody, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	reqCtx, cancel := c.requestContext(ctx, componentSignTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, "POST", c.baseURL+"/sign/component", bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "aplane "+c.token)
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to make request to Signer: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 401 {
+		return nil, ErrAuthentication
+	}
+	if resp.StatusCode == 403 {
+		return nil, ErrSigningRejected
+	}
+	if resp.StatusCode == 503 {
+		return nil, ErrSignerUnavailable
+	}
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("signer error (%d): %s", resp.StatusCode, readErrorBody(resp))
+	}
+
+	var componentResp ComponentSignResponse
+	if err := json.NewDecoder(resp.Body).Decode(&componentResp); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+	if err := componentResp.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid component sign response: %w", err)
+	}
+	return &componentResp, nil
+}
+
+// RequestGuardedAssemble sends a guarded transaction assembly request to
+// /sign/assemble.
+func (c *SignerClient) RequestGuardedAssemble(req GuardedAssemblyRequest) (*GuardedAssemblyResponse, error) {
+	return c.RequestGuardedAssembleWithContext(context.Background(), req)
+}
+
+// RequestGuardedAssembleWithContext sends a guarded transaction assembly
+// request to /sign/assemble.
+func (c *SignerClient) RequestGuardedAssembleWithContext(ctx context.Context, reqBody GuardedAssemblyRequest) (*GuardedAssemblyResponse, error) {
+	if reqBody.RequestID == "" {
+		requestID, err := newSignRequestID()
+		if err != nil {
+			return nil, fmt.Errorf("failed to create guarded assembly request ID: %w", err)
+		}
+		reqBody.RequestID = requestID
+	}
+	if err := reqBody.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid guarded assembly request: %w", err)
+	}
+
+	jsonBody, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	reqCtx, cancel := c.requestContext(ctx, guardedAssemblyTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, "POST", c.baseURL+"/sign/assemble", bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "aplane "+c.token)
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to make request to Signer: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 401 {
+		return nil, ErrAuthentication
+	}
+	if resp.StatusCode == 403 {
+		return nil, ErrSigningRejected
+	}
+	if resp.StatusCode == 503 {
+		return nil, ErrSignerUnavailable
+	}
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("signer error (%d): %s", resp.StatusCode, readErrorBody(resp))
+	}
+
+	var assemblyResp GuardedAssemblyResponse
+	if err := json.NewDecoder(resp.Body).Decode(&assemblyResp); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+	if err := assemblyResp.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid guarded assembly response: %w", err)
+	}
+	return &assemblyResp, nil
+}
+
+// AdminSyncSentryReferences syncs public sentry reference candidates into the
+// connected signer identity.
+func (c *SignerClient) AdminSyncSentryReferences(candidates []SentryReferenceCandidate) (*AdminSyncSentryReferencesResponse, error) {
+	return c.AdminSyncSentryReferencesWithContext(context.Background(), candidates)
+}
+
+// AdminSyncSentryReferencesWithContext syncs public sentry reference
+// candidates into the connected signer identity.
+func (c *SignerClient) AdminSyncSentryReferencesWithContext(ctx context.Context, candidates []SentryReferenceCandidate) (*AdminSyncSentryReferencesResponse, error) {
+	reqBody := AdminSyncSentryReferencesRequest{Candidates: candidates}
+	jsonBody, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	reqCtx, cancel := c.requestContext(ctx, mutationTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, "POST", c.baseURL+"/admin/sentries/sync", bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "aplane "+c.token)
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sync sentry references: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 401 {
+		return nil, ErrAuthentication
+	}
+	if resp.StatusCode == 403 {
+		return nil, ErrSignerLocked
+	}
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("signer error (%d): %s", resp.StatusCode, readErrorBody(resp))
+	}
+
+	var syncResp AdminSyncSentryReferencesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&syncResp); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+	if syncResp.Error != "" {
+		return nil, fmt.Errorf("sentry reference sync failed: %s", syncResp.Error)
+	}
+	return &syncResp, nil
 }
 
 // PlanGroup previews group building without signing or approval.

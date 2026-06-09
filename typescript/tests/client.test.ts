@@ -5,6 +5,10 @@ import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { SignerClient } from "../src/client.js";
 import {
+  COMPONENT_SIGN_ROLE_SENTRY,
+  KEY_TYPE_SENTRY_ED25519,
+} from "../src/types.js";
+import {
   AuthenticationError,
   SigningRejectedError,
   SignerUnavailableError,
@@ -431,6 +435,133 @@ describe("SignerClient", () => {
       mockFetch.mockResolvedValueOnce({ status: 401, ok: false });
       const client = new SignerClient("http://localhost:11270", "test-token");
       await assert.rejects(client.deleteKey("ADDR"), AuthenticationError);
+    });
+  });
+
+  describe("sentry low-level endpoints", () => {
+    it("posts component signing requests to /sign/component", async () => {
+      mockFetch.mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: async () => ({
+          request_id: "sdk-generated",
+          signatures: [
+            {
+              target_index: 0,
+              signature: "aabb",
+              signature_scheme: KEY_TYPE_SENTRY_ED25519,
+            },
+          ],
+        }),
+      });
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const result = await client.requestComponentSign({
+        role: COMPONENT_SIGN_ROLE_SENTRY,
+        component_key: "COMPONENT",
+        group_bytes_hex: ["5458aa"],
+        target_indices: [0],
+      });
+
+      assert.equal(result.signatures[0].signature, "aabb");
+      assert.equal(mockFetch.mock.calls[0][0], "http://localhost:11270/sign/component");
+      assert.equal(mockFetch.mock.calls[0][1].method, "POST");
+      assert.equal(mockFetch.mock.calls[0][1].headers.Authorization, "aplane test-token");
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      assert.match(body.request_id, /^sdk-/);
+      assert.equal(body.role, COMPONENT_SIGN_ROLE_SENTRY);
+      assert.equal(body.component_key, "COMPONENT");
+    });
+
+    it("rejects malformed component signing responses", async () => {
+      mockFetch.mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: async () => ({ request_id: "sdk-test" }),
+      });
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      await assert.rejects(
+        client.requestComponentSign({
+          role: COMPONENT_SIGN_ROLE_SENTRY,
+          group_bytes_hex: ["5458aa"],
+          target_indices: [0],
+        }),
+        { message: /invalid component sign response/ },
+      );
+    });
+
+    it("posts guarded assembly requests to /sign/assemble", async () => {
+      mockFetch.mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: async () => ({
+          request_id: "sdk-assembly",
+          signed_group: ["ccdd"],
+        }),
+      });
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const result = await client.requestGuardedAssemble({
+        group_bytes_hex: ["5458aa"],
+        targets: [
+          {
+            target_index: 0,
+            guarded_account: "GUARDED",
+            user_signature: "aabb",
+            sentry_signature: "bbcc",
+          },
+        ],
+      });
+
+      assert.deepEqual(result.signed_group, ["ccdd"]);
+      assert.equal(mockFetch.mock.calls[0][0], "http://localhost:11270/sign/assemble");
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      assert.match(body.request_id, /^sdk-/);
+      assert.equal(body.targets[0].guarded_account, "GUARDED");
+    });
+
+    it("rejects guarded assembly requests with missing coverage before fetch", async () => {
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      await assert.rejects(
+        client.requestGuardedAssemble({
+          group_bytes_hex: ["5458aa", "5458bb"],
+          targets: [
+            {
+              target_index: 0,
+              guarded_account: "GUARDED",
+              user_signature: "aabb",
+              sentry_signature: "bbcc",
+            },
+          ],
+        }),
+        { message: /not covered/ },
+      );
+      assert.equal(mockFetch.mock.calls.length, 0);
+    });
+
+    it("posts sentry reference sync requests to the admin endpoint", async () => {
+      mockFetch.mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: async () => ({ added: 1, updated: 0, removed: 0, count: 1 }),
+      });
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const result = await client.adminSyncSentryReferences([
+        {
+          endpoint_alias: "sentry-local",
+          component_key: "COMPONENT",
+          key_type: KEY_TYPE_SENTRY_ED25519,
+          public_key_hex: "aabb",
+        },
+      ]);
+
+      assert.equal(result.added, 1);
+      assert.equal(result.count, 1);
+      assert.equal(mockFetch.mock.calls[0][0], "http://localhost:11270/admin/sentries/sync");
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      assert.equal(body.candidates[0].component_key, "COMPONENT");
     });
   });
 

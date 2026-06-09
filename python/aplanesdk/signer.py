@@ -44,7 +44,7 @@ import requests
 import secrets
 import socket
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from typing import Optional, Dict, List, Any
 
 from algosdk import encoding, transaction
@@ -64,12 +64,15 @@ STATUS_TIMEOUT = 5
 INVENTORY_TIMEOUT = 30
 MUTATION_TIMEOUT = 60
 GROUP_PLAN_TIMEOUT = 60
+COMPONENT_SIGN_TIMEOUT = 120
+GUARDED_ASSEMBLY_TIMEOUT = 120
 SIGN_CANCEL_TIMEOUT = 5
 SIGN_APPROVAL_SLACK = 30
 DEFAULT_SIGN_REQUEST_TIMEOUT = 360
 MAX_DISCOVERED_APPROVAL_WAIT = 30 * 60
 APPROVAL_WAIT_REFRESH = 5 * 60
 MAX_SIGN_REQUEST_ID_LENGTH = 128
+MAX_COMPONENT_GROUP_SIZE = 16
 
 COMPONENT_SIGN_ROLE_USER = "user"
 COMPONENT_SIGN_ROLE_SENTRY = "sentry"
@@ -492,6 +495,137 @@ def _validate_sign_request_id(request_id: str, *, required: bool = False) -> Non
         if ch.isalnum() or ch in "-_.:":
             continue
         raise ValueError(f"request_id contains invalid character {ch!r}")
+
+
+def _compact_payload(value: Any) -> Any:
+    """Convert dataclass payloads to JSON dictionaries and drop None values."""
+    if is_dataclass(value):
+        value = asdict(value)
+    if isinstance(value, dict):
+        return {
+            key: _compact_payload(item)
+            for key, item in value.items()
+            if item is not None
+        }
+    if isinstance(value, list):
+        return [_compact_payload(item) for item in value]
+    return value
+
+
+def _validate_component_group_bytes(items: List[str]) -> None:
+    if not items:
+        raise ValueError("group_bytes_hex is empty")
+    if len(items) > MAX_COMPONENT_GROUP_SIZE:
+        raise ValueError(
+            f"group_bytes_hex length {len(items)} exceeds max {MAX_COMPONENT_GROUP_SIZE}"
+        )
+    for index, item in enumerate(items):
+        if not item:
+            raise ValueError(f"group_bytes_hex {index} is empty")
+
+
+def _validate_component_target_indices(indices: List[int], group_len: int) -> None:
+    if not indices:
+        raise ValueError("target_indices is empty")
+    seen = set()
+    for index in indices:
+        if not isinstance(index, int) or index < 0 or index >= group_len:
+            raise ValueError(f"target_indices {index} out of range")
+        if index in seen:
+            raise ValueError(f"target_indices contains duplicate {index}")
+        seen.add(index)
+
+
+def _validate_assembly_index(index: int, group_len: int, covered: set) -> None:
+    if not isinstance(index, int) or index < 0 or index >= group_len:
+        raise ValueError(f"target_index {index} out of range")
+    if index in covered:
+        raise ValueError(f"duplicate target_index {index}")
+    covered.add(index)
+
+
+def _validate_component_sign_request(data: Dict[str, Any]) -> None:
+    _validate_sign_request_id(str(data.get("request_id", "")))
+    role = data.get("role", "")
+    if role == COMPONENT_SIGN_ROLE_USER:
+        if not data.get("component_key"):
+            raise ValueError("component_key is required for user role")
+    elif role != COMPONENT_SIGN_ROLE_SENTRY:
+        raise ValueError(
+            f"role must be {COMPONENT_SIGN_ROLE_USER!r} or {COMPONENT_SIGN_ROLE_SENTRY!r}"
+        )
+    group_bytes_hex = data.get("group_bytes_hex") or []
+    target_indices = data.get("target_indices") or []
+    _validate_component_group_bytes(group_bytes_hex)
+    _validate_component_target_indices(target_indices, len(group_bytes_hex))
+
+
+def _validate_component_sign_response(data: Dict[str, Any]) -> None:
+    request_id = data.get("request_id", "")
+    if not request_id:
+        raise ValueError("request_id is required")
+    _validate_sign_request_id(str(request_id))
+    signatures = data.get("signatures") or []
+    if not signatures:
+        raise ValueError("signatures array is empty")
+    seen = set()
+    for i, signature in enumerate(signatures, start=1):
+        target_index = signature.get("target_index")
+        if not isinstance(target_index, int) or target_index < 0:
+            raise ValueError(f"signature {i}: target_index must be non-negative")
+        if target_index in seen:
+            raise ValueError(f"signature {i}: duplicate target_index {target_index}")
+        seen.add(target_index)
+        if not signature.get("signature"):
+            raise ValueError(f"signature {i}: signature is required")
+        if not signature.get("signature_scheme"):
+            raise ValueError(f"signature {i}: signature_scheme is required")
+
+
+def _validate_guarded_assembly_request(data: Dict[str, Any]) -> None:
+    _validate_sign_request_id(str(data.get("request_id", "")))
+    group_bytes_hex = data.get("group_bytes_hex") or []
+    targets = data.get("targets") or []
+    passthrough = data.get("passthrough") or []
+    _validate_component_group_bytes(group_bytes_hex)
+    if not targets and not passthrough:
+        raise ValueError("targets or passthrough is required")
+
+    covered = set()
+    for i, target in enumerate(targets, start=1):
+        _validate_assembly_index(target.get("target_index"), len(group_bytes_hex), covered)
+        if not target.get("guarded_account"):
+            raise ValueError(f"target {i}: guarded_account is required")
+        if not target.get("user_signature"):
+            raise ValueError(f"target {i}: user_signature is required")
+        if not target.get("sentry_signature"):
+            raise ValueError(f"target {i}: sentry_signature is required")
+        _validate_sign_request_id(str(target.get("user_source_request_id", "")))
+        _validate_sign_request_id(str(target.get("sentry_source_request_id", "")))
+
+    for i, item in enumerate(passthrough, start=1):
+        _validate_assembly_index(item.get("target_index"), len(group_bytes_hex), covered)
+        if not item.get("signed_txn_hex"):
+            raise ValueError(f"passthrough {i}: signed_txn_hex is required")
+
+    for index in range(len(group_bytes_hex)):
+        if index not in covered:
+            raise ValueError(
+                f"group position {index} is not covered by targets or passthrough"
+            )
+
+
+def _validate_guarded_assembly_response(data: Dict[str, Any]) -> None:
+    request_id = data.get("request_id", "")
+    if not request_id:
+        raise ValueError("request_id is required")
+    _validate_sign_request_id(str(request_id))
+    signed_group = data.get("signed_group") or []
+    if not signed_group:
+        raise ValueError("signed_group is empty")
+    for index, signed in enumerate(signed_group):
+        if not signed:
+            raise ValueError(f"signed_group {index} is empty")
 
 
 # -----------------------------------------------------------------------------
@@ -1366,6 +1500,193 @@ class SignerClient:
         if result.error:
             raise SignerError(result.error)
         return result
+
+    def request_component_sign(
+        self,
+        request: Any,
+    ) -> ComponentSignResponse:
+        """
+        Send a raw role-specific component signing request to /sign/component.
+
+        This is a low-level building block for guarded-account flows. The SDK
+        validates request and response shape but does not assemble transactions.
+        """
+        request_body = _compact_payload(request)
+        if not isinstance(request_body, dict):
+            raise ValueError("component sign request must be a mapping or dataclass")
+        if not request_body.get("request_id"):
+            request_body["request_id"] = _new_sign_request_id()
+        try:
+            _validate_component_sign_request(request_body)
+        except ValueError as e:
+            raise ValueError(f"invalid component sign request: {e}") from e
+
+        try:
+            resp = self.session.post(
+                f"{self.base_url}/sign/component",
+                json=request_body,
+                timeout=self._timeout_for(COMPONENT_SIGN_TIMEOUT),
+            )
+        except requests.RequestException as e:
+            raise SignerUnavailableError(f"Failed to connect: {e}")
+
+        if resp.status_code == 401:
+            raise AuthenticationError("Invalid or missing token")
+
+        if resp.status_code == 403:
+            error = self._error_message(resp, "Component signing request rejected")
+            raise SigningRejectedError(error)
+
+        if resp.status_code == 503:
+            raise SignerUnavailableError(self._error_message(resp, "Signer unavailable"))
+
+        if resp.status_code != 200:
+            raise SignerError(
+                self._error_message(
+                    resp,
+                    f"Component signing failed: HTTP {resp.status_code}",
+                )
+            )
+
+        data = self._safe_json(resp)
+        if data.get("error"):
+            raise SignerError(data["error"])
+        try:
+            _validate_component_sign_response(data)
+        except ValueError as e:
+            raise SignerError(f"invalid component sign response: {e}") from e
+
+        return ComponentSignResponse(
+            request_id=data["request_id"],
+            component_key=data.get("component_key", ""),
+            signatures=[
+                ComponentSignature(
+                    target_index=item["target_index"],
+                    signature=item["signature"],
+                    signature_scheme=item["signature_scheme"],
+                )
+                for item in data.get("signatures", [])
+            ],
+        )
+
+    def request_guarded_assemble(
+        self,
+        request: Any,
+    ) -> GuardedAssemblyResponse:
+        """
+        Send a raw guarded transaction assembly request to /sign/assemble.
+        """
+        request_body = _compact_payload(request)
+        if not isinstance(request_body, dict):
+            raise ValueError("guarded assembly request must be a mapping or dataclass")
+        if not request_body.get("request_id"):
+            request_body["request_id"] = _new_sign_request_id()
+        try:
+            _validate_guarded_assembly_request(request_body)
+        except ValueError as e:
+            raise ValueError(f"invalid guarded assembly request: {e}") from e
+
+        try:
+            resp = self.session.post(
+                f"{self.base_url}/sign/assemble",
+                json=request_body,
+                timeout=self._timeout_for(GUARDED_ASSEMBLY_TIMEOUT),
+            )
+        except requests.RequestException as e:
+            raise SignerUnavailableError(f"Failed to connect: {e}")
+
+        if resp.status_code == 401:
+            raise AuthenticationError("Invalid or missing token")
+
+        if resp.status_code == 403:
+            error = self._error_message(resp, "Guarded assembly request rejected")
+            raise SigningRejectedError(error)
+
+        if resp.status_code == 503:
+            raise SignerUnavailableError(self._error_message(resp, "Signer unavailable"))
+
+        if resp.status_code != 200:
+            raise SignerError(
+                self._error_message(
+                    resp,
+                    f"Guarded assembly failed: HTTP {resp.status_code}",
+                )
+            )
+
+        data = self._safe_json(resp)
+        if data.get("error"):
+            raise SignerError(data["error"])
+        try:
+            _validate_guarded_assembly_response(data)
+        except ValueError as e:
+            raise SignerError(f"invalid guarded assembly response: {e}") from e
+
+        return GuardedAssemblyResponse(
+            request_id=data["request_id"],
+            signed_group=data.get("signed_group", []),
+        )
+
+    def admin_sync_sentry_references(
+        self,
+        candidates: List[Any],
+    ) -> AdminSyncSentryReferencesResponse:
+        """
+        Sync public sentry reference candidates into the connected signer.
+        """
+        request_body = {"candidates": _compact_payload(candidates)}
+
+        try:
+            resp = self.session.post(
+                f"{self.base_url}/admin/sentries/sync",
+                json=request_body,
+                timeout=self._timeout_for(MUTATION_TIMEOUT),
+            )
+        except requests.RequestException as e:
+            raise SignerUnavailableError(f"Failed to connect: {e}")
+
+        if resp.status_code == 401:
+            raise AuthenticationError("Invalid or missing token")
+
+        if resp.status_code == 403:
+            raise SignerUnavailableError("Signer is locked")
+
+        if resp.status_code != 200:
+            raise SignerError(
+                self._error_message(
+                    resp,
+                    f"Sentry reference sync failed: HTTP {resp.status_code}",
+                )
+            )
+
+        data = self._safe_json(resp)
+        if data.get("error"):
+            raise SignerError(data["error"])
+
+        raw_records = data.get("records")
+        records = None
+        if isinstance(raw_records, list):
+            records = [
+                SyncedSentryReferenceInfo(
+                    name=item.get("name", ""),
+                    source=item.get("source", ""),
+                    endpoint_alias=item.get("endpoint_alias", ""),
+                    component_key=item.get("component_key", ""),
+                    key_type=item.get("key_type", ""),
+                    public_key_hex=item.get("public_key_hex", ""),
+                    last_seen_at=item.get("last_seen_at", ""),
+                    synced_at=item.get("synced_at", ""),
+                )
+                for item in raw_records
+            ]
+
+        return AdminSyncSentryReferencesResponse(
+            added=data.get("added", 0),
+            updated=data.get("updated", 0),
+            removed=data.get("removed", 0),
+            count=data.get("count", 0),
+            records=records,
+            error=data.get("error", ""),
+        )
 
     def _best_effort_cancel_sign_request(self, request_id: str) -> None:
         try:
