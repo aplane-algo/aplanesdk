@@ -554,6 +554,33 @@ combined = assemble_group([alice_signed_list, bob_signed_list])
 
 Each slot must have exactly one non-empty signed entry across the input lists.
 
+### Guarded Sentry Signing
+
+Guarded accounts use component signatures from both the user signer and a
+sentry signer. Sentry component selectors are public policy keys, not Algorand
+spending accounts, and must not be used as senders, receivers, auth addresses,
+or rekey targets.
+
+Use explicit clients; the SDK does not parse or mutate endpoint enrollment
+files:
+
+```python
+result = sign_guarded_group(
+    user_client=user_client,
+    sentry_client=sentry_client,
+    sentry_component_key="SENTRY_COMPONENT_SELECTOR",
+    group_bytes_hex=["5458..."],
+    guarded_targets=[
+        GuardedSignTarget(target_index=0, guarded_account="GUARDED_ACCOUNT_ADDRESS"),
+    ],
+)
+signed_group = result.signed_group
+```
+
+For manual orchestration, use `request_component_sign()` on the user and
+sentry clients, then `request_guarded_assemble()` on the user client.
+`assemble_group()` remains only the local multi-party concatenation helper.
+
 ## Error Handling
 
 The SDK raises typed exceptions for the common signer-side failure cases:

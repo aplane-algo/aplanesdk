@@ -359,10 +359,64 @@ client.close()
 |----------|-------------|-------|
 | `ed25519` | Native Algorand keys | Standard signing |
 | `aplane.falcon1024.v*` | Post-quantum LogicSig | Signature in LogicSig.Args[0] |
+| `aplane.sentry-ed25519.v1` | Sentry component key | Policy signature only; not a spending account |
+| `aplane.falcon1024-sentry-ed25519.v1` | Guarded account | Requires user and sentry component signatures |
 | `aplane.timed-whitelist.v*` | Time-locked allow-list | No signature, TEAL-only |
 | `aplane.htlc.v*` | Hash-locked funds | Requires `preimage` arg (check `signing_args`) |
 
 The server assembles the complete signed transaction - the SDK returns a base64 string ready for submission.
+
+## Sentry And Guarded Accounts
+
+Sentry component keys are public policy-signature selectors, not Algorand
+spending accounts. Do not use them as senders, receivers, auth addresses, or
+rekey targets. Guarded account keys must be signed through the guarded flow.
+
+Low-level endpoint wrappers are available:
+
+```python
+user_part = user_client.request_component_sign(ComponentSignRequest(
+    role=COMPONENT_SIGN_ROLE_USER,
+    component_key="GUARDED_ACCOUNT_ADDRESS",
+    group_bytes_hex=["5458..."],
+    target_indices=[0],
+))
+
+sentry_part = sentry_client.request_component_sign(ComponentSignRequest(
+    role=COMPONENT_SIGN_ROLE_SENTRY,
+    component_key="SENTRY_COMPONENT_SELECTOR",
+    group_bytes_hex=["5458..."],
+    target_indices=[0],
+))
+
+assembled = user_client.request_guarded_assemble(GuardedAssemblyRequest(
+    group_bytes_hex=["5458..."],
+    targets=[GuardedAssemblyTarget(
+        target_index=0,
+        guarded_account="GUARDED_ACCOUNT_ADDRESS",
+        user_signature=user_part.signatures[0].signature,
+        sentry_signature=sentry_part.signatures[0].signature,
+    )],
+))
+```
+
+For the common explicit two-client flow, use `sign_guarded_group`:
+
+```python
+result = sign_guarded_group(
+    user_client=user_client,
+    sentry_client=sentry_client,
+    sentry_component_key="SENTRY_COMPONENT_SELECTOR",
+    group_bytes_hex=["5458..."],
+    guarded_targets=[
+        GuardedSignTarget(target_index=0, guarded_account="GUARDED_ACCOUNT_ADDRESS"),
+    ],
+)
+signed_group = result.signed_group
+```
+
+`assemble_group()` remains the local multi-party concatenation helper; it is
+not the same operation as server-side guarded assembly.
 
 ## Error Handling
 

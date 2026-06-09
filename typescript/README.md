@@ -368,10 +368,64 @@ controller.abort();
 |----------|-------------|-------|
 | `ed25519` | Native Algorand keys | Standard signing |
 | `aplane.falcon1024.v1` | Post-quantum LogicSig | Signature in LogicSig.Args[0] |
+| `aplane.sentry-ed25519.v1` | Sentry component key | Policy signature only; not a spending account |
+| `aplane.falcon1024-sentry-ed25519.v1` | Guarded account | Requires user and sentry component signatures |
 | `aplane.timed-whitelist.v1` | Time-locked allow-list | No signature, TEAL-only |
 | `aplane.htlc.v*` | Hash-locked funds | Requires `preimage` arg (check `signingArgs`) |
 
 The server assembles the complete signed transaction - the SDK returns a base64 string ready for submission.
+
+## Sentry And Guarded Accounts
+
+Sentry component keys are public policy-signature selectors, not Algorand
+spending accounts. Do not use them as senders, receivers, auth addresses, or
+rekey targets. Guarded account keys must be signed through the guarded flow.
+
+Low-level endpoint wrappers are available:
+
+```typescript
+const userPart = await userClient.requestComponentSign({
+  role: COMPONENT_SIGN_ROLE_USER,
+  component_key: "GUARDED_ACCOUNT_ADDRESS",
+  group_bytes_hex: ["5458..."],
+  target_indices: [0],
+});
+
+const sentryPart = await sentryClient.requestComponentSign({
+  role: COMPONENT_SIGN_ROLE_SENTRY,
+  component_key: "SENTRY_COMPONENT_SELECTOR",
+  group_bytes_hex: ["5458..."],
+  target_indices: [0],
+});
+
+const assembled = await userClient.requestGuardedAssemble({
+  group_bytes_hex: ["5458..."],
+  targets: [{
+    target_index: 0,
+    guarded_account: "GUARDED_ACCOUNT_ADDRESS",
+    user_signature: userPart.signatures[0].signature,
+    sentry_signature: sentryPart.signatures[0].signature,
+  }],
+});
+```
+
+For the common explicit two-client flow, use `signGuardedGroup`:
+
+```typescript
+const result = await signGuardedGroup({
+  userClient,
+  sentryClient,
+  sentryComponentKey: "SENTRY_COMPONENT_SELECTOR",
+  groupBytesHex: ["5458..."],
+  guardedTargets: [
+    { targetIndex: 0, guardedAccount: "GUARDED_ACCOUNT_ADDRESS" },
+  ],
+});
+const signedGroup = result.signedGroup;
+```
+
+`assembleGroup()` remains the local multi-party concatenation helper; it is not
+the same operation as server-side guarded assembly.
 
 ## Error Handling
 

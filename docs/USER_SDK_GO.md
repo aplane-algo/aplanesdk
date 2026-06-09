@@ -443,6 +443,34 @@ if err != nil {
 txid, err := algodClient.SendRawTransaction(combinedBytes).Do(ctx)
 ```
 
+### Guarded Sentry Signing
+
+Guarded accounts use component signatures from both the user signer and a
+sentry signer. Sentry component selectors are public policy keys, not Algorand
+spending accounts, and must not be used as senders, receivers, auth addresses,
+or rekey targets.
+
+Use explicit clients; the SDK does not parse or mutate endpoint enrollment
+files:
+
+```go
+result, err := aplane.SignGuardedGroup(aplane.GuardedSignOptions{
+	UserClient:         userClient,
+	SentryClient:       sentryClient,
+	SentryComponentKey: "SENTRY_COMPONENT_SELECTOR",
+	GroupBytesHex:      []string{"5458..."},
+	Targets: []aplane.GuardedSignTarget{{
+		TargetIndex:    0,
+		GuardedAccount: "GUARDED_ACCOUNT_ADDRESS",
+	}},
+})
+signedGroup := result.SignedGroup
+```
+
+For manual orchestration, use `RequestComponentSign` on the user and sentry
+clients, then `RequestGuardedAssemble` on the user client. `AssembleGroup`
+remains only the local multi-party concatenation helper.
+
 ## Transaction Semantics
 
 - `SignTransaction(...)` returns one base64 string containing the full signed

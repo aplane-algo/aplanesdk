@@ -497,6 +497,33 @@ Use `createTransaction.*` when APlane must own final signing and any
 APlane-managed group expansion. `algorand.send.*` owns the composer send path
 and signs inside that path.
 
+### Guarded Sentry Signing
+
+Guarded accounts use component signatures from both the user signer and a
+sentry signer. Sentry component selectors are public policy keys, not Algorand
+spending accounts, and must not be used as senders, receivers, auth addresses,
+or rekey targets.
+
+Use explicit clients; the SDK does not parse or mutate endpoint enrollment
+files:
+
+```ts
+const result = await signGuardedGroup({
+  userClient,
+  sentryClient,
+  sentryComponentKey: "SENTRY_COMPONENT_SELECTOR",
+  groupBytesHex: ["5458..."],
+  guardedTargets: [
+    { targetIndex: 0, guardedAccount: "GUARDED_ACCOUNT_ADDRESS" },
+  ],
+});
+const signedGroup = result.signedGroup;
+```
+
+For manual orchestration, use `requestComponentSign()` on the user and sentry
+clients, then `requestGuardedAssemble()` on the user client. `assembleGroup()`
+remains only the local multi-party concatenation helper.
+
 ## Transaction Semantics
 
 - `signTransaction()` returns one base64 string containing the full signed

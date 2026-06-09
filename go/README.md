@@ -334,8 +334,65 @@ callers migrating from older contract names, `GroupPlanResponse` and
 |----------|-------------|-------|
 | `ed25519` | Native Algorand keys | Standard signing |
 | `aplane.falcon1024.v1` | Post-quantum LogicSig | Large signature (~3KB) |
+| `aplane.sentry-ed25519.v1` | Sentry component key | Policy signature only; not a spending account |
+| `aplane.falcon1024-sentry-ed25519.v1` | Guarded account | Requires user and sentry component signatures |
 | `aplane.timed-whitelist.v1` | Time-locked allow-list | No signature, TEAL-only |
 | `aplane.htlc.v1` | Hash-locked funds | Requires `preimage` arg |
+
+## Sentry And Guarded Accounts
+
+Sentry component keys are 52-character public selectors for policy-signature
+keys. They are not Algorand spending accounts and must not be used as senders,
+receivers, auth addresses, or rekey targets. Guarded account keys embed the
+sentry public key and are assembled through `/sign/assemble`; ordinary `/sign`
+is not sufficient for guarded slots.
+
+Use the low-level methods when your application owns the orchestration:
+
+```go
+userPart, err := userClient.RequestComponentSign(aplane.ComponentSignRequest{
+	Role:          aplane.ComponentSignRoleUser,
+	ComponentKey:  "GUARDED_ACCOUNT_ADDRESS",
+	GroupBytesHex: []string{"5458..."},
+	TargetIndices: []int{0},
+})
+
+sentryPart, err := sentryClient.RequestComponentSign(aplane.ComponentSignRequest{
+	Role:          aplane.ComponentSignRoleSentry,
+	ComponentKey:  "SENTRY_COMPONENT_SELECTOR",
+	GroupBytesHex: []string{"5458..."},
+	TargetIndices: []int{0},
+})
+
+assembled, err := userClient.RequestGuardedAssemble(aplane.GuardedAssemblyRequest{
+	GroupBytesHex: []string{"5458..."},
+	Targets: []aplane.GuardedAssemblyTarget{{
+		TargetIndex:     0,
+		GuardedAccount:  "GUARDED_ACCOUNT_ADDRESS",
+		UserSignature:   userPart.Signatures[0].Signature,
+		SentrySignature: sentryPart.Signatures[0].Signature,
+	}},
+})
+```
+
+For the common explicit two-client flow, use `SignGuardedGroup`:
+
+```go
+result, err := aplane.SignGuardedGroup(aplane.GuardedSignOptions{
+	UserClient:         userClient,
+	SentryClient:       sentryClient,
+	SentryComponentKey: "SENTRY_COMPONENT_SELECTOR",
+	GroupBytesHex:      []string{"5458..."},
+	Targets: []aplane.GuardedSignTarget{{
+		TargetIndex:    0,
+		GuardedAccount: "GUARDED_ACCOUNT_ADDRESS",
+	}},
+})
+signedGroup := result.SignedGroup
+```
+
+`AssembleGroup` is still the local multi-party concatenation helper. It is not
+the same operation as server-side guarded `RequestGuardedAssemble`.
 
 ## Error Handling
 
