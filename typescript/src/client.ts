@@ -540,6 +540,7 @@ export class SignerClient {
     const data = (await response.json()) as Record<string, unknown>;
     const identity: StatusResponse = {
       identityId: String(data.identity_id || ""),
+      nodeRole: typeof data.node_role === "string" ? data.node_role : undefined,
       state: String(data.state || ""),
       signerLocked: Boolean(data.signer_locked),
       readyForSigning: Boolean(data.ready_for_signing),
@@ -658,7 +659,10 @@ export class SignerClient {
         keyType: raw.key_type || "",
         lsigSize: raw.lsig_size || 0,
         isGenericLsig: raw.is_generic_lsig || false,
+        isComponentKey: raw.is_component_key || false,
+        isSpendingAccount: typeof raw.is_spending_account === "boolean" ? raw.is_spending_account : undefined,
         signingArgs,
+        parameters: raw.parameters,
         templateProvenanceStatus,
         templateProvenanceNote,
         templateStatus: templateProvenanceStatus,
@@ -730,6 +734,7 @@ export class SignerClient {
             : undefined,
           minItems: p.min_items,
           maxItems: p.max_items,
+          options: p.options,
           min: p.min,
           max: p.max,
           example: p.example,
@@ -816,7 +821,10 @@ export class SignerClient {
 
     return {
       address: String(data.address || ""),
+      publicKeyHex: typeof data.public_key_hex === "string" ? data.public_key_hex : undefined,
       keyType: String(data.key_type || ""),
+      isComponentKey: Boolean(data.is_component_key),
+      isSpendingAccount: typeof data.is_spending_account === "boolean" ? data.is_spending_account : undefined,
       parameters: data.parameters as Record<string, string> | undefined,
     };
   }

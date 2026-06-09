@@ -7,7 +7,15 @@ import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
 import { SignerClient } from "../src/client.js";
-import type { CancelSignResponse } from "../src/types.js";
+import type {
+  AdminSyncSentryReferencesRequest,
+  AdminSyncSentryReferencesResponse,
+  CancelSignResponse,
+  ComponentSignRequest,
+  ComponentSignResponse,
+  GuardedAssemblyRequest,
+  GuardedAssemblyResponse,
+} from "../src/types.js";
 
 interface MockFetch {
   (...args: any[]): Promise<any>;
@@ -45,16 +53,25 @@ const fixtureDir = path.resolve(__dirname, "../../contracts/signerapi");
 const expectedFixtureNames = [
   "admin_delete_response_success.json",
   "admin_generate_request_generic.json",
+  "admin_generate_response_component.json",
   "admin_generate_response_generic.json",
+  "admin_sync_sentries_request.json",
+  "admin_sync_sentries_response.json",
   "cancel_sign_request.json",
   "cancel_sign_response_not_found.json",
   "cancel_sign_response_success.json",
+  "component_sign_request_sentry.json",
+  "component_sign_response_sentry.json",
   "error_response.json",
   "group_plan_response_mutated.json",
   "group_sign_request_mixed.json",
   "group_sign_response_mutated.json",
+  "guarded_assembly_request_mixed.json",
+  "guarded_assembly_response.json",
   "health_response_ready.json",
+  "keys_response_component.json",
   "keys_response_generic.json",
+  "keys_response_guarded.json",
   "keytypes_response_full.json",
   "status_response_ready.json",
 ];
@@ -128,7 +145,7 @@ describe("signer API contract fixtures", () => {
 
     assert.equal(keys.length, 2);
     assert.equal(keys[1].publicKeyHex, "ffeeddccbbaa99887766554433221100");
-    assert.equal(keys[1].keyType, "aplane.timelock.v1");
+    assert.equal(keys[1].keyType, "aplane.timed-whitelist.v1");
     assert.equal(keys[1].lsigSize, 512);
     assert.equal(keys[1].isGenericLsig, true);
     assert.equal(keys[1].signingArgs?.[0].name, "preimage");
@@ -146,26 +163,28 @@ describe("signer API contract fixtures", () => {
 
     const client = new SignerClient("http://localhost:11270", "test-token");
     const keyTypes = await client.listKeyTypes();
-    const timelock = keyTypes[1];
+    const timedWhitelist = keyTypes[1];
 
-    assert.equal(timelock.keyType, "aplane.timelock.v1");
-    assert.equal(timelock.displayName, "Timelock");
-    assert.equal(timelock.requiresLogicsig, true);
-    assert.equal(timelock.mnemonicWordCount, 0);
-    assert.equal(timelock.mnemonicImport, false);
-    assert.equal(timelock.creationParams?.[1].paramType, "address[]");
-    assert.equal(timelock.creationParams?.[1].minItems, 1);
-    assert.equal(timelock.creationParams?.[1].maxItems, 8);
-    assert.equal(timelock.creationParams?.[2].min, 1);
-    assert.equal(timelock.creationParams?.[2].max, 999999999);
-    assert.equal(timelock.creationParams?.[3].maxLength, 32);
-    assert.equal(timelock.creationParams?.[3].inputModes?.[1].name, "sha256");
-    assert.equal(timelock.creationParams?.[3].inputModes?.[1].transform, "sha256");
-    assert.equal(timelock.creationParams?.[3].inputModes?.[1].byteLength, 32);
-    assert.equal(timelock.creationParams?.[3].inputModes?.[1].inputType, "bytes");
-    assert.equal(timelock.runtimeArgs?.[0].label, "Preimage");
-    assert.equal(timelock.runtimeArgs?.[0].required, true);
-    assert.equal(timelock.runtimeArgs?.[0].byteLength, 32);
+    assert.equal(timedWhitelist.keyType, "aplane.timed-whitelist.v1");
+    assert.equal(timedWhitelist.displayName, "Timed Whitelist");
+    assert.equal(timedWhitelist.requiresLogicsig, true);
+    assert.equal(timedWhitelist.mnemonicWordCount, 0);
+    assert.equal(timedWhitelist.mnemonicImport, false);
+    assert.equal(timedWhitelist.creationParams?.[1].paramType, "address[]");
+    assert.equal(timedWhitelist.creationParams?.[1].minItems, 1);
+    assert.equal(timedWhitelist.creationParams?.[1].maxItems, 8);
+    assert.equal(timedWhitelist.creationParams?.[2].min, 1);
+    assert.equal(timedWhitelist.creationParams?.[2].max, 999999999);
+    assert.equal(timedWhitelist.creationParams?.[3].maxLength, 32);
+    assert.equal(timedWhitelist.creationParams?.[3].inputModes?.[1].name, "sha256");
+    assert.equal(timedWhitelist.creationParams?.[3].inputModes?.[1].transform, "sha256");
+    assert.equal(timedWhitelist.creationParams?.[3].inputModes?.[1].byteLength, 32);
+    assert.equal(timedWhitelist.creationParams?.[3].inputModes?.[1].inputType, "bytes");
+    assert.equal(timedWhitelist.creationParams?.[4].paramType, "select");
+    assert.deepEqual(timedWhitelist.creationParams?.[4].options, ["lab-sentry", "backup-sentry"]);
+    assert.equal(timedWhitelist.runtimeArgs?.[0].label, "Preimage");
+    assert.equal(timedWhitelist.runtimeArgs?.[0].required, true);
+    assert.equal(timedWhitelist.runtimeArgs?.[0].byteLength, 32);
   });
 
   it("maps /status wire fields to public StatusResponse fields", async () => {
@@ -179,6 +198,7 @@ describe("signer API contract fixtures", () => {
     const identity = await client.getStatus();
 
     assert.equal(identity.identityId, "default");
+    assert.equal(identity.nodeRole, "signer");
     assert.equal(identity.state, "unlocked");
     assert.equal(identity.signerLocked, false);
     assert.equal(identity.readyForSigning, true);
@@ -204,7 +224,7 @@ describe("signer API contract fixtures", () => {
           {
             address: "ADDR1",
             public_key_hex: "abcd",
-            key_type: "aplane.timelock.v1",
+            key_type: "aplane.timed-whitelist.v1",
             template_provenance_status: "conflict",
             template_provenance_note: "template fingerprint differs",
           },
@@ -219,6 +239,29 @@ describe("signer API contract fixtures", () => {
     assert.equal(keys[0].templateWarning, "template fingerprint differs");
     assert.equal(keys[0].templateProvenanceStatus, "conflict");
     assert.equal(keys[0].templateProvenanceNote, "template fingerprint differs");
+  });
+
+  it("maps sentry component and guarded key metadata", async () => {
+    mockFetch.mockResolvedValueOnce({
+      status: 200,
+      ok: true,
+      json: async () => fixture("keys_response_component.json"),
+    });
+
+    const client = new SignerClient("http://localhost:11270", "test-token");
+    const component = (await client.listKeys(true))[0];
+    assert.equal(component.keyType, "aplane.sentry-ed25519.v1");
+    assert.equal(component.isComponentKey, true);
+    assert.equal(component.isSpendingAccount, false);
+
+    mockFetch.mockResolvedValueOnce({
+      status: 200,
+      ok: true,
+      json: async () => fixture("keys_response_guarded.json"),
+    });
+    const guarded = (await client.listKeys(true))[0];
+    assert.equal(guarded.keyType, "aplane.falcon1024-sentry-ed25519.v1");
+    assert.ok(guarded.parameters?.sentry_public_key);
   });
 
   it("maps /plan mutation wire fields to public MutationReport fields", async () => {
@@ -256,12 +299,53 @@ describe("signer API contract fixtures", () => {
     });
 
     const client = new SignerClient("http://localhost:11270", "test-token");
-    const generated = await client.generateKey("aplane.timelock.v1", {
+    const generated = await client.generateKey("aplane.timed-whitelist.v1", {
       unlock_round: "123456",
     });
 
     assert.equal(generated.address, "GENERATEDADDR0000000000000000000000000000000000000000000");
-    assert.equal(generated.keyType, "aplane.timelock.v1");
+    assert.equal(generated.keyType, "aplane.timed-whitelist.v1");
     assert.equal(generated.parameters?.unlock_round, "123456");
+  });
+
+  it("maps /admin/generate component response fields", async () => {
+    mockFetch.mockResolvedValueOnce({
+      status: 200,
+      ok: true,
+      json: async () => fixture("admin_generate_response_component.json"),
+    });
+
+    const client = new SignerClient("http://localhost:11270", "test-token");
+    const generated = await client.generateKey("aplane.sentry-ed25519.v1");
+
+    assert.equal(generated.address, "MYJZE3UF7G4JXR5STMQK5TSL5FNE7PE224BSKLZ2H4AJWJIPBEBQ");
+    assert.equal(generated.publicKeyHex, "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
+    assert.equal(generated.keyType, "aplane.sentry-ed25519.v1");
+    assert.equal(generated.isComponentKey, true);
+    assert.equal(generated.isSpendingAccount, false);
+  });
+
+  it("round-trips sentry component and assembly fixture DTOs", () => {
+    const componentReq = fixture("component_sign_request_sentry.json") as ComponentSignRequest;
+    assert.equal(componentReq.role, "sentry");
+    assert.equal(componentReq.target_indices[0], 0);
+
+    const componentResp = fixture("component_sign_response_sentry.json") as ComponentSignResponse;
+    assert.equal(componentResp.signatures[0].signature_scheme, "aplane.sentry-ed25519.v1");
+
+    const assemblyReq = fixture("guarded_assembly_request_mixed.json") as GuardedAssemblyRequest;
+    assert.equal(assemblyReq.targets?.[0].guarded_account, "LOGICSIGACCOUNTADDRESSAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+
+    const assemblyResp = fixture("guarded_assembly_response.json") as GuardedAssemblyResponse;
+    assert.equal(assemblyResp.signed_group.length, 2);
+  });
+
+  it("round-trips admin sentry sync fixture DTOs", () => {
+    const syncReq = fixture("admin_sync_sentries_request.json") as AdminSyncSentryReferencesRequest;
+    assert.equal(syncReq.candidates[0].key_type, "aplane.sentry-ed25519.v1");
+
+    const syncResp = fixture("admin_sync_sentries_response.json") as AdminSyncSentryReferencesResponse;
+    assert.equal(syncResp.added, 1);
+    assert.equal(syncResp.records?.[0].source, "client_discovery");
   });
 });

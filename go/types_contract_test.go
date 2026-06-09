@@ -17,16 +17,25 @@ import (
 var expectedSDKContractFixtureNames = []string{
 	"admin_delete_response_success.json",
 	"admin_generate_request_generic.json",
+	"admin_generate_response_component.json",
 	"admin_generate_response_generic.json",
+	"admin_sync_sentries_request.json",
+	"admin_sync_sentries_response.json",
 	"cancel_sign_request.json",
 	"cancel_sign_response_not_found.json",
 	"cancel_sign_response_success.json",
+	"component_sign_request_sentry.json",
+	"component_sign_response_sentry.json",
 	"error_response.json",
 	"group_plan_response_mutated.json",
 	"group_sign_request_mixed.json",
 	"group_sign_response_mutated.json",
+	"guarded_assembly_request_mixed.json",
+	"guarded_assembly_response.json",
 	"health_response_ready.json",
+	"keys_response_component.json",
 	"keys_response_generic.json",
+	"keys_response_guarded.json",
 	"keytypes_response_full.json",
 	"status_response_ready.json",
 }
@@ -99,10 +108,19 @@ func TestGoSDKContractFixturesRoundTrip(t *testing.T) {
 		{"group_sign_request_mixed.json", assertSDKContractRoundTrip[GroupSignRequest]},
 		{"group_sign_response_mutated.json", assertSDKContractRoundTrip[GroupSignResponse]},
 		{"group_plan_response_mutated.json", assertSDKContractRoundTrip[PlanGroupResponse]},
+		{"component_sign_request_sentry.json", assertSDKContractRoundTrip[ComponentSignRequest]},
+		{"component_sign_response_sentry.json", assertSDKContractRoundTrip[ComponentSignResponse]},
+		{"guarded_assembly_request_mixed.json", assertSDKContractRoundTrip[GuardedAssemblyRequest]},
+		{"guarded_assembly_response.json", assertSDKContractRoundTrip[GuardedAssemblyResponse]},
 		{"keys_response_generic.json", assertSDKContractRoundTrip[KeysResponse]},
+		{"keys_response_component.json", assertSDKContractRoundTrip[KeysResponse]},
+		{"keys_response_guarded.json", assertSDKContractRoundTrip[KeysResponse]},
 		{"keytypes_response_full.json", assertSDKContractRoundTrip[KeyTypesResponse]},
 		{"admin_generate_request_generic.json", assertSDKContractRoundTrip[generateRequest]},
 		{"admin_generate_response_generic.json", assertSDKContractRoundTrip[GenerateResult]},
+		{"admin_generate_response_component.json", assertSDKContractRoundTrip[GenerateResult]},
+		{"admin_sync_sentries_request.json", assertSDKContractRoundTrip[AdminSyncSentryReferencesRequest]},
+		{"admin_sync_sentries_response.json", assertSDKContractRoundTrip[AdminSyncSentryReferencesResponse]},
 		{"cancel_sign_request.json", assertSDKContractRoundTrip[CancelSignRequest]},
 		{"cancel_sign_response_not_found.json", assertSDKContractRoundTrip[CancelSignResponse]},
 		{"cancel_sign_response_success.json", assertSDKContractRoundTrip[CancelSignResponse]},
@@ -130,6 +148,9 @@ func TestGoSDKContractStatusMetadata(t *testing.T) {
 	if resp.IdentityID != "default" {
 		t.Fatalf("IdentityID = %q, want default", resp.IdentityID)
 	}
+	if resp.NodeRole != "signer" {
+		t.Fatalf("NodeRole = %q, want signer", resp.NodeRole)
+	}
 	if resp.State != "unlocked" {
 		t.Fatalf("State = %q, want unlocked", resp.State)
 	}
@@ -156,8 +177,11 @@ func TestGoSDKContractKeyTypeMetadata(t *testing.T) {
 	if !resp.KeyTypes[0].MnemonicImport {
 		t.Fatal("ed25519 fixture should allow mnemonic import")
 	}
-	if resp.KeyTypes[1].KeyType != "aplane.timelock.v1" {
-		t.Fatalf("generic key type = %q, want aplane.timelock.v1", resp.KeyTypes[1].KeyType)
+	if resp.KeyTypes[1].KeyType != "aplane.timed-whitelist.v1" {
+		t.Fatalf("generic key type = %q, want aplane.timed-whitelist.v1", resp.KeyTypes[1].KeyType)
+	}
+	if resp.KeyTypes[1].DisplayName != "Timed Whitelist" {
+		t.Fatalf("generic display name = %q, want Timed Whitelist", resp.KeyTypes[1].DisplayName)
 	}
 	if resp.KeyTypes[1].MnemonicImport {
 		t.Fatal("generic template fixture should not allow mnemonic import")
@@ -178,6 +202,42 @@ func TestGoSDKContractKeyTypeMetadata(t *testing.T) {
 	if modes[1].InputType != "bytes" {
 		t.Fatalf("InputModes[1].InputType = %q, want bytes", modes[1].InputType)
 	}
+	sentryParam := resp.KeyTypes[1].CreationParams[4]
+	if sentryParam.Type != "select" {
+		t.Fatalf("sentry param type = %q, want select", sentryParam.Type)
+	}
+	if !reflect.DeepEqual(sentryParam.Options, []string{"lab-sentry", "backup-sentry"}) {
+		t.Fatalf("sentry options = %#v", sentryParam.Options)
+	}
+}
+
+func TestGoSDKContractSentryKeyMetadata(t *testing.T) {
+	raw, err := os.ReadFile(sdkContractFixturePath(t, "keys_response_component.json"))
+	if err != nil {
+		t.Fatalf("read component keys fixture: %v", err)
+	}
+	var component KeysResponse
+	if err := json.Unmarshal(raw, &component); err != nil {
+		t.Fatalf("unmarshal component keys fixture: %v", err)
+	}
+	if !component.Keys[0].IsComponentKey {
+		t.Fatal("component key should be marked IsComponentKey")
+	}
+	if component.Keys[0].IsSpendingAccount == nil || *component.Keys[0].IsSpendingAccount {
+		t.Fatalf("component IsSpendingAccount = %#v, want false", component.Keys[0].IsSpendingAccount)
+	}
+
+	raw, err = os.ReadFile(sdkContractFixturePath(t, "keys_response_guarded.json"))
+	if err != nil {
+		t.Fatalf("read guarded keys fixture: %v", err)
+	}
+	var guarded KeysResponse
+	if err := json.Unmarshal(raw, &guarded); err != nil {
+		t.Fatalf("unmarshal guarded keys fixture: %v", err)
+	}
+	if got := guarded.Keys[0].Parameters["sentry_public_key"]; got == "" {
+		t.Fatal("guarded key missing sentry_public_key parameter")
+	}
 }
 
 func TestGoSDKMapsTemplateWarningFields(t *testing.T) {
@@ -186,7 +246,7 @@ func TestGoSDKMapsTemplateWarningFields(t *testing.T) {
 		"keys": [{
 			"address": "ADDR1",
 			"public_key_hex": "abcd",
-			"key_type": "aplane.timelock.v1",
+			"key_type": "aplane.timed-whitelist.v1",
 			"template_provenance_status": "conflict",
 			"template_provenance_note": "template fingerprint differs"
 		}]

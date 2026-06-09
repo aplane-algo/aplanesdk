@@ -1,5 +1,5 @@
 {
-  "key_type": "aplane.timelock.v1",
+  "key_type": "aplane.timed-whitelist.v1",
   "parameters": {
     "unlock_round": "123456",
     "beneficiary": "BENEFICIARYADDR000000000000000000000000000000000000000000"

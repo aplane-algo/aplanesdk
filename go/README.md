@@ -334,7 +334,7 @@ callers migrating from older contract names, `GroupPlanResponse` and
 |----------|-------------|-------|
 | `ed25519` | Native Algorand keys | Standard signing |
 | `aplane.falcon1024.v1` | Post-quantum LogicSig | Large signature (~3KB) |
-| `aplane.timelock.v1` | Time-locked funds | No signature, TEAL-only |
+| `aplane.timed-whitelist.v1` | Time-locked allow-list | No signature, TEAL-only |
 | `aplane.htlc.v1` | Hash-locked funds | Requires `preimage` arg |
 
 ## Error Handling

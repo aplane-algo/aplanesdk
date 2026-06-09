@@ -1,0 +1,11 @@
+{
+  "request_id": "cli-123",
+  "component_key": "MYJZE3UF7G4JXR5STMQK5TSL5FNE7PE224BSKLZ2H4AJWJIPBEBQ",
+  "signatures": [
+    {
+      "target_index": 0,
+      "signature": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "signature_scheme": "aplane.sentry-ed25519.v1"
+    }
+  ]
+}

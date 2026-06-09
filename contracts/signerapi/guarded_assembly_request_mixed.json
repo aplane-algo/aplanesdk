@@ -1,0 +1,23 @@
+{
+  "request_id": "asm-001",
+  "group_bytes_hex": [
+    "5458a16374786ea0",
+    "5458a16374786ea1"
+  ],
+  "targets": [
+    {
+      "target_index": 0,
+      "guarded_account": "LOGICSIGACCOUNTADDRESSAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "user_signature": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "user_source_request_id": "cli-122",
+      "sentry_signature": "cccccccccccccccccccccccccccccccc",
+      "sentry_source_request_id": "cli-123"
+    }
+  ],
+  "passthrough": [
+    {
+      "target_index": 1,
+      "signed_txn_hex": "82a3736967c440aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa374786ea0"
+    }
+  ]
+}

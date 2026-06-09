@@ -13,9 +13,9 @@
       "runtime_args": []
     },
     {
-      "key_type": "aplane.timelock.v1",
+      "key_type": "aplane.timed-whitelist.v1",
       "family": "generic",
-      "display_name": "Timelock",
+      "display_name": "Timed Whitelist",
       "description": "Generic LogicSig with creation and runtime arguments",
       "requires_logicsig": true,
       "mnemonic_word_count": 0,
@@ -73,6 +73,18 @@
             }
           ],
           "default": "aplane"
+        },
+        {
+          "name": "sentry",
+          "label": "Sentry",
+          "description": "Imported sentry public-key reference",
+          "type": "select",
+          "required": true,
+          "options": [
+            "lab-sentry",
+            "backup-sentry"
+          ],
+          "default": "lab-sentry"
         }
       ],
       "runtime_args": [

@@ -10,6 +10,16 @@ import (
 
 const maxSignRequestIDLength = 128
 
+const (
+	ComponentSignRoleUser   ComponentSignRole = "user"
+	ComponentSignRoleSentry ComponentSignRole = "sentry"
+
+	KeyTypeSentryEd25519                     = "aplane.sentry-ed25519.v1"
+	KeyTypeSentryFalcon1024                  = "aplane.sentry-falcon1024.v1"
+	KeyTypeGuardedFalcon1024SentryEd25519    = "aplane.falcon1024-sentry-ed25519.v1"
+	KeyTypeGuardedFalcon1024SentryFalcon1024 = "aplane.falcon1024-sentry-falcon1024.v1"
+)
+
 // The signer HTTP DTOs and validation semantics in this file intentionally
 // mirror contracts/signerapi fixtures and server pkg/signerapi/types.go. Keep JSON
 // fields, request-mode validation, and response field meanings in sync without
@@ -53,6 +63,66 @@ type SignResponse struct {
 type GroupSignRequest struct {
 	RequestID string        `json:"request_id,omitempty"`
 	Requests  []SignRequest `json:"requests"`
+}
+
+// ComponentSignRole is the role-specific component signature requested from
+// POST /sign/component.
+type ComponentSignRole string
+
+// ComponentSignRequest is the request payload for POST /sign/component.
+type ComponentSignRequest struct {
+	RequestID     string            `json:"request_id,omitempty"`
+	Role          ComponentSignRole `json:"role"`
+	ComponentKey  string            `json:"component_key,omitempty"`
+	GroupBytesHex []string          `json:"group_bytes_hex"`
+	TargetIndices []int             `json:"target_indices"`
+}
+
+// ComponentSignature carries one raw role-separated component signature.
+type ComponentSignature struct {
+	TargetIndex     int    `json:"target_index"`
+	Signature       string `json:"signature"`
+	SignatureScheme string `json:"signature_scheme"`
+}
+
+// ComponentSignResponse is the response payload from POST /sign/component.
+type ComponentSignResponse struct {
+	RequestID    string               `json:"request_id"`
+	ComponentKey string               `json:"component_key,omitempty"`
+	Signatures   []ComponentSignature `json:"signatures"`
+}
+
+// GuardedAssemblyRequest is the request payload for POST /sign/assemble.
+type GuardedAssemblyRequest struct {
+	RequestID     string                   `json:"request_id,omitempty"`
+	GroupBytesHex []string                 `json:"group_bytes_hex"`
+	Targets       []GuardedAssemblyTarget  `json:"targets,omitempty"`
+	Passthrough   []GuardedPassthroughItem `json:"passthrough,omitempty"`
+}
+
+// GuardedAssemblyTarget carries one guarded-account group position plus its
+// user and sentry component signatures.
+type GuardedAssemblyTarget struct {
+	TargetIndex           int      `json:"target_index"`
+	GuardedAccount        string   `json:"guarded_account"`
+	UserSignature         string   `json:"user_signature"`
+	UserSourceRequestID   string   `json:"user_source_request_id,omitempty"`
+	SentrySignature       string   `json:"sentry_signature"`
+	SentrySourceRequestID string   `json:"sentry_source_request_id,omitempty"`
+	RuntimeArgs           []string `json:"runtime_args,omitempty"`
+}
+
+// GuardedPassthroughItem carries an already-signed group position to preserve
+// unchanged during guarded assembly.
+type GuardedPassthroughItem struct {
+	TargetIndex  int    `json:"target_index"`
+	SignedTxnHex string `json:"signed_txn_hex"`
+}
+
+// GuardedAssemblyResponse is the response payload from POST /sign/assemble.
+type GuardedAssemblyResponse struct {
+	RequestID   string   `json:"request_id"`
+	SignedGroup []string `json:"signed_group"`
 }
 
 // CancelSignRequest is the request payload for /sign/cancel.
@@ -229,6 +299,7 @@ type HealthResponse struct {
 // StatusResponse is the response from the /status endpoint.
 type StatusResponse struct {
 	IdentityID          string `json:"identity_id"`
+	NodeRole            string `json:"node_role,omitempty"`
 	State               string `json:"state"`
 	SignerLocked        bool   `json:"signer_locked"`
 	ReadyForSigning     bool   `json:"ready_for_signing"`
@@ -279,6 +350,7 @@ type CreationParam struct {
 	InputModes  []InputMode `json:"input_modes,omitempty"`
 	MinItems    int         `json:"min_items,omitempty"`
 	MaxItems    int         `json:"max_items,omitempty"`
+	Options     []string    `json:"options,omitempty"`
 	Min         *uint64     `json:"min,omitempty"`
 	Max         *uint64     `json:"max,omitempty"`
 	Example     string      `json:"example,omitempty"`
@@ -302,16 +374,19 @@ type KeyTypeInfo struct {
 
 // KeyInfo represents a key returned from the /keys endpoint.
 type KeyInfo struct {
-	Address                  string       `json:"address"`
-	PublicKeyHex             string       `json:"public_key_hex"`
-	KeyType                  string       `json:"key_type"`
-	LsigSize                 int          `json:"lsig_size,omitempty"`
-	IsGenericLsig            bool         `json:"is_generic_lsig,omitempty"`
-	SigningArgs              []SigningArg `json:"signing_args,omitempty"`
-	TemplateProvenanceStatus string       `json:"template_provenance_status,omitempty"`
-	TemplateProvenanceNote   string       `json:"template_provenance_note,omitempty"`
-	TemplateStatus           string       `json:"template_status,omitempty"`  // Legacy alias for TemplateProvenanceStatus
-	TemplateWarning          string       `json:"template_warning,omitempty"` // Legacy alias for TemplateProvenanceNote
+	Address                  string            `json:"address"`
+	PublicKeyHex             string            `json:"public_key_hex"`
+	KeyType                  string            `json:"key_type"`
+	LsigSize                 int               `json:"lsig_size,omitempty"`
+	IsGenericLsig            bool              `json:"is_generic_lsig,omitempty"`
+	IsComponentKey           bool              `json:"is_component_key,omitempty"`
+	IsSpendingAccount        *bool             `json:"is_spending_account,omitempty"`
+	SigningArgs              []SigningArg      `json:"signing_args,omitempty"`
+	Parameters               map[string]string `json:"parameters,omitempty"`
+	TemplateProvenanceStatus string            `json:"template_provenance_status,omitempty"`
+	TemplateProvenanceNote   string            `json:"template_provenance_note,omitempty"`
+	TemplateStatus           string            `json:"template_status,omitempty"`  // Legacy alias for TemplateProvenanceStatus
+	TemplateWarning          string            `json:"template_warning,omitempty"` // Legacy alias for TemplateProvenanceNote
 }
 
 // KeysResponse is the response from the /keys endpoint.
@@ -362,10 +437,52 @@ type KeyTypesResponse struct {
 
 // GenerateResult is the response from key generation.
 type GenerateResult struct {
-	Address    string            `json:"address,omitempty"`
-	KeyType    string            `json:"key_type,omitempty"`
-	Parameters map[string]string `json:"parameters,omitempty"`
-	Error      string            `json:"error,omitempty"`
+	Address           string            `json:"address,omitempty"`
+	PublicKeyHex      string            `json:"public_key_hex,omitempty"`
+	KeyType           string            `json:"key_type,omitempty"`
+	IsComponentKey    bool              `json:"is_component_key,omitempty"`
+	IsSpendingAccount *bool             `json:"is_spending_account,omitempty"`
+	Parameters        map[string]string `json:"parameters,omitempty"`
+	Error             string            `json:"error,omitempty"`
+}
+
+// SentryReferenceCandidate is public sentry metadata synced into a signer
+// identity's generation reference catalog.
+type SentryReferenceCandidate struct {
+	EndpointAlias string `json:"endpoint_alias"`
+	ComponentKey  string `json:"component_key"`
+	KeyType       string `json:"key_type"`
+	PublicKeyHex  string `json:"public_key_hex"`
+	LastSeenAt    string `json:"last_seen_at,omitempty"`
+}
+
+// AdminSyncSentryReferencesRequest is the request payload for
+// POST /admin/sentries/sync.
+type AdminSyncSentryReferencesRequest struct {
+	Candidates []SentryReferenceCandidate `json:"candidates"`
+}
+
+// SyncedSentryReferenceInfo describes a signer-local reference after sync.
+type SyncedSentryReferenceInfo struct {
+	Name          string `json:"name"`
+	Source        string `json:"source"`
+	EndpointAlias string `json:"endpoint_alias,omitempty"`
+	ComponentKey  string `json:"component_key"`
+	KeyType       string `json:"key_type"`
+	PublicKeyHex  string `json:"public_key_hex"`
+	LastSeenAt    string `json:"last_seen_at,omitempty"`
+	SyncedAt      string `json:"synced_at,omitempty"`
+}
+
+// AdminSyncSentryReferencesResponse is the response payload for
+// POST /admin/sentries/sync.
+type AdminSyncSentryReferencesResponse struct {
+	Added   int                         `json:"added"`
+	Updated int                         `json:"updated"`
+	Removed int                         `json:"removed"`
+	Count   int                         `json:"count"`
+	Records []SyncedSentryReferenceInfo `json:"records,omitempty"`
+	Error   string                      `json:"error,omitempty"`
 }
 
 // generateRequest is the request payload for key generation.

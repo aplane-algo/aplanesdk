@@ -5,6 +5,16 @@
  * Runtime argument specification for a generic LogicSig.
  * Position in the array corresponds to the TEAL arg index.
  */
+export const COMPONENT_SIGN_ROLE_USER = "user";
+export const COMPONENT_SIGN_ROLE_SENTRY = "sentry";
+
+export const KEY_TYPE_SENTRY_ED25519 = "aplane.sentry-ed25519.v1";
+export const KEY_TYPE_SENTRY_FALCON1024 = "aplane.sentry-falcon1024.v1";
+export const KEY_TYPE_GUARDED_FALCON1024_SENTRY_ED25519 =
+  "aplane.falcon1024-sentry-ed25519.v1";
+export const KEY_TYPE_GUARDED_FALCON1024_SENTRY_FALCON1024 =
+  "aplane.falcon1024-sentry-falcon1024.v1";
+
 export interface RuntimeArg {
   /** Internal name for the argument (e.g., "preimage") */
   name: string;
@@ -33,14 +43,20 @@ export interface KeyInfo {
   address: string;
   /** Public key in hex format */
   publicKeyHex: string;
-  /** Key type (e.g., "ed25519", "aplane.falcon1024.v1", "aplane.timelock.v1") */
+  /** Key type (e.g., "ed25519", "aplane.falcon1024.v1", "aplane.timed-whitelist.v1") */
   keyType: string;
   /** Total LogicSig size for budget calculation (bytecode + crypto sig) */
   lsigSize: number;
   /** True if this is a generic LogicSig (no cryptographic signature needed) */
   isGenericLsig: boolean;
+  /** True when this is a sentry component key, not a spending account */
+  isComponentKey?: boolean;
+  /** False for sentry component keys; absent when older signers do not report it */
+  isSpendingAccount?: boolean;
   /** Key-file-owned signing arguments for LogicSigs */
   signingArgs?: SigningArg[];
+  /** Non-secret key parameters such as guarded-account sentry_public_key */
+  parameters?: Record<string, string>;
   /** Template provenance status, when the signer reports one */
   templateProvenanceStatus?: string;
   /** Human-readable template provenance note */
@@ -167,6 +183,8 @@ export interface CreationParam {
   placeholder?: string;
   /** Default value */
   default?: string;
+  /** Select options for parameters such as sentry references */
+  options?: string[];
 }
 
 /**
@@ -201,6 +219,8 @@ export interface KeyTypeInfo {
 export interface StatusResponse {
   /** Authenticated identity ID resolved from the signer token */
   identityId: string;
+  /** Signer node role, such as "signer" or "sentry", when reported */
+  nodeRole?: string;
   /** Current lock state: "locked", "unlocked", or "unknown" */
   state: string;
   /** True when the signer identity is locked */
@@ -221,8 +241,14 @@ export interface StatusResponse {
 export interface GenerateResult {
   /** Algorand address of the generated key */
   address: string;
+  /** Public key in hex format, when returned */
+  publicKeyHex?: string;
   /** Type of key generated */
   keyType: string;
+  /** True when generated key is a sentry component key */
+  isComponentKey?: boolean;
+  /** False for sentry component keys; absent when not reported */
+  isSpendingAccount?: boolean;
   /** Creation parameters used */
   parameters?: Record<string, string>;
 }
@@ -265,6 +291,111 @@ export interface CancelSignRequest {
 export interface CancelSignResponse {
   success: boolean;
   state?: SignCancelState;
+  error?: string;
+}
+
+export type ComponentSignRole = typeof COMPONENT_SIGN_ROLE_USER | typeof COMPONENT_SIGN_ROLE_SENTRY;
+
+/**
+ * Request payload for /sign/component.
+ */
+export interface ComponentSignRequest {
+  request_id?: string;
+  role: ComponentSignRole;
+  component_key?: string;
+  group_bytes_hex: string[];
+  target_indices: number[];
+}
+
+/**
+ * One raw role-separated component signature.
+ */
+export interface ComponentSignature {
+  target_index: number;
+  signature: string;
+  signature_scheme: string;
+}
+
+/**
+ * Response payload from /sign/component.
+ */
+export interface ComponentSignResponse {
+  request_id: string;
+  component_key?: string;
+  signatures: ComponentSignature[];
+}
+
+/**
+ * One guarded-account group position plus user and sentry component signatures.
+ */
+export interface GuardedAssemblyTarget {
+  target_index: number;
+  guarded_account: string;
+  user_signature: string;
+  user_source_request_id?: string;
+  sentry_signature: string;
+  sentry_source_request_id?: string;
+  runtime_args?: string[];
+}
+
+/**
+ * Already-signed group position preserved during guarded assembly.
+ */
+export interface GuardedPassthroughItem {
+  target_index: number;
+  signed_txn_hex: string;
+}
+
+/**
+ * Request payload for /sign/assemble.
+ */
+export interface GuardedAssemblyRequest {
+  request_id?: string;
+  group_bytes_hex: string[];
+  targets?: GuardedAssemblyTarget[];
+  passthrough?: GuardedPassthroughItem[];
+}
+
+/**
+ * Response payload from /sign/assemble.
+ */
+export interface GuardedAssemblyResponse {
+  request_id: string;
+  signed_group: string[];
+}
+
+/**
+ * Public sentry metadata synced into a signer identity's reference catalog.
+ */
+export interface SentryReferenceCandidate {
+  endpoint_alias: string;
+  component_key: string;
+  key_type: string;
+  public_key_hex: string;
+  last_seen_at?: string;
+}
+
+export interface AdminSyncSentryReferencesRequest {
+  candidates: SentryReferenceCandidate[];
+}
+
+export interface SyncedSentryReferenceInfo {
+  name: string;
+  source: string;
+  endpoint_alias?: string;
+  component_key: string;
+  key_type: string;
+  public_key_hex: string;
+  last_seen_at?: string;
+  synced_at?: string;
+}
+
+export interface AdminSyncSentryReferencesResponse {
+  added: number;
+  updated: number;
+  removed: number;
+  count: number;
+  records?: SyncedSentryReferenceInfo[];
   error?: string;
 }
 

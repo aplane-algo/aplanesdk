@@ -71,6 +71,14 @@ MAX_DISCOVERED_APPROVAL_WAIT = 30 * 60
 APPROVAL_WAIT_REFRESH = 5 * 60
 MAX_SIGN_REQUEST_ID_LENGTH = 128
 
+COMPONENT_SIGN_ROLE_USER = "user"
+COMPONENT_SIGN_ROLE_SENTRY = "sentry"
+
+KEY_TYPE_SENTRY_ED25519 = "aplane.sentry-ed25519.v1"
+KEY_TYPE_SENTRY_FALCON1024 = "aplane.sentry-falcon1024.v1"
+KEY_TYPE_GUARDED_FALCON1024_SENTRY_ED25519 = "aplane.falcon1024-sentry-ed25519.v1"
+KEY_TYPE_GUARDED_FALCON1024_SENTRY_FALCON1024 = "aplane.falcon1024-sentry-falcon1024.v1"
+
 # Current product identity for token provisioning helpers.
 DEFAULT_PRODUCT_IDENTITY = "default"
 
@@ -186,7 +194,10 @@ class KeyInfo:
     public_key_hex: str = ""
     lsig_size: int = 0
     is_generic_lsig: bool = False
+    is_component_key: bool = False
+    is_spending_account: Optional[bool] = None
     signing_args: Optional[List[SigningArg]] = None  # Key-file args required for LogicSigs
+    parameters: Optional[Dict[str, str]] = None
     template_provenance_status: str = ""
     template_provenance_note: str = ""
     template_status: str = ""  # Legacy alias for template_provenance_status
@@ -232,6 +243,7 @@ class CreationParam:
     input_modes: Optional[List[InputModeInfo]] = None
     min_items: int = 0
     max_items: int = 0
+    options: Optional[List[str]] = None
     min: Optional[int] = None
     max: Optional[int] = None
     example: str = ""
@@ -264,6 +276,7 @@ class StatusResponse:
     key_count: int
     keyset_revision: int
     approval_wait_seconds: int = 0
+    node_role: str = ""
 
 
 @dataclass
@@ -283,6 +296,107 @@ class GroupSignResponse:
 
 
 @dataclass
+class ComponentSignRequest:
+    """Request payload for /sign/component"""
+    role: str
+    group_bytes_hex: List[str]
+    target_indices: List[int]
+    request_id: str = ""
+    component_key: str = ""
+
+
+@dataclass
+class ComponentSignature:
+    """One component signature returned from /sign/component"""
+    target_index: int
+    signature: str
+    signature_scheme: str
+
+
+@dataclass
+class ComponentSignResponse:
+    """Response payload from /sign/component"""
+    request_id: str
+    signatures: List[ComponentSignature]
+    component_key: str = ""
+
+
+@dataclass
+class GuardedAssemblyTarget:
+    """One guarded-account position for /sign/assemble"""
+    target_index: int
+    guarded_account: str
+    user_signature: str
+    sentry_signature: str
+    user_source_request_id: str = ""
+    sentry_source_request_id: str = ""
+    runtime_args: Optional[List[str]] = None
+
+
+@dataclass
+class GuardedPassthroughItem:
+    """Already-signed group position for /sign/assemble"""
+    target_index: int
+    signed_txn_hex: str
+
+
+@dataclass
+class GuardedAssemblyRequest:
+    """Request payload for /sign/assemble"""
+    group_bytes_hex: List[str]
+    request_id: str = ""
+    targets: Optional[List[GuardedAssemblyTarget]] = None
+    passthrough: Optional[List[GuardedPassthroughItem]] = None
+
+
+@dataclass
+class GuardedAssemblyResponse:
+    """Response payload from /sign/assemble"""
+    request_id: str
+    signed_group: List[str]
+
+
+@dataclass
+class SentryReferenceCandidate:
+    """Public sentry metadata synced into the signer reference catalog"""
+    endpoint_alias: str
+    component_key: str
+    key_type: str
+    public_key_hex: str
+    last_seen_at: str = ""
+
+
+@dataclass
+class AdminSyncSentryReferencesRequest:
+    """Request payload for /admin/sentries/sync"""
+    candidates: List[SentryReferenceCandidate]
+
+
+@dataclass
+class SyncedSentryReferenceInfo:
+    """Signer-local sentry reference after sync"""
+    name: str
+    source: str
+    component_key: str
+    key_type: str
+    public_key_hex: str
+    endpoint_alias: str = ""
+    last_seen_at: str = ""
+    synced_at: str = ""
+
+
+@dataclass
+class AdminSyncSentryReferencesResponse:
+    """Response payload from /admin/sentries/sync"""
+    added: int
+    updated: int
+    removed: int
+    count: int
+    records: Optional[List[SyncedSentryReferenceInfo]] = None
+    error: str = ""
+
+
+@dataclass
 class ErrorResponse:
     """Standard signer HTTP error body for non-2xx responses"""
     error: str
@@ -293,6 +407,9 @@ class GenerateResult:
     """Result of key generation"""
     address: str
     key_type: str
+    public_key_hex: str = ""
+    is_component_key: bool = False
+    is_spending_account: Optional[bool] = None
     parameters: Optional[Dict[str, str]] = None
 
 
@@ -854,6 +971,7 @@ class SignerClient:
         data = resp.json()
         identity = StatusResponse(
             identity_id=data.get("identity_id", ""),
+            node_role=data.get("node_role", ""),
             state=data.get("state", ""),
             signer_locked=data.get("signer_locked", False),
             ready_for_signing=data.get("ready_for_signing", False),
@@ -961,7 +1079,10 @@ class SignerClient:
                 public_key_hex=k.get("public_key_hex", ""),
                 lsig_size=k.get("lsig_size", 0),
                 is_generic_lsig=k.get("is_generic_lsig", False),
+                is_component_key=k.get("is_component_key", False),
+                is_spending_account=k.get("is_spending_account"),
                 signing_args=signing_args,
+                parameters=k.get("parameters"),
                 template_provenance_status=(
                     k.get("template_provenance_status")
                     or k.get("template_status", "")
@@ -1043,6 +1164,7 @@ class SignerClient:
                         ] or None,
                         min_items=p.get("min_items", 0),
                         max_items=p.get("max_items", 0),
+                        options=p.get("options"),
                         min=p.get("min"),
                         max=p.get("max"),
                         example=p.get("example", ""),
@@ -1138,6 +1260,9 @@ class SignerClient:
         return GenerateResult(
             address=data["address"],
             key_type=data["key_type"],
+            public_key_hex=data.get("public_key_hex", ""),
+            is_component_key=data.get("is_component_key", False),
+            is_spending_account=data.get("is_spending_account"),
             parameters=data.get("parameters"),
         )
 

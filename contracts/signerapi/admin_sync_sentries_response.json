@@ -1,0 +1,18 @@
+{
+  "added": 1,
+  "updated": 0,
+  "removed": 0,
+  "count": 1,
+  "records": [
+    {
+      "name": "endpoint-sentry-local-z2ftqyo3tizjvpw2rvcbqpnvvrtxvqgyvfn34kh2kvm3gss2gifa",
+      "source": "client_discovery",
+      "endpoint_alias": "sentry-local",
+      "component_key": "Z2FTQYO3TIZJVPW2RVCBQPNVVRTXVQGYVFN34KH2KVM3GSS2GIFA",
+      "key_type": "aplane.sentry-ed25519.v1",
+      "public_key_hex": "19482fa6b5437b8f9bab1e816dd0cea94e7d43c9f3bbdbe6fdc5b38fe89727a9",
+      "last_seen_at": "2026-06-04T00:00:00Z",
+      "synced_at": "2026-06-04T00:01:00Z"
+    }
+  ]
+}

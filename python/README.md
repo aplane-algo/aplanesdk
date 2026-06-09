@@ -178,7 +178,7 @@ for key in keys:
 
 Returns list of `KeyInfo`:
 - `address`: Algorand address
-- `key_type`: "ed25519", "aplane.falcon1024.v1", "aplane.timelock.v1", etc.
+- `key_type`: "ed25519", "aplane.falcon1024.v1", "aplane.timed-whitelist.v1", etc.
 - `lsig_size`: LogicSig size (for budget calculation)
 - `is_generic_lsig`: True if no cryptographic signature needed
 - `signing_args`: List of `SigningArg` for LogicSigs (name, arg_type, description)
@@ -359,7 +359,7 @@ client.close()
 |----------|-------------|-------|
 | `ed25519` | Native Algorand keys | Standard signing |
 | `aplane.falcon1024.v*` | Post-quantum LogicSig | Signature in LogicSig.Args[0] |
-| `aplane.timelock.v*` | Time-locked funds | No signature, TEAL-only |
+| `aplane.timed-whitelist.v*` | Time-locked allow-list | No signature, TEAL-only |
 | `aplane.htlc.v*` | Hash-locked funds | Requires `preimage` arg (check `signing_args`) |
 
 The server assembles the complete signed transaction - the SDK returns a base64 string ready for submission.

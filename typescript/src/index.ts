@@ -96,6 +96,27 @@ export type {
   CancelSignRequest,
   CancelSignResponse,
   SignCancelState,
+  ComponentSignRole,
+  ComponentSignRequest,
+  ComponentSignature,
+  ComponentSignResponse,
+  GuardedAssemblyRequest,
+  GuardedAssemblyTarget,
+  GuardedPassthroughItem,
+  GuardedAssemblyResponse,
+  SentryReferenceCandidate,
+  AdminSyncSentryReferencesRequest,
+  SyncedSentryReferenceInfo,
+  AdminSyncSentryReferencesResponse,
+} from "./types.js";
+
+export {
+  COMPONENT_SIGN_ROLE_USER,
+  COMPONENT_SIGN_ROLE_SENTRY,
+  KEY_TYPE_SENTRY_ED25519,
+  KEY_TYPE_SENTRY_FALCON1024,
+  KEY_TYPE_GUARDED_FALCON1024_SENTRY_ED25519,
+  KEY_TYPE_GUARDED_FALCON1024_SENTRY_FALCON1024,
 } from "./types.js";
 
 export type {

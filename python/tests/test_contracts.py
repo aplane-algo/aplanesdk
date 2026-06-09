@@ -8,23 +8,42 @@ import base64
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from aplanesdk.signer import CancelSignResponse, SignerClient, StatusResponse
+from aplanesdk.signer import (
+    AdminSyncSentryReferencesRequest,
+    AdminSyncSentryReferencesResponse,
+    CancelSignResponse,
+    ComponentSignRequest,
+    ComponentSignResponse,
+    GuardedAssemblyRequest,
+    GuardedAssemblyResponse,
+    SignerClient,
+    StatusResponse,
+)
 
 
 FIXTURE_DIR = Path(__file__).resolve().parents[2] / "contracts" / "signerapi"
 EXPECTED_FIXTURE_NAMES = [
     "admin_delete_response_success.json",
     "admin_generate_request_generic.json",
+    "admin_generate_response_component.json",
     "admin_generate_response_generic.json",
+    "admin_sync_sentries_request.json",
+    "admin_sync_sentries_response.json",
     "cancel_sign_request.json",
     "cancel_sign_response_not_found.json",
     "cancel_sign_response_success.json",
+    "component_sign_request_sentry.json",
+    "component_sign_response_sentry.json",
     "error_response.json",
     "group_plan_response_mutated.json",
     "group_sign_request_mixed.json",
     "group_sign_response_mutated.json",
+    "guarded_assembly_request_mixed.json",
+    "guarded_assembly_response.json",
     "health_response_ready.json",
+    "keys_response_component.json",
     "keys_response_generic.json",
+    "keys_response_guarded.json",
     "keytypes_response_full.json",
     "status_response_ready.json",
 ]
@@ -95,7 +114,7 @@ def test_list_keys_maps_generic_lsig_metadata():
     assert len(keys) == 2
     generic = keys[1]
     assert generic.public_key_hex == "ffeeddccbbaa99887766554433221100"
-    assert generic.key_type == "aplane.timelock.v1"
+    assert generic.key_type == "aplane.timed-whitelist.v1"
     assert generic.lsig_size == 512
     assert generic.is_generic_lsig is True
     assert generic.signing_args is not None
@@ -112,27 +131,29 @@ def test_list_key_types_maps_creation_and_runtime_metadata():
     with patch.object(client.session, "get", return_value=resp):
         key_types = client.list_key_types()
 
-    timelock = key_types[1]
-    assert timelock.key_type == "aplane.timelock.v1"
-    assert timelock.display_name == "Timelock"
-    assert timelock.requires_logicsig is True
-    assert timelock.mnemonic_import is False
-    assert timelock.creation_params is not None
-    assert timelock.creation_params[1].param_type == "address[]"
-    assert timelock.creation_params[1].min_items == 1
-    assert timelock.creation_params[1].max_items == 8
-    assert timelock.creation_params[2].min == 1
-    assert timelock.creation_params[2].max == 999999999
-    assert timelock.creation_params[3].max_length == 32
-    assert timelock.creation_params[3].input_modes is not None
-    assert timelock.creation_params[3].input_modes[1].name == "sha256"
-    assert timelock.creation_params[3].input_modes[1].transform == "sha256"
-    assert timelock.creation_params[3].input_modes[1].byte_length == 32
-    assert timelock.creation_params[3].input_modes[1].input_type == "bytes"
-    assert timelock.runtime_args is not None
-    assert timelock.runtime_args[0].label == "Preimage"
-    assert timelock.runtime_args[0].required is True
-    assert timelock.runtime_args[0].byte_length == 32
+    timed_whitelist = key_types[1]
+    assert timed_whitelist.key_type == "aplane.timed-whitelist.v1"
+    assert timed_whitelist.display_name == "Timed Whitelist"
+    assert timed_whitelist.requires_logicsig is True
+    assert timed_whitelist.mnemonic_import is False
+    assert timed_whitelist.creation_params is not None
+    assert timed_whitelist.creation_params[1].param_type == "address[]"
+    assert timed_whitelist.creation_params[1].min_items == 1
+    assert timed_whitelist.creation_params[1].max_items == 8
+    assert timed_whitelist.creation_params[2].min == 1
+    assert timed_whitelist.creation_params[2].max == 999999999
+    assert timed_whitelist.creation_params[3].max_length == 32
+    assert timed_whitelist.creation_params[3].input_modes is not None
+    assert timed_whitelist.creation_params[3].input_modes[1].name == "sha256"
+    assert timed_whitelist.creation_params[3].input_modes[1].transform == "sha256"
+    assert timed_whitelist.creation_params[3].input_modes[1].byte_length == 32
+    assert timed_whitelist.creation_params[3].input_modes[1].input_type == "bytes"
+    assert timed_whitelist.creation_params[4].param_type == "select"
+    assert timed_whitelist.creation_params[4].options == ["lab-sentry", "backup-sentry"]
+    assert timed_whitelist.runtime_args is not None
+    assert timed_whitelist.runtime_args[0].label == "Preimage"
+    assert timed_whitelist.runtime_args[0].required is True
+    assert timed_whitelist.runtime_args[0].byte_length == 32
 
 
 def test_status_fixture_maps_metadata():
@@ -140,6 +161,7 @@ def test_status_fixture_maps_metadata():
     identity = StatusResponse(**data)
 
     assert identity.identity_id == "default"
+    assert identity.node_role == "signer"
     assert identity.state == "unlocked"
     assert identity.signer_locked is False
     assert identity.ready_for_signing is True
@@ -164,7 +186,7 @@ def test_list_keys_maps_template_warning_fields():
             {
                 "address": "ADDR1",
                 "public_key_hex": "abcd",
-                "key_type": "aplane.timelock.v1",
+                    "key_type": "aplane.timed-whitelist.v1",
                 "template_provenance_status": "conflict",
                 "template_provenance_note": "template fingerprint differs",
             }
@@ -178,6 +200,21 @@ def test_list_keys_maps_template_warning_fields():
     assert keys[0].template_warning == "template fingerprint differs"
     assert keys[0].template_provenance_status == "conflict"
     assert keys[0].template_provenance_note == "template fingerprint differs"
+
+
+def test_list_keys_maps_component_and_guarded_metadata():
+    client = make_client()
+    with patch.object(client.session, "get", return_value=mock_response(200, fixture("keys_response_component.json"))):
+        component = client.list_keys(refresh=True)[0]
+    assert component.key_type == "aplane.sentry-ed25519.v1"
+    assert component.is_component_key is True
+    assert component.is_spending_account is False
+
+    with patch.object(client.session, "get", return_value=mock_response(200, fixture("keys_response_guarded.json"))):
+        guarded = client.list_keys(refresh=True)[0]
+    assert guarded.key_type == "aplane.falcon1024-sentry-ed25519.v1"
+    assert guarded.parameters is not None
+    assert guarded.parameters["sentry_public_key"]
 
 
 def test_plan_group_returns_wire_mutation_report():
@@ -208,9 +245,45 @@ def test_generate_key_maps_admin_generate_response():
     resp = mock_response(200, fixture("admin_generate_response_generic.json"))
 
     with patch.object(client.session, "post", return_value=resp):
-        generated = client.generate_key("aplane.timelock.v1", {"unlock_round": "123456"})
+        generated = client.generate_key("aplane.timed-whitelist.v1", {"unlock_round": "123456"})
 
     assert generated.address == "GENERATEDADDR0000000000000000000000000000000000000000000"
-    assert generated.key_type == "aplane.timelock.v1"
+    assert generated.key_type == "aplane.timed-whitelist.v1"
     assert generated.parameters is not None
     assert generated.parameters["unlock_round"] == "123456"
+
+
+def test_generate_key_maps_component_response():
+    client = make_client()
+    resp = mock_response(200, fixture("admin_generate_response_component.json"))
+
+    with patch.object(client.session, "post", return_value=resp):
+        generated = client.generate_key("aplane.sentry-ed25519.v1")
+
+    assert generated.address == "MYJZE3UF7G4JXR5STMQK5TSL5FNE7PE224BSKLZ2H4AJWJIPBEBQ"
+    assert generated.public_key_hex == "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+    assert generated.key_type == "aplane.sentry-ed25519.v1"
+    assert generated.is_component_key is True
+    assert generated.is_spending_account is False
+
+
+def test_sentry_dtos_round_trip_fixtures():
+    component_req = ComponentSignRequest(**fixture("component_sign_request_sentry.json"))
+    assert component_req.role == "sentry"
+    component_resp_data = fixture("component_sign_response_sentry.json")
+    component_resp = ComponentSignResponse(
+        request_id=component_resp_data["request_id"],
+        component_key=component_resp_data["component_key"],
+        signatures=component_resp_data["signatures"],
+    )
+    assert component_resp.signatures[0]["signature_scheme"] == "aplane.sentry-ed25519.v1"
+
+    assembly_req = GuardedAssemblyRequest(**fixture("guarded_assembly_request_mixed.json"))
+    assert assembly_req.group_bytes_hex[0].startswith("5458")
+    assembly_resp = GuardedAssemblyResponse(**fixture("guarded_assembly_response.json"))
+    assert len(assembly_resp.signed_group) == 2
+
+    sync_req = AdminSyncSentryReferencesRequest(**fixture("admin_sync_sentries_request.json"))
+    assert sync_req.candidates[0]["component_key"]
+    sync_resp = AdminSyncSentryReferencesResponse(**fixture("admin_sync_sentries_response.json"))
+    assert sync_resp.records[0]["source"] == "client_discovery"
