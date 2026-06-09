@@ -23,3 +23,6 @@ typescript/dist/
 .env.*
 !.env.example
 .ssh/
+
+# Scratch
+temp/
