@@ -504,6 +504,169 @@ describe("SignerClient", () => {
       );
     });
 
+    it("prepares ASA opt-ins", async () => {
+      const sender = testAddress(1);
+      const algod = mockAlgod({
+        [sender]: { amount: 2_000_000, minBalance: 100_000 },
+      });
+      queueStatusResponse(60, 1);
+      mockFetch.mockResolvedValueOnce(keysResponse(sender));
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const prepared = await client.prepareAsaOptIn(algod, {
+        sender,
+        assetId: 1001,
+      });
+
+      const assetTransfer = (prepared.transaction as any).assetTransfer;
+      assert.equal(assetTransfer.receiver.toString(), sender);
+      assert.equal(String(assetTransfer.amount), "0");
+      assert.equal(prepared.checks?.[0].name, "asa_opt_in");
+    });
+
+    it("prepares ASA opt-outs", async () => {
+      const sender = testAddress(1);
+      const closeTo = testAddress(2);
+      const algod = mockAlgod({
+        [sender]: {
+          amount: 2_000_000,
+          minBalance: 100_000,
+          assets: [{ assetId: 1001, amount: 25 }],
+        },
+        [closeTo]: {
+          amount: 2_000_000,
+          minBalance: 100_000,
+          assets: [{ assetId: 1001, amount: 0 }],
+        },
+      });
+      queueStatusResponse(60, 1);
+      mockFetch.mockResolvedValueOnce(keysResponse(sender));
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const prepared = await client.prepareAsaOptOut(algod, {
+        sender,
+        assetId: 1001,
+        closeTo,
+      });
+
+      const assetTransfer = (prepared.transaction as any).assetTransfer;
+      assert.equal(assetTransfer.closeRemainderTo.toString(), closeTo);
+      assert.equal(prepared.checks?.[0].name, "asa_opt_out");
+    });
+
+    it("prepares account closes", async () => {
+      const sender = testAddress(1);
+      const closeTo = testAddress(2);
+      const algod = mockAlgod({
+        [sender]: { amount: 2_000_000, minBalance: 100_000 },
+      });
+      queueStatusResponse(60, 1);
+      mockFetch.mockResolvedValueOnce(keysResponse(sender));
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const prepared = await client.prepareAccountClose(algod, {
+        sender,
+        closeTo,
+      });
+
+      assert.equal((prepared.transaction as any).payment.closeRemainderTo.toString(), closeTo);
+      assert.equal(prepared.checks?.[0].name, "account_close");
+    });
+
+    it("rejects account closes with ASA holdings", async () => {
+      const sender = testAddress(1);
+      const closeTo = testAddress(2);
+      const algod = mockAlgod({
+        [sender]: {
+          amount: 2_000_000,
+          minBalance: 100_000,
+          assets: [{ assetId: 1001, amount: 0 }],
+        },
+      });
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      await assert.rejects(
+        client.prepareAccountClose(algod, { sender, closeTo }),
+        /ASA holdings/,
+      );
+    });
+
+    it("prepares rekeys", async () => {
+      const sender = testAddress(1);
+      const rekeyTo = testAddress(2);
+      const algod = mockAlgod({
+        [sender]: { amount: 2_000_000, minBalance: 100_000 },
+        [rekeyTo]: { amount: 2_000_000, minBalance: 100_000 },
+      });
+      queueStatusResponse(60, 1);
+      mockFetch.mockResolvedValueOnce(keysResponse(sender));
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const prepared = await client.prepareRekey(algod, { sender, rekeyTo });
+
+      assert.equal((prepared.transaction as any).rekeyTo.toString(), rekeyTo);
+      assert.equal(prepared.checks?.[0].name, "rekey");
+    });
+
+    it("rejects rekey chains", async () => {
+      const sender = testAddress(1);
+      const rekeyTo = testAddress(2);
+      const other = testAddress(3);
+      const algod = mockAlgod({
+        [sender]: { amount: 2_000_000, minBalance: 100_000 },
+        [rekeyTo]: { amount: 2_000_000, minBalance: 100_000, authAddr: other },
+      });
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      await assert.rejects(
+        client.prepareRekey(algod, { sender, rekeyTo }),
+        /rekey target is itself rekeyed/,
+      );
+    });
+
+    it("prepares keyreg nonparticipation", async () => {
+      const sender = testAddress(1);
+      const algod = mockAlgod({
+        [sender]: { amount: 2_000_000, minBalance: 100_000 },
+      });
+      queueStatusResponse(60, 1);
+      mockFetch.mockResolvedValueOnce(keysResponse(sender));
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const prepared = await client.prepareKeyreg(algod, {
+        sender,
+        nonParticipation: true,
+      });
+
+      assert.equal((prepared.transaction as any).keyreg.nonParticipation, true);
+      assert.equal(prepared.checks?.[0].name, "keyreg");
+    });
+
+    it("prepares online keyreg", async () => {
+      const sender = testAddress(1);
+      const key32 = new Uint8Array(32).fill(1);
+      const key64 = new Uint8Array(64).fill(2);
+      const algod = mockAlgod({
+        [sender]: { amount: 2_000_000, minBalance: 100_000 },
+      });
+      queueStatusResponse(60, 1);
+      mockFetch.mockResolvedValueOnce(keysResponse(sender));
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const prepared = await client.prepareKeyreg(algod, {
+        sender,
+        voteKey: key32,
+        selectionKey: key32,
+        stateProofKey: key64,
+        voteFirst: 10,
+        voteLast: 20,
+        voteKeyDilution: 5,
+      });
+
+      assert.equal(String((prepared.transaction as any).keyreg.voteFirst), "10");
+      assert.equal(String((prepared.transaction as any).keyreg.voteLast), "20");
+    });
+
     it("prepares raw app calls with app call info", async () => {
       const sender = testAddress(1);
       const receiver = testAddress(2);
@@ -570,6 +733,58 @@ describe("SignerClient", () => {
         preparedGroupToSignRequests({ transactions: [prepared] })[0].app_call_info?.method,
         "do(uint64,string,account,application,asset)void",
       );
+    });
+
+    it("prepares app deploys", async () => {
+      const sender = testAddress(1);
+      const algod = mockAlgod({
+        [sender]: { amount: 2_000_000, minBalance: 100_000 },
+      });
+      queueStatusResponse(60, 1);
+      mockFetch.mockResolvedValueOnce(keysResponse(sender));
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const prepared = await client.prepareAppDeploy(algod, {
+        sender,
+        approvalProgram: new Uint8Array([1, 2]),
+        clearProgram: new Uint8Array([1]),
+        numGlobalInts: 1,
+        numLocalByteSlices: 1,
+        extraPages: 1,
+      });
+
+      assert.equal(String((prepared.transaction as any).applicationCall.appIndex), "0");
+      assert.equal(prepared.appCallInfo?.mode, "raw");
+      assert.equal(prepared.checks?.[0].name, "app_deploy");
+    });
+
+    it("prepares sweep groups", async () => {
+      const sender = testAddress(1);
+      const receiver = testAddress(2);
+      const algod = mockAlgod({
+        [sender]: {
+          amount: 2_000_000,
+          minBalance: 100_000,
+          assets: [{ assetId: 1001, amount: 25 }],
+        },
+        [receiver]: {
+          amount: 2_000_000,
+          minBalance: 100_000,
+          assets: [{ assetId: 1001, amount: 0 }],
+        },
+      });
+      queueStatusResponse(60, 1);
+      mockFetch.mockResolvedValueOnce(keysResponse(sender));
+      queueStatusResponse(60, 1);
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const group = await client.prepareSweepGroup(algod, {
+        asaTransfers: [{ sender, receiver, assetId: 1001, amount: 5 }],
+        payments: [{ sender, receiver, amount: 10_000 }],
+      });
+
+      assert.equal(group.transactions.length, 2);
+      assert.equal(group.checks?.[0].name, "sweep_group");
     });
 
     it("prepares payment groups in caller order", async () => {

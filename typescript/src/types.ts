@@ -525,6 +525,68 @@ export interface AsaTransferPrepParams {
 }
 
 /**
+ * ASA opt-in transaction intent accepted by prepareAsaOptIn().
+ */
+export interface AsaOptInPrepParams {
+  sender: string;
+  assetId: number | bigint;
+  note?: Uint8Array;
+  fee?: number;
+  useFlatFee?: boolean;
+}
+
+/**
+ * ASA opt-out transaction intent accepted by prepareAsaOptOut().
+ */
+export interface AsaOptOutPrepParams {
+  sender: string;
+  assetId: number | bigint;
+  closeTo: string;
+  note?: Uint8Array;
+  fee?: number;
+  useFlatFee?: boolean;
+}
+
+/**
+ * Account close transaction intent accepted by prepareAccountClose().
+ */
+export interface AccountClosePrepParams {
+  sender: string;
+  closeTo: string;
+  note?: Uint8Array;
+  fee?: number;
+  useFlatFee?: boolean;
+}
+
+/**
+ * Rekey transaction intent accepted by prepareRekey().
+ */
+export interface RekeyPrepParams {
+  sender: string;
+  rekeyTo: string;
+  note?: Uint8Array;
+  fee?: number;
+  useFlatFee?: boolean;
+}
+
+/**
+ * Key registration transaction intent accepted by prepareKeyreg().
+ */
+export interface KeyregPrepParams {
+  sender: string;
+  voteKey?: Uint8Array | string;
+  selectionKey?: Uint8Array | string;
+  stateProofKey?: Uint8Array | string;
+  voteFirst?: number | bigint;
+  voteLast?: number | bigint;
+  voteKeyDilution?: number | bigint;
+  nonParticipation?: boolean;
+  note?: Uint8Array;
+  fee?: number;
+  useFlatFee?: boolean;
+}
+
+/**
  * Raw application-call transaction intent accepted by prepareAppCall().
  */
 export interface AppCallPrepParams {
@@ -554,6 +616,37 @@ export interface AppCallPrepParams {
 export interface AbiAppCallPrepParams extends Omit<AppCallPrepParams, "appArgs"> {
   methodSignature: string;
   args?: unknown[];
+}
+
+/**
+ * Application create transaction intent accepted by prepareAppDeploy().
+ */
+export interface AppDeployPrepParams {
+  sender: string;
+  approvalProgram: Uint8Array;
+  clearProgram: Uint8Array;
+  numLocalInts?: number | bigint;
+  numLocalByteSlices?: number | bigint;
+  numGlobalInts?: number | bigint;
+  numGlobalByteSlices?: number | bigint;
+  extraPages?: number | bigint;
+  appArgs?: Uint8Array[];
+  accounts?: Array<string>;
+  foreignApps?: Array<number | bigint>;
+  foreignAssets?: Array<number | bigint>;
+  boxes?: Array<{ appIndex: number | bigint; name: Uint8Array }>;
+  optIn?: boolean;
+  note?: Uint8Array;
+  fee?: number;
+  useFlatFee?: boolean;
+}
+
+/**
+ * Normalized sweep group accepted by prepareSweepGroup().
+ */
+export interface SweepPrepParams {
+  asaTransfers?: AsaTransferPrepParams[];
+  payments?: PaymentPrepParams[];
 }
 
 /**

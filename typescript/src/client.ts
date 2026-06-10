@@ -15,8 +15,15 @@ import type {
   FromEnvOptions,
   PaymentPrepParams,
   AsaTransferPrepParams,
+  AsaOptInPrepParams,
+  AsaOptOutPrepParams,
+  AccountClosePrepParams,
+  RekeyPrepParams,
+  KeyregPrepParams,
   AppCallPrepParams,
   AbiAppCallPrepParams,
+  AppDeployPrepParams,
+  SweepPrepParams,
   SignOptions,
   LsigArgs,
   LsigArgsMap,
@@ -781,6 +788,41 @@ function assetHoldingAmount(holding: Record<string, any>): bigint {
   return BigInt(holding.amount || 0);
 }
 
+function accountList(accountInfo: AccountInfoResult | Record<string, any>, names: string[]): unknown[] {
+  if (!accountInfo || typeof accountInfo === "string") {
+    return [];
+  }
+  const raw = accountInfo as Record<string, any>;
+  for (const name of names) {
+    const value = raw[name];
+    if (Array.isArray(value) && value.length > 0) {
+      return value;
+    }
+  }
+  return [];
+}
+
+function accountInt(accountInfo: AccountInfoResult | Record<string, any>, names: string[]): number {
+  if (!accountInfo || typeof accountInfo === "string") {
+    return 0;
+  }
+  const raw = accountInfo as Record<string, any>;
+  for (const name of names) {
+    const value = raw[name];
+    if (value !== undefined && value !== null) {
+      return Number(value);
+    }
+  }
+  return 0;
+}
+
+function accountStatus(accountInfo: AccountInfoResult | Record<string, any>): string {
+  if (!accountInfo || typeof accountInfo === "string") {
+    return "";
+  }
+  return String((accountInfo as Record<string, any>).status || "");
+}
+
 function applyPrepFee(params: Record<string, any>, fee?: number, useFlatFee?: boolean): void {
   if (!fee) {
     return;
@@ -788,6 +830,129 @@ function applyPrepFee(params: Record<string, any>, fee?: number, useFlatFee?: bo
   params.fee = fee;
   params.flatFee = Boolean(useFlatFee);
   params.flat_fee = Boolean(useFlatFee);
+}
+
+function asaOptInChecks(
+  accountInfo: AccountInfoResult | Record<string, any>,
+  assetId: number | bigint,
+  fee: number,
+): PreparedCheck[] {
+  if (accountAssetHolding(accountInfo, assetId)) {
+    throw new SignerError(`sender is already opted into asset ${assetId}`);
+  }
+  if (accountAmount(accountInfo) < fee) {
+    throw new SignerError(`insufficient funds for opt-in fee: balance ${accountAmount(accountInfo)}, fee ${fee}`);
+  }
+  return [{
+    name: "asa_opt_in",
+    status: "ok",
+    data: { assetId, fee },
+  }];
+}
+
+function asaOptOutChecks(
+  senderInfo: AccountInfoResult | Record<string, any>,
+  closeInfo: AccountInfoResult | Record<string, any>,
+  assetId: number | bigint,
+  closeTo: string,
+): PreparedCheck[] {
+  const holding = accountAssetHolding(senderInfo, assetId);
+  if (!holding) {
+    throw new SignerError(`sender is not opted into asset ${assetId}`);
+  }
+  if (!accountAssetHolding(closeInfo, assetId)) {
+    throw new SignerError(`close_to is not opted into asset ${assetId}`);
+  }
+  return [{
+    name: "asa_opt_out",
+    status: "ok",
+    data: {
+      assetId,
+      balance: assetHoldingAmount(holding),
+      closeTo,
+    },
+  }];
+}
+
+function accountCloseChecks(
+  accountInfo: AccountInfoResult | Record<string, any>,
+  fee: number,
+): PreparedCheck[] {
+  if (accountStatus(accountInfo).toLowerCase() === "online") {
+    throw new SignerError("cannot close an online account");
+  }
+  if (
+    accountList(accountInfo, ["assets"]).length > 0 ||
+    accountInt(accountInfo, ["total-assets-opted-in", "total_assets_opted_in", "totalAssetsOptedIn"]) > 0
+  ) {
+    throw new SignerError("cannot close account with ASA holdings");
+  }
+  if (
+    accountList(accountInfo, ["created-assets", "created_assets", "createdAssets"]).length > 0 ||
+    accountInt(accountInfo, ["total-created-assets", "total_created_assets", "totalCreatedAssets"]) > 0
+  ) {
+    throw new SignerError("cannot close account with created assets");
+  }
+  if (
+    accountList(accountInfo, ["apps-local-state", "apps_local_state", "appsLocalState"]).length > 0 ||
+    accountInt(accountInfo, ["total-apps-opted-in", "total_apps_opted_in", "totalAppsOptedIn"]) > 0
+  ) {
+    throw new SignerError("cannot close account with app opt-ins");
+  }
+  if (
+    accountList(accountInfo, ["created-apps", "created_apps", "createdApps"]).length > 0 ||
+    accountInt(accountInfo, ["total-created-apps", "total_created_apps", "totalCreatedApps"]) > 0
+  ) {
+    throw new SignerError("cannot close account with created apps");
+  }
+  if (accountAmount(accountInfo) < fee) {
+    throw new SignerError(`insufficient funds for close fee: balance ${accountAmount(accountInfo)}, fee ${fee}`);
+  }
+  return [{
+    name: "account_close",
+    status: "ok",
+    data: {
+      balance: accountAmount(accountInfo),
+      minBalance: accountMinBalance(accountInfo),
+      fee,
+    },
+  }];
+}
+
+function rekeyChecks(accountInfo: AccountInfoResult | Record<string, any>, rekeyTo: string): PreparedCheck[] {
+  const authAddress = extractAuthAddress(accountInfo);
+  if (authAddress && authAddress !== rekeyTo) {
+    throw new SignerError(`rekey target is itself rekeyed to ${authAddress}`);
+  }
+  return [{
+    name: "rekey",
+    status: "ok",
+    data: { rekeyTo },
+  }];
+}
+
+function validateKeyregParams(params: KeyregPrepParams): void {
+  if (params.nonParticipation) {
+    return;
+  }
+  if (!params.voteKey) {
+    throw new SignerError("voteKey is required");
+  }
+  if (!params.selectionKey) {
+    throw new SignerError("selectionKey is required");
+  }
+  if (!params.voteFirst) {
+    throw new SignerError("voteFirst is required");
+  }
+  if (!params.voteLast) {
+    throw new SignerError("voteLast is required");
+  }
+  if (BigInt(params.voteLast) < BigInt(params.voteFirst)) {
+    throw new SignerError("voteLast must be greater than or equal to voteFirst");
+  }
+  if (!params.voteKeyDilution) {
+    throw new SignerError("voteKeyDilution is required");
+  }
 }
 
 function validatePaymentGroup(transactions: PreparedTransaction[]): PreparedCheck {
@@ -1640,6 +1805,230 @@ export class SignerClient {
   }
 
   /**
+   * Build a prepared ASA opt-in transaction.
+   */
+  async prepareAsaOptIn(
+    algodClient: any,
+    params: AsaOptInPrepParams,
+  ): Promise<PreparedTransaction> {
+    if (!algodClient) {
+      throw new SignerError("algodClient is required");
+    }
+    if (!params.sender) {
+      throw new SignerError("sender is required");
+    }
+    if (!params.assetId) {
+      throw new SignerError("assetId is required");
+    }
+
+    const suggestedParams = await algodClient.getTransactionParams().do();
+    applyPrepFee(suggestedParams, params.fee, params.useFlatFee);
+
+    const senderInfo = await algodClient.accountInformation(params.sender).do();
+    const checks = asaOptInChecks(senderInfo, params.assetId, Number(suggestedParams.fee || 0));
+    const txn = algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
+      sender: params.sender,
+      receiver: params.sender,
+      amount: 0,
+      assetIndex: params.assetId,
+      note: params.note,
+      suggestedParams,
+    });
+
+    const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
+    return {
+      transaction: txn,
+      authAddress: resolved.authAddress,
+      signerKey: resolved.keyInfo,
+      checks,
+    };
+  }
+
+  /**
+   * Build a prepared ASA opt-out transaction.
+   */
+  async prepareAsaOptOut(
+    algodClient: any,
+    params: AsaOptOutPrepParams,
+  ): Promise<PreparedTransaction> {
+    if (!algodClient) {
+      throw new SignerError("algodClient is required");
+    }
+    if (!params.sender) {
+      throw new SignerError("sender is required");
+    }
+    if (!params.closeTo) {
+      throw new SignerError("closeTo is required");
+    }
+    if (params.closeTo === params.sender) {
+      throw new SignerError("closeTo must differ from sender");
+    }
+    if (!params.assetId) {
+      throw new SignerError("assetId is required");
+    }
+
+    const suggestedParams = await algodClient.getTransactionParams().do();
+    applyPrepFee(suggestedParams, params.fee, params.useFlatFee);
+
+    const senderInfo = await algodClient.accountInformation(params.sender).do();
+    const closeInfo = await algodClient.accountInformation(params.closeTo).do();
+    const checks = asaOptOutChecks(senderInfo, closeInfo, params.assetId, params.closeTo);
+    const txn = algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
+      sender: params.sender,
+      receiver: params.sender,
+      amount: 0,
+      assetIndex: params.assetId,
+      closeRemainderTo: params.closeTo,
+      note: params.note,
+      suggestedParams,
+    });
+
+    const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
+    return {
+      transaction: txn,
+      authAddress: resolved.authAddress,
+      signerKey: resolved.keyInfo,
+      checks,
+    };
+  }
+
+  /**
+   * Build a prepared account close transaction.
+   */
+  async prepareAccountClose(
+    algodClient: any,
+    params: AccountClosePrepParams,
+  ): Promise<PreparedTransaction> {
+    if (!algodClient) {
+      throw new SignerError("algodClient is required");
+    }
+    if (!params.sender) {
+      throw new SignerError("sender is required");
+    }
+    if (!params.closeTo) {
+      throw new SignerError("closeTo is required");
+    }
+    if (params.closeTo === params.sender) {
+      throw new SignerError("closeTo must differ from sender");
+    }
+
+    const suggestedParams = await algodClient.getTransactionParams().do();
+    applyPrepFee(suggestedParams, params.fee, params.useFlatFee);
+
+    const senderInfo = await algodClient.accountInformation(params.sender).do();
+    const checks = accountCloseChecks(senderInfo, Number(suggestedParams.fee || 0));
+    const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+      sender: params.sender,
+      receiver: params.closeTo,
+      amount: 0,
+      closeRemainderTo: params.closeTo,
+      note: params.note,
+      suggestedParams,
+    });
+
+    const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
+    return {
+      transaction: txn,
+      authAddress: resolved.authAddress,
+      signerKey: resolved.keyInfo,
+      checks,
+    };
+  }
+
+  /**
+   * Build a prepared self-payment rekey transaction.
+   */
+  async prepareRekey(
+    algodClient: any,
+    params: RekeyPrepParams,
+  ): Promise<PreparedTransaction> {
+    if (!algodClient) {
+      throw new SignerError("algodClient is required");
+    }
+    if (!params.sender) {
+      throw new SignerError("sender is required");
+    }
+    if (!params.rekeyTo) {
+      throw new SignerError("rekeyTo is required");
+    }
+
+    const suggestedParams = await algodClient.getTransactionParams().do();
+    applyPrepFee(suggestedParams, params.fee, params.useFlatFee);
+
+    const senderInfo = await algodClient.accountInformation(params.sender).do();
+    const targetInfo = params.rekeyTo === params.sender
+      ? { address: params.rekeyTo }
+      : await algodClient.accountInformation(params.rekeyTo).do();
+    const checks = rekeyChecks(targetInfo, params.rekeyTo);
+    const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+      sender: params.sender,
+      receiver: params.sender,
+      amount: 0,
+      rekeyTo: params.rekeyTo,
+      note: params.note,
+      suggestedParams,
+    });
+
+    const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
+    return {
+      transaction: txn,
+      authAddress: resolved.authAddress,
+      signerKey: resolved.keyInfo,
+      checks,
+    };
+  }
+
+  /**
+   * Build a prepared key registration transaction.
+   */
+  async prepareKeyreg(
+    algodClient: any,
+    params: KeyregPrepParams,
+  ): Promise<PreparedTransaction> {
+    if (!algodClient) {
+      throw new SignerError("algodClient is required");
+    }
+    if (!params.sender) {
+      throw new SignerError("sender is required");
+    }
+    validateKeyregParams(params);
+
+    const suggestedParams = await algodClient.getTransactionParams().do();
+    applyPrepFee(suggestedParams, params.fee, params.useFlatFee);
+
+    const senderInfo = await algodClient.accountInformation(params.sender).do();
+    const txn = algosdk.makeKeyRegistrationTxnWithSuggestedParamsFromObject({
+      sender: params.sender,
+      voteKey: params.voteKey,
+      selectionKey: params.selectionKey,
+      stateProofKey: params.stateProofKey,
+      voteFirst: params.voteFirst,
+      voteLast: params.voteLast,
+      voteKeyDilution: params.voteKeyDilution,
+      nonParticipation: params.nonParticipation,
+      note: params.note,
+      suggestedParams,
+    });
+
+    const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
+    return {
+      transaction: txn,
+      authAddress: resolved.authAddress,
+      signerKey: resolved.keyInfo,
+      checks: [{
+        name: "keyreg",
+        status: "ok",
+        data: {
+          nonParticipation: Boolean(params.nonParticipation),
+          voteFirst: params.voteFirst || 0,
+          voteLast: params.voteLast || 0,
+          voteKeyDilution: params.voteKeyDilution || 0,
+        },
+      }],
+    };
+  }
+
+  /**
    * Build a prepared raw app-call transaction.
    */
   async prepareAppCall(
@@ -1733,6 +2122,116 @@ export class SignerClient {
       appCallInfo,
       checks: appCallChecks(params, appCallInfo),
     };
+  }
+
+  /**
+   * Build a prepared application create transaction.
+   */
+  async prepareAppDeploy(
+    algodClient: any,
+    params: AppDeployPrepParams,
+  ): Promise<PreparedTransaction> {
+    if (!algodClient) {
+      throw new SignerError("algodClient is required");
+    }
+    if (!params.sender) {
+      throw new SignerError("sender is required");
+    }
+    if (!params.approvalProgram || params.approvalProgram.length === 0) {
+      throw new SignerError("approvalProgram is required");
+    }
+    if (!params.clearProgram || params.clearProgram.length === 0) {
+      throw new SignerError("clearProgram is required");
+    }
+
+    const suggestedParams = await algodClient.getTransactionParams().do();
+    applyPrepFee(suggestedParams, params.fee, params.useFlatFee);
+
+    const senderInfo = await algodClient.accountInformation(params.sender).do();
+    const txn = algosdk.makeApplicationCreateTxnFromObject({
+      sender: params.sender,
+      onComplete: params.optIn ? algosdk.OnApplicationComplete.OptInOC : algosdk.OnApplicationComplete.NoOpOC,
+      approvalProgram: params.approvalProgram,
+      clearProgram: params.clearProgram,
+      numLocalInts: params.numLocalInts,
+      numLocalByteSlices: params.numLocalByteSlices,
+      numGlobalInts: params.numGlobalInts,
+      numGlobalByteSlices: params.numGlobalByteSlices,
+      extraPages: params.extraPages,
+      appArgs: params.appArgs,
+      accounts: params.accounts,
+      foreignApps: params.foreignApps,
+      foreignAssets: params.foreignAssets,
+      boxes: params.boxes,
+      note: params.note,
+      suggestedParams,
+    });
+
+    const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
+    return {
+      transaction: txn,
+      authAddress: resolved.authAddress,
+      signerKey: resolved.keyInfo,
+      appCallInfo: { mode: "raw" },
+      checks: [{
+        name: "app_deploy",
+        status: "ok",
+        data: {
+          extraPages: params.extraPages || 0,
+          approvalProgramLen: params.approvalProgram.length,
+          clearProgramLen: params.clearProgram.length,
+          optIn: Boolean(params.optIn),
+        },
+      }],
+    };
+  }
+
+  /**
+   * Build a sweep group from normalized ASA transfers and payments.
+   */
+  async prepareSweepGroup(
+    algodClient: any,
+    params: SweepPrepParams,
+  ): Promise<PreparedGroup> {
+    const asaTransfers = params.asaTransfers || [];
+    const payments = params.payments || [];
+    if (asaTransfers.length === 0 && payments.length === 0) {
+      throw new SignerError("sweep group must not be empty");
+    }
+
+    const transactions: PreparedTransaction[] = [];
+    for (let index = 0; index < asaTransfers.length; index++) {
+      try {
+        transactions.push(await this.prepareAsaTransfer(algodClient, asaTransfers[index]));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new SignerError(`ASA transfer ${index}: ${message}`);
+      }
+    }
+    for (let index = 0; index < payments.length; index++) {
+      try {
+        transactions.push(await this.preparePayment(algodClient, payments[index]));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new SignerError(`payment ${index}: ${message}`);
+      }
+    }
+
+    const checks: PreparedCheck[] = [{
+      name: "sweep_group",
+      status: "ok",
+      data: {
+        asaTransferCount: asaTransfers.length,
+        paymentCount: payments.length,
+      },
+    }];
+    if (asaTransfers.length > 0) {
+      checks.push(validateAsaTransferGroup(transactions.slice(0, asaTransfers.length)));
+    }
+    if (payments.length > 0) {
+      checks.push(validatePaymentGroup(transactions.slice(asaTransfers.length)));
+    }
+    return { transactions, checks };
   }
 
   /**

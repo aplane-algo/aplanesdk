@@ -829,6 +829,153 @@ def _asset_holding_amount(holding: Any) -> int:
     return int(getattr(holding, "amount", 0))
 
 
+def _account_list(account_info: Any, *names: str) -> List[Any]:
+    if isinstance(account_info, dict):
+        for name in names:
+            value = account_info.get(name)
+            if value:
+                return list(value)
+        return []
+    for name in names:
+        value = getattr(account_info, name, None)
+        if value:
+            return list(value)
+    return []
+
+
+def _account_int(account_info: Any, *names: str) -> int:
+    if isinstance(account_info, dict):
+        for name in names:
+            value = account_info.get(name)
+            if value is not None:
+                return int(value)
+        return 0
+    for name in names:
+        value = getattr(account_info, name, None)
+        if value is not None:
+            return int(value)
+    return 0
+
+
+def _account_status(account_info: Any) -> str:
+    if isinstance(account_info, dict):
+        return str(account_info.get("status", ""))
+    return str(getattr(account_info, "status", ""))
+
+
+def _asa_opt_in_checks(account_info: Any, asset_id: int, fee: int) -> List[PreparedCheck]:
+    if _account_asset_holding(account_info, asset_id) is not None:
+        raise SignerError(f"sender is already opted into asset {asset_id}")
+    if _account_amount(account_info) < fee:
+        raise SignerError(
+            f"insufficient funds for opt-in fee: balance {_account_amount(account_info)}, fee {fee}"
+        )
+    return [
+        PreparedCheck(
+            name="asa_opt_in",
+            status="ok",
+            data={"asset_id": asset_id, "fee": fee},
+        )
+    ]
+
+
+def _asa_opt_out_checks(sender_info: Any, close_info: Any, asset_id: int, close_to: str) -> List[PreparedCheck]:
+    holding = _account_asset_holding(sender_info, asset_id)
+    if holding is None:
+        raise SignerError(f"sender is not opted into asset {asset_id}")
+    if _account_asset_holding(close_info, asset_id) is None:
+        raise SignerError(f"close_to is not opted into asset {asset_id}")
+    return [
+        PreparedCheck(
+            name="asa_opt_out",
+            status="ok",
+            data={
+                "asset_id": asset_id,
+                "balance": _asset_holding_amount(holding),
+                "close_to": close_to,
+            },
+        )
+    ]
+
+
+def _account_close_checks(account_info: Any, fee: int) -> List[PreparedCheck]:
+    if _account_status(account_info).lower() == "online":
+        raise SignerError("cannot close an online account")
+    if (
+        _account_list(account_info, "assets")
+        or _account_int(account_info, "total-assets-opted-in", "total_assets_opted_in", "totalAssetsOptedIn") > 0
+    ):
+        raise SignerError("cannot close account with ASA holdings")
+    if (
+        _account_list(account_info, "created-assets", "created_assets", "createdAssets")
+        or _account_int(account_info, "total-created-assets", "total_created_assets", "totalCreatedAssets") > 0
+    ):
+        raise SignerError("cannot close account with created assets")
+    if (
+        _account_list(account_info, "apps-local-state", "apps_local_state", "appsLocalState")
+        or _account_int(account_info, "total-apps-opted-in", "total_apps_opted_in", "totalAppsOptedIn") > 0
+    ):
+        raise SignerError("cannot close account with app opt-ins")
+    if (
+        _account_list(account_info, "created-apps", "created_apps", "createdApps")
+        or _account_int(account_info, "total-created-apps", "total_created_apps", "totalCreatedApps") > 0
+    ):
+        raise SignerError("cannot close account with created apps")
+    if _account_amount(account_info) < fee:
+        raise SignerError(
+            f"insufficient funds for close fee: balance {_account_amount(account_info)}, fee {fee}"
+        )
+    return [
+        PreparedCheck(
+            name="account_close",
+            status="ok",
+            data={
+                "balance": _account_amount(account_info),
+                "min_balance": _account_min_balance(account_info),
+                "fee": fee,
+            },
+        )
+    ]
+
+
+def _rekey_checks(target_info: Any, rekey_to: str) -> List[PreparedCheck]:
+    auth_addr = _extract_auth_address(target_info)
+    if auth_addr and auth_addr != rekey_to:
+        raise SignerError(f"rekey target is itself rekeyed to {auth_addr}")
+    return [
+        PreparedCheck(
+            name="rekey",
+            status="ok",
+            data={"rekey_to": rekey_to},
+        )
+    ]
+
+
+def _validate_keyreg_params(
+    *,
+    nonpart: bool,
+    votekey: Optional[str],
+    selkey: Optional[str],
+    votefst: Optional[int],
+    votelst: Optional[int],
+    votekd: Optional[int],
+) -> None:
+    if nonpart:
+        return
+    if not votekey:
+        raise ValueError("votekey is required")
+    if not selkey:
+        raise ValueError("selkey is required")
+    if not votefst:
+        raise ValueError("votefst is required")
+    if not votelst:
+        raise ValueError("votelst is required")
+    if votelst < votefst:
+        raise ValueError("votelst must be greater than or equal to votefst")
+    if not votekd:
+        raise ValueError("votekd is required")
+
+
 def _validate_payment_group(transactions: List[PreparedTransaction]) -> PreparedCheck:
     totals: Dict[str, Dict[str, int]] = {}
     for item in transactions:
@@ -1840,6 +1987,239 @@ class SignerClient:
             ],
         )
 
+    def prepare_asa_opt_in(
+        self,
+        algod_client: Any,
+        *,
+        sender: str,
+        asset_id: int,
+        note: Optional[bytes] = None,
+        fee: Optional[int] = None,
+        use_flat_fee: bool = False,
+    ) -> PreparedTransaction:
+        """Build a prepared ASA opt-in transaction."""
+        if algod_client is None:
+            raise ValueError("algod_client is required")
+        if not sender:
+            raise ValueError("sender is required")
+        if not asset_id:
+            raise ValueError("asset_id is required")
+
+        params = algod_client.suggested_params()
+        _apply_prep_fee(params, fee, use_flat_fee)
+
+        sender_info = algod_client.account_info(sender)
+        checks = _asa_opt_in_checks(sender_info, asset_id, int(getattr(params, "fee", 0)))
+        txn = transaction.AssetTransferTxn(
+            sender=sender,
+            sp=params,
+            receiver=sender,
+            amt=0,
+            index=asset_id,
+            note=note,
+        )
+        resolved = self.resolve_auth_address(sender, lambda _: sender_info)
+        return PreparedTransaction(
+            transaction=txn,
+            auth_address=resolved.auth_address,
+            signer_key=resolved.key_info,
+            checks=checks,
+        )
+
+    def prepare_asa_opt_out(
+        self,
+        algod_client: Any,
+        *,
+        sender: str,
+        asset_id: int,
+        close_to: str,
+        note: Optional[bytes] = None,
+        fee: Optional[int] = None,
+        use_flat_fee: bool = False,
+    ) -> PreparedTransaction:
+        """Build a prepared ASA opt-out transaction."""
+        if algod_client is None:
+            raise ValueError("algod_client is required")
+        if not sender:
+            raise ValueError("sender is required")
+        if not close_to:
+            raise ValueError("close_to is required")
+        if sender == close_to:
+            raise ValueError("close_to must differ from sender")
+        if not asset_id:
+            raise ValueError("asset_id is required")
+
+        params = algod_client.suggested_params()
+        _apply_prep_fee(params, fee, use_flat_fee)
+
+        sender_info = algod_client.account_info(sender)
+        close_info = algod_client.account_info(close_to)
+        checks = _asa_opt_out_checks(sender_info, close_info, asset_id, close_to)
+        txn = transaction.AssetTransferTxn(
+            sender=sender,
+            sp=params,
+            receiver=sender,
+            amt=0,
+            index=asset_id,
+            close_assets_to=close_to,
+            note=note,
+        )
+        resolved = self.resolve_auth_address(sender, lambda _: sender_info)
+        return PreparedTransaction(
+            transaction=txn,
+            auth_address=resolved.auth_address,
+            signer_key=resolved.key_info,
+            checks=checks,
+        )
+
+    def prepare_account_close(
+        self,
+        algod_client: Any,
+        *,
+        sender: str,
+        close_to: str,
+        note: Optional[bytes] = None,
+        fee: Optional[int] = None,
+        use_flat_fee: bool = False,
+    ) -> PreparedTransaction:
+        """Build a prepared account close transaction."""
+        if algod_client is None:
+            raise ValueError("algod_client is required")
+        if not sender:
+            raise ValueError("sender is required")
+        if not close_to:
+            raise ValueError("close_to is required")
+        if sender == close_to:
+            raise ValueError("close_to must differ from sender")
+
+        params = algod_client.suggested_params()
+        _apply_prep_fee(params, fee, use_flat_fee)
+
+        sender_info = algod_client.account_info(sender)
+        checks = _account_close_checks(sender_info, int(getattr(params, "fee", 0)))
+        txn = transaction.PaymentTxn(
+            sender=sender,
+            sp=params,
+            receiver=close_to,
+            amt=0,
+            close_remainder_to=close_to,
+            note=note,
+        )
+        resolved = self.resolve_auth_address(sender, lambda _: sender_info)
+        return PreparedTransaction(
+            transaction=txn,
+            auth_address=resolved.auth_address,
+            signer_key=resolved.key_info,
+            checks=checks,
+        )
+
+    def prepare_rekey(
+        self,
+        algod_client: Any,
+        *,
+        sender: str,
+        rekey_to: str,
+        note: Optional[bytes] = None,
+        fee: Optional[int] = None,
+        use_flat_fee: bool = False,
+    ) -> PreparedTransaction:
+        """Build a prepared self-payment rekey transaction."""
+        if algod_client is None:
+            raise ValueError("algod_client is required")
+        if not sender:
+            raise ValueError("sender is required")
+        if not rekey_to:
+            raise ValueError("rekey_to is required")
+
+        params = algod_client.suggested_params()
+        _apply_prep_fee(params, fee, use_flat_fee)
+
+        sender_info = algod_client.account_info(sender)
+        target_info = {"address": rekey_to}
+        if rekey_to != sender:
+            target_info = algod_client.account_info(rekey_to)
+        checks = _rekey_checks(target_info, rekey_to)
+        txn = transaction.PaymentTxn(
+            sender=sender,
+            sp=params,
+            receiver=sender,
+            amt=0,
+            note=note,
+            rekey_to=rekey_to,
+        )
+        resolved = self.resolve_auth_address(sender, lambda _: sender_info)
+        return PreparedTransaction(
+            transaction=txn,
+            auth_address=resolved.auth_address,
+            signer_key=resolved.key_info,
+            checks=checks,
+        )
+
+    def prepare_keyreg(
+        self,
+        algod_client: Any,
+        *,
+        sender: str,
+        votekey: Optional[str] = None,
+        selkey: Optional[str] = None,
+        votefst: Optional[int] = None,
+        votelst: Optional[int] = None,
+        votekd: Optional[int] = None,
+        sprfkey: Optional[str] = None,
+        nonpart: bool = False,
+        note: Optional[bytes] = None,
+        fee: Optional[int] = None,
+        use_flat_fee: bool = False,
+    ) -> PreparedTransaction:
+        """Build a prepared key registration transaction."""
+        if algod_client is None:
+            raise ValueError("algod_client is required")
+        if not sender:
+            raise ValueError("sender is required")
+        _validate_keyreg_params(
+            nonpart=nonpart,
+            votekey=votekey,
+            selkey=selkey,
+            votefst=votefst,
+            votelst=votelst,
+            votekd=votekd,
+        )
+
+        params = algod_client.suggested_params()
+        _apply_prep_fee(params, fee, use_flat_fee)
+
+        sender_info = algod_client.account_info(sender)
+        txn = transaction.KeyregTxn(
+            sender=sender,
+            sp=params,
+            votekey=votekey,
+            selkey=selkey,
+            votefst=votefst,
+            votelst=votelst,
+            votekd=votekd,
+            sprfkey=sprfkey,
+            nonpart=nonpart,
+            note=note,
+        )
+        resolved = self.resolve_auth_address(sender, lambda _: sender_info)
+        return PreparedTransaction(
+            transaction=txn,
+            auth_address=resolved.auth_address,
+            signer_key=resolved.key_info,
+            checks=[
+                PreparedCheck(
+                    name="keyreg",
+                    status="ok",
+                    data={
+                        "nonparticipation": nonpart,
+                        "vote_first": votefst or 0,
+                        "vote_last": votelst or 0,
+                        "vote_key_dilution": votekd or 0,
+                    },
+                )
+            ],
+        )
+
     def prepare_app_call(
         self,
         algod_client: Any,
@@ -2003,6 +2383,116 @@ class SignerClient:
                 app_call_info,
             ),
         )
+
+    def prepare_app_deploy(
+        self,
+        algod_client: Any,
+        *,
+        sender: str,
+        approval_program: bytes,
+        clear_program: bytes,
+        global_schema: Optional[transaction.StateSchema] = None,
+        local_schema: Optional[transaction.StateSchema] = None,
+        extra_pages: int = 0,
+        app_args: Optional[List[bytes]] = None,
+        accounts: Optional[List[str]] = None,
+        foreign_apps: Optional[List[int]] = None,
+        foreign_assets: Optional[List[int]] = None,
+        boxes: Optional[List[Any]] = None,
+        opt_in: bool = False,
+        note: Optional[bytes] = None,
+        fee: Optional[int] = None,
+        use_flat_fee: bool = False,
+    ) -> PreparedTransaction:
+        """Build a prepared application create transaction."""
+        if algod_client is None:
+            raise ValueError("algod_client is required")
+        if not sender:
+            raise ValueError("sender is required")
+        if not approval_program:
+            raise ValueError("approval_program is required")
+        if not clear_program:
+            raise ValueError("clear_program is required")
+
+        params = algod_client.suggested_params()
+        _apply_prep_fee(params, fee, use_flat_fee)
+
+        sender_info = algod_client.account_info(sender)
+        txn = transaction.ApplicationCreateTxn(
+            sender=sender,
+            sp=params,
+            on_complete=transaction.OnComplete.OptInOC if opt_in else transaction.OnComplete.NoOpOC,
+            approval_program=approval_program,
+            clear_program=clear_program,
+            global_schema=global_schema or transaction.StateSchema(0, 0),
+            local_schema=local_schema or transaction.StateSchema(0, 0),
+            app_args=app_args,
+            accounts=accounts,
+            foreign_apps=foreign_apps,
+            foreign_assets=foreign_assets,
+            note=note,
+            extra_pages=extra_pages,
+            boxes=boxes,
+        )
+        resolved = self.resolve_auth_address(sender, lambda _: sender_info)
+        return PreparedTransaction(
+            transaction=txn,
+            auth_address=resolved.auth_address,
+            signer_key=resolved.key_info,
+            app_call_info={"mode": "raw"},
+            checks=[
+                PreparedCheck(
+                    name="app_deploy",
+                    status="ok",
+                    data={
+                        "extra_pages": extra_pages,
+                        "approval_program_len": len(approval_program),
+                        "clear_program_len": len(clear_program),
+                        "opt_in": opt_in,
+                    },
+                )
+            ],
+        )
+
+    def prepare_sweep_group(
+        self,
+        algod_client: Any,
+        *,
+        asa_transfers: Optional[List[Dict[str, Any]]] = None,
+        payments: Optional[List[Dict[str, Any]]] = None,
+    ) -> PreparedGroup:
+        """Build a sweep group from normalized ASA transfers and payments."""
+        asa_transfers = asa_transfers or []
+        payments = payments or []
+        if not asa_transfers and not payments:
+            raise ValueError("sweep group must not be empty")
+        prepared: List[PreparedTransaction] = []
+        for index, transfer in enumerate(asa_transfers):
+            try:
+                prepared.append(self.prepare_asa_transfer(algod_client, **transfer))
+            except Exception as e:
+                raise SignerError(f"ASA transfer {index}: {e}") from e
+        for index, payment in enumerate(payments):
+            try:
+                prepared.append(self.prepare_payment(algod_client, **payment))
+            except Exception as e:
+                raise SignerError(f"payment {index}: {e}") from e
+
+        checks = [
+            PreparedCheck(
+                name="sweep_group",
+                status="ok",
+                data={
+                    "asa_transfer_count": len(asa_transfers),
+                    "payment_count": len(payments),
+                },
+            )
+        ]
+        if asa_transfers:
+            checks.append(_validate_asa_transfer_group(prepared[:len(asa_transfers)]))
+        if payments:
+            checks.append(_validate_payment_group(prepared[len(asa_transfers):]))
+        return PreparedGroup(prepared, checks=checks)
 
     def prepare_payment_group(
         self,

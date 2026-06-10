@@ -6,6 +6,7 @@ package aplane
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -58,10 +59,12 @@ func newPrepTestClients(t *testing.T, sender string, receiver string, senderAmou
 			}
 			if address == sender {
 				resp["amount"] = senderAmount
-				resp["assets"] = []map[string]any{{
-					"asset-id": 1001,
-					"amount":   assetAmount,
-				}}
+				if assetAmount > 0 {
+					resp["assets"] = []map[string]any{{
+						"asset-id": 1001,
+						"amount":   assetAmount,
+					}}
+				}
 			}
 			if address == receiver && receiverOptedIn {
 				resp["assets"] = []map[string]any{{
@@ -169,6 +172,171 @@ func TestPrepareAsaTransferRejectsReceiverNotOptedIn(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "receiver is not opted into asset") {
 		t.Fatalf("expected receiver opt-in error, got %v", err)
+	}
+}
+
+func TestPrepareAsaOptIn(t *testing.T) {
+	sender := sdkTestAddress(1)
+	receiver := sdkTestAddress(2)
+	signer, algodClient, cleanup := newPrepTestClients(t, sender, receiver, 2_000_000, 0, false)
+	defer cleanup()
+
+	prepared, err := signer.PrepareAsaOptIn(context.Background(), algodClient, AsaOptInPrepParams{
+		Sender:  sender,
+		AssetID: 1001,
+	})
+	if err != nil {
+		t.Fatalf("PrepareAsaOptIn() error = %v", err)
+	}
+	if prepared.Transaction == nil || prepared.Transaction.Sender.String() != sender {
+		t.Fatalf("transaction mismatch: %#v", prepared.Transaction)
+	}
+	if prepared.Transaction.AssetAmount != 0 || prepared.Transaction.AssetReceiver.String() != sender {
+		t.Fatalf("opt-in transaction mismatch: %#v", prepared.Transaction)
+	}
+	if prepared.Checks[0].Name != "asa_opt_in" {
+		t.Fatalf("checks mismatch: %#v", prepared.Checks)
+	}
+}
+
+func TestPrepareAsaOptOut(t *testing.T) {
+	sender := sdkTestAddress(1)
+	closeTo := sdkTestAddress(2)
+	signer, algodClient, cleanup := newPrepTestClients(t, sender, closeTo, 2_000_000, 25, true)
+	defer cleanup()
+
+	prepared, err := signer.PrepareAsaOptOut(context.Background(), algodClient, AsaOptOutPrepParams{
+		Sender:  sender,
+		AssetID: 1001,
+		CloseTo: closeTo,
+	})
+	if err != nil {
+		t.Fatalf("PrepareAsaOptOut() error = %v", err)
+	}
+	if prepared.Transaction == nil || prepared.Transaction.AssetCloseTo.String() != closeTo {
+		t.Fatalf("opt-out transaction mismatch: %#v", prepared.Transaction)
+	}
+	if prepared.Checks[0].Name != "asa_opt_out" {
+		t.Fatalf("checks mismatch: %#v", prepared.Checks)
+	}
+}
+
+func TestPrepareAccountClose(t *testing.T) {
+	sender := sdkTestAddress(1)
+	closeTo := sdkTestAddress(2)
+	signer, algodClient, cleanup := newPrepTestClients(t, sender, closeTo, 2_000_000, 0, false)
+	defer cleanup()
+
+	prepared, err := signer.PrepareAccountClose(context.Background(), algodClient, AccountClosePrepParams{
+		Sender:  sender,
+		CloseTo: closeTo,
+	})
+	if err != nil {
+		t.Fatalf("PrepareAccountClose() error = %v", err)
+	}
+	if prepared.Transaction == nil || prepared.Transaction.CloseRemainderTo.String() != closeTo {
+		t.Fatalf("close transaction mismatch: %#v", prepared.Transaction)
+	}
+	if prepared.Checks[0].Name != "account_close" {
+		t.Fatalf("checks mismatch: %#v", prepared.Checks)
+	}
+}
+
+func TestPrepareRekey(t *testing.T) {
+	sender := sdkTestAddress(1)
+	rekeyTo := sdkTestAddress(2)
+	signer, algodClient, cleanup := newPrepTestClients(t, sender, rekeyTo, 2_000_000, 0, false)
+	defer cleanup()
+
+	prepared, err := signer.PrepareRekey(context.Background(), algodClient, RekeyPrepParams{
+		Sender:  sender,
+		RekeyTo: rekeyTo,
+	})
+	if err != nil {
+		t.Fatalf("PrepareRekey() error = %v", err)
+	}
+	if prepared.Transaction == nil || prepared.Transaction.RekeyTo.String() != rekeyTo {
+		t.Fatalf("rekey transaction mismatch: %#v", prepared.Transaction)
+	}
+	if prepared.Checks[0].Name != "rekey" {
+		t.Fatalf("checks mismatch: %#v", prepared.Checks)
+	}
+}
+
+func TestPrepareKeyRegNonparticipation(t *testing.T) {
+	sender := sdkTestAddress(1)
+	receiver := sdkTestAddress(2)
+	signer, algodClient, cleanup := newPrepTestClients(t, sender, receiver, 2_000_000, 0, false)
+	defer cleanup()
+
+	prepared, err := signer.PrepareKeyReg(context.Background(), algodClient, KeyRegPrepParams{
+		Sender:           sender,
+		Nonparticipation: true,
+	})
+	if err != nil {
+		t.Fatalf("PrepareKeyReg() error = %v", err)
+	}
+	if prepared.Transaction == nil || prepared.Transaction.Type != types.KeyRegistrationTx {
+		t.Fatalf("keyreg transaction mismatch: %#v", prepared.Transaction)
+	}
+	if !prepared.Transaction.Nonparticipation {
+		t.Fatal("Nonparticipation = false, want true")
+	}
+	if prepared.Checks[0].Name != "keyreg" {
+		t.Fatalf("checks mismatch: %#v", prepared.Checks)
+	}
+}
+
+func TestPrepareKeyRegOnline(t *testing.T) {
+	sender := sdkTestAddress(1)
+	receiver := sdkTestAddress(2)
+	signer, algodClient, cleanup := newPrepTestClients(t, sender, receiver, 2_000_000, 0, false)
+	defer cleanup()
+	key32 := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	key64 := base64.StdEncoding.EncodeToString(make([]byte, 64))
+
+	prepared, err := signer.PrepareKeyReg(context.Background(), algodClient, KeyRegPrepParams{
+		Sender:          sender,
+		VoteKey:         key32,
+		SelectionKey:    key32,
+		StateProofKey:   key64,
+		VoteFirst:       10,
+		VoteLast:        20,
+		VoteKeyDilution: 5,
+	})
+	if err != nil {
+		t.Fatalf("PrepareKeyReg() error = %v", err)
+	}
+	if prepared.Transaction == nil || prepared.Transaction.VoteFirst != 10 || prepared.Transaction.VoteLast != 20 {
+		t.Fatalf("keyreg fields mismatch: %#v", prepared.Transaction)
+	}
+}
+
+func TestPrepareAppDeploy(t *testing.T) {
+	sender := sdkTestAddress(1)
+	receiver := sdkTestAddress(2)
+	signer, algodClient, cleanup := newPrepTestClients(t, sender, receiver, 2_000_000, 0, false)
+	defer cleanup()
+
+	prepared, err := signer.PrepareAppDeploy(context.Background(), algodClient, AppDeployPrepParams{
+		Sender:          sender,
+		ApprovalProgram: []byte{1, 2, 3},
+		ClearProgram:    []byte{1},
+		GlobalSchema:    types.StateSchema{NumUint: 1},
+		LocalSchema:     types.StateSchema{NumByteSlice: 1},
+		ExtraPages:      1,
+	})
+	if err != nil {
+		t.Fatalf("PrepareAppDeploy() error = %v", err)
+	}
+	if prepared.Transaction == nil || prepared.Transaction.Type != types.ApplicationCallTx || prepared.Transaction.ApplicationID != 0 {
+		t.Fatalf("app deploy transaction mismatch: %#v", prepared.Transaction)
+	}
+	if prepared.AppCallInfo == nil || prepared.AppCallInfo.Mode != "raw" {
+		t.Fatalf("app call info mismatch: %#v", prepared.AppCallInfo)
+	}
+	if prepared.Checks[0].Name != "app_deploy" {
+		t.Fatalf("checks mismatch: %#v", prepared.Checks)
 	}
 }
 
@@ -281,6 +449,36 @@ func TestPrepareABIAppCall(t *testing.T) {
 	}
 	if req.AppCallInfo == nil || req.AppCallInfo.Method != "do(uint64,string,account,application,asset)void" {
 		t.Fatalf("request app call info mismatch: %#v", req.AppCallInfo)
+	}
+}
+
+func TestPrepareSweepGroup(t *testing.T) {
+	sender := sdkTestAddress(1)
+	receiver := sdkTestAddress(2)
+	signer, algodClient, cleanup := newPrepTestClients(t, sender, receiver, 2_000_000, 25, true)
+	defer cleanup()
+
+	group, err := signer.PrepareSweepGroup(context.Background(), algodClient, SweepPrepParams{
+		AsaTransfers: []AsaTransferPrepParams{{
+			Sender:   sender,
+			Receiver: receiver,
+			AssetID:  1001,
+			Amount:   5,
+		}},
+		Payments: []PaymentPrepParams{{
+			Sender:   sender,
+			Receiver: receiver,
+			Amount:   10_000,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("PrepareSweepGroup() error = %v", err)
+	}
+	if len(group.Transactions) != 2 {
+		t.Fatalf("group length = %d, want 2", len(group.Transactions))
+	}
+	if group.Checks[0].Name != "sweep_group" {
+		t.Fatalf("checks mismatch: %#v", group.Checks)
 	}
 }
 

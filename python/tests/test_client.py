@@ -1204,6 +1204,168 @@ class TestPrepHelpers:
                 amount=5,
             )
 
+    def test_prepare_asa_opt_in(self):
+        sender = sdk_test_address(1)
+        algod = MockAlgod({
+            sender: {"amount": 2_000_000, "min-balance": 100_000},
+        })
+        client = make_client()
+        with patch.object(client.session, "get", side_effect=[
+            self._status(),
+            self._keys(sender),
+        ]):
+            prepared = client.prepare_asa_opt_in(
+                algod,
+                sender=sender,
+                asset_id=1001,
+            )
+
+        assert prepared.transaction.receiver == sender
+        assert prepared.transaction.amount == 0
+        assert prepared.checks[0].name == "asa_opt_in"
+
+    def test_prepare_asa_opt_out(self):
+        sender = sdk_test_address(1)
+        close_to = sdk_test_address(2)
+        algod = MockAlgod({
+            sender: {
+                "amount": 2_000_000,
+                "min-balance": 100_000,
+                "assets": [{"asset-id": 1001, "amount": 25}],
+            },
+            close_to: {
+                "amount": 2_000_000,
+                "min-balance": 100_000,
+                "assets": [{"asset-id": 1001, "amount": 0}],
+            },
+        })
+        client = make_client()
+        with patch.object(client.session, "get", side_effect=[
+            self._status(),
+            self._keys(sender),
+        ]):
+            prepared = client.prepare_asa_opt_out(
+                algod,
+                sender=sender,
+                asset_id=1001,
+                close_to=close_to,
+            )
+
+        assert prepared.transaction.close_assets_to == close_to
+        assert prepared.checks[0].name == "asa_opt_out"
+
+    def test_prepare_account_close(self):
+        sender = sdk_test_address(1)
+        close_to = sdk_test_address(2)
+        algod = MockAlgod({
+            sender: {"amount": 2_000_000, "min-balance": 100_000},
+        })
+        client = make_client()
+        with patch.object(client.session, "get", side_effect=[
+            self._status(),
+            self._keys(sender),
+        ]):
+            prepared = client.prepare_account_close(
+                algod,
+                sender=sender,
+                close_to=close_to,
+            )
+
+        assert prepared.transaction.close_remainder_to == close_to
+        assert prepared.checks[0].name == "account_close"
+
+    def test_prepare_account_close_rejects_asset_holdings(self):
+        sender = sdk_test_address(1)
+        close_to = sdk_test_address(2)
+        algod = MockAlgod({
+            sender: {
+                "amount": 2_000_000,
+                "min-balance": 100_000,
+                "assets": [{"asset-id": 1001, "amount": 0}],
+            },
+        })
+        client = make_client()
+        with pytest.raises(SignerError, match="ASA holdings"):
+            client.prepare_account_close(algod, sender=sender, close_to=close_to)
+
+    def test_prepare_rekey(self):
+        sender = sdk_test_address(1)
+        rekey_to = sdk_test_address(2)
+        algod = MockAlgod({
+            sender: {"amount": 2_000_000, "min-balance": 100_000},
+            rekey_to: {"amount": 2_000_000, "min-balance": 100_000},
+        })
+        client = make_client()
+        with patch.object(client.session, "get", side_effect=[
+            self._status(),
+            self._keys(sender),
+        ]):
+            prepared = client.prepare_rekey(
+                algod,
+                sender=sender,
+                rekey_to=rekey_to,
+            )
+
+        assert prepared.transaction.rekey_to == rekey_to
+        assert prepared.checks[0].name == "rekey"
+
+    def test_prepare_rekey_rejects_rekey_chain(self):
+        sender = sdk_test_address(1)
+        rekey_to = sdk_test_address(2)
+        other = sdk_test_address(3)
+        algod = MockAlgod({
+            sender: {"amount": 2_000_000, "min-balance": 100_000},
+            rekey_to: {"amount": 2_000_000, "min-balance": 100_000, "auth-addr": other},
+        })
+        client = make_client()
+        with pytest.raises(SignerError, match="rekey target is itself rekeyed"):
+            client.prepare_rekey(algod, sender=sender, rekey_to=rekey_to)
+
+    def test_prepare_keyreg_nonparticipation(self):
+        sender = sdk_test_address(1)
+        algod = MockAlgod({
+            sender: {"amount": 2_000_000, "min-balance": 100_000},
+        })
+        client = make_client()
+        with patch.object(client.session, "get", side_effect=[
+            self._status(),
+            self._keys(sender),
+        ]):
+            prepared = client.prepare_keyreg(
+                algod,
+                sender=sender,
+                nonpart=True,
+            )
+
+        assert prepared.transaction.nonpart is True
+        assert prepared.checks[0].name == "keyreg"
+
+    def test_prepare_keyreg_online(self):
+        sender = sdk_test_address(1)
+        key32 = base64.b64encode(bytes(32)).decode()
+        key64 = base64.b64encode(bytes(64)).decode()
+        algod = MockAlgod({
+            sender: {"amount": 2_000_000, "min-balance": 100_000},
+        })
+        client = make_client()
+        with patch.object(client.session, "get", side_effect=[
+            self._status(),
+            self._keys(sender),
+        ]):
+            prepared = client.prepare_keyreg(
+                algod,
+                sender=sender,
+                votekey=key32,
+                selkey=key32,
+                sprfkey=key64,
+                votefst=10,
+                votelst=20,
+                votekd=5,
+            )
+
+        assert prepared.transaction.votefst == 10
+        assert prepared.transaction.votelst == 20
+
     def test_prepare_app_call(self):
         sender = sdk_test_address(1)
         receiver = sdk_test_address(2)
@@ -1274,6 +1436,64 @@ class TestPrepHelpers:
             "mode": "abi",
             "method": "do(uint64,string,account,application,asset)void",
         }
+
+    def test_prepare_app_deploy(self):
+        sender = sdk_test_address(1)
+        algod = MockAlgod({
+            sender: {"amount": 2_000_000, "min-balance": 100_000},
+        })
+        client = make_client()
+        with patch.object(client.session, "get", side_effect=[
+            self._status(),
+            self._keys(sender),
+        ]):
+            prepared = client.prepare_app_deploy(
+                algod,
+                sender=sender,
+                approval_program=b"\x01\x02",
+                clear_program=b"\x01",
+                global_schema=transaction.StateSchema(1, 0),
+                local_schema=transaction.StateSchema(0, 1),
+                extra_pages=1,
+            )
+
+        assert prepared.transaction.index == 0
+        assert prepared.app_call_info == {"mode": "raw"}
+        assert prepared.checks[0].name == "app_deploy"
+
+    def test_prepare_sweep_group(self):
+        sender = sdk_test_address(1)
+        receiver = sdk_test_address(2)
+        algod = MockAlgod({
+            sender: {
+                "amount": 2_000_000,
+                "min-balance": 100_000,
+                "assets": [{"asset-id": 1001, "amount": 25}],
+            },
+            receiver: {
+                "amount": 2_000_000,
+                "min-balance": 100_000,
+                "assets": [{"asset-id": 1001, "amount": 0}],
+            },
+        })
+        client = make_client()
+        with patch.object(client.session, "get", side_effect=[
+            self._status(),
+            self._keys(sender),
+            self._status(),
+        ]):
+            group = client.prepare_sweep_group(
+                algod,
+                asa_transfers=[
+                    {"sender": sender, "receiver": receiver, "asset_id": 1001, "amount": 5},
+                ],
+                payments=[
+                    {"sender": sender, "receiver": receiver, "amount": 10_000},
+                ],
+            )
+
+        assert len(group.transactions) == 2
+        assert group.checks[0].name == "sweep_group"
 
     def test_prepare_payment_group_preserves_order(self):
         sender = sdk_test_address(1)

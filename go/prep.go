@@ -6,6 +6,7 @@ package aplane
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/algorand/go-algorand-sdk/v2/abi"
 	"github.com/algorand/go-algorand-sdk/v2/client/v2/algod"
@@ -38,6 +39,58 @@ type AsaTransferPrepParams struct {
 	UseFlatFee bool
 }
 
+// AsaOptInPrepParams describes an ASA opt-in transaction intent.
+type AsaOptInPrepParams struct {
+	Sender     string
+	AssetID    uint64
+	Note       []byte
+	Fee        uint64
+	UseFlatFee bool
+}
+
+// AsaOptOutPrepParams describes an ASA opt-out transaction intent.
+type AsaOptOutPrepParams struct {
+	Sender     string
+	AssetID    uint64
+	CloseTo    string
+	Note       []byte
+	Fee        uint64
+	UseFlatFee bool
+}
+
+// AccountClosePrepParams describes an account close transaction intent.
+type AccountClosePrepParams struct {
+	Sender     string
+	CloseTo    string
+	Note       []byte
+	Fee        uint64
+	UseFlatFee bool
+}
+
+// RekeyPrepParams describes an account rekey transaction intent.
+type RekeyPrepParams struct {
+	Sender     string
+	RekeyTo    string
+	Note       []byte
+	Fee        uint64
+	UseFlatFee bool
+}
+
+// KeyRegPrepParams describes a key registration transaction intent.
+type KeyRegPrepParams struct {
+	Sender           string
+	VoteKey          string
+	SelectionKey     string
+	StateProofKey    string
+	VoteFirst        uint64
+	VoteLast         uint64
+	VoteKeyDilution  uint64
+	Nonparticipation bool
+	Note             []byte
+	Fee              uint64
+	UseFlatFee       bool
+}
+
 // AppCallPrepParams describes a raw application-call transaction intent.
 type AppCallPrepParams struct {
 	Sender          string
@@ -63,6 +116,31 @@ type ABIAppCallPrepParams struct {
 	AppCallPrepParams
 	MethodSignature string
 	Args            []any
+}
+
+// AppDeployPrepParams describes an application create transaction intent.
+type AppDeployPrepParams struct {
+	Sender          string
+	ApprovalProgram []byte
+	ClearProgram    []byte
+	GlobalSchema    types.StateSchema
+	LocalSchema     types.StateSchema
+	ExtraPages      uint32
+	AppArgs         [][]byte
+	Accounts        []string
+	ForeignApps     []uint64
+	ForeignAssets   []uint64
+	Boxes           []types.AppBoxReference
+	OptIn           bool
+	Note            []byte
+	Fee             uint64
+	UseFlatFee      bool
+}
+
+// SweepPrepParams describes a normalized sweep group.
+type SweepPrepParams struct {
+	AsaTransfers []AsaTransferPrepParams
+	Payments     []PaymentPrepParams
 }
 
 // PreparePayment builds an unsigned payment transaction and signer metadata.
@@ -181,6 +259,110 @@ func (c *SignerClient) PrepareAsaTransfer(ctx context.Context, algodClient *algo
 	}, nil
 }
 
+// PrepareAsaOptIn builds an unsigned ASA opt-in transaction and signer metadata.
+func (c *SignerClient) PrepareAsaOptIn(ctx context.Context, algodClient *algod.Client, params AsaOptInPrepParams) (*PreparedTransaction, error) {
+	if algodClient == nil {
+		return nil, fmt.Errorf("algod client is required")
+	}
+	if params.Sender == "" {
+		return nil, fmt.Errorf("sender is required")
+	}
+	if params.AssetID == 0 {
+		return nil, fmt.Errorf("asset_id is required")
+	}
+
+	suggested, err := algodClient.SuggestedParams().Do(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get suggested params: %w", err)
+	}
+	applyPrepFee(&suggested, params.Fee, params.UseFlatFee)
+
+	senderAcct, err := algodClient.AccountInformation(params.Sender).Do(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get sender account info: %w", err)
+	}
+	checks, err := asaOptInChecks(senderAcct, params.AssetID, uint64(suggested.Fee))
+	if err != nil {
+		return nil, err
+	}
+
+	txn, err := transaction.MakeAssetAcceptanceTxn(params.Sender, params.Note, suggested, params.AssetID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ASA opt-in transaction: %w", err)
+	}
+
+	resolved, err := c.ResolveAuthAddress(ctx, params.Sender, func(context.Context, string) (string, error) {
+		return senderAcct.AuthAddr, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &PreparedTransaction{
+		Transaction: &txn,
+		AuthAddress: resolved.AuthAddress,
+		SignerKey:   &resolved.KeyInfo,
+		Checks:      checks,
+	}, nil
+}
+
+// PrepareAsaOptOut builds an unsigned ASA opt-out transaction and signer metadata.
+func (c *SignerClient) PrepareAsaOptOut(ctx context.Context, algodClient *algod.Client, params AsaOptOutPrepParams) (*PreparedTransaction, error) {
+	if algodClient == nil {
+		return nil, fmt.Errorf("algod client is required")
+	}
+	if params.Sender == "" {
+		return nil, fmt.Errorf("sender is required")
+	}
+	if params.CloseTo == "" {
+		return nil, fmt.Errorf("close_to is required")
+	}
+	if params.AssetID == 0 {
+		return nil, fmt.Errorf("asset_id is required")
+	}
+	if params.CloseTo == params.Sender {
+		return nil, fmt.Errorf("close_to must differ from sender")
+	}
+
+	suggested, err := algodClient.SuggestedParams().Do(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get suggested params: %w", err)
+	}
+	applyPrepFee(&suggested, params.Fee, params.UseFlatFee)
+
+	senderAcct, err := algodClient.AccountInformation(params.Sender).Do(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get sender account info: %w", err)
+	}
+	closeAcct, err := algodClient.AccountInformation(params.CloseTo).Do(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get close-to account info: %w", err)
+	}
+	checks, err := asaOptOutChecks(senderAcct, closeAcct, params.AssetID)
+	if err != nil {
+		return nil, err
+	}
+
+	txn, err := transaction.MakeAssetTransferTxn(params.Sender, params.Sender, 0, params.Note, suggested, params.CloseTo, params.AssetID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ASA opt-out transaction: %w", err)
+	}
+
+	resolved, err := c.ResolveAuthAddress(ctx, params.Sender, func(context.Context, string) (string, error) {
+		return senderAcct.AuthAddr, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &PreparedTransaction{
+		Transaction: &txn,
+		AuthAddress: resolved.AuthAddress,
+		SignerKey:   &resolved.KeyInfo,
+		Checks:      checks,
+	}, nil
+}
+
 // PrepareAppCall builds an unsigned raw app-call transaction and signer metadata.
 func (c *SignerClient) PrepareAppCall(ctx context.Context, algodClient *algod.Client, params AppCallPrepParams) (*PreparedTransaction, error) {
 	return c.prepareAppCallWithInfo(ctx, algodClient, params, &AppCallInfo{Mode: "raw"})
@@ -204,6 +386,302 @@ func (c *SignerClient) PrepareABIAppCall(ctx context.Context, algodClient *algod
 		Mode:   "abi",
 		Method: method.GetSignature(),
 	})
+}
+
+// PrepareAccountClose builds an unsigned account-close transaction and signer metadata.
+func (c *SignerClient) PrepareAccountClose(ctx context.Context, algodClient *algod.Client, params AccountClosePrepParams) (*PreparedTransaction, error) {
+	if algodClient == nil {
+		return nil, fmt.Errorf("algod client is required")
+	}
+	if params.Sender == "" {
+		return nil, fmt.Errorf("sender is required")
+	}
+	if params.CloseTo == "" {
+		return nil, fmt.Errorf("close_to is required")
+	}
+	if params.CloseTo == params.Sender {
+		return nil, fmt.Errorf("close_to must differ from sender")
+	}
+
+	suggested, err := algodClient.SuggestedParams().Do(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get suggested params: %w", err)
+	}
+	applyPrepFee(&suggested, params.Fee, params.UseFlatFee)
+
+	senderAcct, err := algodClient.AccountInformation(params.Sender).Do(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get sender account info: %w", err)
+	}
+	checks, err := accountCloseChecks(senderAcct, uint64(suggested.Fee))
+	if err != nil {
+		return nil, err
+	}
+
+	txn, err := transaction.MakePaymentTxn(params.Sender, params.CloseTo, 0, params.Note, params.CloseTo, suggested)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create account close transaction: %w", err)
+	}
+
+	resolved, err := c.ResolveAuthAddress(ctx, params.Sender, func(context.Context, string) (string, error) {
+		return senderAcct.AuthAddr, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &PreparedTransaction{
+		Transaction: &txn,
+		AuthAddress: resolved.AuthAddress,
+		SignerKey:   &resolved.KeyInfo,
+		Checks:      checks,
+	}, nil
+}
+
+// PrepareRekey builds an unsigned self-payment rekey transaction and signer metadata.
+func (c *SignerClient) PrepareRekey(ctx context.Context, algodClient *algod.Client, params RekeyPrepParams) (*PreparedTransaction, error) {
+	if algodClient == nil {
+		return nil, fmt.Errorf("algod client is required")
+	}
+	if params.Sender == "" {
+		return nil, fmt.Errorf("sender is required")
+	}
+	if params.RekeyTo == "" {
+		return nil, fmt.Errorf("rekey_to is required")
+	}
+
+	suggested, err := algodClient.SuggestedParams().Do(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get suggested params: %w", err)
+	}
+	applyPrepFee(&suggested, params.Fee, params.UseFlatFee)
+
+	senderAcct, err := algodClient.AccountInformation(params.Sender).Do(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get sender account info: %w", err)
+	}
+	targetAcct := models.Account{Address: params.RekeyTo}
+	if params.RekeyTo != params.Sender {
+		targetAcct, err = algodClient.AccountInformation(params.RekeyTo).Do(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get rekey target account info: %w", err)
+		}
+	}
+	checks, err := rekeyChecks(targetAcct, params.RekeyTo)
+	if err != nil {
+		return nil, err
+	}
+
+	txn, err := transaction.MakePaymentTxn(params.Sender, params.Sender, 0, params.Note, "", suggested)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create rekey transaction: %w", err)
+	}
+	if err := txn.Rekey(params.RekeyTo); err != nil {
+		return nil, fmt.Errorf("failed to set rekey target: %w", err)
+	}
+
+	resolved, err := c.ResolveAuthAddress(ctx, params.Sender, func(context.Context, string) (string, error) {
+		return senderAcct.AuthAddr, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &PreparedTransaction{
+		Transaction: &txn,
+		AuthAddress: resolved.AuthAddress,
+		SignerKey:   &resolved.KeyInfo,
+		Checks:      checks,
+	}, nil
+}
+
+// PrepareKeyReg builds an unsigned key registration transaction and signer metadata.
+func (c *SignerClient) PrepareKeyReg(ctx context.Context, algodClient *algod.Client, params KeyRegPrepParams) (*PreparedTransaction, error) {
+	if algodClient == nil {
+		return nil, fmt.Errorf("algod client is required")
+	}
+	if params.Sender == "" {
+		return nil, fmt.Errorf("sender is required")
+	}
+	if err := validateKeyRegParams(params); err != nil {
+		return nil, err
+	}
+
+	suggested, err := algodClient.SuggestedParams().Do(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get suggested params: %w", err)
+	}
+	applyPrepFee(&suggested, params.Fee, params.UseFlatFee)
+
+	senderAcct, err := algodClient.AccountInformation(params.Sender).Do(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get sender account info: %w", err)
+	}
+
+	txn, err := transaction.MakeKeyRegTxnWithStateProofKey(
+		params.Sender,
+		params.Note,
+		suggested,
+		params.VoteKey,
+		params.SelectionKey,
+		params.StateProofKey,
+		params.VoteFirst,
+		params.VoteLast,
+		params.VoteKeyDilution,
+		params.Nonparticipation,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create keyreg transaction: %w", err)
+	}
+
+	resolved, err := c.ResolveAuthAddress(ctx, params.Sender, func(context.Context, string) (string, error) {
+		return senderAcct.AuthAddr, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &PreparedTransaction{
+		Transaction: &txn,
+		AuthAddress: resolved.AuthAddress,
+		SignerKey:   &resolved.KeyInfo,
+		Checks: []PreparedCheck{{
+			Name:   "keyreg",
+			Status: "ok",
+			Data: map[string]any{
+				"nonparticipation":  params.Nonparticipation,
+				"vote_first":        params.VoteFirst,
+				"vote_last":         params.VoteLast,
+				"vote_key_dilution": params.VoteKeyDilution,
+			},
+		}},
+	}, nil
+}
+
+// PrepareAppDeploy builds an unsigned app-create transaction and signer metadata.
+func (c *SignerClient) PrepareAppDeploy(ctx context.Context, algodClient *algod.Client, params AppDeployPrepParams) (*PreparedTransaction, error) {
+	if algodClient == nil {
+		return nil, fmt.Errorf("algod client is required")
+	}
+	if params.Sender == "" {
+		return nil, fmt.Errorf("sender is required")
+	}
+	if len(params.ApprovalProgram) == 0 {
+		return nil, fmt.Errorf("approval_program is required")
+	}
+	if len(params.ClearProgram) == 0 {
+		return nil, fmt.Errorf("clear_program is required")
+	}
+
+	suggested, err := algodClient.SuggestedParams().Do(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get suggested params: %w", err)
+	}
+	applyPrepFee(&suggested, params.Fee, params.UseFlatFee)
+
+	senderAcct, err := algodClient.AccountInformation(params.Sender).Do(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get sender account info: %w", err)
+	}
+	sender, err := types.DecodeAddress(params.Sender)
+	if err != nil {
+		return nil, fmt.Errorf("invalid sender address: %w", err)
+	}
+
+	txn, err := transaction.MakeApplicationCreateTxWithBoxes(
+		params.OptIn,
+		params.ApprovalProgram,
+		params.ClearProgram,
+		params.GlobalSchema,
+		params.LocalSchema,
+		params.ExtraPages,
+		params.AppArgs,
+		params.Accounts,
+		params.ForeignApps,
+		params.ForeignAssets,
+		params.Boxes,
+		suggested,
+		sender,
+		params.Note,
+		types.Digest{},
+		[32]byte{},
+		types.Address{},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create app deploy transaction: %w", err)
+	}
+
+	resolved, err := c.ResolveAuthAddress(ctx, params.Sender, func(context.Context, string) (string, error) {
+		return senderAcct.AuthAddr, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &PreparedTransaction{
+		Transaction: &txn,
+		AuthAddress: resolved.AuthAddress,
+		SignerKey:   &resolved.KeyInfo,
+		AppCallInfo: &AppCallInfo{Mode: "raw"},
+		Checks: []PreparedCheck{{
+			Name:   "app_deploy",
+			Status: "ok",
+			Data: map[string]any{
+				"extra_pages":          params.ExtraPages,
+				"approval_program_len": len(params.ApprovalProgram),
+				"clear_program_len":    len(params.ClearProgram),
+				"opt_in":               params.OptIn,
+			},
+		}},
+	}, nil
+}
+
+// PrepareSweepGroup builds a sweep group from normalized ASA transfers and payments.
+func (c *SignerClient) PrepareSweepGroup(ctx context.Context, algodClient *algod.Client, params SweepPrepParams) (*PreparedGroup, error) {
+	total := len(params.AsaTransfers) + len(params.Payments)
+	if total == 0 {
+		return nil, fmt.Errorf("sweep group must not be empty")
+	}
+	group := PreparedGroup{
+		Transactions: make([]PreparedTransaction, 0, total),
+		Checks: []PreparedCheck{{
+			Name:   "sweep_group",
+			Status: "ok",
+			Data: map[string]any{
+				"asa_transfer_count": len(params.AsaTransfers),
+				"payment_count":      len(params.Payments),
+			},
+		}},
+	}
+	for i, transfer := range params.AsaTransfers {
+		prepared, err := c.PrepareAsaTransfer(ctx, algodClient, transfer)
+		if err != nil {
+			return nil, fmt.Errorf("ASA transfer %d: %w", i, err)
+		}
+		group.Transactions = append(group.Transactions, *prepared)
+	}
+	for i, payment := range params.Payments {
+		prepared, err := c.PreparePayment(ctx, algodClient, payment)
+		if err != nil {
+			return nil, fmt.Errorf("payment %d: %w", i, err)
+		}
+		group.Transactions = append(group.Transactions, *prepared)
+	}
+	if len(params.AsaTransfers) > 0 {
+		check, err := asaTransferGroupBalanceCheck(group.Transactions[:len(params.AsaTransfers)])
+		if err != nil {
+			return nil, err
+		}
+		group.Checks = append(group.Checks, check)
+	}
+	if len(params.Payments) > 0 {
+		check, err := paymentGroupBalanceCheck(group.Transactions[len(params.AsaTransfers):])
+		if err != nil {
+			return nil, err
+		}
+		group.Checks = append(group.Checks, check)
+	}
+	return &group, nil
 }
 
 // PreparePaymentGroup builds an ordered group of prepared payment transactions.
@@ -407,6 +885,110 @@ func asaTransferChecks(sender models.Account, receiver models.Account, assetID u
 			"balance":  senderHolding.Amount,
 		},
 	}}, nil
+}
+
+func asaOptInChecks(sender models.Account, assetID uint64, fee uint64) ([]PreparedCheck, error) {
+	if _, ok := accountAssetHolding(sender, assetID); ok {
+		return nil, fmt.Errorf("sender is already opted into asset %d", assetID)
+	}
+	if sender.Amount < fee {
+		return nil, fmt.Errorf("insufficient funds for opt-in fee: balance %d, fee %d", sender.Amount, fee)
+	}
+	return []PreparedCheck{{
+		Name:   "asa_opt_in",
+		Status: "ok",
+		Data: map[string]any{
+			"asset_id": assetID,
+			"fee":      fee,
+		},
+	}}, nil
+}
+
+func asaOptOutChecks(sender models.Account, closeTo models.Account, assetID uint64) ([]PreparedCheck, error) {
+	holding, ok := accountAssetHolding(sender, assetID)
+	if !ok {
+		return nil, fmt.Errorf("sender is not opted into asset %d", assetID)
+	}
+	if _, ok := accountAssetHolding(closeTo, assetID); !ok {
+		return nil, fmt.Errorf("close_to is not opted into asset %d", assetID)
+	}
+	return []PreparedCheck{{
+		Name:   "asa_opt_out",
+		Status: "ok",
+		Data: map[string]any{
+			"asset_id": assetID,
+			"balance":  holding.Amount,
+			"close_to": closeTo.Address,
+		},
+	}}, nil
+}
+
+func accountCloseChecks(sender models.Account, fee uint64) ([]PreparedCheck, error) {
+	if strings.EqualFold(sender.Status, "online") {
+		return nil, fmt.Errorf("cannot close an online account")
+	}
+	if len(sender.Assets) > 0 || sender.TotalAssetsOptedIn > 0 {
+		return nil, fmt.Errorf("cannot close account with ASA holdings")
+	}
+	if len(sender.CreatedAssets) > 0 || sender.TotalCreatedAssets > 0 {
+		return nil, fmt.Errorf("cannot close account with created assets")
+	}
+	if len(sender.AppsLocalState) > 0 || sender.TotalAppsOptedIn > 0 {
+		return nil, fmt.Errorf("cannot close account with app opt-ins")
+	}
+	if len(sender.CreatedApps) > 0 || sender.TotalCreatedApps > 0 {
+		return nil, fmt.Errorf("cannot close account with created apps")
+	}
+	if sender.Amount < fee {
+		return nil, fmt.Errorf("insufficient funds for close fee: balance %d, fee %d", sender.Amount, fee)
+	}
+	return []PreparedCheck{{
+		Name:   "account_close",
+		Status: "ok",
+		Data: map[string]any{
+			"balance":     sender.Amount,
+			"min_balance": sender.MinBalance,
+			"fee":         fee,
+		},
+	}}, nil
+}
+
+func rekeyChecks(target models.Account, rekeyTo string) ([]PreparedCheck, error) {
+	if target.AuthAddr != "" && target.AuthAddr != rekeyTo {
+		return nil, fmt.Errorf("rekey target is itself rekeyed to %s", target.AuthAddr)
+	}
+	return []PreparedCheck{{
+		Name:   "rekey",
+		Status: "ok",
+		Data: map[string]any{
+			"rekey_to": rekeyTo,
+		},
+	}}, nil
+}
+
+func validateKeyRegParams(params KeyRegPrepParams) error {
+	if params.Nonparticipation {
+		return nil
+	}
+	if params.VoteKey == "" {
+		return fmt.Errorf("vote_key is required")
+	}
+	if params.SelectionKey == "" {
+		return fmt.Errorf("selection_key is required")
+	}
+	if params.VoteFirst == 0 {
+		return fmt.Errorf("vote_first is required")
+	}
+	if params.VoteLast == 0 {
+		return fmt.Errorf("vote_last is required")
+	}
+	if params.VoteLast < params.VoteFirst {
+		return fmt.Errorf("vote_last must be greater than or equal to vote_first")
+	}
+	if params.VoteKeyDilution == 0 {
+		return fmt.Errorf("vote_key_dilution is required")
+	}
+	return nil
 }
 
 func appCallChecks(params AppCallPrepParams, info *AppCallInfo) []PreparedCheck {
