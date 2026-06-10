@@ -150,6 +150,88 @@ func (c *SignerClient) PrepareAsaTransfer(ctx context.Context, algodClient *algo
 	}, nil
 }
 
+// PreparePaymentGroup builds an ordered group of prepared payment transactions.
+func (c *SignerClient) PreparePaymentGroup(ctx context.Context, algodClient *algod.Client, payments []PaymentPrepParams) (*PreparedGroup, error) {
+	if len(payments) == 0 {
+		return nil, fmt.Errorf("payments must not be empty")
+	}
+	group := PreparedGroup{
+		Transactions: make([]PreparedTransaction, 0, len(payments)),
+		Checks: []PreparedCheck{{
+			Name:   "payment_group",
+			Status: "ok",
+			Data: map[string]any{
+				"count": len(payments),
+			},
+		}},
+	}
+	for i, payment := range payments {
+		prepared, err := c.PreparePayment(ctx, algodClient, payment)
+		if err != nil {
+			return nil, fmt.Errorf("payment %d: %w", i, err)
+		}
+		group.Transactions = append(group.Transactions, *prepared)
+	}
+	check, err := paymentGroupBalanceCheck(group.Transactions)
+	if err != nil {
+		return nil, err
+	}
+	group.Checks = append(group.Checks, check)
+	return &group, nil
+}
+
+// PrepareAsaTransferGroup builds an ordered group of prepared ASA transfers.
+func (c *SignerClient) PrepareAsaTransferGroup(ctx context.Context, algodClient *algod.Client, transfers []AsaTransferPrepParams) (*PreparedGroup, error) {
+	if len(transfers) == 0 {
+		return nil, fmt.Errorf("transfers must not be empty")
+	}
+	group := PreparedGroup{
+		Transactions: make([]PreparedTransaction, 0, len(transfers)),
+		Checks: []PreparedCheck{{
+			Name:   "asa_transfer_group",
+			Status: "ok",
+			Data: map[string]any{
+				"count": len(transfers),
+			},
+		}},
+	}
+	for i, transfer := range transfers {
+		prepared, err := c.PrepareAsaTransfer(ctx, algodClient, transfer)
+		if err != nil {
+			return nil, fmt.Errorf("ASA transfer %d: %w", i, err)
+		}
+		group.Transactions = append(group.Transactions, *prepared)
+	}
+	check, err := asaTransferGroupBalanceCheck(group.Transactions)
+	if err != nil {
+		return nil, err
+	}
+	group.Checks = append(group.Checks, check)
+	return &group, nil
+}
+
+// PreparePaymentAppCallGroup returns the apshell-compatible payment-first
+// group shape for payment plus app-call workflows.
+func (c *SignerClient) PreparePaymentAppCallGroup(payment PreparedTransaction, appCall PreparedTransaction) (*PreparedGroup, error) {
+	if payment.Transaction == nil {
+		return nil, fmt.Errorf("payment transaction is required")
+	}
+	if appCall.Transaction == nil {
+		return nil, fmt.Errorf("app call transaction is required")
+	}
+	return &PreparedGroup{
+		Transactions: []PreparedTransaction{payment, appCall},
+		Checks: []PreparedCheck{{
+			Name:   "payment_app_call_order",
+			Status: "ok",
+			Data: map[string]any{
+				"payment_index":  0,
+				"app_call_index": 1,
+			},
+		}},
+	}, nil
+}
+
 func applyPrepFee(params *types.SuggestedParams, fee uint64, useFlatFee bool) {
 	if fee == 0 {
 		return
@@ -175,6 +257,7 @@ func paymentChecks(sender models.Account, amount uint64, fee uint64) ([]Prepared
 			"fee":         fee,
 			"min_balance": sender.MinBalance,
 			"balance":     sender.Amount,
+			"available":   available,
 		},
 	}}, nil
 }
@@ -196,8 +279,89 @@ func asaTransferChecks(sender models.Account, receiver models.Account, assetID u
 		Data: map[string]any{
 			"asset_id": assetID,
 			"amount":   amount,
+			"balance":  senderHolding.Amount,
 		},
 	}}, nil
+}
+
+func paymentGroupBalanceCheck(items []PreparedTransaction) (PreparedCheck, error) {
+	type totals struct {
+		available uint64
+		required  uint64
+	}
+	bySender := map[string]*totals{}
+	for _, item := range items {
+		if item.Transaction == nil {
+			return PreparedCheck{}, fmt.Errorf("payment group transaction is required")
+		}
+		sender := item.Transaction.Sender.String()
+		total := bySender[sender]
+		if total == nil {
+			total = &totals{}
+			bySender[sender] = total
+		}
+		total.required += uint64(item.Transaction.Amount) + uint64(item.Transaction.Fee)
+		for _, check := range item.Checks {
+			if check.Name != "payment_balance" || check.Data == nil {
+				continue
+			}
+			if available, ok := check.Data["available"].(uint64); ok {
+				total.available = available
+			}
+		}
+	}
+	for sender, total := range bySender {
+		if total.available < total.required {
+			return PreparedCheck{}, fmt.Errorf("payment group insufficient funds for %s: available %d, required %d", sender, total.available, total.required)
+		}
+	}
+	return PreparedCheck{
+		Name:   "payment_group_balance",
+		Status: "ok",
+		Data: map[string]any{
+			"sender_count": len(bySender),
+		},
+	}, nil
+}
+
+func asaTransferGroupBalanceCheck(items []PreparedTransaction) (PreparedCheck, error) {
+	type totals struct {
+		balance uint64
+		amount  uint64
+	}
+	byHolding := map[string]*totals{}
+	for _, item := range items {
+		if item.Transaction == nil {
+			return PreparedCheck{}, fmt.Errorf("ASA transfer group transaction is required")
+		}
+		key := fmt.Sprintf("%s:%d", item.Transaction.Sender.String(), item.Transaction.XferAsset)
+		total := byHolding[key]
+		if total == nil {
+			total = &totals{}
+			byHolding[key] = total
+		}
+		total.amount += item.Transaction.AssetAmount
+		for _, check := range item.Checks {
+			if check.Name != "asa_transfer" || check.Data == nil {
+				continue
+			}
+			if balance, ok := check.Data["balance"].(uint64); ok {
+				total.balance = balance
+			}
+		}
+	}
+	for key, total := range byHolding {
+		if total.balance < total.amount {
+			return PreparedCheck{}, fmt.Errorf("ASA transfer group insufficient asset balance for %s: available %d, required %d", key, total.balance, total.amount)
+		}
+	}
+	return PreparedCheck{
+		Name:   "asa_transfer_group_balance",
+		Status: "ok",
+		Data: map[string]any{
+			"holding_count": len(byHolding),
+		},
+	}, nil
 }
 
 func accountAssetHolding(account models.Account, assetID uint64) (models.AssetHolding, bool) {

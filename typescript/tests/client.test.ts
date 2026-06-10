@@ -503,6 +503,149 @@ describe("SignerClient", () => {
         /receiver is not opted into asset/,
       );
     });
+
+    it("prepares payment groups in caller order", async () => {
+      const sender = testAddress(1);
+      const receiver1 = testAddress(2);
+      const receiver2 = testAddress(3);
+      const algod = mockAlgod({
+        [sender]: { amount: 2_000_000, minBalance: 100_000 },
+      });
+      queueStatusResponse(60, 1);
+      mockFetch.mockResolvedValueOnce(keysResponse(sender));
+      queueStatusResponse(60, 1);
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const group = await client.preparePaymentGroup(algod, [
+        { sender, receiver: receiver1, amount: 10_000 },
+        { sender, receiver: receiver2, amount: 20_000 },
+      ]);
+
+      assert.equal(group.transactions.length, 2);
+      assert.equal((group.transactions[0].transaction as any).payment.receiver.toString(), receiver1);
+      assert.equal((group.transactions[1].transaction as any).payment.receiver.toString(), receiver2);
+      assert.equal(group.checks?.[0].name, "payment_group");
+      assert.equal(group.checks?.[1].name, "payment_group_balance");
+    });
+
+    it("rejects payment groups with aggregate insufficient funds", async () => {
+      const sender = testAddress(1);
+      const receiver1 = testAddress(2);
+      const receiver2 = testAddress(3);
+      const algod = mockAlgod({
+        [sender]: { amount: 121_000, minBalance: 100_000 },
+      });
+      queueStatusResponse(60, 1);
+      mockFetch.mockResolvedValueOnce(keysResponse(sender));
+      queueStatusResponse(60, 1);
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      await assert.rejects(
+        client.preparePaymentGroup(algod, [
+          { sender, receiver: receiver1, amount: 10_000, fee: 1000, useFlatFee: true },
+          { sender, receiver: receiver2, amount: 10_000, fee: 1000, useFlatFee: true },
+        ]),
+        /payment group insufficient funds/,
+      );
+    });
+
+    it("prepares ASA transfer groups in caller order", async () => {
+      const sender = testAddress(1);
+      const receiver = testAddress(2);
+      const algod = mockAlgod({
+        [sender]: {
+          amount: 2_000_000,
+          minBalance: 100_000,
+          assets: [{ assetId: 1001, amount: 25 }],
+        },
+        [receiver]: {
+          amount: 2_000_000,
+          minBalance: 100_000,
+          assets: [{ assetId: 1001, amount: 0 }],
+        },
+      });
+      queueStatusResponse(60, 1);
+      mockFetch.mockResolvedValueOnce(keysResponse(sender));
+      queueStatusResponse(60, 1);
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const group = await client.prepareAsaTransferGroup(algod, [
+        { sender, receiver, assetId: 1001, amount: 5 },
+        { sender, receiver, assetId: 1001, amount: 7 },
+      ]);
+
+      assert.equal(group.transactions.length, 2);
+      assert.equal(String((group.transactions[0].transaction as any).assetTransfer.amount), "5");
+      assert.equal(String((group.transactions[1].transaction as any).assetTransfer.amount), "7");
+      assert.equal(group.checks?.[0].name, "asa_transfer_group");
+      assert.equal(group.checks?.[1].name, "asa_transfer_group_balance");
+    });
+
+    it("rejects ASA transfer groups with aggregate insufficient asset balance", async () => {
+      const sender = testAddress(1);
+      const receiver = testAddress(2);
+      const algod = mockAlgod({
+        [sender]: {
+          amount: 2_000_000,
+          minBalance: 100_000,
+          assets: [{ assetId: 1001, amount: 10 }],
+        },
+        [receiver]: {
+          amount: 2_000_000,
+          minBalance: 100_000,
+          assets: [{ assetId: 1001, amount: 0 }],
+        },
+      });
+      queueStatusResponse(60, 1);
+      mockFetch.mockResolvedValueOnce(keysResponse(sender));
+      queueStatusResponse(60, 1);
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      await assert.rejects(
+        client.prepareAsaTransferGroup(algod, [
+          { sender, receiver, assetId: 1001, amount: 6 },
+          { sender, receiver, assetId: 1001, amount: 6 },
+        ]),
+        /ASA transfer group insufficient asset balance/,
+      );
+    });
+
+    it("builds payment-first payment plus app-call groups", () => {
+      const sender = testAddress(1);
+      const receiver = testAddress(2);
+      const suggestedParams = {
+        fee: 1000n,
+        minFee: 1000n,
+        flatFee: true,
+        firstValid: 1n,
+        lastValid: 100n,
+        genesisHash: new Uint8Array(32),
+        genesisID: "testnet-v1",
+      };
+      const paymentTxn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+        sender,
+        receiver,
+        amount: 1,
+        suggestedParams,
+      });
+      const appTxn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+        sender,
+        receiver: sender,
+        amount: 0,
+        suggestedParams,
+      });
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const group = client.preparePaymentAppCallGroup(
+        { transaction: paymentTxn, authAddress: "PAY_AUTH" },
+        { transaction: appTxn, authAddress: "APP_AUTH", appCallInfo: { mode: "raw" } },
+      );
+
+      assert.equal(group.transactions.length, 2);
+      assert.equal(group.transactions[0].authAddress, "PAY_AUTH");
+      assert.equal(group.transactions[1].appCallInfo?.mode, "raw");
+      assert.equal(group.checks?.[0].name, "payment_app_call_order");
+    });
   });
 
   describe("listKeyTypes", () => {

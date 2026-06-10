@@ -170,3 +170,120 @@ func TestPrepareAsaTransferRejectsReceiverNotOptedIn(t *testing.T) {
 		t.Fatalf("expected receiver opt-in error, got %v", err)
 	}
 }
+
+func TestPreparePaymentGroupPreservesOrder(t *testing.T) {
+	sender := sdkTestAddress(1)
+	receiver1 := sdkTestAddress(2)
+	receiver2 := sdkTestAddress(3)
+	signer, algodClient, cleanup := newPrepTestClients(t, sender, receiver1, 2_000_000, 0, false)
+	defer cleanup()
+
+	group, err := signer.PreparePaymentGroup(context.Background(), algodClient, []PaymentPrepParams{
+		{Sender: sender, Receiver: receiver1, Amount: 10_000},
+		{Sender: sender, Receiver: receiver2, Amount: 20_000},
+	})
+	if err != nil {
+		t.Fatalf("PreparePaymentGroup() error = %v", err)
+	}
+	if len(group.Transactions) != 2 {
+		t.Fatalf("group length = %d, want 2", len(group.Transactions))
+	}
+	if group.Transactions[0].Transaction.Receiver.String() != receiver1 {
+		t.Fatalf("first receiver = %s, want %s", group.Transactions[0].Transaction.Receiver, receiver1)
+	}
+	if group.Transactions[1].Transaction.Receiver.String() != receiver2 {
+		t.Fatalf("second receiver = %s, want %s", group.Transactions[1].Transaction.Receiver, receiver2)
+	}
+	if group.Checks[0].Name != "payment_group" {
+		t.Fatalf("group check = %#v", group.Checks)
+	}
+}
+
+func TestPreparePaymentGroupRejectsAggregateInsufficientFunds(t *testing.T) {
+	sender := sdkTestAddress(1)
+	receiver1 := sdkTestAddress(2)
+	receiver2 := sdkTestAddress(3)
+	signer, algodClient, cleanup := newPrepTestClients(t, sender, receiver1, 121_000, 0, false)
+	defer cleanup()
+
+	_, err := signer.PreparePaymentGroup(context.Background(), algodClient, []PaymentPrepParams{
+		{Sender: sender, Receiver: receiver1, Amount: 10_000, Fee: 1000, UseFlatFee: true},
+		{Sender: sender, Receiver: receiver2, Amount: 10_000, Fee: 1000, UseFlatFee: true},
+	})
+	if err == nil || !strings.Contains(err.Error(), "payment group insufficient funds") {
+		t.Fatalf("expected aggregate insufficient funds error, got %v", err)
+	}
+}
+
+func TestPrepareAsaTransferGroupPreservesOrder(t *testing.T) {
+	sender := sdkTestAddress(1)
+	receiver := sdkTestAddress(2)
+	signer, algodClient, cleanup := newPrepTestClients(t, sender, receiver, 2_000_000, 25, true)
+	defer cleanup()
+
+	group, err := signer.PrepareAsaTransferGroup(context.Background(), algodClient, []AsaTransferPrepParams{
+		{Sender: sender, Receiver: receiver, AssetID: 1001, Amount: 5},
+		{Sender: sender, Receiver: receiver, AssetID: 1001, Amount: 7},
+	})
+	if err != nil {
+		t.Fatalf("PrepareAsaTransferGroup() error = %v", err)
+	}
+	if len(group.Transactions) != 2 {
+		t.Fatalf("group length = %d, want 2", len(group.Transactions))
+	}
+	if group.Transactions[0].Transaction.AssetAmount != 5 {
+		t.Fatalf("first amount = %d, want 5", group.Transactions[0].Transaction.AssetAmount)
+	}
+	if group.Transactions[1].Transaction.AssetAmount != 7 {
+		t.Fatalf("second amount = %d, want 7", group.Transactions[1].Transaction.AssetAmount)
+	}
+	if group.Checks[0].Name != "asa_transfer_group" {
+		t.Fatalf("group check = %#v", group.Checks)
+	}
+}
+
+func TestPrepareAsaTransferGroupRejectsAggregateInsufficientAssetBalance(t *testing.T) {
+	sender := sdkTestAddress(1)
+	receiver := sdkTestAddress(2)
+	signer, algodClient, cleanup := newPrepTestClients(t, sender, receiver, 2_000_000, 10, true)
+	defer cleanup()
+
+	_, err := signer.PrepareAsaTransferGroup(context.Background(), algodClient, []AsaTransferPrepParams{
+		{Sender: sender, Receiver: receiver, AssetID: 1001, Amount: 6},
+		{Sender: sender, Receiver: receiver, AssetID: 1001, Amount: 6},
+	})
+	if err == nil || !strings.Contains(err.Error(), "ASA transfer group insufficient asset balance") {
+		t.Fatalf("expected aggregate asset balance error, got %v", err)
+	}
+}
+
+func TestPreparePaymentAppCallGroup(t *testing.T) {
+	sender := types.Address{}
+	paymentTxn := types.Transaction{Type: types.PaymentTx, Header: types.Header{Sender: sender}}
+	appTxn := types.Transaction{Type: types.ApplicationCallTx, Header: types.Header{Sender: sender}}
+	client := NewSignerClientWithToken("http://example.invalid", "token")
+
+	group, err := client.PreparePaymentAppCallGroup(
+		PreparedTransaction{Transaction: &paymentTxn, AuthAddress: "PAY_AUTH"},
+		PreparedTransaction{
+			Transaction: &appTxn,
+			AuthAddress: "APP_AUTH",
+			AppCallInfo: &AppCallInfo{Mode: "raw"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("PreparePaymentAppCallGroup() error = %v", err)
+	}
+	if len(group.Transactions) != 2 {
+		t.Fatalf("group length = %d, want 2", len(group.Transactions))
+	}
+	if group.Transactions[0].AuthAddress != "PAY_AUTH" {
+		t.Fatalf("first auth = %s, want PAY_AUTH", group.Transactions[0].AuthAddress)
+	}
+	if group.Transactions[1].AppCallInfo == nil || group.Transactions[1].AppCallInfo.Mode != "raw" {
+		t.Fatalf("second app info mismatch: %#v", group.Transactions[1].AppCallInfo)
+	}
+	if group.Checks[0].Name != "payment_app_call_order" {
+		t.Fatalf("group check = %#v", group.Checks)
+	}
+}

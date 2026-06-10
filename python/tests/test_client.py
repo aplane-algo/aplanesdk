@@ -1204,6 +1204,149 @@ class TestPrepHelpers:
                 amount=5,
             )
 
+    def test_prepare_payment_group_preserves_order(self):
+        sender = sdk_test_address(1)
+        receiver1 = sdk_test_address(2)
+        receiver2 = sdk_test_address(3)
+        algod = MockAlgod({
+            sender: {"amount": 2_000_000, "min-balance": 100_000},
+        })
+        client = make_client()
+        with patch.object(client.session, "get", side_effect=[
+            self._status(),
+            self._keys(sender),
+            self._status(),
+        ]):
+            group = client.prepare_payment_group(algod, [
+                {"sender": sender, "receiver": receiver1, "amount": 10_000},
+                {"sender": sender, "receiver": receiver2, "amount": 20_000},
+            ])
+
+        assert len(group.transactions) == 2
+        assert group.transactions[0].transaction.receiver == receiver1
+        assert group.transactions[1].transaction.receiver == receiver2
+        assert group.checks[0].name == "payment_group"
+        assert group.checks[1].name == "payment_group_balance"
+
+    def test_prepare_payment_group_rejects_aggregate_insufficient_funds(self):
+        sender = sdk_test_address(1)
+        receiver1 = sdk_test_address(2)
+        receiver2 = sdk_test_address(3)
+        algod = MockAlgod({
+            sender: {"amount": 121_000, "min-balance": 100_000},
+        })
+        client = make_client()
+        with patch.object(client.session, "get", side_effect=[
+            self._status(),
+            self._keys(sender),
+            self._status(),
+        ]):
+            with pytest.raises(SignerError, match="payment group insufficient funds"):
+                client.prepare_payment_group(algod, [
+                    {
+                        "sender": sender,
+                        "receiver": receiver1,
+                        "amount": 10_000,
+                        "fee": 1000,
+                        "use_flat_fee": True,
+                    },
+                    {
+                        "sender": sender,
+                        "receiver": receiver2,
+                        "amount": 10_000,
+                        "fee": 1000,
+                        "use_flat_fee": True,
+                    },
+                ])
+
+    def test_prepare_asa_transfer_group_preserves_order(self):
+        sender = sdk_test_address(1)
+        receiver = sdk_test_address(2)
+        algod = MockAlgod({
+            sender: {
+                "amount": 2_000_000,
+                "min-balance": 100_000,
+                "assets": [{"asset-id": 1001, "amount": 25}],
+            },
+            receiver: {
+                "amount": 2_000_000,
+                "min-balance": 100_000,
+                "assets": [{"asset-id": 1001, "amount": 0}],
+            },
+        })
+        client = make_client()
+        with patch.object(client.session, "get", side_effect=[
+            self._status(),
+            self._keys(sender),
+            self._status(),
+        ]):
+            group = client.prepare_asa_transfer_group(algod, [
+                {"sender": sender, "receiver": receiver, "asset_id": 1001, "amount": 5},
+                {"sender": sender, "receiver": receiver, "asset_id": 1001, "amount": 7},
+            ])
+
+        assert len(group.transactions) == 2
+        assert group.transactions[0].transaction.amount == 5
+        assert group.transactions[1].transaction.amount == 7
+        assert group.checks[0].name == "asa_transfer_group"
+        assert group.checks[1].name == "asa_transfer_group_balance"
+
+    def test_prepare_asa_transfer_group_rejects_aggregate_insufficient_asset_balance(self):
+        sender = sdk_test_address(1)
+        receiver = sdk_test_address(2)
+        algod = MockAlgod({
+            sender: {
+                "amount": 2_000_000,
+                "min-balance": 100_000,
+                "assets": [{"asset-id": 1001, "amount": 10}],
+            },
+            receiver: {
+                "amount": 2_000_000,
+                "min-balance": 100_000,
+                "assets": [{"asset-id": 1001, "amount": 0}],
+            },
+        })
+        client = make_client()
+        with patch.object(client.session, "get", side_effect=[
+            self._status(),
+            self._keys(sender),
+            self._status(),
+        ]):
+            with pytest.raises(SignerError, match="ASA transfer group insufficient asset balance"):
+                client.prepare_asa_transfer_group(algod, [
+                    {"sender": sender, "receiver": receiver, "asset_id": 1001, "amount": 6},
+                    {"sender": sender, "receiver": receiver, "asset_id": 1001, "amount": 6},
+                ])
+
+    def test_prepare_payment_app_call_group(self):
+        sender = sdk_test_address(1)
+        receiver = sdk_test_address(2)
+        sp = transaction.SuggestedParams(
+            1000,
+            1,
+            100,
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            gen="testnet-v1",
+            flat_fee=True,
+        )
+        payment_txn = transaction.PaymentTxn(sender=sender, sp=sp, receiver=receiver, amt=1)
+        app_txn = transaction.PaymentTxn(sender=sender, sp=sp, receiver=sender, amt=0)
+        client = make_client()
+
+        group = client.prepare_payment_app_call_group(
+            PreparedTransaction(transaction=payment_txn, auth_address="PAY_AUTH"),
+            PreparedTransaction(
+                transaction=app_txn,
+                auth_address="APP_AUTH",
+                app_call_info={"mode": "raw"},
+            ),
+        )
+
+        assert len(group.transactions) == 2
+        assert group.transactions[0].auth_address == "PAY_AUTH"
+        assert group.transactions[1].app_call_info == {"mode": "raw"}
+        assert group.checks[0].name == "payment_app_call_order"
+
 
 class TestFromEnv:
     def test_throws_when_ssh_not_configured(self, tmp_path):

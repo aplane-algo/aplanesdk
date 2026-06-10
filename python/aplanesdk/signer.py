@@ -827,6 +827,58 @@ def _asset_holding_amount(holding: Any) -> int:
     return int(getattr(holding, "amount", 0))
 
 
+def _validate_payment_group(transactions: List[PreparedTransaction]) -> PreparedCheck:
+    totals: Dict[str, Dict[str, int]] = {}
+    for item in transactions:
+        if item.transaction is None:
+            raise ValueError("payment group transaction is required")
+        sender = item.transaction.sender
+        total = totals.setdefault(sender, {"available": 0, "required": 0})
+        amount = int(getattr(item.transaction, "amt", getattr(item.transaction, "amount", 0)))
+        fee = int(getattr(item.transaction, "fee", 0))
+        total["required"] += amount + fee
+        for check in item.checks or []:
+            if check.name == "payment_balance" and check.data:
+                total["available"] = int(check.data.get("available", 0))
+    for sender, total in totals.items():
+        if total["available"] < total["required"]:
+            raise SignerError(
+                f"payment group insufficient funds for {sender}: "
+                f"available {total['available']}, required {total['required']}"
+            )
+    return PreparedCheck(
+        name="payment_group_balance",
+        status="ok",
+        data={"sender_count": len(totals)},
+    )
+
+
+def _validate_asa_transfer_group(transactions: List[PreparedTransaction]) -> PreparedCheck:
+    totals: Dict[str, Dict[str, int]] = {}
+    for item in transactions:
+        if item.transaction is None:
+            raise ValueError("ASA transfer group transaction is required")
+        sender = item.transaction.sender
+        asset_id = int(item.transaction.index)
+        key = f"{sender}:{asset_id}"
+        total = totals.setdefault(key, {"balance": 0, "amount": 0})
+        total["amount"] += int(item.transaction.amount)
+        for check in item.checks or []:
+            if check.name == "asa_transfer" and check.data:
+                total["balance"] = int(check.data.get("balance", 0))
+    for key, total in totals.items():
+        if total["balance"] < total["amount"]:
+            raise SignerError(
+                f"ASA transfer group insufficient asset balance for {key}: "
+                f"available {total['balance']}, required {total['amount']}"
+            )
+    return PreparedCheck(
+        name="asa_transfer_group_balance",
+        status="ok",
+        data={"holding_count": len(totals)},
+    )
+
+
 # -----------------------------------------------------------------------------
 # Signer Client
 # -----------------------------------------------------------------------------
@@ -1624,7 +1676,86 @@ class SignerClient:
                 PreparedCheck(
                     name="asa_transfer",
                     status="ok",
-                    data={"asset_id": asset_id, "amount": amount},
+                    data={
+                        "asset_id": asset_id,
+                        "amount": amount,
+                        "balance": sender_amount,
+                    },
+                )
+            ],
+        )
+
+    def prepare_payment_group(
+        self,
+        algod_client: Any,
+        payments: List[Dict[str, Any]],
+    ) -> PreparedGroup:
+        """Build an ordered group of prepared ALGO payment transactions."""
+        if not payments:
+            raise ValueError("payments must not be empty")
+        prepared = []
+        for index, payment in enumerate(payments):
+            try:
+                prepared.append(self.prepare_payment(algod_client, **payment))
+            except Exception as e:
+                raise SignerError(f"payment {index}: {e}") from e
+        group_checks = [
+            PreparedCheck(
+                name="payment_group",
+                status="ok",
+                data={"count": len(payments)},
+            ),
+            _validate_payment_group(prepared),
+        ]
+        return PreparedGroup(
+            prepared,
+            checks=group_checks,
+        )
+
+    def prepare_asa_transfer_group(
+        self,
+        algod_client: Any,
+        transfers: List[Dict[str, Any]],
+    ) -> PreparedGroup:
+        """Build an ordered group of prepared ASA transfer transactions."""
+        if not transfers:
+            raise ValueError("transfers must not be empty")
+        prepared = []
+        for index, transfer in enumerate(transfers):
+            try:
+                prepared.append(self.prepare_asa_transfer(algod_client, **transfer))
+            except Exception as e:
+                raise SignerError(f"ASA transfer {index}: {e}") from e
+        group_checks = [
+            PreparedCheck(
+                name="asa_transfer_group",
+                status="ok",
+                data={"count": len(transfers)},
+            ),
+            _validate_asa_transfer_group(prepared),
+        ]
+        return PreparedGroup(
+            prepared,
+            checks=group_checks,
+        )
+
+    def prepare_payment_app_call_group(
+        self,
+        payment: PreparedTransaction,
+        app_call: PreparedTransaction,
+    ) -> PreparedGroup:
+        """Return the payment-first group shape for payment plus app-call."""
+        if payment.transaction is None:
+            raise ValueError("payment transaction is required")
+        if app_call.transaction is None:
+            raise ValueError("app call transaction is required")
+        return PreparedGroup(
+            [payment, app_call],
+            checks=[
+                PreparedCheck(
+                    name="payment_app_call_order",
+                    status="ok",
+                    data={"payment_index": 0, "app_call_index": 1},
                 )
             ],
         )

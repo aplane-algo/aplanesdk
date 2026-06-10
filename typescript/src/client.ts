@@ -24,6 +24,8 @@ import type {
   StatusResponse,
   ResolvedAuthAddress,
   PreparedTransaction,
+  PreparedGroup,
+  PreparedCheck,
   KeysResponse,
   KeyTypesResponse,
   KeyTypeInfo,
@@ -784,6 +786,71 @@ function applyPrepFee(params: Record<string, any>, fee?: number, useFlatFee?: bo
   params.flat_fee = Boolean(useFlatFee);
 }
 
+function validatePaymentGroup(transactions: PreparedTransaction[]): PreparedCheck {
+  const totals = new Map<string, { available: bigint; required: bigint }>();
+  for (const item of transactions) {
+    if (!item.transaction) {
+      throw new SignerError("payment group transaction is required");
+    }
+    const txn = item.transaction as any;
+    const sender = txn.sender.toString();
+    const total = totals.get(sender) || { available: 0n, required: 0n };
+    total.required += BigInt(txn.payment?.amount || 0) + BigInt(txn.fee || 0);
+    for (const check of item.checks || []) {
+      if (check.name !== "payment_balance" || !check.data) {
+        continue;
+      }
+      total.available = BigInt((check.data.available as number | bigint | undefined) || 0);
+    }
+    totals.set(sender, total);
+  }
+  for (const [sender, total] of totals) {
+    if (total.available < total.required) {
+      throw new SignerError(
+        `payment group insufficient funds for ${sender}: available ${total.available}, required ${total.required}`,
+      );
+    }
+  }
+  return {
+    name: "payment_group_balance",
+    status: "ok",
+    data: { senderCount: totals.size },
+  };
+}
+
+function validateAsaTransferGroup(transactions: PreparedTransaction[]): PreparedCheck {
+  const totals = new Map<string, { balance: bigint; amount: bigint }>();
+  for (const item of transactions) {
+    if (!item.transaction) {
+      throw new SignerError("ASA transfer group transaction is required");
+    }
+    const txn = item.transaction as any;
+    const assetIndex = BigInt(txn.assetTransfer?.assetIndex || 0);
+    const key = `${txn.sender.toString()}:${assetIndex}`;
+    const total = totals.get(key) || { balance: 0n, amount: 0n };
+    total.amount += BigInt(txn.assetTransfer?.amount || 0);
+    for (const check of item.checks || []) {
+      if (check.name !== "asa_transfer" || !check.data) {
+        continue;
+      }
+      total.balance = BigInt((check.data.balance as number | bigint | undefined) || 0);
+    }
+    totals.set(key, total);
+  }
+  for (const [key, total] of totals) {
+    if (total.balance < total.amount) {
+      throw new SignerError(
+        `ASA transfer group insufficient asset balance for ${key}: available ${total.balance}, required ${total.amount}`,
+      );
+    }
+  }
+  return {
+    name: "asa_transfer_group_balance",
+    status: "ok",
+    data: { holdingCount: totals.size },
+  };
+}
+
 /**
  * Client for apsigner signing service.
  *
@@ -1365,7 +1432,89 @@ export class SignerClient {
         data: {
           assetId: params.assetId,
           amount: params.amount,
+          balance: senderAmount,
         },
+      }],
+    };
+  }
+
+  /**
+   * Build an ordered group of prepared ALGO payment transactions.
+   */
+  async preparePaymentGroup(
+    algodClient: any,
+    payments: PaymentPrepParams[],
+  ): Promise<PreparedGroup> {
+    if (!payments || payments.length === 0) {
+      throw new SignerError("payments must not be empty");
+    }
+    const transactions: PreparedTransaction[] = [];
+    for (let index = 0; index < payments.length; index++) {
+      try {
+        transactions.push(await this.preparePayment(algodClient, payments[index]));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new SignerError(`payment ${index}: ${message}`);
+      }
+    }
+    return {
+      transactions,
+      checks: [{
+        name: "payment_group",
+        status: "ok",
+        data: { count: payments.length },
+      }, validatePaymentGroup(transactions)],
+    };
+  }
+
+  /**
+   * Build an ordered group of prepared ASA transfer transactions.
+   */
+  async prepareAsaTransferGroup(
+    algodClient: any,
+    transfers: AsaTransferPrepParams[],
+  ): Promise<PreparedGroup> {
+    if (!transfers || transfers.length === 0) {
+      throw new SignerError("transfers must not be empty");
+    }
+    const transactions: PreparedTransaction[] = [];
+    for (let index = 0; index < transfers.length; index++) {
+      try {
+        transactions.push(await this.prepareAsaTransfer(algodClient, transfers[index]));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new SignerError(`ASA transfer ${index}: ${message}`);
+      }
+    }
+    return {
+      transactions,
+      checks: [{
+        name: "asa_transfer_group",
+        status: "ok",
+        data: { count: transfers.length },
+      }, validateAsaTransferGroup(transactions)],
+    };
+  }
+
+  /**
+   * Return the payment-first group shape for payment plus app-call workflows.
+   */
+  preparePaymentAppCallGroup(
+    payment: PreparedTransaction,
+    appCall: PreparedTransaction,
+  ): PreparedGroup {
+    if (!payment.transaction) {
+      throw new SignerError("payment transaction is required");
+    }
+    if (!appCall.transaction) {
+      throw new SignerError("app call transaction is required");
+    }
+    return {
+      transactions: [payment, appCall],
+      checks: [{
+        name: "payment_app_call_order",
+        status: "ok",
+        data: { paymentIndex: 0, appCallIndex: 1 },
       }],
     };
   }
