@@ -525,6 +525,38 @@ export interface AsaTransferPrepParams {
 }
 
 /**
+ * Raw application-call transaction intent accepted by prepareAppCall().
+ */
+export interface AppCallPrepParams {
+  sender: string;
+  appId: number | bigint;
+  onComplete?: number;
+  appArgs?: Uint8Array[];
+  accounts?: Array<string>;
+  foreignApps?: Array<number | bigint>;
+  foreignAssets?: Array<number | bigint>;
+  boxes?: Array<{ appIndex: number | bigint; name: Uint8Array }>;
+  approvalProgram?: Uint8Array;
+  clearProgram?: Uint8Array;
+  numLocalInts?: number | bigint;
+  numLocalByteSlices?: number | bigint;
+  numGlobalInts?: number | bigint;
+  numGlobalByteSlices?: number | bigint;
+  extraPages?: number | bigint;
+  note?: Uint8Array;
+  fee?: number;
+  useFlatFee?: boolean;
+}
+
+/**
+ * ABI method-call transaction intent accepted by prepareAbiAppCall().
+ */
+export interface AbiAppCallPrepParams extends Omit<AppCallPrepParams, "appArgs"> {
+  methodSignature: string;
+  args?: unknown[];
+}
+
+/**
  * Account information shape accepted by auth-resolution helpers.
  */
 export type AccountInfoResult =

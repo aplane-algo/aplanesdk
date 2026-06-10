@@ -15,6 +15,8 @@ import type {
   FromEnvOptions,
   PaymentPrepParams,
   AsaTransferPrepParams,
+  AppCallPrepParams,
+  AbiAppCallPrepParams,
   SignOptions,
   LsigArgs,
   LsigArgsMap,
@@ -85,6 +87,8 @@ const MAX_SIGN_REQUEST_ID_LENGTH = 128;
 const MAX_COMPONENT_GROUP_SIZE = 16;
 const COMPONENT_SIGN_ROLE_USER = "user";
 const COMPONENT_SIGN_ROLE_SENTRY = "sentry";
+const APP_CALL_MAX_APP_ARGS = 16;
+const APP_CALL_METHOD_ARGS_TUPLE_THRESHOLD = APP_CALL_MAX_APP_ARGS - 2;
 
 function newSignRequestId(): string {
   return `sdk-${randomBytes(16).toString("hex")}`;
@@ -851,6 +855,203 @@ function validateAsaTransferGroup(transactions: PreparedTransaction[]): Prepared
   };
 }
 
+function appCallChecks(params: AppCallPrepParams, info: { mode?: string; method?: string }): PreparedCheck[] {
+  return [{
+    name: "app_call",
+    status: "ok",
+    data: {
+      appId: params.appId,
+      onCompletion: params.onComplete ?? algosdk.OnApplicationComplete.NoOpOC,
+      args: params.appArgs?.length || 0,
+      accounts: params.accounts?.length || 0,
+      foreignApps: params.foreignApps?.length || 0,
+      foreignAssets: params.foreignAssets?.length || 0,
+      boxes: params.boxes?.length || 0,
+      mode: info.mode,
+      ...(info.method ? { method: info.method } : {}),
+    },
+  }];
+}
+
+function encodeAbiMethodArgs(
+  method: any,
+  args: unknown[],
+  sender: string,
+  appId: number | bigint,
+  accounts?: string[],
+  foreignApps?: Array<number | bigint>,
+  foreignAssets?: Array<number | bigint>,
+): {
+  appArgs: Uint8Array[];
+  accounts: string[];
+  foreignApps: Array<number | bigint>;
+  foreignAssets: Array<number | bigint>;
+} {
+  if (args.length !== method.args.length) {
+    throw new SignerError(`incorrect number of ABI arguments: got ${args.length}, want ${method.args.length}`);
+  }
+
+  const transactionTypes = new Set(["txn", "pay", "keyreg", "acfg", "axfer", "afrz", "appl"]);
+  const referenceTypes = new Set(["account", "application", "asset"]);
+  const basicArgTypes: any[] = [];
+  const basicArgValues: unknown[] = [];
+  const refArgTypes: string[] = [];
+  const refArgValues: unknown[] = [];
+  const refArgIndexToBasicArgIndex = new Map<number, number>();
+
+  for (let index = 0; index < method.args.length; index++) {
+    let argType = method.args[index].type as any;
+    const argValue = args[index];
+    const argTypeName = String(argType);
+    if (transactionTypes.has(argTypeName)) {
+      throw new SignerError("ABI transaction arguments are not supported by prepareAbiAppCall");
+    }
+    if (referenceTypes.has(argTypeName)) {
+      refArgIndexToBasicArgIndex.set(refArgTypes.length, basicArgTypes.length);
+      refArgTypes.push(argTypeName);
+      refArgValues.push(argValue);
+      argType = new (algosdk as any).ABIUintType(8);
+    } else if (typeof argType === "string") {
+      argType = (algosdk as any).ABIType.from(argType);
+    }
+    basicArgTypes.push(argType);
+    basicArgValues.push(argValue);
+  }
+
+  const resolvedAccounts = [...(accounts || [])];
+  const resolvedApps = [...(foreignApps || [])];
+  const resolvedAssets = [...(foreignAssets || [])];
+  const refIndexes = resolveAbiReferenceArgs(
+    sender,
+    appId,
+    refArgTypes,
+    refArgValues,
+    resolvedAccounts,
+    resolvedApps,
+    resolvedAssets,
+  );
+  refIndexes.forEach((resolved, index) => {
+    if (resolved > 255) {
+      throw new SignerError(`ABI reference index ${resolved} exceeds uint8`);
+    }
+    const basicIndex = refArgIndexToBasicArgIndex.get(index);
+    if (basicIndex === undefined) {
+      throw new SignerError(`missing ABI reference index ${index}`);
+    }
+    basicArgValues[basicIndex] = resolved;
+  });
+
+  if (basicArgValues.length > APP_CALL_MAX_APP_ARGS - 1) {
+    const tupleTypes = basicArgTypes.slice(APP_CALL_METHOD_ARGS_TUPLE_THRESHOLD);
+    const tupleValues = basicArgValues.slice(APP_CALL_METHOD_ARGS_TUPLE_THRESHOLD);
+    basicArgTypes.length = APP_CALL_METHOD_ARGS_TUPLE_THRESHOLD;
+    basicArgValues.length = APP_CALL_METHOD_ARGS_TUPLE_THRESHOLD;
+    basicArgTypes.push(new (algosdk as any).ABITupleType(tupleTypes));
+    basicArgValues.push(tupleValues);
+  }
+
+  const appArgs: Uint8Array[] = [method.getSelector()];
+  for (let index = 0; index < basicArgTypes.length; index++) {
+    appArgs.push(basicArgTypes[index].encode(basicArgValues[index] as any));
+  }
+  return {
+    appArgs,
+    accounts: resolvedAccounts,
+    foreignApps: resolvedApps,
+    foreignAssets: resolvedAssets,
+  };
+}
+
+function resolveAbiReferenceArgs(
+  sender: string,
+  appId: number | bigint,
+  argTypes: string[],
+  values: unknown[],
+  accounts: string[],
+  apps: Array<number | bigint>,
+  assets: Array<number | bigint>,
+): number[] {
+  const resolved: number[] = [];
+  for (let index = 0; index < argTypes.length; index++) {
+    switch (argTypes[index]) {
+      case "account": {
+        const address = marshalAbiAddress(values[index]);
+        if (address === sender) {
+          resolved.push(0);
+        } else {
+          const existing = accounts.indexOf(address);
+          if (existing >= 0) {
+            resolved.push(existing + 1);
+          } else {
+            accounts.push(address);
+            resolved.push(accounts.length);
+          }
+        }
+        break;
+      }
+      case "application": {
+        const refAppId = BigInt(values[index] as any);
+        if (refAppId === BigInt(appId)) {
+          resolved.push(0);
+        } else {
+          const existing = indexOfUint64(apps, refAppId);
+          if (existing >= 0) {
+            resolved.push(existing + 1);
+          } else {
+            apps.push(uint64Value(refAppId));
+            resolved.push(apps.length);
+          }
+        }
+        break;
+      }
+      case "asset": {
+        const assetId = BigInt(values[index] as any);
+        const existing = indexOfUint64(assets, assetId);
+        if (existing >= 0) {
+          resolved.push(existing);
+        } else {
+          assets.push(uint64Value(assetId));
+          resolved.push(assets.length - 1);
+        }
+        break;
+      }
+      default:
+        throw new SignerError(`unknown reference type: ${argTypes[index]}`);
+    }
+  }
+  return resolved;
+}
+
+function marshalAbiAddress(value: unknown): string {
+  if (typeof value === "string") {
+    algosdk.decodeAddress(value);
+    return value;
+  }
+  if (value instanceof Uint8Array) {
+    if (value.length !== 32) {
+      throw new SignerError("decoded value is not a 32-byte address");
+    }
+    return algosdk.encodeAddress(value);
+  }
+  if (value && typeof (value as { toString?: unknown }).toString === "function") {
+    const address = (value as { toString: () => string }).toString();
+    algosdk.decodeAddress(address);
+    return address;
+  }
+  throw new SignerError("account reference arguments must be Algorand addresses");
+}
+
+function indexOfUint64(values: Array<number | bigint>, target: bigint): number {
+  return values.findIndex((value) => BigInt(value) === target);
+}
+
+function uint64Value(value: bigint): number | bigint {
+  if (value <= BigInt(Number.MAX_SAFE_INTEGER)) {
+    return Number(value);
+  }
+  return value;
+}
+
 /**
  * Client for apsigner signing service.
  *
@@ -1435,6 +1636,102 @@ export class SignerClient {
           balance: senderAmount,
         },
       }],
+    };
+  }
+
+  /**
+   * Build a prepared raw app-call transaction.
+   */
+  async prepareAppCall(
+    algodClient: any,
+    params: AppCallPrepParams,
+  ): Promise<PreparedTransaction> {
+    return this.prepareAppCallWithInfo(algodClient, params, { mode: "raw" });
+  }
+
+  /**
+   * Build a prepared ABI method-call transaction.
+   */
+  async prepareAbiAppCall(
+    algodClient: any,
+    params: AbiAppCallPrepParams,
+  ): Promise<PreparedTransaction> {
+    if (!params.methodSignature) {
+      throw new SignerError("methodSignature is required");
+    }
+    const method = (algosdk as any).ABIMethod.fromSignature(params.methodSignature);
+    const encoded = encodeAbiMethodArgs(
+      method,
+      params.args || [],
+      params.sender,
+      params.appId,
+      params.accounts,
+      params.foreignApps,
+      params.foreignAssets,
+    );
+    return this.prepareAppCallWithInfo(
+      algodClient,
+      {
+        ...params,
+        appArgs: encoded.appArgs,
+        accounts: encoded.accounts,
+        foreignApps: encoded.foreignApps,
+        foreignAssets: encoded.foreignAssets,
+      },
+      { mode: "abi", method: method.getSignature() },
+    );
+  }
+
+  private async prepareAppCallWithInfo(
+    algodClient: any,
+    params: AppCallPrepParams,
+    appCallInfo: { mode?: string; method?: string },
+  ): Promise<PreparedTransaction> {
+    if (!algodClient) {
+      throw new SignerError("algodClient is required");
+    }
+    if (!params.sender) {
+      throw new SignerError("sender is required");
+    }
+    if (!params.appId || BigInt(params.appId) === 0n) {
+      throw new SignerError("appId is required");
+    }
+    const onComplete = params.onComplete ?? algosdk.OnApplicationComplete.NoOpOC;
+    if (!Number.isInteger(onComplete) || onComplete < 0 || onComplete > algosdk.OnApplicationComplete.DeleteApplicationOC) {
+      throw new SignerError(`invalid onComplete: ${onComplete}`);
+    }
+
+    const suggestedParams = await algodClient.getTransactionParams().do();
+    applyPrepFee(suggestedParams, params.fee, params.useFlatFee);
+
+    const senderInfo = await algodClient.accountInformation(params.sender).do();
+    const txn = algosdk.makeApplicationCallTxnFromObject({
+      sender: params.sender,
+      appIndex: params.appId,
+      onComplete,
+      appArgs: params.appArgs,
+      accounts: params.accounts,
+      foreignApps: params.foreignApps,
+      foreignAssets: params.foreignAssets,
+      boxes: params.boxes,
+      approvalProgram: params.approvalProgram,
+      clearProgram: params.clearProgram,
+      numLocalInts: params.numLocalInts,
+      numLocalByteSlices: params.numLocalByteSlices,
+      numGlobalInts: params.numGlobalInts,
+      numGlobalByteSlices: params.numGlobalByteSlices,
+      extraPages: params.extraPages,
+      note: params.note,
+      suggestedParams,
+    });
+
+    const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
+    return {
+      transaction: txn,
+      authAddress: resolved.authAddress,
+      signerKey: resolved.keyInfo,
+      appCallInfo,
+      checks: appCallChecks(params, appCallInfo),
     };
   }
 

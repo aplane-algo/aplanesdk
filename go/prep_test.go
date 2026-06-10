@@ -4,6 +4,7 @@
 package aplane
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -168,6 +169,118 @@ func TestPrepareAsaTransferRejectsReceiverNotOptedIn(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "receiver is not opted into asset") {
 		t.Fatalf("expected receiver opt-in error, got %v", err)
+	}
+}
+
+func TestPrepareAppCall(t *testing.T) {
+	sender := sdkTestAddress(1)
+	receiver := sdkTestAddress(2)
+	signer, algodClient, cleanup := newPrepTestClients(t, sender, receiver, 2_000_000, 0, false)
+	defer cleanup()
+
+	prepared, err := signer.PrepareAppCall(context.Background(), algodClient, AppCallPrepParams{
+		Sender:        sender,
+		AppID:         7,
+		OnCompletion:  types.NoOpOC,
+		AppArgs:       [][]byte{[]byte("raw")},
+		Accounts:      []string{receiver},
+		ForeignApps:   []uint64{8},
+		ForeignAssets: []uint64{1001},
+		Boxes: []types.AppBoxReference{{
+			AppID: 7,
+			Name:  []byte("box"),
+		}},
+		Fee:        1000,
+		UseFlatFee: true,
+	})
+	if err != nil {
+		t.Fatalf("PrepareAppCall() error = %v", err)
+	}
+	if prepared.Transaction == nil || prepared.Transaction.Type != types.ApplicationCallTx {
+		t.Fatalf("transaction type mismatch: %#v", prepared.Transaction)
+	}
+	if uint64(prepared.Transaction.ApplicationID) != 7 {
+		t.Fatalf("app id = %d, want 7", prepared.Transaction.ApplicationID)
+	}
+	if prepared.AppCallInfo == nil || prepared.AppCallInfo.Mode != "raw" {
+		t.Fatalf("app call info mismatch: %#v", prepared.AppCallInfo)
+	}
+	if len(prepared.Checks) != 1 || prepared.Checks[0].Name != "app_call" {
+		t.Fatalf("checks mismatch: %#v", prepared.Checks)
+	}
+	req, err := prepared.SignRequest()
+	if err != nil {
+		t.Fatalf("SignRequest() error = %v", err)
+	}
+	if req.AppCallInfo == nil || req.AppCallInfo.Mode != "raw" {
+		t.Fatalf("request app call info mismatch: %#v", req.AppCallInfo)
+	}
+}
+
+func TestPrepareABIAppCall(t *testing.T) {
+	sender := sdkTestAddress(1)
+	receiver := sdkTestAddress(2)
+	signer, algodClient, cleanup := newPrepTestClients(t, sender, receiver, 2_000_000, 0, false)
+	defer cleanup()
+
+	prepared, err := signer.PrepareABIAppCall(context.Background(), algodClient, ABIAppCallPrepParams{
+		AppCallPrepParams: AppCallPrepParams{
+			Sender:      sender,
+			AppID:       7,
+			ForeignApps: []uint64{9},
+			ForeignAssets: []uint64{
+				1001,
+			},
+		},
+		MethodSignature: "do(uint64,string,account,application,asset)void",
+		Args: []any{
+			uint64(42),
+			"hi",
+			receiver,
+			uint64(8),
+			uint64(1002),
+		},
+	})
+	if err != nil {
+		t.Fatalf("PrepareABIAppCall() error = %v", err)
+	}
+	txn := prepared.Transaction
+	if txn == nil {
+		t.Fatal("transaction is nil")
+	}
+	if prepared.AppCallInfo == nil || prepared.AppCallInfo.Mode != "abi" || prepared.AppCallInfo.Method != "do(uint64,string,account,application,asset)void" {
+		t.Fatalf("app call info mismatch: %#v", prepared.AppCallInfo)
+	}
+	if len(txn.ApplicationArgs) != 6 {
+		t.Fatalf("app args length = %d, want 6", len(txn.ApplicationArgs))
+	}
+	if len(txn.ApplicationArgs[0]) != 4 {
+		t.Fatalf("selector length = %d, want 4", len(txn.ApplicationArgs[0]))
+	}
+	if len(txn.Accounts) != 1 || txn.Accounts[0].String() != receiver {
+		t.Fatalf("accounts mismatch: %#v", txn.Accounts)
+	}
+	if len(txn.ForeignApps) != 2 || uint64(txn.ForeignApps[0]) != 9 || uint64(txn.ForeignApps[1]) != 8 {
+		t.Fatalf("foreign apps mismatch: %#v", txn.ForeignApps)
+	}
+	if len(txn.ForeignAssets) != 2 || uint64(txn.ForeignAssets[0]) != 1001 || uint64(txn.ForeignAssets[1]) != 1002 {
+		t.Fatalf("foreign assets mismatch: %#v", txn.ForeignAssets)
+	}
+	if !bytes.Equal(txn.ApplicationArgs[3], []byte{1}) {
+		t.Fatalf("account ref arg = %x, want 01", txn.ApplicationArgs[3])
+	}
+	if !bytes.Equal(txn.ApplicationArgs[4], []byte{2}) {
+		t.Fatalf("app ref arg = %x, want 02", txn.ApplicationArgs[4])
+	}
+	if !bytes.Equal(txn.ApplicationArgs[5], []byte{1}) {
+		t.Fatalf("asset ref arg = %x, want 01", txn.ApplicationArgs[5])
+	}
+	req, err := prepared.SignRequest()
+	if err != nil {
+		t.Fatalf("SignRequest() error = %v", err)
+	}
+	if req.AppCallInfo == nil || req.AppCallInfo.Method != "do(uint64,string,account,application,asset)void" {
+		t.Fatalf("request app call info mismatch: %#v", req.AppCallInfo)
 	}
 }
 

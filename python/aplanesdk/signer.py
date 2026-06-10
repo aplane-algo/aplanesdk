@@ -50,7 +50,7 @@ import time
 from dataclasses import asdict, dataclass, is_dataclass
 from typing import Optional, Dict, List, Any, Callable
 
-from algosdk import encoding, transaction
+from algosdk import abi, encoding, transaction
 
 import paramiko
 
@@ -76,6 +76,8 @@ MAX_DISCOVERED_APPROVAL_WAIT = 30 * 60
 APPROVAL_WAIT_REFRESH = 5 * 60
 MAX_SIGN_REQUEST_ID_LENGTH = 128
 MAX_COMPONENT_GROUP_SIZE = 16
+APP_CALL_MAX_APP_ARGS = 16
+APP_CALL_METHOD_ARGS_TUPLE_THRESHOLD = APP_CALL_MAX_APP_ARGS - 2
 
 COMPONENT_SIGN_ROLE_USER = "user"
 COMPONENT_SIGN_ROLE_SENTRY = "sentry"
@@ -877,6 +879,159 @@ def _validate_asa_transfer_group(transactions: List[PreparedTransaction]) -> Pre
         status="ok",
         data={"holding_count": len(totals)},
     )
+
+
+def _app_call_checks(
+    app_id: int,
+    on_complete: Any,
+    app_args: Optional[List[bytes]],
+    accounts: Optional[List[str]],
+    foreign_apps: Optional[List[int]],
+    foreign_assets: Optional[List[int]],
+    boxes: Optional[List[Any]],
+    app_call_info: Dict[str, str],
+) -> List[PreparedCheck]:
+    data: Dict[str, Any] = {
+        "app_id": app_id,
+        "on_completion": int(on_complete),
+        "args": len(app_args or []),
+        "accounts": len(accounts or []),
+        "foreign_apps": len(foreign_apps or []),
+        "foreign_assets": len(foreign_assets or []),
+        "boxes": len(boxes or []),
+        "mode": app_call_info.get("mode"),
+    }
+    if app_call_info.get("method"):
+        data["method"] = app_call_info["method"]
+    return [PreparedCheck(name="app_call", status="ok", data=data)]
+
+
+def _encode_abi_method_args(
+    method: abi.Method,
+    args: List[Any],
+    sender: str,
+    app_id: int,
+    accounts: Optional[List[str]],
+    foreign_apps: Optional[List[int]],
+    foreign_assets: Optional[List[int]],
+) -> tuple[List[bytes], List[str], List[int], List[int]]:
+    if len(args) != len(method.args):
+        raise ValueError(
+            f"incorrect number of ABI arguments: got {len(args)}, want {len(method.args)}"
+        )
+
+    basic_arg_types: List[Any] = []
+    basic_arg_values: List[Any] = []
+    ref_arg_types: List[str] = []
+    ref_arg_values: List[Any] = []
+    ref_arg_index_to_basic_arg_index: Dict[int, int] = {}
+
+    transaction_types = {"txn", "pay", "keyreg", "acfg", "axfer", "afrz", "appl"}
+    reference_types = {"account", "application", "asset"}
+
+    for index, method_arg in enumerate(method.args):
+        arg_type = method_arg.type
+        arg_value = args[index]
+        if isinstance(arg_type, str) and arg_type in transaction_types:
+            raise ValueError("ABI transaction arguments are not supported by prepare_abi_app_call")
+        if isinstance(arg_type, str) and arg_type in reference_types:
+            ref_arg_index_to_basic_arg_index[len(ref_arg_types)] = len(basic_arg_types)
+            ref_arg_types.append(arg_type)
+            ref_arg_values.append(arg_value)
+            abi_type = abi.ABIType.from_string("uint8")
+        elif isinstance(arg_type, str):
+            abi_type = abi.ABIType.from_string(arg_type)
+        else:
+            abi_type = arg_type
+
+        basic_arg_types.append(abi_type)
+        basic_arg_values.append(arg_value)
+
+    resolved_accounts = list(accounts or [])
+    resolved_apps = list(foreign_apps or [])
+    resolved_assets = list(foreign_assets or [])
+    ref_indexes = _resolve_abi_reference_args(
+        sender,
+        app_id,
+        ref_arg_types,
+        ref_arg_values,
+        resolved_accounts,
+        resolved_apps,
+        resolved_assets,
+    )
+    for ref_index, resolved in enumerate(ref_indexes):
+        if resolved > 255:
+            raise ValueError(f"ABI reference index {resolved} exceeds uint8")
+        basic_arg_values[ref_arg_index_to_basic_arg_index[ref_index]] = resolved
+
+    if len(basic_arg_values) > APP_CALL_MAX_APP_ARGS - 1:
+        tuple_types = basic_arg_types[APP_CALL_METHOD_ARGS_TUPLE_THRESHOLD:]
+        tuple_values = basic_arg_values[APP_CALL_METHOD_ARGS_TUPLE_THRESHOLD:]
+        tuple_type = abi.ABIType.from_string(
+            "(" + ",".join(str(arg_type) for arg_type in tuple_types) + ")"
+        )
+        basic_arg_types = basic_arg_types[:APP_CALL_METHOD_ARGS_TUPLE_THRESHOLD]
+        basic_arg_values = basic_arg_values[:APP_CALL_METHOD_ARGS_TUPLE_THRESHOLD]
+        basic_arg_types.append(tuple_type)
+        basic_arg_values.append(tuple_values)
+
+    encoded_args = [method.get_selector()]
+    for arg_type, arg_value in zip(basic_arg_types, basic_arg_values):
+        encoded_args.append(arg_type.encode(arg_value))
+
+    return encoded_args, resolved_accounts, resolved_apps, resolved_assets
+
+
+def _resolve_abi_reference_args(
+    sender: str,
+    app_id: int,
+    arg_types: List[str],
+    values: List[Any],
+    accounts: List[str],
+    apps: List[int],
+    assets: List[int],
+) -> List[int]:
+    resolved: List[int] = []
+    for arg_type, value in zip(arg_types, values):
+        if arg_type == "account":
+            address = _marshal_abi_address(value)
+            if address == sender:
+                resolved.append(0)
+            elif address in accounts:
+                resolved.append(accounts.index(address) + 1)
+            else:
+                accounts.append(address)
+                resolved.append(len(accounts))
+        elif arg_type == "application":
+            ref_app_id = int(value)
+            if ref_app_id == app_id:
+                resolved.append(0)
+            elif ref_app_id in apps:
+                resolved.append(apps.index(ref_app_id) + 1)
+            else:
+                apps.append(ref_app_id)
+                resolved.append(len(apps))
+        elif arg_type == "asset":
+            asset_id = int(value)
+            if asset_id in assets:
+                resolved.append(assets.index(asset_id))
+            else:
+                assets.append(asset_id)
+                resolved.append(len(assets) - 1)
+        else:
+            raise ValueError(f"unknown reference type: {arg_type}")
+    return resolved
+
+
+def _marshal_abi_address(value: Any) -> str:
+    if isinstance(value, str):
+        encoding.decode_address(value)
+        return value
+    if isinstance(value, bytes):
+        if len(value) != 32:
+            raise ValueError("decoded value is not a 32-byte address")
+        return encoding.encode_address(value)
+    raise ValueError("account reference arguments must be Algorand addresses")
 
 
 # -----------------------------------------------------------------------------
@@ -1683,6 +1838,170 @@ class SignerClient:
                     },
                 )
             ],
+        )
+
+    def prepare_app_call(
+        self,
+        algod_client: Any,
+        *,
+        sender: str,
+        app_id: int,
+        on_complete: Any = transaction.OnComplete.NoOpOC,
+        app_args: Optional[List[bytes]] = None,
+        accounts: Optional[List[str]] = None,
+        foreign_apps: Optional[List[int]] = None,
+        foreign_assets: Optional[List[int]] = None,
+        boxes: Optional[List[Any]] = None,
+        approval_program: Optional[bytes] = None,
+        clear_program: Optional[bytes] = None,
+        local_schema: Optional[transaction.StateSchema] = None,
+        global_schema: Optional[transaction.StateSchema] = None,
+        note: Optional[bytes] = None,
+        fee: Optional[int] = None,
+        use_flat_fee: bool = False,
+    ) -> PreparedTransaction:
+        """Build a prepared raw app-call transaction."""
+        return self._prepare_app_call(
+            algod_client,
+            sender=sender,
+            app_id=app_id,
+            on_complete=on_complete,
+            app_args=app_args,
+            accounts=accounts,
+            foreign_apps=foreign_apps,
+            foreign_assets=foreign_assets,
+            boxes=boxes,
+            approval_program=approval_program,
+            clear_program=clear_program,
+            local_schema=local_schema,
+            global_schema=global_schema,
+            note=note,
+            fee=fee,
+            use_flat_fee=use_flat_fee,
+            app_call_info={"mode": "raw"},
+        )
+
+    def prepare_abi_app_call(
+        self,
+        algod_client: Any,
+        *,
+        sender: str,
+        app_id: int,
+        method_signature: str,
+        args: Optional[List[Any]] = None,
+        on_complete: Any = transaction.OnComplete.NoOpOC,
+        accounts: Optional[List[str]] = None,
+        foreign_apps: Optional[List[int]] = None,
+        foreign_assets: Optional[List[int]] = None,
+        boxes: Optional[List[Any]] = None,
+        approval_program: Optional[bytes] = None,
+        clear_program: Optional[bytes] = None,
+        local_schema: Optional[transaction.StateSchema] = None,
+        global_schema: Optional[transaction.StateSchema] = None,
+        note: Optional[bytes] = None,
+        fee: Optional[int] = None,
+        use_flat_fee: bool = False,
+    ) -> PreparedTransaction:
+        """Build a prepared ABI method-call transaction."""
+        if not method_signature:
+            raise ValueError("method_signature is required")
+        method = abi.Method.from_signature(method_signature)
+        app_args, resolved_accounts, resolved_apps, resolved_assets = _encode_abi_method_args(
+            method,
+            list(args or []),
+            sender,
+            app_id,
+            accounts,
+            foreign_apps,
+            foreign_assets,
+        )
+        return self._prepare_app_call(
+            algod_client,
+            sender=sender,
+            app_id=app_id,
+            on_complete=on_complete,
+            app_args=app_args,
+            accounts=resolved_accounts,
+            foreign_apps=resolved_apps,
+            foreign_assets=resolved_assets,
+            boxes=boxes,
+            approval_program=approval_program,
+            clear_program=clear_program,
+            local_schema=local_schema,
+            global_schema=global_schema,
+            note=note,
+            fee=fee,
+            use_flat_fee=use_flat_fee,
+            app_call_info={"mode": "abi", "method": method.get_signature()},
+        )
+
+    def _prepare_app_call(
+        self,
+        algod_client: Any,
+        *,
+        sender: str,
+        app_id: int,
+        on_complete: Any,
+        app_args: Optional[List[bytes]],
+        accounts: Optional[List[str]],
+        foreign_apps: Optional[List[int]],
+        foreign_assets: Optional[List[int]],
+        boxes: Optional[List[Any]],
+        approval_program: Optional[bytes],
+        clear_program: Optional[bytes],
+        local_schema: Optional[transaction.StateSchema],
+        global_schema: Optional[transaction.StateSchema],
+        note: Optional[bytes],
+        fee: Optional[int],
+        use_flat_fee: bool,
+        app_call_info: Dict[str, str],
+    ) -> PreparedTransaction:
+        if algod_client is None:
+            raise ValueError("algod_client is required")
+        if not sender:
+            raise ValueError("sender is required")
+        if not app_id:
+            raise ValueError("app_id is required")
+        if int(on_complete) < 0 or int(on_complete) > int(transaction.OnComplete.DeleteApplicationOC):
+            raise ValueError(f"invalid on_complete: {on_complete}")
+
+        params = algod_client.suggested_params()
+        _apply_prep_fee(params, fee, use_flat_fee)
+
+        sender_info = algod_client.account_info(sender)
+        txn = transaction.ApplicationCallTxn(
+            sender=sender,
+            sp=params,
+            index=app_id,
+            on_complete=on_complete,
+            app_args=app_args,
+            accounts=accounts,
+            foreign_apps=foreign_apps,
+            foreign_assets=foreign_assets,
+            note=note,
+            boxes=boxes,
+            approval_program=approval_program,
+            clear_program=clear_program,
+            local_schema=local_schema,
+            global_schema=global_schema,
+        )
+
+        resolved = self.resolve_auth_address(sender, lambda _: sender_info)
+        return PreparedTransaction(
+            transaction=txn,
+            auth_address=resolved.auth_address,
+            signer_key=resolved.key_info,
+            app_call_info=app_call_info,
+            checks=_app_call_checks(
+                app_id,
+                on_complete,
+                app_args,
+                accounts,
+                foreign_apps,
+                foreign_assets,
+                boxes,
+                app_call_info,
+            ),
         )
 
     def prepare_payment_group(

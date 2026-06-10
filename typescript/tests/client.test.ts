@@ -504,6 +504,74 @@ describe("SignerClient", () => {
       );
     });
 
+    it("prepares raw app calls with app call info", async () => {
+      const sender = testAddress(1);
+      const receiver = testAddress(2);
+      const algod = mockAlgod({
+        [sender]: { amount: 2_000_000, minBalance: 100_000 },
+      });
+      queueStatusResponse(60, 1);
+      mockFetch.mockResolvedValueOnce(keysResponse(sender));
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const prepared = await client.prepareAppCall(algod, {
+        sender,
+        appId: 7,
+        onComplete: algosdk.OnApplicationComplete.NoOpOC,
+        appArgs: [new Uint8Array([1, 2, 3])],
+        accounts: [receiver],
+        foreignApps: [8],
+        foreignAssets: [1001],
+        fee: 1000,
+        useFlatFee: true,
+      });
+
+      const appCall = (prepared.transaction as any).applicationCall;
+      assert.equal(prepared.authAddress, sender);
+      assert.equal(String(appCall.appIndex), "7");
+      assert.deepEqual(Array.from(appCall.appArgs[0]), [1, 2, 3]);
+      assert.equal(appCall.accounts[0].toString(), receiver);
+      assert.equal(prepared.appCallInfo?.mode, "raw");
+      assert.equal(prepared.checks?.[0].name, "app_call");
+      assert.equal(preparedGroupToSignRequests({ transactions: [prepared] })[0].app_call_info?.mode, "raw");
+    });
+
+    it("prepares ABI app calls with selector and reference args", async () => {
+      const sender = testAddress(1);
+      const receiver = testAddress(2);
+      const algod = mockAlgod({
+        [sender]: { amount: 2_000_000, minBalance: 100_000 },
+      });
+      queueStatusResponse(60, 1);
+      mockFetch.mockResolvedValueOnce(keysResponse(sender));
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const prepared = await client.prepareAbiAppCall(algod, {
+        sender,
+        appId: 7,
+        methodSignature: "do(uint64,string,account,application,asset)void",
+        args: [42, "hi", receiver, 8, 1002],
+        foreignApps: [9],
+        foreignAssets: [1001],
+      });
+
+      const appCall = (prepared.transaction as any).applicationCall;
+      assert.equal(prepared.appCallInfo?.mode, "abi");
+      assert.equal(prepared.appCallInfo?.method, "do(uint64,string,account,application,asset)void");
+      assert.equal(appCall.appArgs.length, 6);
+      assert.equal(appCall.appArgs[0].length, 4);
+      assert.equal(appCall.accounts[0].toString(), receiver);
+      assert.deepEqual(appCall.foreignApps.map(String), ["9", "8"]);
+      assert.deepEqual(appCall.foreignAssets.map(String), ["1001", "1002"]);
+      assert.deepEqual(Array.from(appCall.appArgs[3]), [1]);
+      assert.deepEqual(Array.from(appCall.appArgs[4]), [2]);
+      assert.deepEqual(Array.from(appCall.appArgs[5]), [1]);
+      assert.equal(
+        preparedGroupToSignRequests({ transactions: [prepared] })[0].app_call_info?.method,
+        "do(uint64,string,account,application,asset)void",
+      );
+    });
+
     it("prepares payment groups in caller order", async () => {
       const sender = testAddress(1);
       const receiver1 = testAddress(2);
@@ -628,10 +696,10 @@ describe("SignerClient", () => {
         amount: 1,
         suggestedParams,
       });
-      const appTxn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+      const appTxn = algosdk.makeApplicationCallTxnFromObject({
         sender,
-        receiver: sender,
-        amount: 0,
+        appIndex: 7,
+        onComplete: algosdk.OnApplicationComplete.NoOpOC,
         suggestedParams,
       });
 

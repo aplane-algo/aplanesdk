@@ -1204,6 +1204,77 @@ class TestPrepHelpers:
                 amount=5,
             )
 
+    def test_prepare_app_call(self):
+        sender = sdk_test_address(1)
+        receiver = sdk_test_address(2)
+        algod = MockAlgod({
+            sender: {"amount": 2_000_000, "min-balance": 100_000},
+        })
+        client = make_client()
+        with patch.object(client.session, "get", side_effect=[
+            self._status(),
+            self._keys(sender),
+        ]):
+            prepared = client.prepare_app_call(
+                algod,
+                sender=sender,
+                app_id=7,
+                on_complete=transaction.OnComplete.NoOpOC,
+                app_args=[b"raw"],
+                accounts=[receiver],
+                foreign_apps=[8],
+                foreign_assets=[1001],
+                fee=1000,
+                use_flat_fee=True,
+            )
+
+        assert prepared.auth_address == sender
+        assert prepared.transaction.index == 7
+        assert prepared.transaction.app_args == [b"raw"]
+        assert prepared.transaction.accounts == [receiver]
+        assert prepared.app_call_info == {"mode": "raw"}
+        assert prepared.checks[0].name == "app_call"
+        assert prepared.to_sign_request()["app_call_info"] == {"mode": "raw"}
+
+    def test_prepare_abi_app_call(self):
+        sender = sdk_test_address(1)
+        receiver = sdk_test_address(2)
+        algod = MockAlgod({
+            sender: {"amount": 2_000_000, "min-balance": 100_000},
+        })
+        client = make_client()
+        with patch.object(client.session, "get", side_effect=[
+            self._status(),
+            self._keys(sender),
+        ]):
+            prepared = client.prepare_abi_app_call(
+                algod,
+                sender=sender,
+                app_id=7,
+                method_signature="do(uint64,string,account,application,asset)void",
+                args=[42, "hi", receiver, 8, 1002],
+                foreign_apps=[9],
+                foreign_assets=[1001],
+            )
+
+        txn = prepared.transaction
+        assert prepared.app_call_info == {
+            "mode": "abi",
+            "method": "do(uint64,string,account,application,asset)void",
+        }
+        assert len(txn.app_args) == 6
+        assert len(txn.app_args[0]) == 4
+        assert txn.accounts == [receiver]
+        assert txn.foreign_apps == [9, 8]
+        assert txn.foreign_assets == [1001, 1002]
+        assert txn.app_args[3] == b"\x01"
+        assert txn.app_args[4] == b"\x02"
+        assert txn.app_args[5] == b"\x01"
+        assert prepared.to_sign_request()["app_call_info"] == {
+            "mode": "abi",
+            "method": "do(uint64,string,account,application,asset)void",
+        }
+
     def test_prepare_payment_group_preserves_order(self):
         sender = sdk_test_address(1)
         receiver1 = sdk_test_address(2)
@@ -1330,7 +1401,12 @@ class TestPrepHelpers:
             flat_fee=True,
         )
         payment_txn = transaction.PaymentTxn(sender=sender, sp=sp, receiver=receiver, amt=1)
-        app_txn = transaction.PaymentTxn(sender=sender, sp=sp, receiver=sender, amt=0)
+        app_txn = transaction.ApplicationCallTxn(
+            sender=sender,
+            sp=sp,
+            index=7,
+            on_complete=transaction.OnComplete.NoOpOC,
+        )
         client = make_client()
 
         group = client.prepare_payment_app_call_group(
