@@ -1142,7 +1142,6 @@ func (c *SignerClient) SignGroupWithContext(ctx context.Context, groupReq GroupS
 	reqCtx, cancel := c.requestContext(ctx, c.signRequestTimeout())
 	defer cancel()
 
-	var completed atomic.Bool
 	var cancelOnce sync.Once
 	sendCancel := func() {
 		cancelOnce.Do(func() {
@@ -1151,29 +1150,40 @@ func (c *SignerClient) SignGroupWithContext(ctx context.Context, groupReq GroupS
 			_, _ = c.CancelSignRequestWithContext(cancelCtx, groupReq.RequestID)
 		})
 	}
+	// done is closed the moment the request returns so a deadline landing in
+	// the same instant as a successful response cannot fire a spurious cancel
+	// for a request the server already processed.
+	done := make(chan struct{})
 	go func() {
-		<-reqCtx.Done()
-		if !completed.Load() {
+		select {
+		case <-done:
+			return
+		case <-reqCtx.Done():
+		}
+		select {
+		case <-done:
+			// Request finished in the same instant; nothing to cancel.
+		default:
 			sendCancel()
 		}
 	}()
 
 	req, err := http.NewRequestWithContext(reqCtx, "POST", c.baseURL+"/sign", bytes.NewBuffer(jsonBody))
 	if err != nil {
+		close(done)
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "aplane "+c.token)
 
 	resp, err := c.client.Do(req)
+	close(done)
 	if err != nil {
 		if reqCtx.Err() != nil {
 			sendCancel()
 		}
-		completed.Store(true)
 		return nil, fmt.Errorf("failed to make request to Signer: %w", err)
 	}
-	completed.Store(true)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -1189,7 +1199,39 @@ func (c *SignerClient) SignGroupWithContext(ctx context.Context, groupReq GroupS
 		return nil, fmt.Errorf("group signing failed: %s", groupResp.Error)
 	}
 
+	if err := validateGroupSignResponse(groupReq.Requests, groupResp.Signed); err != nil {
+		return nil, err
+	}
+
 	return &groupResp, nil
+}
+
+// validateGroupSignResponse rejects truncated or partially empty /sign
+// responses so a malformed signer reply can never submit an incomplete
+// group. The server may append signed dummy transactions after the request
+// slots, and foreign-mode slots are returned empty by design.
+func validateGroupSignResponse(requests []SignRequest, signed []string) error {
+	if len(signed) < len(requests) {
+		return fmt.Errorf("signer returned %d signed transaction(s), want at least %d", len(signed), len(requests))
+	}
+	for i, req := range requests {
+		mode, err := req.Mode()
+		if err != nil {
+			continue
+		}
+		if mode == RequestModeForeign {
+			continue
+		}
+		if signed[i] == "" {
+			return fmt.Errorf("signer returned no signature for position %d", i+1)
+		}
+	}
+	for i := len(requests); i < len(signed); i++ {
+		if signed[i] == "" {
+			return fmt.Errorf("signer returned empty dummy transaction at position %d", i+1)
+		}
+	}
+	return nil
 }
 
 // CancelSignRequest asks apsigner to cancel a pending manual approval request.

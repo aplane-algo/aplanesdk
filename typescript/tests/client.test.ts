@@ -1536,6 +1536,58 @@ describe("SignerClient", () => {
       toByte: () => new Uint8Array([1, 2, 3, 4]),
     });
 
+    it("rejects truncated /sign responses", async () => {
+      queueStatusResponse();
+      mockFetch.mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: async () => ({ signed: ["aa"] }),
+      });
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      await assert.rejects(
+        client.signRequests([
+          { auth_address: "AUTH1", txn_bytes_hex: "5458aa" },
+          { auth_address: "AUTH2", txn_bytes_hex: "5458bb" },
+        ]),
+        /want at least 2/
+      );
+    });
+
+    it("rejects empty signed slot for sign-mode request", async () => {
+      queueStatusResponse();
+      mockFetch.mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: async () => ({ signed: ["aa", ""] }),
+      });
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      await assert.rejects(
+        client.signRequests([
+          { auth_address: "AUTH1", txn_bytes_hex: "5458aa" },
+          { auth_address: "AUTH2", txn_bytes_hex: "5458bb" },
+        ]),
+        /no signature for position 2/
+      );
+    });
+
+    it("tolerates empty foreign slot and trailing dummies", async () => {
+      queueStatusResponse();
+      mockFetch.mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: async () => ({ signed: ["aa", "", "dd"] }),
+      });
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const data = await client.signRequests([
+        { auth_address: "AUTH1", txn_bytes_hex: "5458aa" },
+        { txn_bytes_hex: "5458bb" },
+      ]);
+      assert.deepEqual(data.signed, ["aa", "", "dd"]);
+    });
+
     it("throws AuthenticationError on 401", async () => {
       queueStatusResponse();
       mockFetch.mockResolvedValueOnce({

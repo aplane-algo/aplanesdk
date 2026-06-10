@@ -655,6 +655,39 @@ def encode_transaction(txn: transaction.Transaction) -> tuple:
     return txn_bytes.hex(), txn.sender
 
 
+def _validate_group_sign_response(
+    sign_entries: List[Dict[str, Any]], signed: List[str]
+) -> None:
+    """Reject truncated or partially empty /sign responses.
+
+    A malformed signer reply must never submit an incomplete group. The
+    server may append signed dummy transactions after the request slots, and
+    foreign-mode slots are returned empty by design.
+    """
+    if len(signed) < len(sign_entries):
+        raise SignerError(
+            f"Server returned {len(signed)} signed transaction(s), "
+            f"want at least {len(sign_entries)}"
+        )
+    for index, entry in enumerate(sign_entries):
+        foreign = (
+            bool(entry.get("txn_bytes_hex"))
+            and not entry.get("auth_address")
+            and not entry.get("signed_txn_hex")
+        )
+        if foreign:
+            continue
+        if not signed[index]:
+            raise SignerError(
+                f"Server returned no signature for position {index + 1}"
+            )
+    for index in range(len(sign_entries), len(signed)):
+        if not signed[index]:
+            raise SignerError(
+                f"Server returned empty dummy transaction at position {index + 1}"
+            )
+
+
 def _new_sign_request_id() -> str:
     return f"sdk-{secrets.token_hex(16)}"
 
@@ -3321,8 +3354,11 @@ class SignerClient:
         if data.get("error"):
             raise SignerError(data["error"])
 
+        signed = data.get("signed", [])
+        _validate_group_sign_response(sign_entries, signed)
+
         return GroupSignResponse(
-            signed=data.get("signed", []),
+            signed=signed,
             mutations=data.get("mutations"),
             error=data.get("error", ""),
         )

@@ -441,6 +441,26 @@ class TestGenerateKey:
             with pytest.raises(AuthenticationError):
                 client.generate_key("ed25519")
 
+    def test_truncated_sign_response_rejected(self):
+        client = make_client()
+        resp = mock_response(200, {"signed": ["aa"]})
+        with patch.object(client.session, "post", return_value=resp):
+            with pytest.raises(SignerError, match="want at least 2"):
+                client.sign_requests([
+                    {"auth_address": "AUTH1", "txn_bytes_hex": "5458aa"},
+                    {"auth_address": "AUTH2", "txn_bytes_hex": "5458bb"},
+                ])
+
+    def test_foreign_slot_and_trailing_dummies_tolerated(self):
+        client = make_client()
+        resp = mock_response(200, {"signed": ["aa", "", "dd"]})
+        with patch.object(client.session, "post", return_value=resp):
+            result = client.sign_requests([
+                {"auth_address": "AUTH1", "txn_bytes_hex": "5458aa"},
+                {"txn_bytes_hex": "5458bb"},
+            ])
+        assert result.signed == ["aa", "", "dd"]
+
     def test_locked_error(self):
         client = make_client()
         with patch.object(client.session, "post", return_value=mock_response(403)):
@@ -1872,7 +1892,7 @@ class TestSignReturnFormat:
         resp = mock_response(200, {"signed": [b"signed-txn-1".hex(), ""]})
         with patch.object(client.session, "post", return_value=resp), \
              patch("aplanesdk.signer.encode_transaction", return_value=("deadbeef", "SENDER_ADDR")):
-            with pytest.raises(SignerError, match="empty signed transaction slot"):
+            with pytest.raises(SignerError, match="no signature for position 2"):
                 client.sign_transactions(
                     [self._make_mock_txn(), self._make_mock_txn()]
                 )
@@ -1882,7 +1902,7 @@ class TestSignReturnFormat:
         resp = mock_response(200, {"signed": [b"signed-txn-1".hex(), ""]})
         with patch.object(client.session, "post", return_value=resp), \
              patch("aplanesdk.signer.encode_transaction", return_value=("deadbeef", "SENDER_ADDR")):
-            with pytest.raises(SignerError, match="empty signed transaction slot"):
+            with pytest.raises(SignerError, match="no signature for position 2"):
                 client.sign_transactions_list(
                     [self._make_mock_txn(), self._make_mock_txn()]
                 )

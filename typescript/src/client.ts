@@ -1477,6 +1477,35 @@ function uint64Value(value: bigint): number | bigint {
  * await client.close();
  * ```
  */
+/**
+ * Reject truncated or partially empty /sign responses so a malformed signer
+ * reply can never submit an incomplete group. The server may append signed
+ * dummy transactions after the request slots, and foreign-mode slots are
+ * returned empty by design.
+ */
+function validateGroupSignResponse(requests: SignRequest[], signed: string[]): void {
+  if (signed.length < requests.length) {
+    throw new SignerError(
+      `Server returned ${signed.length} signed transaction(s), want at least ${requests.length}`
+    );
+  }
+  requests.forEach((request, index) => {
+    const foreign =
+      !!request.txn_bytes_hex && !request.auth_address && !request.signed_txn_hex;
+    if (foreign) {
+      return;
+    }
+    if (!signed[index]) {
+      throw new SignerError(`Server returned no signature for position ${index + 1}`);
+    }
+  });
+  for (let i = requests.length; i < signed.length; i++) {
+    if (!signed[i]) {
+      throw new SignerError(`Server returned empty dummy transaction at position ${i + 1}`);
+    }
+  }
+}
+
 export class SignerClient {
   private baseUrl: string;
   private token: string;
@@ -3223,6 +3252,8 @@ export class SignerClient {
     if (data.error) {
       throw new SignerError(data.error);
     }
+
+    validateGroupSignResponse(requests, data.signed ?? []);
 
     return data;
   }
