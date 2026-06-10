@@ -29,6 +29,8 @@
 
 // Main client
 export { SignerClient, signGuardedGroup, signPreparedGuardedGroup } from "./client.js";
+export { ErrorCodes } from "./types.js";
+export type { ErrorCode } from "./types.js";
 export type {
   GuardedSignTarget,
   GuardedPrimarySignTarget,

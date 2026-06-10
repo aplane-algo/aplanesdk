@@ -56,6 +56,7 @@ import type {
   AdminSyncSentryReferencesResponse,
   ErrorResponse,
 } from "./types.js";
+import { ErrorCodes } from "./types.js";
 import {
   SignerError,
   AuthenticationError,
@@ -1702,9 +1703,7 @@ export class SignerClient {
       throw new SignerUnavailableError(await this.errorMessage(response, "Signer unavailable"));
     }
     if (response.status !== 200) {
-      throw new SignerError(
-        await this.errorMessage(response, `Failed to get signer status: HTTP ${response.status}`)
-      );
+      throw await this.signerHTTPError(response, `Failed to get signer status: HTTP ${response.status}`);
     }
 
     const data = (await response.json()) as Record<string, unknown>;
@@ -1793,9 +1792,7 @@ export class SignerClient {
     }
 
     if (response.status !== 200) {
-      throw new SignerError(
-        await this.errorMessage(response, `Failed to list keys: HTTP ${response.status}`)
-      );
+      throw await this.signerHTTPError(response, `Failed to list keys: HTTP ${response.status}`);
     }
 
     const data = (await response.json()) as KeysResponse;
@@ -2567,9 +2564,7 @@ export class SignerClient {
       throw new AuthenticationError();
     }
     if (response.status !== 200) {
-      throw new SignerError(
-        await this.errorMessage(response, `Failed to list key types: HTTP ${response.status}`)
-      );
+      throw await this.signerHTTPError(response, `Failed to list key types: HTTP ${response.status}`);
     }
 
     const data = (await response.json()) as KeyTypesResponse;
@@ -2664,15 +2659,13 @@ export class SignerClient {
       throw new AuthenticationError();
     }
     if (response.status === 403) {
-      throw new SignerUnavailableError("Signer is locked");
+      throw await this.forbiddenLockedError(response);
     }
     if (response.status === 400) {
-      throw new SignerError(await this.errorMessage(response, "Bad request"));
+      throw await this.signerHTTPError(response, "Bad request");
     }
     if (response.status !== 200) {
-      throw new SignerError(
-        await this.errorMessage(response, `Key generation failed: HTTP ${response.status}`)
-      );
+      throw await this.signerHTTPError(response, `Key generation failed: HTTP ${response.status}`);
     }
 
     const data = (await response.json()) as Record<string, unknown>;
@@ -2709,15 +2702,13 @@ export class SignerClient {
       throw new AuthenticationError();
     }
     if (response.status === 403) {
-      throw new SignerUnavailableError("Signer is locked");
+      throw await this.forbiddenLockedError(response);
     }
     if (response.status === 404) {
       throw new KeyDeletionError(await this.errorMessage(response, `Key not found: ${address}`));
     }
     if (response.status !== 200) {
-      throw new SignerError(
-        await this.errorMessage(response, `Key deletion failed: HTTP ${response.status}`)
-      );
+      throw await this.signerHTTPError(response, `Key deletion failed: HTTP ${response.status}`);
     }
 
     const data = await this.safeJson(response);
@@ -2748,9 +2739,7 @@ export class SignerClient {
       throw new AuthenticationError();
     }
     if (response.status !== 200) {
-      throw new SignerError(
-        await this.errorMessage(response, `Sign cancel failed: HTTP ${response.status}`)
-      );
+      throw await this.signerHTTPError(response, `Sign cancel failed: HTTP ${response.status}`);
     }
 
     const data = (await response.json()) as CancelSignResponse;
@@ -2794,8 +2783,7 @@ export class SignerClient {
     }
 
     if (response.status === 403) {
-      const error = await this.errorMessage(response, "Component signing request rejected");
-      throw new SigningRejectedError(error);
+      throw await this.forbiddenRejectedError(response, "Component signing request rejected");
     }
 
     if (response.status === 503) {
@@ -2803,9 +2791,7 @@ export class SignerClient {
     }
 
     if (response.status !== 200) {
-      throw new SignerError(
-        await this.errorMessage(response, `Component signing failed: HTTP ${response.status}`)
-      );
+      throw await this.signerHTTPError(response, `Component signing failed: HTTP ${response.status}`);
     }
 
     let data: ComponentSignResponse & { error?: string };
@@ -2861,8 +2847,7 @@ export class SignerClient {
     }
 
     if (response.status === 403) {
-      const error = await this.errorMessage(response, "Guarded assembly request rejected");
-      throw new SigningRejectedError(error);
+      throw await this.forbiddenRejectedError(response, "Guarded assembly request rejected");
     }
 
     if (response.status === 503) {
@@ -2870,9 +2855,7 @@ export class SignerClient {
     }
 
     if (response.status !== 200) {
-      throw new SignerError(
-        await this.errorMessage(response, `Guarded assembly failed: HTTP ${response.status}`)
-      );
+      throw await this.signerHTTPError(response, `Guarded assembly failed: HTTP ${response.status}`);
     }
 
     let data: GuardedAssemblyResponse & { error?: string };
@@ -2914,12 +2897,10 @@ export class SignerClient {
       throw new AuthenticationError();
     }
     if (response.status === 403) {
-      throw new SignerUnavailableError("Signer is locked");
+      throw await this.forbiddenLockedError(response);
     }
     if (response.status !== 200) {
-      throw new SignerError(
-        await this.errorMessage(response, `Sentry reference sync failed: HTTP ${response.status}`)
-      );
+      throw await this.signerHTTPError(response, `Sentry reference sync failed: HTTP ${response.status}`);
     }
 
     let data: AdminSyncSentryReferencesResponse;
@@ -2993,10 +2974,10 @@ export class SignerClient {
       throw new SignerError(`Bad request: ${error}`);
     }
     if (response.status === 403) {
-      throw new SignerError(await this.errorMessage(response, "Forbidden"));
+      throw await this.signerHTTPError(response, "Forbidden");
     }
     if (response.status !== 200) {
-      throw new SignerError(await this.errorMessage(response, `Plan failed: HTTP ${response.status}`));
+      throw await this.signerHTTPError(response, `Plan failed: HTTP ${response.status}`);
     }
 
     let data: PlanGroupResponse;
@@ -3220,8 +3201,7 @@ export class SignerClient {
     }
 
     if (response.status === 403) {
-      const error = await this.errorMessage(response, "Signing request rejected by operator");
-      throw new SigningRejectedError(error);
+      throw await this.forbiddenRejectedError(response, "Signing request rejected by operator");
     }
 
     if (response.status === 503) {
@@ -3230,7 +3210,7 @@ export class SignerClient {
     }
 
     if (response.status !== 200) {
-      throw new SignerError(await this.errorMessage(response, `Signing failed: HTTP ${response.status}`));
+      throw await this.signerHTTPError(response, `Signing failed: HTTP ${response.status}`);
     }
 
     let data: GroupSignResponse;
@@ -3290,7 +3270,7 @@ export class SignerClient {
     }
 
     if (response.status === 403) {
-      throw new SignerError(await this.errorMessage(response, "Forbidden"));
+      throw await this.signerHTTPError(response, "Forbidden");
     }
 
     if (response.status === 503) {
@@ -3299,7 +3279,7 @@ export class SignerClient {
     }
 
     if (response.status !== 200) {
-      throw new SignerError(await this.errorMessage(response, `Simulation failed: HTTP ${response.status}`));
+      throw await this.signerHTTPError(response, `Simulation failed: HTTP ${response.status}`);
     }
 
     let data: GroupSimulateResponse;
@@ -3474,12 +3454,27 @@ export class SignerClient {
    * Parse a non-2xx signer error response.
    */
   private async errorMessage(response: Response, fallback: string): Promise<string> {
+    const { message } = await this.errorParts(response, fallback);
+    return message;
+  }
+
+  /**
+   * Parse a non-2xx signer error response into its stable machine-readable
+   * code (empty on pre-code signers) and human-readable message.
+   */
+  private async errorParts(
+    response: Response,
+    fallback: string
+  ): Promise<{ code: string; message: string }> {
     try {
       const jsonResponse =
         typeof response.clone === "function" ? response.clone() : response;
       const data = (await jsonResponse.json()) as Partial<ErrorResponse>;
       if (typeof data.error === "string" && data.error.trim() !== "") {
-        return data.error;
+        return {
+          code: typeof data.code === "string" ? data.code : "",
+          message: data.error,
+        };
       }
     } catch {
       // Fall through to text/fallback handling.
@@ -3490,13 +3485,52 @@ export class SignerClient {
         typeof response.clone === "function" ? response.clone() : response;
       const text = (await textResponse.text()).trim();
       if (text !== "") {
-        return text;
+        return { code: "", message: text };
       }
     } catch {
       // Fall through to fallback.
     }
 
-    return fallback;
+    return { code: "", message: fallback };
+  }
+
+  /**
+   * Build a SignerError for a non-2xx response, carrying the stable wire
+   * error code when the signer provided one.
+   */
+  private async signerHTTPError(response: Response, fallback: string): Promise<SignerError> {
+    const { code, message } = await this.errorParts(response, fallback);
+    return new SignerError(message, code);
+  }
+
+  /**
+   * Classify a 403 at endpoints that historically reported the signer as
+   * locked. The wire code distinguishes a genuinely locked signer from other
+   * forbidden conditions; pre-code signers send no code and keep the legacy
+   * locked mapping.
+   */
+  private async forbiddenLockedError(response: Response): Promise<SignerError> {
+    const { code, message } = await this.errorParts(response, "Signer is locked");
+    if (code === "" || code === ErrorCodes.Locked) {
+      return new SignerUnavailableError("Signer is locked", code);
+    }
+    return new SignerError(message, code);
+  }
+
+  /**
+   * Classify a 403 at endpoints that historically reported the request as
+   * rejected. A locked code maps to the locked error; forbidden (or no code,
+   * for pre-code signers) keeps the rejection error.
+   */
+  private async forbiddenRejectedError(response: Response, fallback: string): Promise<SignerError> {
+    const { code, message } = await this.errorParts(response, fallback);
+    if (code === ErrorCodes.Locked) {
+      return new SignerUnavailableError("Signer is locked", code);
+    }
+    if (code === "" || code === ErrorCodes.Forbidden) {
+      return new SigningRejectedError(message, code);
+    }
+    return new SignerError(message, code);
   }
 
   /**

@@ -3,7 +3,10 @@
 
 package aplane
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 // Signing errors
 var (
@@ -49,6 +52,45 @@ var (
 	// ErrTokenNotFound indicates aplane.token was not found.
 	ErrTokenNotFound = errors.New("aplane.token not found")
 )
+
+// Stable machine-readable error codes carried in ErrorResponse.Code.
+// These mirror the signer wire contract (pkg/signerapi/error_codes.go in the
+// aplane repo). An empty code means the signer predates code support.
+const (
+	ErrCodeBadRequest        = "bad_request"
+	ErrCodeUnauthorized      = "unauthorized"
+	ErrCodeForbidden         = "forbidden"
+	ErrCodeLocked            = "locked"
+	ErrCodeNotFound          = "not_found"
+	ErrCodeInvalidPassphrase = "invalid_passphrase"
+	ErrCodeUnavailable       = "unavailable"
+	ErrCodeCacheRefresh      = "cache_refresh"
+	ErrCodeInternal          = "internal"
+)
+
+// APIError preserves the HTTP status, stable wire error code, and message of
+// a non-2xx signer response for callers that need to classify failures
+// without matching message text. Code is empty when the signer predates wire
+// error codes.
+type APIError struct {
+	StatusCode int
+	Code       string
+	Message    string
+	// Op optionally names the failed operation for message formatting
+	// (e.g. "plan failed"); empty means the generic "signer error" prefix.
+	Op string
+}
+
+func (e *APIError) Error() string {
+	if e == nil {
+		return "signer error"
+	}
+	op := e.Op
+	if op == "" {
+		op = "signer error"
+	}
+	return fmt.Sprintf("%s (%d): %s", op, e.StatusCode, e.Message)
+}
 
 // TransactionError wraps a transaction rejection with details.
 type TransactionError struct {

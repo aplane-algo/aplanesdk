@@ -1045,6 +1045,39 @@ describe("SignerClient", () => {
       const client = new SignerClient("http://localhost:11270", "test-token");
       await assert.rejects(client.generateKey("ed25519"), SignerUnavailableError);
     });
+
+    it("treats 403 with locked code as locked", async () => {
+      mockFetch.mockResolvedValueOnce({
+        status: 403,
+        ok: false,
+        json: async () => ({ error: "signer is locked", code: "locked" }),
+      });
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      await assert.rejects(client.generateKey("ed25519"), (err: unknown) => {
+        assert.ok(err instanceof SignerUnavailableError);
+        assert.equal(err.code, "locked");
+        return true;
+      });
+    });
+
+    it("does not treat 403 with forbidden code as locked", async () => {
+      mockFetch.mockResolvedValueOnce({
+        status: 403,
+        ok: false,
+        json: async () => ({
+          error: "key generation not allowed for node role",
+          code: "forbidden",
+        }),
+      });
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      await assert.rejects(client.generateKey("ed25519"), (err: unknown) => {
+        assert.ok(err instanceof SignerError);
+        assert.ok(!(err instanceof SignerUnavailableError));
+        assert.equal(err.code, "forbidden");
+        assert.equal(err.message, "key generation not allowed for node role");
+        return true;
+      });
+    });
   });
 
   describe("deleteKey", () => {
@@ -1516,12 +1549,28 @@ describe("SignerClient", () => {
       await assert.rejects(client.signTransaction(mockTxn), AuthenticationError);
     });
 
+    it("throws locked error when sign 403 carries locked code", async () => {
+      queueStatusResponse();
+      mockFetch.mockResolvedValueOnce({
+        status: 403,
+        ok: false,
+        json: async () => ({ error: "signer is locked", code: "locked" }),
+      });
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const lockedTxn = createMockTxn() as Parameters<typeof client.signTransaction>[0];
+      await assert.rejects(
+        client.signTransaction(lockedTxn, "A".repeat(58)),
+        SignerUnavailableError
+      );
+    });
+
     it("throws SigningRejectedError on 403", async () => {
       queueStatusResponse();
       mockFetch.mockResolvedValueOnce({
         status: 403,
         ok: false,
-        json: async () => ({ error: "Operator rejected" }),
+        json: async () => ({ error: "Operator rejected", code: "forbidden" }),
       });
 
       const client = new SignerClient("http://localhost:11270", "test-token");

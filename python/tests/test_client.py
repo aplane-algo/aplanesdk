@@ -447,6 +447,27 @@ class TestGenerateKey:
             with pytest.raises(SignerUnavailableError):
                 client.generate_key("ed25519")
 
+    def test_locked_code_is_locked(self):
+        client = make_client()
+        resp = mock_response(403, {"error": "signer is locked", "code": "locked"})
+        with patch.object(client.session, "post", return_value=resp):
+            with pytest.raises(SignerUnavailableError) as excinfo:
+                client.generate_key("ed25519")
+        assert excinfo.value.code == "locked"
+
+    def test_forbidden_code_is_not_locked(self):
+        client = make_client()
+        resp = mock_response(
+            403,
+            {"error": "key generation not allowed for node role", "code": "forbidden"},
+        )
+        with patch.object(client.session, "post", return_value=resp):
+            with pytest.raises(SignerError) as excinfo:
+                client.generate_key("ed25519")
+        assert not isinstance(excinfo.value, SignerUnavailableError)
+        assert excinfo.value.code == "forbidden"
+        assert "node role" in str(excinfo.value)
+
     def test_missing_required_fields(self):
         client = make_client()
         resp = mock_response(200, {"key_type": "ed25519"})

@@ -123,9 +123,32 @@ def _require_current_product_identity(identity: str) -> None:
 # Exceptions
 # -----------------------------------------------------------------------------
 
+# Stable machine-readable error codes carried in ErrorResponse.code.
+# These mirror the signer wire contract (pkg/signerapi/error_codes.go in the
+# aplane repo). An empty code means the signer predates code support.
+ERR_CODE_BAD_REQUEST = "bad_request"
+ERR_CODE_UNAUTHORIZED = "unauthorized"
+ERR_CODE_FORBIDDEN = "forbidden"
+ERR_CODE_LOCKED = "locked"
+ERR_CODE_NOT_FOUND = "not_found"
+ERR_CODE_INVALID_PASSPHRASE = "invalid_passphrase"
+ERR_CODE_UNAVAILABLE = "unavailable"
+ERR_CODE_CACHE_REFRESH = "cache_refresh"
+ERR_CODE_INTERNAL = "internal"
+
+
 class SignerError(Exception):
-    """Base exception for signer errors"""
-    pass
+    """Base exception for signer errors.
+
+    ``code`` carries the stable machine-readable wire error code from the
+    signer when one was provided (see ERR_CODE_* constants); branch on it
+    instead of matching message text. Empty when the signer predates wire
+    error codes or the error was raised client-side.
+    """
+
+    def __init__(self, *args, code: str = ""):
+        super().__init__(*args)
+        self.code = code
 
 
 class AuthenticationError(SignerError):
@@ -544,8 +567,14 @@ class ResolvedAuthAddress:
 
 @dataclass
 class ErrorResponse:
-    """Standard signer HTTP error body for non-2xx responses"""
+    """Standard signer HTTP error body for non-2xx responses.
+
+    ``code`` carries a stable machine-readable classification (see the
+    ERR_CODE_* constants); branch on ``code``, never on ``error`` message
+    text. Empty when the signer predates wire error codes.
+    """
     error: str
+    code: str = ""
 
 
 @dataclass
@@ -1666,12 +1695,10 @@ class SignerClient:
             raise SignerUnavailableError(self._error_message(resp, "Signer unavailable"))
 
         if resp.status_code != 200:
-            raise SignerError(
-                self._error_message(
-                    resp,
-                    f"Failed to get signer status: HTTP {resp.status_code}",
+            raise self._signer_http_error(
+                resp,
+                f"Failed to get signer status: HTTP {resp.status_code}",
                 )
-            )
 
         data = resp.json()
         identity = StatusResponse(
@@ -1755,9 +1782,7 @@ class SignerClient:
             raise AuthenticationError("Invalid or missing token")
 
         if resp.status_code != 200:
-            raise SignerError(
-                self._error_message(resp, f"Failed to list keys: HTTP {resp.status_code}")
-            )
+            raise self._signer_http_error(resp, f"Failed to list keys: HTTP {resp.status_code}")
 
         data = resp.json()
         self._key_cache.clear()
@@ -2605,12 +2630,10 @@ class SignerClient:
             raise AuthenticationError("Invalid or missing token")
 
         if resp.status_code != 200:
-            raise SignerError(
-                self._error_message(
-                    resp,
-                    f"Failed to list key types: HTTP {resp.status_code}",
+            raise self._signer_http_error(
+                resp,
+                f"Failed to list key types: HTTP {resp.status_code}",
                 )
-            )
 
         data = resp.json()
         result = []
@@ -2708,15 +2731,13 @@ class SignerClient:
             raise AuthenticationError("Invalid or missing token")
 
         if resp.status_code == 403:
-            raise SignerUnavailableError("Signer is locked")
+            raise self._forbidden_locked_error(resp)
 
         if resp.status_code == 400:
-            raise SignerError(self._error_message(resp, "Bad request"))
+            raise self._signer_http_error(resp, "Bad request")
 
         if resp.status_code != 200:
-            raise SignerError(
-                self._error_message(resp, f"Key generation failed: HTTP {resp.status_code}")
-            )
+            raise self._signer_http_error(resp, f"Key generation failed: HTTP {resp.status_code}")
 
         data = resp.json()
         if data.get("error"):
@@ -2760,15 +2781,13 @@ class SignerClient:
             raise AuthenticationError("Invalid or missing token")
 
         if resp.status_code == 403:
-            raise SignerUnavailableError("Signer is locked")
+            raise self._forbidden_locked_error(resp)
 
         if resp.status_code == 404:
             raise KeyDeletionError(self._error_message(resp, f"Key not found: {address}"))
 
         if resp.status_code != 200:
-            raise SignerError(
-                self._error_message(resp, f"Key deletion failed: HTTP {resp.status_code}")
-            )
+            raise self._signer_http_error(resp, f"Key deletion failed: HTTP {resp.status_code}")
 
         data = self._safe_json(resp)
         if data.get("error"):
@@ -2798,14 +2817,54 @@ class SignerClient:
 
     def _error_message(self, resp: requests.Response, fallback: str) -> str:
         """Return signer error text from top-level JSON error, text, or fallback."""
+        _, message = self._error_parts(resp, fallback)
+        return message
+
+    def _error_parts(self, resp: requests.Response, fallback: str) -> tuple[str, str]:
+        """Return (code, message) for a non-2xx signer response.
+
+        ``code`` is the stable machine-readable wire error code, empty when
+        the signer predates code support.
+        """
         data = self._safe_json(resp)
         error = data.get("error")
         if isinstance(error, str) and error.strip():
-            return error
+            code = data.get("code")
+            return (code if isinstance(code, str) else "", error)
         text = (resp.text or "").strip()
         if text:
-            return text
-        return fallback
+            return ("", text)
+        return ("", fallback)
+
+    def _signer_http_error(self, resp: requests.Response, fallback: str) -> SignerError:
+        """Build a SignerError carrying the stable wire error code."""
+        code, message = self._error_parts(resp, fallback)
+        return SignerError(message, code=code)
+
+    def _forbidden_locked_error(self, resp: requests.Response) -> SignerError:
+        """Classify a 403 at endpoints that historically reported locked.
+
+        The wire code distinguishes a genuinely locked signer from other
+        forbidden conditions; pre-code signers send no code and keep the
+        legacy locked mapping.
+        """
+        code, message = self._error_parts(resp, "Signer is locked")
+        if code in ("", ERR_CODE_LOCKED):
+            return SignerUnavailableError("Signer is locked", code=code)
+        return SignerError(message, code=code)
+
+    def _forbidden_rejected_error(self, resp: requests.Response, fallback: str) -> SignerError:
+        """Classify a 403 at endpoints that historically reported rejection.
+
+        A locked code maps to the locked error; forbidden (or no code, for
+        pre-code signers) keeps the rejection error.
+        """
+        code, message = self._error_parts(resp, fallback)
+        if code == ERR_CODE_LOCKED:
+            return SignerUnavailableError("Signer is locked", code=code)
+        if code in ("", ERR_CODE_FORBIDDEN):
+            return SigningRejectedError(message, code=code)
+        return SignerError(message, code=code)
 
     def cancel_sign_request(self, request_id: str) -> CancelSignResponse:
         """
@@ -2828,9 +2887,7 @@ class SignerClient:
             raise AuthenticationError("Invalid or missing token")
 
         if resp.status_code != 200:
-            raise SignerError(
-                self._error_message(resp, f"Sign cancel failed: HTTP {resp.status_code}")
-            )
+            raise self._signer_http_error(resp, f"Sign cancel failed: HTTP {resp.status_code}")
 
         data = self._safe_json(resp)
         result = CancelSignResponse(
@@ -2875,19 +2932,16 @@ class SignerClient:
             raise AuthenticationError("Invalid or missing token")
 
         if resp.status_code == 403:
-            error = self._error_message(resp, "Component signing request rejected")
-            raise SigningRejectedError(error)
+            raise self._forbidden_rejected_error(resp, "Component signing request rejected")
 
         if resp.status_code == 503:
             raise SignerUnavailableError(self._error_message(resp, "Signer unavailable"))
 
         if resp.status_code != 200:
-            raise SignerError(
-                self._error_message(
-                    resp,
-                    f"Component signing failed: HTTP {resp.status_code}",
+            raise self._signer_http_error(
+                resp,
+                f"Component signing failed: HTTP {resp.status_code}",
                 )
-            )
 
         data = self._safe_json(resp)
         if data.get("error"):
@@ -2940,19 +2994,16 @@ class SignerClient:
             raise AuthenticationError("Invalid or missing token")
 
         if resp.status_code == 403:
-            error = self._error_message(resp, "Guarded assembly request rejected")
-            raise SigningRejectedError(error)
+            raise self._forbidden_rejected_error(resp, "Guarded assembly request rejected")
 
         if resp.status_code == 503:
             raise SignerUnavailableError(self._error_message(resp, "Signer unavailable"))
 
         if resp.status_code != 200:
-            raise SignerError(
-                self._error_message(
-                    resp,
-                    f"Guarded assembly failed: HTTP {resp.status_code}",
+            raise self._signer_http_error(
+                resp,
+                f"Guarded assembly failed: HTTP {resp.status_code}",
                 )
-            )
 
         data = self._safe_json(resp)
         if data.get("error"):
@@ -2989,15 +3040,13 @@ class SignerClient:
             raise AuthenticationError("Invalid or missing token")
 
         if resp.status_code == 403:
-            raise SignerUnavailableError("Signer is locked")
+            raise self._forbidden_locked_error(resp)
 
         if resp.status_code != 200:
-            raise SignerError(
-                self._error_message(
-                    resp,
-                    f"Sentry reference sync failed: HTTP {resp.status_code}",
+            raise self._signer_http_error(
+                resp,
+                f"Sentry reference sync failed: HTTP {resp.status_code}",
                 )
-            )
 
         data = self._safe_json(resp)
         if data.get("error"):
@@ -3254,17 +3303,14 @@ class SignerClient:
             raise SignerError(f"Bad request: {error}")
 
         if resp.status_code == 403:
-            error = self._error_message(resp, "Signing request rejected by operator")
-            raise SigningRejectedError(error)
+            raise self._forbidden_rejected_error(resp, "Signing request rejected by operator")
 
         if resp.status_code == 503:
             error = self._error_message(resp, "Signer unavailable")
             raise SignerUnavailableError(error)
 
         if resp.status_code != 200:
-            raise SignerError(
-                self._error_message(resp, f"Signing failed: HTTP {resp.status_code}")
-            )
+            raise self._signer_http_error(resp, f"Signing failed: HTTP {resp.status_code}")
 
         # Parse successful response
         try:
@@ -3354,10 +3400,10 @@ class SignerClient:
             raise SignerError(f"Bad request: {error}")
 
         if resp.status_code == 403:
-            raise SignerError(self._error_message(resp, "Forbidden"))
+            raise self._signer_http_error(resp, "Forbidden")
 
         if resp.status_code != 200:
-            raise SignerError(self._error_message(resp, f"Plan failed: HTTP {resp.status_code}"))
+            raise self._signer_http_error(resp, f"Plan failed: HTTP {resp.status_code}")
 
         try:
             data = resp.json()
@@ -3411,16 +3457,14 @@ class SignerClient:
             raise SignerError(f"Bad request: {error}")
 
         if resp.status_code == 403:
-            raise SignerError(self._error_message(resp, "Forbidden"))
+            raise self._signer_http_error(resp, "Forbidden")
 
         if resp.status_code == 503:
             error = self._error_message(resp, "Signer unavailable")
             raise SignerUnavailableError(error)
 
         if resp.status_code != 200:
-            raise SignerError(
-                self._error_message(resp, f"Simulation failed: HTTP {resp.status_code}")
-            )
+            raise self._signer_http_error(resp, f"Simulation failed: HTTP {resp.status_code}")
 
         try:
             data = resp.json()

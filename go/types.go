@@ -430,8 +430,12 @@ type GroupSignResponse struct {
 }
 
 // ErrorResponse is the standard signer HTTP error body for non-2xx responses.
+// Code carries a stable machine-readable classification (see error code
+// constants in errors.go); branch on Code, never on Error message text. Code
+// is empty when the signer predates wire error codes.
 type ErrorResponse struct {
 	Error string `json:"error"`
+	Code  string `json:"code,omitempty"`
 }
 
 // PlanGroupResponse is the response from the /plan endpoint.

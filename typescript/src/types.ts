@@ -736,10 +736,34 @@ export interface GroupSimulateResponse {
 
 /**
  * Standard signer HTTP error body for non-2xx responses.
+ *
+ * `code` carries a stable machine-readable classification (see ErrorCodes);
+ * branch on `code`, never on `error` message text. `code` is absent when the
+ * signer predates wire error codes.
  */
 export interface ErrorResponse {
   error: string;
+  code?: string;
 }
+
+/**
+ * Stable machine-readable signer error codes carried in ErrorResponse.code.
+ * These mirror the signer wire contract (pkg/signerapi/error_codes.go in the
+ * aplane repo).
+ */
+export const ErrorCodes = {
+  BadRequest: "bad_request",
+  Unauthorized: "unauthorized",
+  Forbidden: "forbidden",
+  Locked: "locked",
+  NotFound: "not_found",
+  InvalidPassphrase: "invalid_passphrase",
+  Unavailable: "unavailable",
+  CacheRefresh: "cache_refresh",
+  Internal: "internal",
+} as const;
+
+export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];
 
 /**
  * Response from the /keys endpoint.

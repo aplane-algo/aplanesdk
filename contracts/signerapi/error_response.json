@@ -1,3 +1,4 @@
 {
-  "error": "signer locked"
+  "error": "signer locked",
+  "code": "locked"
 }

@@ -39,6 +39,15 @@ from .signer import (
     load_config,
 
     # Exceptions
+    ERR_CODE_BAD_REQUEST,
+    ERR_CODE_UNAUTHORIZED,
+    ERR_CODE_FORBIDDEN,
+    ERR_CODE_LOCKED,
+    ERR_CODE_NOT_FOUND,
+    ERR_CODE_INVALID_PASSPHRASE,
+    ERR_CODE_UNAVAILABLE,
+    ERR_CODE_CACHE_REFRESH,
+    ERR_CODE_INTERNAL,
     SignerError,
     AuthenticationError,
     SigningRejectedError,
@@ -111,6 +120,15 @@ __all__ = [
     "load_config",
 
     # Exceptions
+    "ERR_CODE_BAD_REQUEST",
+    "ERR_CODE_UNAUTHORIZED",
+    "ERR_CODE_FORBIDDEN",
+    "ERR_CODE_LOCKED",
+    "ERR_CODE_NOT_FOUND",
+    "ERR_CODE_INVALID_PASSPHRASE",
+    "ERR_CODE_UNAVAILABLE",
+    "ERR_CODE_CACHE_REFRESH",
+    "ERR_CODE_INTERNAL",
     "SignerError",
     "AuthenticationError",
     "SigningRejectedError",

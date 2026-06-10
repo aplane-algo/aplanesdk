@@ -3,11 +3,19 @@
 
 /**
  * Base exception for signer errors.
+ *
+ * `code` carries the stable machine-readable wire error code from the signer
+ * when one was provided (see ErrorCodes in types.ts); branch on it instead of
+ * matching message text. Empty when the signer predates wire error codes or
+ * the error was raised client-side.
  */
 export class SignerError extends Error {
-  constructor(message: string) {
+  code: string;
+
+  constructor(message: string, code: string = "") {
     super(message);
     this.name = "SignerError";
+    this.code = code;
   }
 }
 
@@ -15,8 +23,8 @@ export class SignerError extends Error {
  * Token invalid or missing (HTTP 401).
  */
 export class AuthenticationError extends SignerError {
-  constructor(message: string = "Invalid or missing token") {
-    super(message);
+  constructor(message: string = "Invalid or missing token", code: string = "") {
+    super(message, code);
     this.name = "AuthenticationError";
   }
 }
@@ -25,8 +33,8 @@ export class AuthenticationError extends SignerError {
  * Operator rejected the signing request (HTTP 403).
  */
 export class SigningRejectedError extends SignerError {
-  constructor(message: string = "Signing request rejected by operator") {
-    super(message);
+  constructor(message: string = "Signing request rejected by operator", code: string = "") {
+    super(message, code);
     this.name = "SigningRejectedError";
   }
 }
@@ -35,8 +43,8 @@ export class SigningRejectedError extends SignerError {
  * Signer not reachable or locked (HTTP 503, timeout, network error).
  */
 export class SignerUnavailableError extends SignerError {
-  constructor(message: string = "Signer not reachable or locked") {
-    super(message);
+  constructor(message: string = "Signer not reachable or locked", code: string = "") {
+    super(message, code);
     this.name = "SignerUnavailableError";
   }
 }
@@ -45,8 +53,8 @@ export class SignerUnavailableError extends SignerError {
  * Requested auth_address not found in signer.
  */
 export class KeyNotFoundError extends SignerError {
-  constructor(message: string = "Key not found in signer") {
-    super(message);
+  constructor(message: string = "Key not found in signer", code: string = "") {
+    super(message, code);
     this.name = "KeyNotFoundError";
   }
 }
@@ -55,8 +63,8 @@ export class KeyNotFoundError extends SignerError {
  * Key deletion failed (not found or other error).
  */
 export class KeyDeletionError extends SignerError {
-  constructor(message: string = "Key deletion failed") {
-    super(message);
+  constructor(message: string = "Key deletion failed", code: string = "") {
+    super(message, code);
     this.name = "KeyDeletionError";
   }
 }
@@ -65,8 +73,8 @@ export class KeyDeletionError extends SignerError {
  * Token provisioning failed (rejected or no operator).
  */
 export class TokenProvisioningError extends SignerError {
-  constructor(message: string = "Token provisioning failed") {
-    super(message);
+  constructor(message: string = "Token provisioning failed", code: string = "") {
+    super(message, code);
     this.name = "TokenProvisioningError";
   }
 }

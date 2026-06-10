@@ -84,20 +84,69 @@ func (c *SignerClient) SetHTTPClient(client *http.Client) {
 }
 
 func readErrorBody(resp *http.Response) string {
+	_, message := readErrorParts(resp)
+	return message
+}
+
+// readErrorParts reads a non-2xx body and returns the stable wire error code
+// (empty on pre-code signers) and the human-readable message.
+func readErrorParts(resp *http.Response) (code, message string) {
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Sprintf("<failed to read error body: %v>", err)
+		return "", fmt.Sprintf("<failed to read error body: %v>", err)
 	}
 	body := strings.TrimSpace(string(bodyBytes))
 	if body == "" {
-		return http.StatusText(resp.StatusCode)
+		return "", http.StatusText(resp.StatusCode)
 	}
 
 	var errorResp ErrorResponse
 	if err := json.Unmarshal(bodyBytes, &errorResp); err == nil && errorResp.Error != "" {
-		return errorResp.Error
+		return errorResp.Code, errorResp.Error
 	}
-	return body
+	return "", body
+}
+
+// signerHTTPError reads a non-2xx response into a typed *APIError carrying
+// status, wire code, and message.
+func signerHTTPError(resp *http.Response) *APIError {
+	return signerHTTPErrorOp(resp, "")
+}
+
+// signerHTTPErrorOp is signerHTTPError with an operation-specific message
+// prefix (e.g. "plan failed").
+func signerHTTPErrorOp(resp *http.Response, op string) *APIError {
+	code, message := readErrorParts(resp)
+	return &APIError{StatusCode: resp.StatusCode, Code: code, Message: message, Op: op}
+}
+
+// lockedForbiddenError classifies a 403 at endpoints that historically
+// reported the signer as locked. The wire code distinguishes a genuinely
+// locked signer from other forbidden conditions; pre-code signers send no
+// code and keep the legacy locked mapping.
+func lockedForbiddenError(resp *http.Response) error {
+	apiErr := signerHTTPError(resp)
+	switch apiErr.Code {
+	case "", ErrCodeLocked:
+		return ErrSignerLocked
+	default:
+		return apiErr
+	}
+}
+
+// rejectedForbiddenError classifies a 403 at endpoints that historically
+// reported the request as rejected. A locked code maps to ErrSignerLocked;
+// forbidden (or no code, for pre-code signers) keeps the rejection sentinel.
+func rejectedForbiddenError(resp *http.Response) error {
+	apiErr := signerHTTPError(resp)
+	switch apiErr.Code {
+	case ErrCodeLocked:
+		return ErrSignerLocked
+	case "", ErrCodeForbidden:
+		return ErrSigningRejected
+	default:
+		return apiErr
+	}
 }
 
 func (c *SignerClient) requestContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
@@ -272,7 +321,7 @@ func (c *SignerClient) GetStatusWithContext(ctx context.Context) (*StatusRespons
 		return nil, ErrSignerUnavailable
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("signer error (%d): %s", resp.StatusCode, readErrorBody(resp))
+		return nil, signerHTTPError(resp)
 	}
 
 	var identityResp StatusResponse
@@ -432,13 +481,19 @@ func (c *SignerClient) GetKeysResponseWithContext(ctx context.Context) (*KeysRes
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusForbidden {
-		return &KeysResult{Locked: true}, nil
+		apiErr := signerHTTPError(resp)
+		switch apiErr.Code {
+		case "", ErrCodeLocked:
+			return &KeysResult{Locked: true}, nil
+		default:
+			return nil, apiErr
+		}
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
 		return nil, ErrAuthentication
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("signer error (%d): %s", resp.StatusCode, readErrorBody(resp))
+		return nil, signerHTTPError(resp)
 	}
 
 	var keysResp keysResponse
@@ -485,13 +540,13 @@ func (c *SignerClient) ListKeyTypes() ([]KeyTypeInfo, error) {
 		return nil, ErrAuthentication
 	}
 	if resp.StatusCode == 403 {
-		return nil, ErrSigningRejected
+		return nil, rejectedForbiddenError(resp)
 	}
 	if resp.StatusCode == 503 {
 		return nil, ErrSignerUnavailable
 	}
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("signer error (%d): %s", resp.StatusCode, readErrorBody(resp))
+		return nil, signerHTTPError(resp)
 	}
 
 	var ktResp keyTypesResponse
@@ -530,10 +585,10 @@ func (c *SignerClient) GenerateKey(keyType string, parameters map[string]string)
 		return nil, ErrAuthentication
 	}
 	if resp.StatusCode == 403 {
-		return nil, ErrSignerLocked
+		return nil, lockedForbiddenError(resp)
 	}
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("key generation failed (%d): %s", resp.StatusCode, readErrorBody(resp))
+		return nil, signerHTTPErrorOp(resp, "key generation failed")
 	}
 
 	var result GenerateResult
@@ -571,13 +626,13 @@ func (c *SignerClient) DeleteKey(address string) error {
 		return ErrAuthentication
 	}
 	if resp.StatusCode == 403 {
-		return ErrSignerLocked
+		return lockedForbiddenError(resp)
 	}
 	if resp.StatusCode == 404 {
 		return ErrKeyDeletion
 	}
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("key deletion failed (%d): %s", resp.StatusCode, readErrorBody(resp))
+		return signerHTTPErrorOp(resp, "key deletion failed")
 	}
 
 	// Invalidate key cache
@@ -634,13 +689,13 @@ func (c *SignerClient) RequestComponentSignWithContext(ctx context.Context, reqB
 		return nil, ErrAuthentication
 	}
 	if resp.StatusCode == 403 {
-		return nil, ErrSigningRejected
+		return nil, rejectedForbiddenError(resp)
 	}
 	if resp.StatusCode == 503 {
 		return nil, ErrSignerUnavailable
 	}
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("signer error (%d): %s", resp.StatusCode, readErrorBody(resp))
+		return nil, signerHTTPError(resp)
 	}
 
 	var componentResp ComponentSignResponse
@@ -698,13 +753,13 @@ func (c *SignerClient) RequestGuardedAssembleWithContext(ctx context.Context, re
 		return nil, ErrAuthentication
 	}
 	if resp.StatusCode == 403 {
-		return nil, ErrSigningRejected
+		return nil, rejectedForbiddenError(resp)
 	}
 	if resp.StatusCode == 503 {
 		return nil, ErrSignerUnavailable
 	}
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("signer error (%d): %s", resp.StatusCode, readErrorBody(resp))
+		return nil, signerHTTPError(resp)
 	}
 
 	var assemblyResp GuardedAssemblyResponse
@@ -752,10 +807,10 @@ func (c *SignerClient) AdminSyncSentryReferencesWithContext(ctx context.Context,
 		return nil, ErrAuthentication
 	}
 	if resp.StatusCode == 403 {
-		return nil, ErrSignerLocked
+		return nil, lockedForbiddenError(resp)
 	}
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("signer error (%d): %s", resp.StatusCode, readErrorBody(resp))
+		return nil, signerHTTPError(resp)
 	}
 
 	var syncResp AdminSyncSentryReferencesResponse
@@ -812,7 +867,7 @@ func (c *SignerClient) PlanRequestsWithContext(ctx context.Context, requests []S
 		return nil, ErrAuthentication
 	}
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("plan failed (%d): %s", resp.StatusCode, readErrorBody(resp))
+		return nil, signerHTTPErrorOp(resp, "plan failed")
 	}
 
 	var planResp PlanGroupResponse
@@ -887,7 +942,7 @@ func (c *SignerClient) SimulateRequestsWithContext(ctx context.Context, requests
 		return nil, ErrAuthentication
 	}
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("simulate failed (%d): %s", resp.StatusCode, readErrorBody(resp))
+		return nil, signerHTTPErrorOp(resp, "simulate failed")
 	}
 
 	var simulateResp GroupSimulateResponse
@@ -1122,7 +1177,7 @@ func (c *SignerClient) SignGroupWithContext(ctx context.Context, groupReq GroupS
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("signer error (%d): %s", resp.StatusCode, readErrorBody(resp))
+		return nil, signerHTTPError(resp)
 	}
 
 	var groupResp GroupSignResponse
@@ -1276,13 +1331,13 @@ func (c *SignerClient) signResponse(requests []SignRequest) (*GroupSignResponse,
 		return nil, ErrAuthentication
 	}
 	if resp.StatusCode == 403 {
-		return nil, ErrSigningRejected
+		return nil, rejectedForbiddenError(resp)
 	}
 	if resp.StatusCode == 503 {
 		return nil, ErrSignerUnavailable
 	}
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("signer error (%d): %s", resp.StatusCode, readErrorBody(resp))
+		return nil, signerHTTPError(resp)
 	}
 
 	var groupResp GroupSignResponse
