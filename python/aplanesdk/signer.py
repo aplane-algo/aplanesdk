@@ -40,6 +40,7 @@ Data directory is required:
 from __future__ import annotations
 
 import base64
+import copy
 import json
 import os
 import re
@@ -79,6 +80,10 @@ MAX_SIGN_REQUEST_ID_LENGTH = 128
 MAX_COMPONENT_GROUP_SIZE = 16
 APP_CALL_MAX_APP_ARGS = 16
 APP_CALL_METHOD_ARGS_TUPLE_THRESHOLD = APP_CALL_MAX_APP_ARGS - 2
+GUARDED_LSIG_BUDGET_BYTES = 1000
+GUARDED_MAX_GROUP_SIZE = 16
+GUARDED_DEFAULT_MIN_FEE = 1000
+GUARDED_DUMMY_PROGRAM = bytes.fromhex("033120320312")
 
 COMPONENT_SIGN_ROLE_USER = "user"
 COMPONENT_SIGN_ROLE_SENTRY = "sentry"
@@ -3624,6 +3629,197 @@ def _component_signatures_by_index(
     }
 
 
+def _is_guarded_key_type(key_type: str) -> bool:
+    return key_type in {
+        KEY_TYPE_GUARDED_FALCON1024_SENTRY_ED25519,
+        KEY_TYPE_GUARDED_FALCON1024_SENTRY_FALCON1024,
+    }
+
+
+def _guarded_sentry_component_key_type(key_type: str) -> str:
+    if key_type == KEY_TYPE_GUARDED_FALCON1024_SENTRY_FALCON1024:
+        return KEY_TYPE_SENTRY_FALCON1024
+    if key_type == KEY_TYPE_GUARDED_FALCON1024_SENTRY_ED25519:
+        return KEY_TYPE_SENTRY_ED25519
+    return ""
+
+
+def _guarded_dummies_needed(total_lsig_bytes: int, txn_count: int) -> int:
+    current_budget = txn_count * GUARDED_LSIG_BUDGET_BYTES
+    if total_lsig_bytes <= current_budget:
+        return 0
+    extra_budget = total_lsig_bytes - current_budget
+    return (extra_budget + GUARDED_LSIG_BUDGET_BYTES - 1) // GUARDED_LSIG_BUDGET_BYTES
+
+
+def _apply_guarded_dummy_fees(
+    txns: List[transaction.Transaction],
+    lsig_indices: List[int],
+    dummy_count: int,
+    min_fee: int,
+) -> None:
+    total_fees = dummy_count * min_fee
+    if not lsig_indices:
+        if not txns:
+            raise ValueError("no transactions to apply dummy fees to")
+        txns[0].fee = int(getattr(txns[0], "fee", 0)) + total_fees
+        return
+
+    fee_per_lsig = total_fees // len(lsig_indices)
+    remainder = total_fees % len(lsig_indices)
+    for offset, index in enumerate(lsig_indices):
+        extra = fee_per_lsig + (remainder if offset == 0 else 0)
+        txns[index].fee = int(getattr(txns[index], "fee", 0)) + extra
+
+
+def _create_guarded_dummies(first_txn: transaction.Transaction, count: int) -> List[transaction.Transaction]:
+    if count == 0:
+        return []
+    dummy_account = transaction.LogicSigAccount(GUARDED_DUMMY_PROGRAM)
+    dummy_address = dummy_account.address()
+    params = transaction.SuggestedParams(
+        int(getattr(first_txn, "fee", GUARDED_DEFAULT_MIN_FEE)),
+        int(getattr(first_txn, "first_valid_round", 0)),
+        int(getattr(first_txn, "last_valid_round", 0)),
+        getattr(first_txn, "genesis_hash", ""),
+        getattr(first_txn, "genesis_id", None),
+        flat_fee=True,
+    )
+    dummies = []
+    for index in range(count):
+        txn = transaction.PaymentTxn(
+            dummy_address,
+            params,
+            dummy_address,
+            0,
+            note=bytes([index]),
+        )
+        txn.fee = 0
+        dummies.append(txn)
+    return dummies
+
+
+def _sign_guarded_dummies(
+    dummies: List[transaction.Transaction],
+    start_index: int,
+) -> List[GuardedPassthroughItem]:
+    dummy_account = transaction.LogicSigAccount(GUARDED_DUMMY_PROGRAM)
+    passthrough = []
+    for offset, txn in enumerate(dummies):
+        signed = transaction.LogicSigTransaction(txn, dummy_account)
+        signed_hex = base64.b64decode(encoding.msgpack_encode(signed)).hex()
+        passthrough.append(GuardedPassthroughItem(
+            target_index=start_index + offset,
+            signed_txn_hex=signed_hex,
+        ))
+    return passthrough
+
+
+def _encode_guarded_lsig_args(args: Optional[Dict[str, bytes]]) -> Optional[Dict[str, str]]:
+    if not args:
+        return None
+    return {name: value.hex() for name, value in args.items()}
+
+
+def _build_prepared_guarded_sign_inputs(
+    user_client: SignerClient,
+    prepared_group: PreparedGroup,
+    sentry_client: Optional[SignerClient],
+    sentry_resolver: Optional[Any],
+    sentry_component_key: str,
+    assembly_request_id: str,
+    min_fee: int,
+) -> Dict[str, Any]:
+    if user_client is None:
+        raise SignerError("user_client is required")
+    prepared = prepared_group.transactions
+    if not prepared:
+        raise ValueError("prepared group is empty")
+
+    txns = []
+    guarded_targets = []
+    primary_targets = []
+    lsig_indices = []
+    total_lsig_bytes = 0
+
+    for index, item in enumerate(prepared):
+        if item.signed_transaction_base64:
+            raise ValueError(
+                f"prepared transaction {index}: passthrough entries are not supported in prepared guarded groups"
+            )
+        if item.transaction is None:
+            raise ValueError(f"prepared transaction {index}: transaction is required")
+        txns.append(copy.deepcopy(item.transaction))
+
+        key = item.signer_key
+        if key is None and item.auth_address:
+            key = user_client.get_key_info(item.auth_address)
+        if key is None:
+            raise ValueError(f"prepared transaction {index}: signer key metadata is required")
+
+        lsig_size = item.lsig_size
+        if key.lsig_size > 0:
+            lsig_size = key.lsig_size
+        if lsig_size > 0:
+            total_lsig_bytes += lsig_size
+            lsig_indices.append(index)
+
+        if _is_guarded_key_type(key.key_type):
+            if not item.auth_address:
+                raise ValueError(f"prepared transaction {index}: guarded auth address is required")
+            guarded_targets.append(GuardedSignTarget(
+                target_index=index,
+                guarded_account=item.auth_address,
+                sentry_public_key_hex=(key.parameters or {}).get("sentry_public_key", ""),
+                sentry_component_key_type=_guarded_sentry_component_key_type(key.key_type),
+            ))
+            continue
+
+        if not item.auth_address:
+            raise ValueError(f"prepared transaction {index}: primary auth address is required")
+        primary_targets.append(GuardedPrimarySignTarget(
+            target_index=index,
+            auth_address=item.auth_address,
+            txn_sender=item.txn_sender,
+            lsig_args=_encode_guarded_lsig_args(item.lsig_args),
+            lsig_size=lsig_size,
+            app_call_info=item.app_call_info,
+        ))
+
+    if not guarded_targets:
+        raise ValueError("prepared group has no guarded targets")
+
+    dummy_count = _guarded_dummies_needed(total_lsig_bytes, len(txns))
+    if len(txns) + dummy_count > GUARDED_MAX_GROUP_SIZE:
+        raise ValueError(
+            f"group would be {len(txns) + dummy_count} transactions (max {GUARDED_MAX_GROUP_SIZE}) "
+            f"- cannot add {dummy_count} dummies for LSig budget"
+        )
+    if dummy_count > 0:
+        _apply_guarded_dummy_fees(txns, lsig_indices, dummy_count, min_fee or GUARDED_DEFAULT_MIN_FEE)
+
+    dummies = _create_guarded_dummies(txns[0], dummy_count)
+    all_txns = txns + dummies
+    if len(all_txns) > 1:
+        for txn in all_txns:
+            txn.group = None
+        transaction.assign_group_id(all_txns)
+
+    dummy_passthrough = _sign_guarded_dummies(all_txns[len(txns):], len(txns))
+    group_bytes_hex = [encode_transaction(txn)[0] for txn in all_txns]
+    return {
+        "user_client": user_client,
+        "group_bytes_hex": group_bytes_hex,
+        "guarded_targets": guarded_targets,
+        "sentry_client": sentry_client,
+        "sentry_resolver": sentry_resolver,
+        "sentry_component_key": sentry_component_key,
+        "primary_targets": primary_targets,
+        "passthrough": dummy_passthrough,
+        "assembly_request_id": assembly_request_id,
+    }
+
+
 def _resolve_sentry_for_target(
     target: Dict[str, Any],
     sentry_client: Optional[SignerClient],
@@ -3698,6 +3894,35 @@ def _request_primary_guarded_passthrough(
             )
         )
     return response, passthrough
+
+
+def sign_prepared_guarded_group(
+    *,
+    user_client: SignerClient,
+    prepared_group: PreparedGroup,
+    sentry_client: Optional[SignerClient] = None,
+    sentry_resolver: Optional[Any] = None,
+    sentry_component_key: str = "",
+    assembly_request_id: str = "",
+    min_fee: int = GUARDED_DEFAULT_MIN_FEE,
+) -> GuardedSignResult:
+    """
+    Canonicalize a prepared group locally, classify guarded and primary slots,
+    then sign and assemble it through guarded component endpoints.
+
+    This mirrors apshell's guarded client-side prep path and avoids sending an
+    all-guarded group to /plan or /sign as all-foreign requests.
+    """
+    inputs = _build_prepared_guarded_sign_inputs(
+        user_client,
+        prepared_group,
+        sentry_client,
+        sentry_resolver,
+        sentry_component_key,
+        assembly_request_id,
+        min_fee,
+    )
+    return sign_guarded_group(**inputs)
 
 
 def sign_guarded_group(

@@ -68,6 +68,7 @@ import {
   encodeTransaction,
   encodeLsigArgs,
   concatenateSignedTxns,
+  bytesToHex,
   hexToBytes,
 } from "./encoding.js";
 import { preparedGroupToSignRequests } from "./prepared.js";
@@ -99,6 +100,14 @@ const COMPONENT_SIGN_ROLE_USER = "user";
 const COMPONENT_SIGN_ROLE_SENTRY = "sentry";
 const APP_CALL_MAX_APP_ARGS = 16;
 const APP_CALL_METHOD_ARGS_TUPLE_THRESHOLD = APP_CALL_MAX_APP_ARGS - 2;
+const GUARDED_LSIG_BUDGET_BYTES = 1000;
+const GUARDED_MAX_GROUP_SIZE = 16;
+const GUARDED_DEFAULT_MIN_FEE = 1000;
+const GUARDED_DUMMY_PROGRAM = new Uint8Array([0x03, 0x31, 0x20, 0x32, 0x03, 0x12]);
+const KEY_TYPE_GUARDED_FALCON1024_SENTRY_ED25519_VALUE =
+  "aplane.falcon1024-sentry-ed25519.v1";
+const KEY_TYPE_GUARDED_FALCON1024_SENTRY_FALCON1024_VALUE =
+  "aplane.falcon1024-sentry-falcon1024.v1";
 
 function newSignRequestId(): string {
   return `sdk-${randomBytes(16).toString("hex")}`;
@@ -217,12 +226,226 @@ async function requestPrimaryGuardedPassthrough(
   return { response, passthrough };
 }
 
+function isGuardedKeyType(keyType: string): boolean {
+  return keyType === KEY_TYPE_GUARDED_FALCON1024_SENTRY_ED25519_VALUE ||
+    keyType === KEY_TYPE_GUARDED_FALCON1024_SENTRY_FALCON1024_VALUE;
+}
+
+function guardedSentryComponentKeyType(keyType: string): string {
+  if (keyType === KEY_TYPE_GUARDED_FALCON1024_SENTRY_FALCON1024_VALUE) {
+    return "aplane.sentry-falcon1024.v1";
+  }
+  if (keyType === KEY_TYPE_GUARDED_FALCON1024_SENTRY_ED25519_VALUE) {
+    return "aplane.sentry-ed25519.v1";
+  }
+  return "";
+}
+
+function guardedDummiesNeeded(totalLsigBytes: number, txnCount: number): number {
+  const currentBudget = txnCount * GUARDED_LSIG_BUDGET_BYTES;
+  if (totalLsigBytes <= currentBudget) {
+    return 0;
+  }
+  const extraBudget = totalLsigBytes - currentBudget;
+  return Math.ceil(extraBudget / GUARDED_LSIG_BUDGET_BYTES);
+}
+
+function applyGuardedDummyFees(
+  txns: Transaction[],
+  lsigIndices: number[],
+  dummyCount: number,
+  minFee: number,
+): void {
+  const totalFees = BigInt(dummyCount) * BigInt(minFee);
+  if (lsigIndices.length === 0) {
+    if (txns.length === 0) {
+      throw new SignerError("no transactions to apply dummy fees to");
+    }
+    (txns[0] as any).fee = BigInt((txns[0] as any).fee || 0) + totalFees;
+    return;
+  }
+
+  const feePerLsig = totalFees / BigInt(lsigIndices.length);
+  const remainder = totalFees % BigInt(lsigIndices.length);
+  for (let offset = 0; offset < lsigIndices.length; offset++) {
+    const index = lsigIndices[offset];
+    const extra = feePerLsig + (offset === 0 ? remainder : 0n);
+    (txns[index] as any).fee = BigInt((txns[index] as any).fee || 0) + extra;
+  }
+}
+
+function cloneTransaction(txn: Transaction): Transaction {
+  return algosdk.decodeUnsignedTransaction(txn.toByte());
+}
+
+function createGuardedDummies(firstTxn: Transaction, count: number): Transaction[] {
+  if (count === 0) {
+    return [];
+  }
+  const dummyAccount = new algosdk.LogicSigAccount(GUARDED_DUMMY_PROGRAM);
+  const dummyAddress = dummyAccount.address().toString();
+  const first = firstTxn as any;
+  const suggestedParams: any = {
+    fee: Number(first.fee || GUARDED_DEFAULT_MIN_FEE),
+    firstValid: first.firstValid ?? first.firstValidRound ?? 0,
+    lastValid: first.lastValid ?? first.lastValidRound ?? 0,
+    genesisHash: first.genesisHash,
+    genesisID: first.genesisID,
+    flatFee: true,
+  };
+
+  const dummies: Transaction[] = [];
+  for (let index = 0; index < count; index++) {
+    const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+      sender: dummyAddress,
+      receiver: dummyAddress,
+      amount: 0,
+      note: new Uint8Array([index]),
+      suggestedParams,
+    });
+    (txn as any).fee = 0n;
+    dummies.push(txn);
+  }
+  return dummies;
+}
+
+function signGuardedDummies(dummies: Transaction[], startIndex: number): GuardedPassthroughItem[] {
+  if (dummies.length === 0) {
+    return [];
+  }
+  const dummyAccount = new algosdk.LogicSigAccount(GUARDED_DUMMY_PROGRAM);
+  return dummies.map((txn, offset) => {
+    const signed = algosdk.signLogicSigTransactionObject(txn, dummyAccount);
+    return {
+      target_index: startIndex + offset,
+      signed_txn_hex: bytesToHex(signed.blob),
+    };
+  });
+}
+
+async function buildPreparedGuardedSignOptions(
+  options: PreparedGuardedGroupOptions,
+): Promise<GuardedSignOptions> {
+  if (!options.userClient) {
+    throw new SignerError("userClient is required");
+  }
+  const prepared = options.preparedGroup.transactions || [];
+  if (prepared.length === 0) {
+    throw new SignerError("prepared group is empty");
+  }
+
+  const txns: Transaction[] = [];
+  const guardedTargets: GuardedSignTarget[] = [];
+  const primaryTargets: GuardedPrimarySignTarget[] = [];
+  const lsigIndices: number[] = [];
+  let totalLsigBytes = 0;
+
+  for (let index = 0; index < prepared.length; index++) {
+    const item = prepared[index];
+    if (item.signedTransactionBase64) {
+      throw new SignerError(
+        `prepared transaction ${index}: passthrough entries are not supported in prepared guarded groups`
+      );
+    }
+    if (!item.transaction) {
+      throw new SignerError(`prepared transaction ${index}: transaction is required`);
+    }
+    txns.push(cloneTransaction(item.transaction));
+
+    let key = item.signerKey;
+    if (!key && item.authAddress) {
+      key = await options.userClient.getKeyInfo(item.authAddress);
+    }
+    if (!key) {
+      throw new SignerError(`prepared transaction ${index}: signer key metadata is required`);
+    }
+
+    let lsigSize = item.lsigSize || 0;
+    if (key.lsigSize && key.lsigSize > 0) {
+      lsigSize = key.lsigSize;
+    }
+    if (lsigSize > 0) {
+      totalLsigBytes += lsigSize;
+      lsigIndices.push(index);
+    }
+
+    if (isGuardedKeyType(key.keyType)) {
+      if (!item.authAddress) {
+        throw new SignerError(`prepared transaction ${index}: guarded auth address is required`);
+      }
+      guardedTargets.push({
+        targetIndex: index,
+        guardedAccount: item.authAddress,
+        sentryPublicKeyHex: key.parameters?.sentry_public_key || "",
+        sentryComponentKeyType: guardedSentryComponentKeyType(key.keyType),
+      });
+      continue;
+    }
+
+    if (!item.authAddress) {
+      throw new SignerError(`prepared transaction ${index}: primary auth address is required`);
+    }
+    primaryTargets.push({
+      targetIndex: index,
+      authAddress: item.authAddress,
+      txnSender: item.txnSender,
+      lsigArgs: item.lsigArgs ? encodeLsigArgs(item.lsigArgs) : undefined,
+      lsigSize,
+      appCallInfo: item.appCallInfo,
+    });
+  }
+
+  if (guardedTargets.length === 0) {
+    throw new SignerError("prepared group has no guarded targets");
+  }
+
+  const minFee = options.minFee || GUARDED_DEFAULT_MIN_FEE;
+  const dummyCount = guardedDummiesNeeded(totalLsigBytes, txns.length);
+  if (txns.length + dummyCount > GUARDED_MAX_GROUP_SIZE) {
+    throw new SignerError(
+      `group would be ${txns.length + dummyCount} transactions (max ${GUARDED_MAX_GROUP_SIZE}) ` +
+      `- cannot add ${dummyCount} dummies for LSig budget`
+    );
+  }
+  if (dummyCount > 0) {
+    applyGuardedDummyFees(txns, lsigIndices, dummyCount, minFee);
+  }
+
+  const dummies = createGuardedDummies(txns[0], dummyCount);
+  const allTxns = [...txns, ...dummies];
+  if (allTxns.length > 1) {
+    for (const txn of allTxns) {
+      (txn as any).group = undefined;
+    }
+    algosdk.assignGroupID(allTxns);
+  }
+
+  return {
+    userClient: options.userClient,
+    sentryClient: options.sentryClient,
+    sentryResolver: options.sentryResolver,
+    sentryComponentKey: options.sentryComponentKey,
+    groupBytesHex: allTxns.map((txn) => encodeTransaction(txn)[0]),
+    guardedTargets,
+    primaryTargets,
+    passthrough: signGuardedDummies(allTxns.slice(txns.length), txns.length),
+    assemblyRequestId: options.assemblyRequestId,
+    signal: options.signal,
+  };
+}
+
 /**
  * Sign and assemble a guarded group using explicit signer clients.
  *
  * The helper expects canonical TX-prefixed group bytes. Planning and endpoint
  * discovery stay caller-owned.
  */
+export async function signPreparedGuardedGroup(
+  options: PreparedGuardedGroupOptions,
+): Promise<GuardedSignResult> {
+  return signGuardedGroup(await buildPreparedGuardedSignOptions(options));
+}
+
 export async function signGuardedGroup(options: GuardedSignOptions): Promise<GuardedSignResult> {
   if (!options.userClient) {
     throw new SignerError("userClient is required");
@@ -722,6 +945,17 @@ export interface GuardedSignOptions {
   primaryTargets?: GuardedPrimarySignTarget[];
   passthrough?: GuardedPassthroughItem[];
   assemblyRequestId?: string;
+  signal?: AbortSignal;
+}
+
+export interface PreparedGuardedGroupOptions {
+  userClient: SignerClient;
+  preparedGroup: PreparedGroup;
+  sentryClient?: SignerClient;
+  sentryResolver?: GuardedSentryResolver;
+  sentryComponentKey?: string;
+  assemblyRequestId?: string;
+  minFee?: number;
   signal?: AbortSignal;
 }
 

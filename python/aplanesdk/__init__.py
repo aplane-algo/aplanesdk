@@ -28,6 +28,7 @@ from .signer import (
     send_raw_transaction,
     assemble_group,
     sign_guarded_group,
+    sign_prepared_guarded_group,
 
     # Token provisioning
     request_token,
@@ -99,6 +100,7 @@ __all__ = [
     "send_raw_transaction",
     "assemble_group",
     "sign_guarded_group",
+    "sign_prepared_guarded_group",
 
     # Token provisioning
     "request_token",

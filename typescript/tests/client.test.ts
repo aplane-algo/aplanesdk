@@ -4,9 +4,10 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import algosdk from "algosdk";
-import { SignerClient, signGuardedGroup } from "../src/client.js";
+import { SignerClient, signGuardedGroup, signPreparedGuardedGroup } from "../src/client.js";
 import {
   COMPONENT_SIGN_ROLE_SENTRY,
+  KEY_TYPE_GUARDED_FALCON1024_SENTRY_ED25519,
   KEY_TYPE_SENTRY_ED25519,
 } from "../src/types.js";
 import {
@@ -1329,6 +1330,92 @@ describe("SignerClient", () => {
 
       assert.equal(result.signedGroup[1], "guarded-signed");
       assert.ok(result.primarySignResponse);
+    });
+
+    it("handles prepared all-guarded groups without plan or sign", async () => {
+      const guarded = testAddress(1);
+      const receiver = testAddress(2);
+      const user = new SignerClient("http://localhost:11270", "test-token");
+      const sentry = new SignerClient("http://sentry:11270", "sentry-token");
+
+      (user as any).requestComponentSign = async (request: any) => {
+        assert.equal(request.component_key, guarded);
+        assert.equal(request.group_bytes_hex.length, 4);
+        assert.deepEqual(request.target_indices, [0]);
+        return {
+          request_id: "user-id",
+          signatures: [
+            { target_index: 0, signature: "user-sig", signature_scheme: KEY_TYPE_SENTRY_ED25519 },
+          ],
+        };
+      };
+      (sentry as any).requestComponentSign = async (request: any) => {
+        assert.equal(request.component_key, "SENTRY_COMPONENT");
+        assert.equal(request.group_bytes_hex.length, 4);
+        assert.deepEqual(request.target_indices, [0]);
+        return {
+          request_id: "sentry-id",
+          signatures: [
+            { target_index: 0, signature: "sentry-sig", signature_scheme: KEY_TYPE_SENTRY_ED25519 },
+          ],
+        };
+      };
+      (user as any).signRequests = async () => {
+        throw new Error("all-guarded path must not call /sign");
+      };
+      (user as any).planGroup = async () => {
+        throw new Error("all-guarded path must not call /plan");
+      };
+      (user as any).requestGuardedAssemble = async (request: any) => {
+        assert.equal(request.group_bytes_hex.length, 4);
+        assert.equal(request.passthrough.length, 3);
+        assert.deepEqual(request.passthrough.map((item: any) => item.target_index), [1, 2, 3]);
+        assert.ok(request.passthrough.every((item: any) => item.signed_txn_hex));
+        return {
+          request_id: "assembly-id",
+          signed_group: ["guarded-signed", "dummy-1", "dummy-2", "dummy-3"],
+        };
+      };
+
+      const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+        sender: guarded,
+        receiver,
+        amount: 1000n,
+        suggestedParams: {
+          fee: 1000n,
+          minFee: 1000n,
+          firstValid: 1n,
+          lastValid: 100n,
+          genesisHash: new Uint8Array(32),
+          genesisID: "testnet-v1",
+          flatFee: true,
+        },
+      });
+
+      const result = await signPreparedGuardedGroup({
+        userClient: user,
+        sentryClient: sentry,
+        sentryComponentKey: "SENTRY_COMPONENT",
+        preparedGroup: {
+          transactions: [
+            {
+              transaction: txn,
+              authAddress: guarded,
+              signerKey: {
+                address: guarded,
+                publicKeyHex: "",
+                keyType: KEY_TYPE_GUARDED_FALCON1024_SENTRY_ED25519,
+                lsigSize: 3035,
+                isGenericLsig: false,
+                parameters: { sentry_public_key: "aabbcc" },
+              },
+            },
+          ],
+        },
+      });
+
+      assert.equal(result.signedGroup.length, 4);
+      assert.equal(result.primarySignResponse, undefined);
     });
   });
 

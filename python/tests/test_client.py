@@ -21,6 +21,7 @@ from aplanesdk.signer import (
     KeyDeletionError,
     assemble_group,
     sign_guarded_group,
+    sign_prepared_guarded_group,
     load_config,
     SSHConfig,
     ClientConfig,
@@ -28,6 +29,7 @@ from aplanesdk.signer import (
     ComponentSignature,
     ComponentSignResponse,
     GroupSignResponse,
+    KeyInfo,
     GuardedAssemblyRequest,
     GuardedAssemblyTarget,
     GuardedAssemblyResponse,
@@ -38,6 +40,7 @@ from aplanesdk.signer import (
     PreparedGroup,
     COMPONENT_SIGN_ROLE_SENTRY,
     KEY_TYPE_SENTRY_ED25519,
+    KEY_TYPE_GUARDED_FALCON1024_SENTRY_ED25519,
     request_token,
     request_token_to_file,
     _validate_sign_request_id,
@@ -716,6 +719,71 @@ class TestSignGuardedGroup:
         sign_requests = user.sign_requests.call_args.args[0]
         assert sign_requests[0]["auth_address"] == "AUTH"
         assert "auth_address" not in sign_requests[1]
+
+    def test_prepared_all_guarded_adds_dummies_without_plan_or_sign(self):
+        guarded = sdk_test_address(1)
+        receiver = sdk_test_address(2)
+        user = make_client()
+        sentry = make_client("http://sentry:11270")
+
+        user.request_component_sign = MagicMock(return_value=ComponentSignResponse(
+            request_id="user-id",
+            signatures=[ComponentSignature(0, "user-sig", KEY_TYPE_SENTRY_ED25519)],
+        ))
+        sentry.request_component_sign = MagicMock(return_value=ComponentSignResponse(
+            request_id="sentry-id",
+            signatures=[ComponentSignature(0, "sentry-sig", KEY_TYPE_SENTRY_ED25519)],
+        ))
+        user.sign_requests = MagicMock(side_effect=AssertionError("all-guarded path must not call /sign"))
+        user.plan_group = MagicMock(side_effect=AssertionError("all-guarded path must not call /plan"))
+
+        def assemble(req):
+            assert len(req.group_bytes_hex) == 4
+            assert len(req.passthrough) == 3
+            assert [item.target_index for item in req.passthrough] == [1, 2, 3]
+            assert all(item.signed_txn_hex for item in req.passthrough)
+            return GuardedAssemblyResponse(
+                request_id="assembly-id",
+                signed_group=["guarded-signed", "dummy-1", "dummy-2", "dummy-3"],
+            )
+
+        user.request_guarded_assemble = MagicMock(side_effect=assemble)
+
+        params = transaction.SuggestedParams(
+            1000,
+            1,
+            100,
+            base64.b64encode(bytes(32)).decode(),
+            "testnet-v1.0",
+            flat_fee=True,
+        )
+        txn = transaction.PaymentTxn(guarded, params, receiver, 1000)
+        result = sign_prepared_guarded_group(
+            user_client=user,
+            sentry_client=sentry,
+            sentry_component_key="SENTRY_COMPONENT",
+            prepared_group=PreparedGroup([
+                PreparedTransaction(
+                    transaction=txn,
+                    auth_address=guarded,
+                    signer_key=KeyInfo(
+                        address=guarded,
+                        key_type=KEY_TYPE_GUARDED_FALCON1024_SENTRY_ED25519,
+                        lsig_size=3035,
+                        parameters={"sentry_public_key": "aabbcc"},
+                    ),
+                )
+            ]),
+        )
+
+        assert len(result.signed_group) == 4
+        assert result.primary_sign_response is None
+        user_req = user.request_component_sign.call_args.args[0]
+        assert user_req.component_key == guarded
+        assert len(user_req.group_bytes_hex) == 4
+        sentry_req = sentry.request_component_sign.call_args.args[0]
+        assert sentry_req.component_key == "SENTRY_COMPONENT"
+        assert len(sentry_req.group_bytes_hex) == 4
 
 
 # ---------------------------------------------------------------------------
