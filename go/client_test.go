@@ -26,14 +26,14 @@ func TestFromEnv_RequiresSSH(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "aplane.token"), []byte("test-token"), 0600)
 
 	// Write config without SSH block
-	os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("signer_port: 11270\n"), 0600)
+	os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("endpoint:\n  signer_port: 11270\n"), 0600)
 
 	_, err := FromEnv(&FromEnvOptions{DataDir: dir})
 	if err == nil {
 		t.Fatal("expected error when SSH not configured")
 	}
-	if !strings.Contains(err.Error(), "no ssh block") {
-		t.Fatalf("expected 'no ssh block' error, got: %s", err)
+	if !strings.Contains(err.Error(), "no endpoint.ssh block") {
+		t.Fatalf("expected 'no endpoint.ssh block' error, got: %s", err)
 	}
 }
 
@@ -43,14 +43,14 @@ func TestFromEnv_RequiresSSHHost(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "aplane.token"), []byte("test-token"), 0600)
 
 	// SSH block with empty host
-	os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("signer_port: 11270\nssh:\n  port: 1127\n"), 0600)
+	os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("endpoint:\n  signer_port: 11270\n  ssh:\n    port: 1127\n"), 0600)
 
 	_, err := FromEnv(&FromEnvOptions{DataDir: dir})
 	if err == nil {
 		t.Fatal("expected error when SSH host is empty")
 	}
-	if !strings.Contains(err.Error(), "no ssh block") {
-		t.Fatalf("expected 'no ssh block' error, got: %s", err)
+	if !strings.Contains(err.Error(), "no endpoint.ssh block") {
+		t.Fatalf("expected 'no endpoint.ssh block' error, got: %s", err)
 	}
 }
 
@@ -1236,7 +1236,7 @@ func TestLoadConfig_Default(t *testing.T) {
 func TestLoadConfig_WithSSH(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
-		"signer_port: 11271\nssh:\n  host: example.com\n  port: 1128\n  identity_file: .ssh/id\n  trust_on_first_use: true\n",
+		"endpoint:\n  signer_port: 11271\n  ssh:\n    host: example.com\n    port: 1128\n    identity_file: .ssh/id\n    trust_on_first_use: true\n",
 	), 0600)
 
 	config, err := LoadConfig(dir)
@@ -1257,7 +1257,7 @@ func TestLoadConfig_WithSSH(t *testing.T) {
 func TestLoadConfig_TrustOnFirstUseDefaultsFalse(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
-		"signer_port: 11270\nssh:\n  host: localhost\n  port: 1127\n",
+		"endpoint:\n  signer_port: 11270\n  ssh:\n    host: localhost\n    port: 1127\n",
 	), 0600)
 
 	config, err := LoadConfig(dir)

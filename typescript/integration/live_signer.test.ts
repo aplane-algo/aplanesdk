@@ -34,11 +34,11 @@ function liveSignerPort(): number {
 
   const config = YAML.parse(
     fs.readFileSync(path.join(dataDir, "config.yaml"), "utf-8")
-  ) as { signer_port?: number };
-  if (!config.signer_port) {
-    throw new Error("signer_port not set in signer config");
+  ) as { endpoint?: { signer_port?: number } };
+  if (!config.endpoint?.signer_port) {
+    throw new Error("endpoint.signer_port not set in signer config");
   }
-  return config.signer_port;
+  return config.endpoint.signer_port;
 }
 
 function liveSignerToken(): string {

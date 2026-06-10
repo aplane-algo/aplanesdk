@@ -160,7 +160,7 @@ func (t *sshTunnel) buildHostKeyCallback() (ssh.HostKeyCallback, error) {
 
 		// Unknown host
 		if !t.trustOnFirstUse {
-			return fmt.Errorf("unknown SSH host key for %s; to trust this host, set ssh.trust_on_first_use: true in config.yaml, or connect via apshell first to save the host key to %s", hostname, t.knownHostsPath)
+			return fmt.Errorf("unknown SSH host key for %s; to trust this host, set endpoint.ssh.trust_on_first_use: true in config.yaml, or connect via apshell first to save the host key to %s", hostname, t.knownHostsPath)
 		}
 
 		// TOFU enabled — trust and save key

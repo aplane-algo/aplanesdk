@@ -407,8 +407,8 @@ export async function requestTokenToFile(
   if (!host) {
     if (!config.ssh?.host) {
       throw new SignerError(
-        "No host specified and no ssh.host in config.yaml. " +
-        "Pass host option or add ssh block to config.yaml."
+        "No host specified and no endpoint.ssh.host in config.yaml. " +
+        "Pass host option or add endpoint.ssh block to config.yaml."
       );
     }
     host = config.ssh.host;

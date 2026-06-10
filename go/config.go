@@ -75,6 +75,12 @@ func LoadConfig(dataDir string) (*Config, error) {
 	if err := yaml.Unmarshal(data, config); err != nil {
 		return nil, fmt.Errorf("failed to parse config.yaml: %w", err)
 	}
+	if config.Endpoint.SignerPort != 0 {
+		config.SignerPort = config.Endpoint.SignerPort
+	}
+	if config.Endpoint.SSH != nil {
+		config.SSH = config.Endpoint.SSH
+	}
 	if config.Algod == nil && len(config.Networks) > 0 {
 		config.Algod = make(AlgodConfig, len(config.Networks))
 	}
@@ -107,6 +113,7 @@ func LoadConfig(dataDir string) (*Config, error) {
 	if config.SignerPort == 0 {
 		config.SignerPort = DefaultSignerPort
 	}
+	config.Endpoint.SignerPort = config.SignerPort
 	if config.Theme == "" {
 		config.Theme = "auto"
 	}
@@ -122,6 +129,7 @@ func LoadConfig(dataDir string) (*Config, error) {
 		}
 		config.SSH.IdentityFile = ResolvePath(config.SSH.IdentityFile, dataDir)
 		config.SSH.KnownHostsPath = ResolvePath(config.SSH.KnownHostsPath, dataDir)
+		config.Endpoint.SSH = config.SSH
 	}
 
 	return config, nil

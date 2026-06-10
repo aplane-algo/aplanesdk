@@ -1118,13 +1118,14 @@ describe("loadConfig", () => {
     try {
       fs.writeFileSync(
         path.join(tmpDir, "config.yaml"),
-        "signer_port: 12345\n" +
-        "ssh:\n" +
-        "  host: signer.example.com\n" +
-        "  port: 2222\n" +
-        "  identity_file: .ssh/mykey\n" +
-        "  known_hosts_path: .ssh/hosts\n" +
-        "  trust_on_first_use: true\n"
+        "endpoint:\n" +
+        "  signer_port: 12345\n" +
+        "  ssh:\n" +
+        "    host: signer.example.com\n" +
+        "    port: 2222\n" +
+        "    identity_file: .ssh/mykey\n" +
+        "    known_hosts_path: .ssh/hosts\n" +
+        "    trust_on_first_use: true\n"
       );
       const config = loadConfig(tmpDir);
       assert.equal(config.signerPort, 12345);
@@ -1144,7 +1145,7 @@ describe("loadConfig", () => {
     try {
       fs.writeFileSync(
         path.join(tmpDir, "config.yaml"),
-        "ssh:\n  host: example.com\n"
+        "endpoint:\n  ssh:\n    host: example.com\n"
       );
       const config = loadConfig(tmpDir);
       assert.equal(config.ssh!.trustOnFirstUse, false);
@@ -1239,12 +1240,12 @@ describe("fromEnv", () => {
   it("throws when SSH not configured", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-test-"));
     try {
-      fs.writeFileSync(path.join(tmpDir, "config.yaml"), "signer_port: 11270\n");
+      fs.writeFileSync(path.join(tmpDir, "config.yaml"), "endpoint:\n  signer_port: 11270\n");
       fs.writeFileSync(path.join(tmpDir, "aplane.token"), "test-token");
 
       await assert.rejects(
         SignerClient.fromEnv({ dataDir: tmpDir }),
-        { message: /No ssh block/ },
+        { message: /No endpoint.ssh block/ },
       );
     } finally {
       fs.rmSync(tmpDir, { recursive: true });
@@ -1256,13 +1257,13 @@ describe("fromEnv", () => {
     try {
       fs.writeFileSync(
         path.join(tmpDir, "config.yaml"),
-        "signer_port: 11270\nssh:\n  port: 1127\n"
+        "endpoint:\n  signer_port: 11270\n  ssh:\n    port: 1127\n"
       );
       fs.writeFileSync(path.join(tmpDir, "aplane.token"), "test-token");
 
       await assert.rejects(
         SignerClient.fromEnv({ dataDir: tmpDir }),
-        { message: /No ssh block/ },
+        { message: /No endpoint.ssh block/ },
       );
     } finally {
       fs.rmSync(tmpDir, { recursive: true });
@@ -1274,7 +1275,7 @@ describe("fromEnv", () => {
     try {
       fs.writeFileSync(
         path.join(tmpDir, "config.yaml"),
-        "ssh:\n  host: example.com\n  port: 1127\n"
+        "endpoint:\n  ssh:\n    host: example.com\n    port: 1127\n"
       );
       // No token file
 

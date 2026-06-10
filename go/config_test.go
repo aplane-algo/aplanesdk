@@ -16,9 +16,10 @@ func TestLoadConfig_WithClientRuntimeFields(t *testing.T) {
 network: mainnet
 networks_allowed: [mainnet, testnet]
 theme: light
-signer_port: 11271
-ssh:
-  host: signer.example.com
+endpoint:
+  signer_port: 11271
+  ssh:
+    host: signer.example.com
 algod:
   mainnet:
     server: https://mainnet-api.example.com
@@ -59,8 +60,9 @@ algod:
 func TestLoadConfig_ResolvesSSHPathsAndDefaults(t *testing.T) {
 	dir := t.TempDir()
 	err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`
-ssh:
-  host: signer.example.com
+endpoint:
+  ssh:
+    host: signer.example.com
 `), 0o600)
 	if err != nil {
 		t.Fatalf("write config: %v", err)

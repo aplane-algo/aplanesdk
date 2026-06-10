@@ -87,20 +87,21 @@ Example `config.yaml`:
 ```yaml
 network: testnet
 networks_allowed: [testnet]
-signer_port: 11270
-ssh:
-  host: signer.example.com
-  port: 1127
-  identity_file: .ssh/id_ed25519
-  known_hosts_path: .ssh/known_hosts
-  trust_on_first_use: false
+endpoint:
+  signer_port: 11270
+  ssh:
+    host: signer.example.com
+    port: 1127
+    identity_file: .ssh/id_ed25519
+    known_hosts_path: .ssh/known_hosts
+    trust_on_first_use: false
 algod:
   testnet:
     server: https://testnet-api.4160.nodely.dev
     token: ""
 ```
 
-If `ssh.trust_on_first_use: true` is set, the SDK can auto-trust an unknown
+If `endpoint.ssh.trust_on_first_use: true` is set, the SDK can auto-trust an unknown
 host key on first connection and save it to `known_hosts`. Otherwise, unknown
 hosts are rejected until the host key is already trusted.
 
@@ -149,7 +150,7 @@ This path:
 `FromEnv(...)` requires:
 
 - a token file at `<dataDir>/aplane.token`
-- an `ssh` block in `config.yaml`
+- an `endpoint.ssh` block in `config.yaml`
 - a readable SSH private key at the configured `identity_file`
 
 You can override the defaults:

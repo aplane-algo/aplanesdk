@@ -132,16 +132,17 @@ Data directory structure (installer default: `~/aplane/apclient`):
 
 Example `config.yaml` (remote via SSH):
 ```yaml
-signer_port: 11270
-ssh:
-  host: signer.example.com
-  port: 1127
-  identity_file: .ssh/id_ed25519
-  known_hosts_path: .ssh/known_hosts
-  trust_on_first_use: false
+endpoint:
+  signer_port: 11270
+  ssh:
+    host: signer.example.com
+    port: 1127
+    identity_file: .ssh/id_ed25519
+    known_hosts_path: .ssh/known_hosts
+    trust_on_first_use: false
 ```
 
-If you want Trust-On-First-Use host enrollment, set `trust_on_first_use: true`. On first connection, the SDK will trust and save the signer's SSH host key into `known_hosts`.
+If you want Trust-On-First-Use host enrollment, set `endpoint.ssh.trust_on_first_use: true`. On first connection, the SDK will trust and save the signer's SSH host key into `known_hosts`.
 
 ## Authentication
 

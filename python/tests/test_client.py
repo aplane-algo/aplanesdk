@@ -919,25 +919,25 @@ class TestBuildSignRequests:
 class TestFromEnv:
     def test_throws_when_ssh_not_configured(self, tmp_path):
         config_file = tmp_path / "config.yaml"
-        config_file.write_text("signer_port: 11270\n")
+        config_file.write_text("endpoint:\n  signer_port: 11270\n")
         token_file = tmp_path / "aplane.token"
         token_file.write_text("test-token")
 
-        with pytest.raises(SignerError, match="No ssh block"):
+        with pytest.raises(SignerError, match="No endpoint.ssh block"):
             SignerClient.from_env(data_dir=str(tmp_path))
 
     def test_throws_when_ssh_host_empty(self, tmp_path):
         config_file = tmp_path / "config.yaml"
-        config_file.write_text("signer_port: 11270\nssh:\n  port: 1127\n")
+        config_file.write_text("endpoint:\n  signer_port: 11270\n  ssh:\n    port: 1127\n")
         token_file = tmp_path / "aplane.token"
         token_file.write_text("test-token")
 
-        with pytest.raises(SignerError, match="ssh.host is required"):
+        with pytest.raises(SignerError, match="endpoint.ssh.host is required"):
             SignerClient.from_env(data_dir=str(tmp_path))
 
     def test_throws_when_token_missing(self, tmp_path):
         config_file = tmp_path / "config.yaml"
-        config_file.write_text("ssh:\n  host: example.com\n  port: 1127\n")
+        config_file.write_text("endpoint:\n  ssh:\n    host: example.com\n    port: 1127\n")
         # No token file
 
         with pytest.raises(SignerError, match="No token"):
@@ -1002,7 +1002,7 @@ class TestSignReturnFormat:
 
 class TestRequestTokenToFile:
     def test_creates_token_file_with_secure_permissions(self, tmp_path):
-        (tmp_path / "config.yaml").write_text("ssh:\n  host: example.com\n  port: 1127\n")
+        (tmp_path / "config.yaml").write_text("endpoint:\n  ssh:\n    host: example.com\n    port: 1127\n")
         ssh_dir = tmp_path / ".ssh"
         ssh_dir.mkdir()
         (ssh_dir / "id_ed25519").write_text("dummy-private-key")
@@ -1123,13 +1123,14 @@ class TestLoadConfig:
     def test_with_ssh(self, tmp_path):
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
-            "signer_port: 12345\n"
-            "ssh:\n"
-            "  host: signer.example.com\n"
-            "  port: 2222\n"
-            "  identity_file: .ssh/mykey\n"
-            "  known_hosts_path: .ssh/hosts\n"
-            "  trust_on_first_use: true\n"
+            "endpoint:\n"
+            "  signer_port: 12345\n"
+            "  ssh:\n"
+            "    host: signer.example.com\n"
+            "    port: 2222\n"
+            "    identity_file: .ssh/mykey\n"
+            "    known_hosts_path: .ssh/hosts\n"
+            "    trust_on_first_use: true\n"
         )
         config = load_config(str(tmp_path))
         assert config.signer_port == 12345
@@ -1143,8 +1144,9 @@ class TestLoadConfig:
     def test_trust_on_first_use_defaults_false(self, tmp_path):
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
-            "ssh:\n"
-            "  host: example.com\n"
+            "endpoint:\n"
+            "  ssh:\n"
+            "    host: example.com\n"
         )
         config = load_config(str(tmp_path))
         assert config.ssh.trust_on_first_use is False

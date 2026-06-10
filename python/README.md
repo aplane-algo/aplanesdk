@@ -88,12 +88,13 @@ Data directory structure (installer default: `~/aplane/apclient`):
 
 Example `config.yaml`:
 ```yaml
-signer_port: 11270
-ssh:
-  host: localhost            # Change to remote host if signer is on another machine
-  port: 1127
-  identity_file: .ssh/id_ed25519
-  known_hosts_path: .ssh/known_hosts
+endpoint:
+  signer_port: 11270
+  ssh:
+    host: localhost            # Change to remote host if signer is on another machine
+    port: 1127
+    identity_file: .ssh/id_ed25519
+    known_hosts_path: .ssh/known_hosts
 ```
 
 ### Direct SSH Connection

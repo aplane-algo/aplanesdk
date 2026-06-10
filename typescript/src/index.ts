@@ -10,11 +10,12 @@
  *     └── config.yaml          # Connection settings
  *
  * Example config.yaml:
- *     signer_port: 11270
- *     ssh:
- *       host: signer.example.com
- *       port: 1127
- *       identity_file: .ssh/id_ed25519
+ *     endpoint:
+ *       signer_port: 11270
+ *       ssh:
+ *         host: signer.example.com
+ *         port: 1127
+ *         identity_file: .ssh/id_ed25519
  *
  * Usage:
  *     import { SignerClient, sendRawTransaction } from "aplanesdk";

@@ -12,11 +12,12 @@
  *   5. Set env: export APCLIENT_DATA=~/aplane/apclient
  *
  * Example config.yaml (SSH tunnel):
- *   signer_port: 11270
- *   ssh:
- *     host: 192.168.86.73
- *     port: 1127
- *     identity_file: .ssh/id_ed25519
+ *   endpoint:
+ *     signer_port: 11270
+ *     ssh:
+ *       host: 192.168.86.73
+ *       port: 1127
+ *       identity_file: .ssh/id_ed25519
  *
  * Prerequisites:
  *   - A hashlock key must exist in the signer's keystore

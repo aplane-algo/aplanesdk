@@ -43,18 +43,20 @@ export function loadConfig(dataDir: string): ClientConfig {
     const content = fs.readFileSync(configPath, "utf-8");
     const data = parseYaml(content) || {};
 
-    if (data.signer_port !== undefined) {
-      config.signerPort = data.signer_port;
+    const endpoint = data.endpoint || {};
+
+    if (endpoint.signer_port !== undefined) {
+      config.signerPort = endpoint.signer_port;
     }
 
     // Parse SSH config if present
-    if (data.ssh && data.ssh.host) {
+    if (endpoint.ssh && endpoint.ssh.host) {
       config.ssh = {
-        host: data.ssh.host,
-        port: data.ssh.port ?? DEFAULT_SSH_PORT,
-        identityFile: data.ssh.identity_file ?? ".ssh/id_ed25519",
-        knownHostsPath: data.ssh.known_hosts_path ?? ".ssh/known_hosts",
-        trustOnFirstUse: data.ssh.trust_on_first_use ?? false,
+        host: endpoint.ssh.host,
+        port: endpoint.ssh.port ?? DEFAULT_SSH_PORT,
+        identityFile: endpoint.ssh.identity_file ?? ".ssh/id_ed25519",
+        knownHostsPath: endpoint.ssh.known_hosts_path ?? ".ssh/known_hosts",
+        trustOnFirstUse: endpoint.ssh.trust_on_first_use ?? false,
       };
     }
   } catch {

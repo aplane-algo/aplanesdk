@@ -127,13 +127,14 @@ Example `config.yaml`:
 network: testnet
 networks_allowed: [testnet]
 theme: auto
-signer_port: 11270
-ssh:
-  host: signer.example.com
-  port: 1127
-  identity_file: .ssh/id_ed25519
-  known_hosts_path: .ssh/known_hosts
-  trust_on_first_use: false
+endpoint:
+  signer_port: 11270
+  ssh:
+    host: signer.example.com
+    port: 1127
+    identity_file: .ssh/id_ed25519
+    known_hosts_path: .ssh/known_hosts
+    trust_on_first_use: false
 networks:
   testnet:
     algod:
@@ -144,8 +145,9 @@ networks:
 If you want Trust-On-First-Use host enrollment, set:
 
 ```yaml
-ssh:
-  trust_on_first_use: true
+endpoint:
+  ssh:
+    trust_on_first_use: true
 ```
 
 That allows the SDK to trust and save the signer's SSH host key into `known_hosts` on first connection.

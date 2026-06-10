@@ -197,7 +197,7 @@ func FromEnv(opts *FromEnvOptions) (*SignerClient, error) {
 
 	// SSH is required
 	if config.SSH == nil || config.SSH.Host == "" {
-		return nil, fmt.Errorf("no ssh block in config.yaml; add an ssh block with host, port, and identity_file")
+		return nil, fmt.Errorf("no endpoint.ssh block in config.yaml; add endpoint.ssh with host, port, and identity_file")
 	}
 
 	sshKeyPath := ResolvePath(config.SSH.IdentityFile, dataDir)

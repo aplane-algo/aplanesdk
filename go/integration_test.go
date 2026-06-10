@@ -18,7 +18,9 @@ import (
 )
 
 type liveSignerConfig struct {
-	SignerPort int `yaml:"signer_port"`
+	Endpoint struct {
+		SignerPort int `yaml:"signer_port"`
+	} `yaml:"endpoint"`
 }
 
 func liveSignerClient(t *testing.T) (*SignerClient, string) {
@@ -60,10 +62,10 @@ func liveSignerPort(t *testing.T) int {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		t.Fatalf("failed to parse signer config: %v", err)
 	}
-	if cfg.SignerPort == 0 {
-		t.Fatal("signer_port not set in signer config")
+	if cfg.Endpoint.SignerPort == 0 {
+		t.Fatal("endpoint.signer_port not set in signer config")
 	}
-	return cfg.SignerPort
+	return cfg.Endpoint.SignerPort
 }
 
 func liveSignerToken(t *testing.T) string {

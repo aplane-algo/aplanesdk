@@ -618,7 +618,7 @@ class SSHTunnel {
             if (!options.trustOnFirstUse) {
               hostKeyError =
                 `Unknown SSH host key for ${formatHostEntry(options.host, options.sshPort)}; ` +
-                `to trust this host, set ssh.trust_on_first_use: true in config.yaml, ` +
+        `to trust this host, set endpoint.ssh.trust_on_first_use: true in config.yaml, ` +
                 `or connect via apshell first to save the host key to ${options.knownHostsPath}`;
               return false;
             }
@@ -855,7 +855,7 @@ export class SignerClient {
    * Connect using config file from data directory.
    *
    * Data directory contents:
-   *   - config.yaml: Connection settings (signer_port, ssh)
+   *   - config.yaml: Connection settings (endpoint.signer_port, endpoint.ssh)
    *   - aplane.token: Authentication token
    *   - .ssh/id_ed25519: SSH key (if using SSH tunnel)
    *
@@ -907,8 +907,8 @@ export class SignerClient {
 
     // SSH is required
     throw new SignerError(
-      "No ssh block in config.yaml. " +
-      "Add an ssh block with host, port, and identity_file."
+      "No endpoint.ssh block in config.yaml. " +
+      "Add endpoint.ssh with host, port, and identity_file."
     );
   }
 

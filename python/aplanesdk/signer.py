@@ -12,11 +12,12 @@ Data directory (required via APCLIENT_DATA env var or data_dir parameter):
         └── id_ed25519       # SSH key for authentication
 
 Example config.yaml:
-    signer_port: 11270
-    ssh:
-      host: signer.example.com
-      port: 1127
-      identity_file: .ssh/id_ed25519
+    endpoint:
+      signer_port: 11270
+      ssh:
+        host: signer.example.com
+        port: 1127
+        identity_file: .ssh/id_ed25519
 
 Token Provisioning:
     from aplanesdk import request_token_to_file
@@ -472,15 +473,18 @@ def load_config(data_dir: str) -> ClientConfig:
     except yaml.YAMLError as e:
         raise SignerError(f"failed to parse config.yaml: {e}") from e
 
-    # Map yaml fields to config
-    if "signer_port" in data:
-        config.signer_port = data["signer_port"]
+    endpoint_data = data.get("endpoint") or {}
+    if not isinstance(endpoint_data, dict):
+        raise SignerError("endpoint must be a mapping in config.yaml")
+
+    if "signer_port" in endpoint_data:
+        config.signer_port = int(endpoint_data["signer_port"])
 
     # Parse nested SSH config (if present, SSH tunnel is enabled)
-    if "ssh" in data and data["ssh"]:
-        ssh_data = data["ssh"]
+    if "ssh" in endpoint_data and endpoint_data["ssh"]:
+        ssh_data = endpoint_data["ssh"]
         if "host" not in ssh_data:
-            raise SignerError("ssh.host is required when ssh block is present")
+            raise SignerError("endpoint.ssh.host is required when endpoint.ssh block is present")
         config.ssh = SSHConfig(
             host=ssh_data["host"],
             port=ssh_data.get("port", DEFAULT_SSH_PORT),
@@ -759,7 +763,7 @@ class _SSHTunnel:
             if "not found in known_hosts" in err_msg.lower() or "reject" in err_msg.lower():
                 raise SignerError(
                     f"Unknown SSH host key for {self._ssh_host}:{self._ssh_port}; "
-                    f"to trust this host, set ssh.trust_on_first_use: true in config.yaml, "
+                    f"to trust this host, set endpoint.ssh.trust_on_first_use: true in config.yaml, "
                     f"or connect via apshell first to save the host key to "
                     f"{self._known_hosts_path}"
                 )
@@ -1069,8 +1073,8 @@ class SignerClient:
 
         # SSH is required
         raise SignerError(
-            "No ssh block in config.yaml. "
-            "Add an ssh block with host, port, and identity_file."
+            "No endpoint.ssh block in config.yaml. "
+            "Add endpoint.ssh with host, port, and identity_file."
         )
 
     def close(self):
@@ -2767,8 +2771,8 @@ def request_token_to_file(
 
     Args:
         data_dir: Client data directory. Required unless APCLIENT_DATA env var is set.
-        host: Signer host (default: from config.yaml ssh.host)
-        ssh_port: SSH port (default: from config.yaml ssh.port or 1127)
+        host: Signer host (default: from config.yaml endpoint.ssh.host)
+        ssh_port: SSH port (default: from config.yaml endpoint.ssh.port or 1127)
         identity: Identity ID for the token (default: current product identity).
                   Non-product identities are rejected in the current single-operator mode.
         auto_add_host: If True, automatically trust unknown hosts
@@ -2797,8 +2801,8 @@ def request_token_to_file(
     if host is None:
         if config.ssh is None:
             raise SignerError(
-                "No host specified and no ssh.host in config.yaml. "
-                "Pass host parameter or add ssh block to config.yaml."
+                "No host specified and no endpoint.ssh.host in config.yaml. "
+                "Pass host parameter or add endpoint.ssh block to config.yaml."
             )
         host = config.ssh.host
     if ssh_port is None:

@@ -31,17 +31,30 @@ EOF
   fi
 
   port="$(python3 - "$config" <<'PY'
-import re
 import sys
 from pathlib import Path
 
-match = re.search(r"(?m)^signer_port:\s*(\d+)\s*$", Path(sys.argv[1]).read_text())
-if not match:
+config = Path(sys.argv[1])
+in_endpoint = False
+for raw in config.read_text().splitlines():
+    stripped = raw.strip()
+    if not stripped or stripped.startswith("#"):
+        continue
+    indent = len(raw) - len(raw.lstrip(" "))
+    if indent == 0:
+        in_endpoint = stripped == "endpoint:"
+        continue
+    if in_endpoint and indent == 2 and stripped.startswith("signer_port:"):
+        value = stripped.split(":", 1)[1].split("#", 1)[0].strip()
+        if not value.isdigit():
+            raise SystemExit(1)
+        print(value)
+        break
+else:
     raise SystemExit(1)
-print(match.group(1))
 PY
 )" || {
-    echo "Could not read signer_port from $config." >&2
+    echo "Could not read endpoint.signer_port from $config." >&2
     echo "Set APLANE_SDK_SIGNER_URL explicitly." >&2
     exit 1
   }

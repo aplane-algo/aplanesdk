@@ -39,9 +39,9 @@ def _live_signer_port() -> int:
 
     with open(Path(data_dir) / "config.yaml", encoding="utf-8") as f:
         config = yaml.safe_load(f) or {}
-    port = int(config.get("signer_port") or 0)
+    port = int((config.get("endpoint") or {}).get("signer_port") or 0)
     if port == 0:
-        raise AssertionError("signer_port not set in signer config")
+        raise AssertionError("endpoint.signer_port not set in signer config")
     return port
 
 
