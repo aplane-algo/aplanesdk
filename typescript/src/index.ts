@@ -64,6 +64,12 @@ export {
   hexToBytes,
 } from "./encoding.js";
 
+// Prepared transaction model
+export {
+  preparedTransactionToSignRequest,
+  preparedGroupToSignRequests,
+} from "./prepared.js";
+
 // Errors
 export {
   SignerError,
@@ -99,6 +105,9 @@ export type {
   SignRequest,
   GroupSignRequest,
   GroupSignResponse,
+  PreparedCheck,
+  PreparedTransaction,
+  PreparedGroup,
   ErrorResponse,
   MutationReport,
   PlanGroupResponse,

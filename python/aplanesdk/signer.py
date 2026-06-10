@@ -37,6 +37,8 @@ Data directory is required:
     # or pass data_dir parameter to from_env()
 """
 
+from __future__ import annotations
+
 import base64
 import json
 import os
@@ -430,6 +432,86 @@ class GuardedSignResult:
     sentry_component_responses: List[ComponentSignResponse]
     assembly_response: GuardedAssemblyResponse
     primary_sign_response: Optional[GroupSignResponse] = None
+
+
+@dataclass
+class PreparedCheck:
+    """SDK-side preflight information collected during intent preparation."""
+    name: str
+    status: str = ""
+    message: str = ""
+    data: Optional[Dict[str, Any]] = None
+
+
+@dataclass
+class PreparedTransaction:
+    """One prepared transaction slot before apsigner planning/signing."""
+    transaction: Optional[transaction.Transaction] = None
+    auth_address: Optional[str] = None
+    txn_sender: str = ""
+    signer_key: Optional[KeyInfo] = None
+    lsig_args: Optional[Dict[str, bytes]] = None
+    lsig_size: int = 0
+    app_call_info: Optional[Dict[str, str]] = None
+    signed_transaction_base64: str = ""
+    checks: Optional[List[PreparedCheck]] = None
+
+    def to_sign_request(self) -> Dict[str, Any]:
+        """Convert this prepared slot to a signer SignRequest entry."""
+        if self.signed_transaction_base64:
+            try:
+                signed_hex = base64.b64decode(
+                    self.signed_transaction_base64,
+                    validate=True,
+                ).hex()
+            except Exception as e:
+                raise ValueError(
+                    f"invalid passthrough transaction: {e}"
+                ) from e
+            return {"signed_txn_hex": signed_hex}
+
+        if self.transaction is None:
+            raise ValueError("transaction is required")
+
+        txn_bytes_hex, txn_sender = encode_transaction(self.transaction)
+        if not self.auth_address:
+            request: Dict[str, Any] = {"txn_bytes_hex": txn_bytes_hex}
+            if self.lsig_size > 0:
+                request["lsig_size"] = self.lsig_size
+            return request
+
+        request = {
+            "txn_bytes_hex": txn_bytes_hex,
+            "auth_address": self.auth_address,
+            "txn_sender": self.txn_sender or txn_sender,
+        }
+        if self.lsig_args:
+            request["lsig_args"] = {
+                name: value.hex()
+                for name, value in self.lsig_args.items()
+            }
+        if self.app_call_info:
+            request["app_call_info"] = self.app_call_info
+        return request
+
+
+@dataclass
+class PreparedGroup:
+    """Ordered group of prepared transaction slots."""
+    transactions: List[PreparedTransaction]
+    checks: Optional[List[PreparedCheck]] = None
+
+    def to_sign_requests(self) -> List[Dict[str, Any]]:
+        """Convert this group to signer SignRequest entries."""
+        if not self.transactions:
+            raise ValueError("prepared group is empty")
+        requests = []
+        for index, item in enumerate(self.transactions):
+            try:
+                requests.append(item.to_sign_request())
+            except Exception as e:
+                raise ValueError(f"prepared transaction {index}: {e}") from e
+        return requests
 
 
 @dataclass

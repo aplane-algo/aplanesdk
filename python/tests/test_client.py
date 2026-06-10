@@ -33,6 +33,8 @@ from aplanesdk.signer import (
     GuardedSignTarget,
     GuardedPrimarySignTarget,
     SentryReferenceCandidate,
+    PreparedTransaction,
+    PreparedGroup,
     COMPONENT_SIGN_ROLE_SENTRY,
     KEY_TYPE_SENTRY_ED25519,
     request_token,
@@ -914,6 +916,66 @@ class TestBuildSignRequests:
         body = call_kwargs[1]["json"]
         assert body["requests"][0]["lsig_args"] is not None
         assert body["requests"][0]["lsig_args"]["preimage"] == "736563726574"
+
+
+class TestPreparedGroup:
+    def _make_mock_txn(self):
+        txn = MagicMock()
+        txn.sender = "SENDER_ADDR"
+        return txn
+
+    def test_to_sign_requests_sign_mode(self):
+        prepared = PreparedGroup([
+            PreparedTransaction(
+                transaction=self._make_mock_txn(),
+                auth_address="AUTH_ADDR",
+                txn_sender="DISPLAY_SENDER",
+                lsig_args={"preimage": b"secret"},
+                app_call_info={"mode": "abi", "method": "do(uint64)void"},
+            )
+        ])
+
+        with patch("aplanesdk.signer.encode_transaction", return_value=("deadbeef", "SENDER_ADDR")):
+            requests = prepared.to_sign_requests()
+
+        assert requests == [{
+            "txn_bytes_hex": "deadbeef",
+            "auth_address": "AUTH_ADDR",
+            "txn_sender": "DISPLAY_SENDER",
+            "lsig_args": {"preimage": "736563726574"},
+            "app_call_info": {"mode": "abi", "method": "do(uint64)void"},
+        }]
+
+    def test_to_sign_requests_foreign_mode(self):
+        prepared = PreparedGroup([
+            PreparedTransaction(
+                transaction=self._make_mock_txn(),
+                lsig_size=3035,
+            )
+        ])
+
+        with patch("aplanesdk.signer.encode_transaction", return_value=("deadbeef", "SENDER_ADDR")):
+            requests = prepared.to_sign_requests()
+
+        assert requests == [{
+            "txn_bytes_hex": "deadbeef",
+            "lsig_size": 3035,
+        }]
+
+    def test_to_sign_requests_passthrough_mode(self):
+        prepared = PreparedGroup([
+            PreparedTransaction(
+                signed_transaction_base64=base64.b64encode(b"signed-txn").decode(),
+            )
+        ])
+
+        assert prepared.to_sign_requests() == [{
+            "signed_txn_hex": b"signed-txn".hex(),
+        }]
+
+    def test_rejects_empty_group(self):
+        with pytest.raises(ValueError, match="prepared group is empty"):
+            PreparedGroup([]).to_sign_requests()
 
 
 class TestFromEnv:

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 APlane Project LLC
 
+import type { Transaction } from "algosdk";
+
 /**
  * Runtime argument specification for a generic LogicSig.
  * Position in the array corresponds to the TEAL arg index.
@@ -449,6 +451,52 @@ export interface AppCallInfo {
   mode?: string;
   /** ABI method signature when available */
   method?: string;
+}
+
+/**
+ * SDK-side preflight information collected during intent preparation.
+ */
+export interface PreparedCheck {
+  /** Stable check name. */
+  name: string;
+  /** Check status, such as "ok", "warning", or "error". */
+  status?: string;
+  /** Human-readable check detail. */
+  message?: string;
+  /** Optional structured check data. */
+  data?: Record<string, unknown>;
+}
+
+/**
+ * One prepared transaction slot before apsigner planning/signing.
+ */
+export interface PreparedTransaction {
+  /** Unsigned algosdk transaction for sign or foreign mode. */
+  transaction?: Transaction | null;
+  /** Effective signer address. Empty/null means foreign context. */
+  authAddress?: string | null;
+  /** Optional sender display override. Defaults to transaction sender. */
+  txnSender?: string;
+  /** Optional signer key metadata found during preparation. */
+  signerKey?: KeyInfo;
+  /** Optional LogicSig runtime arguments. */
+  lsigArgs?: LsigArgs;
+  /** Optional LogicSig size hint for foreign planning. */
+  lsigSize?: number;
+  /** Optional app-call approval metadata. */
+  appCallInfo?: AppCallInfo;
+  /** Base64-encoded signed transaction for passthrough mode. */
+  signedTransactionBase64?: string;
+  /** SDK-side preflight checks for this slot. */
+  checks?: PreparedCheck[];
+}
+
+/**
+ * Ordered group of prepared transaction slots.
+ */
+export interface PreparedGroup {
+  transactions: PreparedTransaction[];
+  checks?: PreparedCheck[];
 }
 
 /**

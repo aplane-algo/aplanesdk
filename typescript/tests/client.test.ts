@@ -20,6 +20,7 @@ import { requestToken } from "../src/utils.js";
 import { bytesToHex, hexToBytes, concatenateSignedTxns, encodeTransaction, encodeLsigArgs } from "../src/encoding.js";
 import { assembleGroup } from "../src/utils.js";
 import { loadConfig, loadTokenFromDir } from "../src/config.js";
+import { preparedGroupToSignRequests } from "../src/prepared.js";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -1233,6 +1234,70 @@ describe("buildSignRequests", () => {
     const capturedBody = JSON.parse(mockFetch.mock.calls[1][1].body);
     assert.notEqual(capturedBody.requests[0].lsig_args, undefined);
     assert.equal(capturedBody.requests[0].lsig_args.preimage, "736563726574");
+  });
+});
+
+describe("preparedGroupToSignRequests", () => {
+  const createMockTxn = (sender = "SENDER_ADDRESS") => ({
+    sender: { toString: () => sender },
+    toByte: () => new Uint8Array([1, 2, 3]),
+  });
+
+  it("builds sign-mode requests", () => {
+    const requests = preparedGroupToSignRequests({
+      transactions: [{
+        transaction: createMockTxn() as any,
+        authAddress: "AUTH_ADDR",
+        txnSender: "DISPLAY_SENDER",
+        lsigArgs: {
+          preimage: new Uint8Array([0x73, 0x65, 0x63, 0x72, 0x65, 0x74]),
+        },
+        appCallInfo: {
+          mode: "abi",
+          method: "do(uint64)void",
+        },
+      }],
+    });
+
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].txn_bytes_hex, "5458010203");
+    assert.equal(requests[0].auth_address, "AUTH_ADDR");
+    assert.equal(requests[0].txn_sender, "DISPLAY_SENDER");
+    assert.equal(requests[0].lsig_args?.preimage, "736563726574");
+    assert.equal(requests[0].app_call_info?.method, "do(uint64)void");
+  });
+
+  it("builds foreign-mode requests", () => {
+    const requests = preparedGroupToSignRequests({
+      transactions: [{
+        transaction: createMockTxn() as any,
+        lsigSize: 3035,
+      }],
+    });
+
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].txn_bytes_hex, "5458010203");
+    assert.equal(requests[0].auth_address, undefined);
+    assert.equal(requests[0].lsig_size, 3035);
+  });
+
+  it("builds passthrough requests", () => {
+    const requests = preparedGroupToSignRequests({
+      transactions: [{
+        signedTransactionBase64: Buffer.from("signed-txn").toString("base64"),
+      }],
+    });
+
+    assert.deepEqual(requests, [{
+      signed_txn_hex: Buffer.from("signed-txn").toString("hex"),
+    }]);
+  });
+
+  it("rejects empty groups", () => {
+    assert.throws(
+      () => preparedGroupToSignRequests({ transactions: [] }),
+      /prepared group is empty/,
+    );
   });
 });
 
