@@ -3,6 +3,7 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import algosdk from "algosdk";
 import { SignerClient, signGuardedGroup } from "../src/client.js";
 import {
   COMPONENT_SIGN_ROLE_SENTRY,
@@ -87,6 +88,31 @@ function queueStatusResponse(
       approval_wait_seconds: approvalWaitSeconds,
     }),
   });
+}
+
+function testAddress(seed: number): string {
+  const bytes = new Uint8Array(32);
+  bytes[31] = seed;
+  return algosdk.encodeAddress(bytes);
+}
+
+function mockAlgod(accounts: Record<string, any>): any {
+  return {
+    getTransactionParams: () => ({
+      do: async () => ({
+        fee: 1000n,
+        minFee: 1000n,
+        flatFee: false,
+        firstValid: 1n,
+        lastValid: 100n,
+        genesisHash: new Uint8Array(32),
+        genesisID: "testnet-v1",
+      }),
+    }),
+    accountInformation: (address: string) => ({
+      do: async () => accounts[address],
+    }),
+  };
 }
 
 // Restore on process exit
@@ -364,6 +390,117 @@ describe("SignerClient", () => {
       await assert.rejects(
         client.resolveAuthAddress("SENDER", () => ({ "auth-addr": "AUTH" })),
         /not signable/,
+      );
+    });
+  });
+
+  describe("prep helpers", () => {
+    const keysResponse = (address: string) => ({
+      status: 200,
+      ok: true,
+      json: async () => ({
+        count: 1,
+        keys: [{ address, key_type: "ed25519" }],
+      }),
+    });
+
+    it("prepares payment transactions", async () => {
+      const sender = testAddress(1);
+      const receiver = testAddress(2);
+      const algod = mockAlgod({
+        [sender]: { amount: 2_000_000, minBalance: 100_000 },
+      });
+      queueStatusResponse(60, 1);
+      mockFetch.mockResolvedValueOnce(keysResponse(sender));
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const prepared = await client.preparePayment(algod, {
+        sender,
+        receiver,
+        amount: 10_000,
+        fee: 1000,
+        useFlatFee: true,
+      });
+
+      assert.equal(prepared.authAddress, sender);
+      assert.equal(prepared.signerKey?.address, sender);
+      assert.equal((prepared.transaction as any).payment.receiver.toString(), receiver);
+      assert.equal(String((prepared.transaction as any).fee), "1000");
+      assert.equal(prepared.checks?.[0].name, "payment_balance");
+    });
+
+    it("rejects payment transactions with insufficient funds", async () => {
+      const sender = testAddress(1);
+      const receiver = testAddress(2);
+      const algod = mockAlgod({
+        [sender]: { amount: 101_000, minBalance: 100_000 },
+      });
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      await assert.rejects(
+        client.preparePayment(algod, { sender, receiver, amount: 10_000 }),
+        /insufficient funds/,
+      );
+    });
+
+    it("prepares ASA transfer transactions", async () => {
+      const sender = testAddress(1);
+      const receiver = testAddress(2);
+      const algod = mockAlgod({
+        [sender]: {
+          amount: 2_000_000,
+          minBalance: 100_000,
+          assets: [{ assetId: 1001, amount: 25 }],
+        },
+        [receiver]: {
+          amount: 2_000_000,
+          minBalance: 100_000,
+          assets: [{ assetId: 1001, amount: 0 }],
+        },
+      });
+      queueStatusResponse(60, 1);
+      mockFetch.mockResolvedValueOnce(keysResponse(sender));
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const prepared = await client.prepareAsaTransfer(algod, {
+        sender,
+        receiver,
+        assetId: 1001,
+        amount: 5,
+      });
+
+      assert.equal(prepared.authAddress, sender);
+      assert.equal(prepared.signerKey?.address, sender);
+      assert.equal(String((prepared.transaction as any).assetTransfer.assetIndex), "1001");
+      assert.equal(String((prepared.transaction as any).assetTransfer.amount), "5");
+      assert.equal(prepared.checks?.[0].name, "asa_transfer");
+    });
+
+    it("rejects ASA transfers when the receiver is not opted in", async () => {
+      const sender = testAddress(1);
+      const receiver = testAddress(2);
+      const algod = mockAlgod({
+        [sender]: {
+          amount: 2_000_000,
+          minBalance: 100_000,
+          assets: [{ assetId: 1001, amount: 25 }],
+        },
+        [receiver]: {
+          amount: 2_000_000,
+          minBalance: 100_000,
+          assets: [],
+        },
+      });
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      await assert.rejects(
+        client.prepareAsaTransfer(algod, {
+          sender,
+          receiver,
+          assetId: 1001,
+          amount: 5,
+        }),
+        /receiver is not opted into asset/,
       );
     });
   });

@@ -9,6 +9,7 @@ from unittest.mock import patch, MagicMock
 import os
 
 import pytest
+from algosdk import encoding as algo_encoding, transaction
 
 from aplanesdk.signer import (
     SignerClient,
@@ -56,6 +57,30 @@ def mock_response(status_code=200, json_data=None, text=""):
     resp.content = json.dumps(json_data).encode() if json_data else b""
     resp.json.return_value = json_data if json_data else {}
     return resp
+
+
+def sdk_test_address(seed: int) -> str:
+    raw = bytearray(32)
+    raw[-1] = seed
+    return algo_encoding.encode_address(bytes(raw))
+
+
+class MockAlgod:
+    def __init__(self, accounts):
+        self.accounts = accounts
+
+    def suggested_params(self):
+        return transaction.SuggestedParams(
+            1000,
+            1,
+            100,
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            gen="testnet-v1",
+            flat_fee=False,
+        )
+
+    def account_info(self, address):
+        return self.accounts[address]
 
 
 # ---------------------------------------------------------------------------
@@ -1060,6 +1085,124 @@ class TestPreparedGroup:
     def test_rejects_empty_group(self):
         with pytest.raises(ValueError, match="prepared group is empty"):
             PreparedGroup([]).to_sign_requests()
+
+
+class TestPrepHelpers:
+    def _status(self):
+        return mock_response(200, {
+            "identity_id": "default",
+            "state": "unlocked",
+            "signer_locked": False,
+            "ready_for_signing": True,
+            "key_count": 1,
+            "keyset_revision": 1,
+        })
+
+    def _keys(self, address):
+        return mock_response(200, {
+            "count": 1,
+            "keys": [{"address": address, "key_type": "ed25519"}],
+        })
+
+    def test_prepare_payment(self):
+        sender = sdk_test_address(1)
+        receiver = sdk_test_address(2)
+        algod = MockAlgod({
+            sender: {"amount": 2_000_000, "min-balance": 100_000},
+        })
+        client = make_client()
+        with patch.object(client.session, "get", side_effect=[
+            self._status(),
+            self._keys(sender),
+        ]):
+            prepared = client.prepare_payment(
+                algod,
+                sender=sender,
+                receiver=receiver,
+                amount=10_000,
+                fee=1000,
+                use_flat_fee=True,
+            )
+
+        assert prepared.auth_address == sender
+        assert prepared.signer_key.address == sender
+        assert prepared.transaction.receiver == receiver
+        assert prepared.transaction.fee == 1000
+        assert prepared.checks[0].name == "payment_balance"
+
+    def test_prepare_payment_rejects_insufficient_funds(self):
+        sender = sdk_test_address(1)
+        receiver = sdk_test_address(2)
+        algod = MockAlgod({
+            sender: {"amount": 101_000, "min-balance": 100_000},
+        })
+        client = make_client()
+        with pytest.raises(SignerError, match="insufficient funds"):
+            client.prepare_payment(
+                algod,
+                sender=sender,
+                receiver=receiver,
+                amount=10_000,
+            )
+
+    def test_prepare_asa_transfer(self):
+        sender = sdk_test_address(1)
+        receiver = sdk_test_address(2)
+        algod = MockAlgod({
+            sender: {
+                "amount": 2_000_000,
+                "min-balance": 100_000,
+                "assets": [{"asset-id": 1001, "amount": 25}],
+            },
+            receiver: {
+                "amount": 2_000_000,
+                "min-balance": 100_000,
+                "assets": [{"asset-id": 1001, "amount": 0}],
+            },
+        })
+        client = make_client()
+        with patch.object(client.session, "get", side_effect=[
+            self._status(),
+            self._keys(sender),
+        ]):
+            prepared = client.prepare_asa_transfer(
+                algod,
+                sender=sender,
+                receiver=receiver,
+                asset_id=1001,
+                amount=5,
+            )
+
+        assert prepared.auth_address == sender
+        assert prepared.signer_key.address == sender
+        assert prepared.transaction.index == 1001
+        assert prepared.transaction.amount == 5
+        assert prepared.checks[0].name == "asa_transfer"
+
+    def test_prepare_asa_transfer_rejects_receiver_not_opted_in(self):
+        sender = sdk_test_address(1)
+        receiver = sdk_test_address(2)
+        algod = MockAlgod({
+            sender: {
+                "amount": 2_000_000,
+                "min-balance": 100_000,
+                "assets": [{"asset-id": 1001, "amount": 25}],
+            },
+            receiver: {
+                "amount": 2_000_000,
+                "min-balance": 100_000,
+                "assets": [],
+            },
+        })
+        client = make_client()
+        with pytest.raises(SignerError, match="receiver is not opted into asset"):
+            client.prepare_asa_transfer(
+                algod,
+                sender=sender,
+                receiver=receiver,
+                asset_id=1001,
+                amount=5,
+            )
 
 
 class TestFromEnv:

@@ -785,6 +785,48 @@ def _find_spendable_key(keys: List[KeyInfo], address: str) -> Optional[KeyInfo]:
     return None
 
 
+def _apply_prep_fee(params: Any, fee: Optional[int], use_flat_fee: bool) -> None:
+    if fee is None:
+        return
+    params.fee = fee
+    params.flat_fee = use_flat_fee
+
+
+def _account_amount(account_info: Any) -> int:
+    if isinstance(account_info, dict):
+        return int(account_info.get("amount", 0))
+    return int(getattr(account_info, "amount", 0))
+
+
+def _account_min_balance(account_info: Any) -> int:
+    if isinstance(account_info, dict):
+        return int(account_info.get("min-balance") or account_info.get("min_balance") or 0)
+    return int(
+        getattr(account_info, "min_balance", None)
+        or getattr(account_info, "minBalance", 0)
+    )
+
+
+def _account_asset_holding(account_info: Any, asset_id: int) -> Optional[Any]:
+    assets = account_info.get("assets", []) if isinstance(account_info, dict) else getattr(account_info, "assets", [])
+    for holding in assets or []:
+        if isinstance(holding, dict):
+            holding_id = holding.get("asset-id") or holding.get("asset_id")
+            deleted = holding.get("deleted", False)
+        else:
+            holding_id = getattr(holding, "asset_id", None) or getattr(holding, "assetId", None)
+            deleted = getattr(holding, "deleted", False)
+        if int(holding_id or 0) == asset_id and not deleted:
+            return holding
+    return None
+
+
+def _asset_holding_amount(holding: Any) -> int:
+    if isinstance(holding, dict):
+        return int(holding.get("amount", 0))
+    return int(getattr(holding, "amount", 0))
+
+
 # -----------------------------------------------------------------------------
 # Signer Client
 # -----------------------------------------------------------------------------
@@ -1468,6 +1510,123 @@ class SignerClient:
             auth_address=signing_addr,
             is_rekeyed=signing_addr != address,
             key_info=key_info,
+        )
+
+    def prepare_payment(
+        self,
+        algod_client: Any,
+        *,
+        sender: str,
+        receiver: str,
+        amount: int,
+        note: Optional[bytes] = None,
+        fee: Optional[int] = None,
+        use_flat_fee: bool = False,
+    ) -> PreparedTransaction:
+        """Build a prepared ALGO payment transaction."""
+        if algod_client is None:
+            raise ValueError("algod_client is required")
+        if not sender:
+            raise ValueError("sender is required")
+        if not receiver:
+            raise ValueError("receiver is required")
+
+        params = algod_client.suggested_params()
+        _apply_prep_fee(params, fee, use_flat_fee)
+
+        sender_info = algod_client.account_info(sender)
+        txn = transaction.PaymentTxn(
+            sender=sender,
+            sp=params,
+            receiver=receiver,
+            amt=amount,
+            note=note,
+        )
+        txn_fee = int(getattr(txn, "fee", 0))
+        available = _account_amount(sender_info) - _account_min_balance(sender_info)
+        required = amount + txn_fee
+        if available < required:
+            raise SignerError(
+                f"insufficient funds: available {available}, required {required}"
+            )
+
+        resolved = self.resolve_auth_address(sender, lambda _: sender_info)
+        return PreparedTransaction(
+            transaction=txn,
+            auth_address=resolved.auth_address,
+            signer_key=resolved.key_info,
+            checks=[
+                PreparedCheck(
+                    name="payment_balance",
+                    status="ok",
+                    data={
+                        "amount": amount,
+                        "fee": txn_fee,
+                        "available": available,
+                    },
+                )
+            ],
+        )
+
+    def prepare_asa_transfer(
+        self,
+        algod_client: Any,
+        *,
+        sender: str,
+        receiver: str,
+        asset_id: int,
+        amount: int,
+        note: Optional[bytes] = None,
+        fee: Optional[int] = None,
+        use_flat_fee: bool = False,
+    ) -> PreparedTransaction:
+        """Build a prepared ASA transfer transaction."""
+        if algod_client is None:
+            raise ValueError("algod_client is required")
+        if not sender:
+            raise ValueError("sender is required")
+        if not receiver:
+            raise ValueError("receiver is required")
+        if not asset_id:
+            raise ValueError("asset_id is required")
+
+        params = algod_client.suggested_params()
+        _apply_prep_fee(params, fee, use_flat_fee)
+
+        sender_info = algod_client.account_info(sender)
+        receiver_info = algod_client.account_info(receiver)
+        sender_holding = _account_asset_holding(sender_info, asset_id)
+        if sender_holding is None:
+            raise SignerError(f"sender is not opted into asset {asset_id}")
+        sender_amount = _asset_holding_amount(sender_holding)
+        if sender_amount < amount:
+            raise SignerError(
+                f"insufficient asset balance: available {sender_amount}, required {amount}"
+            )
+        if _account_asset_holding(receiver_info, asset_id) is None:
+            raise SignerError(f"receiver is not opted into asset {asset_id}")
+
+        txn = transaction.AssetTransferTxn(
+            sender=sender,
+            sp=params,
+            receiver=receiver,
+            amt=amount,
+            index=asset_id,
+            note=note,
+        )
+
+        resolved = self.resolve_auth_address(sender, lambda _: sender_info)
+        return PreparedTransaction(
+            transaction=txn,
+            auth_address=resolved.auth_address,
+            signer_key=resolved.key_info,
+            checks=[
+                PreparedCheck(
+                    name="asa_transfer",
+                    status="ok",
+                    data={"asset_id": asset_id, "amount": amount},
+                )
+            ],
         )
 
     def list_key_types(self) -> List[KeyTypeInfo]:

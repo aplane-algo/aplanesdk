@@ -108,6 +108,8 @@ export type {
   PreparedCheck,
   PreparedTransaction,
   PreparedGroup,
+  PaymentPrepParams,
+  AsaTransferPrepParams,
   AccountInfoResult,
   AccountInfoLookup,
   ResolvedAuthAddress,

@@ -500,6 +500,31 @@ export interface PreparedGroup {
 }
 
 /**
+ * Payment transaction intent accepted by preparePayment().
+ */
+export interface PaymentPrepParams {
+  sender: string;
+  receiver: string;
+  amount: number | bigint;
+  note?: Uint8Array;
+  fee?: number;
+  useFlatFee?: boolean;
+}
+
+/**
+ * ASA transfer transaction intent accepted by prepareAsaTransfer().
+ */
+export interface AsaTransferPrepParams {
+  sender: string;
+  receiver: string;
+  assetId: number | bigint;
+  amount: number | bigint;
+  note?: Uint8Array;
+  fee?: number;
+  useFlatFee?: boolean;
+}
+
+/**
  * Account information shape accepted by auth-resolution helpers.
  */
 export type AccountInfoResult =

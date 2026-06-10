@@ -5,7 +5,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as net from "net";
 import { randomBytes } from "crypto";
-import type { Transaction } from "algosdk";
+import algosdk, { type Transaction } from "algosdk";
 import type { Client as SSHClient, ClientChannel } from "ssh2";
 import type {
   KeyInfo,
@@ -13,6 +13,8 @@ import type {
   AccountInfoResult,
   ConnectSshOptions,
   FromEnvOptions,
+  PaymentPrepParams,
+  AsaTransferPrepParams,
   SignOptions,
   LsigArgs,
   LsigArgsMap,
@@ -21,6 +23,7 @@ import type {
   GroupSignResponse,
   StatusResponse,
   ResolvedAuthAddress,
+  PreparedTransaction,
   KeysResponse,
   KeyTypesResponse,
   KeyTypeInfo,
@@ -736,6 +739,51 @@ function findSpendableKey(keys: KeyInfo[], address: string): KeyInfo | undefined
   ));
 }
 
+function accountAmount(accountInfo: AccountInfoResult | Record<string, any>): number {
+  if (!accountInfo || typeof accountInfo === "string") {
+    return 0;
+  }
+  const raw = accountInfo as Record<string, any>;
+  return Number(raw.amount || 0);
+}
+
+function accountMinBalance(accountInfo: AccountInfoResult | Record<string, any>): number {
+  if (!accountInfo || typeof accountInfo === "string") {
+    return 0;
+  }
+  const raw = accountInfo as Record<string, any>;
+  return Number(raw["min-balance"] || raw.min_balance || raw.minBalance || 0);
+}
+
+function accountAssetHolding(
+  accountInfo: AccountInfoResult | Record<string, any>,
+  assetId: number | bigint,
+): Record<string, any> | undefined {
+  if (!accountInfo || typeof accountInfo === "string") {
+    return undefined;
+  }
+  const raw = accountInfo as Record<string, any>;
+  const wanted = BigInt(assetId);
+  const assets = Array.isArray(raw.assets) ? raw.assets : [];
+  return assets.find((holding: Record<string, any>) => {
+    const id = holding["asset-id"] ?? holding.asset_id ?? holding.assetId;
+    return id !== undefined && BigInt(id) === wanted && holding.deleted !== true;
+  });
+}
+
+function assetHoldingAmount(holding: Record<string, any>): bigint {
+  return BigInt(holding.amount || 0);
+}
+
+function applyPrepFee(params: Record<string, any>, fee?: number, useFlatFee?: boolean): void {
+  if (!fee) {
+    return;
+  }
+  params.fee = fee;
+  params.flatFee = Boolean(useFlatFee);
+  params.flat_fee = Boolean(useFlatFee);
+}
+
 /**
  * Client for apsigner signing service.
  *
@@ -1202,6 +1250,123 @@ export class SignerClient {
       authAddress: signingAddress,
       isRekeyed: signingAddress !== address,
       keyInfo,
+    };
+  }
+
+  /**
+   * Build a prepared ALGO payment transaction.
+   */
+  async preparePayment(
+    algodClient: any,
+    params: PaymentPrepParams,
+  ): Promise<PreparedTransaction> {
+    if (!algodClient) {
+      throw new SignerError("algodClient is required");
+    }
+    if (!params.sender) {
+      throw new SignerError("sender is required");
+    }
+    if (!params.receiver) {
+      throw new SignerError("receiver is required");
+    }
+
+    const suggestedParams = await algodClient.getTransactionParams().do();
+    applyPrepFee(suggestedParams, params.fee, params.useFlatFee);
+
+    const senderInfo = await algodClient.accountInformation(params.sender).do();
+    const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+      sender: params.sender,
+      receiver: params.receiver,
+      amount: params.amount,
+      note: params.note,
+      suggestedParams,
+    });
+
+    const fee = Number((txn as any).fee || 0);
+    const available = accountAmount(senderInfo) - accountMinBalance(senderInfo);
+    const required = Number(params.amount) + fee;
+    if (available < required) {
+      throw new SignerError(`insufficient funds: available ${available}, required ${required}`);
+    }
+
+    const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
+    return {
+      transaction: txn,
+      authAddress: resolved.authAddress,
+      signerKey: resolved.keyInfo,
+      checks: [{
+        name: "payment_balance",
+        status: "ok",
+        data: {
+          amount: params.amount,
+          fee,
+          available,
+        },
+      }],
+    };
+  }
+
+  /**
+   * Build a prepared ASA transfer transaction.
+   */
+  async prepareAsaTransfer(
+    algodClient: any,
+    params: AsaTransferPrepParams,
+  ): Promise<PreparedTransaction> {
+    if (!algodClient) {
+      throw new SignerError("algodClient is required");
+    }
+    if (!params.sender) {
+      throw new SignerError("sender is required");
+    }
+    if (!params.receiver) {
+      throw new SignerError("receiver is required");
+    }
+    if (!params.assetId) {
+      throw new SignerError("assetId is required");
+    }
+
+    const suggestedParams = await algodClient.getTransactionParams().do();
+    applyPrepFee(suggestedParams, params.fee, params.useFlatFee);
+
+    const senderInfo = await algodClient.accountInformation(params.sender).do();
+    const receiverInfo = await algodClient.accountInformation(params.receiver).do();
+    const senderHolding = accountAssetHolding(senderInfo, params.assetId);
+    if (!senderHolding) {
+      throw new SignerError(`sender is not opted into asset ${params.assetId}`);
+    }
+    const senderAmount = assetHoldingAmount(senderHolding);
+    if (senderAmount < BigInt(params.amount)) {
+      throw new SignerError(
+        `insufficient asset balance: available ${senderAmount}, required ${params.amount}`,
+      );
+    }
+    if (!accountAssetHolding(receiverInfo, params.assetId)) {
+      throw new SignerError(`receiver is not opted into asset ${params.assetId}`);
+    }
+
+    const txn = algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
+      sender: params.sender,
+      receiver: params.receiver,
+      amount: params.amount,
+      assetIndex: params.assetId,
+      note: params.note,
+      suggestedParams,
+    });
+
+    const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
+    return {
+      transaction: txn,
+      authAddress: resolved.authAddress,
+      signerKey: resolved.keyInfo,
+      checks: [{
+        name: "asa_transfer",
+        status: "ok",
+        data: {
+          assetId: params.assetId,
+          amount: params.amount,
+        },
+      }],
     };
   }
 
