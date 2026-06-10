@@ -448,6 +448,18 @@ type PlanGroupResponse struct {
 // older response name.
 type GroupPlanResponse = PlanGroupResponse
 
+// GroupSimulateResponse is the response from the /simulate endpoint.
+// The signer signs internally, calls algod simulate, and returns diagnostics
+// plus the final unsigned transactions without exposing reusable signed bytes.
+type GroupSimulateResponse struct {
+	TxIDs        []string        `json:"tx_ids,omitempty"`       // Transaction IDs for the simulated group
+	Transactions []string        `json:"transactions,omitempty"` // TX-prefixed hex-encoded unsigned txns (final group)
+	Mutations    *MutationReport `json:"mutations,omitempty"`    // Modifications made by server planning
+	Output       string          `json:"output,omitempty"`       // Human-readable simulation report
+	Failed       bool            `json:"failed,omitempty"`       // True when algod simulate returned an execution failure
+	Error        string          `json:"error,omitempty"`
+}
+
 // HealthResponse is the response from the /health endpoint.
 type HealthResponse struct {
 	Status          string `json:"status"`

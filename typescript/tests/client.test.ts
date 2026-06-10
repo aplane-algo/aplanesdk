@@ -1666,6 +1666,100 @@ describe("SignerClient", () => {
     });
   });
 
+  describe("simulateRequests", () => {
+    it("sends raw simulate requests and returns diagnostics", async () => {
+      mockFetch.mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: async () => ({
+          tx_ids: ["SIMTXID1"],
+          transactions: ["545801"],
+          mutations: { dummies_added: 1 },
+          output: "Simulation failed\nlogic eval error",
+          failed: true,
+        }),
+      });
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const result = await client.simulateRequests(
+        [
+          {
+            txn_bytes_hex: "545801",
+            auth_address: "AUTH",
+            txn_sender: "SENDER",
+          },
+        ],
+        { requestId: "simulate-id" },
+      );
+
+      assert.deepEqual(result.tx_ids, ["SIMTXID1"]);
+      assert.deepEqual(result.transactions, ["545801"]);
+      assert.equal(result.mutations?.dummiesAdded, 1);
+      assert.equal(result.failed, true);
+      assert.match(result.output ?? "", /logic eval error/);
+      assert.equal(mockFetch.mock.calls[0][0], "http://localhost:11270/simulate");
+      assert.deepEqual(JSON.parse(mockFetch.mock.calls[0][1].body), {
+        request_id: "simulate-id",
+        requests: [
+          {
+            txn_bytes_hex: "545801",
+            auth_address: "AUTH",
+            txn_sender: "SENDER",
+          },
+        ],
+      });
+    });
+
+    it("simulates prepared groups", async () => {
+      mockFetch.mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: async () => ({ tx_ids: ["SIMTXID1"] }),
+      });
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const mockTxn = {
+        sender: { toString: () => "SENDER" },
+        toByte: () => new Uint8Array([1, 2, 3, 4]),
+      };
+      const result = await client.simulatePreparedGroup({
+        transactions: [
+          {
+            transaction: mockTxn as any,
+            authAddress: "AUTH",
+            txnSender: "SENDER",
+          },
+        ],
+      });
+
+      assert.deepEqual(result.tx_ids, ["SIMTXID1"]);
+      assert.equal(mockFetch.mock.calls[0][0], "http://localhost:11270/simulate");
+      assert.equal(JSON.parse(mockFetch.mock.calls[0][1].body).requests[0].auth_address, "AUTH");
+    });
+
+    it("throws on server error in response", async () => {
+      mockFetch.mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: async () => ({ error: "simulation unavailable" }),
+      });
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      await assert.rejects(
+        client.simulateRequests([{ txn_bytes_hex: "545801", auth_address: "AUTH" }]),
+        /simulation unavailable/,
+      );
+    });
+
+    it("validates raw simulate request IDs", async () => {
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      await assert.rejects(
+        client.simulateRequests([{ txn_bytes_hex: "545801" }], { requestId: "bad id" }),
+        { message: /invalid character/ },
+      );
+    });
+  });
+
   describe("cancelSignRequest", () => {
     it("returns cancel state", async () => {
       mockFetch.mockResolvedValueOnce({

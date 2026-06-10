@@ -30,6 +30,7 @@ import type {
   SignRequest,
   GroupSignRequest,
   GroupSignResponse,
+  GroupSimulateResponse,
   StatusResponse,
   ResolvedAuthAddress,
   PreparedTransaction,
@@ -69,6 +70,7 @@ import {
   concatenateSignedTxns,
   hexToBytes,
 } from "./encoding.js";
+import { preparedGroupToSignRequests } from "./prepared.js";
 import {
   loadConfig,
   loadTokenFromDir,
@@ -83,6 +85,7 @@ const STATUS_TIMEOUT = 5000;
 const INVENTORY_TIMEOUT = 30000;
 const MUTATION_TIMEOUT = 60000;
 const GROUP_PLAN_TIMEOUT = 60000;
+const GROUP_SIMULATE_TIMEOUT = 60000;
 const COMPONENT_SIGN_TIMEOUT = 120000;
 const GUARDED_ASSEMBLY_TIMEOUT = 120000;
 const SIGN_CANCEL_TIMEOUT = 5000;
@@ -3008,6 +3011,102 @@ export class SignerClient {
     }
 
     return data;
+  }
+
+  /**
+   * Send raw signing request entries to /simulate.
+   *
+   * The signer signs internally, runs algod simulation, and returns
+   * diagnostics plus final unsigned transaction bytes. Signed bytes are never
+   * returned by this endpoint.
+   */
+  async simulateRequests(
+    requests: SignRequest[],
+    options?: { requestId?: string; signal?: AbortSignal },
+  ): Promise<GroupSimulateResponse> {
+    if (requests.length === 0) {
+      throw new SignerError("requests must not be empty");
+    }
+
+    const requestId = options?.requestId ?? "";
+    if (requestId) {
+      validateSignRequestId(requestId);
+    }
+    const requestBody: GroupSignRequest = requestId
+      ? { request_id: requestId, requests }
+      : { requests };
+
+    const response = await this.fetch("/simulate", {
+      method: "POST",
+      body: JSON.stringify(requestBody),
+      timeout: this.timeoutFor(GROUP_SIMULATE_TIMEOUT),
+      signal: options?.signal,
+    });
+
+    if (response.status === 401) {
+      throw new AuthenticationError();
+    }
+
+    if (response.status === 400) {
+      const error = await this.errorMessage(response, "");
+      if (error.toLowerCase().includes("not found")) {
+        throw new KeyNotFoundError(error);
+      }
+      throw new SignerError(`Bad request: ${error}`);
+    }
+
+    if (response.status === 403) {
+      throw new SignerError(await this.errorMessage(response, "Forbidden"));
+    }
+
+    if (response.status === 503) {
+      const error = await this.errorMessage(response, "Signer unavailable");
+      throw new SignerUnavailableError(error);
+    }
+
+    if (response.status !== 200) {
+      throw new SignerError(await this.errorMessage(response, `Simulation failed: HTTP ${response.status}`));
+    }
+
+    let data: GroupSimulateResponse;
+    try {
+      data = (await response.json()) as GroupSimulateResponse;
+    } catch {
+      throw new SignerError("Server returned invalid JSON");
+    }
+
+    if (data.error) {
+      throw new SignerError(data.error);
+    }
+
+    if (data.mutations) {
+      data = {
+        ...data,
+        mutations: this.normalizeMutationReport(data.mutations),
+      };
+    }
+
+    return data;
+  }
+
+  /**
+   * Simulate a prepared group through apsigner /simulate.
+   */
+  async simulatePreparedGroup(
+    group: PreparedGroup,
+    options?: { requestId?: string; signal?: AbortSignal },
+  ): Promise<GroupSimulateResponse> {
+    return this.simulateRequests(preparedGroupToSignRequests(group), options);
+  }
+
+  /**
+   * Simulate one prepared transaction through apsigner /simulate.
+   */
+  async simulatePreparedTransaction(
+    prepared: PreparedTransaction,
+    options?: { requestId?: string; signal?: AbortSignal },
+  ): Promise<GroupSimulateResponse> {
+    return this.simulatePreparedGroup({ transactions: [prepared] }, options);
   }
 
   /**

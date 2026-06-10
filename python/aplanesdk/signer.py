@@ -67,6 +67,7 @@ STATUS_TIMEOUT = 5
 INVENTORY_TIMEOUT = 30
 MUTATION_TIMEOUT = 60
 GROUP_PLAN_TIMEOUT = 60
+GROUP_SIMULATE_TIMEOUT = 60
 COMPONENT_SIGN_TIMEOUT = 120
 GUARDED_ASSEMBLY_TIMEOUT = 120
 SIGN_CANCEL_TIMEOUT = 5
@@ -300,6 +301,17 @@ class GroupSignResponse:
     """Response from /sign"""
     signed: List[str]
     mutations: Optional[Dict[str, Any]] = None
+    error: str = ""
+
+
+@dataclass
+class GroupSimulateResponse:
+    """Response from /simulate"""
+    tx_ids: List[str]
+    transactions: List[str]
+    mutations: Optional[Dict[str, Any]] = None
+    output: str = ""
+    failed: bool = False
     error: str = ""
 
 
@@ -3351,6 +3363,100 @@ class SignerClient:
             raise SignerError(data["error"])
 
         return data
+
+    def simulate_requests(
+        self,
+        sign_entries: List[Dict[str, Any]],
+        *,
+        request_id: Optional[str] = None,
+    ) -> GroupSimulateResponse:
+        """
+        Send raw signing request entries to /simulate.
+
+        The signer signs internally, runs algod simulation, and returns
+        diagnostics plus final unsigned transaction bytes. Signed bytes are
+        never returned by this endpoint.
+        """
+        if not sign_entries:
+            raise ValueError("sign_entries must not be empty")
+
+        if request_id is not None:
+            _validate_sign_request_id(request_id)
+
+        request_body: Dict[str, Any] = {"requests": sign_entries}
+        if request_id:
+            request_body["request_id"] = request_id
+
+        try:
+            resp = self.session.post(
+                f"{self.base_url}/simulate",
+                json=request_body,
+                timeout=self._timeout_for(GROUP_SIMULATE_TIMEOUT)
+            )
+        except requests.RequestException as e:
+            raise SignerUnavailableError(f"Failed to connect: {e}")
+
+        if resp.status_code == 401:
+            raise AuthenticationError("Invalid or missing token")
+
+        if resp.status_code == 400:
+            error = self._error_message(resp, "")
+            if "not found" in error.lower():
+                raise KeyNotFoundError(error)
+            raise SignerError(f"Bad request: {error}")
+
+        if resp.status_code == 403:
+            raise SignerError(self._error_message(resp, "Forbidden"))
+
+        if resp.status_code == 503:
+            error = self._error_message(resp, "Signer unavailable")
+            raise SignerUnavailableError(error)
+
+        if resp.status_code != 200:
+            raise SignerError(
+                self._error_message(resp, f"Simulation failed: HTTP {resp.status_code}")
+            )
+
+        try:
+            data = resp.json()
+        except json.JSONDecodeError:
+            raise SignerError(f"Server returned invalid JSON: {resp.text[:200]}")
+
+        if data.get("error"):
+            raise SignerError(data["error"])
+
+        return GroupSimulateResponse(
+            tx_ids=data.get("tx_ids", []),
+            transactions=data.get("transactions", []),
+            mutations=data.get("mutations"),
+            output=data.get("output", ""),
+            failed=bool(data.get("failed", False)),
+            error=data.get("error", ""),
+        )
+
+    def simulate_prepared_group(
+        self,
+        prepared_group: PreparedGroup,
+        *,
+        request_id: Optional[str] = None,
+    ) -> GroupSimulateResponse:
+        """Simulate a prepared group through apsigner /simulate."""
+        return self.simulate_requests(
+            prepared_group.to_sign_requests(),
+            request_id=request_id,
+        )
+
+    def simulate_prepared_transaction(
+        self,
+        prepared: PreparedTransaction,
+        *,
+        request_id: Optional[str] = None,
+    ) -> GroupSimulateResponse:
+        """Simulate one prepared transaction through apsigner /simulate."""
+        return self.simulate_prepared_group(
+            PreparedGroup([prepared]),
+            request_id=request_id,
+        )
 
     def sign_transaction(
         self,

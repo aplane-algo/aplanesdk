@@ -47,6 +47,7 @@ const (
 	inventoryTimeout          = 30 * time.Second
 	mutationTimeout           = 60 * time.Second
 	groupPlanTimeout          = 60 * time.Second
+	groupSimulateTimeout      = 60 * time.Second
 	componentSignTimeout      = 2 * time.Minute
 	guardedAssemblyTimeout    = 2 * time.Minute
 	signCancelTimeout         = 5 * time.Second
@@ -824,6 +825,81 @@ func (c *SignerClient) PlanRequestsWithContext(ctx context.Context, requests []S
 	}
 
 	return &planResp, nil
+}
+
+// SimulateGroup performs signer-managed simulation for a caller-built group.
+func (c *SignerClient) SimulateGroup(txns []types.Transaction, authAddresses []string, lsigArgsMap LsigArgsMap, opts *SignOptions) (*GroupSimulateResponse, error) {
+	requests, err := buildSignRequestsWithOptions(txns, authAddresses, lsigArgsMap, opts)
+	if err != nil {
+		return nil, err
+	}
+	return c.SimulateRequestsWithContext(context.Background(), requests)
+}
+
+// SimulatePreparedTransaction performs signer-managed simulation for one prepared transaction.
+func (c *SignerClient) SimulatePreparedTransaction(ctx context.Context, prepared PreparedTransaction) (*GroupSimulateResponse, error) {
+	return c.SimulatePreparedGroup(ctx, NewPreparedGroup(prepared))
+}
+
+// SimulatePreparedGroup performs signer-managed simulation for a prepared group.
+func (c *SignerClient) SimulatePreparedGroup(ctx context.Context, group PreparedGroup) (*GroupSimulateResponse, error) {
+	requests, err := group.SignRequests()
+	if err != nil {
+		return nil, err
+	}
+	return c.SimulateRequestsWithContext(ctx, requests)
+}
+
+// SimulateRequests posts raw /simulate requests without rebuilding them from transactions.
+func (c *SignerClient) SimulateRequests(requests []SignRequest) (*GroupSimulateResponse, error) {
+	return c.SimulateRequestsWithContext(context.Background(), requests)
+}
+
+// SimulateRequestsWithContext posts raw /simulate requests without rebuilding them from transactions.
+func (c *SignerClient) SimulateRequestsWithContext(ctx context.Context, requests []SignRequest) (*GroupSimulateResponse, error) {
+	if err := validateRequests(requests); err != nil {
+		return nil, err
+	}
+	groupReq := groupSignRequest{Requests: requests}
+
+	jsonBody, err := json.Marshal(groupReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	reqCtx, cancel := c.requestContext(ctx, groupSimulateTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, "POST", c.baseURL+"/simulate", bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "aplane "+c.token)
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to simulate group: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 401 {
+		return nil, ErrAuthentication
+	}
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("simulate failed (%d): %s", resp.StatusCode, readErrorBody(resp))
+	}
+
+	var simulateResp GroupSimulateResponse
+	if err := json.NewDecoder(resp.Body).Decode(&simulateResp); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	if simulateResp.Error != "" {
+		return nil, fmt.Errorf("simulate failed: %s", simulateResp.Error)
+	}
+
+	return &simulateResp, nil
 }
 
 // SignTransaction signs a single transaction.

@@ -765,6 +765,77 @@ class TestPlanGroup:
                 client.plan_group([self._make_mock_txn()])
 
 
+class TestSimulateRequests:
+    def test_simulate_requests_sends_raw_request(self):
+        client = make_client()
+        resp = mock_response(200, {
+            "tx_ids": ["SIMTXID1"],
+            "transactions": ["545801"],
+            "mutations": {"dummies_added": 1},
+            "output": "Simulation failed\nlogic eval error",
+            "failed": True,
+        })
+
+        with patch.object(client.session, "post", return_value=resp) as mock_post:
+            result = client.simulate_requests(
+                [
+                    {
+                        "txn_bytes_hex": "545801",
+                        "auth_address": "AUTH",
+                        "txn_sender": "SENDER",
+                    },
+                ],
+                request_id="simulate-id",
+            )
+
+        assert result.tx_ids == ["SIMTXID1"]
+        assert result.transactions == ["545801"]
+        assert result.mutations == {"dummies_added": 1}
+        assert result.failed is True
+        assert "logic eval error" in result.output
+        assert mock_post.call_args.args[0] == "http://localhost:11270/simulate"
+        assert mock_post.call_args.kwargs["json"] == {
+            "request_id": "simulate-id",
+            "requests": [
+                {
+                    "txn_bytes_hex": "545801",
+                    "auth_address": "AUTH",
+                    "txn_sender": "SENDER",
+                },
+            ],
+        }
+
+    def test_simulate_prepared_group(self):
+        client = make_client()
+        resp = mock_response(200, {"tx_ids": ["SIMTXID1"]})
+        prepared = PreparedTransaction(
+            transaction=MagicMock(),
+            auth_address="AUTH",
+            txn_sender="SENDER",
+        )
+
+        with patch.object(client.session, "post", return_value=resp) as mock_post, \
+             patch("aplanesdk.signer.encode_transaction", return_value=("545801", "SENDER")):
+            result = client.simulate_prepared_group(PreparedGroup([prepared]))
+
+        assert result.tx_ids == ["SIMTXID1"]
+        assert mock_post.call_args.args[0] == "http://localhost:11270/simulate"
+        assert mock_post.call_args.kwargs["json"]["requests"][0]["auth_address"] == "AUTH"
+
+    def test_simulate_requests_response_error(self):
+        client = make_client()
+        resp = mock_response(200, {"error": "simulation unavailable"})
+
+        with patch.object(client.session, "post", return_value=resp):
+            with pytest.raises(SignerError, match="simulation unavailable"):
+                client.simulate_requests([{"txn_bytes_hex": "545801", "auth_address": "AUTH"}])
+
+    def test_simulate_requests_validates_request_id(self):
+        client = make_client()
+        with pytest.raises(ValueError, match="invalid character"):
+            client.simulate_requests([{"txn_bytes_hex": "545801"}], request_id="bad id")
+
+
 class TestConfigAndConstruction:
     def test_load_config_parse_error(self, tmp_path):
         (tmp_path / "config.yaml").write_text("ssh:\n  host: [\n", encoding="utf-8")

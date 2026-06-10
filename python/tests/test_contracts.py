@@ -38,6 +38,7 @@ EXPECTED_FIXTURE_NAMES = [
     "group_plan_response_mutated.json",
     "group_sign_request_mixed.json",
     "group_sign_response_mutated.json",
+    "group_simulate_response_mutated.json",
     "guarded_assembly_request_mixed.json",
     "guarded_assembly_response.json",
     "health_response_ready.json",
@@ -238,6 +239,28 @@ def test_plan_group_returns_wire_mutation_report():
     assert plan["mutations"]["original_count"] == 2
     assert plan["mutations"]["final_count"] == 3
     assert plan["mutations"]["foreign_count"] == 1
+
+
+def test_simulate_requests_maps_wire_response():
+    client = make_client()
+    resp = mock_response(200, fixture("group_simulate_response_mutated.json"))
+
+    with patch.object(client.session, "post", return_value=resp):
+        simulation = client.simulate_requests([
+            {
+                "txn_bytes_hex": "545801",
+                "auth_address": "AUTHADDR00000000000000000000000000000000000000000000000",
+            },
+        ])
+
+    assert simulation.tx_ids == ["SIMTXID1", "SIMTXID2", "SIMTXID3"]
+    assert simulation.transactions == ["545801", "545802", "545803"]
+    assert simulation.mutations["dummies_added"] == 1
+    assert simulation.mutations["group_id_changed"] is True
+    assert simulation.mutations["fees_modified"] == [0, 2]
+    assert simulation.mutations["foreign_count"] == 1
+    assert simulation.failed is True
+    assert "Group size: 3" in simulation.output
 
 
 def test_generate_key_maps_admin_generate_response():

@@ -66,6 +66,7 @@ const expectedFixtureNames = [
   "group_plan_response_mutated.json",
   "group_sign_request_mixed.json",
   "group_sign_response_mutated.json",
+  "group_simulate_response_mutated.json",
   "guarded_assembly_request_mixed.json",
   "guarded_assembly_response.json",
   "health_response_ready.json",
@@ -289,6 +290,31 @@ describe("signer API contract fixtures", () => {
     assert.equal(plan.mutations?.originalCount, 2);
     assert.equal(plan.mutations?.finalCount, 3);
     assert.equal(plan.mutations?.foreignCount, 1);
+  });
+
+  it("maps /simulate response wire fields", async () => {
+    mockFetch.mockResolvedValueOnce({
+      status: 200,
+      ok: true,
+      json: async () => fixture("group_simulate_response_mutated.json"),
+    });
+
+    const client = new SignerClient("http://localhost:11270", "test-token");
+    const simulation = await client.simulateRequests([
+      {
+        txn_bytes_hex: "545801",
+        auth_address: "AUTHADDR00000000000000000000000000000000000000000000000",
+      },
+    ]);
+
+    assert.deepEqual(simulation.tx_ids, ["SIMTXID1", "SIMTXID2", "SIMTXID3"]);
+    assert.deepEqual(simulation.transactions, ["545801", "545802", "545803"]);
+    assert.equal(simulation.mutations?.dummiesAdded, 1);
+    assert.equal(simulation.mutations?.groupIdChanged, true);
+    assert.deepEqual(simulation.mutations?.feesModified, [0, 2]);
+    assert.equal(simulation.mutations?.foreignCount, 1);
+    assert.equal(simulation.failed, true);
+    assert.match(simulation.output ?? "", /Group size: 3/);
   });
 
   it("maps /admin/generate response fields", async () => {

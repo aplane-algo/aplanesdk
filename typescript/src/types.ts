@@ -717,6 +717,24 @@ export interface GroupSignResponse {
 }
 
 /**
+ * Response from the /simulate endpoint.
+ */
+export interface GroupSimulateResponse {
+  /** Transaction IDs for the simulated group */
+  tx_ids?: string[];
+  /** TX-prefixed hex-encoded unsigned transactions */
+  transactions?: string[];
+  /** Modifications made by server planning */
+  mutations?: MutationReport;
+  /** Human-readable simulation report */
+  output?: string;
+  /** True when algod simulate returned an execution failure */
+  failed?: boolean;
+  /** Error message if simulation failed before algod execution */
+  error?: string;
+}
+
+/**
  * Standard signer HTTP error body for non-2xx responses.
  */
 export interface ErrorResponse {

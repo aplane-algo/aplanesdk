@@ -105,6 +105,7 @@ export type {
   SignRequest,
   GroupSignRequest,
   GroupSignResponse,
+  GroupSimulateResponse,
   PreparedCheck,
   PreparedTransaction,
   PreparedGroup,
