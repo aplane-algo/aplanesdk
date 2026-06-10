@@ -9,6 +9,8 @@ import type { Transaction } from "algosdk";
 import type { Client as SSHClient, ClientChannel } from "ssh2";
 import type {
   KeyInfo,
+  AccountInfoLookup,
+  AccountInfoResult,
   ConnectSshOptions,
   FromEnvOptions,
   SignOptions,
@@ -18,6 +20,7 @@ import type {
   GroupSignRequest,
   GroupSignResponse,
   StatusResponse,
+  ResolvedAuthAddress,
   KeysResponse,
   KeyTypesResponse,
   KeyTypeInfo,
@@ -711,6 +714,28 @@ export interface GuardedSignResult {
   assemblyResponse: GuardedAssemblyResponse;
 }
 
+function extractAuthAddress(accountInfo: AccountInfoResult): string {
+  if (!accountInfo) {
+    return "";
+  }
+  if (typeof accountInfo === "string") {
+    return accountInfo;
+  }
+  return (
+    accountInfo["auth-addr"] ||
+    accountInfo.auth_addr ||
+    accountInfo.authAddr ||
+    accountInfo.authAddress ||
+    ""
+  );
+}
+
+function findSpendableKey(keys: KeyInfo[], address: string): KeyInfo | undefined {
+  return keys.find((key) => (
+    key.address === address && key.isSpendingAccount !== false
+  ));
+}
+
 /**
  * Client for apsigner signing service.
  *
@@ -738,6 +763,7 @@ export class SignerClient {
   private token: string;
   private explicitTimeout?: number;
   private keyCache: Map<string, KeyInfo> = new Map();
+  private keyCacheRevision?: number;
   private tunnel: SSHTunnel | null = null;
   private approvalWaitSeconds?: number;
   private approvalWaitFetchedAt?: number;
@@ -1056,6 +1082,8 @@ export class SignerClient {
 
     const data = (await response.json()) as KeysResponse;
     const keys: KeyInfo[] = [];
+    this.keyCache.clear();
+    this.keyCacheRevision = undefined;
 
     for (const k of data.keys || []) {
       // Parse signing_args, mapping snake_case API fields to camelCase TypeScript
@@ -1102,6 +1130,26 @@ export class SignerClient {
   }
 
   /**
+   * Return cached keys when /status.keyset_revision is unchanged.
+   */
+  async listKeysIfKeysetChanged(): Promise<KeyInfo[]> {
+    const status = await this.getStatus();
+    if (status.signerLocked) {
+      throw new SignerUnavailableError("signer is locked");
+    }
+    if (
+      this.keyCache.size > 0 &&
+      this.keyCacheRevision !== undefined &&
+      this.keyCacheRevision === status.keysetRevision
+    ) {
+      return Array.from(this.keyCache.values());
+    }
+    const keys = await this.listKeys(true);
+    this.keyCacheRevision = status.keysetRevision;
+    return keys;
+  }
+
+  /**
    * Get key info for a specific address.
    *
    * @param address - The Algorand address to look up
@@ -1112,6 +1160,49 @@ export class SignerClient {
       await this.listKeys(true);
     }
     return this.keyCache.get(address);
+  }
+
+  /**
+   * Resolve sender -> effective signer and verify signer key ownership.
+   */
+  async resolveAuthAddress(
+    address: string,
+    accountInfoLookup: AccountInfoLookup,
+  ): Promise<ResolvedAuthAddress> {
+    if (!accountInfoLookup) {
+      throw new SignerError("accountInfoLookup is required");
+    }
+
+    let accountInfo: AccountInfoResult;
+    try {
+      accountInfo = await accountInfoLookup(address);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new SignerError(`failed to query account info: ${message}`);
+    }
+
+    const authAddress = extractAuthAddress(accountInfo);
+    const signingAddress =
+      authAddress && authAddress !== address ? authAddress : address;
+    const keyInfo = findSpendableKey(
+      await this.listKeysIfKeysetChanged(),
+      signingAddress,
+    );
+    if (!keyInfo) {
+      if (signingAddress === address) {
+        throw new KeyNotFoundError(`${address} is not available for signing`);
+      }
+      throw new KeyNotFoundError(
+        `account is rekeyed to ${authAddress} but that address is not signable`,
+      );
+    }
+
+    return {
+      address,
+      authAddress: signingAddress,
+      isRekeyed: signingAddress !== address,
+      keyInfo,
+    };
   }
 
   /**
@@ -1244,6 +1335,7 @@ export class SignerClient {
 
     // Invalidate key cache
     this.keyCache.clear();
+    this.keyCacheRevision = undefined;
 
     return {
       address: String(data.address || ""),
@@ -1288,6 +1380,7 @@ export class SignerClient {
 
     // Invalidate key cache
     this.keyCache.clear();
+    this.keyCacheRevision = undefined;
   }
 
   /**

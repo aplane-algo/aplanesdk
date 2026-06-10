@@ -500,6 +500,37 @@ export interface PreparedGroup {
 }
 
 /**
+ * Account information shape accepted by auth-resolution helpers.
+ */
+export type AccountInfoResult =
+  | string
+  | {
+      "auth-addr"?: string | null;
+      auth_addr?: string | null;
+      authAddr?: string | null;
+      authAddress?: string | null;
+    }
+  | null
+  | undefined;
+
+/**
+ * Function that returns algod account information or directly returns auth addr.
+ */
+export type AccountInfoLookup = (
+  address: string,
+) => AccountInfoResult | Promise<AccountInfoResult>;
+
+/**
+ * Effective signer information for one account.
+ */
+export interface ResolvedAuthAddress {
+  address: string;
+  authAddress: string;
+  isRekeyed: boolean;
+  keyInfo: KeyInfo;
+}
+
+/**
  * Describes modifications made by the server during signing.
  */
 export interface MutationReport {

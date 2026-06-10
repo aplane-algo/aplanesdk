@@ -24,12 +24,14 @@ import (
 
 // SignerClient is the client for connecting to apsigner.
 type SignerClient struct {
-	baseURL   string
-	token     string
-	client    *http.Client
-	sshTunnel *sshTunnel
-	keyMu     sync.RWMutex
-	keyCache  map[string]*KeyInfo
+	baseURL               string
+	token                 string
+	client                *http.Client
+	sshTunnel             *sshTunnel
+	keyMu                 sync.RWMutex
+	keyCache              map[string]*KeyInfo
+	keyCacheRevision      uint64
+	keyCacheRevisionKnown bool
 
 	requestTimeout      time.Duration
 	requestTimeoutSet   bool
@@ -386,6 +388,31 @@ func (c *SignerClient) cachedKeys() []KeyInfo {
 	return keys
 }
 
+func (c *SignerClient) cachedKeysForRevision(revision uint64) ([]KeyInfo, bool) {
+	c.keyMu.RLock()
+	defer c.keyMu.RUnlock()
+	if c.keyCache == nil || !c.keyCacheRevisionKnown || c.keyCacheRevision != revision {
+		return nil, false
+	}
+	keys := make([]KeyInfo, 0, len(c.keyCache))
+	for _, k := range c.keyCache {
+		keys = append(keys, *k)
+	}
+	return keys, true
+}
+
+func (c *SignerClient) cacheKeysRevision(revision uint64) {
+	c.keyMu.Lock()
+	defer c.keyMu.Unlock()
+	c.keyCacheRevision = revision
+	c.keyCacheRevisionKnown = true
+}
+
+func (c *SignerClient) invalidateKeyCacheRevisionLocked() {
+	c.keyCacheRevision = 0
+	c.keyCacheRevisionKnown = false
+}
+
 // GetKeysResponseWithContext fetches /keys with local locked-state reporting.
 func (c *SignerClient) GetKeysResponseWithContext(ctx context.Context) (*KeysResult, error) {
 	reqCtx, cancel := c.requestContext(ctx, inventoryTimeout)
@@ -425,6 +452,7 @@ func (c *SignerClient) GetKeysResponseWithContext(ctx context.Context) (*KeysRes
 	}
 	c.keyMu.Lock()
 	c.keyCache = cache
+	c.invalidateKeyCacheRevisionLocked()
 	c.keyMu.Unlock()
 
 	return &KeysResult{
@@ -515,6 +543,7 @@ func (c *SignerClient) GenerateKey(keyType string, parameters map[string]string)
 	// Invalidate key cache
 	c.keyMu.Lock()
 	c.keyCache = nil
+	c.invalidateKeyCacheRevisionLocked()
 	c.keyMu.Unlock()
 
 	return &result, nil
@@ -553,6 +582,7 @@ func (c *SignerClient) DeleteKey(address string) error {
 	// Invalidate key cache
 	c.keyMu.Lock()
 	c.keyCache = nil
+	c.invalidateKeyCacheRevisionLocked()
 	c.keyMu.Unlock()
 
 	return nil

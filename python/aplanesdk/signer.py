@@ -48,7 +48,7 @@ import secrets
 import socket
 import time
 from dataclasses import asdict, dataclass, is_dataclass
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Callable
 
 from algosdk import encoding, transaction
 
@@ -515,6 +515,15 @@ class PreparedGroup:
 
 
 @dataclass
+class ResolvedAuthAddress:
+    """Effective signer information for one account."""
+    address: str
+    auth_address: str
+    is_rekeyed: bool
+    key_info: KeyInfo
+
+
+@dataclass
 class ErrorResponse:
     """Standard signer HTTP error body for non-2xx responses"""
     error: str
@@ -744,6 +753,36 @@ def _validate_guarded_assembly_response(data: Dict[str, Any]) -> None:
     for index, signed in enumerate(signed_group):
         if not signed:
             raise ValueError(f"signed_group {index} is empty")
+
+
+def _extract_auth_address(account_info: Any) -> str:
+    if account_info is None:
+        return ""
+    if isinstance(account_info, str):
+        return account_info
+    if isinstance(account_info, dict):
+        return (
+            account_info.get("auth-addr")
+            or account_info.get("auth_addr")
+            or account_info.get("authAddr")
+            or ""
+        )
+    return (
+        getattr(account_info, "auth_addr", "")
+        or getattr(account_info, "authAddr", "")
+        or getattr(account_info, "auth_address", "")
+        or ""
+    )
+
+
+def _find_spendable_key(keys: List[KeyInfo], address: str) -> Optional[KeyInfo]:
+    for key in keys:
+        if key.address != address:
+            continue
+        if key.is_spending_account is False:
+            continue
+        return key
+    return None
 
 
 # -----------------------------------------------------------------------------
@@ -1009,6 +1048,7 @@ class SignerClient:
         self.session.headers["Authorization"] = f"aplane {token}"
         self._tunnel = tunnel
         self._key_cache: Dict[str, KeyInfo] = {}  # Cache key info by address
+        self._key_cache_revision: Optional[int] = None
         self._approval_wait_seconds: Optional[int] = None
         self._approval_wait_fetched_at: Optional[float] = None
         self._approval_wait_known = False
@@ -1308,6 +1348,7 @@ class SignerClient:
 
         data = resp.json()
         self._key_cache.clear()
+        self._key_cache_revision = None
         keys = []
         for k in data.get("keys", []):
             # Parse signing_args if present
@@ -1351,6 +1392,27 @@ class SignerClient:
 
         return keys
 
+    def list_keys_if_keyset_changed(self) -> List[KeyInfo]:
+        """
+        Return cached keys when /status.keyset_revision is unchanged.
+
+        This is the SDK-facing cache invalidation contract for preparation
+        helpers that need fresh signer inventory before deciding signability.
+        """
+        status = self.get_status()
+        if status.signer_locked:
+            raise SignerUnavailableError("signer is locked")
+        if (
+            self._key_cache
+            and self._key_cache_revision is not None
+            and self._key_cache_revision == status.keyset_revision
+        ):
+            return list(self._key_cache.values())
+
+        keys = self.list_keys(refresh=True)
+        self._key_cache_revision = status.keyset_revision
+        return keys
+
     def get_key_info(self, address: str) -> Optional[KeyInfo]:
         """
         Get key info for a specific address.
@@ -1364,6 +1426,49 @@ class SignerClient:
         if address not in self._key_cache:
             self.list_keys(refresh=True)
         return self._key_cache.get(address)
+
+    def resolve_auth_address(
+        self,
+        address: str,
+        account_info_lookup: Callable[[str], Any],
+    ) -> ResolvedAuthAddress:
+        """
+        Resolve sender -> effective signer and verify signer key ownership.
+
+        account_info_lookup is usually algod_client.account_info. It may return
+        a dict/object containing auth-addr/auth_addr/authAddr, or a string auth
+        address. Empty auth address means the account signs for itself.
+        """
+        if account_info_lookup is None:
+            raise ValueError("account_info_lookup is required")
+
+        try:
+            account_info = account_info_lookup(address)
+        except Exception as e:
+            raise SignerError(f"failed to query account info: {e}") from e
+
+        auth_addr = _extract_auth_address(account_info)
+        signing_addr = address
+        if auth_addr and auth_addr != address:
+            signing_addr = auth_addr
+
+        key_info = _find_spendable_key(
+            self.list_keys_if_keyset_changed(),
+            signing_addr,
+        )
+        if key_info is None:
+            if signing_addr == address:
+                raise KeyNotFoundError(f"{address} is not available for signing")
+            raise KeyNotFoundError(
+                f"account is rekeyed to {auth_addr} but that address is not signable"
+            )
+
+        return ResolvedAuthAddress(
+            address=address,
+            auth_address=signing_addr,
+            is_rekeyed=signing_addr != address,
+            key_info=key_info,
+        )
 
     def list_key_types(self) -> List[KeyTypeInfo]:
         """
@@ -1503,6 +1608,7 @@ class SignerClient:
 
         # Invalidate key cache so next list_keys fetches fresh
         self._key_cache.clear()
+        self._key_cache_revision = None
 
         if not data.get("address"):
             raise SignerError("Key generation response missing address")
@@ -1554,6 +1660,7 @@ class SignerClient:
 
         # Invalidate key cache
         self._key_cache.clear()
+        self._key_cache_revision = None
 
     def _safe_json(self, resp: requests.Response) -> dict:
         """

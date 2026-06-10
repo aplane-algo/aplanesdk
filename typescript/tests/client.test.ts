@@ -70,7 +70,10 @@ const originalFetch = globalThis.fetch;
 const mockFetch = createMockFetch();
 globalThis.fetch = mockFetch as any;
 
-function queueStatusResponse(approvalWaitSeconds: number = 60): void {
+function queueStatusResponse(
+  approvalWaitSeconds: number = 60,
+  keysetRevision: number = 4,
+): void {
   mockFetch.mockResolvedValueOnce({
     status: 200,
     ok: true,
@@ -80,7 +83,7 @@ function queueStatusResponse(approvalWaitSeconds: number = 60): void {
       signer_locked: false,
       ready_for_signing: true,
       key_count: 37,
-      keyset_revision: 4,
+      keyset_revision: keysetRevision,
       approval_wait_seconds: approvalWaitSeconds,
     }),
   });
@@ -290,6 +293,78 @@ describe("SignerClient", () => {
       // Third call with refresh fetches again
       await client.listKeys(true);
       assert.equal(mockFetch.mock.calls.length, 2);
+    });
+  });
+
+  describe("auth resolution", () => {
+    const keysResponse = (...addresses: string[]) => ({
+      status: 200,
+      ok: true,
+      json: async () => ({
+        count: addresses.length,
+        keys: addresses.map((address) => ({ address, key_type: "ed25519" })),
+      }),
+    });
+
+    it("refreshes keys only when keyset revision changes", async () => {
+      queueStatusResponse(60, 1);
+      mockFetch.mockResolvedValueOnce(keysResponse("ADDR1"));
+      queueStatusResponse(60, 1);
+      queueStatusResponse(60, 2);
+      mockFetch.mockResolvedValueOnce(keysResponse("ADDR2"));
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const first = await client.listKeysIfKeysetChanged();
+      const second = await client.listKeysIfKeysetChanged();
+      const third = await client.listKeysIfKeysetChanged();
+
+      assert.deepEqual(first.map((key) => key.address), ["ADDR1"]);
+      assert.deepEqual(second.map((key) => key.address), ["ADDR1"]);
+      assert.deepEqual(third.map((key) => key.address), ["ADDR2"]);
+      assert.equal(
+        mockFetch.mock.calls.filter((call) => call[0] === "http://localhost:11270/keys").length,
+        2,
+      );
+    });
+
+    it("resolves self-signing accounts", async () => {
+      queueStatusResponse(60, 1);
+      mockFetch.mockResolvedValueOnce(keysResponse("SENDER"));
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const resolved = await client.resolveAuthAddress("SENDER", () => ({}));
+
+      assert.equal(resolved.address, "SENDER");
+      assert.equal(resolved.authAddress, "SENDER");
+      assert.equal(resolved.isRekeyed, false);
+      assert.equal(resolved.keyInfo.address, "SENDER");
+    });
+
+    it("resolves rekeyed accounts", async () => {
+      queueStatusResponse(60, 1);
+      mockFetch.mockResolvedValueOnce(keysResponse("AUTH"));
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const resolved = await client.resolveAuthAddress(
+        "SENDER",
+        () => ({ "auth-addr": "AUTH" }),
+      );
+
+      assert.equal(resolved.address, "SENDER");
+      assert.equal(resolved.authAddress, "AUTH");
+      assert.equal(resolved.isRekeyed, true);
+      assert.equal(resolved.keyInfo.address, "AUTH");
+    });
+
+    it("rejects rekeyed accounts whose auth address is not signable", async () => {
+      queueStatusResponse(60, 1);
+      mockFetch.mockResolvedValueOnce(keysResponse("SENDER"));
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      await assert.rejects(
+        client.resolveAuthAddress("SENDER", () => ({ "auth-addr": "AUTH" })),
+        /not signable/,
+      );
     });
   });
 

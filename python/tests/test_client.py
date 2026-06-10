@@ -228,6 +228,90 @@ class TestListKeys:
         assert mock_get.call_args.kwargs["timeout"] == 10
 
 
+class TestAuthResolution:
+    def _status(self, revision=1):
+        return mock_response(200, {
+            "identity_id": "default",
+            "state": "unlocked",
+            "signer_locked": False,
+            "ready_for_signing": True,
+            "key_count": 1,
+            "keyset_revision": revision,
+        })
+
+    def _keys(self, *addresses):
+        return mock_response(200, {
+            "count": len(addresses),
+            "keys": [
+                {"address": address, "key_type": "ed25519"}
+                for address in addresses
+            ],
+        })
+
+    def test_list_keys_if_keyset_changed_uses_revision(self):
+        client = make_client()
+        with patch.object(client.session, "get", side_effect=[
+            self._status(1),
+            self._keys("ADDR1"),
+            self._status(1),
+            self._status(2),
+            self._keys("ADDR2"),
+        ]) as mock_get:
+            first = client.list_keys_if_keyset_changed()
+            second = client.list_keys_if_keyset_changed()
+            third = client.list_keys_if_keyset_changed()
+
+        assert [key.address for key in first] == ["ADDR1"]
+        assert [key.address for key in second] == ["ADDR1"]
+        assert [key.address for key in third] == ["ADDR2"]
+        key_calls = [
+            call.args[0] for call in mock_get.call_args_list
+            if call.args[0].endswith("/keys")
+        ]
+        assert len(key_calls) == 2
+
+    def test_resolve_auth_address_self_signing(self):
+        client = make_client()
+        with patch.object(client.session, "get", side_effect=[
+            self._status(1),
+            self._keys("SENDER"),
+        ]):
+            resolved = client.resolve_auth_address("SENDER", lambda _: {})
+
+        assert resolved.address == "SENDER"
+        assert resolved.auth_address == "SENDER"
+        assert resolved.is_rekeyed is False
+        assert resolved.key_info.address == "SENDER"
+
+    def test_resolve_auth_address_rekeyed(self):
+        client = make_client()
+        with patch.object(client.session, "get", side_effect=[
+            self._status(1),
+            self._keys("AUTH"),
+        ]):
+            resolved = client.resolve_auth_address(
+                "SENDER",
+                lambda _: {"auth-addr": "AUTH"},
+            )
+
+        assert resolved.address == "SENDER"
+        assert resolved.auth_address == "AUTH"
+        assert resolved.is_rekeyed is True
+        assert resolved.key_info.address == "AUTH"
+
+    def test_resolve_auth_address_rejects_rekeyed_not_signable(self):
+        client = make_client()
+        with patch.object(client.session, "get", side_effect=[
+            self._status(1),
+            self._keys("SENDER"),
+        ]):
+            with pytest.raises(KeyNotFoundError, match="not signable"):
+                client.resolve_auth_address(
+                    "SENDER",
+                    lambda _: {"auth-addr": "AUTH"},
+                )
+
+
 # ---------------------------------------------------------------------------
 # list_key_types
 # ---------------------------------------------------------------------------
