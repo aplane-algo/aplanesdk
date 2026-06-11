@@ -2874,6 +2874,18 @@ class SignerClient:
         code, message = self._error_parts(resp, fallback)
         return SignerError(message, code=code)
 
+    def _bad_request_error(self, resp: requests.Response) -> SignerError:
+        """Classify a 400 at signing/planning endpoints.
+
+        The wire code is authoritative: not_found maps to KeyNotFoundError.
+        Pre-code signers send no code and keep the legacy message-text
+        mapping.
+        """
+        code, message = self._error_parts(resp, "Bad request")
+        if code == ERR_CODE_NOT_FOUND or (code == "" and "not found" in message.lower()):
+            return KeyNotFoundError(message, code=code)
+        return SignerError(f"Bad request: {message}", code=code)
+
     def _forbidden_locked_error(self, resp: requests.Response) -> SignerError:
         """Classify a 403 at endpoints that historically reported locked.
 
@@ -3330,10 +3342,7 @@ class SignerClient:
             raise AuthenticationError("Invalid or missing token")
 
         if resp.status_code == 400:
-            error = self._error_message(resp, "")
-            if "not found" in error.lower():
-                raise KeyNotFoundError(error)
-            raise SignerError(f"Bad request: {error}")
+            raise self._bad_request_error(resp)
 
         if resp.status_code == 403:
             raise self._forbidden_rejected_error(resp, "Signing request rejected by operator")
@@ -3430,10 +3439,7 @@ class SignerClient:
             raise AuthenticationError("Invalid or missing token")
 
         if resp.status_code == 400:
-            error = self._error_message(resp, "")
-            if "not found" in error.lower():
-                raise KeyNotFoundError(error)
-            raise SignerError(f"Bad request: {error}")
+            raise self._bad_request_error(resp)
 
         if resp.status_code == 403:
             raise self._signer_http_error(resp, "Forbidden")
@@ -3487,10 +3493,7 @@ class SignerClient:
             raise AuthenticationError("Invalid or missing token")
 
         if resp.status_code == 400:
-            error = self._error_message(resp, "")
-            if "not found" in error.lower():
-                raise KeyNotFoundError(error)
-            raise SignerError(f"Bad request: {error}")
+            raise self._bad_request_error(resp)
 
         if resp.status_code == 403:
             raise self._signer_http_error(resp, "Forbidden")

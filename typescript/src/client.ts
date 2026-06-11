@@ -2996,11 +2996,7 @@ export class SignerClient {
       throw new AuthenticationError();
     }
     if (response.status === 400) {
-      const error = await this.errorMessage(response, "");
-      if (error.toLowerCase().includes("not found")) {
-        throw new KeyNotFoundError(error);
-      }
-      throw new SignerError(`Bad request: ${error}`);
+      throw await this.badRequestError(response);
     }
     if (response.status === 403) {
       throw await this.signerHTTPError(response, "Forbidden");
@@ -3222,11 +3218,7 @@ export class SignerClient {
     }
 
     if (response.status === 400) {
-      const error = await this.errorMessage(response, "");
-      if (error.toLowerCase().includes("not found")) {
-        throw new KeyNotFoundError(error);
-      }
-      throw new SignerError(`Bad request: ${error}`);
+      throw await this.badRequestError(response);
     }
 
     if (response.status === 403) {
@@ -3293,11 +3285,7 @@ export class SignerClient {
     }
 
     if (response.status === 400) {
-      const error = await this.errorMessage(response, "");
-      if (error.toLowerCase().includes("not found")) {
-        throw new KeyNotFoundError(error);
-      }
-      throw new SignerError(`Bad request: ${error}`);
+      throw await this.badRequestError(response);
     }
 
     if (response.status === 403) {
@@ -3532,6 +3520,22 @@ export class SignerClient {
   private async signerHTTPError(response: Response, fallback: string): Promise<SignerError> {
     const { code, message } = await this.errorParts(response, fallback);
     return new SignerError(message, code);
+  }
+
+  /**
+   * Classify a 400 at signing/planning endpoints. The wire code is
+   * authoritative: not_found maps to KeyNotFoundError. Pre-code signers send
+   * no code and keep the legacy message-text mapping.
+   */
+  private async badRequestError(response: Response): Promise<SignerError> {
+    const { code, message } = await this.errorParts(response, "Bad request");
+    if (
+      code === ErrorCodes.NotFound ||
+      (code === "" && message.toLowerCase().includes("not found"))
+    ) {
+      return new KeyNotFoundError(message, code);
+    }
+    return new SignerError(`Bad request: ${message}`, code);
   }
 
   /**

@@ -1001,6 +1001,23 @@ class TestSigningErrors:
             with pytest.raises(KeyNotFoundError):
                 client.sign_transaction(self._make_mock_txn())
 
+    def test_key_not_found_by_code_regardless_of_wording(self):
+        client = make_client()
+        resp = mock_response(400, {"error": "auth address unavailable", "code": "not_found"})
+        with patch.object(client.session, "post", return_value=resp), \
+             patch("aplanesdk.signer.encode_transaction", return_value=("deadbeef", "SENDER_ADDR")):
+            with pytest.raises(KeyNotFoundError):
+                client.sign_transaction(self._make_mock_txn())
+
+    def test_non_not_found_code_is_not_key_not_found(self):
+        client = make_client()
+        resp = mock_response(400, {"error": "group not found in request", "code": "bad_request"})
+        with patch.object(client.session, "post", return_value=resp), \
+             patch("aplanesdk.signer.encode_transaction", return_value=("deadbeef", "SENDER_ADDR")):
+            with pytest.raises(SignerError) as exc_info:
+                client.sign_transaction(self._make_mock_txn())
+            assert not isinstance(exc_info.value, KeyNotFoundError)
+
     def test_uses_discovered_approval_wait_plus_slack(self):
         client = SignerClient("http://localhost:11270", "test-token")
         client._cache_approval_wait(120)

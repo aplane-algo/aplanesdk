@@ -1660,6 +1660,39 @@ describe("SignerClient", () => {
       await assert.rejects(client.signTransaction(mockTxn), KeyNotFoundError);
     });
 
+    it("throws KeyNotFoundError on 400 with not_found code regardless of wording", async () => {
+      queueStatusResponse();
+      mockFetch.mockResolvedValueOnce({
+        status: 400,
+        ok: false,
+        json: async () => ({ error: "auth address unavailable", code: "not_found" }),
+        text: async () => "auth address unavailable",
+      });
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const mockTxn = createMockTxn() as Parameters<typeof client.signTransaction>[0];
+
+      await assert.rejects(client.signTransaction(mockTxn), KeyNotFoundError);
+    });
+
+    it("does not map 400 with a non-not_found code to KeyNotFoundError", async () => {
+      queueStatusResponse();
+      mockFetch.mockResolvedValueOnce({
+        status: 400,
+        ok: false,
+        json: async () => ({ error: "group not found in request", code: "bad_request" }),
+        text: async () => "group not found in request",
+      });
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const mockTxn = createMockTxn() as Parameters<typeof client.signTransaction>[0];
+
+      await assert.rejects(
+        client.signTransaction(mockTxn),
+        (err: unknown) => err instanceof SignerError && !(err instanceof KeyNotFoundError)
+      );
+    });
+
     it("throws SignerUnavailableError on timeout", async () => {
       const abortError = new Error("Abort");
       abortError.name = "AbortError";
