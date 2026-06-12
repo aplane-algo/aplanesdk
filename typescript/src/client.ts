@@ -56,7 +56,7 @@ import type {
   AdminSyncSentryReferencesResponse,
   ErrorResponse,
 } from "./types.js";
-import { ErrorCodes } from "./types.js";
+import { ErrorCodes, SIGNING_FLOW_SENTRY1 } from "./types.js";
 import {
   SignerError,
   AuthenticationError,
@@ -105,11 +105,6 @@ const GUARDED_LSIG_BUDGET_BYTES = 1000;
 const GUARDED_MAX_GROUP_SIZE = 16;
 const GUARDED_DEFAULT_MIN_FEE = 1000;
 const GUARDED_DUMMY_PROGRAM = new Uint8Array([0x03, 0x31, 0x20, 0x32, 0x03, 0x12]);
-const KEY_TYPE_GUARDED_FALCON1024_SENTRY_ED25519_VALUE =
-  "aplane.falcon1024-sentry-ed25519.v1";
-const KEY_TYPE_GUARDED_FALCON1024_SENTRY_FALCON1024_VALUE =
-  "aplane.falcon1024-sentry-falcon1024.v1";
-
 function newSignRequestId(): string {
   return `sdk-${randomBytes(16).toString("hex")}`;
 }
@@ -225,21 +220,6 @@ async function requestPrimaryGuardedPassthrough(
     });
   }
   return { response, passthrough };
-}
-
-function isGuardedKeyType(keyType: string): boolean {
-  return keyType === KEY_TYPE_GUARDED_FALCON1024_SENTRY_ED25519_VALUE ||
-    keyType === KEY_TYPE_GUARDED_FALCON1024_SENTRY_FALCON1024_VALUE;
-}
-
-function guardedSentryComponentKeyType(keyType: string): string {
-  if (keyType === KEY_TYPE_GUARDED_FALCON1024_SENTRY_FALCON1024_VALUE) {
-    return "aplane.sentry-falcon1024.v1";
-  }
-  if (keyType === KEY_TYPE_GUARDED_FALCON1024_SENTRY_ED25519_VALUE) {
-    return "aplane.sentry-ed25519.v1";
-  }
-  return "";
 }
 
 function guardedDummiesNeeded(totalLsigBytes: number, txnCount: number): number {
@@ -370,7 +350,12 @@ async function buildPreparedGuardedSignOptions(
       lsigIndices.push(index);
     }
 
-    if (isGuardedKeyType(key.keyType)) {
+    if (key.signingFlow) {
+      if (key.signingFlow !== SIGNING_FLOW_SENTRY1) {
+        throw new SignerError(
+          `prepared transaction ${index}: signer key requires signing flow "${key.signingFlow}", which this SDK does not support; upgrade the SDK`,
+        );
+      }
       if (!item.authAddress) {
         throw new SignerError(`prepared transaction ${index}: guarded auth address is required`);
       }
@@ -378,7 +363,7 @@ async function buildPreparedGuardedSignOptions(
         targetIndex: index,
         guardedAccount: item.authAddress,
         sentryPublicKeyHex: key.parameters?.sentry_public_key || "",
-        sentryComponentKeyType: guardedSentryComponentKeyType(key.keyType),
+        sentryComponentKeyType: key.sentryComponentKeyType || "",
       });
       continue;
     }
@@ -1855,6 +1840,8 @@ export class SignerClient {
         address: k.address,
         publicKeyHex: raw.public_key_hex || "",
         keyType: raw.key_type || "",
+        signingFlow: raw.signing_flow || undefined,
+        sentryComponentKeyType: raw.sentry_component_key_type || undefined,
         lsigSize: raw.lsig_size || 0,
         isGenericLsig: raw.is_generic_lsig || false,
         isComponentKey: raw.is_component_key || false,
@@ -2653,6 +2640,8 @@ export class SignerClient {
         mnemonicWordCount: kt.mnemonic_word_count,
         mnemonicImport: kt.mnemonic_import,
         mnemonicScheme: kt.mnemonic_scheme,
+        signingFlow: kt.signing_flow || undefined,
+        sentryComponentKeyType: kt.sentry_component_key_type || undefined,
         creationParams,
         runtimeArgs,
       });

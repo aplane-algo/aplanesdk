@@ -9,6 +9,7 @@ import {
   COMPONENT_SIGN_ROLE_SENTRY,
   KEY_TYPE_GUARDED_FALCON1024_SENTRY_ED25519,
   KEY_TYPE_SENTRY_ED25519,
+  SIGNING_FLOW_SENTRY1,
 } from "../src/types.js";
 import {
   AuthenticationError,
@@ -1438,6 +1439,8 @@ describe("SignerClient", () => {
                 address: guarded,
                 publicKeyHex: "",
                 keyType: KEY_TYPE_GUARDED_FALCON1024_SENTRY_ED25519,
+                signingFlow: SIGNING_FLOW_SENTRY1,
+                sentryComponentKeyType: KEY_TYPE_SENTRY_ED25519,
                 lsigSize: 3035,
                 isGenericLsig: false,
                 parameters: { sentry_public_key: "aabbcc" },
@@ -1449,6 +1452,50 @@ describe("SignerClient", () => {
 
       assert.equal(result.signedGroup.length, 4);
       assert.equal(result.primarySignResponse, undefined);
+    });
+
+    it("rejects prepared groups whose keys require an unsupported signing flow", async () => {
+      const guarded = testAddress(1);
+      const receiver = testAddress(2);
+      const user = new SignerClient("http://localhost:11270", "test-token");
+
+      const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+        sender: guarded,
+        receiver,
+        amount: 1000n,
+        suggestedParams: {
+          fee: 1000n,
+          minFee: 1000n,
+          firstValid: 1n,
+          lastValid: 100n,
+          genesisHash: new Uint8Array(32),
+          genesisID: "testnet-v1",
+          flatFee: true,
+        },
+      });
+
+      await assert.rejects(
+        signPreparedGuardedGroup({
+          userClient: user,
+          preparedGroup: {
+            transactions: [
+              {
+                transaction: txn,
+                authAddress: guarded,
+                signerKey: {
+                  address: guarded,
+                  publicKeyHex: "",
+                  keyType: "aplane.future-guarded.v1",
+                  signingFlow: "sentry2",
+                  lsigSize: 3035,
+                  isGenericLsig: false,
+                },
+              },
+            ],
+          },
+        }),
+        /signing flow "sentry2"/,
+      );
     });
   });
 

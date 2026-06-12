@@ -538,23 +538,34 @@ type CreationParam struct {
 
 // KeyTypeInfo describes an available key type on the signer.
 type KeyTypeInfo struct {
-	KeyType           string          `json:"key_type"`
-	Family            string          `json:"family"`
-	DisplayName       string          `json:"display_name"`
-	Description       string          `json:"description"`
-	RequiresLogicSig  bool            `json:"requires_logicsig"`
-	MnemonicWordCount int             `json:"mnemonic_word_count"`
-	MnemonicImport    bool            `json:"mnemonic_import"`
-	MnemonicScheme    string          `json:"mnemonic_scheme"`
-	CreationParams    []CreationParam `json:"creation_params"`
-	RuntimeArgs       []RuntimeArg    `json:"runtime_args"`
+	KeyType                string          `json:"key_type"`
+	Family                 string          `json:"family"`
+	DisplayName            string          `json:"display_name"`
+	Description            string          `json:"description"`
+	RequiresLogicSig       bool            `json:"requires_logicsig"`
+	MnemonicWordCount      int             `json:"mnemonic_word_count"`
+	MnemonicImport         bool            `json:"mnemonic_import"`
+	MnemonicScheme         string          `json:"mnemonic_scheme"`
+	SigningFlow            string          `json:"signing_flow,omitempty"`
+	SentryComponentKeyType string          `json:"sentry_component_key_type,omitempty"`
+	CreationParams         []CreationParam `json:"creation_params"`
+	RuntimeArgs            []RuntimeArg    `json:"runtime_args"`
 }
+
+// SigningFlowSentry1 names the sentry co-signed component signing
+// choreography (one user plus one sentry component signature per target,
+// assembled via /sign/assemble). Signer inventory labels guarded keys with
+// this flow; clients route on the label and must fail fast on flow labels
+// they do not implement. An empty signing_flow means the ordinary /sign path.
+const SigningFlowSentry1 = "sentry1"
 
 // KeyInfo represents a key returned from the /keys endpoint.
 type KeyInfo struct {
 	Address                  string            `json:"address"`
 	PublicKeyHex             string            `json:"public_key_hex"`
 	KeyType                  string            `json:"key_type"`
+	SigningFlow              string            `json:"signing_flow,omitempty"`
+	SentryComponentKeyType   string            `json:"sentry_component_key_type,omitempty"`
 	LsigSize                 int               `json:"lsig_size,omitempty"`
 	IsGenericLsig            bool              `json:"is_generic_lsig,omitempty"`
 	IsComponentKey           bool              `json:"is_component_key,omitempty"`

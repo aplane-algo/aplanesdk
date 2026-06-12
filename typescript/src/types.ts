@@ -10,6 +10,15 @@ import type { Transaction } from "algosdk";
 export const COMPONENT_SIGN_ROLE_USER = "user";
 export const COMPONENT_SIGN_ROLE_SENTRY = "sentry";
 
+/**
+ * Signing choreography label for the sentry co-signed component flow (one
+ * user plus one sentry component signature per target, assembled via
+ * /sign/assemble). Signer inventory labels guarded keys with this flow;
+ * clients route on the label and must fail fast on flow labels they do not
+ * implement. An empty signing_flow means the ordinary /sign path.
+ */
+export const SIGNING_FLOW_SENTRY1 = "sentry1";
+
 export const KEY_TYPE_SENTRY_ED25519 = "aplane.sentry-ed25519.v1";
 export const KEY_TYPE_SENTRY_FALCON1024 = "aplane.sentry-falcon1024.v1";
 export const KEY_TYPE_GUARDED_FALCON1024_SENTRY_ED25519 =
@@ -47,6 +56,10 @@ export interface KeyInfo {
   publicKeyHex: string;
   /** Key type (e.g., "ed25519", "aplane.falcon1024.v1", "aplane.timed-whitelist.v1") */
   keyType: string;
+  /** Signing choreography label (e.g. "sentry1"); empty/absent = plain /sign path */
+  signingFlow?: string;
+  /** Sentry component key type for signing flow "sentry1" */
+  sentryComponentKeyType?: string;
   /** Total LogicSig size for budget calculation (bytecode + crypto sig) */
   lsigSize: number;
   /** True if this is a generic LogicSig (no cryptographic signature needed) */
@@ -209,6 +222,10 @@ export interface KeyTypeInfo {
   mnemonicImport?: boolean;
   /** Mnemonic scheme name */
   mnemonicScheme?: string;
+  /** Signing choreography label (e.g. "sentry1"); empty/absent = plain /sign path */
+  signingFlow?: string;
+  /** Sentry component key type for signing flow "sentry1" */
+  sentryComponentKeyType?: string;
   /** Creation parameters */
   creationParams?: CreationParam[];
   /** Runtime arguments for generic LogicSigs */

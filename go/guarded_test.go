@@ -6,6 +6,7 @@ package aplane
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/algorand/go-algorand-sdk/v2/transaction"
@@ -345,10 +346,12 @@ func TestSignPreparedGuardedGroupAllGuardedAddsDummiesWithoutPlanOrSign(t *testi
 			Transaction: &txn,
 			AuthAddress: guarded,
 			SignerKey: &KeyInfo{
-				Address:    guarded,
-				KeyType:    KeyTypeGuardedFalcon1024SentryEd25519,
-				LsigSize:   3035,
-				Parameters: map[string]string{"sentry_public_key": "aabbcc"},
+				Address:                guarded,
+				KeyType:                KeyTypeGuardedFalcon1024SentryEd25519,
+				SigningFlow:            SigningFlowSentry1,
+				SentryComponentKeyType: KeyTypeSentryEd25519,
+				LsigSize:               3035,
+				Parameters:             map[string]string{"sentry_public_key": "aabbcc"},
 			},
 		}),
 	})
@@ -357,5 +360,40 @@ func TestSignPreparedGuardedGroupAllGuardedAddsDummiesWithoutPlanOrSign(t *testi
 	}
 	if len(result.SignedGroup) != 4 || result.PrimarySignResponse != nil {
 		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestSignPreparedGuardedGroupRejectsUnsupportedSigningFlow(t *testing.T) {
+	var genesisHash types.Digest
+	sp := types.SuggestedParams{
+		Fee:             types.MicroAlgos(1000),
+		FirstRoundValid: 1,
+		LastRoundValid:  100,
+		GenesisID:       "testnet-v1.0",
+		GenesisHash:     genesisHash[:],
+		FlatFee:         true,
+	}
+	guarded := sdkTestAddress(1)
+	receiver := sdkTestAddress(2)
+	txn, err := transaction.MakePaymentTxn(guarded, receiver, 1000, nil, "", sp)
+	if err != nil {
+		t.Fatalf("MakePaymentTxn() error = %v", err)
+	}
+
+	_, err = SignPreparedGuardedGroup(PreparedGuardedGroupOptions{
+		UserClient: &SignerClient{},
+		PreparedGroup: NewPreparedGroup(PreparedTransaction{
+			Transaction: &txn,
+			AuthAddress: guarded,
+			SignerKey: &KeyInfo{
+				Address:     guarded,
+				KeyType:     "aplane.future-guarded.v1",
+				SigningFlow: "sentry2",
+				LsigSize:    3035,
+			},
+		}),
+	})
+	if err == nil || !strings.Contains(err.Error(), `signing flow "sentry2"`) {
+		t.Fatalf("SignPreparedGuardedGroup() error = %v, want unsupported signing flow rejection", err)
 	}
 }

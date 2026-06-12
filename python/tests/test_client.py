@@ -41,6 +41,8 @@ from aplanesdk.signer import (
     COMPONENT_SIGN_ROLE_SENTRY,
     KEY_TYPE_SENTRY_ED25519,
     KEY_TYPE_GUARDED_FALCON1024_SENTRY_ED25519,
+    KEY_TYPE_SENTRY_ED25519,
+    SIGNING_FLOW_SENTRY1,
     request_token,
     request_token_to_file,
     _validate_sign_request_id,
@@ -810,6 +812,8 @@ class TestSignGuardedGroup:
                     signer_key=KeyInfo(
                         address=guarded,
                         key_type=KEY_TYPE_GUARDED_FALCON1024_SENTRY_ED25519,
+                        signing_flow=SIGNING_FLOW_SENTRY1,
+                        sentry_component_key_type=KEY_TYPE_SENTRY_ED25519,
                         lsig_size=3035,
                         parameters={"sentry_public_key": "aabbcc"},
                     ),
@@ -825,6 +829,37 @@ class TestSignGuardedGroup:
         sentry_req = sentry.request_component_sign.call_args.args[0]
         assert sentry_req.component_key == "SENTRY_COMPONENT"
         assert len(sentry_req.group_bytes_hex) == 4
+
+    def test_prepared_group_rejects_unsupported_signing_flow(self):
+        guarded = sdk_test_address(1)
+        receiver = sdk_test_address(2)
+        user = MagicMock()
+
+        params = transaction.SuggestedParams(
+            1000,
+            1,
+            100,
+            base64.b64encode(bytes(32)).decode(),
+            "testnet-v1.0",
+            flat_fee=True,
+        )
+        txn = transaction.PaymentTxn(guarded, params, receiver, 1000)
+        with pytest.raises(ValueError, match="signing flow 'sentry2'"):
+            sign_prepared_guarded_group(
+                user_client=user,
+                prepared_group=PreparedGroup([
+                    PreparedTransaction(
+                        transaction=txn,
+                        auth_address=guarded,
+                        signer_key=KeyInfo(
+                            address=guarded,
+                            key_type="aplane.future-guarded.v1",
+                            signing_flow="sentry2",
+                            lsig_size=3035,
+                        ),
+                    )
+                ]),
+            )
 
 
 # ---------------------------------------------------------------------------

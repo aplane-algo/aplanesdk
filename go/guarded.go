@@ -266,7 +266,10 @@ func buildPreparedGuardedSignOptions(opts PreparedGuardedGroupOptions) (GuardedS
 			lsigIndices = append(lsigIndices, i)
 		}
 
-		if isGuardedKeyType(key.KeyType) {
+		if key.SigningFlow != "" {
+			if key.SigningFlow != SigningFlowSentry1 {
+				return GuardedSignOptions{}, fmt.Errorf("prepared transaction %d: signer key requires signing flow %q, which this SDK does not support; upgrade the SDK", i, key.SigningFlow)
+			}
 			if item.AuthAddress == "" {
 				return GuardedSignOptions{}, fmt.Errorf("prepared transaction %d: guarded auth address is required", i)
 			}
@@ -274,7 +277,7 @@ func buildPreparedGuardedSignOptions(opts PreparedGuardedGroupOptions) (GuardedS
 				TargetIndex:            i,
 				GuardedAccount:         item.AuthAddress,
 				SentryPublicKeyHex:     guardedSentryPublicKey(key),
-				SentryComponentKeyType: guardedSentryComponentKeyType(key.KeyType),
+				SentryComponentKeyType: key.SentryComponentKeyType,
 			})
 			continue
 		}
@@ -352,26 +355,11 @@ func buildPreparedGuardedSignOptions(opts PreparedGuardedGroupOptions) (GuardedS
 	}, nil
 }
 
-func isGuardedKeyType(keyType string) bool {
-	return keyType == KeyTypeGuardedFalcon1024SentryEd25519 || keyType == KeyTypeGuardedFalcon1024SentryFalcon1024
-}
-
 func guardedSentryPublicKey(key *KeyInfo) string {
 	if key == nil || key.Parameters == nil {
 		return ""
 	}
 	return key.Parameters["sentry_public_key"]
-}
-
-func guardedSentryComponentKeyType(keyType string) string {
-	switch keyType {
-	case KeyTypeGuardedFalcon1024SentryFalcon1024:
-		return KeyTypeSentryFalcon1024
-	case KeyTypeGuardedFalcon1024SentryEd25519:
-		return KeyTypeSentryEd25519
-	default:
-		return ""
-	}
 }
 
 func encodeGuardedLsigArgs(args LsigArgs) map[string]string {

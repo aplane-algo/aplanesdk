@@ -88,6 +88,13 @@ GUARDED_DUMMY_PROGRAM = bytes.fromhex("033120320312")
 COMPONENT_SIGN_ROLE_USER = "user"
 COMPONENT_SIGN_ROLE_SENTRY = "sentry"
 
+# Signing choreography label for the sentry co-signed component flow (one
+# user plus one sentry component signature per target, assembled via
+# /sign/assemble). Signer inventory labels guarded keys with this flow;
+# clients route on the label and must fail fast on flow labels they do not
+# implement. An empty signing_flow means the ordinary /sign path.
+SIGNING_FLOW_SENTRY1 = "sentry1"
+
 KEY_TYPE_SENTRY_ED25519 = "aplane.sentry-ed25519.v1"
 KEY_TYPE_SENTRY_FALCON1024 = "aplane.sentry-falcon1024.v1"
 KEY_TYPE_GUARDED_FALCON1024_SENTRY_ED25519 = "aplane.falcon1024-sentry-ed25519.v1"
@@ -229,6 +236,8 @@ class KeyInfo:
     address: str
     key_type: str
     public_key_hex: str = ""
+    signing_flow: str = ""  # Signing choreography label (e.g. "sentry1"); empty = plain /sign
+    sentry_component_key_type: str = ""  # Sentry component key type for signing flow "sentry1"
     lsig_size: int = 0
     is_generic_lsig: bool = False
     is_component_key: bool = False
@@ -299,6 +308,8 @@ class KeyTypeInfo:
     mnemonic_word_count: int = 0
     mnemonic_import: bool = False
     mnemonic_scheme: str = ""
+    signing_flow: str = ""  # Signing choreography label (e.g. "sentry1"); empty = plain /sign
+    sentry_component_key_type: str = ""  # Sentry component key type for signing flow "sentry1"
     creation_params: Optional[List[CreationParam]] = None
     runtime_args: Optional[List[RuntimeArg]] = None
 
@@ -1841,6 +1852,8 @@ class SignerClient:
                 address=k["address"],
                 key_type=k["key_type"],
                 public_key_hex=k.get("public_key_hex", ""),
+                signing_flow=k.get("signing_flow", ""),
+                sentry_component_key_type=k.get("sentry_component_key_type", ""),
                 lsig_size=k.get("lsig_size", 0),
                 is_generic_lsig=k.get("is_generic_lsig", False),
                 is_component_key=k.get("is_component_key", False),
@@ -2726,6 +2739,8 @@ class SignerClient:
                 mnemonic_word_count=kt.get("mnemonic_word_count", 0),
                 mnemonic_import=kt.get("mnemonic_import", False),
                 mnemonic_scheme=kt.get("mnemonic_scheme", ""),
+                signing_flow=kt.get("signing_flow", ""),
+                sentry_component_key_type=kt.get("sentry_component_key_type", ""),
                 creation_params=creation_params,
                 runtime_args=runtime_args,
             ))
@@ -3712,21 +3727,6 @@ def _component_signatures_by_index(
     }
 
 
-def _is_guarded_key_type(key_type: str) -> bool:
-    return key_type in {
-        KEY_TYPE_GUARDED_FALCON1024_SENTRY_ED25519,
-        KEY_TYPE_GUARDED_FALCON1024_SENTRY_FALCON1024,
-    }
-
-
-def _guarded_sentry_component_key_type(key_type: str) -> str:
-    if key_type == KEY_TYPE_GUARDED_FALCON1024_SENTRY_FALCON1024:
-        return KEY_TYPE_SENTRY_FALCON1024
-    if key_type == KEY_TYPE_GUARDED_FALCON1024_SENTRY_ED25519:
-        return KEY_TYPE_SENTRY_ED25519
-    return ""
-
-
 def _guarded_dummies_needed(total_lsig_bytes: int, txn_count: int) -> int:
     current_budget = txn_count * GUARDED_LSIG_BUDGET_BYTES
     if total_lsig_bytes <= current_budget:
@@ -3847,14 +3847,19 @@ def _build_prepared_guarded_sign_inputs(
             total_lsig_bytes += lsig_size
             lsig_indices.append(index)
 
-        if _is_guarded_key_type(key.key_type):
+        if key.signing_flow:
+            if key.signing_flow != SIGNING_FLOW_SENTRY1:
+                raise ValueError(
+                    f"prepared transaction {index}: signer key requires signing flow "
+                    f"{key.signing_flow!r}, which this SDK does not support; upgrade the SDK"
+                )
             if not item.auth_address:
                 raise ValueError(f"prepared transaction {index}: guarded auth address is required")
             guarded_targets.append(GuardedSignTarget(
                 target_index=index,
                 guarded_account=item.auth_address,
                 sentry_public_key_hex=(key.parameters or {}).get("sentry_public_key", ""),
-                sentry_component_key_type=_guarded_sentry_component_key_type(key.key_type),
+                sentry_component_key_type=key.sentry_component_key_type,
             ))
             continue
 
