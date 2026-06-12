@@ -4,12 +4,14 @@
 package aplane
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"fmt"
 	"sort"
 
 	"github.com/algorand/go-algorand-sdk/v2/crypto"
+	"github.com/algorand/go-algorand-sdk/v2/encoding/msgpack"
 	"github.com/algorand/go-algorand-sdk/v2/transaction"
 	"github.com/algorand/go-algorand-sdk/v2/types"
 )
@@ -197,9 +199,55 @@ func SignGuardedGroupWithContext(ctx context.Context, opts GuardedSignOptions) (
 	if err != nil {
 		return nil, err
 	}
+	if err := verifyAssembledGroup(opts.GroupBytesHex, assemblyResp.SignedGroup); err != nil {
+		return nil, err
+	}
 	result.AssemblyResponse = assemblyResp
 	result.SignedGroup = append([]string(nil), assemblyResp.SignedGroup...)
 	return result, nil
+}
+
+// verifyAssembledGroup cross-checks the assembler's signed group against the
+// frozen canonical bytes the caller submitted. GuardedAssemblyResponse.Validate
+// only confirms each slot is non-empty; this additionally pins the length and
+// the per-position transaction identity, so a wrong-length or substituted
+// assembled group cannot reach submission. Each signed transaction's inner Txn
+// must re-encode to exactly the canonical bytes at the same index.
+func verifyAssembledGroup(groupBytesHex []string, signedGroup []string) error {
+	if len(signedGroup) != len(groupBytesHex) {
+		return fmt.Errorf("assembled group has %d transaction(s), want %d", len(signedGroup), len(groupBytesHex))
+	}
+	for i, signedHex := range signedGroup {
+		if err := signedTxnMatchesCanonical("assembled transaction", i, signedHex, groupBytesHex[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// signedTxnMatchesCanonical decodes a hex-encoded SignedTxn and checks that its
+// inner transaction re-encodes to exactly the canonical TX-prefixed bytes
+// expected at this position. It is the per-slot identity check shared by
+// assembled-group verification and primary-passthrough verification: a signer
+// must return a signature over the transaction we asked it to sign, not a
+// substituted one.
+func signedTxnMatchesCanonical(label string, index int, signedHex, canonicalHex string) error {
+	canonical, err := hex.DecodeString(canonicalHex)
+	if err != nil {
+		return fmt.Errorf("%s %d: canonical bytes invalid hex: %w", label, index, err)
+	}
+	signedBytes, err := hex.DecodeString(signedHex)
+	if err != nil {
+		return fmt.Errorf("%s %d: invalid hex: %w", label, index, err)
+	}
+	var stxn types.SignedTxn
+	if err := msgpack.Decode(signedBytes, &stxn); err != nil {
+		return fmt.Errorf("%s %d: decode failed: %w", label, index, err)
+	}
+	if reencoded := encodeTxn(stxn.Txn); !bytes.Equal(reencoded, canonical) {
+		return fmt.Errorf("%s %d does not match the submitted canonical bytes", label, index)
+	}
+	return nil
 }
 
 // SignPreparedGuardedGroup canonicalizes a prepared group locally, classifies
@@ -588,6 +636,12 @@ func requestPrimaryGuardedPassthrough(ctx context.Context, client *SignerClient,
 	for index := range primaryByIndex {
 		if index >= len(response.Signed) || response.Signed[index] == "" {
 			return nil, fmt.Errorf("primary signer returned no signed transaction for target %d", index)
+		}
+		// The primary signer's output is forwarded to assembly as passthrough;
+		// verify it signed the transaction we requested (not a substituted one)
+		// before trusting its bytes.
+		if err := signedTxnMatchesCanonical("primary passthrough", index, response.Signed[index], groupBytesHex[index]); err != nil {
+			return nil, err
 		}
 		passthrough = append(passthrough, GuardedPassthroughItem{
 			TargetIndex:  index,

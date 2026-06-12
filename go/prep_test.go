@@ -598,3 +598,33 @@ func TestPreparePaymentAppCallGroup(t *testing.T) {
 		t.Fatalf("group check = %#v", group.Checks)
 	}
 }
+
+// TestApplyPrepFee pins the unified fee model: a positive fee is always flat
+// microAlgos (never reinterpreted as fee-per-byte), an explicit flat zero is
+// applied (for fee pooling), and an unset fee leaves the suggested fee intact.
+func TestApplyPrepFee(t *testing.T) {
+	tests := []struct {
+		name       string
+		fee        uint64
+		useFlatFee bool
+		wantFee    types.MicroAlgos
+		wantFlat   bool
+	}{
+		{"positive fee is flat even without UseFlatFee", 5000, false, 5000, true},
+		{"positive fee with UseFlatFee is flat", 5000, true, 5000, true},
+		{"explicit flat zero is applied", 0, true, 0, true},
+		{"unset fee keeps suggested", 0, false, 7, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			params := types.SuggestedParams{Fee: 7, FlatFee: false}
+			applyPrepFee(&params, tt.fee, tt.useFlatFee)
+			if params.Fee != tt.wantFee {
+				t.Fatalf("Fee = %d, want %d", params.Fee, tt.wantFee)
+			}
+			if params.FlatFee != tt.wantFlat {
+				t.Fatalf("FlatFee = %v, want %v", params.FlatFee, tt.wantFlat)
+			}
+		})
+	}
+}

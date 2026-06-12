@@ -1047,12 +1047,18 @@ function accountStatus(accountInfo: AccountInfoResult | Record<string, any>): st
 }
 
 function applyPrepFee(params: Record<string, any>, fee?: number, useFlatFee?: boolean): void {
-  if (!fee) {
+  // No fee-per-byte mode: fee is always flat microAlgos, so a set fee can never
+  // be silently reinterpreted as EstimateSize*fee. undefined means unset (keep
+  // the suggested fee); an explicit number (including 0, used for fee pooling)
+  // is applied as a flat fee. useFlatFee is accepted for signature
+  // compatibility but no longer selects a per-byte fee.
+  void useFlatFee;
+  if (fee === undefined) {
     return;
   }
   params.fee = fee;
-  params.flatFee = Boolean(useFlatFee);
-  params.flat_fee = Boolean(useFlatFee);
+  params.flatFee = true;
+  params.flat_fee = true;
 }
 
 function asaOptInChecks(

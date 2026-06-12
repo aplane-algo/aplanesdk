@@ -1391,6 +1391,15 @@ func (c *SignerClient) signResponse(requests []SignRequest) (*GroupSignResponse,
 		return nil, fmt.Errorf("signing failed: %s", groupResp.Error)
 	}
 
+	// Shape-validate here so every legacy sign path (sign/signList and their
+	// public callers SignTransactions*/SignTransactionsList*) gets the same
+	// truncated/empty-slot protection that SignGroupWithContext has; otherwise
+	// hexArrayToBase64 below would silently decode an empty hex slot to empty
+	// bytes and yield a partial group.
+	if err := validateGroupSignResponse(requests, groupResp.Signed); err != nil {
+		return nil, err
+	}
+
 	return &groupResp, nil
 }
 

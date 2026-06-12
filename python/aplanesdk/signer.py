@@ -878,10 +878,16 @@ def _find_spendable_key(keys: List[KeyInfo], address: str) -> Optional[KeyInfo]:
 
 
 def _apply_prep_fee(params: Any, fee: Optional[int], use_flat_fee: bool) -> None:
+    # No fee-per-byte mode: fee is always flat microAlgos, so a set fee can
+    # never be silently reinterpreted as EstimateSize*fee. None means unset
+    # (keep the suggested fee); an explicit int (including 0, used for fee
+    # pooling) is applied as a flat fee. use_flat_fee is accepted for signature
+    # compatibility but no longer selects a per-byte fee.
+    _ = use_flat_fee
     if fee is None:
         return
     params.fee = fee
-    params.flat_fee = use_flat_fee
+    params.flat_fee = True
 
 
 def _account_amount(account_info: Any) -> int:

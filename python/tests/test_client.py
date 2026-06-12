@@ -2120,3 +2120,37 @@ class TestRequestToken:
                 ssh_key_path="~/.ssh/id_ed25519",
                 identity="other-identity",
             )
+
+
+class _FeeParams:
+    """Minimal SuggestedParams stand-in for _apply_prep_fee tests."""
+
+    def __init__(self):
+        self.fee = 7
+        self.flat_fee = False
+
+
+class TestApplyPrepFee:
+    """The unified fee model: a positive fee is always flat microAlgos, an
+    explicit flat zero is applied, and None leaves the suggested fee intact."""
+
+    def test_positive_fee_is_flat(self):
+        from aplanesdk.signer import _apply_prep_fee
+
+        p = _FeeParams()
+        _apply_prep_fee(p, 5000, False)
+        assert p.fee == 5000 and p.flat_fee is True
+
+    def test_explicit_zero_is_flat(self):
+        from aplanesdk.signer import _apply_prep_fee
+
+        p = _FeeParams()
+        _apply_prep_fee(p, 0, False)
+        assert p.fee == 0 and p.flat_fee is True
+
+    def test_none_keeps_suggested(self):
+        from aplanesdk.signer import _apply_prep_fee
+
+        p = _FeeParams()
+        _apply_prep_fee(p, None, False)
+        assert p.fee == 7 and p.flat_fee is False

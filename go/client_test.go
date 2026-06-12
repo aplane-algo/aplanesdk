@@ -174,6 +174,34 @@ func TestSignTransactionsList_ReturnsIndividualBase64(t *testing.T) {
 	}
 }
 
+// TestSignTransactionsList_RejectsTruncatedResponse pins that the legacy sign
+// path (sign/signList via signResponse) now shape-validates the signer reply:
+// a response with fewer signed slots than requests, or an empty non-foreign
+// slot, is rejected rather than silently yielding a partial group.
+func TestSignTransactionsList_RejectsTruncatedResponse(t *testing.T) {
+	cases := map[string]GroupSignResponse{
+		"too few slots":     {Signed: []string{hex.EncodeToString([]byte("only-one"))}},
+		"empty signed slot": {Signed: []string{hex.EncodeToString([]byte("ok")), ""}},
+	}
+	for name, resp := range cases {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				json.NewEncoder(w).Encode(resp)
+			}))
+			defer server.Close()
+
+			client := &SignerClient{baseURL: server.URL, token: "test", client: http.DefaultClient}
+			_, err := client.SignTransactionsList(
+				[]types.Transaction{{Type: types.PaymentTx}, {Type: types.PaymentTx}},
+				nil, nil,
+			)
+			if err == nil {
+				t.Fatal("SignTransactionsList() error = nil, want truncated-response rejection")
+			}
+		})
+	}
+}
+
 func TestSignTransactions_ReturnsConcatenatedBase64(t *testing.T) {
 	signedHex1 := hex.EncodeToString([]byte("signed-txn-1"))
 	signedHex2 := hex.EncodeToString([]byte("signed-txn-2"))

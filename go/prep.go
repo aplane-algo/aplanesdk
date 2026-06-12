@@ -835,12 +835,19 @@ func (c *SignerClient) prepareAppCallWithInfo(ctx context.Context, algodClient *
 	}, nil
 }
 
+// applyPrepFee applies a caller-specified fee. The SDK has no fee-per-byte
+// mode: Fee is always interpreted as flat microAlgos, so a set fee can never be
+// silently reinterpreted as EstimateSize*Fee. A flat fee is applied when the
+// caller explicitly opts in (UseFlatFee) — including an explicit flat zero, used
+// for fee pooling — or whenever Fee is positive (UseFlatFee defaults on for
+// positive fees). Fee==0 without UseFlatFee means "unset": the suggested-params
+// fee stands.
 func applyPrepFee(params *types.SuggestedParams, fee uint64, useFlatFee bool) {
-	if fee == 0 {
+	if !useFlatFee && fee == 0 {
 		return
 	}
 	params.Fee = types.MicroAlgos(fee)
-	params.FlatFee = useFlatFee
+	params.FlatFee = true
 }
 
 func paymentChecks(sender models.Account, amount uint64, fee uint64) ([]PreparedCheck, error) {

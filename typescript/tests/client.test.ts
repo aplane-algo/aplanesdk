@@ -431,6 +431,42 @@ describe("SignerClient", () => {
       assert.equal(prepared.checks?.[0].name, "payment_balance");
     });
 
+    it("treats a set fee as flat microAlgos without useFlatFee", async () => {
+      const sender = testAddress(1);
+      const receiver = testAddress(2);
+      const algod = mockAlgod({ [sender]: { amount: 2_000_000, minBalance: 100_000 } });
+      queueStatusResponse(60, 1);
+      mockFetch.mockResolvedValueOnce(keysResponse(sender));
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const prepared = await client.preparePayment(algod, {
+        sender,
+        receiver,
+        amount: 10_000,
+        fee: 5000, // no useFlatFee: must still be a flat 5000, never EstimateSize*5000
+      });
+
+      assert.equal(String((prepared.transaction as any).fee), "5000");
+    });
+
+    it("applies an explicit zero fee as a flat zero", async () => {
+      const sender = testAddress(1);
+      const receiver = testAddress(2);
+      const algod = mockAlgod({ [sender]: { amount: 2_000_000, minBalance: 100_000 } });
+      queueStatusResponse(60, 1);
+      mockFetch.mockResolvedValueOnce(keysResponse(sender));
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const prepared = await client.preparePayment(algod, {
+        sender,
+        receiver,
+        amount: 10_000,
+        fee: 0,
+      });
+
+      assert.equal(String((prepared.transaction as any).fee), "0");
+    });
+
     it("rejects payment transactions with insufficient funds", async () => {
       const sender = testAddress(1);
       const receiver = testAddress(2);
