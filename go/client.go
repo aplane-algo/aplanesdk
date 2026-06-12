@@ -16,7 +16,6 @@ import (
 	"net/url"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/algorand/go-algorand-sdk/v2/types"
@@ -1335,7 +1334,6 @@ func (c *SignerClient) signResponse(requests []SignRequest) (*GroupSignResponse,
 	reqCtx, cancel := c.requestContext(ctx, c.signRequestTimeout())
 	defer cancel()
 
-	var completed atomic.Bool
 	var cancelOnce sync.Once
 	sendCancel := func() {
 		cancelOnce.Do(func() {
@@ -1344,29 +1342,39 @@ func (c *SignerClient) signResponse(requests []SignRequest) (*GroupSignResponse,
 			_, _ = c.CancelSignRequestWithContext(cancelCtx, requestID)
 		})
 	}
+	// done is closed the moment the request returns so a deadline landing in the
+	// same instant as a successful response cannot fire a spurious cancel for a
+	// request the server already processed. Mirrors SignGroupWithContext.
+	done := make(chan struct{})
 	go func() {
-		<-reqCtx.Done()
-		if !completed.Load() {
+		select {
+		case <-done:
+			return
+		case <-reqCtx.Done():
+		}
+		select {
+		case <-done:
+		default:
 			sendCancel()
 		}
 	}()
 
 	req, err := http.NewRequestWithContext(reqCtx, "POST", c.baseURL+"/sign", bytes.NewBuffer(jsonBody))
 	if err != nil {
+		close(done)
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "aplane "+c.token)
 
 	resp, err := c.client.Do(req)
+	close(done)
 	if err != nil {
 		if reqCtx.Err() != nil {
 			sendCancel()
 		}
-		completed.Store(true)
 		return nil, fmt.Errorf("failed to sign: %w", err)
 	}
-	completed.Store(true)
 	defer resp.Body.Close()
 
 	if resp.StatusCode == 401 {

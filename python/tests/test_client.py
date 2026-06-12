@@ -2154,3 +2154,18 @@ class TestApplyPrepFee:
         p = _FeeParams()
         _apply_prep_fee(p, None, False)
         assert p.fee == 7 and p.flat_fee is False
+
+
+class TestCreateGuardedDummies:
+    def test_requires_genesis_hash(self):
+        from aplanesdk.signer import _create_guarded_dummies, SignerError
+
+        class FakeTxn:
+            genesis_hash = ""
+            fee = 1000
+            first_valid_round = 1
+            last_valid_round = 100
+            genesis_id = "x"
+
+        with pytest.raises(SignerError, match="genesis hash"):
+            _create_guarded_dummies(FakeTxn(), 1)

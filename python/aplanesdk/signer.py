@@ -3764,13 +3764,19 @@ def _apply_guarded_dummy_fees(
 def _create_guarded_dummies(first_txn: transaction.Transaction, count: int) -> List[transaction.Transaction]:
     if count == 0:
         return []
+    # The dummies must share the real transactions' network. A missing genesis
+    # hash would silently build dummies for the wrong (empty) network, so fail
+    # loudly instead of defaulting to "".
+    genesis_hash = getattr(first_txn, "genesis_hash", None)
+    if not genesis_hash:
+        raise SignerError("cannot build guarded dummy transactions: first transaction has no genesis hash")
     dummy_account = transaction.LogicSigAccount(GUARDED_DUMMY_PROGRAM)
     dummy_address = dummy_account.address()
     params = transaction.SuggestedParams(
         int(getattr(first_txn, "fee", GUARDED_DEFAULT_MIN_FEE)),
         int(getattr(first_txn, "first_valid_round", 0)),
         int(getattr(first_txn, "last_valid_round", 0)),
-        getattr(first_txn, "genesis_hash", ""),
+        genesis_hash,
         getattr(first_txn, "genesis_id", None),
         flat_fee=True,
     )

@@ -852,6 +852,9 @@ func applyPrepFee(params *types.SuggestedParams, fee uint64, useFlatFee bool) {
 
 func paymentChecks(sender models.Account, amount uint64, fee uint64) ([]PreparedCheck, error) {
 	required := amount + fee
+	if required < amount {
+		return nil, fmt.Errorf("amount %d plus fee %d overflows uint64", amount, fee)
+	}
 	available := uint64(0)
 	if sender.Amount > sender.MinBalance {
 		available = sender.Amount - sender.MinBalance

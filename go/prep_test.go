@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/algorand/go-algorand-sdk/v2/client/v2/algod"
+	"github.com/algorand/go-algorand-sdk/v2/client/v2/common/models"
 	"github.com/algorand/go-algorand-sdk/v2/types"
 )
 
@@ -626,5 +627,12 @@ func TestApplyPrepFee(t *testing.T) {
 				t.Fatalf("FlatFee = %v, want %v", params.FlatFee, tt.wantFlat)
 			}
 		})
+	}
+}
+
+func TestPaymentChecksRejectsAmountFeeOverflow(t *testing.T) {
+	_, err := paymentChecks(models.Account{Amount: 1_000_000, MinBalance: 0}, ^uint64(0), 1)
+	if err == nil || !strings.Contains(err.Error(), "overflow") {
+		t.Fatalf("expected overflow error, got %v", err)
 	}
 }
