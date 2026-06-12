@@ -82,6 +82,41 @@ describe("AlgoKit adapter", () => {
     assert.equal(client.signCalls[0].options?.signal, signal);
   });
 
+  const makeAccount = (response: GroupSignResponse) => {
+    const client = {
+      async signRequests(): Promise<GroupSignResponse> {
+        return response;
+      },
+    };
+    return new ApsignerAlgoKitAccount({
+      client: client as unknown as MockSignerClient,
+      address: zeroAddress,
+      authAddress: "AUTHADDR",
+      newRequestId: () => "sdk-algokit-test",
+      encodeTransaction: async () => new Uint8Array([84, 88, 1]),
+    });
+  };
+
+  const oneTxnGroup = [{ sender: { toString: () => "1" } }];
+
+  it("rejects a re-grouped response (signer added dummies / recomputed group ID)", async () => {
+    for (const mutations of [{ dummiesAdded: 2 }, { groupIdChanged: true }]) {
+      const account = makeAccount({ signed: ["aabb"], mutations });
+      await assert.rejects(
+        account.signer(oneTxnGroup, [0]),
+        /re-grouped/,
+      );
+    }
+  });
+
+  it("rejects a response whose signed count differs from the requested count", async () => {
+    const account = makeAccount({ signed: ["aabb", "ccdd"] }); // 2 signed, 1 requested
+    await assert.rejects(
+      account.signer(oneTxnGroup, [0]),
+      /returned 2 signed transaction\(s\), but AlgoKit requested 1/,
+    );
+  });
+
   it("lists signer keys as AlgoKit accounts", async () => {
     const client = new MockSignerClient();
     const accounts = await listApsignerAccounts(client, { refresh: true });
@@ -101,23 +136,6 @@ describe("AlgoKit adapter", () => {
 
     assert.equal(account.addr.toString(), zeroAddress);
     assert.equal(typeof account.signer, "function");
-  });
-
-  it("allows signer responses with additional APlane-managed transactions", async () => {
-    const client = new MockSignerClient();
-    client.signRequests = async (requests, options) => {
-      client.signCalls.push({ requests, options });
-      return { signed: ["aabb", "ccdd"] };
-    };
-    const account = createApsignerAccount({
-      client,
-      address: zeroAddress,
-      encodeTransaction: () => new Uint8Array([84, 88]),
-    });
-
-    const signed = await account.signer([{ sender: { toString: () => zeroAddress } }], [0]);
-
-    assert.deepEqual(signed, [new Uint8Array([0xaa, 0xbb]), new Uint8Array([0xcc, 0xdd])]);
   });
 
   it("rejects signer responses with too few signed transactions", async () => {
@@ -140,7 +158,7 @@ describe("AlgoKit adapter", () => {
         ],
         [0, 1],
       ),
-      /fewer signed transactions/,
+      /returned 1 signed transaction\(s\), but AlgoKit requested 2/,
     );
   });
 });

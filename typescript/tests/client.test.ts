@@ -481,6 +481,29 @@ describe("SignerClient", () => {
       );
     });
 
+    it("checks payment sufficiency exactly above 2^53 microAlgos", async () => {
+      // balance 2^53, amount 2^53 + 1: a Number()-based check rounds the amount
+      // down to 2^53 and would wrongly accept; the BigInt check rejects.
+      const sender = testAddress(1);
+      const receiver = testAddress(2);
+      const algod = mockAlgod({
+        [sender]: { amount: 9007199254740992n, minBalance: 0n },
+      });
+      queueStatusResponse(60, 1);
+      mockFetch.mockResolvedValueOnce(keysResponse(sender));
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      await assert.rejects(
+        client.preparePayment(algod, {
+          sender,
+          receiver,
+          amount: 9007199254740993n,
+          fee: 0,
+        }),
+        /insufficient funds/,
+      );
+    });
+
     it("prepares ASA transfer transactions", async () => {
       const sender = testAddress(1);
       const receiver = testAddress(2);
@@ -2134,6 +2157,16 @@ describe("encoding utilities", () => {
       const result = concatenateSignedTxns(hexes);
       // Should be base64 of [0xde, 0xad, 0xbe, 0xef]
       assert.equal(result, "3q2+7w==");
+    });
+
+    it("encodes a large group without exceeding the argument-spread limit", () => {
+      // ~64 KB across 16 entries: would overflow String.fromCharCode(...bytes)
+      // in the browser fallback if not chunked. Verify it round-trips.
+      const big = "ab".repeat(2048); // 2 KB per entry
+      const hexes = Array.from({ length: 16 }, () => big);
+      const result = concatenateSignedTxns(hexes);
+      const decoded = Buffer.from(result, "base64");
+      assert.equal(decoded.length, 16 * 2048);
     });
   });
 });

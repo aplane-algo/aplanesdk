@@ -69,6 +69,7 @@ import {
   encodeTransaction,
   encodeLsigArgs,
   concatenateSignedTxns,
+  bytesToBase64,
   bytesToHex,
   hexToBytes,
 } from "./encoding.js";
@@ -991,6 +992,25 @@ function accountMinBalance(accountInfo: AccountInfoResult | Record<string, any>)
   return Number(raw["min-balance"] || raw.min_balance || raw.minBalance || 0);
 }
 
+// accountAmountBig / accountMinBalanceBig return microAlgo balances as bigint so
+// sufficiency checks stay exact above 2^53 microAlgos, where Number() would lose
+// precision. Account balances are integer microAlgos, so BigInt() is exact.
+function accountAmountBig(accountInfo: AccountInfoResult | Record<string, any>): bigint {
+  if (!accountInfo || typeof accountInfo === "string") {
+    return 0n;
+  }
+  const raw = accountInfo as Record<string, any>;
+  return BigInt(raw.amount ?? 0);
+}
+
+function accountMinBalanceBig(accountInfo: AccountInfoResult | Record<string, any>): bigint {
+  if (!accountInfo || typeof accountInfo === "string") {
+    return 0n;
+  }
+  const raw = accountInfo as Record<string, any>;
+  return BigInt(raw["min-balance"] ?? raw.min_balance ?? raw.minBalance ?? 0);
+}
+
 function accountAssetHolding(
   accountInfo: AccountInfoResult | Record<string, any>,
   assetId: number | bigint,
@@ -1069,8 +1089,8 @@ function asaOptInChecks(
   if (accountAssetHolding(accountInfo, assetId)) {
     throw new SignerError(`sender is already opted into asset ${assetId}`);
   }
-  if (accountAmount(accountInfo) < fee) {
-    throw new SignerError(`insufficient funds for opt-in fee: balance ${accountAmount(accountInfo)}, fee ${fee}`);
+  if (accountAmountBig(accountInfo) < BigInt(fee)) {
+    throw new SignerError(`insufficient funds for opt-in fee: balance ${accountAmountBig(accountInfo)}, fee ${fee}`);
   }
   return [{
     name: "asa_opt_in",
@@ -1134,8 +1154,8 @@ function accountCloseChecks(
   ) {
     throw new SignerError("cannot close account with created apps");
   }
-  if (accountAmount(accountInfo) < fee) {
-    throw new SignerError(`insufficient funds for close fee: balance ${accountAmount(accountInfo)}, fee ${fee}`);
+  if (accountAmountBig(accountInfo) < BigInt(fee)) {
+    throw new SignerError(`insufficient funds for close fee: balance ${accountAmountBig(accountInfo)}, fee ${fee}`);
   }
   return [{
     name: "account_close",
@@ -1971,9 +1991,9 @@ export class SignerClient {
       suggestedParams,
     });
 
-    const fee = Number((txn as any).fee || 0);
-    const available = accountAmount(senderInfo) - accountMinBalance(senderInfo);
-    const required = Number(params.amount) + fee;
+    const fee = BigInt((txn as any).fee ?? 0);
+    const available = accountAmountBig(senderInfo) - accountMinBalanceBig(senderInfo);
+    const required = BigInt(params.amount) + fee;
     if (available < required) {
       throw new SignerError(`insufficient funds: available ${available}, required ${required}`);
     }
@@ -3165,12 +3185,7 @@ export class SignerClient {
     // Convert each hex to base64 (empty strings stay empty for foreign entries)
     return signedHexes.map((hex) => {
       if (hex === "") return "";
-      const bytes = hexToBytes(hex);
-      if (typeof Buffer !== "undefined") {
-        return Buffer.from(bytes).toString("base64");
-      }
-      const binary = String.fromCharCode(...bytes);
-      return btoa(binary);
+      return bytesToBase64(hexToBytes(hex));
     });
   }
 

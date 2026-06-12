@@ -197,10 +197,25 @@ export class ApsignerAlgoKitAccount implements ApsignerAccount {
       } satisfies SignOptions,
     );
 
-    const signed = response.signed ?? [];
-    if (signed.length < indexesToSign.length) {
+    // AlgoKit assigns the group ID itself, over the full group, before calling
+    // the signer. If apsigner re-grouped these transactions for LogicSig budget
+    // (appended dummies and/or recomputed the group ID), the signatures are over
+    // a different group than AlgoKit's composer will submit, so they are
+    // unusable here. Fail fast with a clear diagnostic rather than returning a
+    // result that fails opaquely on-chain.
+    const mutations = response.mutations;
+    if (mutations && (mutations.groupIdChanged || (mutations.dummiesAdded ?? 0) > 0)) {
       throw new SignerError(
-        "apsigner returned fewer signed transactions than AlgoKit requested",
+        "apsigner re-grouped these transactions (added LogicSig-budget dummy transactions or recomputed the group ID); AlgoKit assigns its own group ID and cannot use a re-grouped result. Sign large-LogicSig groups through the aplane SDK's group/guarded flow instead.",
+      );
+    }
+
+    // With no re-grouping, the signer returns exactly one signed transaction per
+    // requested index, in order. Any other count is a malformed response.
+    const signed = response.signed ?? [];
+    if (signed.length !== indexesToSign.length) {
+      throw new SignerError(
+        `apsigner returned ${signed.length} signed transaction(s), but AlgoKit requested ${indexesToSign.length}`,
       );
     }
 

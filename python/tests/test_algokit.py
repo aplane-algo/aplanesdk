@@ -197,11 +197,30 @@ def test_encoder_failure_clears_in_flight_slot() -> None:
     assert signed == [bytes.fromhex("aabb")]
 
 
-def test_allows_expanded_signer_response() -> None:
+def test_rejects_regrouped_signer_response() -> None:
+    # AlgoKit assigns its own group ID, so a signer that re-grouped (added
+    # dummies or recomputed the group ID) produces signatures AlgoKit cannot
+    # submit. The adapter must fail fast rather than return them.
+    for mutations in ({"dummies_added": 2}, {"group_id_changed": True}):
+        class RegroupedClient(MockSignerClient):
+            def sign_requests(self, requests, *, request_id=None):
+                self.sign_calls.append((requests, request_id))
+                return GroupSignResponse(signed=["aabb"], mutations=mutations)
+
+        account = ApsignerAccount(
+            RegroupedClient(),
+            "ADDR",
+            encode_transaction=lambda _txn: b"TX",
+        )
+        with pytest.raises(SignerError, match="re-grouped"):
+            account.signer([MockTxn("ADDR")], [0])
+
+
+def test_rejects_mismatched_signed_count() -> None:
     class ExpandingClient(MockSignerClient):
         def sign_requests(self, requests, *, request_id=None):
             self.sign_calls.append((requests, request_id))
-            return GroupSignResponse(signed=["aabb", "ccdd"])
+            return GroupSignResponse(signed=["aabb", "ccdd"])  # 2 signed, 1 requested
 
     account = ApsignerAccount(
         ExpandingClient(),
@@ -209,9 +228,8 @@ def test_allows_expanded_signer_response() -> None:
         encode_transaction=lambda _txn: b"TX",
     )
 
-    signed = account.signer([MockTxn("ADDR")], [0])
-
-    assert signed == [bytes.fromhex("aabb"), bytes.fromhex("ccdd")]
+    with pytest.raises(SignerError, match="returned 2 signed transaction"):
+        account.signer([MockTxn("ADDR")], [0])
 
 
 def test_rejects_too_few_signer_responses() -> None:
@@ -226,5 +244,5 @@ def test_rejects_too_few_signer_responses() -> None:
         encode_transaction=lambda _txn: b"TX",
     )
 
-    with pytest.raises(SignerError, match="fewer signed transactions"):
+    with pytest.raises(SignerError, match="returned 1 signed transaction"):
         account.signer([MockTxn("1"), MockTxn("2")], [0, 1])

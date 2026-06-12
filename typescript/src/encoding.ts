@@ -96,12 +96,22 @@ export function concatenateSignedTxns(signedHexes: string[]): string {
     offset += bytes.length;
   }
 
-  // Convert to base64
-  // Use Buffer in Node.js, or btoa for browser
+  return bytesToBase64(combined);
+}
+
+// bytesToBase64 encodes bytes as base64, using Buffer in Node.js and a chunked
+// btoa fallback in the browser. The chunking matters: String.fromCharCode(...big)
+// spreads every byte as a function argument and throws on large inputs (e.g. a
+// 16-transaction Falcon group is ~50 KB), so the bytes are converted in 32 KB
+// blocks instead.
+export function bytesToBase64(bytes: Uint8Array): string {
   if (typeof Buffer !== "undefined") {
-    return Buffer.from(combined).toString("base64");
+    return Buffer.from(bytes).toString("base64");
   }
-  // Browser fallback
-  const binary = String.fromCharCode(...combined);
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
   return btoa(binary);
 }

@@ -148,9 +148,29 @@ class ApsignerAccount:
 
             result = self._client.sign_requests(requests, request_id=request_id)
 
-            if len(result.signed) < len(indexes_to_sign):
+            # AlgoKit assigns the group ID itself, over the full group, before
+            # calling the signer. If apsigner re-grouped these transactions for
+            # LogicSig budget (appended dummies and/or recomputed the group ID),
+            # the signatures are over a different group than AlgoKit's composer
+            # will submit, so they are unusable here. Fail fast rather than
+            # returning a result that fails opaquely on-chain.
+            mutations = result.mutations or {}
+            if mutations.get("group_id_changed") or (mutations.get("dummies_added") or 0) > 0:
                 raise SignerError(
-                    "apsigner returned fewer signed transactions than AlgoKit requested"
+                    "apsigner re-grouped these transactions (added LogicSig-budget "
+                    "dummy transactions or recomputed the group ID); AlgoKit assigns "
+                    "its own group ID and cannot use a re-grouped result. Sign "
+                    "large-LogicSig groups through the aplane SDK's group/guarded "
+                    "flow instead."
+                )
+
+            # With no re-grouping, the signer returns exactly one signed
+            # transaction per requested index, in order. Any other count is a
+            # malformed response.
+            if len(result.signed) != len(indexes_to_sign):
+                raise SignerError(
+                    f"apsigner returned {len(result.signed)} signed transaction(s), "
+                    f"but AlgoKit requested {len(indexes_to_sign)}"
                 )
 
             return [bytes.fromhex(item) for item in result.signed]
