@@ -11,12 +11,12 @@ on:
         description: 'Publish Python SDK to PyPI'
         required: false
         type: boolean
-        default: false
+        default: true
       publish_npm:
         description: 'Publish TypeScript SDK to npm'
         required: false
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: write
