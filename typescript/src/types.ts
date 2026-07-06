@@ -233,6 +233,16 @@ export interface KeyTypeInfo {
 }
 
 /**
+ * Signer wire-protocol version.
+ */
+export interface ProtocolVersion {
+  /** Protocol major version */
+  major: number;
+  /** Protocol minor version */
+  minor: number;
+}
+
+/**
  * Response from the /status endpoint.
  */
 export interface StatusResponse {
@@ -240,6 +250,10 @@ export interface StatusResponse {
   identityId: string;
   /** Signer node role, such as "signer" or "sentry", when reported */
   nodeRole?: string;
+  /** Signer protocol version, when reported */
+  protocolVersion?: ProtocolVersion;
+  /** Signer build version, when reported */
+  buildVersion?: string;
   /** Current lock state: "locked", "unlocked", or "unknown" */
   state: string;
   /** True when the signer identity is locked */

@@ -464,26 +464,36 @@ type GroupSimulateResponse struct {
 	Error        string          `json:"error,omitempty"`
 }
 
+// ProtocolVersion identifies a signer wire-protocol version.
+type ProtocolVersion struct {
+	Major int `json:"major"`
+	Minor int `json:"minor"`
+}
+
 // HealthResponse is the response from the /health endpoint.
 type HealthResponse struct {
-	Status          string `json:"status"`
-	Service         string `json:"service"`
-	SignerLocked    bool   `json:"signer_locked"`
-	ReadyForSigning bool   `json:"ready_for_signing"`
-	SSHEnabled      bool   `json:"ssh_enabled"`
-	IPCEnabled      bool   `json:"ipc_enabled"`
+	Status          string          `json:"status"`
+	Service         string          `json:"service"`
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+	BuildVersion    string          `json:"build_version"`
+	SignerLocked    bool            `json:"signer_locked"`
+	ReadyForSigning bool            `json:"ready_for_signing"`
+	SSHEnabled      bool            `json:"ssh_enabled"`
+	IPCEnabled      bool            `json:"ipc_enabled"`
 }
 
 // StatusResponse is the response from the /status endpoint.
 type StatusResponse struct {
-	IdentityID          string `json:"identity_id"`
-	NodeRole            string `json:"node_role,omitempty"`
-	State               string `json:"state"`
-	SignerLocked        bool   `json:"signer_locked"`
-	ReadyForSigning     bool   `json:"ready_for_signing"`
-	KeyCount            int    `json:"key_count"`
-	KeysetRevision      uint64 `json:"keyset_revision"`
-	ApprovalWaitSeconds int64  `json:"approval_wait_seconds,omitempty"`
+	IdentityID          string          `json:"identity_id"`
+	NodeRole            string          `json:"node_role,omitempty"`
+	ProtocolVersion     ProtocolVersion `json:"protocol_version"`
+	BuildVersion        string          `json:"build_version"`
+	State               string          `json:"state"`
+	SignerLocked        bool            `json:"signer_locked"`
+	ReadyForSigning     bool            `json:"ready_for_signing"`
+	KeyCount            int             `json:"key_count"`
+	KeysetRevision      uint64          `json:"keyset_revision"`
+	ApprovalWaitSeconds int64           `json:"approval_wait_seconds,omitempty"`
 }
 
 // RuntimeArg describes a runtime argument for generic LogicSig keys.

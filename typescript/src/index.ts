@@ -96,6 +96,7 @@ export type {
   InputModeInfo,
   CreationParam,
   KeyTypeInfo,
+  ProtocolVersion,
   StatusResponse,
   GenerateResult,
   ClientConfig,

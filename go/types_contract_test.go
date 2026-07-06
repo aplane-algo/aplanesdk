@@ -4,6 +4,9 @@
 package aplane
 
 import (
+	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -14,31 +17,27 @@ import (
 	"testing"
 )
 
-var expectedSDKContractFixtureNames = []string{
-	"admin_delete_response_success.json",
-	"admin_generate_request_generic.json",
-	"admin_generate_response_component.json",
-	"admin_generate_response_generic.json",
-	"admin_sync_sentries_request.json",
-	"admin_sync_sentries_response.json",
-	"cancel_sign_request.json",
-	"cancel_sign_response_not_found.json",
-	"cancel_sign_response_success.json",
-	"component_sign_request_sentry.json",
-	"component_sign_response_sentry.json",
-	"error_response.json",
-	"group_plan_response_mutated.json",
-	"group_sign_request_mixed.json",
-	"group_sign_response_mutated.json",
-	"group_simulate_response_mutated.json",
-	"guarded_assembly_request_mixed.json",
-	"guarded_assembly_response.json",
-	"health_response_ready.json",
-	"keys_response_component.json",
-	"keys_response_generic.json",
-	"keys_response_guarded.json",
-	"keytypes_response_full.json",
-	"status_response_ready.json",
+const (
+	contractFixtureManifestName          = "fixture_manifest.json"
+	contractFixtureHashManifestName      = "SHA256SUMS"
+	contractErrorCodesFixtureName        = "error_codes.json"
+	contractErrorClassificationsFileName = "error_code_classifications.json"
+	contractFixtureSchemaVersion         = 1
+)
+
+type contractFixtureManifest struct {
+	SchemaVersion int      `json:"schema_version"`
+	Fixtures      []string `json:"fixtures"`
+}
+
+type contractErrorCodesFixture struct {
+	SchemaVersion int      `json:"schema_version"`
+	Codes         []string `json:"codes"`
+}
+
+type contractErrorClassificationsFixture struct {
+	SchemaVersion   int               `json:"schema_version"`
+	Classifications map[string]string `json:"classifications"`
 }
 
 func sdkContractFixturePath(t *testing.T, name string) string {
@@ -63,12 +62,51 @@ func committedSDKContractFixtureNames(t *testing.T) []string {
 	}
 	var names []string
 	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") && !isContractMetadataFile(entry.Name()) {
 			names = append(names, entry.Name())
 		}
 	}
 	sort.Strings(names)
 	return names
+}
+
+func expectedSDKContractFixtureNames(t *testing.T) []string {
+	t.Helper()
+	var manifest contractFixtureManifest
+	readContractMetadata(t, contractFixtureManifestName, &manifest)
+	if manifest.SchemaVersion != contractFixtureSchemaVersion {
+		t.Fatalf("%s schema_version = %d, want %d", contractFixtureManifestName, manifest.SchemaVersion, contractFixtureSchemaVersion)
+	}
+	names := sortedUniqueStrings(t, contractFixtureManifestName, manifest.Fixtures)
+	for _, name := range names {
+		if !strings.HasSuffix(name, ".json") {
+			t.Fatalf("%s contains non-json fixture %q", contractFixtureManifestName, name)
+		}
+		if isContractMetadataFile(name) {
+			t.Fatalf("%s must list API payload fixtures only, not metadata file %q", contractFixtureManifestName, name)
+		}
+	}
+	return names
+}
+
+func isContractMetadataFile(name string) bool {
+	switch name {
+	case contractFixtureManifestName, contractErrorCodesFixtureName, contractErrorClassificationsFileName:
+		return true
+	default:
+		return false
+	}
+}
+
+func readContractMetadata(t *testing.T, name string, out any) {
+	t.Helper()
+	raw, err := os.ReadFile(sdkContractFixturePath(t, name))
+	if err != nil {
+		t.Fatalf("read contract metadata %s: %v", name, err)
+	}
+	if err := json.Unmarshal(raw, out); err != nil {
+		t.Fatalf("unmarshal contract metadata %s: %v", name, err)
+	}
 }
 
 func assertSDKContractRoundTrip[T any](t *testing.T, name string) {
@@ -152,6 +190,12 @@ func TestGoSDKContractStatusMetadata(t *testing.T) {
 	}
 	if resp.NodeRole != "signer" {
 		t.Fatalf("NodeRole = %q, want signer", resp.NodeRole)
+	}
+	if resp.ProtocolVersion.Major != 1 || resp.ProtocolVersion.Minor != 0 {
+		t.Fatalf("ProtocolVersion = %d.%d, want 1.0", resp.ProtocolVersion.Major, resp.ProtocolVersion.Minor)
+	}
+	if !strings.Contains(resp.BuildVersion, "v0.30.0") {
+		t.Fatalf("BuildVersion = %q, want v0.30.0 fixture", resp.BuildVersion)
 	}
 	if resp.State != "unlocked" {
 		t.Fatalf("State = %q, want unlocked", resp.State)
@@ -272,10 +316,11 @@ func TestGoSDKMapsTemplateWarningFields(t *testing.T) {
 }
 
 func TestGoSDKContractFixtureManifest(t *testing.T) {
-	if got := committedSDKContractFixtureNames(t); !reflect.DeepEqual(got, expectedSDKContractFixtureNames) {
-		t.Fatalf("contract fixture manifest mismatch\nwant: %#v\n got: %#v", expectedSDKContractFixtureNames, got)
+	expected := expectedSDKContractFixtureNames(t)
+	if got := committedSDKContractFixtureNames(t); !reflect.DeepEqual(got, expected) {
+		t.Fatalf("contract fixture manifest mismatch\nwant: %#v\n got: %#v", expected, got)
 	}
-	for _, name := range expectedSDKContractFixtureNames {
+	for _, name := range expected {
 		raw, err := os.ReadFile(sdkContractFixturePath(t, name))
 		if err != nil {
 			t.Fatalf("read fixture %s: %v", name, err)
@@ -285,4 +330,147 @@ func TestGoSDKContractFixtureManifest(t *testing.T) {
 			t.Fatalf("fixture %s is not valid JSON: %v", name, err)
 		}
 	}
+}
+
+func TestGoSDKContractErrorCodes(t *testing.T) {
+	var fixture contractErrorCodesFixture
+	readContractMetadata(t, contractErrorCodesFixtureName, &fixture)
+	if fixture.SchemaVersion != contractFixtureSchemaVersion {
+		t.Fatalf("%s schema_version = %d, want %d", contractErrorCodesFixtureName, fixture.SchemaVersion, contractFixtureSchemaVersion)
+	}
+	assertStringSetEqual(t, "signer API error codes", signerAPIErrorCodes(t), fixture.Codes)
+}
+
+func TestGoSDKContractErrorClassifications(t *testing.T) {
+	var fixture contractErrorClassificationsFixture
+	readContractMetadata(t, contractErrorClassificationsFileName, &fixture)
+	if fixture.SchemaVersion != contractFixtureSchemaVersion {
+		t.Fatalf("%s schema_version = %d, want %d", contractErrorClassificationsFileName, fixture.SchemaVersion, contractFixtureSchemaVersion)
+	}
+
+	var classifiedCodes []string
+	for code, class := range fixture.Classifications {
+		if strings.TrimSpace(class) == "" {
+			t.Fatalf("%s has empty classification for code %q", contractErrorClassificationsFileName, code)
+		}
+		classifiedCodes = append(classifiedCodes, code)
+	}
+	assertStringSetEqual(t, "signer API error classifications", signerAPIErrorCodes(t), classifiedCodes)
+}
+
+func TestGoSDKContractHashManifest(t *testing.T) {
+	want := readContractHashManifest(t)
+	got := computeContractHashes(t)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("contract fixture hash manifest mismatch\nwant: %#v\n got: %#v", want, got)
+	}
+}
+
+func signerAPIErrorCodes(t *testing.T) []string {
+	t.Helper()
+	return []string{
+		ErrCodeBadRequest,
+		ErrCodeUnauthorized,
+		ErrCodeForbidden,
+		ErrCodeLocked,
+		ErrCodeNotFound,
+		ErrCodeInvalidPassphrase,
+		ErrCodeUnavailable,
+		ErrCodeCacheRefresh,
+		ErrCodeInternal,
+	}
+}
+
+func assertStringSetEqual(t *testing.T, label string, want, got []string) {
+	t.Helper()
+	wantSorted := sortedUniqueStrings(t, label+" want", want)
+	gotSorted := sortedUniqueStrings(t, label+" got", got)
+	if !reflect.DeepEqual(gotSorted, wantSorted) {
+		t.Fatalf("%s mismatch\nwant: %#v\n got: %#v", label, wantSorted, gotSorted)
+	}
+}
+
+func sortedUniqueStrings(t *testing.T, label string, values []string) []string {
+	t.Helper()
+	seen := make(map[string]struct{}, len(values))
+	out := append([]string(nil), values...)
+	sort.Strings(out)
+	for _, value := range out {
+		if strings.TrimSpace(value) == "" {
+			t.Fatalf("%s contains an empty value", label)
+		}
+		if _, ok := seen[value]; ok {
+			t.Fatalf("%s contains duplicate value %q", label, value)
+		}
+		seen[value] = struct{}{}
+	}
+	return out
+}
+
+func readContractHashManifest(t *testing.T) map[string]string {
+	t.Helper()
+	file, err := os.Open(sdkContractFixturePath(t, contractFixtureHashManifestName))
+	if err != nil {
+		t.Fatalf("open %s: %v", contractFixtureHashManifestName, err)
+	}
+	defer func() {
+		if err := file.Close(); err != nil {
+			t.Fatalf("close %s: %v", contractFixtureHashManifestName, err)
+		}
+	}()
+
+	hashes := map[string]string{}
+	scanner := bufio.NewScanner(file)
+	for lineNo := 1; scanner.Scan(); lineNo++ {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			t.Fatalf("%s:%d: expected '<sha256>  <filename>', got %q", contractFixtureHashManifestName, lineNo, line)
+		}
+		hash, name := fields[0], fields[1]
+		if len(hash) != sha256.Size*2 {
+			t.Fatalf("%s:%d: invalid sha256 length for %q", contractFixtureHashManifestName, lineNo, name)
+		}
+		if _, err := hex.DecodeString(hash); err != nil {
+			t.Fatalf("%s:%d: invalid sha256 for %q: %v", contractFixtureHashManifestName, lineNo, name, err)
+		}
+		if name == contractFixtureHashManifestName {
+			t.Fatalf("%s:%d: hash manifest must not include itself", contractFixtureHashManifestName, lineNo)
+		}
+		if filepath.Base(name) != name || strings.ContainsAny(name, `/\`) {
+			t.Fatalf("%s:%d: expected base filename, got %q", contractFixtureHashManifestName, lineNo, name)
+		}
+		if _, exists := hashes[name]; exists {
+			t.Fatalf("%s:%d: duplicate hash entry for %q", contractFixtureHashManifestName, lineNo, name)
+		}
+		hashes[name] = hash
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan %s: %v", contractFixtureHashManifestName, err)
+	}
+	return hashes
+}
+
+func computeContractHashes(t *testing.T) map[string]string {
+	t.Helper()
+	entries, err := os.ReadDir(sdkContractFixtureDir(t))
+	if err != nil {
+		t.Fatalf("read contract fixture dir: %v", err)
+	}
+	hashes := map[string]string{}
+	for _, entry := range entries {
+		if entry.IsDir() || entry.Name() == contractFixtureHashManifestName {
+			continue
+		}
+		raw, err := os.ReadFile(sdkContractFixturePath(t, entry.Name()))
+		if err != nil {
+			t.Fatalf("read contract fixture file %s: %v", entry.Name(), err)
+		}
+		sum := sha256.Sum256(raw)
+		hashes[entry.Name()] = hex.EncodeToString(sum[:])
+	}
+	return hashes
 }

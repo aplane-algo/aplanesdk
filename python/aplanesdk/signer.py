@@ -315,6 +315,13 @@ class KeyTypeInfo:
 
 
 @dataclass
+class ProtocolVersion:
+    """Signer wire-protocol version."""
+    major: int = 0
+    minor: int = 0
+
+
+@dataclass
 class StatusResponse:
     """Authenticated signer status from /status"""
     identity_id: str
@@ -323,8 +330,14 @@ class StatusResponse:
     ready_for_signing: bool
     key_count: int
     keyset_revision: int
+    protocol_version: Optional[ProtocolVersion] = None
+    build_version: str = ""
     approval_wait_seconds: int = 0
     node_role: str = ""
+
+    def __post_init__(self) -> None:
+        if isinstance(self.protocol_version, dict):
+            self.protocol_version = ProtocolVersion(**self.protocol_version)
 
 
 @dataclass
@@ -1759,6 +1772,8 @@ class SignerClient:
             ready_for_signing=data.get("ready_for_signing", False),
             key_count=data.get("key_count", 0),
             keyset_revision=data.get("keyset_revision", 0),
+            protocol_version=data.get("protocol_version"),
+            build_version=data.get("build_version", ""),
             approval_wait_seconds=data.get("approval_wait_seconds", 0),
         )
         self._cache_approval_wait(identity.approval_wait_seconds)

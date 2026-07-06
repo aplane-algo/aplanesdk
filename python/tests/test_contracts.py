@@ -5,6 +5,7 @@
 
 import json
 import base64
+import hashlib
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -14,6 +15,15 @@ from aplanesdk.signer import (
     CancelSignResponse,
     ComponentSignRequest,
     ComponentSignResponse,
+    ERR_CODE_BAD_REQUEST,
+    ERR_CODE_CACHE_REFRESH,
+    ERR_CODE_FORBIDDEN,
+    ERR_CODE_INTERNAL,
+    ERR_CODE_INVALID_PASSPHRASE,
+    ERR_CODE_LOCKED,
+    ERR_CODE_NOT_FOUND,
+    ERR_CODE_UNAUTHORIZED,
+    ERR_CODE_UNAVAILABLE,
     GuardedAssemblyRequest,
     GuardedAssemblyResponse,
     SignerClient,
@@ -22,32 +32,13 @@ from aplanesdk.signer import (
 
 
 FIXTURE_DIR = Path(__file__).resolve().parents[2] / "contracts" / "signerapi"
-EXPECTED_FIXTURE_NAMES = [
-    "admin_delete_response_success.json",
-    "admin_generate_request_generic.json",
-    "admin_generate_response_component.json",
-    "admin_generate_response_generic.json",
-    "admin_sync_sentries_request.json",
-    "admin_sync_sentries_response.json",
-    "cancel_sign_request.json",
-    "cancel_sign_response_not_found.json",
-    "cancel_sign_response_success.json",
-    "component_sign_request_sentry.json",
-    "component_sign_response_sentry.json",
-    "error_response.json",
-    "group_plan_response_mutated.json",
-    "group_sign_request_mixed.json",
-    "group_sign_response_mutated.json",
-    "group_simulate_response_mutated.json",
-    "guarded_assembly_request_mixed.json",
-    "guarded_assembly_response.json",
-    "health_response_ready.json",
-    "keys_response_component.json",
-    "keys_response_generic.json",
-    "keys_response_guarded.json",
-    "keytypes_response_full.json",
-    "status_response_ready.json",
-]
+CONTRACT_SCHEMA_VERSION = 1
+HASH_MANIFEST_NAME = "SHA256SUMS"
+CONTRACT_METADATA_FILES = {
+    "fixture_manifest.json",
+    "error_codes.json",
+    "error_code_classifications.json",
+}
 
 
 def fixture(name: str) -> dict:
@@ -69,13 +60,87 @@ def mock_response(status_code=200, json_data=None, text=""):
 
 
 def committed_fixture_names() -> list[str]:
-    return sorted(path.name for path in FIXTURE_DIR.glob("*.json"))
+    return sorted(
+        path.name
+        for path in FIXTURE_DIR.glob("*.json")
+        if path.name not in CONTRACT_METADATA_FILES
+    )
+
+
+def expected_fixture_names() -> list[str]:
+    manifest = fixture("fixture_manifest.json")
+    assert manifest["schema_version"] == CONTRACT_SCHEMA_VERSION
+    names = sorted(manifest["fixtures"])
+    assert len(names) == len(set(names))
+    assert all(name.endswith(".json") for name in names)
+    assert all(name not in CONTRACT_METADATA_FILES for name in names)
+    return names
+
+
+def sdk_error_codes() -> list[str]:
+    return [
+        ERR_CODE_BAD_REQUEST,
+        ERR_CODE_UNAUTHORIZED,
+        ERR_CODE_FORBIDDEN,
+        ERR_CODE_LOCKED,
+        ERR_CODE_NOT_FOUND,
+        ERR_CODE_INVALID_PASSPHRASE,
+        ERR_CODE_UNAVAILABLE,
+        ERR_CODE_CACHE_REFRESH,
+        ERR_CODE_INTERNAL,
+    ]
+
+
+def hash_manifest() -> dict[str, str]:
+    hashes: dict[str, str] = {}
+    with open(FIXTURE_DIR / HASH_MANIFEST_NAME, "r", encoding="utf-8") as f:
+        for line_no, raw_line in enumerate(f, start=1):
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            fields = line.split()
+            assert len(fields) == 2, f"{HASH_MANIFEST_NAME}:{line_no}"
+            digest, name = fields
+            assert len(digest) == 64, f"{HASH_MANIFEST_NAME}:{line_no}"
+            int(digest, 16)
+            assert name != HASH_MANIFEST_NAME
+            assert Path(name).name == name
+            assert name not in hashes
+            hashes[name] = digest
+    return hashes
+
+
+def computed_hashes() -> dict[str, str]:
+    hashes: dict[str, str] = {}
+    for path in FIXTURE_DIR.iterdir():
+        if path.is_file() and path.name != HASH_MANIFEST_NAME:
+            hashes[path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return hashes
 
 
 def test_accounts_for_every_committed_fixture():
-    assert committed_fixture_names() == EXPECTED_FIXTURE_NAMES
-    for name in EXPECTED_FIXTURE_NAMES:
+    expected = expected_fixture_names()
+    assert committed_fixture_names() == expected
+    for name in expected:
         assert isinstance(fixture(name), dict)
+
+
+def test_error_code_fixture_matches_sdk_constants():
+    data = fixture("error_codes.json")
+    assert data["schema_version"] == CONTRACT_SCHEMA_VERSION
+    assert sorted(data["codes"]) == sorted(sdk_error_codes())
+
+
+def test_error_code_classifications_cover_sdk_constants():
+    data = fixture("error_code_classifications.json")
+    assert data["schema_version"] == CONTRACT_SCHEMA_VERSION
+    classifications = data["classifications"]
+    assert sorted(classifications.keys()) == sorted(sdk_error_codes())
+    assert all(str(value).strip() for value in classifications.values())
+
+
+def test_hash_manifest_matches_contract_files():
+    assert computed_hashes() == hash_manifest()
 
 
 def test_encodes_mixed_group_sign_request_wire_fields():
@@ -163,6 +228,10 @@ def test_status_fixture_maps_metadata():
 
     assert identity.identity_id == "default"
     assert identity.node_role == "signer"
+    assert identity.protocol_version is not None
+    assert identity.protocol_version.major == 1
+    assert identity.protocol_version.minor == 0
+    assert identity.build_version.startswith("v0.30.0 ")
     assert identity.state == "unlocked"
     assert identity.signer_locked is False
     assert identity.ready_for_signing is True

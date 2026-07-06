@@ -1,6 +1,11 @@
 {
   "identity_id": "default",
   "node_role": "signer",
+  "protocol_version": {
+    "major": 1,
+    "minor": 0
+  },
+  "build_version": "v0.30.0 (commit: fixture, built: 2026-01-01T00:00:00Z, linux/amd64)",
   "state": "unlocked",
   "signer_locked": false,
   "ready_for_signing": true,

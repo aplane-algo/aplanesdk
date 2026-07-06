@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "fixtures": [
+    "admin_delete_response_success.json",
+    "admin_generate_request_generic.json",
+    "admin_generate_response_component.json",
+    "admin_generate_response_generic.json",
+    "admin_sync_sentries_request.json",
+    "admin_sync_sentries_response.json",
+    "cancel_sign_request.json",
+    "cancel_sign_response_not_found.json",
+    "cancel_sign_response_success.json",
+    "component_sign_request_sentry.json",
+    "component_sign_response_sentry.json",
+    "error_response.json",
+    "group_plan_response_mutated.json",
+    "group_sign_request_mixed.json",
+    "group_sign_response_mutated.json",
+    "group_simulate_response_mutated.json",
+    "guarded_assembly_request_mixed.json",
+    "guarded_assembly_response.json",
+    "health_response_ready.json",
+    "keys_response_component.json",
+    "keys_response_generic.json",
+    "keys_response_guarded.json",
+    "keytypes_response_full.json",
+    "status_response_ready.json"
+  ]
+}

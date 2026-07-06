@@ -3,10 +3,12 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
 import { SignerClient } from "../src/client.js";
+import { ErrorCodes } from "../src/types.js";
 import type {
   AdminSyncSentryReferencesRequest,
   AdminSyncSentryReferencesResponse,
@@ -50,39 +52,68 @@ function createMockFetch(): MockFetch {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const fixtureDir = path.resolve(__dirname, "../../contracts/signerapi");
-const expectedFixtureNames = [
-  "admin_delete_response_success.json",
-  "admin_generate_request_generic.json",
-  "admin_generate_response_component.json",
-  "admin_generate_response_generic.json",
-  "admin_sync_sentries_request.json",
-  "admin_sync_sentries_response.json",
-  "cancel_sign_request.json",
-  "cancel_sign_response_not_found.json",
-  "cancel_sign_response_success.json",
-  "component_sign_request_sentry.json",
-  "component_sign_response_sentry.json",
-  "error_response.json",
-  "group_plan_response_mutated.json",
-  "group_sign_request_mixed.json",
-  "group_sign_response_mutated.json",
-  "group_simulate_response_mutated.json",
-  "guarded_assembly_request_mixed.json",
-  "guarded_assembly_response.json",
-  "health_response_ready.json",
-  "keys_response_component.json",
-  "keys_response_generic.json",
-  "keys_response_guarded.json",
-  "keytypes_response_full.json",
-  "status_response_ready.json",
-];
+const contractSchemaVersion = 1;
+const hashManifestName = "SHA256SUMS";
+const contractMetadataFiles = new Set([
+  "fixture_manifest.json",
+  "error_codes.json",
+  "error_code_classifications.json",
+]);
 
 function fixture(name: string): any {
   return JSON.parse(fs.readFileSync(path.join(fixtureDir, name), "utf-8"));
 }
 
 function committedFixtureNames(): string[] {
-  return fs.readdirSync(fixtureDir).filter((name) => name.endsWith(".json")).sort();
+  return fs
+    .readdirSync(fixtureDir)
+    .filter((name) => name.endsWith(".json") && !contractMetadataFiles.has(name))
+    .sort();
+}
+
+function expectedFixtureNames(): string[] {
+  const manifest = fixture("fixture_manifest.json");
+  assert.equal(manifest.schema_version, contractSchemaVersion);
+  const names = [...manifest.fixtures].sort();
+  assert.equal(new Set(names).size, names.length);
+  for (const name of names) {
+    assert.equal(name.endsWith(".json"), true);
+    assert.equal(contractMetadataFiles.has(name), false);
+  }
+  return names;
+}
+
+function sdkErrorCodes(): string[] {
+  return Object.values(ErrorCodes).sort();
+}
+
+function readHashManifest(): Record<string, string> {
+  const hashes: Record<string, string> = {};
+  const lines = fs.readFileSync(path.join(fixtureDir, hashManifestName), "utf-8").split(/\r?\n/);
+  lines.forEach((rawLine, index) => {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) return;
+    const fields = line.split(/\s+/);
+    assert.equal(fields.length, 2, `${hashManifestName}:${index + 1}`);
+    const [digest, name] = fields;
+    assert.match(digest, /^[0-9a-f]{64}$/);
+    assert.notEqual(name, hashManifestName);
+    assert.equal(path.basename(name), name);
+    assert.equal(Object.hasOwn(hashes, name), false);
+    hashes[name] = digest;
+  });
+  return hashes;
+}
+
+function computedHashes(): Record<string, string> {
+  const hashes: Record<string, string> = {};
+  for (const name of fs.readdirSync(fixtureDir)) {
+    const fullPath = path.join(fixtureDir, name);
+    if (fs.statSync(fullPath).isFile() && name !== hashManifestName) {
+      hashes[name] = createHash("sha256").update(fs.readFileSync(fullPath)).digest("hex");
+    }
+  }
+  return hashes;
 }
 
 const originalFetch = globalThis.fetch;
@@ -99,10 +130,28 @@ describe("signer API contract fixtures", () => {
   });
 
   it("accounts for every committed fixture", () => {
-    assert.deepEqual(committedFixtureNames(), expectedFixtureNames);
-    for (const name of expectedFixtureNames) {
+    const expected = expectedFixtureNames();
+    assert.deepEqual(committedFixtureNames(), expected);
+    for (const name of expected) {
       assert.doesNotThrow(() => fixture(name), name);
     }
+  });
+
+  it("matches signer API error-code fixtures", () => {
+    const codes = fixture("error_codes.json");
+    assert.equal(codes.schema_version, contractSchemaVersion);
+    assert.deepEqual([...codes.codes].sort(), sdkErrorCodes());
+
+    const classifications = fixture("error_code_classifications.json");
+    assert.equal(classifications.schema_version, contractSchemaVersion);
+    assert.deepEqual(Object.keys(classifications.classifications).sort(), sdkErrorCodes());
+    for (const classification of Object.values(classifications.classifications)) {
+      assert.equal(String(classification).trim().length > 0, true);
+    }
+  });
+
+  it("matches the contract hash manifest", () => {
+    assert.deepEqual(computedHashes(), readHashManifest());
   });
 
   it("encodes mixed group sign request wire fields", () => {
@@ -200,6 +249,8 @@ describe("signer API contract fixtures", () => {
 
     assert.equal(identity.identityId, "default");
     assert.equal(identity.nodeRole, "signer");
+    assert.deepEqual(identity.protocolVersion, { major: 1, minor: 0 });
+    assert.match(identity.buildVersion || "", /^v0\.30\.0 /);
     assert.equal(identity.state, "unlocked");
     assert.equal(identity.signerLocked, false);
     assert.equal(identity.readyForSigning, true);

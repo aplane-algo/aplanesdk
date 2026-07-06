@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "codes": [
+    "bad_request",
+    "unauthorized",
+    "forbidden",
+    "locked",
+    "not_found",
+    "invalid_passphrase",
+    "unavailable",
+    "cache_refresh",
+    "internal"
+  ]
+}

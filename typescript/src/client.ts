@@ -1747,9 +1747,18 @@ export class SignerClient {
     }
 
     const data = (await response.json()) as Record<string, unknown>;
+    const rawProtocolVersion = data.protocol_version as Record<string, unknown> | undefined;
     const identity: StatusResponse = {
       identityId: String(data.identity_id || ""),
       nodeRole: typeof data.node_role === "string" ? data.node_role : undefined,
+      protocolVersion:
+        rawProtocolVersion && typeof rawProtocolVersion === "object"
+          ? {
+              major: Number(rawProtocolVersion.major || 0),
+              minor: Number(rawProtocolVersion.minor || 0),
+            }
+          : undefined,
+      buildVersion: typeof data.build_version === "string" ? data.build_version : undefined,
       state: String(data.state || ""),
       signerLocked: Boolean(data.signer_locked),
       readyForSigning: Boolean(data.ready_for_signing),

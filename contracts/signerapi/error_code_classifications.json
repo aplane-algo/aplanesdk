@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "classifications": {
+    "bad_request": "request_error",
+    "unauthorized": "authentication",
+    "forbidden": "authorization",
+    "locked": "locked",
+    "not_found": "not_found",
+    "invalid_passphrase": "passphrase",
+    "unavailable": "temporary",
+    "cache_refresh": "cache_refresh",
+    "internal": "internal"
+  }
+}
