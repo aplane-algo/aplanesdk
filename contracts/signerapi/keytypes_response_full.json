@@ -13,9 +13,9 @@
       "runtime_args": []
     },
     {
-      "key_type": "aplane.timed-whitelist.v1",
+      "key_type": "aplane.timed-allowlist.v1",
       "family": "generic",
-      "display_name": "Timed Whitelist",
+      "display_name": "Timed Allowlist",
       "description": "Generic LogicSig with creation and runtime arguments",
       "requires_logicsig": true,
       "mnemonic_word_count": 0,

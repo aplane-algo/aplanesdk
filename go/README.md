@@ -338,7 +338,7 @@ callers migrating from older contract names, `GroupPlanResponse` and
 | `aplane.falcon1024.v1` | Post-quantum LogicSig | Large signature (~3KB) |
 | `aplane.sentry-ed25519.v1` | Sentry component key | Policy signature only; not a spending account |
 | `aplane.falcon1024-sentry-ed25519.v1` | Guarded account | Requires user and sentry component signatures |
-| `aplane.timed-whitelist.v1` | Time-locked allow-list | No signature, TEAL-only |
+| `aplane.timed-allowlist.v1` | Time-locked allow-list | No signature, TEAL-only |
 | `aplane.htlc.v1` | Hash-locked funds | Requires `preimage` arg |
 
 ## Sentry And Guarded Accounts

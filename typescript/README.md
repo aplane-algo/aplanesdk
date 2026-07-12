@@ -198,7 +198,7 @@ for (const key of keys) {
 
 Returns list of `KeyInfo`:
 - `address`: Algorand address
-- `keyType`: "ed25519", "aplane.falcon1024.v1", "aplane.timed-whitelist.v1", etc.
+- `keyType`: "ed25519", "aplane.falcon1024.v1", "aplane.timed-allowlist.v1", etc.
 - `lsigSize`: LogicSig size (for budget calculation)
 - `isGenericLsig`: True if no cryptographic signature needed
 - `signingArgs`: List of `SigningArg` for LogicSigs
@@ -371,7 +371,7 @@ controller.abort();
 | `aplane.falcon1024.v1` | Post-quantum LogicSig | Signature in LogicSig.Args[0] |
 | `aplane.sentry-ed25519.v1` | Sentry component key | Policy signature only; not a spending account |
 | `aplane.falcon1024-sentry-ed25519.v1` | Guarded account | Requires user and sentry component signatures |
-| `aplane.timed-whitelist.v1` | Time-locked allow-list | No signature, TEAL-only |
+| `aplane.timed-allowlist.v1` | Time-locked allow-list | No signature, TEAL-only |
 | `aplane.htlc.v*` | Hash-locked funds | Requires `preimage` arg (check `signingArgs`) |
 
 The server assembles the complete signed transaction - the SDK returns a base64 string ready for submission.

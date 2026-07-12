@@ -9,7 +9,7 @@
     {
       "address": "GENERICADDR00000000000000000000000000000000000000000000",
       "public_key_hex": "ffeeddccbbaa99887766554433221100",
-      "key_type": "aplane.timed-whitelist.v1",
+      "key_type": "aplane.timed-allowlist.v1",
       "lsig_size": 512,
       "is_generic_lsig": true,
       "signing_args": [

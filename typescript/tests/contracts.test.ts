@@ -195,7 +195,7 @@ describe("signer API contract fixtures", () => {
 
     assert.equal(keys.length, 2);
     assert.equal(keys[1].publicKeyHex, "ffeeddccbbaa99887766554433221100");
-    assert.equal(keys[1].keyType, "aplane.timed-whitelist.v1");
+    assert.equal(keys[1].keyType, "aplane.timed-allowlist.v1");
     assert.equal(keys[1].lsigSize, 512);
     assert.equal(keys[1].isGenericLsig, true);
     assert.equal(keys[1].signingArgs?.[0].name, "preimage");
@@ -213,28 +213,28 @@ describe("signer API contract fixtures", () => {
 
     const client = new SignerClient("http://localhost:11270", "test-token");
     const keyTypes = await client.listKeyTypes();
-    const timedWhitelist = keyTypes[1];
+    const timedAllowlist = keyTypes[1];
 
-    assert.equal(timedWhitelist.keyType, "aplane.timed-whitelist.v1");
-    assert.equal(timedWhitelist.displayName, "Timed Whitelist");
-    assert.equal(timedWhitelist.requiresLogicsig, true);
-    assert.equal(timedWhitelist.mnemonicWordCount, 0);
-    assert.equal(timedWhitelist.mnemonicImport, false);
-    assert.equal(timedWhitelist.creationParams?.[1].paramType, "address[]");
-    assert.equal(timedWhitelist.creationParams?.[1].minItems, 1);
-    assert.equal(timedWhitelist.creationParams?.[1].maxItems, 8);
-    assert.equal(timedWhitelist.creationParams?.[2].min, 1);
-    assert.equal(timedWhitelist.creationParams?.[2].max, 999999999);
-    assert.equal(timedWhitelist.creationParams?.[3].maxLength, 32);
-    assert.equal(timedWhitelist.creationParams?.[3].inputModes?.[1].name, "sha256");
-    assert.equal(timedWhitelist.creationParams?.[3].inputModes?.[1].transform, "sha256");
-    assert.equal(timedWhitelist.creationParams?.[3].inputModes?.[1].byteLength, 32);
-    assert.equal(timedWhitelist.creationParams?.[3].inputModes?.[1].inputType, "bytes");
-    assert.equal(timedWhitelist.creationParams?.[4].paramType, "select");
-    assert.deepEqual(timedWhitelist.creationParams?.[4].options, ["lab-sentry", "backup-sentry"]);
-    assert.equal(timedWhitelist.runtimeArgs?.[0].label, "Preimage");
-    assert.equal(timedWhitelist.runtimeArgs?.[0].required, true);
-    assert.equal(timedWhitelist.runtimeArgs?.[0].byteLength, 32);
+    assert.equal(timedAllowlist.keyType, "aplane.timed-allowlist.v1");
+    assert.equal(timedAllowlist.displayName, "Timed Allowlist");
+    assert.equal(timedAllowlist.requiresLogicsig, true);
+    assert.equal(timedAllowlist.mnemonicWordCount, 0);
+    assert.equal(timedAllowlist.mnemonicImport, false);
+    assert.equal(timedAllowlist.creationParams?.[1].paramType, "address[]");
+    assert.equal(timedAllowlist.creationParams?.[1].minItems, 1);
+    assert.equal(timedAllowlist.creationParams?.[1].maxItems, 8);
+    assert.equal(timedAllowlist.creationParams?.[2].min, 1);
+    assert.equal(timedAllowlist.creationParams?.[2].max, 999999999);
+    assert.equal(timedAllowlist.creationParams?.[3].maxLength, 32);
+    assert.equal(timedAllowlist.creationParams?.[3].inputModes?.[1].name, "sha256");
+    assert.equal(timedAllowlist.creationParams?.[3].inputModes?.[1].transform, "sha256");
+    assert.equal(timedAllowlist.creationParams?.[3].inputModes?.[1].byteLength, 32);
+    assert.equal(timedAllowlist.creationParams?.[3].inputModes?.[1].inputType, "bytes");
+    assert.equal(timedAllowlist.creationParams?.[4].paramType, "select");
+    assert.deepEqual(timedAllowlist.creationParams?.[4].options, ["lab-sentry", "backup-sentry"]);
+    assert.equal(timedAllowlist.runtimeArgs?.[0].label, "Preimage");
+    assert.equal(timedAllowlist.runtimeArgs?.[0].required, true);
+    assert.equal(timedAllowlist.runtimeArgs?.[0].byteLength, 32);
   });
 
   it("maps /status wire fields to public StatusResponse fields", async () => {
@@ -276,7 +276,7 @@ describe("signer API contract fixtures", () => {
           {
             address: "ADDR1",
             public_key_hex: "abcd",
-            key_type: "aplane.timed-whitelist.v1",
+            key_type: "aplane.timed-allowlist.v1",
             template_provenance_status: "conflict",
             template_provenance_note: "template fingerprint differs",
           },
@@ -376,12 +376,12 @@ describe("signer API contract fixtures", () => {
     });
 
     const client = new SignerClient("http://localhost:11270", "test-token");
-    const generated = await client.generateKey("aplane.timed-whitelist.v1", {
+    const generated = await client.generateKey("aplane.timed-allowlist.v1", {
       unlock_round: "123456",
     });
 
     assert.equal(generated.address, "GENERATEDADDR0000000000000000000000000000000000000000000");
-    assert.equal(generated.keyType, "aplane.timed-whitelist.v1");
+    assert.equal(generated.keyType, "aplane.timed-allowlist.v1");
     assert.equal(generated.parameters?.unlock_round, "123456");
   });
 

@@ -54,7 +54,7 @@ export interface KeyInfo {
   address: string;
   /** Public key in hex format */
   publicKeyHex: string;
-  /** Key type (e.g., "ed25519", "aplane.falcon1024.v1", "aplane.timed-whitelist.v1") */
+  /** Key type (e.g., "ed25519", "aplane.falcon1024.v1", "aplane.timed-allowlist.v1") */
   keyType: string;
   /** Signing choreography label (e.g. "sentry1"); empty/absent = plain /sign path */
   signingFlow?: string;

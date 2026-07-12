@@ -180,7 +180,7 @@ def test_list_keys_maps_generic_lsig_metadata():
     assert len(keys) == 2
     generic = keys[1]
     assert generic.public_key_hex == "ffeeddccbbaa99887766554433221100"
-    assert generic.key_type == "aplane.timed-whitelist.v1"
+    assert generic.key_type == "aplane.timed-allowlist.v1"
     assert generic.lsig_size == 512
     assert generic.is_generic_lsig is True
     assert generic.signing_args is not None
@@ -197,29 +197,29 @@ def test_list_key_types_maps_creation_and_runtime_metadata():
     with patch.object(client.session, "get", return_value=resp):
         key_types = client.list_key_types()
 
-    timed_whitelist = key_types[1]
-    assert timed_whitelist.key_type == "aplane.timed-whitelist.v1"
-    assert timed_whitelist.display_name == "Timed Whitelist"
-    assert timed_whitelist.requires_logicsig is True
-    assert timed_whitelist.mnemonic_import is False
-    assert timed_whitelist.creation_params is not None
-    assert timed_whitelist.creation_params[1].param_type == "address[]"
-    assert timed_whitelist.creation_params[1].min_items == 1
-    assert timed_whitelist.creation_params[1].max_items == 8
-    assert timed_whitelist.creation_params[2].min == 1
-    assert timed_whitelist.creation_params[2].max == 999999999
-    assert timed_whitelist.creation_params[3].max_length == 32
-    assert timed_whitelist.creation_params[3].input_modes is not None
-    assert timed_whitelist.creation_params[3].input_modes[1].name == "sha256"
-    assert timed_whitelist.creation_params[3].input_modes[1].transform == "sha256"
-    assert timed_whitelist.creation_params[3].input_modes[1].byte_length == 32
-    assert timed_whitelist.creation_params[3].input_modes[1].input_type == "bytes"
-    assert timed_whitelist.creation_params[4].param_type == "select"
-    assert timed_whitelist.creation_params[4].options == ["lab-sentry", "backup-sentry"]
-    assert timed_whitelist.runtime_args is not None
-    assert timed_whitelist.runtime_args[0].label == "Preimage"
-    assert timed_whitelist.runtime_args[0].required is True
-    assert timed_whitelist.runtime_args[0].byte_length == 32
+    timed_allowlist = key_types[1]
+    assert timed_allowlist.key_type == "aplane.timed-allowlist.v1"
+    assert timed_allowlist.display_name == "Timed Allowlist"
+    assert timed_allowlist.requires_logicsig is True
+    assert timed_allowlist.mnemonic_import is False
+    assert timed_allowlist.creation_params is not None
+    assert timed_allowlist.creation_params[1].param_type == "address[]"
+    assert timed_allowlist.creation_params[1].min_items == 1
+    assert timed_allowlist.creation_params[1].max_items == 8
+    assert timed_allowlist.creation_params[2].min == 1
+    assert timed_allowlist.creation_params[2].max == 999999999
+    assert timed_allowlist.creation_params[3].max_length == 32
+    assert timed_allowlist.creation_params[3].input_modes is not None
+    assert timed_allowlist.creation_params[3].input_modes[1].name == "sha256"
+    assert timed_allowlist.creation_params[3].input_modes[1].transform == "sha256"
+    assert timed_allowlist.creation_params[3].input_modes[1].byte_length == 32
+    assert timed_allowlist.creation_params[3].input_modes[1].input_type == "bytes"
+    assert timed_allowlist.creation_params[4].param_type == "select"
+    assert timed_allowlist.creation_params[4].options == ["lab-sentry", "backup-sentry"]
+    assert timed_allowlist.runtime_args is not None
+    assert timed_allowlist.runtime_args[0].label == "Preimage"
+    assert timed_allowlist.runtime_args[0].required is True
+    assert timed_allowlist.runtime_args[0].byte_length == 32
 
 
 def test_status_fixture_maps_metadata():
@@ -256,7 +256,7 @@ def test_list_keys_maps_template_warning_fields():
             {
                 "address": "ADDR1",
                 "public_key_hex": "abcd",
-                    "key_type": "aplane.timed-whitelist.v1",
+                    "key_type": "aplane.timed-allowlist.v1",
                 "template_provenance_status": "conflict",
                 "template_provenance_note": "template fingerprint differs",
             }
@@ -337,10 +337,10 @@ def test_generate_key_maps_admin_generate_response():
     resp = mock_response(200, fixture("admin_generate_response_generic.json"))
 
     with patch.object(client.session, "post", return_value=resp):
-        generated = client.generate_key("aplane.timed-whitelist.v1", {"unlock_round": "123456"})
+        generated = client.generate_key("aplane.timed-allowlist.v1", {"unlock_round": "123456"})
 
     assert generated.address == "GENERATEDADDR0000000000000000000000000000000000000000000"
-    assert generated.key_type == "aplane.timed-whitelist.v1"
+    assert generated.key_type == "aplane.timed-allowlist.v1"
     assert generated.parameters is not None
     assert generated.parameters["unlock_round"] == "123456"
 

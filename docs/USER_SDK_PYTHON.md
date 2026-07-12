@@ -342,7 +342,7 @@ Key types with creation parameters take a string map:
 
 ```python
 result = client.generate_key(
-    "aplane.timed-whitelist.v1",
+    "aplane.timed-allowlist.v1",
     {
         "recipient": "ADDR1",
         "unlock_round": "123456",
