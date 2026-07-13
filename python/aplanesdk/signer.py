@@ -1500,6 +1500,7 @@ class _SSHTunnel:
 
         sock: Optional[socket.socket] = None
         transport: Optional[paramiko.Transport] = None
+        proof: Optional[TokenProofClient] = None
         try:
             sock = socket.create_connection((self._ssh_host, self._ssh_port))
             transport = paramiko.Transport(sock)
@@ -1537,6 +1538,9 @@ class _SSHTunnel:
             elif sock:
                 sock.close()
             raise
+        finally:
+            if proof is not None:
+                proof.clear()
 
         self._transport = transport
 
