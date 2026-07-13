@@ -256,7 +256,7 @@ class KeyInfo:
 
 @dataclass
 class SSHConfig:
-    """SSH tunnel configuration (token is used as SSH username for 2FA)"""
+    """SSH tunnel configuration for public-key plus mutual token-proof auth."""
     host: str  # Remote host to SSH to
     port: int = DEFAULT_SSH_PORT
     identity_file: str = ".ssh/id_ed25519"  # Relative to data_dir

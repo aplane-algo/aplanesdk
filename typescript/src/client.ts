@@ -1660,8 +1660,8 @@ export class SignerClient {
    * Connect to remote apsigner via SSH tunnel.
    *
    * Establishes an SSH tunnel to the remote host and forwards
-   * the signer port to a local port. Uses 2FA: token (as SSH username)
-   * + public key authentication.
+   * the signer port to a local port. Authentication uses an enrolled public
+   * key plus a mutual token proof bound to the accepted host key.
    *
    * @param host - Remote host running apsigner
    * @param token - Authentication token (used for both SSH and HTTP API)
