@@ -3,6 +3,7 @@
 
 import json
 from pathlib import Path
+import threading
 
 import pytest
 import paramiko
@@ -16,7 +17,11 @@ from aplanesdk._ssh_tokenproof import (
     encode_transcript,
     parse_message,
 )
-from aplanesdk.signer import SignerError, _SSHTunnel
+from aplanesdk.signer import (
+    SignerError,
+    _SSHTunnel,
+    _continue_keyboard_interactive_auth,
+)
 
 
 def _vector():
@@ -92,3 +97,35 @@ def test_host_key_verification_persists_tofu_and_rejects_mismatch(tmp_path):
     _tunnel(known_hosts, False)._verify_host_key(key)
     with pytest.raises(SignerError, match="mismatch"):
         _tunnel(known_hosts, False)._verify_host_key(paramiko.RSAKey.generate(1024))
+
+
+def test_partial_auth_continuation_sends_only_userauth_request():
+    class AuthHandler:
+        def wait_for_response(self, event):
+            assert event is self.auth_event
+            return []
+
+    class Transport:
+        def __init__(self):
+            self.auth_handler = AuthHandler()
+            self.lock = threading.Lock()
+            self.saved_exception = RuntimeError("stale partial result")
+            self.sent = []
+
+        def _send_message(self, message):
+            self.sent.append(bytes(message))
+
+    transport = Transport()
+    callback = lambda _title, _instructions, _prompts: ["answer"]
+    assert _continue_keyboard_interactive_auth(transport, "default", callback) == []
+    assert transport.saved_exception is None
+    assert transport.auth_handler.interactive_handler is callback
+
+    request = paramiko.Message(transport.sent[0])
+    assert request.get_byte() == paramiko.common.cMSG_USERAUTH_REQUEST
+    assert request.get_text() == "default"
+    assert request.get_text() == "ssh-connection"
+    assert request.get_text() == "keyboard-interactive"
+    assert request.get_text() == ""
+    assert request.get_text() == ""
+    assert request.get_remainder() == b""

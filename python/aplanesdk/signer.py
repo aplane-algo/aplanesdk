@@ -47,6 +47,7 @@ import re
 import requests
 import secrets
 import socket
+import threading
 import time
 from dataclasses import asdict, dataclass, is_dataclass
 from typing import Optional, Dict, List, Any, Callable
@@ -1409,6 +1410,40 @@ def _find_free_port() -> int:
         return s.getsockname()[1]
 
 
+def _continue_keyboard_interactive_auth(
+    transport: paramiko.Transport,
+    username: str,
+    handler: Callable[[str, str, list[tuple[str, bool]]], list[str]],
+) -> list[str]:
+    """Continue partial auth without sending a second SSH service request."""
+    auth_handler = transport.auth_handler
+    if auth_handler is None:
+        raise paramiko.SSHException("SSH authentication handler is unavailable")
+
+    # Paramiko's public auth_interactive() creates a new AuthHandler, which
+    # sends another ssh-userauth service request. After partial success the SSH
+    # protocol requires the next USERAUTH_REQUEST on the existing service.
+    event = threading.Event()
+    with transport.lock:
+        transport.saved_exception = None
+        auth_handler.auth_event = event
+        auth_handler.auth_method = "keyboard-interactive"
+        auth_handler.username = username
+        auth_handler.interactive_handler = handler
+        auth_handler.submethods = ""
+
+        request = paramiko.Message()
+        request.add_byte(paramiko.common.cMSG_USERAUTH_REQUEST)
+        request.add_string(username)
+        request.add_string("ssh-connection")
+        request.add_string("keyboard-interactive")
+        request.add_string("")  # language tag
+        request.add_string("")  # submethods
+        transport._send_message(request)
+
+    return auth_handler.wait_for_response(event)
+
+
 class _SSHTunnel:
     """
     Lightweight SSH local port forward using paramiko directly.
@@ -1479,7 +1514,9 @@ class _SSHTunnel:
                 raise SignerError(
                     "SSH server did not require token proof after public-key authentication"
                 )
-            transport.auth_interactive(SSH_TOKEN_PROOF_IDENTITY, proof.challenge)
+            _continue_keyboard_interactive_auth(
+                transport, SSH_TOKEN_PROOF_IDENTITY, proof.challenge
+            )
             if not transport.is_authenticated() or not proof.server_verified:
                 raise SignerError("SSH token proof authentication did not complete")
         except SignerError:
