@@ -98,8 +98,10 @@ const client = await SignerClient.connectSsh(
 );
 ```
 
-**Note**: SSH uses 2FA (token + public key). The token is passed as the SSH
-username. Remember to close when done:
+**Note**: SSH verifies the enrolled public key, then performs a programmatic
+mutual proof of the token bound to the accepted host key and fresh nonces. The
+SSH username is the non-secret identity ID; the bearer token is never sent as
+SSH metadata. Remember to close when done:
 
 ```typescript
 await client.close();

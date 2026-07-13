@@ -76,6 +76,7 @@ import {
   hexToBytes,
 } from "./encoding.js";
 import { preparedGroupToSignRequests } from "./prepared.js";
+import { SSH_TOKEN_PROOF_IDENTITY, SSHTokenProofClient } from "./ssh-tokenproof.js";
 import {
   loadConfig,
   loadTokenFromDir,
@@ -843,7 +844,7 @@ class SSHTunnel {
   async connect(options: {
     host: string;
     sshPort: number;
-    username: string;
+    token: string;
     privateKeyPath: string;
     remoteHost: string;
     remotePort: number;
@@ -861,14 +862,23 @@ class SSHTunnel {
 
     const privateKey = fs.readFileSync(options.privateKeyPath, "utf-8");
     this.localPort = await findFreePort();
+    const proof = new SSHTokenProofClient(options.token);
 
     // Track host key error for meaningful rejection messages
     let hostKeyError = "";
+    let authStage = 0;
 
     return new Promise((resolve, reject) => {
       this.sshClient = new Client();
 
       this.sshClient.on("ready", () => {
+        if (!proof.serverVerified) {
+          this.sshClient!.end();
+          reject(new SignerUnavailableError(
+            "SSH server accepted authentication without completing token proof"
+          ));
+          return;
+        }
         // Create local server that forwards to remote via SSH
         this.server = net.createServer((localSocket) => {
           this.sshClient!.forwardOut(
@@ -903,8 +913,41 @@ class SSHTunnel {
       this.sshClient.connect({
         host: options.host,
         port: options.sshPort,
-        username: options.username,
+        username: SSH_TOKEN_PROOF_IDENTITY,
         privateKey: privateKey,
+        authHandler: (methodsLeft, partialSuccess, next) => {
+          if (authStage === 0 && (methodsLeft === null || methodsLeft === undefined)) {
+            authStage = 1;
+            next({
+              type: "publickey",
+              username: SSH_TOKEN_PROOF_IDENTITY,
+              key: privateKey,
+            });
+            return;
+          }
+          if (
+            authStage === 1 &&
+            partialSuccess &&
+            methodsLeft.includes("keyboard-interactive")
+          ) {
+            authStage = 2;
+            next({
+              type: "keyboard-interactive",
+              username: SSH_TOKEN_PROOF_IDENTITY,
+              prompt: (name, instructions, _lang, prompts, finish) => {
+                try {
+                  finish(proof.challenge(name, instructions, prompts));
+                } catch (error) {
+                  hostKeyError = error instanceof Error ? error.message : String(error);
+                  finish([]);
+                }
+              },
+            });
+            return;
+          }
+          hostKeyError = "SSH server did not require token proof after public-key authentication";
+          next(false as never);
+        },
         hostVerifier: (key: Buffer): boolean => {
           const storedKey = loadKnownHostKey(
             options.knownHostsPath, options.host, options.sshPort
@@ -920,10 +963,12 @@ class SSHTunnel {
             }
             // TOFU enabled — trust and save key
             saveHostKey(options.knownHostsPath, options.host, options.sshPort, key);
+            proof.captureHostKey(key);
             return true;
           }
 
           if (storedKey.equals(key)) {
+            proof.captureHostKey(key);
             return true; // Known host, key matches
           }
 
@@ -1615,8 +1660,8 @@ export class SignerClient {
    * Connect to remote apsigner via SSH tunnel.
    *
    * Establishes an SSH tunnel to the remote host and forwards
-   * the signer port to a local port. Uses 2FA: token (as SSH username)
-   * + public key authentication.
+   * the signer port to a local port. Authentication uses an enrolled public
+   * key plus a mutual token proof bound to the accepted host key.
    *
    * @param host - Remote host running apsigner
    * @param token - Authentication token (used for both SSH and HTTP API)
@@ -1663,11 +1708,10 @@ export class SignerClient {
     const tunnel = new SSHTunnel();
 
     try {
-      // Token is used as SSH username for 2FA (token + public key)
       await tunnel.connect({
         host,
         sshPort,
-        username: token,
+        token,
         privateKeyPath: expandedKeyPath,
         remoteHost: "127.0.0.1",
         remotePort: signerPort,

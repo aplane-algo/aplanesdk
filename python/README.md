@@ -112,8 +112,10 @@ client = SignerClient.connect_ssh(
 )
 ```
 
-**Note**: SSH uses 2FA (token + public key). The token is passed as the SSH
-username. Keys are enrolled via the `request-token` operator-approved flow.
+**Note**: SSH verifies the enrolled public key, then performs a programmatic
+mutual proof of the token bound to the accepted host key and fresh nonces. The
+SSH username is the non-secret identity ID; the bearer token is never sent as
+SSH metadata. Keys are enrolled via the `request-token` operator-approved flow.
 
 The SSH tunnel is established automatically. Remember to close when done:
 
@@ -483,7 +485,7 @@ def main():
     # Load token
     token = load_token("~/aplane/apclient/aplane.token")
 
-    # Connect via SSH (token is used as SSH username for 2FA)
+    # Connect via SSH (public key plus host-key-bound token proof)
     with SignerClient.connect_ssh(
         host="signer.example.com",
         token=token,

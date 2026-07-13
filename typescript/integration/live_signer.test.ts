@@ -15,15 +15,47 @@ function integrationEnabled(): boolean {
   return process.env.APLANE_SDK_INTEGRATION === "1";
 }
 
-function liveSignerClient(): { client: SignerClient; keyType: string } {
+async function liveSignerClient(): Promise<{ client: SignerClient; keyType: string }> {
+  const token = liveSignerToken();
+  const keyType = process.env.APLANE_SDK_KEY_TYPE || "ed25519";
+
+  const sshHost = (process.env.APLANE_SDK_SSH_HOST || "").trim();
+  if (sshHost) {
+    const client = await SignerClient.connectSsh(
+      sshHost,
+      token,
+      requiredSshEnv("APLANE_SDK_SSH_KEY_PATH"),
+      {
+        sshPort: requiredSshPort("APLANE_SDK_SSH_PORT"),
+        signerPort: requiredSshPort("APLANE_SDK_SIGNER_PORT"),
+        knownHostsPath: requiredSshEnv("APLANE_SDK_KNOWN_HOSTS_PATH"),
+      }
+    );
+    return { client, keyType };
+  }
+
   let baseUrl = (process.env.APLANE_SDK_SIGNER_URL || "").replace(/\/+$/, "");
   if (!baseUrl) {
     baseUrl = `http://127.0.0.1:${liveSignerPort()}`;
   }
-
-  const token = liveSignerToken();
-  const keyType = process.env.APLANE_SDK_KEY_TYPE || "ed25519";
   return { client: new SignerClient(baseUrl, token), keyType };
+}
+
+function requiredSshEnv(name: string): string {
+  const value = (process.env[name] || "").trim();
+  if (!value) {
+    throw new Error(`${name} must be set when APLANE_SDK_SSH_HOST is set`);
+  }
+  return value;
+}
+
+function requiredSshPort(name: string): number {
+  const value = requiredSshEnv(name);
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`${name} must be a valid TCP port, got ${JSON.stringify(value)}`);
+  }
+  return port;
 }
 
 function liveSignerPort(): number {
@@ -76,7 +108,7 @@ test(
   "integration: live signer client workflow",
   { skip: integrationEnabled() ? false : "set APLANE_SDK_INTEGRATION=1" },
   async () => {
-    const { client, keyType } = liveSignerClient();
+    const { client, keyType } = await liveSignerClient();
     let address = "";
     let cleanup = false;
 

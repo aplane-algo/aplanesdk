@@ -26,7 +26,8 @@ type sshTunnel struct {
 }
 
 // connect establishes an SSH tunnel to the signer.
-// Token is used as the SSH username for 2FA (token + public key).
+// The bearer token is proven through a host-key-bound challenge and is never
+// sent as the SSH username.
 // Returns the local port that forwards to the signer.
 func (t *sshTunnel) connect(host string, sshPort, signerPort int, token, sshKeyPath string) (int, error) {
 	// Load SSH private key
@@ -46,13 +47,22 @@ func (t *sshTunnel) connect(host string, sshPort, signerPort int, token, sshKeyP
 		return 0, fmt.Errorf("failed to set up host key verification: %w", err)
 	}
 
-	// SSH config - token is the username for 2FA
+	proof := newSSHTokenProofClient(token)
+	defer proof.clear()
+	verifiedHostKeyCallback := func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+		if err := hostKeyCallback(hostname, remote, key); err != nil {
+			return err
+		}
+		return proof.captureHostKey(key)
+	}
+
 	config := &ssh.ClientConfig{
-		User: token,
+		User: sshTokenProofIdentity,
 		Auth: []ssh.AuthMethod{
 			ssh.PublicKeys(signer),
+			ssh.KeyboardInteractive(proof.challenge),
 		},
-		HostKeyCallback: hostKeyCallback,
+		HostKeyCallback: verifiedHostKeyCallback,
 	}
 
 	// Connect to SSH server
@@ -60,6 +70,10 @@ func (t *sshTunnel) connect(host string, sshPort, signerPort int, token, sshKeyP
 	client, err := ssh.Dial("tcp", addr, config)
 	if err != nil {
 		return 0, fmt.Errorf("failed to connect to SSH server: %w", err)
+	}
+	if !proof.serverVerified() {
+		_ = client.Close()
+		return 0, fmt.Errorf("SSH server accepted authentication without completing token proof")
 	}
 	t.client = client
 

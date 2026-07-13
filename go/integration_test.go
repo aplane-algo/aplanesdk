@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -30,19 +31,49 @@ func liveSignerClient(t *testing.T) (*SignerClient, string) {
 		t.Skip("set APLANE_SDK_INTEGRATION=1 to run live signer integration tests")
 	}
 
-	baseURL := strings.TrimRight(os.Getenv("APLANE_SDK_SIGNER_URL"), "/")
-	if baseURL == "" {
-		port := liveSignerPort(t)
-		baseURL = fmt.Sprintf("http://127.0.0.1:%d", port)
-	}
-
 	token := liveSignerToken(t)
 	keyType := os.Getenv("APLANE_SDK_KEY_TYPE")
 	if keyType == "" {
 		keyType = "ed25519"
 	}
 
+	if host := strings.TrimSpace(os.Getenv("APLANE_SDK_SSH_HOST")); host != "" {
+		client, err := ConnectSSH(host, token, liveRequiredEnv(t, "APLANE_SDK_SSH_KEY_PATH"), &SSHConnectOptions{
+			SSHPort:        liveRequiredPort(t, "APLANE_SDK_SSH_PORT"),
+			SignerPort:     liveRequiredPort(t, "APLANE_SDK_SIGNER_PORT"),
+			KnownHostsPath: liveRequiredEnv(t, "APLANE_SDK_KNOWN_HOSTS_PATH"),
+		})
+		if err != nil {
+			t.Fatalf("connect to live signer over SSH: %v", err)
+		}
+		return client, keyType
+	}
+
+	baseURL := strings.TrimRight(os.Getenv("APLANE_SDK_SIGNER_URL"), "/")
+	if baseURL == "" {
+		port := liveSignerPort(t)
+		baseURL = fmt.Sprintf("http://127.0.0.1:%d", port)
+	}
 	return NewSignerClientWithToken(baseURL, token), keyType
+}
+
+func liveRequiredEnv(t *testing.T, name string) string {
+	t.Helper()
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		t.Fatalf("%s must be set when APLANE_SDK_SSH_HOST is set", name)
+	}
+	return value
+}
+
+func liveRequiredPort(t *testing.T, name string) int {
+	t.Helper()
+	value := liveRequiredEnv(t, name)
+	port, err := strconv.Atoi(value)
+	if err != nil || port < 1 || port > 65535 {
+		t.Fatalf("%s must be a valid TCP port, got %q", name, value)
+	}
+	return port
 }
 
 func liveSignerPort(t *testing.T) int {
@@ -104,6 +135,7 @@ func liveSignerToken(t *testing.T) string {
 
 func TestIntegrationLiveSignerClientWorkflow(t *testing.T) {
 	client, keyType := liveSignerClient(t)
+	defer client.Close()
 
 	healthy, err := client.Health()
 	if err != nil {
