@@ -3059,6 +3059,10 @@ export class SignerClient {
       throw new SignerError("Server returned invalid JSON");
     }
 
+    if (data.error) {
+      throw new SignerError(data.error);
+    }
+
     try {
       validateGuardedSimulateResponse(data);
     } catch (error) {

@@ -779,6 +779,9 @@ func (c *SignerClient) RequestGuardedSimulateWithContext(ctx context.Context, re
 	if err := json.NewDecoder(resp.Body).Decode(&simulateResp); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
+	if simulateResp.Error != "" {
+		return nil, fmt.Errorf("guarded simulation failed: %s", simulateResp.Error)
+	}
 	if err := simulateResp.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid guarded simulate response: %w", err)
 	}

@@ -6,6 +6,7 @@ package aplane
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -80,6 +81,25 @@ func TestRequestGuardedSimulate(t *testing.T) {
 	}
 	if len(resp.TxIDs) != 3 || resp.Output != "ok" || resp.Failed {
 		t.Fatalf("guarded simulate response = %+v", resp)
+	}
+}
+
+func TestRequestGuardedSimulateRejectsErrorResponse(t *testing.T) {
+	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		var req GuardedSimulateRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode guarded simulate request: %v", err)
+		}
+		json.NewEncoder(w).Encode(GuardedSimulateResponse{
+			RequestID: req.RequestID,
+			Error:     "assembly rejected",
+		})
+	})
+	defer server.Close()
+
+	_, err := client.RequestGuardedSimulate(validGuardedSimulateRequest())
+	if err == nil || !strings.Contains(err.Error(), "assembly rejected") {
+		t.Fatalf("RequestGuardedSimulate() error = %v, want error-field rejection", err)
 	}
 }
 
