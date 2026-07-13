@@ -89,6 +89,12 @@ func TestSignGuardedGroupOneTarget(t *testing.T) {
 				RequestID:   req.RequestID,
 				SignedGroup: signedGroupFor(t, req.GroupBytesHex),
 			})
+		case "/status":
+			json.NewEncoder(w).Encode(StatusResponse{
+				IdentityID:          "default",
+				State:               "unlocked",
+				ApprovalWaitSeconds: 60,
+			})
 		default:
 			t.Fatalf("unexpected user path %s", r.URL.Path)
 		}
@@ -163,6 +169,12 @@ func TestSignGuardedGroupBatchesSharedSentryKey(t *testing.T) {
 				RequestID:   req.RequestID,
 				SignedGroup: signedGroupFor(t, req.GroupBytesHex),
 			})
+		case "/status":
+			json.NewEncoder(w).Encode(StatusResponse{
+				IdentityID:          "default",
+				State:               "unlocked",
+				ApprovalWaitSeconds: 60,
+			})
 		default:
 			t.Fatalf("unexpected user path %s", r.URL.Path)
 		}
@@ -235,6 +247,12 @@ func TestSignGuardedGroupRejectsMismatchedAssembly(t *testing.T) {
 					var req GuardedAssemblyRequest
 					_ = json.NewDecoder(r.Body).Decode(&req)
 					json.NewEncoder(w).Encode(GuardedAssemblyResponse{RequestID: req.RequestID, SignedGroup: badSignedGroup})
+				case "/status":
+					json.NewEncoder(w).Encode(StatusResponse{
+						IdentityID:          "default",
+						State:               "unlocked",
+						ApprovalWaitSeconds: 60,
+					})
 				default:
 					t.Fatalf("unexpected user path %s", r.URL.Path)
 				}
@@ -404,6 +422,12 @@ func TestSignPreparedGuardedGroupAllGuardedAddsDummiesWithoutPlanOrSign(t *testi
 			})
 		case "/plan", "/sign":
 			t.Fatalf("prepared all-guarded path must not call %s", r.URL.Path)
+		case "/status":
+			json.NewEncoder(w).Encode(StatusResponse{
+				IdentityID:          "default",
+				State:               "unlocked",
+				ApprovalWaitSeconds: 60,
+			})
 		default:
 			t.Fatalf("unexpected user path %s", r.URL.Path)
 		}

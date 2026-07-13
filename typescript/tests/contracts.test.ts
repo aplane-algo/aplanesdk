@@ -17,6 +17,8 @@ import type {
   ComponentSignResponse,
   GuardedAssemblyRequest,
   GuardedAssemblyResponse,
+  GuardedSimulateRequest,
+  GuardedSimulateResponse,
 } from "../src/types.js";
 
 interface MockFetch {
@@ -415,6 +417,20 @@ describe("signer API contract fixtures", () => {
 
     const assemblyResp = fixture("guarded_assembly_response.json") as GuardedAssemblyResponse;
     assert.equal(assemblyResp.signed_group.length, 2);
+  });
+
+  it("round-trips guarded simulate fixture DTOs", () => {
+    const simulateReq = fixture("guarded_simulate_request_mixed.json") as GuardedSimulateRequest;
+    assert.equal(simulateReq.requests.length, 3);
+    assert.equal(simulateReq.requests[1].auth_address, "AUTHADDRESSAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+    assert.equal(simulateReq.targets[0].guarded_account, "LOGICSIGACCOUNTADDRESSAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+    assert.equal(simulateReq.targets[0].sentry_signature, "cccccccccccccccccccccccccccccccc");
+    assert.equal(simulateReq.passthrough?.[0].target_index, 2);
+
+    const simulateResp = fixture("guarded_simulate_response.json") as GuardedSimulateResponse;
+    assert.equal(simulateResp.tx_ids?.length, 3);
+    assert.equal(simulateResp.transactions?.length, 3);
+    assert.ok(simulateResp.output?.includes("Simulation successful"));
   });
 
   it("round-trips admin sentry sync fixture DTOs", () => {

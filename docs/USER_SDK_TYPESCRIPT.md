@@ -525,6 +525,22 @@ For manual orchestration, use `requestComponentSign()` on the user and sentry
 clients, then `requestGuardedAssemble()` on the user client. `assembleGroup()`
 remains only the local multi-party concatenation helper.
 
+User-role component signing runs the signer-domain approval gates and can
+block on a manual operator decision. The SDK automatically discovers the
+signer's `approval_wait_seconds` and sizes the request deadline accordingly,
+exactly like `/sign`; sentry-role component requests stay on the short
+deterministic deadline.
+
+Guarded simulation is contained inside the user signer: call
+`requestGuardedSimulate()` with the frozen group, sentry component signatures,
+and signed passthrough entries. The signer produces the user component
+signatures internally, assembles, simulates against its own algod, and returns
+only transaction IDs, final unsigned transactions, and the simulation report.
+Do not implement guarded simulation by requesting real user components and
+simulating client-side: that triggers a real operator approval for a
+transaction the caller only wants to preview, and leaves fully submittable
+signed bytes in the client's hands.
+
 ## Transaction Semantics
 
 - `signTransaction()` returns one base64 string containing the full signed

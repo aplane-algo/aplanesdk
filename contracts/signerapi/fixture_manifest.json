@@ -19,6 +19,8 @@
     "group_simulate_response_mutated.json",
     "guarded_assembly_request_mixed.json",
     "guarded_assembly_response.json",
+    "guarded_simulate_request_mixed.json",
+    "guarded_simulate_response.json",
     "health_response_ready.json",
     "keys_response_component.json",
     "keys_response_generic.json",

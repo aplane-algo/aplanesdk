@@ -70,6 +70,7 @@ MUTATION_TIMEOUT = 60
 GROUP_PLAN_TIMEOUT = 60
 GROUP_SIMULATE_TIMEOUT = 60
 COMPONENT_SIGN_TIMEOUT = 120
+GUARDED_SIMULATE_TIMEOUT = 120
 GUARDED_ASSEMBLY_TIMEOUT = 120
 SIGN_CANCEL_TIMEOUT = 5
 SIGN_APPROVAL_SLACK = 30
@@ -426,6 +427,51 @@ class GuardedAssemblyResponse:
     """Response payload from /sign/assemble"""
     request_id: str
     signed_group: List[str]
+
+
+@dataclass
+class GuardedSimulateTarget:
+    """One guarded-account position for /simulate/guarded.
+
+    Carries the sentry component signature only; the user component signature
+    is produced inside the signer and never crosses the wire.
+    """
+    target_index: int
+    guarded_account: str
+    sentry_signature: str
+    sentry_source_request_id: str = ""
+    runtime_args: Optional[List[str]] = None
+
+
+@dataclass
+class GuardedSimulateRequest:
+    """Request payload for /simulate/guarded (contained guarded simulation).
+
+    ``requests`` carries the full frozen group, one entry per position, in the
+    same shape the mixed guarded flow sends to /sign: positions the signer
+    signs with ordinary keys are sign-mode entries (auth_address set); guarded
+    positions and externally signed positions carry only txn_bytes_hex and are
+    covered by ``targets`` and ``passthrough`` respectively.
+    """
+    requests: List[Any]
+    targets: List[GuardedSimulateTarget]
+    request_id: str = ""
+    passthrough: Optional[List[GuardedPassthroughItem]] = None
+
+
+@dataclass
+class GuardedSimulateResponse:
+    """Response payload from /simulate/guarded.
+
+    Intentionally carries no signed bytes: only transaction IDs, the final
+    unsigned transactions, and the simulation report.
+    """
+    request_id: str
+    tx_ids: List[str]
+    transactions: List[str]
+    output: str = ""
+    failed: bool = False
+    error: str = ""
 
 
 @dataclass
@@ -858,6 +904,64 @@ def _validate_guarded_assembly_response(data: Dict[str, Any]) -> None:
     for index, signed in enumerate(signed_group):
         if not signed:
             raise ValueError(f"signed_group {index} is empty")
+
+
+def _validate_guarded_simulate_request(data: Dict[str, Any]) -> None:
+    _validate_sign_request_id(str(data.get("request_id", "")))
+    requests_list = data.get("requests") or []
+    if not requests_list:
+        raise ValueError("requests is empty")
+    if len(requests_list) > MAX_COMPONENT_GROUP_SIZE:
+        raise ValueError(
+            f"requests length {len(requests_list)} exceeds max {MAX_COMPONENT_GROUP_SIZE}"
+        )
+    targets = data.get("targets") or []
+    if not targets:
+        raise ValueError("targets is required")
+    for i, entry in enumerate(requests_list, start=1):
+        if not entry.get("txn_bytes_hex"):
+            raise ValueError(f"request {i}: txn_bytes_hex is required")
+        if entry.get("signed_txn_hex"):
+            raise ValueError(
+                f"request {i}: signed_txn_hex is not valid in guarded simulation; use passthrough"
+            )
+
+    covered = set()
+    for i, target in enumerate(targets, start=1):
+        _validate_assembly_index(target.get("target_index"), len(requests_list), covered)
+        if not target.get("guarded_account"):
+            raise ValueError(f"target {i}: guarded_account is required")
+        if not target.get("sentry_signature"):
+            raise ValueError(f"target {i}: sentry_signature is required")
+        _validate_sign_request_id(str(target.get("sentry_source_request_id", "")))
+        if requests_list[target["target_index"]].get("auth_address"):
+            raise ValueError(
+                f"target {i}: position {target['target_index']} must not also be a sign-mode request"
+            )
+
+    for i, item in enumerate(data.get("passthrough") or [], start=1):
+        _validate_assembly_index(item.get("target_index"), len(requests_list), covered)
+        if not item.get("signed_txn_hex"):
+            raise ValueError(f"passthrough {i}: signed_txn_hex is required")
+        if requests_list[item["target_index"]].get("auth_address"):
+            raise ValueError(
+                f"passthrough {i}: position {item['target_index']} must not also be a sign-mode request"
+            )
+
+    for index in range(len(requests_list)):
+        if index in covered:
+            continue
+        if not requests_list[index].get("auth_address"):
+            raise ValueError(
+                f"group position {index} is not covered by targets, passthrough, or a sign-mode request"
+            )
+
+
+def _validate_guarded_simulate_response(data: Dict[str, Any]) -> None:
+    request_id = data.get("request_id", "")
+    if not request_id:
+        raise ValueError("request_id is required")
+    _validate_sign_request_id(str(request_id))
 
 
 def _extract_auth_address(account_info: Any) -> str:
@@ -3000,11 +3104,20 @@ class SignerClient:
         except ValueError as e:
             raise ValueError(f"invalid component sign request: {e}") from e
 
+        # User-role component signing runs the signer-domain approval gates
+        # and can block on a manual approval decision, so it needs the same
+        # approval-aware deadline as /sign. Sentry-role requests are
+        # deterministic and keep the short component deadline.
+        timeout = self._timeout_for(COMPONENT_SIGN_TIMEOUT)
+        if request_body.get("role") == COMPONENT_SIGN_ROLE_USER:
+            self._discover_approval_wait()
+            timeout = max(timeout, self._sign_request_timeout())
+
         try:
             resp = self.session.post(
                 f"{self.base_url}/sign/component",
                 json=request_body,
-                timeout=self._timeout_for(COMPONENT_SIGN_TIMEOUT),
+                timeout=timeout,
             )
         except requests.RequestException as e:
             raise SignerUnavailableError(f"Failed to connect: {e}")
@@ -3097,6 +3210,67 @@ class SignerClient:
         return GuardedAssemblyResponse(
             request_id=data["request_id"],
             signed_group=data.get("signed_group", []),
+        )
+
+    def request_guarded_simulate(
+        self,
+        request: Any,
+    ) -> GuardedSimulateResponse:
+        """
+        Send a contained guarded simulation request to /simulate/guarded.
+
+        The signer produces user component signatures internally and returns
+        only simulation results, never signed bytes.
+        """
+        request_body = _compact_payload(request)
+        if not isinstance(request_body, dict):
+            raise ValueError("guarded simulate request must be a mapping or dataclass")
+        if not request_body.get("request_id"):
+            request_body["request_id"] = _new_sign_request_id()
+        try:
+            _validate_guarded_simulate_request(request_body)
+        except ValueError as e:
+            raise ValueError(f"invalid guarded simulate request: {e}") from e
+
+        try:
+            resp = self.session.post(
+                f"{self.base_url}/simulate/guarded",
+                json=request_body,
+                timeout=self._timeout_for(GUARDED_SIMULATE_TIMEOUT),
+            )
+        except requests.RequestException as e:
+            raise SignerUnavailableError(f"Failed to connect: {e}")
+
+        if resp.status_code == 401:
+            raise AuthenticationError("Invalid or missing token")
+
+        if resp.status_code == 403:
+            raise self._forbidden_rejected_error(resp, "Guarded simulate request rejected")
+
+        if resp.status_code == 503:
+            raise SignerUnavailableError(self._error_message(resp, "Signer unavailable"))
+
+        if resp.status_code != 200:
+            raise self._signer_http_error(
+                resp,
+                f"Guarded simulation failed: HTTP {resp.status_code}",
+                )
+
+        data = self._safe_json(resp)
+        if data.get("error"):
+            raise SignerError(data["error"])
+        try:
+            _validate_guarded_simulate_response(data)
+        except ValueError as e:
+            raise SignerError(f"invalid guarded simulate response: {e}") from e
+
+        return GuardedSimulateResponse(
+            request_id=data["request_id"],
+            tx_ids=data.get("tx_ids", []),
+            transactions=data.get("transactions", []),
+            output=data.get("output", ""),
+            failed=data.get("failed", False),
+            error=data.get("error", ""),
         )
 
     def admin_sync_sentry_references(

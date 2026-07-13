@@ -48,6 +48,7 @@ const (
 	groupPlanTimeout          = 60 * time.Second
 	groupSimulateTimeout      = 60 * time.Second
 	componentSignTimeout      = 2 * time.Minute
+	guardedSimulateTimeout    = 2 * time.Minute
 	guardedAssemblyTimeout    = 2 * time.Minute
 	signCancelTimeout         = 5 * time.Second
 	signApprovalSlack         = 30 * time.Second
@@ -668,7 +669,19 @@ func (c *SignerClient) RequestComponentSignWithContext(ctx context.Context, reqB
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	reqCtx, cancel := c.requestContext(ctx, componentSignTimeout)
+	// User-role component signing runs the signer-domain approval gates and
+	// can block on a manual approval decision, so it needs the same
+	// approval-aware deadline as /sign. Sentry-role requests are deterministic
+	// and keep the short component deadline.
+	timeout := componentSignTimeout
+	if reqBody.Role == ComponentSignRoleUser {
+		c.discoverApprovalWait(ctx)
+		if signTimeout := c.signRequestTimeout(); signTimeout > timeout {
+			timeout = signTimeout
+		}
+	}
+
+	reqCtx, cancel := c.requestContext(ctx, timeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(reqCtx, "POST", c.baseURL+"/sign/component", bytes.NewBuffer(jsonBody))
@@ -705,6 +718,71 @@ func (c *SignerClient) RequestComponentSignWithContext(ctx context.Context, reqB
 		return nil, fmt.Errorf("invalid component sign response: %w", err)
 	}
 	return &componentResp, nil
+}
+
+// RequestGuardedSimulate sends a contained guarded simulation request to
+// /simulate/guarded.
+func (c *SignerClient) RequestGuardedSimulate(req GuardedSimulateRequest) (*GuardedSimulateResponse, error) {
+	return c.RequestGuardedSimulateWithContext(context.Background(), req)
+}
+
+// RequestGuardedSimulateWithContext sends a contained guarded simulation
+// request to /simulate/guarded. The signer produces user component signatures
+// internally and returns only simulation results, never signed bytes.
+func (c *SignerClient) RequestGuardedSimulateWithContext(ctx context.Context, reqBody GuardedSimulateRequest) (*GuardedSimulateResponse, error) {
+	if reqBody.RequestID == "" {
+		requestID, err := newSignRequestID()
+		if err != nil {
+			return nil, fmt.Errorf("failed to create guarded simulate request ID: %w", err)
+		}
+		reqBody.RequestID = requestID
+	}
+	if err := reqBody.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid guarded simulate request: %w", err)
+	}
+
+	jsonBody, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	reqCtx, cancel := c.requestContext(ctx, guardedSimulateTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, "POST", c.baseURL+"/simulate/guarded", bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "aplane "+c.token)
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to make request to Signer: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 401 {
+		return nil, ErrAuthentication
+	}
+	if resp.StatusCode == 403 {
+		return nil, rejectedForbiddenError(resp)
+	}
+	if resp.StatusCode == 503 {
+		return nil, ErrSignerUnavailable
+	}
+	if resp.StatusCode != 200 {
+		return nil, signerHTTPError(resp)
+	}
+
+	var simulateResp GuardedSimulateResponse
+	if err := json.NewDecoder(resp.Body).Decode(&simulateResp); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+	if err := simulateResp.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid guarded simulate response: %w", err)
+	}
+	return &simulateResp, nil
 }
 
 // RequestGuardedAssemble sends a guarded transaction assembly request to

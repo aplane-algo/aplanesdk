@@ -51,6 +51,8 @@ import type {
   GuardedAssemblyRequest,
   GuardedAssemblyResponse,
   GuardedPassthroughItem,
+  GuardedSimulateRequest,
+  GuardedSimulateResponse,
   SentryReferenceCandidate,
   AdminSyncSentryReferencesRequest,
   AdminSyncSentryReferencesResponse,
@@ -90,6 +92,7 @@ const MUTATION_TIMEOUT = 60000;
 const GROUP_PLAN_TIMEOUT = 60000;
 const GROUP_SIMULATE_TIMEOUT = 60000;
 const COMPONENT_SIGN_TIMEOUT = 120000;
+const GUARDED_SIMULATE_TIMEOUT = 120000;
 const GUARDED_ASSEMBLY_TIMEOUT = 120000;
 const SIGN_CANCEL_TIMEOUT = 5000;
 const SIGN_APPROVAL_SLACK = 30000;
@@ -695,6 +698,67 @@ function validateGuardedAssemblyResponse(response: GuardedAssemblyResponse): voi
       throw new SignerError(`signed_group ${index} is empty`);
     }
   });
+}
+
+function validateGuardedSimulateRequest(request: GuardedSimulateRequest): void {
+  validateSignRequestId(request.request_id || "");
+  const requests = request.requests || [];
+  if (requests.length === 0) {
+    throw new SignerError("requests is empty");
+  }
+  if (requests.length > MAX_COMPONENT_GROUP_SIZE) {
+    throw new SignerError(`requests length ${requests.length} exceeds max ${MAX_COMPONENT_GROUP_SIZE}`);
+  }
+  const targets = request.targets || [];
+  if (targets.length === 0) {
+    throw new SignerError("targets is required");
+  }
+  requests.forEach((entry, index) => {
+    const item = index + 1;
+    if (!entry.txn_bytes_hex) {
+      throw new SignerError(`request ${item}: txn_bytes_hex is required`);
+    }
+    if (entry.signed_txn_hex) {
+      throw new SignerError(`request ${item}: signed_txn_hex is not valid in guarded simulation; use passthrough`);
+    }
+  });
+
+  const covered = new Set<number>();
+  targets.forEach((target, index) => {
+    const item = index + 1;
+    validateAssemblyIndex(target.target_index, requests.length, covered);
+    if (!target.guarded_account) {
+      throw new SignerError(`target ${item}: guarded_account is required`);
+    }
+    if (!target.sentry_signature) {
+      throw new SignerError(`target ${item}: sentry_signature is required`);
+    }
+    validateSignRequestId(target.sentry_source_request_id || "");
+    if (requests[target.target_index].auth_address) {
+      throw new SignerError(`target ${item}: position ${target.target_index} must not also be a sign-mode request`);
+    }
+  });
+  (request.passthrough || []).forEach((item, index) => {
+    validateAssemblyIndex(item.target_index, requests.length, covered);
+    if (!item.signed_txn_hex) {
+      throw new SignerError(`passthrough ${index + 1}: signed_txn_hex is required`);
+    }
+    if (requests[item.target_index].auth_address) {
+      throw new SignerError(`passthrough ${index + 1}: position ${item.target_index} must not also be a sign-mode request`);
+    }
+  });
+  for (let index = 0; index < requests.length; index++) {
+    if (!covered.has(index) && !requests[index].auth_address) {
+      throw new SignerError(`group position ${index} is not covered by targets, passthrough, or a sign-mode request`);
+    }
+  }
+}
+
+function validateGuardedSimulateResponse(response: GuardedSimulateResponse): void {
+  if (!response.request_id) {
+    throw new SignerError("request_id is required");
+  }
+  validateSignRequestId(response.request_id);
 }
 
 /**
@@ -2824,10 +2888,20 @@ export class SignerClient {
       );
     }
 
+    // User-role component signing runs the signer-domain approval gates and
+    // can block on a manual approval decision, so it needs the same
+    // approval-aware deadline as /sign. Sentry-role requests are
+    // deterministic and keep the short component deadline.
+    let timeout = this.timeoutFor(COMPONENT_SIGN_TIMEOUT);
+    if (requestBody.role === COMPONENT_SIGN_ROLE_USER) {
+      await this.discoverApprovalWait();
+      timeout = Math.max(timeout, this.signRequestTimeout());
+    }
+
     const response = await this.fetch("/sign/component", {
       method: "POST",
       body: JSON.stringify(requestBody),
-      timeout: this.timeoutFor(COMPONENT_SIGN_TIMEOUT),
+      timeout,
       signal: options?.signal,
     });
 
@@ -2927,6 +3001,69 @@ export class SignerClient {
     } catch (error) {
       throw new SignerError(
         `invalid guarded assembly response: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+
+    return data;
+  }
+
+  /**
+   * Send a contained guarded simulation request to /simulate/guarded.
+   *
+   * The signer produces user component signatures internally and returns only
+   * simulation results, never signed bytes.
+   */
+  async requestGuardedSimulate(
+    request: GuardedSimulateRequest,
+    options?: { signal?: AbortSignal },
+  ): Promise<GuardedSimulateResponse> {
+    const requestBody: GuardedSimulateRequest = {
+      ...request,
+      request_id: request.request_id || newSignRequestId(),
+    };
+    try {
+      validateGuardedSimulateRequest(requestBody);
+    } catch (error) {
+      throw new SignerError(
+        `invalid guarded simulate request: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+
+    const response = await this.fetch("/simulate/guarded", {
+      method: "POST",
+      body: JSON.stringify(requestBody),
+      timeout: this.timeoutFor(GUARDED_SIMULATE_TIMEOUT),
+      signal: options?.signal,
+    });
+
+    if (response.status === 401) {
+      throw new AuthenticationError();
+    }
+
+    if (response.status === 403) {
+      throw await this.forbiddenRejectedError(response, "Guarded simulate request rejected");
+    }
+
+    if (response.status === 503) {
+      throw new SignerUnavailableError(await this.errorMessage(response, "Signer unavailable"));
+    }
+
+    if (response.status !== 200) {
+      throw await this.signerHTTPError(response, `Guarded simulation failed: HTTP ${response.status}`);
+    }
+
+    let data: GuardedSimulateResponse;
+    try {
+      data = (await response.json()) as GuardedSimulateResponse;
+    } catch {
+      throw new SignerError("Server returned invalid JSON");
+    }
+
+    try {
+      validateGuardedSimulateResponse(data);
+    } catch (error) {
+      throw new SignerError(
+        `invalid guarded simulate response: ${error instanceof Error ? error.message : String(error)}`
       );
     }
 

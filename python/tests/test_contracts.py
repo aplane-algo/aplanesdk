@@ -25,6 +25,8 @@ from aplanesdk.signer import (
     ERR_CODE_UNAUTHORIZED,
     ERR_CODE_UNAVAILABLE,
     GuardedAssemblyRequest,
+    GuardedSimulateRequest,
+    GuardedSimulateResponse,
     GuardedAssemblyResponse,
     SignerClient,
     StatusResponse,
@@ -357,6 +359,21 @@ def test_generate_key_maps_component_response():
     assert generated.key_type == "aplane.sentry-ed25519.v1"
     assert generated.is_component_key is True
     assert generated.is_spending_account is False
+
+
+def test_guarded_simulate_dtos_round_trip_fixtures():
+    simulate_req = GuardedSimulateRequest(**fixture("guarded_simulate_request_mixed.json"))
+    assert len(simulate_req.requests) == 3
+    assert simulate_req.requests[1]["auth_address"].startswith("AUTHADDRESS")
+    assert simulate_req.targets[0]["guarded_account"].startswith("LOGICSIGACCOUNT")
+    assert simulate_req.targets[0]["sentry_signature"]
+    assert simulate_req.passthrough[0]["target_index"] == 2
+
+    simulate_resp = GuardedSimulateResponse(**fixture("guarded_simulate_response.json"))
+    assert len(simulate_resp.tx_ids) == 3
+    assert len(simulate_resp.transactions) == 3
+    assert "Simulation successful" in simulate_resp.output
+    assert simulate_resp.failed is False
 
 
 def test_sentry_dtos_round_trip_fixtures():
