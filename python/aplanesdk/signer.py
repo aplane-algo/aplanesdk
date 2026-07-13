@@ -55,6 +55,9 @@ from algosdk import abi, encoding, transaction
 
 import paramiko
 
+from ._ssh_tokenproof import IDENTITY as SSH_TOKEN_PROOF_IDENTITY
+from ._ssh_tokenproof import TokenProofClient
+
 
 # -----------------------------------------------------------------------------
 # Constants
@@ -1418,7 +1421,7 @@ class _SSHTunnel:
         self,
         ssh_host: str,
         ssh_port: int,
-        ssh_username: str,
+        token: str,
         ssh_pkey_path: str,
         remote_host: str,
         remote_port: int,
@@ -1434,7 +1437,7 @@ class _SSHTunnel:
 
         self._ssh_host = ssh_host
         self._ssh_port = ssh_port
-        self._ssh_username = ssh_username
+        self._token = token
         self._ssh_pkey_path = ssh_pkey_path
         self._remote_host = remote_host
         self._remote_port = remote_port
@@ -1460,54 +1463,45 @@ class _SSHTunnel:
             except paramiko.ssh_exception.SSHException as e:
                 raise SignerError(f"Failed to load SSH key: {e}")
 
-        # Use SSHClient for host key verification (TOFU)
-        client = paramiko.SSHClient()
-
-        # Load existing known hosts if available
-        if os.path.exists(self._known_hosts_path):
-            client.load_host_keys(self._known_hosts_path)
-
-        # Set host key policy based on trust_on_first_use
-        if self._trust_on_first_use:
-            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        else:
-            client.set_missing_host_key_policy(paramiko.RejectPolicy())
-
+        sock: Optional[socket.socket] = None
+        transport: Optional[paramiko.Transport] = None
         try:
-            client.connect(
-                hostname=self._ssh_host,
-                port=self._ssh_port,
-                username=self._ssh_username,
-                pkey=pkey,
-                look_for_keys=False,
-                allow_agent=False,
-            )
+            sock = socket.create_connection((self._ssh_host, self._ssh_port))
+            transport = paramiko.Transport(sock)
+            transport.start_client()
+            server_key = transport.get_remote_server_key()
+            self._verify_host_key(server_key)
+
+            proof = TokenProofClient(self._token)
+            proof.capture_host_key(server_key.asbytes())
+            methods = transport.auth_publickey(SSH_TOKEN_PROOF_IDENTITY, pkey)
+            if transport.is_authenticated() or "keyboard-interactive" not in methods:
+                raise SignerError(
+                    "SSH server did not require token proof after public-key authentication"
+                )
+            transport.auth_interactive(SSH_TOKEN_PROOF_IDENTITY, proof.challenge)
+            if not transport.is_authenticated() or not proof.server_verified:
+                raise SignerError("SSH token proof authentication did not complete")
+        except SignerError:
+            if transport:
+                transport.close()
+            elif sock:
+                sock.close()
+            raise
         except paramiko.ssh_exception.SSHException as e:
-            err_msg = str(e)
-            if "not match" in err_msg.lower() or "mismatch" in err_msg.lower():
-                raise SignerError(
-                    f"SSH host key mismatch for {self._ssh_host}:{self._ssh_port} "
-                    f"(possible MITM attack); remove the old key from "
-                    f"{self._known_hosts_path} to connect"
-                )
-            if "not found in known_hosts" in err_msg.lower() or "reject" in err_msg.lower():
-                raise SignerError(
-                    f"Unknown SSH host key for {self._ssh_host}:{self._ssh_port}; "
-                    f"to trust this host, set endpoint.ssh.trust_on_first_use: true in config.yaml, "
-                    f"or connect via apshell first to save the host key to "
-                    f"{self._known_hosts_path}"
-                )
+            if transport:
+                transport.close()
+            elif sock:
+                sock.close()
             raise SignerError(f"SSH connection failed: {e}")
+        except Exception:
+            if transport:
+                transport.close()
+            elif sock:
+                sock.close()
+            raise
 
-        # Save updated known hosts when TOFU is enabled (includes newly added keys)
-        if self._trust_on_first_use:
-            known_hosts_dir = os.path.dirname(self._known_hosts_path)
-            if known_hosts_dir and not os.path.exists(known_hosts_dir):
-                os.makedirs(known_hosts_dir, mode=0o700)
-            client.save_host_keys(self._known_hosts_path)
-
-        self._ssh_client = client
-        self._transport = client.get_transport()
+        self._transport = transport
 
         # Start local listener
         self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -1520,6 +1514,42 @@ class _SSHTunnel:
         accept_thread = threading.Thread(target=self._accept_loop, daemon=True)
         accept_thread.start()
         self._threads.append(accept_thread)
+
+    def _verify_host_key(self, server_key: paramiko.PKey) -> None:
+        """Verify or persist the negotiated key before authentication."""
+        host_entry = (
+            self._ssh_host
+            if self._ssh_port == 22
+            else f"[{self._ssh_host}]:{self._ssh_port}"
+        )
+        host_keys = paramiko.HostKeys()
+        if os.path.exists(self._known_hosts_path):
+            host_keys.load(self._known_hosts_path)
+        known = host_keys.lookup(host_entry)
+        if known is not None:
+            expected = known.get(server_key.get_name())
+            if expected is None or expected != server_key:
+                raise SignerError(
+                    f"SSH host key mismatch for {self._ssh_host}:{self._ssh_port} "
+                    f"(possible MITM attack); remove the old key from "
+                    f"{self._known_hosts_path} to connect"
+                )
+            return
+
+        if not self._trust_on_first_use:
+            raise SignerError(
+                f"Unknown SSH host key for {self._ssh_host}:{self._ssh_port}; "
+                f"to trust this host, set endpoint.ssh.trust_on_first_use: true in config.yaml, "
+                f"or connect via apshell first to save the host key to "
+                f"{self._known_hosts_path}"
+            )
+
+        known_hosts_dir = os.path.dirname(self._known_hosts_path)
+        if known_hosts_dir:
+            os.makedirs(known_hosts_dir, mode=0o700, exist_ok=True)
+        host_keys.add(host_entry, server_key.get_name(), server_key)
+        host_keys.save(self._known_hosts_path)
+        os.chmod(self._known_hosts_path, 0o600)
 
     def _accept_loop(self):
         """Accept local connections and forward through SSH channel."""
@@ -1678,12 +1708,12 @@ class SignerClient:
         Connect to remote apsigner via SSH tunnel.
 
         Establishes an SSH tunnel to the remote host and forwards
-        the signer port to a local port. Uses 2FA: token (as SSH username)
-        + public key authentication.
+        the signer port to a local port. Uses public-key authentication plus a
+        host-key-bound token proof.
 
         Args:
             host: Remote host running apsigner
-            token: Authentication token (used for both SSH and HTTP API)
+            token: Authentication token (proven during SSH auth and used by the HTTP API)
             ssh_key_path: Path to SSH private key (e.g., ~/.ssh/id_ed25519)
             ssh_port: SSH port on remote (default: 1127)
             signer_port: Signer REST port on remote (default: 11270)
@@ -1705,11 +1735,10 @@ class SignerClient:
         local_port = _find_free_port()
 
         try:
-            # Token is used as SSH username for 2FA (token + public key)
             tunnel = _SSHTunnel(
                 ssh_host=host,
                 ssh_port=ssh_port,
-                ssh_username=token,
+                token=token,
                 ssh_pkey_path=ssh_key_path,
                 remote_host='127.0.0.1',
                 remote_port=signer_port,
