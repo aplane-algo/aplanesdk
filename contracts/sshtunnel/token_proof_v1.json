@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "protocol": "aplane-ssh-token-proof-v1",
+  "token": "contract-token",
+  "identity_id": "default",
+  "host_key_hash": "ERERERERERERERERERERERERERERERERERERERERERE",
+  "client_nonce": "IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI",
+  "server_nonce": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+  "transcript_hex": "0000001961706c616e652d7373682d746f6b656e2d70726f6f662d76310000000764656661756c74000000201111111111111111111111111111111111111111111111111111111111111111000000202222222222222222222222222222222222222222222222222222222222222222000000203333333333333333333333333333333333333333333333333333333333333333",
+  "server_proof": "YPqTxn1X6TxIjz-_EeRKRlfG8cEcvbTrxRNhvcHUJmM",
+  "client_proof": "7BNGST8E0Oe_7_nzWAKhD3fxeCaJwpe04xKl2EMM3Hk",
+  "client_nonce_question": "{\"version\":1,\"step\":\"client_nonce\"}",
+  "client_nonce_answer": "{\"client_nonce\":\"IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI\"}",
+  "server_proof_question": "{\"version\":1,\"step\":\"server_proof\",\"server_nonce\":\"MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM\",\"proof\":\"YPqTxn1X6TxIjz-_EeRKRlfG8cEcvbTrxRNhvcHUJmM\"}",
+  "client_proof_answer": "{\"client_proof\":\"7BNGST8E0Oe_7_nzWAKhD3fxeCaJwpe04xKl2EMM3Hk\"}"
+}
