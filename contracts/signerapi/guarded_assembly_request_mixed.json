@@ -11,7 +11,11 @@
       "user_signature": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "user_source_request_id": "cli-122",
       "sentry_signature": "cccccccccccccccccccccccccccccccc",
-      "sentry_source_request_id": "cli-123"
+      "sentry_source_request_id": "cli-123",
+      "runtime_args": [
+        "aa01",
+        "bb02"
+      ]
     }
   ],
   "passthrough": [

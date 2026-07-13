@@ -367,13 +367,14 @@ def test_guarded_simulate_dtos_round_trip_fixtures():
     assert simulate_req.requests[1]["auth_address"].startswith("AUTHADDRESS")
     assert simulate_req.targets[0]["guarded_account"].startswith("LOGICSIGACCOUNT")
     assert simulate_req.targets[0]["sentry_signature"]
+    assert simulate_req.targets[0]["runtime_args"] == ["aa01", "bb02"]
     assert simulate_req.passthrough[0]["target_index"] == 2
 
     simulate_resp = GuardedSimulateResponse(**fixture("guarded_simulate_response.json"))
     assert len(simulate_resp.tx_ids) == 3
     assert len(simulate_resp.transactions) == 3
-    assert "Simulation successful" in simulate_resp.output
-    assert simulate_resp.failed is False
+    assert "Simulation FAILED" in simulate_resp.output
+    assert simulate_resp.failed is True
 
 
 def test_sentry_dtos_round_trip_fixtures():

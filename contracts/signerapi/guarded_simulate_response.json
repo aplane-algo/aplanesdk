@@ -10,5 +10,6 @@
     "5458a16374786ea1",
     "5458a16374786ea2"
   ],
-  "output": "Simulation successful\nGroup size: 3"
+  "output": "Simulation FAILED\nReason: logic eval error\nGroup size: 3",
+  "failed": true
 }

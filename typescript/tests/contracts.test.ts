@@ -425,12 +425,14 @@ describe("signer API contract fixtures", () => {
     assert.equal(simulateReq.requests[1].auth_address, "AUTHADDRESSAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
     assert.equal(simulateReq.targets[0].guarded_account, "LOGICSIGACCOUNTADDRESSAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
     assert.equal(simulateReq.targets[0].sentry_signature, "cccccccccccccccccccccccccccccccc");
+    assert.deepEqual(simulateReq.targets[0].runtime_args, ["aa01", "bb02"]);
     assert.equal(simulateReq.passthrough?.[0].target_index, 2);
 
     const simulateResp = fixture("guarded_simulate_response.json") as GuardedSimulateResponse;
     assert.equal(simulateResp.tx_ids?.length, 3);
     assert.equal(simulateResp.transactions?.length, 3);
-    assert.ok(simulateResp.output?.includes("Simulation successful"));
+    assert.ok(simulateResp.output?.includes("Simulation FAILED"));
+    assert.equal(simulateResp.failed, true);
   });
 
   it("round-trips admin sentry sync fixture DTOs", () => {
