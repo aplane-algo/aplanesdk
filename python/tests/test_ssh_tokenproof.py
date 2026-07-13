@@ -69,6 +69,22 @@ def test_token_proof_requires_verified_host_key():
         proof.challenge(DOMAIN, "", [('{"version":1,"step":"client_nonce"}', False)])
 
 
+def test_token_proof_clear_releases_authentication_state():
+    proof = TokenProofClient("token")
+    proof._host_hash = b"h" * 32
+    proof._client_nonce = b"n" * 32
+    proof._round = 2
+    proof._verified = True
+
+    proof.clear()
+
+    assert proof._token == ""
+    assert proof._host_hash == b""
+    assert proof._client_nonce == b""
+    assert proof._round == -1
+    assert proof.server_verified is False
+
+
 def _tunnel(known_hosts: Path, trust_on_first_use: bool) -> _SSHTunnel:
     return _SSHTunnel(
         ssh_host="signer.example",

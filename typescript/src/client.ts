@@ -868,7 +868,7 @@ class SSHTunnel {
     let hostKeyError = "";
     let authStage = 0;
 
-    return new Promise((resolve, reject) => {
+    const connection = new Promise<void>((resolve, reject) => {
       this.sshClient = new Client();
 
       this.sshClient.on("ready", () => {
@@ -980,6 +980,12 @@ class SSHTunnel {
         },
       });
     });
+
+    try {
+      await connection;
+    } finally {
+      proof.dispose();
+    }
   }
 
   async close(): Promise<void> {

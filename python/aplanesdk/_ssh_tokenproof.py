@@ -165,3 +165,11 @@ class TokenProofClient:
     @property
     def server_verified(self) -> bool:
         return self._verified and self._round == 2
+
+    def clear(self) -> None:
+        """Release proof-only state after an authentication attempt."""
+        self._token = ""
+        self._host_hash = b""
+        self._client_nonce = b""
+        self._round = -1
+        self._verified = False

@@ -128,8 +128,11 @@ export class SSHTokenProofClient {
   private clientNonce = Buffer.alloc(0);
   private round = 0;
   private verified = false;
+  private token: string;
 
-  constructor(private readonly token: string) {}
+  constructor(token: string) {
+    this.token = token;
+  }
 
   captureHostKey(keyBlob: Buffer): void {
     const hash = createHash("sha256").update(keyBlob).digest();
@@ -193,5 +196,15 @@ export class SSHTokenProofClient {
 
   get serverVerified(): boolean {
     return this.verified && this.round === 2;
+  }
+
+  dispose(): void {
+    this.hostHash.fill(0);
+    this.clientNonce.fill(0);
+    this.hostHash = Buffer.alloc(0);
+    this.clientNonce = Buffer.alloc(0);
+    this.token = "";
+    this.round = -1;
+    this.verified = false;
   }
 }

@@ -71,3 +71,26 @@ test("SSH token proof requires an accepted host key", () => {
     /challenge shape/
   );
 });
+
+test("SSH token proof disposal zeros and releases authentication state", () => {
+  const proof = new SSHTokenProofClient("token");
+  const hostHash = Buffer.alloc(32, 0x68);
+  const clientNonce = Buffer.alloc(32, 0x6e);
+  Object.assign(proof, { hostHash, clientNonce, round: 2, verified: true });
+
+  proof.dispose();
+
+  assert.ok(hostHash.every((value) => value === 0));
+  assert.ok(clientNonce.every((value) => value === 0));
+  assert.equal(proof.serverVerified, false);
+  assert.deepEqual(
+    Object.assign({}, proof),
+    {
+      hostHash: Buffer.alloc(0),
+      clientNonce: Buffer.alloc(0),
+      round: -1,
+      verified: false,
+      token: "",
+    }
+  );
+});
