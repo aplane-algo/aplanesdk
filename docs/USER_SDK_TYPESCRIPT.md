@@ -130,7 +130,7 @@ Typical client layout (installer default: `~/aplane/apclient`):
 The SDK reads:
 
 - `config.yaml` for SSH host/port and signer REST port
-- `aplane.token` for HTTP and SSH token auth
+- `aplane.token` for HTTP bearer authentication and the SSH mutual proof
 - `.ssh/id_ed25519` for client SSH auth
 - `.ssh/known_hosts` for SSH host key verification
 
@@ -237,6 +237,12 @@ try {
   await client.close();
 }
 ```
+
+The SSH username is the non-secret identity ID. Authentication verifies the
+enrolled public key first, then performs a programmatic mutual proof of the
+token bound to the accepted host key and fresh client/server nonces. The
+server proves token possession before the client returns its proof, and the
+bearer token is never sent as SSH metadata.
 
 This is useful when:
 
