@@ -22,14 +22,43 @@ def _integration_enabled() -> bool:
 
 
 def _live_signer_client() -> tuple[SignerClient, str]:
+    token = _live_signer_token()
+    key_type = os.environ.get("APLANE_SDK_KEY_TYPE") or "ed25519"
+
+    if host := os.environ.get("APLANE_SDK_SSH_HOST", "").strip():
+        client = SignerClient.connect_ssh(
+            host,
+            token,
+            _required_ssh_env("APLANE_SDK_SSH_KEY_PATH"),
+            ssh_port=_required_ssh_port("APLANE_SDK_SSH_PORT"),
+            signer_port=_required_ssh_port("APLANE_SDK_SIGNER_PORT"),
+            known_hosts_path=_required_ssh_env("APLANE_SDK_KNOWN_HOSTS_PATH"),
+        )
+        return client, key_type
+
     base_url = os.environ.get("APLANE_SDK_SIGNER_URL", "").rstrip("/")
     if not base_url:
         port = _live_signer_port()
         base_url = f"http://127.0.0.1:{port}"
-
-    token = _live_signer_token()
-    key_type = os.environ.get("APLANE_SDK_KEY_TYPE") or "ed25519"
     return SignerClient(base_url, token), key_type
+
+
+def _required_ssh_env(name: str) -> str:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise AssertionError(f"{name} must be set when APLANE_SDK_SSH_HOST is set")
+    return value
+
+
+def _required_ssh_port(name: str) -> int:
+    value = _required_ssh_env(name)
+    try:
+        port = int(value)
+    except ValueError as exc:
+        raise AssertionError(f"{name} must be a valid TCP port, got {value!r}") from exc
+    if port < 1 or port > 65535:
+        raise AssertionError(f"{name} must be a valid TCP port, got {value!r}")
+    return port
 
 
 def _live_signer_port() -> int:
