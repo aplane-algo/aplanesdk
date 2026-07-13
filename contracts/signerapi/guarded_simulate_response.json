@@ -1,0 +1,15 @@
+{
+  "request_id": "gsim-001",
+  "tx_ids": [
+    "GSIMTXID1",
+    "GSIMTXID2",
+    "GSIMTXID3"
+  ],
+  "transactions": [
+    "5458a16374786ea0",
+    "5458a16374786ea1",
+    "5458a16374786ea2"
+  ],
+  "output": "Simulation FAILED\nReason: logic eval error\nGroup size: 3",
+  "failed": true
+}

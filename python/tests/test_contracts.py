@@ -25,6 +25,10 @@ from aplanesdk.signer import (
     ERR_CODE_UNAUTHORIZED,
     ERR_CODE_UNAVAILABLE,
     GuardedAssemblyRequest,
+    GuardedAssemblyTarget,
+    GuardedSimulateRequest,
+    GuardedSimulateTarget,
+    GuardedSimulateResponse,
     GuardedAssemblyResponse,
     SignerClient,
     StatusResponse,
@@ -359,6 +363,23 @@ def test_generate_key_maps_component_response():
     assert generated.is_spending_account is False
 
 
+def test_guarded_simulate_dtos_round_trip_fixtures():
+    simulate_req = GuardedSimulateRequest(**fixture("guarded_simulate_request_mixed.json"))
+    assert len(simulate_req.requests) == 3
+    assert simulate_req.requests[1]["auth_address"].startswith("AUTHADDRESS")
+    simulate_target = GuardedSimulateTarget(**simulate_req.targets[0])
+    assert simulate_target.guarded_account.startswith("LOGICSIGACCOUNT")
+    assert simulate_target.sentry_signature
+    assert simulate_target.runtime_args == ["aa01", "bb02"]
+    assert simulate_req.passthrough[0]["target_index"] == 2
+
+    simulate_resp = GuardedSimulateResponse(**fixture("guarded_simulate_response.json"))
+    assert len(simulate_resp.tx_ids) == 3
+    assert len(simulate_resp.transactions) == 3
+    assert "Simulation FAILED" in simulate_resp.output
+    assert simulate_resp.failed is True
+
+
 def test_sentry_dtos_round_trip_fixtures():
     component_req = ComponentSignRequest(**fixture("component_sign_request_sentry.json"))
     assert component_req.role == "sentry"
@@ -372,6 +393,10 @@ def test_sentry_dtos_round_trip_fixtures():
 
     assembly_req = GuardedAssemblyRequest(**fixture("guarded_assembly_request_mixed.json"))
     assert assembly_req.group_bytes_hex[0].startswith("5458")
+    assembly_target = GuardedAssemblyTarget(**assembly_req.targets[0])
+    assert assembly_target.user_signature
+    assert assembly_target.sentry_signature
+    assert assembly_target.runtime_args == ["aa01", "bb02"]
     assembly_resp = GuardedAssemblyResponse(**fixture("guarded_assembly_response.json"))
     assert len(assembly_resp.signed_group) == 2
 
