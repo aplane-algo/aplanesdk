@@ -116,8 +116,10 @@ jobs:
       - name: Collect release assets
         run: |
           mkdir -p release-assets
-          cp python/dist/* release-assets/
-          cp typescript/*.tgz release-assets/
+          cp "python/dist/aplanesdk-$VERSION.tar.gz" \
+            "release-assets/aplanesdk-$VERSION-py3.tgz"
+          cp "typescript/aplanesdk-$VERSION.tgz" \
+            "release-assets/aplanesdk-$VERSION-ts.tgz"
           ls -lh release-assets
 
       - name: Write GitHub Release notes
@@ -127,12 +129,12 @@ jobs:
           cat > release-notes.md <<EOF
           SDK release packages for $SDK_TAG.
 
-          This is the aplanesdk repository release. The package-manager
-          artifacts keep their canonical package filenames:
+          This is the aplanesdk repository release. GitHub release tarballs
+          use language-qualified filenames; package registries retain their
+          canonical package filenames:
 
-          - \`aplanesdk-$VERSION-py3-none-any.whl\` - Python SDK wheel for the PyPI package \`aplanesdk\`
-          - \`aplanesdk-$VERSION.tar.gz\` - Python SDK source distribution for the PyPI package \`aplanesdk\`
-          - \`aplanesdk-$VERSION.tgz\` - TypeScript SDK npm package tarball for the npm package \`aplanesdk\`
+          - \`aplanesdk-$VERSION-py3.tgz\` - Python SDK source distribution for the PyPI package \`aplanesdk\`
+          - \`aplanesdk-$VERSION-ts.tgz\` - TypeScript SDK npm package tarball for the npm package \`aplanesdk\`
           - \`aplanesdk-go-sdk-$VERSION.tar.gz\` - Go SDK source archive
           EOF
 
