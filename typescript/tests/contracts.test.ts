@@ -431,6 +431,10 @@ describe("signer API contract fixtures", () => {
     assert.equal(key.lsigSize, 6592);
     assert.equal(key.boundedAuthorization?.layer3Policy, "fixed_allowlist");
     assert.ok(key.boundedAuthorization?.adminKeyId);
+    assert.equal(
+      key.boundedAuthorization?.programBinding,
+      "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+    );
     assert.equal(key.boundedAuthorization?.postSigningLsigSize, 7872);
     assert.deepEqual(key.boundedAuthorization?.spendEffects, ["pay", "axfer", "asset_opt_in"]);
     assert.equal(key.boundedAuthorization?.adminOperations[0].policyGate, "none");

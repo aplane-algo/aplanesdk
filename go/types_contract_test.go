@@ -202,6 +202,9 @@ func TestBoundedInventoryUsesSpendPathLogicSigSize(t *testing.T) {
 	if key.BoundedAuthorization == nil || key.BoundedAuthorization.PostSigningLogicSigSize != 7872 {
 		t.Fatalf("bounded authorization = %+v, want admin-inclusive size 7872", key.BoundedAuthorization)
 	}
+	if key.BoundedAuthorization.ProgramBindingHex != "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f" {
+		t.Fatalf("program binding = %q, want fixture binding", key.BoundedAuthorization.ProgramBindingHex)
+	}
 	if len(key.BoundedAuthorization.SpendEffects) != 3 || len(key.BoundedAuthorization.ArgumentLayout) != 2 {
 		t.Fatalf("bounded authorization = %+v, want effects and static slots", key.BoundedAuthorization)
 	}

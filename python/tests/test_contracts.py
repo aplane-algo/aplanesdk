@@ -416,6 +416,9 @@ def test_bounded_inventory_projects_layer3_policy():
     assert key.lsig_size == 6592
     assert key.bounded_authorization.layer3_policy == "fixed_allowlist"
     assert key.bounded_authorization.admin_key_id
+    assert key.bounded_authorization.program_binding == (
+        "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+    )
     assert key.bounded_authorization.post_signing_lsig_size == 7872
     assert key.bounded_authorization.spend_effects == ["pay", "axfer", "asset_opt_in"]
     assert key.bounded_authorization.admin_operations[0].policy_gate == "none"
