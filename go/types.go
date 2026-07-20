@@ -617,6 +617,7 @@ type RuntimeArg struct {
 	Description string `json:"description,omitempty"`
 	Required    bool   `json:"required,omitempty"`
 	ByteLength  int    `json:"byte_length,omitempty"`
+	MaxSize     int    `json:"max_size,omitempty"`
 }
 
 // RuntimeArgInfo is kept as a compatibility alias for callers using the
@@ -661,18 +662,19 @@ type CreationParam struct {
 
 // KeyTypeInfo describes an available key type on the signer.
 type KeyTypeInfo struct {
-	KeyType                string          `json:"key_type"`
-	Family                 string          `json:"family"`
-	DisplayName            string          `json:"display_name"`
-	Description            string          `json:"description"`
-	RequiresLogicSig       bool            `json:"requires_logicsig"`
-	MnemonicWordCount      int             `json:"mnemonic_word_count"`
-	MnemonicImport         bool            `json:"mnemonic_import"`
-	MnemonicScheme         string          `json:"mnemonic_scheme"`
-	SigningFlow            string          `json:"signing_flow,omitempty"`
-	SentryComponentKeyType string          `json:"sentry_component_key_type,omitempty"`
-	CreationParams         []CreationParam `json:"creation_params"`
-	RuntimeArgs            []RuntimeArg    `json:"runtime_args"`
+	KeyType                string                    `json:"key_type"`
+	Family                 string                    `json:"family"`
+	DisplayName            string                    `json:"display_name"`
+	Description            string                    `json:"description"`
+	RequiresLogicSig       bool                      `json:"requires_logicsig"`
+	MnemonicWordCount      int                       `json:"mnemonic_word_count"`
+	MnemonicImport         bool                      `json:"mnemonic_import"`
+	MnemonicScheme         string                    `json:"mnemonic_scheme"`
+	SigningFlow            string                    `json:"signing_flow,omitempty"`
+	SentryComponentKeyType string                    `json:"sentry_component_key_type,omitempty"`
+	BoundedAuthorization   *BoundedAuthorizationInfo `json:"bounded_authorization,omitempty"`
+	CreationParams         []CreationParam           `json:"creation_params"`
+	RuntimeArgs            []RuntimeArg              `json:"runtime_args"`
 }
 
 // SigningFlowSentry1 names the sentry co-signed component signing
@@ -682,23 +684,74 @@ type KeyTypeInfo struct {
 // they do not implement. An empty signing_flow means the ordinary /sign path.
 const SigningFlowSentry1 = "sentry1"
 
+// SigningFlowBounded1 names the transaction-aware LogicSig choreography.
+const SigningFlowBounded1 = "bounded1"
+
+type BoundedSignatureArgLayout struct {
+	Count    int   `json:"count"`
+	MaxSizes []int `json:"max_sizes"`
+}
+
+type BoundedAdminOperationInfo struct {
+	Kind          string `json:"kind"`
+	Authorization string `json:"authorization"`
+	PolicyGate    string `json:"policy_gate"`
+}
+
+type BoundedDerivedArgInfo struct {
+	Name      string `json:"name"`
+	Kind      string `json:"kind"`
+	Parameter string `json:"parameter"`
+	MaxSize   int    `json:"max_size"`
+}
+
+type BoundedArgumentPathMask struct {
+	Spend         string `json:"spend"`
+	SpendingRekey string `json:"spending_rekey"`
+	AdminRekey    string `json:"admin_rekey"`
+}
+
+type BoundedArgumentSlotInfo struct {
+	Index   int                     `json:"index"`
+	Name    string                  `json:"name"`
+	Source  string                  `json:"source"`
+	MaxSize int                     `json:"max_size"`
+	Paths   BoundedArgumentPathMask `json:"paths"`
+}
+
+type BoundedAuthorizationInfo struct {
+	Contract                string                      `json:"contract"`
+	BaseSignatureArgLayout  BoundedSignatureArgLayout   `json:"base_signature_arg_layout"`
+	SpendEffects            []string                    `json:"spend_effects"`
+	MaxFee                  uint64                      `json:"max_fee"`
+	AdminOperations         []BoundedAdminOperationInfo `json:"admin_operations"`
+	RuntimeArgs             []RuntimeArg                `json:"runtime_args"`
+	DerivedArgs             []BoundedDerivedArgInfo     `json:"derived_args"`
+	ArgumentLayout          []BoundedArgumentSlotInfo   `json:"argument_layout"`
+	Layer3Policy            string                      `json:"layer3_policy"`
+	AdminKeyID              string                      `json:"admin_key_id,omitempty"`
+	ProgramBindingHex       string                      `json:"program_binding,omitempty"`
+	PostSigningLogicSigSize int                         `json:"post_signing_lsig_size,omitempty"` // Admin-inclusive bounded size
+}
+
 // KeyInfo represents a key returned from the /keys endpoint.
 type KeyInfo struct {
-	Address                  string            `json:"address"`
-	PublicKeyHex             string            `json:"public_key_hex"`
-	KeyType                  string            `json:"key_type"`
-	SigningFlow              string            `json:"signing_flow,omitempty"`
-	SentryComponentKeyType   string            `json:"sentry_component_key_type,omitempty"`
-	LsigSize                 int               `json:"lsig_size,omitempty"`
-	IsGenericLsig            bool              `json:"is_generic_lsig,omitempty"`
-	IsComponentKey           bool              `json:"is_component_key,omitempty"`
-	IsSpendingAccount        *bool             `json:"is_spending_account,omitempty"`
-	SigningArgs              []SigningArg      `json:"signing_args,omitempty"`
-	Parameters               map[string]string `json:"parameters,omitempty"`
-	TemplateProvenanceStatus string            `json:"template_provenance_status,omitempty"`
-	TemplateProvenanceNote   string            `json:"template_provenance_note,omitempty"`
-	TemplateStatus           string            `json:"template_status,omitempty"`  // Legacy alias for TemplateProvenanceStatus
-	TemplateWarning          string            `json:"template_warning,omitempty"` // Legacy alias for TemplateProvenanceNote
+	Address                  string                    `json:"address"`
+	PublicKeyHex             string                    `json:"public_key_hex"`
+	KeyType                  string                    `json:"key_type"`
+	SigningFlow              string                    `json:"signing_flow,omitempty"`
+	SentryComponentKeyType   string                    `json:"sentry_component_key_type,omitempty"`
+	LsigSize                 int                       `json:"lsig_size,omitempty"` // Spend-path size for bounded1
+	IsGenericLsig            bool                      `json:"is_generic_lsig,omitempty"`
+	IsComponentKey           bool                      `json:"is_component_key,omitempty"`
+	BoundedAuthorization     *BoundedAuthorizationInfo `json:"bounded_authorization,omitempty"`
+	IsSpendingAccount        *bool                     `json:"is_spending_account,omitempty"`
+	SigningArgs              []SigningArg              `json:"signing_args,omitempty"`
+	Parameters               map[string]string         `json:"parameters,omitempty"`
+	TemplateProvenanceStatus string                    `json:"template_provenance_status,omitempty"`
+	TemplateProvenanceNote   string                    `json:"template_provenance_note,omitempty"`
+	TemplateStatus           string                    `json:"template_status,omitempty"`  // Legacy alias for TemplateProvenanceStatus
+	TemplateWarning          string                    `json:"template_warning,omitempty"` // Legacy alias for TemplateProvenanceNote
 }
 
 // KeysResponse is the response from the /keys endpoint.

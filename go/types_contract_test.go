@@ -157,7 +157,9 @@ func TestGoSDKContractFixturesRoundTrip(t *testing.T) {
 		{"keys_response_generic.json", assertSDKContractRoundTrip[KeysResponse]},
 		{"keys_response_component.json", assertSDKContractRoundTrip[KeysResponse]},
 		{"keys_response_guarded.json", assertSDKContractRoundTrip[KeysResponse]},
+		{"keys_response_bounded.json", assertSDKContractRoundTrip[KeysResponse]},
 		{"keytypes_response_full.json", assertSDKContractRoundTrip[KeyTypesResponse]},
+		{"keytypes_response_bounded.json", assertSDKContractRoundTrip[KeyTypesResponse]},
 		{"admin_generate_request_generic.json", assertSDKContractRoundTrip[generateRequest]},
 		{"admin_generate_response_generic.json", assertSDKContractRoundTrip[GenerateResult]},
 		{"admin_generate_response_component.json", assertSDKContractRoundTrip[GenerateResult]},
@@ -175,6 +177,77 @@ func TestGoSDKContractFixturesRoundTrip(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tt.run(t, tt.name)
 		})
+	}
+}
+
+func TestBoundedInventoryUsesSpendPathLogicSigSize(t *testing.T) {
+	raw, err := os.ReadFile(sdkContractFixturePath(t, "keys_response_bounded.json"))
+	if err != nil {
+		t.Fatalf("read bounded keys fixture: %v", err)
+	}
+	var response KeysResponse
+	if err := json.Unmarshal(raw, &response); err != nil {
+		t.Fatalf("decode bounded keys fixture: %v", err)
+	}
+	if len(response.Keys) != 1 {
+		t.Fatalf("bounded key count = %d, want 1", len(response.Keys))
+	}
+	key := response.Keys[0]
+	if key.SigningFlow != SigningFlowBounded1 {
+		t.Fatalf("signing flow = %q, want %q", key.SigningFlow, SigningFlowBounded1)
+	}
+	if key.LsigSize != 6592 {
+		t.Fatalf("spend-path lsig size = %d, want 6592", key.LsigSize)
+	}
+	if key.BoundedAuthorization == nil || key.BoundedAuthorization.PostSigningLogicSigSize != 7872 {
+		t.Fatalf("bounded authorization = %+v, want admin-inclusive size 7872", key.BoundedAuthorization)
+	}
+	if len(key.BoundedAuthorization.SpendEffects) != 3 || len(key.BoundedAuthorization.ArgumentLayout) != 2 {
+		t.Fatalf("bounded authorization = %+v, want effects and static slots", key.BoundedAuthorization)
+	}
+	if operation := key.BoundedAuthorization.AdminOperations[0]; operation.PolicyGate != "none" {
+		t.Fatalf("admin operation = %+v, want policy_gate none", operation)
+	}
+}
+
+func TestSDKProductionSurfaceExcludesBoundedAdminWorkflow(t *testing.T) {
+	roots := []struct {
+		path string
+		ext  string
+	}{
+		{path: ".", ext: ".go"},
+		{path: "../python/aplanesdk", ext: ".py"},
+		{path: "../typescript/src", ext: ".ts"},
+	}
+	forbidden := []string{
+		"/sign/" + "bounded-admin",
+		".apbounded-" + "admin-key",
+		".apbounded-" + "admin-request",
+		".apbounded-" + "admin-signature",
+	}
+
+	for _, root := range roots {
+		err := filepath.WalkDir(root.path, func(path string, entry os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() || filepath.Ext(path) != root.ext || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			content, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			for _, token := range forbidden {
+				if strings.Contains(string(content), token) {
+					t.Errorf("%s exposes forbidden bounded-admin workflow token %q", path, token)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("scan SDK production surface %s: %v", root.path, err)
+		}
 	}
 }
 
@@ -380,6 +453,7 @@ func signerAPIErrorCodes(t *testing.T) []string {
 		ErrCodeUnavailable,
 		ErrCodeCacheRefresh,
 		ErrCodeInternal,
+		ErrCodeBoundedAdminRequired,
 	}
 }
 

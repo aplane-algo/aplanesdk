@@ -1,0 +1,33 @@
+{
+  "schema": "aplane.bounded-admin-partial.v1",
+  "operation": "rekey",
+  "transactions": [
+    "545881a474797065a3706179",
+    "545881a474797065a3706179"
+  ],
+  "partial_signed": [
+    "81a46c73696781a16191c40101",
+    ""
+  ],
+  "target_index": 0,
+  "authorization": {
+    "contract_admin_key_id": "bounded-admin:falcon1024:EXAMPLE",
+    "public_key_hex": "000102030405060708090a0b0c0d0e0f",
+    "spending_public_key_hex": "101112131415161718191a1b1c1d1e1f",
+    "program_binding_hex": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+	"transaction_id": "EXAMPLETXID",
+	"message_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+    "base_signature_arg_count": 1,
+    "admin_signature_arg_index": 1,
+    "spend_effects": ["pay", "axfer", "asset_opt_in"],
+    "max_fee": 10000
+  },
+  "mutations": {
+    "dummies_added": 1,
+    "group_id_changed": true,
+    "total_fees_delta": 1000,
+    "original_count": 1,
+    "final_count": 2,
+    "reason": "lsig_budget"
+  }
+}

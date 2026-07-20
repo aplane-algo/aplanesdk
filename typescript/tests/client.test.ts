@@ -1171,7 +1171,7 @@ describe("SignerClient", () => {
     });
   });
 
-  describe("sentry low-level endpoints", () => {
+  describe("specialized low-level endpoints", () => {
     it("posts component signing requests to /sign/component", async () => {
       mockFetch.mockResolvedValueOnce({
         status: 200,

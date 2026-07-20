@@ -91,6 +91,12 @@ export {
 // Types
 export type {
   KeyInfo,
+  BoundedSignatureArgLayout,
+  BoundedAdminOperationInfo,
+  BoundedDerivedArgInfo,
+  BoundedArgumentPathMask,
+  BoundedArgumentSlotInfo,
+  BoundedAuthorizationInfo,
   RuntimeArg,
   SigningArg,
   InputModeInfo,
@@ -145,6 +151,7 @@ export {
   COMPONENT_SIGN_ROLE_USER,
   COMPONENT_SIGN_ROLE_SENTRY,
   SIGNING_FLOW_SENTRY1,
+  SIGNING_FLOW_BOUNDED1,
   KEY_TYPE_SENTRY_ED25519,
   KEY_TYPE_SENTRY_FALCON1024,
   KEY_TYPE_GUARDED_FALCON1024_SENTRY_ED25519,

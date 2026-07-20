@@ -324,6 +324,14 @@ for (const key of keys) {
 - `templateStatus`
 - `templateWarning`
 
+`lsigSize` is the spend-path LogicSig budget. For `bounded1`, it excludes the
+external contract-admin signature slot;
+`boundedAuthorization.postSigningLsigSize` is admin-inclusive.
+
+The TypeScript SDK exposes bounded inventory and ordinary spend signing only.
+It does not expose `/sign/bounded-admin` or build and complete contract-admin
+rekeys; use the APlane `apbounded-admin` workflow for those operations.
+
 `templateStatus` and `templateWarning` are legacy aliases for
 `templateProvenanceStatus` and `templateProvenanceNote`.
 

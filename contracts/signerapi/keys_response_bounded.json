@@ -1,0 +1,38 @@
+{
+  "count": 1,
+  "keys": [
+    {
+      "address": "BOUNDEDADDR000000000000000000000000000000000000000000000",
+      "public_key_hex": "00112233445566778899aabbccddeeff",
+      "key_type": "aplane.falcon1024-admin-allowlist.v1",
+      "signing_flow": "bounded1",
+      "lsig_size": 6592,
+      "bounded_authorization": {
+        "contract": "bounded1",
+        "base_signature_arg_layout": {
+          "count": 1,
+          "max_sizes": [1280]
+        },
+        "spend_effects": ["pay", "axfer", "asset_opt_in"],
+        "max_fee": 10000,
+        "admin_operations": [
+          {"kind": "rekey", "authorization": "admin_key", "policy_gate": "none"}
+        ],
+        "runtime_args": [],
+        "derived_args": [],
+        "argument_layout": [
+          {"index": 0, "name": "base_signature_0", "source": "base_signature", "max_size": 1280, "paths": {"spend": "required", "spending_rekey": "required", "admin_rekey": "required"}},
+          {"index": 1, "name": "admin_signature", "source": "admin", "max_size": 1280, "paths": {"spend": "forbidden", "spending_rekey": "forbidden", "admin_rekey": "required"}}
+        ],
+        "layer3_policy": "fixed_allowlist",
+        "admin_key_id": "bounded-admin:falcon1024:EXAMPLE",
+        "program_binding": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+        "post_signing_lsig_size": 7872
+      },
+      "parameters": {
+        "recipients": "ADDR1,ADDR2",
+        "bounded_admin_public_key": "000102030405060708090a0b0c0d0e0f"
+      }
+    }
+  ]
+}

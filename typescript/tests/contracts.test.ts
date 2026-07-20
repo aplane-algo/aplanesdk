@@ -419,6 +419,33 @@ describe("signer API contract fixtures", () => {
     assert.equal(assemblyResp.signed_group.length, 2);
   });
 
+  it("projects bounded inventory layer3 policy", async () => {
+    mockFetch.mockResolvedValueOnce({
+      status: 200,
+      ok: true,
+      json: async () => fixture("keys_response_bounded.json"),
+    });
+    const client = new SignerClient("http://localhost:11270", "test-token");
+    const key = (await client.listKeys(true))[0];
+    assert.equal(key.signingFlow, "bounded1");
+    assert.equal(key.lsigSize, 6592);
+    assert.equal(key.boundedAuthorization?.layer3Policy, "fixed_allowlist");
+    assert.ok(key.boundedAuthorization?.adminKeyId);
+    assert.equal(key.boundedAuthorization?.postSigningLsigSize, 7872);
+    assert.deepEqual(key.boundedAuthorization?.spendEffects, ["pay", "axfer", "asset_opt_in"]);
+    assert.equal(key.boundedAuthorization?.adminOperations[0].policyGate, "none");
+    assert.equal(key.boundedAuthorization?.argumentLayout[1].source, "admin");
+
+    mockFetch.mockResolvedValueOnce({
+      status: 200,
+      ok: true,
+      json: async () => fixture("keytypes_response_bounded.json"),
+    });
+    const keyType = (await client.listKeyTypes())[0];
+    assert.equal(keyType.boundedAuthorization?.layer3Policy, "fixed_allowlist");
+    assert.equal(keyType.boundedAuthorization?.adminKeyId, undefined);
+  });
+
   it("round-trips guarded simulate fixture DTOs", () => {
     const simulateReq = fixture("guarded_simulate_request_mixed.json") as GuardedSimulateRequest;
     assert.equal(simulateReq.requests.length, 3);

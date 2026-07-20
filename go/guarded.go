@@ -315,6 +315,20 @@ func buildPreparedGuardedSignOptions(opts PreparedGuardedGroupOptions) (GuardedS
 		}
 
 		if key.SigningFlow != "" {
+			if key.SigningFlow == SigningFlowBounded1 {
+				if item.AuthAddress == "" {
+					return GuardedSignOptions{}, fmt.Errorf("prepared transaction %d: primary auth address is required", i)
+				}
+				primaryTargets = append(primaryTargets, GuardedPrimarySignTarget{
+					TargetIndex: i,
+					AuthAddress: item.AuthAddress,
+					TxnSender:   item.TxnSender,
+					LsigArgs:    encodeGuardedLsigArgs(item.LsigArgs),
+					LsigSize:    lsigSize,
+					AppCallInfo: item.AppCallInfo,
+				})
+				continue
+			}
 			if key.SigningFlow != SigningFlowSentry1 {
 				return GuardedSignOptions{}, fmt.Errorf("prepared transaction %d: signer key requires signing flow %q, which this SDK does not support; upgrade the SDK", i, key.SigningFlow)
 			}
