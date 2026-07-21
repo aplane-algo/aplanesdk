@@ -282,8 +282,8 @@ def test_list_keys_maps_component_and_guarded_metadata():
     client = make_client()
     with patch.object(client.session, "get", return_value=mock_response(200, fixture("keys_response_component.json"))):
         component = client.list_keys(refresh=True)[0]
-    assert component.key_type == "aplane.sentry-falcon1024.v1"
-    assert component.is_component_key is True
+    assert component.key_type == "aplane.witness-falcon1024.v1"
+    assert component.is_witness_key is True
     assert component.is_spending_account is False
 
     with patch.object(client.session, "get", return_value=mock_response(200, fixture("keys_response_guarded.json"))):
@@ -356,13 +356,13 @@ def test_generate_key_maps_component_response():
     resp = mock_response(200, fixture("admin_generate_response_component.json"))
 
     with patch.object(client.session, "post", return_value=resp):
-        generated = client.generate_key("aplane.sentry-falcon1024.v1")
+        generated = client.generate_key("aplane.witness-falcon1024.v1")
 
-    assert generated.address == "H2DZY4Y4D726DVOAURO5HG4H2HVKTXE26LTVZ7LOGHFKAG6DN62Q"
+    assert generated.address == "ROGAFDACF7ASC3EMZRWNKVM73NXHO4P6O4EB7ZXWER37SM63BMFQ"
     assert len(generated.public_key_hex) == 3586
     assert set(generated.public_key_hex) == {"0"}
-    assert generated.key_type == "aplane.sentry-falcon1024.v1"
-    assert generated.is_component_key is True
+    assert generated.key_type == "aplane.witness-falcon1024.v1"
+    assert generated.is_witness_key is True
     assert generated.is_spending_account is False
 
 
@@ -392,7 +392,7 @@ def test_sentry_dtos_round_trip_fixtures():
         component_key=component_resp_data["component_key"],
         signatures=component_resp_data["signatures"],
     )
-    assert component_resp.signatures[0]["signature_scheme"] == "aplane.sentry-falcon1024.v1"
+    assert component_resp.signatures[0]["signature_scheme"] == "aplane.witness-falcon1024.v1"
 
     assembly_req = GuardedAssemblyRequest(**fixture("guarded_assembly_request_mixed.json"))
     assert assembly_req.group_bytes_hex[0].startswith("5458")

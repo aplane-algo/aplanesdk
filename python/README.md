@@ -190,7 +190,7 @@ Returns list of `KeyInfo`:
 
 The SDK exposes bounded inventory and ordinary spend signing only. It does not
 build, partially sign, or complete contract-admin rekey transactions; use the
-APlane `apbounded-admin` workflow for those operations.
+APlane `aprekey` workflow for those operations.
 
 **Discovering required arguments for generic LogicSigs:**
 
@@ -369,7 +369,7 @@ client.close()
 | `ed25519` | Native Algorand keys | Standard signing |
 | `aplane.falcon1024.v1` | Post-quantum LogicSig | Signature in LogicSig.Args[0] |
 | `aplane.ed25519.v1` | Ed25519 DSA LogicSig | Library-visible plain DSA account |
-| `aplane.sentry-falcon1024.v1` | Sentry component key | Policy signature only; not a spending account |
+| `aplane.witness-falcon1024.v1` | Witness key | Sentry-custodied policy signature key; not a spending account |
 | `aplane.falcon1024-sentry1024.v1` | Guarded account | Requires user and sentry component signatures |
 | `aplane.corridor.v1` | Corridor account | Falcon user and sentry signatures with corridor policy |
 | `aplane.falcon1024-allowlist.v1` | Bounded allowlist | Inline allowlist; `bounded1` signing flow |
@@ -382,7 +382,7 @@ The server assembles the complete signed transaction - the SDK returns a base64 
 
 ## Sentry And Guarded Accounts
 
-Sentry component keys are public policy-signature selectors, not Algorand
+Witness keys enrolled as sentries are public policy-signature selectors, not Algorand
 spending accounts. Do not use them as senders, receivers, auth addresses, or
 rekey targets. Guarded account keys must be signed through the guarded flow.
 

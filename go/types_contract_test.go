@@ -344,8 +344,8 @@ func TestGoSDKContractSentryKeyMetadata(t *testing.T) {
 	if err := json.Unmarshal(raw, &component); err != nil {
 		t.Fatalf("unmarshal component keys fixture: %v", err)
 	}
-	if !component.Keys[0].IsComponentKey {
-		t.Fatal("component key should be marked IsComponentKey")
+	if !component.Keys[0].IsWitnessKey {
+		t.Fatal("witness key should be marked IsWitnessKey")
 	}
 	if component.Keys[0].IsSpendingAccount == nil || *component.Keys[0].IsSpendingAccount {
 		t.Fatalf("component IsSpendingAccount = %#v, want false", component.Keys[0].IsSpendingAccount)

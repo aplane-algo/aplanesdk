@@ -20,7 +20,7 @@ export const COMPONENT_SIGN_ROLE_SENTRY = "sentry";
 export const SIGNING_FLOW_SENTRY1 = "sentry1";
 export const SIGNING_FLOW_BOUNDED1 = "bounded1";
 
-export const KEY_TYPE_SENTRY_FALCON1024 = "aplane.sentry-falcon1024.v1";
+export const KEY_TYPE_WITNESS_FALCON1024 = "aplane.witness-falcon1024.v1";
 export const KEY_TYPE_GUARDED_FALCON1024_SENTRY1024 =
   "aplane.falcon1024-sentry1024.v1";
 
@@ -112,9 +112,9 @@ export interface KeyInfo {
   lsigSize: number;
   /** True if this is a generic LogicSig (no cryptographic signature needed) */
   isGenericLsig: boolean;
-  /** True when this is a sentry component key, not a spending account */
-  isComponentKey?: boolean;
-  /** False for sentry component keys; absent when older signers do not report it */
+  /** True when this is a witness key, not a spending account */
+  isWitnessKey?: boolean;
+  /** False for witness keys; absent when older signers do not report it */
   isSpendingAccount?: boolean;
   /** Transaction-authorization capability and instance metadata */
   boundedAuthorization?: BoundedAuthorizationInfo;
@@ -330,9 +330,9 @@ export interface GenerateResult {
   publicKeyHex?: string;
   /** Type of key generated */
   keyType: string;
-  /** True when generated key is a sentry component key */
-  isComponentKey?: boolean;
-  /** False for sentry component keys; absent when not reported */
+  /** True when generated key is a witness key */
+  isWitnessKey?: boolean;
+  /** False for witness keys; absent when not reported */
   isSpendingAccount?: boolean;
   /** Creation parameters used */
   parameters?: Record<string, string>;

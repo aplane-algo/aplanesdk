@@ -316,7 +316,7 @@ external contract-admin signature slot;
 
 The Python SDK exposes bounded inventory and ordinary spend signing only. It
 does not expose `/sign/bounded-admin` or build and complete contract-admin
-rekeys; use the APlane `apbounded-admin` workflow for those operations.
+rekeys; use the APlane `aprekey` workflow for those operations.
 
 `template_status` and `template_warning` are legacy aliases for
 `template_provenance_status` and `template_provenance_note`.

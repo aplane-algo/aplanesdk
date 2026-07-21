@@ -1,11 +1,11 @@
 {
   "request_id": "cli-123",
-  "component_key": "H2DZY4Y4D726DVOAURO5HG4H2HVKTXE26LTVZ7LOGHFKAG6DN62Q",
+  "component_key": "ROGAFDACF7ASC3EMZRWNKVM73NXHO4P6O4EB7ZXWER37SM63BMFQ",
   "signatures": [
     {
       "target_index": 0,
       "signature": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "signature_scheme": "aplane.sentry-falcon1024.v1"
+      "signature_scheme": "aplane.witness-falcon1024.v1"
     }
   ]
 }
