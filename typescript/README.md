@@ -201,9 +201,15 @@ for (const key of keys) {
 Returns list of `KeyInfo`:
 - `address`: Algorand address
 - `keyType`: "ed25519", "aplane.falcon1024.v1", "aplane.timed-allowlist.v1", etc.
-- `lsigSize`: LogicSig size (for budget calculation)
+- `lsigSize`: spend-path LogicSig size used for budget calculation. For
+  `bounded1`, this excludes the external contract-admin signature slot;
+  `boundedAuthorization.postSigningLsigSize` is admin-inclusive.
 - `isGenericLsig`: True if no cryptographic signature needed
 - `signingArgs`: List of `SigningArg` for LogicSigs
+
+The SDK exposes bounded inventory and ordinary spend signing only. It does not
+build, partially sign, or complete contract-admin rekey transactions; use the
+APlane `apbounded-admin` workflow for those operations.
 
 **Discovering required arguments for generic LogicSigs:**
 

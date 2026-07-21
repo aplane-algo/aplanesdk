@@ -204,6 +204,14 @@ the SDK to size `/sign` deadlines.
 
 List available signing keys.
 
+`KeyInfo.LsigSize` is the spend-path LogicSig budget. For `bounded1`, it
+excludes the external contract-admin signature slot; the admin-inclusive size
+is available as `KeyInfo.BoundedAuthorization.PostSigningLogicSigSize`.
+
+The SDK exposes bounded inventory and ordinary spend signing only. It does not
+build, partially sign, or complete contract-admin rekey transactions; use the
+APlane `apbounded-admin` workflow for those operations.
+
 ```go
 keys, err := client.ListKeys(false)
 for _, key := range keys {

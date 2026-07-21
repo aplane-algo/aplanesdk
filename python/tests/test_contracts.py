@@ -19,6 +19,7 @@ from aplanesdk.signer import (
     ERR_CODE_CACHE_REFRESH,
     ERR_CODE_FORBIDDEN,
     ERR_CODE_INTERNAL,
+    ERR_CODE_BOUNDED_ADMIN_REQUIRED,
     ERR_CODE_INVALID_PASSPHRASE,
     ERR_CODE_LOCKED,
     ERR_CODE_NOT_FOUND,
@@ -92,6 +93,7 @@ def sdk_error_codes() -> list[str]:
         ERR_CODE_UNAVAILABLE,
         ERR_CODE_CACHE_REFRESH,
         ERR_CODE_INTERNAL,
+        ERR_CODE_BOUNDED_ADMIN_REQUIRED,
     ]
 
 
@@ -404,3 +406,25 @@ def test_sentry_dtos_round_trip_fixtures():
     assert sync_req.candidates[0]["component_key"]
     sync_resp = AdminSyncSentryReferencesResponse(**fixture("admin_sync_sentries_response.json"))
     assert sync_resp.records[0]["source"] == "client_discovery"
+
+
+def test_bounded_inventory_projects_layer3_policy():
+    client = make_client()
+    with patch.object(client.session, "get", return_value=mock_response(200, fixture("keys_response_bounded.json"))):
+        key = client.list_keys(refresh=True)[0]
+    assert key.signing_flow == "bounded1"
+    assert key.lsig_size == 6592
+    assert key.bounded_authorization.layer3_policy == "fixed_allowlist"
+    assert key.bounded_authorization.admin_key_id
+    assert key.bounded_authorization.program_binding == (
+        "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+    )
+    assert key.bounded_authorization.post_signing_lsig_size == 7872
+    assert key.bounded_authorization.spend_effects == ["pay", "axfer", "asset_opt_in"]
+    assert key.bounded_authorization.admin_operations[0].policy_gate == "none"
+    assert key.bounded_authorization.argument_layout[1].source == "admin"
+
+    with patch.object(client.session, "get", return_value=mock_response(200, fixture("keytypes_response_bounded.json"))):
+        key_type = client.list_key_types()[0]
+    assert key_type.bounded_authorization.layer3_policy == "fixed_allowlist"
+    assert key_type.bounded_authorization.admin_key_id == ""

@@ -13,6 +13,8 @@
     "component_sign_request_sentry.json",
     "component_sign_response_sentry.json",
     "error_response.json",
+	"bounded_admin_partial_response.json",
+	"bounded_admin_request.json",
     "group_plan_response_mutated.json",
     "group_sign_request_mixed.json",
     "group_sign_response_mutated.json",
@@ -25,7 +27,9 @@
     "keys_response_component.json",
     "keys_response_generic.json",
     "keys_response_guarded.json",
+    "keys_response_bounded.json",
     "keytypes_response_full.json",
+    "keytypes_response_bounded.json",
     "status_response_ready.json"
   ]
 }

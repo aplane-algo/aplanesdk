@@ -18,6 +18,7 @@ export const COMPONENT_SIGN_ROLE_SENTRY = "sentry";
  * implement. An empty signing_flow means the ordinary /sign path.
  */
 export const SIGNING_FLOW_SENTRY1 = "sentry1";
+export const SIGNING_FLOW_BOUNDED1 = "bounded1";
 
 export const KEY_TYPE_SENTRY_ED25519 = "aplane.sentry-ed25519.v1";
 export const KEY_TYPE_SENTRY_FALCON1024 = "aplane.sentry-falcon1024.v1";
@@ -39,12 +40,62 @@ export interface RuntimeArg {
   required?: boolean;
   /** Expected byte length (0 = variable) */
   byteLength?: number;
+  /** Maximum encoded size accepted by the signer (0 = unspecified) */
+  maxSize?: number;
 }
 
 /**
  * Key-file-owned signing argument metadata returned from /keys.
  */
 export type SigningArg = RuntimeArg;
+
+export interface BoundedSignatureArgLayout {
+  count: number;
+  maxSizes: number[];
+}
+
+export interface BoundedAdminOperationInfo {
+  kind: string;
+  authorization: string;
+  policyGate: string;
+}
+
+export interface BoundedDerivedArgInfo {
+  name: string;
+  kind: string;
+  parameter: string;
+  maxSize: number;
+}
+
+export interface BoundedArgumentPathMask {
+  spend: string;
+  spendingRekey: string;
+  adminRekey: string;
+}
+
+export interface BoundedArgumentSlotInfo {
+  index: number;
+  name: string;
+  source: string;
+  maxSize: number;
+  paths: BoundedArgumentPathMask;
+}
+
+export interface BoundedAuthorizationInfo {
+  contract: string;
+  baseSignatureArgLayout: BoundedSignatureArgLayout;
+  spendEffects: string[];
+  maxFee: number;
+  adminOperations: BoundedAdminOperationInfo[];
+  runtimeArgs: RuntimeArg[];
+  derivedArgs: BoundedDerivedArgInfo[];
+  argumentLayout: BoundedArgumentSlotInfo[];
+  layer3Policy: string;
+  adminKeyId?: string;
+  programBinding?: string;
+  /** Admin-inclusive post-signing LogicSig size for bounded1 inventory. */
+  postSigningLsigSize?: number;
+}
 
 /**
  * Information about a signing key from the signer.
@@ -60,7 +111,7 @@ export interface KeyInfo {
   signingFlow?: string;
   /** Sentry component key type for signing flow "sentry1" */
   sentryComponentKeyType?: string;
-  /** Total LogicSig size for budget calculation (bytecode + crypto sig) */
+  /** Spend-path LogicSig size for budget calculation; excludes the bounded1 admin signature slot. */
   lsigSize: number;
   /** True if this is a generic LogicSig (no cryptographic signature needed) */
   isGenericLsig: boolean;
@@ -68,6 +119,8 @@ export interface KeyInfo {
   isComponentKey?: boolean;
   /** False for sentry component keys; absent when older signers do not report it */
   isSpendingAccount?: boolean;
+  /** Transaction-authorization capability and instance metadata */
+  boundedAuthorization?: BoundedAuthorizationInfo;
   /** Key-file-owned signing arguments for LogicSigs */
   signingArgs?: SigningArg[];
   /** Non-secret key parameters such as guarded-account sentry_public_key */
@@ -226,6 +279,8 @@ export interface KeyTypeInfo {
   signingFlow?: string;
   /** Sentry component key type for signing flow "sentry1" */
   sentryComponentKeyType?: string;
+  /** Definition-level transaction-authorization capability */
+  boundedAuthorization?: BoundedAuthorizationInfo;
   /** Creation parameters */
   creationParams?: CreationParam[];
   /** Runtime arguments for generic LogicSigs */
@@ -837,6 +892,7 @@ export const ErrorCodes = {
   InvalidPassphrase: "invalid_passphrase",
   Unavailable: "unavailable",
   CacheRefresh: "cache_refresh",
+  BoundedAdminRequired: "bounded_admin_required",
   Internal: "internal",
 } as const;
 

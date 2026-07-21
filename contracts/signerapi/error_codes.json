@@ -9,6 +9,7 @@
     "invalid_passphrase",
     "unavailable",
     "cache_refresh",
-    "internal"
+    "internal",
+	"bounded_admin_required"
   ]
 }

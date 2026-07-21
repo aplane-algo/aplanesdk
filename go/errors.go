@@ -57,15 +57,16 @@ var (
 // These mirror the signer wire contract (pkg/signerapi/error_codes.go in the
 // aplane repo). An empty code means the signer predates code support.
 const (
-	ErrCodeBadRequest        = "bad_request"
-	ErrCodeUnauthorized      = "unauthorized"
-	ErrCodeForbidden         = "forbidden"
-	ErrCodeLocked            = "locked"
-	ErrCodeNotFound          = "not_found"
-	ErrCodeInvalidPassphrase = "invalid_passphrase"
-	ErrCodeUnavailable       = "unavailable"
-	ErrCodeCacheRefresh      = "cache_refresh"
-	ErrCodeInternal          = "internal"
+	ErrCodeBadRequest           = "bad_request"
+	ErrCodeUnauthorized         = "unauthorized"
+	ErrCodeForbidden            = "forbidden"
+	ErrCodeLocked               = "locked"
+	ErrCodeNotFound             = "not_found"
+	ErrCodeInvalidPassphrase    = "invalid_passphrase"
+	ErrCodeUnavailable          = "unavailable"
+	ErrCodeCacheRefresh         = "cache_refresh"
+	ErrCodeInternal             = "internal"
+	ErrCodeBoundedAdminRequired = "bounded_admin_required"
 )
 
 // APIError preserves the HTTP status, stable wire error code, and message of

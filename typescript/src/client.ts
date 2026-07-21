@@ -57,8 +57,13 @@ import type {
   AdminSyncSentryReferencesRequest,
   AdminSyncSentryReferencesResponse,
   ErrorResponse,
+  BoundedAuthorizationInfo,
 } from "./types.js";
-import { ErrorCodes, SIGNING_FLOW_SENTRY1 } from "./types.js";
+import {
+  ErrorCodes,
+  SIGNING_FLOW_SENTRY1,
+  SIGNING_FLOW_BOUNDED1,
+} from "./types.js";
 import {
   SignerError,
   AuthenticationError,
@@ -356,6 +361,20 @@ async function buildPreparedGuardedSignOptions(
     }
 
     if (key.signingFlow) {
+      if (key.signingFlow === SIGNING_FLOW_BOUNDED1) {
+        if (!item.authAddress) {
+          throw new SignerError(`prepared transaction ${index}: primary auth address is required`);
+        }
+        primaryTargets.push({
+          targetIndex: index,
+          authAddress: item.authAddress,
+          txnSender: item.txnSender,
+          lsigArgs: item.lsigArgs ? encodeLsigArgs(item.lsigArgs) : undefined,
+          lsigSize,
+          appCallInfo: item.appCallInfo,
+        });
+        continue;
+      }
       if (key.signingFlow !== SIGNING_FLOW_SENTRY1) {
         throw new SignerError(
           `prepared transaction ${index}: signer key requires signing flow "${key.signingFlow}", which this SDK does not support; upgrade the SDK`,
@@ -634,6 +653,60 @@ function validateComponentSignResponse(response: ComponentSignResponse): void {
       throw new SignerError(`signature ${item}: signature_scheme is required`);
     }
   });
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mapRuntimeArg(raw: any): RuntimeArg {
+  return {
+    name: raw.name || "",
+    type: raw.type || "bytes",
+    description: raw.description || "",
+    label: raw.label,
+    required: raw.required,
+    byteLength: raw.byte_length,
+    maxSize: raw.max_size,
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mapBoundedAuthorization(raw: any): BoundedAuthorizationInfo | undefined {
+  if (!raw) return undefined;
+  return {
+    contract: raw.contract || "",
+    baseSignatureArgLayout: {
+      count: raw.base_signature_arg_layout?.count || 0,
+      maxSizes: raw.base_signature_arg_layout?.max_sizes || [],
+    },
+    spendEffects: raw.spend_effects || [],
+    maxFee: raw.max_fee || 0,
+    adminOperations: (raw.admin_operations || []).map((operation: any) => ({
+      kind: operation.kind || "",
+      authorization: operation.authorization || "",
+      policyGate: operation.policy_gate || "",
+    })),
+    runtimeArgs: (raw.runtime_args || []).map(mapRuntimeArg),
+    derivedArgs: (raw.derived_args || []).map((arg: any) => ({
+      name: arg.name || "",
+      kind: arg.kind || "",
+      parameter: arg.parameter || "",
+      maxSize: arg.max_size || 0,
+    })),
+    argumentLayout: (raw.argument_layout || []).map((slot: any) => ({
+      index: slot.index || 0,
+      name: slot.name || "",
+      source: slot.source || "",
+      maxSize: slot.max_size || 0,
+      paths: {
+        spend: slot.paths?.spend || "",
+        spendingRekey: slot.paths?.spending_rekey || "",
+        adminRekey: slot.paths?.admin_rekey || "",
+      },
+    })),
+    layer3Policy: raw.layer3_policy || "",
+    adminKeyId: raw.admin_key_id || undefined,
+    programBinding: raw.program_binding || undefined,
+    postSigningLsigSize: raw.post_signing_lsig_size || undefined,
+  };
 }
 
 function validateAssemblyIndex(index: number, groupLen: number, covered: Set<number>): void {
@@ -1977,6 +2050,7 @@ export class SignerClient {
           label: arg.label,
           required: arg.required,
           byteLength: arg.byte_length,
+          maxSize: arg.max_size,
         }));
       }
 
@@ -1995,6 +2069,7 @@ export class SignerClient {
         isGenericLsig: raw.is_generic_lsig || false,
         isComponentKey: raw.is_component_key || false,
         isSpendingAccount: typeof raw.is_spending_account === "boolean" ? raw.is_spending_account : undefined,
+        boundedAuthorization: mapBoundedAuthorization(raw.bounded_authorization),
         signingArgs,
         parameters: raw.parameters,
         templateProvenanceStatus,
@@ -2777,6 +2852,7 @@ export class SignerClient {
           label: arg.label,
           required: arg.required,
           byteLength: arg.byte_length,
+          maxSize: arg.max_size,
         }));
       }
 
@@ -2791,6 +2867,7 @@ export class SignerClient {
         mnemonicScheme: kt.mnemonic_scheme,
         signingFlow: kt.signing_flow || undefined,
         sentryComponentKeyType: kt.sentry_component_key_type || undefined,
+        boundedAuthorization: mapBoundedAuthorization(kt.bounded_authorization),
         creationParams,
         runtimeArgs,
       });

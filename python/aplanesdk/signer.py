@@ -99,6 +99,7 @@ COMPONENT_SIGN_ROLE_SENTRY = "sentry"
 # clients route on the label and must fail fast on flow labels they do not
 # implement. An empty signing_flow means the ordinary /sign path.
 SIGNING_FLOW_SENTRY1 = "sentry1"
+SIGNING_FLOW_BOUNDED1 = "bounded1"
 
 KEY_TYPE_SENTRY_ED25519 = "aplane.sentry-ed25519.v1"
 KEY_TYPE_SENTRY_FALCON1024 = "aplane.sentry-falcon1024.v1"
@@ -147,6 +148,7 @@ ERR_CODE_INVALID_PASSPHRASE = "invalid_passphrase"
 ERR_CODE_UNAVAILABLE = "unavailable"
 ERR_CODE_CACHE_REFRESH = "cache_refresh"
 ERR_CODE_INTERNAL = "internal"
+ERR_CODE_BOUNDED_ADMIN_REQUIRED = "bounded_admin_required"
 
 
 class SignerError(Exception):
@@ -229,10 +231,64 @@ class RuntimeArg:
     label: str = ""
     required: bool = False
     byte_length: int = 0
+    max_size: int = 0
 
 
 # /keys exposes key-file-owned signing_args with the same item shape.
 SigningArg = RuntimeArg
+
+
+@dataclass
+class BoundedSignatureArgLayout:
+    count: int
+    max_sizes: List[int]
+
+
+@dataclass
+class BoundedAdminOperationInfo:
+    kind: str
+    authorization: str
+    policy_gate: str
+
+
+@dataclass
+class BoundedDerivedArgInfo:
+    name: str
+    kind: str
+    parameter: str
+    max_size: int
+
+
+@dataclass
+class BoundedArgumentPathMask:
+    spend: str
+    spending_rekey: str
+    admin_rekey: str
+
+
+@dataclass
+class BoundedArgumentSlotInfo:
+    index: int
+    name: str
+    source: str
+    max_size: int
+    paths: BoundedArgumentPathMask
+
+
+@dataclass
+class BoundedAuthorizationInfo:
+    contract: str
+    base_signature_arg_layout: BoundedSignatureArgLayout
+    spend_effects: List[str]
+    max_fee: int
+    admin_operations: List[BoundedAdminOperationInfo]
+    runtime_args: List[RuntimeArg]
+    derived_args: List[BoundedDerivedArgInfo]
+    argument_layout: List[BoundedArgumentSlotInfo]
+    layer3_policy: str
+    admin_key_id: str = ""
+    program_binding: str = ""
+    post_signing_lsig_size: int = 0  # Admin-inclusive bounded size
 
 
 @dataclass
@@ -243,9 +299,10 @@ class KeyInfo:
     public_key_hex: str = ""
     signing_flow: str = ""  # Signing choreography label (e.g. "sentry1"); empty = plain /sign
     sentry_component_key_type: str = ""  # Sentry component key type for signing flow "sentry1"
-    lsig_size: int = 0
+    lsig_size: int = 0  # Spend-path size for bounded1
     is_generic_lsig: bool = False
     is_component_key: bool = False
+    bounded_authorization: Optional[BoundedAuthorizationInfo] = None
     is_spending_account: Optional[bool] = None
     signing_args: Optional[List[SigningArg]] = None  # Key-file args required for LogicSigs
     parameters: Optional[Dict[str, str]] = None
@@ -315,6 +372,7 @@ class KeyTypeInfo:
     mnemonic_scheme: str = ""
     signing_flow: str = ""  # Signing choreography label (e.g. "sentry1"); empty = plain /sign
     sentry_component_key_type: str = ""  # Sentry component key type for signing flow "sentry1"
+    bounded_authorization: Optional[BoundedAuthorizationInfo] = None
     creation_params: Optional[List[CreationParam]] = None
     runtime_args: Optional[List[RuntimeArg]] = None
 
@@ -840,6 +898,71 @@ def _validate_component_sign_request(data: Dict[str, Any]) -> None:
     target_indices = data.get("target_indices") or []
     _validate_component_group_bytes(group_bytes_hex)
     _validate_component_target_indices(target_indices, len(group_bytes_hex))
+
+
+def _parse_bounded_authorization(data: Any) -> Optional[BoundedAuthorizationInfo]:
+    if not isinstance(data, dict):
+        return None
+    layout = data.get("base_signature_arg_layout") or {}
+    operations = data.get("admin_operations") or []
+    runtime_args = data.get("runtime_args") or []
+    derived_args = data.get("derived_args") or []
+    argument_layout = data.get("argument_layout") or []
+    return BoundedAuthorizationInfo(
+        contract=data.get("contract", ""),
+        base_signature_arg_layout=BoundedSignatureArgLayout(
+            count=layout.get("count", 0), max_sizes=list(layout.get("max_sizes") or [])
+        ),
+        spend_effects=list(data.get("spend_effects") or []),
+        max_fee=data.get("max_fee", 0),
+        admin_operations=[
+            BoundedAdminOperationInfo(
+                kind=item.get("kind", ""),
+                authorization=item.get("authorization", ""),
+                policy_gate=item.get("policy_gate", ""),
+            )
+            for item in operations
+        ],
+        runtime_args=[
+            RuntimeArg(
+                name=item.get("name", ""),
+                arg_type=item.get("type", "bytes"),
+                description=item.get("description", ""),
+                label=item.get("label", ""),
+                required=item.get("required", False),
+                byte_length=item.get("byte_length", 0),
+                max_size=item.get("max_size", 0),
+            )
+            for item in runtime_args
+        ],
+        derived_args=[
+            BoundedDerivedArgInfo(
+                name=item.get("name", ""),
+                kind=item.get("kind", ""),
+                parameter=item.get("parameter", ""),
+                max_size=item.get("max_size", 0),
+            )
+            for item in derived_args
+        ],
+        argument_layout=[
+            BoundedArgumentSlotInfo(
+                index=item.get("index", 0),
+                name=item.get("name", ""),
+                source=item.get("source", ""),
+                max_size=item.get("max_size", 0),
+                paths=BoundedArgumentPathMask(
+                    spend=(item.get("paths") or {}).get("spend", ""),
+                    spending_rekey=(item.get("paths") or {}).get("spending_rekey", ""),
+                    admin_rekey=(item.get("paths") or {}).get("admin_rekey", ""),
+                ),
+            )
+            for item in argument_layout
+        ],
+        layer3_policy=data.get("layer3_policy", ""),
+        admin_key_id=data.get("admin_key_id", ""),
+        program_binding=data.get("program_binding", ""),
+        post_signing_lsig_size=data.get("post_signing_lsig_size", 0),
+    )
 
 
 def _validate_component_sign_response(data: Dict[str, Any]) -> None:
@@ -2039,6 +2162,7 @@ class SignerClient:
                         label=arg.get("label", ""),
                         required=arg.get("required", False),
                         byte_length=arg.get("byte_length", 0),
+                        max_size=arg.get("max_size", 0),
                     )
                     for arg in k["signing_args"]
                 ]
@@ -2052,6 +2176,7 @@ class SignerClient:
                 lsig_size=k.get("lsig_size", 0),
                 is_generic_lsig=k.get("is_generic_lsig", False),
                 is_component_key=k.get("is_component_key", False),
+                bounded_authorization=_parse_bounded_authorization(k.get("bounded_authorization")),
                 is_spending_account=k.get("is_spending_account"),
                 signing_args=signing_args,
                 parameters=k.get("parameters"),
@@ -2921,6 +3046,7 @@ class SignerClient:
                         label=arg.get("label", ""),
                         required=arg.get("required", False),
                         byte_length=arg.get("byte_length", 0),
+                        max_size=arg.get("max_size", 0),
                     )
                     for arg in kt["runtime_args"]
                 ]
@@ -2936,6 +3062,7 @@ class SignerClient:
                 mnemonic_scheme=kt.get("mnemonic_scheme", ""),
                 signing_flow=kt.get("signing_flow", ""),
                 sentry_component_key_type=kt.get("sentry_component_key_type", ""),
+                bounded_authorization=_parse_bounded_authorization(kt.get("bounded_authorization")),
                 creation_params=creation_params,
                 runtime_args=runtime_args,
             ))
@@ -4119,11 +4246,25 @@ def _build_prepared_guarded_sign_inputs(
             lsig_indices.append(index)
 
         if key.signing_flow:
-            if key.signing_flow != SIGNING_FLOW_SENTRY1:
+            if key.signing_flow == SIGNING_FLOW_BOUNDED1:
+                pass
+            elif key.signing_flow != SIGNING_FLOW_SENTRY1:
                 raise ValueError(
                     f"prepared transaction {index}: signer key requires signing flow "
                     f"{key.signing_flow!r}, which this SDK does not support; upgrade the SDK"
                 )
+            if key.signing_flow == SIGNING_FLOW_BOUNDED1:
+                if not item.auth_address:
+                    raise ValueError(f"prepared transaction {index}: primary auth address is required")
+                primary_targets.append(GuardedPrimarySignTarget(
+                    target_index=index,
+                    auth_address=item.auth_address,
+                    txn_sender=item.txn_sender,
+                    lsig_args=_encode_guarded_lsig_args(item.lsig_args),
+                    lsig_size=lsig_size,
+                    app_call_info=item.app_call_info,
+                ))
+                continue
             if not item.auth_address:
                 raise ValueError(f"prepared transaction {index}: guarded auth address is required")
             guarded_targets.append(GuardedSignTarget(

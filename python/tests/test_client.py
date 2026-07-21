@@ -540,7 +540,7 @@ class TestDeleteKey:
 # sentry low-level endpoints
 # ---------------------------------------------------------------------------
 
-class TestSentryLowLevelEndpoints:
+class TestSpecializedLowLevelEndpoints:
     def test_request_component_sign_posts_to_component_endpoint(self):
         client = make_client()
         resp = mock_response(200, {

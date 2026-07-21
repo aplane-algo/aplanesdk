@@ -1,0 +1,11 @@
+{
+  "request_id": "bounded-admin-ceremony-1",
+  "operation": "rekey",
+  "requests": [
+    {
+      "auth_address": "BOUNDEDACCOUNT",
+      "txn_sender": "ORIGINALACCOUNT",
+      "txn_bytes_hex": "545881a474797065a3706179"
+    }
+  ]
+}

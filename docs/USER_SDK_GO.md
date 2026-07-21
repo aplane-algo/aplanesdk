@@ -265,6 +265,14 @@ for _, key := range keys {
 - `TemplateStatus`
 - `TemplateWarning`
 
+`LsigSize` is the spend-path LogicSig budget. For `bounded1`, it excludes the
+external contract-admin signature slot;
+`BoundedAuthorization.PostSigningLogicSigSize` is admin-inclusive.
+
+The Go SDK exposes bounded inventory and ordinary spend signing only. It does
+not expose `/sign/bounded-admin` or build and complete contract-admin rekeys;
+use the APlane `apbounded-admin` workflow for those operations.
+
 `TemplateStatus` and `TemplateWarning` are legacy aliases for
 `TemplateProvenanceStatus` and `TemplateProvenanceNote`.
 
