@@ -21,8 +21,8 @@ export const SIGNING_FLOW_SENTRY1 = "sentry1";
 export const SIGNING_FLOW_BOUNDED1 = "bounded1";
 
 export const KEY_TYPE_SENTRY_FALCON1024 = "aplane.sentry-falcon1024.v1";
-export const KEY_TYPE_GUARDED_FALCON1024_SENTRY_FALCON1024 =
-  "aplane.falcon1024-sentry-falcon1024.v1";
+export const KEY_TYPE_GUARDED_FALCON1024_SENTRY1024 =
+  "aplane.falcon1024-sentry1024.v1";
 
 export interface RuntimeArg {
   /** Internal name for the argument (e.g., "preimage") */

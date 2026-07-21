@@ -288,7 +288,7 @@ def test_list_keys_maps_component_and_guarded_metadata():
 
     with patch.object(client.session, "get", return_value=mock_response(200, fixture("keys_response_guarded.json"))):
         guarded = client.list_keys(refresh=True)[0]
-    assert guarded.key_type == "aplane.falcon1024-sentry-falcon1024.v1"
+    assert guarded.key_type == "aplane.falcon1024-sentry1024.v1"
     assert guarded.parameters is not None
     assert guarded.parameters["sentry_public_key"]
 

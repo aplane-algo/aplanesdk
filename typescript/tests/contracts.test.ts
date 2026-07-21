@@ -314,7 +314,7 @@ describe("signer API contract fixtures", () => {
       json: async () => fixture("keys_response_guarded.json"),
     });
     const guarded = (await client.listKeys(true))[0];
-    assert.equal(guarded.keyType, "aplane.falcon1024-sentry-falcon1024.v1");
+    assert.equal(guarded.keyType, "aplane.falcon1024-sentry1024.v1");
     assert.ok(guarded.parameters?.sentry_public_key);
   });
 

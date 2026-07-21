@@ -39,7 +39,7 @@ from aplanesdk.signer import (
     PreparedTransaction,
     PreparedGroup,
     COMPONENT_SIGN_ROLE_SENTRY,
-    KEY_TYPE_GUARDED_FALCON1024_SENTRY_FALCON1024,
+    KEY_TYPE_GUARDED_FALCON1024_SENTRY1024,
     KEY_TYPE_SENTRY_FALCON1024,
     SIGNING_FLOW_SENTRY1,
     request_token,
@@ -810,7 +810,7 @@ class TestSignGuardedGroup:
                     auth_address=guarded,
                     signer_key=KeyInfo(
                         address=guarded,
-                        key_type=KEY_TYPE_GUARDED_FALCON1024_SENTRY_FALCON1024,
+                        key_type=KEY_TYPE_GUARDED_FALCON1024_SENTRY1024,
                         signing_flow=SIGNING_FLOW_SENTRY1,
                         sentry_component_key_type=KEY_TYPE_SENTRY_FALCON1024,
                         lsig_size=3035,

@@ -7,7 +7,7 @@ import algosdk from "algosdk";
 import { SignerClient, signGuardedGroup, signPreparedGuardedGroup } from "../src/client.js";
 import {
   COMPONENT_SIGN_ROLE_SENTRY,
-  KEY_TYPE_GUARDED_FALCON1024_SENTRY_FALCON1024,
+  KEY_TYPE_GUARDED_FALCON1024_SENTRY1024,
   KEY_TYPE_SENTRY_FALCON1024,
   SIGNING_FLOW_SENTRY1,
 } from "../src/types.js";
@@ -1497,7 +1497,7 @@ describe("SignerClient", () => {
               signerKey: {
                 address: guarded,
                 publicKeyHex: "",
-                keyType: KEY_TYPE_GUARDED_FALCON1024_SENTRY_FALCON1024,
+                keyType: KEY_TYPE_GUARDED_FALCON1024_SENTRY1024,
                 signingFlow: SIGNING_FLOW_SENTRY1,
                 sentryComponentKeyType: KEY_TYPE_SENTRY_FALCON1024,
                 lsigSize: 3035,

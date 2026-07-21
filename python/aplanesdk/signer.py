@@ -102,7 +102,7 @@ SIGNING_FLOW_SENTRY1 = "sentry1"
 SIGNING_FLOW_BOUNDED1 = "bounded1"
 
 KEY_TYPE_SENTRY_FALCON1024 = "aplane.sentry-falcon1024.v1"
-KEY_TYPE_GUARDED_FALCON1024_SENTRY_FALCON1024 = "aplane.falcon1024-sentry-falcon1024.v1"
+KEY_TYPE_GUARDED_FALCON1024_SENTRY1024 = "aplane.falcon1024-sentry1024.v1"
 
 # Current product identity for token provisioning helpers.
 DEFAULT_PRODUCT_IDENTITY = "default"

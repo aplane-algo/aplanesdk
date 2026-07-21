@@ -15,8 +15,8 @@ const (
 	ComponentSignRoleUser   ComponentSignRole = "user"
 	ComponentSignRoleSentry ComponentSignRole = "sentry"
 
-	KeyTypeSentryFalcon1024                  = "aplane.sentry-falcon1024.v1"
-	KeyTypeGuardedFalcon1024SentryFalcon1024 = "aplane.falcon1024-sentry-falcon1024.v1"
+	KeyTypeSentryFalcon1024            = "aplane.sentry-falcon1024.v1"
+	KeyTypeGuardedFalcon1024Sentry1024 = "aplane.falcon1024-sentry1024.v1"
 )
 
 // The signer HTTP DTOs and validation semantics in this file intentionally

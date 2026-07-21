@@ -479,7 +479,7 @@ func TestSignPreparedGuardedGroupAllGuardedAddsDummiesWithoutPlanOrSign(t *testi
 			AuthAddress: guarded,
 			SignerKey: &KeyInfo{
 				Address:                guarded,
-				KeyType:                KeyTypeGuardedFalcon1024SentryFalcon1024,
+				KeyType:                KeyTypeGuardedFalcon1024Sentry1024,
 				SigningFlow:            SigningFlowSentry1,
 				SentryComponentKeyType: KeyTypeSentryFalcon1024,
 				LsigSize:               3035,

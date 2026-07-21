@@ -349,7 +349,7 @@ callers migrating from older contract names, `GroupPlanResponse` and
 | `aplane.falcon1024.v1` | Post-quantum LogicSig | Large signature (~3KB) |
 | `aplane.ed25519.v1` | Ed25519 DSA LogicSig | Library-visible plain DSA account |
 | `aplane.sentry-falcon1024.v1` | Sentry component key | Policy signature only; not a spending account |
-| `aplane.falcon1024-sentry-falcon1024.v1` | Guarded account | Requires user and sentry component signatures |
+| `aplane.falcon1024-sentry1024.v1` | Guarded account | Requires user and sentry component signatures |
 | `aplane.corridor.v1` | Corridor account | Falcon user and sentry signatures with corridor policy |
 | `aplane.falcon1024-allowlist.v1` | Bounded allowlist | Inline allowlist; `bounded1` signing flow |
 | `aplane.falcon1024-allowlist.v2` | Bounded allowlist | Merkle allowlist; `bounded1` signing flow |
