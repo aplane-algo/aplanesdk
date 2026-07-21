@@ -353,10 +353,12 @@ Key types with creation parameters take a string map:
 
 ```python
 result = client.generate_key(
-    "aplane.timed-allowlist.v1",
+    "aplane.htlc.v1",
     {
+        "hash": "SHA256_HEX",
         "recipient": "ADDR1",
-        "unlock_round": "123456",
+        "refund_address": "ADDR2",
+        "timeout_round": "123456",
     },
 )
 ```

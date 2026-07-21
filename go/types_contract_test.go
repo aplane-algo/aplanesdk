@@ -301,11 +301,11 @@ func TestGoSDKContractKeyTypeMetadata(t *testing.T) {
 	if !resp.KeyTypes[0].MnemonicImport {
 		t.Fatal("ed25519 fixture should allow mnemonic import")
 	}
-	if resp.KeyTypes[1].KeyType != "aplane.timed-allowlist.v1" {
-		t.Fatalf("generic key type = %q, want aplane.timed-allowlist.v1", resp.KeyTypes[1].KeyType)
+	if resp.KeyTypes[1].KeyType != "example.generic-policy.v1" {
+		t.Fatalf("generic key type = %q, want example.generic-policy.v1", resp.KeyTypes[1].KeyType)
 	}
-	if resp.KeyTypes[1].DisplayName != "Timed Allowlist" {
-		t.Fatalf("generic display name = %q, want Timed Allowlist", resp.KeyTypes[1].DisplayName)
+	if resp.KeyTypes[1].DisplayName != "Generic Policy" {
+		t.Fatalf("generic display name = %q, want Generic Policy", resp.KeyTypes[1].DisplayName)
 	}
 	if resp.KeyTypes[1].MnemonicImport {
 		t.Fatal("generic template fixture should not allow mnemonic import")
@@ -370,7 +370,7 @@ func TestGoSDKMapsTemplateWarningFields(t *testing.T) {
 		"keys": [{
 			"address": "ADDR1",
 			"public_key_hex": "abcd",
-			"key_type": "aplane.timed-allowlist.v1",
+			"key_type": "example.generic-policy.v1",
 			"template_provenance_status": "conflict",
 			"template_provenance_note": "template fingerprint differs"
 		}]

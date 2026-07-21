@@ -7,8 +7,8 @@ import algosdk from "algosdk";
 import { SignerClient, signGuardedGroup, signPreparedGuardedGroup } from "../src/client.js";
 import {
   COMPONENT_SIGN_ROLE_SENTRY,
-  KEY_TYPE_GUARDED_FALCON1024_SENTRY_ED25519,
-  KEY_TYPE_SENTRY_ED25519,
+  KEY_TYPE_GUARDED_FALCON1024_SENTRY_FALCON1024,
+  KEY_TYPE_SENTRY_FALCON1024,
   SIGNING_FLOW_SENTRY1,
 } from "../src/types.js";
 import {
@@ -1182,7 +1182,7 @@ describe("SignerClient", () => {
             {
               target_index: 0,
               signature: "aabb",
-              signature_scheme: KEY_TYPE_SENTRY_ED25519,
+              signature_scheme: KEY_TYPE_SENTRY_FALCON1024,
             },
           ],
         }),
@@ -1285,7 +1285,7 @@ describe("SignerClient", () => {
         {
           endpoint_alias: "sentry-local",
           component_key: "COMPONENT",
-          key_type: KEY_TYPE_SENTRY_ED25519,
+          key_type: KEY_TYPE_SENTRY_FALCON1024,
           public_key_hex: "aabb",
         },
       ]);
@@ -1309,7 +1309,7 @@ describe("SignerClient", () => {
         return {
           request_id: "user-id",
           signatures: [
-            { target_index: 0, signature: "user-sig", signature_scheme: KEY_TYPE_SENTRY_ED25519 },
+            { target_index: 0, signature: "user-sig", signature_scheme: KEY_TYPE_SENTRY_FALCON1024 },
           ],
         };
       };
@@ -1319,7 +1319,7 @@ describe("SignerClient", () => {
         return {
           request_id: "sentry-id",
           signatures: [
-            { target_index: 0, signature: "sentry-sig", signature_scheme: KEY_TYPE_SENTRY_ED25519 },
+            { target_index: 0, signature: "sentry-sig", signature_scheme: KEY_TYPE_SENTRY_FALCON1024 },
           ],
         };
       };
@@ -1350,8 +1350,8 @@ describe("SignerClient", () => {
         return {
           request_id: "user-id",
           signatures: [
-            { target_index: 0, signature: "user-0", signature_scheme: KEY_TYPE_SENTRY_ED25519 },
-            { target_index: 1, signature: "user-1", signature_scheme: KEY_TYPE_SENTRY_ED25519 },
+            { target_index: 0, signature: "user-0", signature_scheme: KEY_TYPE_SENTRY_FALCON1024 },
+            { target_index: 1, signature: "user-1", signature_scheme: KEY_TYPE_SENTRY_FALCON1024 },
           ],
         };
       };
@@ -1361,8 +1361,8 @@ describe("SignerClient", () => {
         return {
           request_id: "sentry-id",
           signatures: [
-            { target_index: 0, signature: "sentry-0", signature_scheme: KEY_TYPE_SENTRY_ED25519 },
-            { target_index: 1, signature: "sentry-1", signature_scheme: KEY_TYPE_SENTRY_ED25519 },
+            { target_index: 0, signature: "sentry-0", signature_scheme: KEY_TYPE_SENTRY_FALCON1024 },
+            { target_index: 1, signature: "sentry-1", signature_scheme: KEY_TYPE_SENTRY_FALCON1024 },
           ],
         };
       };
@@ -1392,13 +1392,13 @@ describe("SignerClient", () => {
       (user as any).requestComponentSign = async () => ({
         request_id: "user-id",
         signatures: [
-          { target_index: 1, signature: "user-sig", signature_scheme: KEY_TYPE_SENTRY_ED25519 },
+          { target_index: 1, signature: "user-sig", signature_scheme: KEY_TYPE_SENTRY_FALCON1024 },
         ],
       });
       (sentry as any).requestComponentSign = async () => ({
         request_id: "sentry-id",
         signatures: [
-          { target_index: 1, signature: "sentry-sig", signature_scheme: KEY_TYPE_SENTRY_ED25519 },
+          { target_index: 1, signature: "sentry-sig", signature_scheme: KEY_TYPE_SENTRY_FALCON1024 },
         ],
       });
       (user as any).signRequests = async (requests: any[]) => {
@@ -1438,7 +1438,7 @@ describe("SignerClient", () => {
         return {
           request_id: "user-id",
           signatures: [
-            { target_index: 0, signature: "user-sig", signature_scheme: KEY_TYPE_SENTRY_ED25519 },
+            { target_index: 0, signature: "user-sig", signature_scheme: KEY_TYPE_SENTRY_FALCON1024 },
           ],
         };
       };
@@ -1449,7 +1449,7 @@ describe("SignerClient", () => {
         return {
           request_id: "sentry-id",
           signatures: [
-            { target_index: 0, signature: "sentry-sig", signature_scheme: KEY_TYPE_SENTRY_ED25519 },
+            { target_index: 0, signature: "sentry-sig", signature_scheme: KEY_TYPE_SENTRY_FALCON1024 },
           ],
         };
       };
@@ -1497,9 +1497,9 @@ describe("SignerClient", () => {
               signerKey: {
                 address: guarded,
                 publicKeyHex: "",
-                keyType: KEY_TYPE_GUARDED_FALCON1024_SENTRY_ED25519,
+                keyType: KEY_TYPE_GUARDED_FALCON1024_SENTRY_FALCON1024,
                 signingFlow: SIGNING_FLOW_SENTRY1,
-                sentryComponentKeyType: KEY_TYPE_SENTRY_ED25519,
+                sentryComponentKeyType: KEY_TYPE_SENTRY_FALCON1024,
                 lsigSize: 3035,
                 isGenericLsig: false,
                 parameters: { sentry_public_key: "aabbcc" },

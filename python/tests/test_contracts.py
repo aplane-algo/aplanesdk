@@ -186,7 +186,7 @@ def test_list_keys_maps_generic_lsig_metadata():
     assert len(keys) == 2
     generic = keys[1]
     assert generic.public_key_hex == "ffeeddccbbaa99887766554433221100"
-    assert generic.key_type == "aplane.timed-allowlist.v1"
+    assert generic.key_type == "example.generic-policy.v1"
     assert generic.lsig_size == 512
     assert generic.is_generic_lsig is True
     assert generic.signing_args is not None
@@ -203,29 +203,29 @@ def test_list_key_types_maps_creation_and_runtime_metadata():
     with patch.object(client.session, "get", return_value=resp):
         key_types = client.list_key_types()
 
-    timed_allowlist = key_types[1]
-    assert timed_allowlist.key_type == "aplane.timed-allowlist.v1"
-    assert timed_allowlist.display_name == "Timed Allowlist"
-    assert timed_allowlist.requires_logicsig is True
-    assert timed_allowlist.mnemonic_import is False
-    assert timed_allowlist.creation_params is not None
-    assert timed_allowlist.creation_params[1].param_type == "address[]"
-    assert timed_allowlist.creation_params[1].min_items == 1
-    assert timed_allowlist.creation_params[1].max_items == 8
-    assert timed_allowlist.creation_params[2].min == 1
-    assert timed_allowlist.creation_params[2].max == 999999999
-    assert timed_allowlist.creation_params[3].max_length == 32
-    assert timed_allowlist.creation_params[3].input_modes is not None
-    assert timed_allowlist.creation_params[3].input_modes[1].name == "sha256"
-    assert timed_allowlist.creation_params[3].input_modes[1].transform == "sha256"
-    assert timed_allowlist.creation_params[3].input_modes[1].byte_length == 32
-    assert timed_allowlist.creation_params[3].input_modes[1].input_type == "bytes"
-    assert timed_allowlist.creation_params[4].param_type == "select"
-    assert timed_allowlist.creation_params[4].options == ["lab-sentry", "backup-sentry"]
-    assert timed_allowlist.runtime_args is not None
-    assert timed_allowlist.runtime_args[0].label == "Preimage"
-    assert timed_allowlist.runtime_args[0].required is True
-    assert timed_allowlist.runtime_args[0].byte_length == 32
+    generic_policy = key_types[1]
+    assert generic_policy.key_type == "example.generic-policy.v1"
+    assert generic_policy.display_name == "Generic Policy"
+    assert generic_policy.requires_logicsig is True
+    assert generic_policy.mnemonic_import is False
+    assert generic_policy.creation_params is not None
+    assert generic_policy.creation_params[1].param_type == "address[]"
+    assert generic_policy.creation_params[1].min_items == 1
+    assert generic_policy.creation_params[1].max_items == 8
+    assert generic_policy.creation_params[2].min == 1
+    assert generic_policy.creation_params[2].max == 999999999
+    assert generic_policy.creation_params[3].max_length == 32
+    assert generic_policy.creation_params[3].input_modes is not None
+    assert generic_policy.creation_params[3].input_modes[1].name == "sha256"
+    assert generic_policy.creation_params[3].input_modes[1].transform == "sha256"
+    assert generic_policy.creation_params[3].input_modes[1].byte_length == 32
+    assert generic_policy.creation_params[3].input_modes[1].input_type == "bytes"
+    assert generic_policy.creation_params[4].param_type == "select"
+    assert generic_policy.creation_params[4].options == ["lab-sentry", "backup-sentry"]
+    assert generic_policy.runtime_args is not None
+    assert generic_policy.runtime_args[0].label == "Preimage"
+    assert generic_policy.runtime_args[0].required is True
+    assert generic_policy.runtime_args[0].byte_length == 32
 
 
 def test_status_fixture_maps_metadata():
@@ -262,7 +262,7 @@ def test_list_keys_maps_template_warning_fields():
             {
                 "address": "ADDR1",
                 "public_key_hex": "abcd",
-                    "key_type": "aplane.timed-allowlist.v1",
+                    "key_type": "example.generic-policy.v1",
                 "template_provenance_status": "conflict",
                 "template_provenance_note": "template fingerprint differs",
             }
@@ -282,13 +282,13 @@ def test_list_keys_maps_component_and_guarded_metadata():
     client = make_client()
     with patch.object(client.session, "get", return_value=mock_response(200, fixture("keys_response_component.json"))):
         component = client.list_keys(refresh=True)[0]
-    assert component.key_type == "aplane.sentry-ed25519.v1"
+    assert component.key_type == "aplane.sentry-falcon1024.v1"
     assert component.is_component_key is True
     assert component.is_spending_account is False
 
     with patch.object(client.session, "get", return_value=mock_response(200, fixture("keys_response_guarded.json"))):
         guarded = client.list_keys(refresh=True)[0]
-    assert guarded.key_type == "aplane.falcon1024-sentry-ed25519.v1"
+    assert guarded.key_type == "aplane.falcon1024-sentry-falcon1024.v1"
     assert guarded.parameters is not None
     assert guarded.parameters["sentry_public_key"]
 
@@ -343,10 +343,10 @@ def test_generate_key_maps_admin_generate_response():
     resp = mock_response(200, fixture("admin_generate_response_generic.json"))
 
     with patch.object(client.session, "post", return_value=resp):
-        generated = client.generate_key("aplane.timed-allowlist.v1", {"unlock_round": "123456"})
+        generated = client.generate_key("example.generic-policy.v1", {"unlock_round": "123456"})
 
     assert generated.address == "GENERATEDADDR0000000000000000000000000000000000000000000"
-    assert generated.key_type == "aplane.timed-allowlist.v1"
+    assert generated.key_type == "example.generic-policy.v1"
     assert generated.parameters is not None
     assert generated.parameters["unlock_round"] == "123456"
 
@@ -356,11 +356,12 @@ def test_generate_key_maps_component_response():
     resp = mock_response(200, fixture("admin_generate_response_component.json"))
 
     with patch.object(client.session, "post", return_value=resp):
-        generated = client.generate_key("aplane.sentry-ed25519.v1")
+        generated = client.generate_key("aplane.sentry-falcon1024.v1")
 
-    assert generated.address == "MYJZE3UF7G4JXR5STMQK5TSL5FNE7PE224BSKLZ2H4AJWJIPBEBQ"
-    assert generated.public_key_hex == "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
-    assert generated.key_type == "aplane.sentry-ed25519.v1"
+    assert generated.address == "H2DZY4Y4D726DVOAURO5HG4H2HVKTXE26LTVZ7LOGHFKAG6DN62Q"
+    assert len(generated.public_key_hex) == 3586
+    assert set(generated.public_key_hex) == {"0"}
+    assert generated.key_type == "aplane.sentry-falcon1024.v1"
     assert generated.is_component_key is True
     assert generated.is_spending_account is False
 
@@ -391,7 +392,7 @@ def test_sentry_dtos_round_trip_fixtures():
         component_key=component_resp_data["component_key"],
         signatures=component_resp_data["signatures"],
     )
-    assert component_resp.signatures[0]["signature_scheme"] == "aplane.sentry-ed25519.v1"
+    assert component_resp.signatures[0]["signature_scheme"] == "aplane.sentry-falcon1024.v1"
 
     assembly_req = GuardedAssemblyRequest(**fixture("guarded_assembly_request_mixed.json"))
     assert assembly_req.group_bytes_hex[0].startswith("5458")

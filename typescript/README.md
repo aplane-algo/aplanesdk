@@ -200,7 +200,7 @@ for (const key of keys) {
 
 Returns list of `KeyInfo`:
 - `address`: Algorand address
-- `keyType`: "ed25519", "aplane.falcon1024.v1", "aplane.timed-allowlist.v1", etc.
+- `keyType`: "ed25519", "aplane.falcon1024.v1", "aplane.htlc.v1", etc.
 - `lsigSize`: spend-path LogicSig size used for budget calculation. For
   `bounded1`, this excludes the external contract-admin signature slot;
   `boundedAuthorization.postSigningLsigSize` is admin-inclusive.
@@ -377,10 +377,15 @@ controller.abort();
 |----------|-------------|-------|
 | `ed25519` | Native Algorand keys | Standard signing |
 | `aplane.falcon1024.v1` | Post-quantum LogicSig | Signature in LogicSig.Args[0] |
-| `aplane.sentry-ed25519.v1` | Sentry component key | Policy signature only; not a spending account |
-| `aplane.falcon1024-sentry-ed25519.v1` | Guarded account | Requires user and sentry component signatures |
-| `aplane.timed-allowlist.v1` | Time-locked allow-list | No signature, TEAL-only |
-| `aplane.htlc.v*` | Hash-locked funds | Requires `preimage` arg (check `signingArgs`) |
+| `aplane.ed25519.v1` | Ed25519 DSA LogicSig | Library-visible plain DSA account |
+| `aplane.sentry-falcon1024.v1` | Sentry component key | Policy signature only; not a spending account |
+| `aplane.falcon1024-sentry-falcon1024.v1` | Guarded account | Requires user and sentry component signatures |
+| `aplane.corridor.v1` | Corridor account | Falcon user and sentry signatures with corridor policy |
+| `aplane.falcon1024-allowlist.v1` | Bounded allowlist | Inline allowlist; `bounded1` signing flow |
+| `aplane.falcon1024-allowlist.v2` | Bounded allowlist | Merkle allowlist; `bounded1` signing flow |
+| `aplane.falcon1024-timelock.v1` | Bounded timelock | Round-gated `bounded1` signing flow |
+| `aplane.falcon1024-allowlist-alock.v1` | Rekey-locked bounded allowlist | Ordinary spending uses `bounded1`; admin rekey is outside SDK scope |
+| `aplane.htlc.v1` | Hash-locked funds | Requires `preimage` arg (check `signingArgs`) |
 
 The server assembles the complete signed transaction - the SDK returns a base64 string ready for submission.
 

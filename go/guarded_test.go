@@ -74,7 +74,7 @@ func TestSignGuardedGroupOneTarget(t *testing.T) {
 				Signatures: []ComponentSignature{{
 					TargetIndex:     0,
 					Signature:       "user-sig",
-					SignatureScheme: KeyTypeSentryEd25519,
+					SignatureScheme: KeyTypeSentryFalcon1024,
 				}},
 			})
 		case "/sign/assemble":
@@ -117,7 +117,7 @@ func TestSignGuardedGroupOneTarget(t *testing.T) {
 			Signatures: []ComponentSignature{{
 				TargetIndex:     0,
 				Signature:       "sentry-sig",
-				SignatureScheme: KeyTypeSentryEd25519,
+				SignatureScheme: KeyTypeSentryFalcon1024,
 			}},
 		})
 	})
@@ -156,8 +156,8 @@ func TestSignGuardedGroupBatchesSharedSentryKey(t *testing.T) {
 			json.NewEncoder(w).Encode(ComponentSignResponse{
 				RequestID: req.RequestID,
 				Signatures: []ComponentSignature{
-					{TargetIndex: 0, Signature: "user-0", SignatureScheme: KeyTypeSentryEd25519},
-					{TargetIndex: 1, Signature: "user-1", SignatureScheme: KeyTypeSentryEd25519},
+					{TargetIndex: 0, Signature: "user-0", SignatureScheme: KeyTypeSentryFalcon1024},
+					{TargetIndex: 1, Signature: "user-1", SignatureScheme: KeyTypeSentryFalcon1024},
 				},
 			})
 		case "/sign/assemble":
@@ -194,8 +194,8 @@ func TestSignGuardedGroupBatchesSharedSentryKey(t *testing.T) {
 		json.NewEncoder(w).Encode(ComponentSignResponse{
 			RequestID: req.RequestID,
 			Signatures: []ComponentSignature{
-				{TargetIndex: 0, Signature: "sentry-0", SignatureScheme: KeyTypeSentryEd25519},
-				{TargetIndex: 1, Signature: "sentry-1", SignatureScheme: KeyTypeSentryEd25519},
+				{TargetIndex: 0, Signature: "sentry-0", SignatureScheme: KeyTypeSentryFalcon1024},
+				{TargetIndex: 1, Signature: "sentry-1", SignatureScheme: KeyTypeSentryFalcon1024},
 			},
 		})
 	})
@@ -241,7 +241,7 @@ func TestSignGuardedGroupRejectsMismatchedAssembly(t *testing.T) {
 					_ = json.NewDecoder(r.Body).Decode(&req)
 					json.NewEncoder(w).Encode(ComponentSignResponse{
 						RequestID:  req.RequestID,
-						Signatures: []ComponentSignature{{TargetIndex: 0, Signature: "user-sig", SignatureScheme: KeyTypeSentryEd25519}},
+						Signatures: []ComponentSignature{{TargetIndex: 0, Signature: "user-sig", SignatureScheme: KeyTypeSentryFalcon1024}},
 					})
 				case "/sign/assemble":
 					var req GuardedAssemblyRequest
@@ -264,7 +264,7 @@ func TestSignGuardedGroupRejectsMismatchedAssembly(t *testing.T) {
 				_ = json.NewDecoder(r.Body).Decode(&req)
 				json.NewEncoder(w).Encode(ComponentSignResponse{
 					RequestID:  req.RequestID,
-					Signatures: []ComponentSignature{{TargetIndex: 0, Signature: "sentry-sig", SignatureScheme: KeyTypeSentryEd25519}},
+					Signatures: []ComponentSignature{{TargetIndex: 0, Signature: "sentry-sig", SignatureScheme: KeyTypeSentryFalcon1024}},
 				})
 			})
 			defer sentryServer.Close()
@@ -313,7 +313,7 @@ func TestSignGuardedGroupMixedPrimaryAndGuarded(t *testing.T) {
 				Signatures: []ComponentSignature{{
 					TargetIndex:     1,
 					Signature:       "user-sig",
-					SignatureScheme: KeyTypeSentryEd25519,
+					SignatureScheme: KeyTypeSentryFalcon1024,
 				}},
 			})
 		case "/sign/assemble":
@@ -344,7 +344,7 @@ func TestSignGuardedGroupMixedPrimaryAndGuarded(t *testing.T) {
 			Signatures: []ComponentSignature{{
 				TargetIndex:     1,
 				Signature:       "sentry-sig",
-				SignatureScheme: KeyTypeSentryEd25519,
+				SignatureScheme: KeyTypeSentryFalcon1024,
 			}},
 		})
 	})
@@ -397,7 +397,7 @@ func TestSignPreparedGuardedGroupAllGuardedAddsDummiesWithoutPlanOrSign(t *testi
 				Signatures: []ComponentSignature{{
 					TargetIndex:     0,
 					Signature:       "user-sig",
-					SignatureScheme: KeyTypeSentryEd25519,
+					SignatureScheme: KeyTypeSentryFalcon1024,
 				}},
 			})
 		case "/sign/assemble":
@@ -450,7 +450,7 @@ func TestSignPreparedGuardedGroupAllGuardedAddsDummiesWithoutPlanOrSign(t *testi
 			Signatures: []ComponentSignature{{
 				TargetIndex:     0,
 				Signature:       "sentry-sig",
-				SignatureScheme: KeyTypeSentryEd25519,
+				SignatureScheme: KeyTypeSentryFalcon1024,
 			}},
 		})
 	})
@@ -479,9 +479,9 @@ func TestSignPreparedGuardedGroupAllGuardedAddsDummiesWithoutPlanOrSign(t *testi
 			AuthAddress: guarded,
 			SignerKey: &KeyInfo{
 				Address:                guarded,
-				KeyType:                KeyTypeGuardedFalcon1024SentryEd25519,
+				KeyType:                KeyTypeGuardedFalcon1024SentryFalcon1024,
 				SigningFlow:            SigningFlowSentry1,
-				SentryComponentKeyType: KeyTypeSentryEd25519,
+				SentryComponentKeyType: KeyTypeSentryFalcon1024,
 				LsigSize:               3035,
 				Parameters:             map[string]string{"sentry_public_key": "aabbcc"},
 			},

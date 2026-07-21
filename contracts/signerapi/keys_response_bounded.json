@@ -4,7 +4,7 @@
     {
       "address": "BOUNDEDADDR000000000000000000000000000000000000000000000",
       "public_key_hex": "00112233445566778899aabbccddeeff",
-      "key_type": "aplane.falcon1024-admin-allowlist.v1",
+      "key_type": "aplane.falcon1024-allowlist-alock.v1",
       "signing_flow": "bounded1",
       "lsig_size": 6592,
       "bounded_authorization": {
