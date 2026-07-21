@@ -209,7 +209,7 @@ Returns list of `KeyInfo`:
 
 The SDK exposes bounded inventory and ordinary spend signing only. It does not
 build, partially sign, or complete contract-admin rekey transactions; use the
-APlane `apbounded-admin` workflow for those operations.
+APlane `aprekey` workflow for those operations.
 
 **Discovering required arguments for generic LogicSigs:**
 

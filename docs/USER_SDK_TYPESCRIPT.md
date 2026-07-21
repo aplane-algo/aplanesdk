@@ -330,7 +330,7 @@ external contract-admin signature slot;
 
 The TypeScript SDK exposes bounded inventory and ordinary spend signing only.
 It does not expose `/sign/bounded-admin` or build and complete contract-admin
-rekeys; use the APlane `apbounded-admin` workflow for those operations.
+rekeys; use the APlane `aprekey` workflow for those operations.
 
 `templateStatus` and `templateWarning` are legacy aliases for
 `templateProvenanceStatus` and `templateProvenanceNote`.
