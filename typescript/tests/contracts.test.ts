@@ -304,8 +304,8 @@ describe("signer API contract fixtures", () => {
 
     const client = new SignerClient("http://localhost:11270", "test-token");
     const component = (await client.listKeys(true))[0];
-    assert.equal(component.keyType, "aplane.sentry-falcon1024.v1");
-    assert.equal(component.isComponentKey, true);
+    assert.equal(component.keyType, "aplane.witness-falcon1024.v1");
+    assert.equal(component.isWitnessKey, true);
     assert.equal(component.isSpendingAccount, false);
 
     mockFetch.mockResolvedValueOnce({
@@ -395,13 +395,13 @@ describe("signer API contract fixtures", () => {
     });
 
     const client = new SignerClient("http://localhost:11270", "test-token");
-    const generated = await client.generateKey("aplane.sentry-falcon1024.v1");
+    const generated = await client.generateKey("aplane.witness-falcon1024.v1");
 
-    assert.equal(generated.address, "H2DZY4Y4D726DVOAURO5HG4H2HVKTXE26LTVZ7LOGHFKAG6DN62Q");
+    assert.equal(generated.address, "ROGAFDACF7ASC3EMZRWNKVM73NXHO4P6O4EB7ZXWER37SM63BMFQ");
     assert.equal(generated.publicKeyHex.length, 3586);
     assert.match(generated.publicKeyHex, /^0+$/);
-    assert.equal(generated.keyType, "aplane.sentry-falcon1024.v1");
-    assert.equal(generated.isComponentKey, true);
+    assert.equal(generated.keyType, "aplane.witness-falcon1024.v1");
+    assert.equal(generated.isWitnessKey, true);
     assert.equal(generated.isSpendingAccount, false);
   });
 
@@ -411,7 +411,7 @@ describe("signer API contract fixtures", () => {
     assert.equal(componentReq.target_indices[0], 0);
 
     const componentResp = fixture("component_sign_response_sentry.json") as ComponentSignResponse;
-    assert.equal(componentResp.signatures[0].signature_scheme, "aplane.sentry-falcon1024.v1");
+    assert.equal(componentResp.signatures[0].signature_scheme, "aplane.witness-falcon1024.v1");
 
     const assemblyReq = fixture("guarded_assembly_request_mixed.json") as GuardedAssemblyRequest;
     assert.equal(assemblyReq.targets?.[0].guarded_account, "LOGICSIGACCOUNTADDRESSAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
@@ -469,7 +469,7 @@ describe("signer API contract fixtures", () => {
 
   it("round-trips admin sentry sync fixture DTOs", () => {
     const syncReq = fixture("admin_sync_sentries_request.json") as AdminSyncSentryReferencesRequest;
-    assert.equal(syncReq.candidates[0].key_type, "aplane.sentry-falcon1024.v1");
+    assert.equal(syncReq.candidates[0].key_type, "aplane.witness-falcon1024.v1");
 
     const syncResp = fixture("admin_sync_sentries_response.json") as AdminSyncSentryReferencesResponse;
     assert.equal(syncResp.added, 1);

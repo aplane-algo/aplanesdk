@@ -795,7 +795,7 @@ func TestRequestComponentSignPostsToComponentEndpoint(t *testing.T) {
 			Signatures: []ComponentSignature{{
 				TargetIndex:     0,
 				Signature:       "aabb",
-				SignatureScheme: KeyTypeSentryFalcon1024,
+				SignatureScheme: KeyTypeWitnessFalcon1024,
 			}},
 		})
 	})
@@ -941,7 +941,7 @@ func TestAdminSyncSentryReferencesPostsToAdminEndpoint(t *testing.T) {
 	resp, err := client.AdminSyncSentryReferences([]SentryReferenceCandidate{{
 		EndpointAlias: "sentry-local",
 		ComponentKey:  "COMPONENT",
-		KeyType:       KeyTypeSentryFalcon1024,
+		KeyType:       KeyTypeWitnessFalcon1024,
 		PublicKeyHex:  "aabb",
 	}})
 	if err != nil {

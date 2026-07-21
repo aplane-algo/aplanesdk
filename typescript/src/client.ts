@@ -2067,7 +2067,7 @@ export class SignerClient {
         sentryComponentKeyType: raw.sentry_component_key_type || undefined,
         lsigSize: raw.lsig_size || 0,
         isGenericLsig: raw.is_generic_lsig || false,
-        isComponentKey: raw.is_component_key || false,
+        isWitnessKey: raw.is_witness_key || false,
         isSpendingAccount: typeof raw.is_spending_account === "boolean" ? raw.is_spending_account : undefined,
         boundedAuthorization: mapBoundedAuthorization(raw.bounded_authorization),
         signingArgs,
@@ -2925,7 +2925,7 @@ export class SignerClient {
       address: String(data.address || ""),
       publicKeyHex: typeof data.public_key_hex === "string" ? data.public_key_hex : undefined,
       keyType: String(data.key_type || ""),
-      isComponentKey: Boolean(data.is_component_key),
+      isWitnessKey: Boolean(data.is_witness_key),
       isSpendingAccount: typeof data.is_spending_account === "boolean" ? data.is_spending_account : undefined,
       parameters: data.parameters as Record<string, string> | undefined,
     };

@@ -15,7 +15,7 @@ const (
 	ComponentSignRoleUser   ComponentSignRole = "user"
 	ComponentSignRoleSentry ComponentSignRole = "sentry"
 
-	KeyTypeSentryFalcon1024            = "aplane.sentry-falcon1024.v1"
+	KeyTypeWitnessFalcon1024           = "aplane.witness-falcon1024.v1"
 	KeyTypeGuardedFalcon1024Sentry1024 = "aplane.falcon1024-sentry1024.v1"
 )
 
@@ -741,7 +741,7 @@ type KeyInfo struct {
 	SentryComponentKeyType   string                    `json:"sentry_component_key_type,omitempty"`
 	LsigSize                 int                       `json:"lsig_size,omitempty"` // Spend-path size for bounded1
 	IsGenericLsig            bool                      `json:"is_generic_lsig,omitempty"`
-	IsComponentKey           bool                      `json:"is_component_key,omitempty"`
+	IsWitnessKey             bool                      `json:"is_witness_key,omitempty"`
 	BoundedAuthorization     *BoundedAuthorizationInfo `json:"bounded_authorization,omitempty"`
 	IsSpendingAccount        *bool                     `json:"is_spending_account,omitempty"`
 	SigningArgs              []SigningArg              `json:"signing_args,omitempty"`
@@ -803,7 +803,7 @@ type GenerateResult struct {
 	Address           string            `json:"address,omitempty"`
 	PublicKeyHex      string            `json:"public_key_hex,omitempty"`
 	KeyType           string            `json:"key_type,omitempty"`
-	IsComponentKey    bool              `json:"is_component_key,omitempty"`
+	IsWitnessKey      bool              `json:"is_witness_key,omitempty"`
 	IsSpendingAccount *bool             `json:"is_spending_account,omitempty"`
 	Parameters        map[string]string `json:"parameters,omitempty"`
 	Error             string            `json:"error,omitempty"`

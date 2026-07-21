@@ -101,7 +101,7 @@ COMPONENT_SIGN_ROLE_SENTRY = "sentry"
 SIGNING_FLOW_SENTRY1 = "sentry1"
 SIGNING_FLOW_BOUNDED1 = "bounded1"
 
-KEY_TYPE_SENTRY_FALCON1024 = "aplane.sentry-falcon1024.v1"
+KEY_TYPE_WITNESS_FALCON1024 = "aplane.witness-falcon1024.v1"
 KEY_TYPE_GUARDED_FALCON1024_SENTRY1024 = "aplane.falcon1024-sentry1024.v1"
 
 # Current product identity for token provisioning helpers.
@@ -299,7 +299,7 @@ class KeyInfo:
     sentry_component_key_type: str = ""  # Sentry component key type for signing flow "sentry1"
     lsig_size: int = 0  # Spend-path size for bounded1
     is_generic_lsig: bool = False
-    is_component_key: bool = False
+    is_witness_key: bool = False
     bounded_authorization: Optional[BoundedAuthorizationInfo] = None
     is_spending_account: Optional[bool] = None
     signing_args: Optional[List[SigningArg]] = None  # Key-file args required for LogicSigs
@@ -713,7 +713,7 @@ class GenerateResult:
     address: str
     key_type: str
     public_key_hex: str = ""
-    is_component_key: bool = False
+    is_witness_key: bool = False
     is_spending_account: Optional[bool] = None
     parameters: Optional[Dict[str, str]] = None
 
@@ -2173,7 +2173,7 @@ class SignerClient:
                 sentry_component_key_type=k.get("sentry_component_key_type", ""),
                 lsig_size=k.get("lsig_size", 0),
                 is_generic_lsig=k.get("is_generic_lsig", False),
-                is_component_key=k.get("is_component_key", False),
+                is_witness_key=k.get("is_witness_key", False),
                 bounded_authorization=_parse_bounded_authorization(k.get("bounded_authorization")),
                 is_spending_account=k.get("is_spending_account"),
                 signing_args=signing_args,
@@ -3124,7 +3124,7 @@ class SignerClient:
             address=data["address"],
             key_type=data["key_type"],
             public_key_hex=data.get("public_key_hex", ""),
-            is_component_key=data.get("is_component_key", False),
+            is_witness_key=data.get("is_witness_key", False),
             is_spending_account=data.get("is_spending_account"),
             parameters=data.get("parameters"),
         )

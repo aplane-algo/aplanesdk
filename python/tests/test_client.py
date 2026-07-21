@@ -40,7 +40,7 @@ from aplanesdk.signer import (
     PreparedGroup,
     COMPONENT_SIGN_ROLE_SENTRY,
     KEY_TYPE_GUARDED_FALCON1024_SENTRY1024,
-    KEY_TYPE_SENTRY_FALCON1024,
+    KEY_TYPE_WITNESS_FALCON1024,
     SIGNING_FLOW_SENTRY1,
     request_token,
     request_token_to_file,
@@ -548,7 +548,7 @@ class TestSpecializedLowLevelEndpoints:
                 {
                     "target_index": 0,
                     "signature": "aabb",
-                    "signature_scheme": KEY_TYPE_SENTRY_FALCON1024,
+                    "signature_scheme": KEY_TYPE_WITNESS_FALCON1024,
                 },
             ],
         })
@@ -633,7 +633,7 @@ class TestSpecializedLowLevelEndpoints:
                 SentryReferenceCandidate(
                     endpoint_alias="sentry-local",
                     component_key="COMPONENT",
-                    key_type=KEY_TYPE_SENTRY_FALCON1024,
+                    key_type=KEY_TYPE_WITNESS_FALCON1024,
                     public_key_hex="aabb",
                 ),
             ])
@@ -652,11 +652,11 @@ class TestSignGuardedGroup:
 
         user.request_component_sign = MagicMock(return_value=ComponentSignResponse(
             request_id="user-id",
-            signatures=[ComponentSignature(0, "user-sig", KEY_TYPE_SENTRY_FALCON1024)],
+            signatures=[ComponentSignature(0, "user-sig", KEY_TYPE_WITNESS_FALCON1024)],
         ))
         sentry.request_component_sign = MagicMock(return_value=ComponentSignResponse(
             request_id="sentry-id",
-            signatures=[ComponentSignature(0, "sentry-sig", KEY_TYPE_SENTRY_FALCON1024)],
+            signatures=[ComponentSignature(0, "sentry-sig", KEY_TYPE_WITNESS_FALCON1024)],
         ))
 
         def assemble(req):
@@ -691,15 +691,15 @@ class TestSignGuardedGroup:
         user.request_component_sign = MagicMock(return_value=ComponentSignResponse(
             request_id="user-id",
             signatures=[
-                ComponentSignature(0, "user-0", KEY_TYPE_SENTRY_FALCON1024),
-                ComponentSignature(1, "user-1", KEY_TYPE_SENTRY_FALCON1024),
+                ComponentSignature(0, "user-0", KEY_TYPE_WITNESS_FALCON1024),
+                ComponentSignature(1, "user-1", KEY_TYPE_WITNESS_FALCON1024),
             ],
         ))
         sentry.request_component_sign = MagicMock(return_value=ComponentSignResponse(
             request_id="sentry-id",
             signatures=[
-                ComponentSignature(0, "sentry-0", KEY_TYPE_SENTRY_FALCON1024),
-                ComponentSignature(1, "sentry-1", KEY_TYPE_SENTRY_FALCON1024),
+                ComponentSignature(0, "sentry-0", KEY_TYPE_WITNESS_FALCON1024),
+                ComponentSignature(1, "sentry-1", KEY_TYPE_WITNESS_FALCON1024),
             ],
         ))
         user.request_guarded_assemble = MagicMock(return_value=GuardedAssemblyResponse(
@@ -726,11 +726,11 @@ class TestSignGuardedGroup:
         sentry = make_client("http://sentry:11270")
         user.request_component_sign = MagicMock(return_value=ComponentSignResponse(
             request_id="user-id",
-            signatures=[ComponentSignature(1, "user-sig", KEY_TYPE_SENTRY_FALCON1024)],
+            signatures=[ComponentSignature(1, "user-sig", KEY_TYPE_WITNESS_FALCON1024)],
         ))
         sentry.request_component_sign = MagicMock(return_value=ComponentSignResponse(
             request_id="sentry-id",
-            signatures=[ComponentSignature(1, "sentry-sig", KEY_TYPE_SENTRY_FALCON1024)],
+            signatures=[ComponentSignature(1, "sentry-sig", KEY_TYPE_WITNESS_FALCON1024)],
         ))
         user.sign_requests = MagicMock(return_value=GroupSignResponse(
             signed=["primary-signed", ""],
@@ -770,11 +770,11 @@ class TestSignGuardedGroup:
 
         user.request_component_sign = MagicMock(return_value=ComponentSignResponse(
             request_id="user-id",
-            signatures=[ComponentSignature(0, "user-sig", KEY_TYPE_SENTRY_FALCON1024)],
+            signatures=[ComponentSignature(0, "user-sig", KEY_TYPE_WITNESS_FALCON1024)],
         ))
         sentry.request_component_sign = MagicMock(return_value=ComponentSignResponse(
             request_id="sentry-id",
-            signatures=[ComponentSignature(0, "sentry-sig", KEY_TYPE_SENTRY_FALCON1024)],
+            signatures=[ComponentSignature(0, "sentry-sig", KEY_TYPE_WITNESS_FALCON1024)],
         ))
         user.sign_requests = MagicMock(side_effect=AssertionError("all-guarded path must not call /sign"))
         user.plan_group = MagicMock(side_effect=AssertionError("all-guarded path must not call /plan"))
@@ -812,7 +812,7 @@ class TestSignGuardedGroup:
                         address=guarded,
                         key_type=KEY_TYPE_GUARDED_FALCON1024_SENTRY1024,
                         signing_flow=SIGNING_FLOW_SENTRY1,
-                        sentry_component_key_type=KEY_TYPE_SENTRY_FALCON1024,
+                        sentry_component_key_type=KEY_TYPE_WITNESS_FALCON1024,
                         lsig_size=3035,
                         parameters={"sentry_public_key": "aabbcc"},
                     ),

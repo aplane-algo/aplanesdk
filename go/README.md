@@ -348,7 +348,7 @@ callers migrating from older contract names, `GroupPlanResponse` and
 | `ed25519` | Native Algorand keys | Standard signing |
 | `aplane.falcon1024.v1` | Post-quantum LogicSig | Large signature (~3KB) |
 | `aplane.ed25519.v1` | Ed25519 DSA LogicSig | Library-visible plain DSA account |
-| `aplane.sentry-falcon1024.v1` | Sentry component key | Policy signature only; not a spending account |
+| `aplane.witness-falcon1024.v1` | Witness key | Sentry-custodied policy signature key; not a spending account |
 | `aplane.falcon1024-sentry1024.v1` | Guarded account | Requires user and sentry component signatures |
 | `aplane.corridor.v1` | Corridor account | Falcon user and sentry signatures with corridor policy |
 | `aplane.falcon1024-allowlist.v1` | Bounded allowlist | Inline allowlist; `bounded1` signing flow |
@@ -359,7 +359,7 @@ callers migrating from older contract names, `GroupPlanResponse` and
 
 ## Sentry And Guarded Accounts
 
-Sentry component keys are 52-character public selectors for policy-signature
+Witness keys enrolled as sentries use 52-character public selectors for policy-signature
 keys. They are not Algorand spending accounts and must not be used as senders,
 receivers, auth addresses, or rekey targets. Guarded account keys embed the
 sentry public key and are assembled through `/sign/assemble`; ordinary `/sign`
