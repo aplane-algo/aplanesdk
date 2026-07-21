@@ -1,5 +1,5 @@
 {
-  "key_type": "aplane.timed-allowlist.v1",
+  "key_type": "example.generic-policy.v1",
   "parameters": {
     "unlock_round": "123456",
     "beneficiary": "BENEFICIARYADDR000000000000000000000000000000000000000000"

@@ -20,12 +20,9 @@ export const COMPONENT_SIGN_ROLE_SENTRY = "sentry";
 export const SIGNING_FLOW_SENTRY1 = "sentry1";
 export const SIGNING_FLOW_BOUNDED1 = "bounded1";
 
-export const KEY_TYPE_SENTRY_ED25519 = "aplane.sentry-ed25519.v1";
 export const KEY_TYPE_SENTRY_FALCON1024 = "aplane.sentry-falcon1024.v1";
-export const KEY_TYPE_GUARDED_FALCON1024_SENTRY_ED25519 =
-  "aplane.falcon1024-sentry-ed25519.v1";
-export const KEY_TYPE_GUARDED_FALCON1024_SENTRY_FALCON1024 =
-  "aplane.falcon1024-sentry-falcon1024.v1";
+export const KEY_TYPE_GUARDED_FALCON1024_SENTRY1024 =
+  "aplane.falcon1024-sentry1024.v1";
 
 export interface RuntimeArg {
   /** Internal name for the argument (e.g., "preimage") */
@@ -105,7 +102,7 @@ export interface KeyInfo {
   address: string;
   /** Public key in hex format */
   publicKeyHex: string;
-  /** Key type (e.g., "ed25519", "aplane.falcon1024.v1", "aplane.timed-allowlist.v1") */
+  /** Key type (e.g., "ed25519", "aplane.falcon1024.v1", "aplane.htlc.v1") */
   keyType: string;
   /** Signing choreography label (e.g. "sentry1"); empty/absent = plain /sign path */
   signingFlow?: string;

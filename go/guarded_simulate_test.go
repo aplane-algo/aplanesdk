@@ -124,7 +124,7 @@ func TestRequestComponentSignUserRoleDiscoversApprovalWait(t *testing.T) {
 				Signatures: []ComponentSignature{{
 					TargetIndex:     0,
 					Signature:       "sig",
-					SignatureScheme: KeyTypeSentryEd25519,
+					SignatureScheme: KeyTypeSentryFalcon1024,
 				}},
 			})
 		default:

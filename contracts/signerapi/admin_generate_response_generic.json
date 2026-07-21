@@ -1,6 +1,6 @@
 {
   "address": "GENERATEDADDR0000000000000000000000000000000000000000000",
-  "key_type": "aplane.timed-allowlist.v1",
+  "key_type": "example.generic-policy.v1",
   "parameters": {
     "beneficiary": "BENEFICIARYADDR000000000000000000000000000000000000000000",
     "unlock_round": "123456"
