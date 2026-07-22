@@ -17,8 +17,6 @@ import type {
   ComponentSignResponse,
   GuardedAssemblyRequest,
   GuardedAssemblyResponse,
-  GuardedSimulateRequest,
-  GuardedSimulateResponse,
 } from "../src/types.js";
 
 interface MockFetch {
@@ -251,7 +249,7 @@ describe("signer API contract fixtures", () => {
 
     assert.equal(identity.identityId, "default");
     assert.equal(identity.nodeRole, "signer");
-    assert.deepEqual(identity.protocolVersion, { major: 1, minor: 0 });
+    assert.deepEqual(identity.protocolVersion, { major: 2, minor: 0 });
     assert.match(identity.buildVersion || "", /^v0\.30\.0 /);
     assert.equal(identity.state, "unlocked");
     assert.equal(identity.signerLocked, false);
@@ -345,31 +343,6 @@ describe("signer API contract fixtures", () => {
     assert.equal(plan.mutations?.foreignCount, 1);
   });
 
-  it("maps /simulate response wire fields", async () => {
-    mockFetch.mockResolvedValueOnce({
-      status: 200,
-      ok: true,
-      json: async () => fixture("group_simulate_response_mutated.json"),
-    });
-
-    const client = new SignerClient("http://localhost:11270", "test-token");
-    const simulation = await client.simulateRequests([
-      {
-        txn_bytes_hex: "545801",
-        auth_address: "AUTHADDR00000000000000000000000000000000000000000000000",
-      },
-    ]);
-
-    assert.deepEqual(simulation.tx_ids, ["SIMTXID1", "SIMTXID2", "SIMTXID3"]);
-    assert.deepEqual(simulation.transactions, ["545801", "545802", "545803"]);
-    assert.equal(simulation.mutations?.dummiesAdded, 1);
-    assert.equal(simulation.mutations?.groupIdChanged, true);
-    assert.deepEqual(simulation.mutations?.feesModified, [0, 2]);
-    assert.equal(simulation.mutations?.foreignCount, 1);
-    assert.equal(simulation.failed, true);
-    assert.match(simulation.output ?? "", /Group size: 3/);
-  });
-
   it("maps /admin/generate response fields", async () => {
     mockFetch.mockResolvedValueOnce({
       status: 200,
@@ -449,22 +422,6 @@ describe("signer API contract fixtures", () => {
     const keyType = (await client.listKeyTypes())[0];
     assert.equal(keyType.boundedAuthorization?.layer3Policy, "fixed_allowlist");
     assert.equal(keyType.boundedAuthorization?.adminKeyId, undefined);
-  });
-
-  it("round-trips guarded simulate fixture DTOs", () => {
-    const simulateReq = fixture("guarded_simulate_request_mixed.json") as GuardedSimulateRequest;
-    assert.equal(simulateReq.requests.length, 3);
-    assert.equal(simulateReq.requests[1].auth_address, "AUTHADDRESSAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
-    assert.equal(simulateReq.targets[0].guarded_account, "LOGICSIGACCOUNTADDRESSAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
-    assert.equal(simulateReq.targets[0].sentry_signature, "cccccccccccccccccccccccccccccccc");
-    assert.deepEqual(simulateReq.targets[0].runtime_args, ["aa01", "bb02"]);
-    assert.equal(simulateReq.passthrough?.[0].target_index, 2);
-
-    const simulateResp = fixture("guarded_simulate_response.json") as GuardedSimulateResponse;
-    assert.equal(simulateResp.tx_ids?.length, 3);
-    assert.equal(simulateResp.transactions?.length, 3);
-    assert.ok(simulateResp.output?.includes("Simulation FAILED"));
-    assert.equal(simulateResp.failed, true);
   });
 
   it("round-trips admin sentry sync fixture DTOs", () => {

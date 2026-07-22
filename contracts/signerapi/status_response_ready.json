@@ -2,7 +2,7 @@
   "identity_id": "default",
   "node_role": "signer",
   "protocol_version": {
-    "major": 1,
+    "major": 2,
     "minor": 0
   },
   "build_version": "v0.30.0 (commit: fixture, built: 2026-01-01T00:00:00Z, linux/amd64)",
