@@ -4,7 +4,12 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import algosdk from "algosdk";
-import { SignerClient, signGuardedGroup, signPreparedGuardedGroup } from "../src/client.js";
+import {
+  SignerClient,
+  signGuardedGroup,
+  signPreparedGuardedGroup,
+  simulateGuardedGroup,
+} from "../src/client.js";
 import {
   COMPONENT_SIGN_ROLE_SENTRY,
   KEY_TYPE_GUARDED_FALCON1024_SENTRY1024,
@@ -1993,97 +1998,88 @@ describe("SignerClient", () => {
     });
   });
 
-  describe("simulateRequests", () => {
-    it("sends raw simulate requests and returns diagnostics", async () => {
+  describe("client-side signed simulation", () => {
+    it("uses ordinary signing before calling the caller's algod", async () => {
+      const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+        sender: testAddress(1),
+        receiver: testAddress(2),
+        amount: 1n,
+        suggestedParams: {
+          fee: 1000n,
+          minFee: 1000n,
+          firstValid: 1n,
+          lastValid: 100n,
+          genesisHash: new Uint8Array(32),
+          genesisID: "testnet-v1",
+          flatFee: true,
+        },
+      });
+      const signature = new Uint8Array(64);
+      signature[63] = 1;
+      const signedBytes = algosdk.encodeMsgpack(
+        new algosdk.SignedTransaction({ txn, sig: signature }),
+      );
+      const signedHex = bytesToHex(signedBytes);
+
+      queueStatusResponse();
       mockFetch.mockResolvedValueOnce({
         status: 200,
         ok: true,
         json: async () => ({
-          tx_ids: ["SIMTXID1"],
-          transactions: ["545801"],
-          mutations: { dummies_added: 1 },
-          output: "Simulation failed\nlogic eval error",
-          failed: true,
+          signed: [signedHex],
+          mutations: { original_count: 1, final_count: 1 },
         }),
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
-      const result = await client.simulateRequests(
-        [
-          {
-            txn_bytes_hex: "545801",
-            auth_address: "AUTH",
-            txn_sender: "SENDER",
-          },
-        ],
-        { requestId: "simulate-id" },
-      );
+      const simulationRequests: algosdk.modelsv2.SimulateRequest[] = [];
+      const algodClient = {
+        simulateTransactions: (request: algosdk.modelsv2.SimulateRequest) => {
+          simulationRequests.push(request);
+          return {
+            do: async () => ({
+              lastRound: 7n,
+              version: 2n,
+              txnGroups: [{ failureMessage: "logic eval error", txnResults: [] }],
+            }),
+          };
+        },
+      } as any;
 
-      assert.deepEqual(result.tx_ids, ["SIMTXID1"]);
-      assert.deepEqual(result.transactions, ["545801"]);
-      assert.equal(result.mutations?.dummiesAdded, 1);
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const result = await client.simulatePreparedGroup(algodClient, {
+        transactions: [{ transaction: txn, authAddress: testAddress(1) }],
+      });
+
+      assert.equal(mockFetch.mock.calls[1][0], "http://localhost:11270/sign");
+      assert.equal(mockFetch.mock.calls.some((call) => call[0].endsWith("/simulate")), false);
+      assert.equal(simulationRequests.length, 1);
+      assert.equal(simulationRequests[0].allowEmptySignatures, false);
+      assert.equal(simulationRequests[0].fixSigners, false);
+      assert.deepEqual(
+        algosdk.encodeMsgpack(simulationRequests[0].txnGroups[0].txns[0]),
+        signedBytes,
+      );
+      assert.deepEqual(result.signedGroup, [signedHex]);
+      assert.deepEqual(result.txIds, [txn.txID()]);
+      assert.equal(result.mutations?.finalCount, 1);
       assert.equal(result.failed, true);
-      assert.match(result.output ?? "", /logic eval error/);
-      assert.equal(mockFetch.mock.calls[0][0], "http://localhost:11270/simulate");
-      assert.deepEqual(JSON.parse(mockFetch.mock.calls[0][1].body), {
-        request_id: "simulate-id",
-        requests: [
-          {
-            txn_bytes_hex: "545801",
-            auth_address: "AUTH",
-            txn_sender: "SENDER",
-          },
-        ],
-      });
     });
 
-    it("simulates prepared groups", async () => {
-      mockFetch.mockResolvedValueOnce({
-        status: 200,
-        ok: true,
-        json: async () => ({ tx_ids: ["SIMTXID1"] }),
-      });
-
-      const client = new SignerClient("http://localhost:11270", "test-token");
-      const mockTxn = {
-        sender: { toString: () => "SENDER" },
-        toByte: () => new Uint8Array([1, 2, 3, 4]),
-      };
-      const result = await client.simulatePreparedGroup({
-        transactions: [
-          {
-            transaction: mockTxn as any,
-            authAddress: "AUTH",
-            txnSender: "SENDER",
-          },
-        ],
-      });
-
-      assert.deepEqual(result.tx_ids, ["SIMTXID1"]);
-      assert.equal(mockFetch.mock.calls[0][0], "http://localhost:11270/simulate");
-      assert.equal(JSON.parse(mockFetch.mock.calls[0][1].body).requests[0].auth_address, "AUTH");
-    });
-
-    it("throws on server error in response", async () => {
-      mockFetch.mockResolvedValueOnce({
-        status: 200,
-        ok: true,
-        json: async () => ({ error: "simulation unavailable" }),
-      });
-
+    it("requires algod before contacting the signer", async () => {
       const client = new SignerClient("http://localhost:11270", "test-token");
       await assert.rejects(
-        client.simulateRequests([{ txn_bytes_hex: "545801", auth_address: "AUTH" }]),
-        /simulation unavailable/,
+        client.simulatePreparedGroup(null as any, { transactions: [] }),
+        /algodClient is required/,
       );
+      assert.equal(mockFetch.mock.calls.length, 0);
     });
 
-    it("validates raw simulate request IDs", async () => {
-      const client = new SignerClient("http://localhost:11270", "test-token");
+    it("requires algod before starting guarded signing", async () => {
       await assert.rejects(
-        client.simulateRequests([{ txn_bytes_hex: "545801" }], { requestId: "bad id" }),
-        { message: /invalid character/ },
+        simulateGuardedGroup(null as any, {} as any),
+        /algodClient is required/,
       );
+      assert.equal(mockFetch.mock.calls.length, 0);
     });
   });
 

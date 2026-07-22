@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 APlane Project LLC
 
-import type { Transaction } from "algosdk";
+import type { Transaction, modelsv2 } from "algosdk";
 
 /**
  * Runtime argument specification for a generic LogicSig.
@@ -450,52 +450,6 @@ export interface GuardedAssemblyResponse {
 }
 
 /**
- * One guarded-account group position plus its sentry component signature for
- * POST /simulate/guarded. The user component signature is produced inside the
- * signer and never crosses the wire.
- */
-export interface GuardedSimulateTarget {
-  target_index: number;
-  guarded_account: string;
-  sentry_signature: string;
-  sentry_source_request_id?: string;
-  runtime_args?: string[];
-}
-
-/**
- * Request payload for POST /simulate/guarded, the contained guarded
- * simulation flow: apsigner produces the user component signatures
- * internally, assembles the guarded group, and simulates against its own
- * algod. Assembled signed bytes never leave the signer.
- *
- * `requests` carries the full frozen group, one entry per position, in the
- * same shape the mixed guarded flow sends to /sign: positions the signer
- * signs with ordinary keys are sign-mode entries (auth_address set); guarded
- * positions and externally signed positions carry only txn_bytes_hex and are
- * covered by `targets` and `passthrough` respectively.
- */
-export interface GuardedSimulateRequest {
-  request_id?: string;
-  requests: SignRequest[];
-  targets: GuardedSimulateTarget[];
-  passthrough?: GuardedPassthroughItem[];
-}
-
-/**
- * Response payload from POST /simulate/guarded. It intentionally carries no
- * signed bytes: only transaction IDs, the final unsigned transactions, and
- * the simulation report.
- */
-export interface GuardedSimulateResponse {
-  request_id: string;
-  tx_ids?: string[];
-  transactions?: string[];
-  output?: string;
-  failed?: boolean;
-  error?: string;
-}
-
-/**
  * Public sentry metadata synced into a signer identity's reference catalog.
  */
 export interface SentryReferenceCandidate {
@@ -845,22 +799,14 @@ export interface GroupSignResponse {
   error?: string;
 }
 
-/**
- * Response from the /simulate endpoint.
- */
-export interface GroupSimulateResponse {
-  /** Transaction IDs for the simulated group */
-  tx_ids?: string[];
-  /** TX-prefixed hex-encoded unsigned transactions */
-  transactions?: string[];
-  /** Modifications made by server planning */
+/** Result of ordinary executable signing followed by client-side algod simulation. */
+export interface SimulationResult {
+  txIds: string[];
+  transactions: string[];
+  signedGroup: string[];
   mutations?: MutationReport;
-  /** Human-readable simulation report */
-  output?: string;
-  /** True when algod simulate returned an execution failure */
-  failed?: boolean;
-  /** Error message if simulation failed before algod execution */
-  error?: string;
+  response: modelsv2.SimulateResponse;
+  failed: boolean;
 }
 
 /**
