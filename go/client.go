@@ -46,9 +46,7 @@ const (
 	inventoryTimeout          = 30 * time.Second
 	mutationTimeout           = 60 * time.Second
 	groupPlanTimeout          = 60 * time.Second
-	groupSimulateTimeout      = 60 * time.Second
 	componentSignTimeout      = 2 * time.Minute
-	guardedSimulateTimeout    = 2 * time.Minute
 	guardedAssemblyTimeout    = 2 * time.Minute
 	signCancelTimeout         = 5 * time.Second
 	signApprovalSlack         = 30 * time.Second
@@ -720,74 +718,6 @@ func (c *SignerClient) RequestComponentSignWithContext(ctx context.Context, reqB
 	return &componentResp, nil
 }
 
-// RequestGuardedSimulate sends a contained guarded simulation request to
-// /simulate/guarded.
-func (c *SignerClient) RequestGuardedSimulate(req GuardedSimulateRequest) (*GuardedSimulateResponse, error) {
-	return c.RequestGuardedSimulateWithContext(context.Background(), req)
-}
-
-// RequestGuardedSimulateWithContext sends a contained guarded simulation
-// request to /simulate/guarded. The signer produces user component signatures
-// internally and returns only simulation results, never signed bytes.
-func (c *SignerClient) RequestGuardedSimulateWithContext(ctx context.Context, reqBody GuardedSimulateRequest) (*GuardedSimulateResponse, error) {
-	if reqBody.RequestID == "" {
-		requestID, err := newSignRequestID()
-		if err != nil {
-			return nil, fmt.Errorf("failed to create guarded simulate request ID: %w", err)
-		}
-		reqBody.RequestID = requestID
-	}
-	if err := reqBody.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid guarded simulate request: %w", err)
-	}
-
-	jsonBody, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	reqCtx, cancel := c.requestContext(ctx, guardedSimulateTimeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(reqCtx, "POST", c.baseURL+"/simulate/guarded", bytes.NewBuffer(jsonBody))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "aplane "+c.token)
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to make request to Signer: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == 401 {
-		return nil, ErrAuthentication
-	}
-	if resp.StatusCode == 403 {
-		return nil, rejectedForbiddenError(resp)
-	}
-	if resp.StatusCode == 503 {
-		return nil, ErrSignerUnavailable
-	}
-	if resp.StatusCode != 200 {
-		return nil, signerHTTPError(resp)
-	}
-
-	var simulateResp GuardedSimulateResponse
-	if err := json.NewDecoder(resp.Body).Decode(&simulateResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-	if simulateResp.Error != "" {
-		return nil, fmt.Errorf("guarded simulation failed: %s", simulateResp.Error)
-	}
-	if err := simulateResp.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid guarded simulate response: %w", err)
-	}
-	return &simulateResp, nil
-}
-
 // RequestGuardedAssemble sends a guarded transaction assembly request to
 // /sign/assemble.
 func (c *SignerClient) RequestGuardedAssemble(req GuardedAssemblyRequest) (*GuardedAssemblyResponse, error) {
@@ -960,81 +890,6 @@ func (c *SignerClient) PlanRequestsWithContext(ctx context.Context, requests []S
 	}
 
 	return &planResp, nil
-}
-
-// SimulateGroup performs signer-managed simulation for a caller-built group.
-func (c *SignerClient) SimulateGroup(txns []types.Transaction, authAddresses []string, lsigArgsMap LsigArgsMap, opts *SignOptions) (*GroupSimulateResponse, error) {
-	requests, err := buildSignRequestsWithOptions(txns, authAddresses, lsigArgsMap, opts)
-	if err != nil {
-		return nil, err
-	}
-	return c.SimulateRequestsWithContext(context.Background(), requests)
-}
-
-// SimulatePreparedTransaction performs signer-managed simulation for one prepared transaction.
-func (c *SignerClient) SimulatePreparedTransaction(ctx context.Context, prepared PreparedTransaction) (*GroupSimulateResponse, error) {
-	return c.SimulatePreparedGroup(ctx, NewPreparedGroup(prepared))
-}
-
-// SimulatePreparedGroup performs signer-managed simulation for a prepared group.
-func (c *SignerClient) SimulatePreparedGroup(ctx context.Context, group PreparedGroup) (*GroupSimulateResponse, error) {
-	requests, err := group.SignRequests()
-	if err != nil {
-		return nil, err
-	}
-	return c.SimulateRequestsWithContext(ctx, requests)
-}
-
-// SimulateRequests posts raw /simulate requests without rebuilding them from transactions.
-func (c *SignerClient) SimulateRequests(requests []SignRequest) (*GroupSimulateResponse, error) {
-	return c.SimulateRequestsWithContext(context.Background(), requests)
-}
-
-// SimulateRequestsWithContext posts raw /simulate requests without rebuilding them from transactions.
-func (c *SignerClient) SimulateRequestsWithContext(ctx context.Context, requests []SignRequest) (*GroupSimulateResponse, error) {
-	if err := validateRequests(requests); err != nil {
-		return nil, err
-	}
-	groupReq := groupSignRequest{Requests: requests}
-
-	jsonBody, err := json.Marshal(groupReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	reqCtx, cancel := c.requestContext(ctx, groupSimulateTimeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(reqCtx, "POST", c.baseURL+"/simulate", bytes.NewBuffer(jsonBody))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "aplane "+c.token)
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to simulate group: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == 401 {
-		return nil, ErrAuthentication
-	}
-	if resp.StatusCode != 200 {
-		return nil, signerHTTPErrorOp(resp, "simulate failed")
-	}
-
-	var simulateResp GroupSimulateResponse
-	if err := json.NewDecoder(resp.Body).Decode(&simulateResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	if simulateResp.Error != "" {
-		return nil, fmt.Errorf("simulate failed: %s", simulateResp.Error)
-	}
-
-	return &simulateResp, nil
 }
 
 // SignTransaction signs a single transaction.

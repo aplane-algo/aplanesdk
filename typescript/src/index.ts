@@ -28,7 +28,13 @@
  */
 
 // Main client
-export { SignerClient, signGuardedGroup, signPreparedGuardedGroup } from "./client.js";
+export {
+  SignerClient,
+  signGuardedGroup,
+  signPreparedGuardedGroup,
+  simulateGuardedGroup,
+  simulatePreparedGuardedGroup,
+} from "./client.js";
 export { ErrorCodes } from "./types.js";
 export type { ErrorCode } from "./types.js";
 export type {
@@ -38,6 +44,7 @@ export type {
   GuardedSentryResolver,
   GuardedSignOptions,
   GuardedSignResult,
+  GuardedSimulationResult,
   PreparedGuardedGroupOptions,
 } from "./client.js";
 export {
@@ -115,7 +122,7 @@ export type {
   SignRequest,
   GroupSignRequest,
   GroupSignResponse,
-  GroupSimulateResponse,
+  SimulationResult,
   PreparedCheck,
   PreparedTransaction,
   PreparedGroup,
@@ -138,9 +145,6 @@ export type {
   GuardedAssemblyTarget,
   GuardedPassthroughItem,
   GuardedAssemblyResponse,
-  GuardedSimulateRequest,
-  GuardedSimulateTarget,
-  GuardedSimulateResponse,
   SentryReferenceCandidate,
   AdminSyncSentryReferencesRequest,
   SyncedSentryReferenceInfo,

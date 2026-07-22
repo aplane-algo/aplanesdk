@@ -601,15 +601,29 @@ signer's `approval_wait_seconds` and sizes the request deadline accordingly,
 exactly like `/sign`; sentry-role component requests stay on the short
 deterministic deadline.
 
-Guarded simulation is contained inside the user signer: call
-`request_guarded_simulate()` with the frozen group, sentry component signatures,
-and signed passthrough entries. The signer produces the user component
-signatures internally, assembles, simulates against its own algod, and returns
-only transaction IDs, final unsigned transactions, and the simulation report.
-Do not implement guarded simulation by requesting real user components and
-simulating client-side: that triggers a real operator approval for a
-transaction the caller only wants to preview, and leaves fully submittable
-signed bytes in the client's hands.
+Full simulation uses ordinary executable signing and the caller's algod. The
+signer does not have a simulation endpoint and does not know whether the caller
+will simulate or submit the released group. Policy, review, approval, assembly,
+and audit behavior are therefore identical to submission.
+
+```python
+simulation = user_client.simulate_prepared_group(
+    algod_client,
+    prepared_group,
+)
+if simulation.failed:
+    # Inspect simulation.response for algod diagnostics.
+    pass
+
+guarded = simulate_guarded_group(algod_client, **guarded_options)
+```
+
+`SimulationResult.signed_group` contains fully executable signed transactions
+that remain submittable until expiry. Keep them confidential. The helper sends
+the exact signed group to the supplied algod with empty-signature overrides
+disabled. A missing algod client fails before any signing request. Algod
+execution failure sets `failed`; transport or decoding failures raise an error
+and never trigger another signing request automatically.
 
 ## Error Handling
 

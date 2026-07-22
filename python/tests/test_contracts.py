@@ -27,9 +27,6 @@ from aplanesdk.signer import (
     ERR_CODE_UNAVAILABLE,
     GuardedAssemblyRequest,
     GuardedAssemblyTarget,
-    GuardedSimulateRequest,
-    GuardedSimulateTarget,
-    GuardedSimulateResponse,
     GuardedAssemblyResponse,
     SignerClient,
     StatusResponse,
@@ -235,7 +232,7 @@ def test_status_fixture_maps_metadata():
     assert identity.identity_id == "default"
     assert identity.node_role == "signer"
     assert identity.protocol_version is not None
-    assert identity.protocol_version.major == 1
+    assert identity.protocol_version.major == 2
     assert identity.protocol_version.minor == 0
     assert identity.build_version.startswith("v0.30.0 ")
     assert identity.state == "unlocked"
@@ -316,28 +313,6 @@ def test_plan_group_returns_wire_mutation_report():
     assert plan["mutations"]["foreign_count"] == 1
 
 
-def test_simulate_requests_maps_wire_response():
-    client = make_client()
-    resp = mock_response(200, fixture("group_simulate_response_mutated.json"))
-
-    with patch.object(client.session, "post", return_value=resp):
-        simulation = client.simulate_requests([
-            {
-                "txn_bytes_hex": "545801",
-                "auth_address": "AUTHADDR00000000000000000000000000000000000000000000000",
-            },
-        ])
-
-    assert simulation.tx_ids == ["SIMTXID1", "SIMTXID2", "SIMTXID3"]
-    assert simulation.transactions == ["545801", "545802", "545803"]
-    assert simulation.mutations["dummies_added"] == 1
-    assert simulation.mutations["group_id_changed"] is True
-    assert simulation.mutations["fees_modified"] == [0, 2]
-    assert simulation.mutations["foreign_count"] == 1
-    assert simulation.failed is True
-    assert "Group size: 3" in simulation.output
-
-
 def test_generate_key_maps_admin_generate_response():
     client = make_client()
     resp = mock_response(200, fixture("admin_generate_response_generic.json"))
@@ -364,23 +339,6 @@ def test_generate_key_maps_component_response():
     assert generated.key_type == "aplane.witness-falcon1024.v1"
     assert generated.is_witness_key is True
     assert generated.is_spending_account is False
-
-
-def test_guarded_simulate_dtos_round_trip_fixtures():
-    simulate_req = GuardedSimulateRequest(**fixture("guarded_simulate_request_mixed.json"))
-    assert len(simulate_req.requests) == 3
-    assert simulate_req.requests[1]["auth_address"].startswith("AUTHADDRESS")
-    simulate_target = GuardedSimulateTarget(**simulate_req.targets[0])
-    assert simulate_target.guarded_account.startswith("LOGICSIGACCOUNT")
-    assert simulate_target.sentry_signature
-    assert simulate_target.runtime_args == ["aa01", "bb02"]
-    assert simulate_req.passthrough[0]["target_index"] == 2
-
-    simulate_resp = GuardedSimulateResponse(**fixture("guarded_simulate_response.json"))
-    assert len(simulate_resp.tx_ids) == 3
-    assert len(simulate_resp.transactions) == 3
-    assert "Simulation FAILED" in simulate_resp.output
-    assert simulate_resp.failed is True
 
 
 def test_sentry_dtos_round_trip_fixtures():

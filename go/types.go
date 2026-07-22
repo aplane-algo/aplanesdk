@@ -124,46 +124,6 @@ type GuardedAssemblyResponse struct {
 	SignedGroup []string `json:"signed_group"`
 }
 
-// GuardedSimulateRequest is the request payload for POST /simulate/guarded,
-// the contained guarded simulation flow: apsigner produces the user component
-// signatures internally, assembles the guarded group, and simulates against
-// its own algod. Assembled signed bytes never leave the signer.
-//
-// Requests carries the full frozen group, one entry per position, in the same
-// shape the mixed guarded flow sends to /sign: positions the signer signs
-// with ordinary keys are sign-mode entries (auth_address set); guarded
-// positions and externally signed positions carry only txn_bytes_hex and are
-// covered by Targets and Passthrough respectively.
-type GuardedSimulateRequest struct {
-	RequestID   string                   `json:"request_id,omitempty"`
-	Requests    []SignRequest            `json:"requests"`
-	Targets     []GuardedSimulateTarget  `json:"targets"`
-	Passthrough []GuardedPassthroughItem `json:"passthrough,omitempty"`
-}
-
-// GuardedSimulateTarget carries one guarded-account group position plus its
-// sentry component signature. The user component signature is produced inside
-// the signer and never crosses the wire.
-type GuardedSimulateTarget struct {
-	TargetIndex           int      `json:"target_index"`
-	GuardedAccount        string   `json:"guarded_account"`
-	SentrySignature       string   `json:"sentry_signature"`
-	SentrySourceRequestID string   `json:"sentry_source_request_id,omitempty"`
-	RuntimeArgs           []string `json:"runtime_args,omitempty"`
-}
-
-// GuardedSimulateResponse is the response payload from POST /simulate/guarded.
-// It intentionally carries no signed bytes: only transaction IDs, the final
-// unsigned transactions, and the simulation report.
-type GuardedSimulateResponse struct {
-	RequestID    string   `json:"request_id"`
-	TxIDs        []string `json:"tx_ids,omitempty"`
-	Transactions []string `json:"transactions,omitempty"`
-	Output       string   `json:"output,omitempty"`
-	Failed       bool     `json:"failed,omitempty"`
-	Error        string   `json:"error,omitempty"`
-}
-
 // CancelSignRequest is the request payload for /sign/cancel.
 type CancelSignRequest struct {
 	RequestID string `json:"request_id"`
@@ -375,79 +335,6 @@ func (r GuardedAssemblyResponse) Validate() error {
 	return nil
 }
 
-// Validate checks the guarded simulate request shape. Every group position
-// must be covered exactly once: by a guarded target, a signed passthrough
-// entry, or a local sign-mode request (auth_address set).
-func (r GuardedSimulateRequest) Validate() error {
-	if err := validateSignRequestID(r.RequestID); err != nil {
-		return err
-	}
-	if len(r.Requests) == 0 {
-		return fmt.Errorf("requests is empty")
-	}
-	if len(r.Requests) > maxComponentGroupSize {
-		return fmt.Errorf("requests length %d exceeds max %d", len(r.Requests), maxComponentGroupSize)
-	}
-	if len(r.Targets) == 0 {
-		return fmt.Errorf("targets is required")
-	}
-	for i, request := range r.Requests {
-		if request.TxnBytesHex == "" {
-			return fmt.Errorf("request %d: txn_bytes_hex is required", i+1)
-		}
-		if request.SignedTxnHex != "" {
-			return fmt.Errorf("request %d: signed_txn_hex is not valid in guarded simulation; use passthrough", i+1)
-		}
-	}
-
-	covered := make([]bool, len(r.Requests))
-	for i, target := range r.Targets {
-		if err := validateAssemblyIndex(target.TargetIndex, len(r.Requests), covered); err != nil {
-			return fmt.Errorf("target %d: %w", i+1, err)
-		}
-		if target.GuardedAccount == "" {
-			return fmt.Errorf("target %d: guarded_account is required", i+1)
-		}
-		if target.SentrySignature == "" {
-			return fmt.Errorf("target %d: sentry_signature is required", i+1)
-		}
-		if err := validateSignRequestID(target.SentrySourceRequestID); err != nil {
-			return fmt.Errorf("target %d: sentry_source_request_id: %w", i+1, err)
-		}
-		if r.Requests[target.TargetIndex].AuthAddress != "" {
-			return fmt.Errorf("target %d: position %d must not also be a sign-mode request", i+1, target.TargetIndex)
-		}
-	}
-	for i, passthrough := range r.Passthrough {
-		if err := validateAssemblyIndex(passthrough.TargetIndex, len(r.Requests), covered); err != nil {
-			return fmt.Errorf("passthrough %d: %w", i+1, err)
-		}
-		if passthrough.SignedTxnHex == "" {
-			return fmt.Errorf("passthrough %d: signed_txn_hex is required", i+1)
-		}
-		if r.Requests[passthrough.TargetIndex].AuthAddress != "" {
-			return fmt.Errorf("passthrough %d: position %d must not also be a sign-mode request", i+1, passthrough.TargetIndex)
-		}
-	}
-	for i, ok := range covered {
-		if ok {
-			continue
-		}
-		if r.Requests[i].AuthAddress == "" {
-			return fmt.Errorf("group position %d is not covered by targets, passthrough, or a sign-mode request", i)
-		}
-	}
-	return nil
-}
-
-// Validate checks the guarded simulate response shape.
-func (r GuardedSimulateResponse) Validate() error {
-	if r.RequestID == "" {
-		return fmt.Errorf("request_id is required")
-	}
-	return validateSignRequestID(r.RequestID)
-}
-
 // Validate checks that the cancel request names a concrete sign request.
 func (r CancelSignRequest) Validate() error {
 	if r.RequestID == "" {
@@ -562,18 +449,6 @@ type PlanGroupResponse struct {
 // GroupPlanResponse is kept as a compatibility alias for callers using the
 // older response name.
 type GroupPlanResponse = PlanGroupResponse
-
-// GroupSimulateResponse is the response from the /simulate endpoint.
-// The signer signs internally, calls algod simulate, and returns diagnostics
-// plus the final unsigned transactions without exposing reusable signed bytes.
-type GroupSimulateResponse struct {
-	TxIDs        []string        `json:"tx_ids,omitempty"`       // Transaction IDs for the simulated group
-	Transactions []string        `json:"transactions,omitempty"` // TX-prefixed hex-encoded unsigned txns (final group)
-	Mutations    *MutationReport `json:"mutations,omitempty"`    // Modifications made by server planning
-	Output       string          `json:"output,omitempty"`       // Human-readable simulation report
-	Failed       bool            `json:"failed,omitempty"`       // True when algod simulate returned an execution failure
-	Error        string          `json:"error,omitempty"`
-}
 
 // ProtocolVersion identifies a signer wire-protocol version.
 type ProtocolVersion struct {

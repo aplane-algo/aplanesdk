@@ -5,7 +5,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as net from "net";
 import { randomBytes } from "crypto";
-import algosdk, { type Transaction } from "algosdk";
+import algosdk, { type Algodv2, type Transaction } from "algosdk";
 import type { Client as SSHClient, ClientChannel } from "ssh2";
 import type {
   KeyInfo,
@@ -30,7 +30,7 @@ import type {
   SignRequest,
   GroupSignRequest,
   GroupSignResponse,
-  GroupSimulateResponse,
+  SimulationResult,
   StatusResponse,
   ResolvedAuthAddress,
   PreparedTransaction,
@@ -51,8 +51,6 @@ import type {
   GuardedAssemblyRequest,
   GuardedAssemblyResponse,
   GuardedPassthroughItem,
-  GuardedSimulateRequest,
-  GuardedSimulateResponse,
   SentryReferenceCandidate,
   AdminSyncSentryReferencesRequest,
   AdminSyncSentryReferencesResponse,
@@ -96,9 +94,7 @@ const STATUS_TIMEOUT = 5000;
 const INVENTORY_TIMEOUT = 30000;
 const MUTATION_TIMEOUT = 60000;
 const GROUP_PLAN_TIMEOUT = 60000;
-const GROUP_SIMULATE_TIMEOUT = 60000;
 const COMPONENT_SIGN_TIMEOUT = 120000;
-const GUARDED_SIMULATE_TIMEOUT = 120000;
 const GUARDED_ASSEMBLY_TIMEOUT = 120000;
 const SIGN_CANCEL_TIMEOUT = 5000;
 const SIGN_APPROVAL_SLACK = 30000;
@@ -456,6 +452,102 @@ export async function signPreparedGuardedGroup(
   return signGuardedGroup(await buildPreparedGuardedSignOptions(options));
 }
 
+/**
+ * Sign and assemble a guarded group through the ordinary approval flow, then
+ * send the exact executable group to the caller-provided algod.
+ */
+export async function simulateGuardedGroup(
+  algodClient: Algodv2,
+  options: GuardedSignOptions,
+): Promise<GuardedSimulationResult> {
+  if (!algodClient) {
+    throw new SignerError("algodClient is required");
+  }
+  const signing = await signGuardedGroup(options);
+  return {
+    signing,
+    simulation: await simulateSignedGroup(algodClient, signing.signedGroup),
+  };
+}
+
+/**
+ * Prepare, sign, assemble, and simulate a guarded group through the caller's
+ * algod client.
+ */
+export async function simulatePreparedGuardedGroup(
+  algodClient: Algodv2,
+  options: PreparedGuardedGroupOptions,
+): Promise<GuardedSimulationResult> {
+  if (!algodClient) {
+    throw new SignerError("algodClient is required");
+  }
+  const signing = await signPreparedGuardedGroup(options);
+  return {
+    signing,
+    simulation: await simulateSignedGroup(algodClient, signing.signedGroup),
+  };
+}
+
+async function simulateSignedGroup(
+  algodClient: Algodv2,
+  signedGroup: string[],
+  mutations?: MutationReport,
+): Promise<SimulationResult> {
+  if (!algodClient) {
+    throw new SignerError("algodClient is required");
+  }
+  if (signedGroup.length === 0) {
+    throw new SignerError("signed group is empty");
+  }
+
+  const signedTransactions = signedGroup.map((signedHex, index) => {
+    if (!signedHex) {
+      throw new SignerError(`signed group position ${index + 1} is empty`);
+    }
+    try {
+      return algosdk.decodeSignedTransaction(hexToBytes(signedHex));
+    } catch (error) {
+      throw new SignerError(
+        `signed group position ${index + 1} is invalid: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  });
+
+  const makeRequest = (trace: boolean) => new algosdk.modelsv2.SimulateRequest({
+    txnGroups: [new algosdk.modelsv2.SimulateRequestTransactionGroup({
+      txns: signedTransactions,
+    })],
+    allowEmptySignatures: false,
+    fixSigners: false,
+    allowMoreLogging: trace,
+    execTraceConfig: trace
+      ? new algosdk.modelsv2.SimulateTraceConfig({ enable: true, stateChange: true })
+      : undefined,
+  });
+
+  let response: algosdk.modelsv2.SimulateResponse;
+  try {
+    response = await algodClient.simulateTransactions(makeRequest(true)).do();
+  } catch {
+    try {
+      response = await algodClient.simulateTransactions(makeRequest(false)).do();
+    } catch (error) {
+      throw new SignerError(
+        `simulation API call failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+
+  return {
+    txIds: signedTransactions.map((signed) => signed.txn.txID()),
+    transactions: signedTransactions.map((signed) => encodeTransaction(signed.txn)[0]),
+    signedGroup: [...signedGroup],
+    mutations,
+    response,
+    failed: (response.txnGroups?.[0]?.failureMessage ?? "") !== "",
+  };
+}
+
 export async function signGuardedGroup(options: GuardedSignOptions): Promise<GuardedSignResult> {
   if (!options.userClient) {
     throw new SignerError("userClient is required");
@@ -655,7 +747,6 @@ function validateComponentSignResponse(response: ComponentSignResponse): void {
   });
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function mapRuntimeArg(raw: any): RuntimeArg {
   return {
     name: raw.name || "",
@@ -668,7 +759,6 @@ function mapRuntimeArg(raw: any): RuntimeArg {
   };
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function mapBoundedAuthorization(raw: any): BoundedAuthorizationInfo | undefined {
   if (!raw) return undefined;
   return {
@@ -772,67 +862,6 @@ function validateGuardedAssemblyResponse(response: GuardedAssemblyResponse): voi
       throw new SignerError(`signed_group ${index} is empty`);
     }
   });
-}
-
-function validateGuardedSimulateRequest(request: GuardedSimulateRequest): void {
-  validateSignRequestId(request.request_id || "");
-  const requests = request.requests || [];
-  if (requests.length === 0) {
-    throw new SignerError("requests is empty");
-  }
-  if (requests.length > MAX_COMPONENT_GROUP_SIZE) {
-    throw new SignerError(`requests length ${requests.length} exceeds max ${MAX_COMPONENT_GROUP_SIZE}`);
-  }
-  const targets = request.targets || [];
-  if (targets.length === 0) {
-    throw new SignerError("targets is required");
-  }
-  requests.forEach((entry, index) => {
-    const item = index + 1;
-    if (!entry.txn_bytes_hex) {
-      throw new SignerError(`request ${item}: txn_bytes_hex is required`);
-    }
-    if (entry.signed_txn_hex) {
-      throw new SignerError(`request ${item}: signed_txn_hex is not valid in guarded simulation; use passthrough`);
-    }
-  });
-
-  const covered = new Set<number>();
-  targets.forEach((target, index) => {
-    const item = index + 1;
-    validateAssemblyIndex(target.target_index, requests.length, covered);
-    if (!target.guarded_account) {
-      throw new SignerError(`target ${item}: guarded_account is required`);
-    }
-    if (!target.sentry_signature) {
-      throw new SignerError(`target ${item}: sentry_signature is required`);
-    }
-    validateSignRequestId(target.sentry_source_request_id || "");
-    if (requests[target.target_index].auth_address) {
-      throw new SignerError(`target ${item}: position ${target.target_index} must not also be a sign-mode request`);
-    }
-  });
-  (request.passthrough || []).forEach((item, index) => {
-    validateAssemblyIndex(item.target_index, requests.length, covered);
-    if (!item.signed_txn_hex) {
-      throw new SignerError(`passthrough ${index + 1}: signed_txn_hex is required`);
-    }
-    if (requests[item.target_index].auth_address) {
-      throw new SignerError(`passthrough ${index + 1}: position ${item.target_index} must not also be a sign-mode request`);
-    }
-  });
-  for (let index = 0; index < requests.length; index++) {
-    if (!covered.has(index) && !requests[index].auth_address) {
-      throw new SignerError(`group position ${index} is not covered by targets, passthrough, or a sign-mode request`);
-    }
-  }
-}
-
-function validateGuardedSimulateResponse(response: GuardedSimulateResponse): void {
-  if (!response.request_id) {
-    throw new SignerError("request_id is required");
-  }
-  validateSignRequestId(response.request_id);
 }
 
 /**
@@ -1140,6 +1169,11 @@ export interface GuardedSignResult {
   sentryComponentResponses: ComponentSignResponse[];
   primarySignResponse?: GroupSignResponse;
   assemblyResponse: GuardedAssemblyResponse;
+}
+
+export interface GuardedSimulationResult {
+  signing: GuardedSignResult;
+  simulation: SimulationResult;
 }
 
 function extractAuthAddress(accountInfo: AccountInfoResult): string {
@@ -2039,10 +2073,8 @@ export class SignerClient {
     for (const k of data.keys || []) {
       // Parse signing_args, mapping snake_case API fields to camelCase TypeScript
       let signingArgs: SigningArg[] | undefined;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const rawArgs = (k as any).signing_args;
       if (rawArgs) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         signingArgs = rawArgs.map((arg: any) => ({
           name: arg.name,
           type: arg.type || "bytes",
@@ -2055,7 +2087,6 @@ export class SignerClient {
       }
 
       // Map snake_case API fields to camelCase TypeScript interface
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const raw = k as any;
       const templateProvenanceStatus = raw.template_provenance_status || raw.template_status;
       const templateProvenanceNote = raw.template_provenance_note || raw.template_warning;
@@ -2810,11 +2841,9 @@ export class SignerClient {
     const data = (await response.json()) as KeyTypesResponse;
     const result: KeyTypeInfo[] = [];
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     for (const kt of (data as any).key_types || []) {
       let creationParams: CreationParam[] | undefined;
       if (kt.creation_params) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         creationParams = kt.creation_params.map((p: any) => ({
           name: p.name,
           label: p.label || "",
@@ -2844,7 +2873,6 @@ export class SignerClient {
 
       let runtimeArgs: RuntimeArg[] | undefined;
       if (kt.runtime_args) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         runtimeArgs = kt.runtime_args.map((arg: any) => ({
           name: arg.name,
           type: arg.type || "bytes",
@@ -2887,7 +2915,6 @@ export class SignerClient {
     keyType: string,
     parameters?: Record<string, string>
   ): Promise<GenerateResult> {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const body: any = { key_type: keyType };
     if (parameters) {
       body.parameters = parameters;
@@ -3135,73 +3162,6 @@ export class SignerClient {
   }
 
   /**
-   * Send a contained guarded simulation request to /simulate/guarded.
-   *
-   * The signer produces user component signatures internally and returns only
-   * simulation results, never signed bytes.
-   */
-  async requestGuardedSimulate(
-    request: GuardedSimulateRequest,
-    options?: { signal?: AbortSignal },
-  ): Promise<GuardedSimulateResponse> {
-    const requestBody: GuardedSimulateRequest = {
-      ...request,
-      request_id: request.request_id || newSignRequestId(),
-    };
-    try {
-      validateGuardedSimulateRequest(requestBody);
-    } catch (error) {
-      throw new SignerError(
-        `invalid guarded simulate request: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-
-    const response = await this.fetch("/simulate/guarded", {
-      method: "POST",
-      body: JSON.stringify(requestBody),
-      timeout: this.timeoutFor(GUARDED_SIMULATE_TIMEOUT),
-      signal: options?.signal,
-    });
-
-    if (response.status === 401) {
-      throw new AuthenticationError();
-    }
-
-    if (response.status === 403) {
-      throw await this.forbiddenRejectedError(response, "Guarded simulate request rejected");
-    }
-
-    if (response.status === 503) {
-      throw new SignerUnavailableError(await this.errorMessage(response, "Signer unavailable"));
-    }
-
-    if (response.status !== 200) {
-      throw await this.signerHTTPError(response, `Guarded simulation failed: HTTP ${response.status}`);
-    }
-
-    let data: GuardedSimulateResponse;
-    try {
-      data = (await response.json()) as GuardedSimulateResponse;
-    } catch {
-      throw new SignerError("Server returned invalid JSON");
-    }
-
-    if (data.error) {
-      throw new SignerError(data.error);
-    }
-
-    try {
-      validateGuardedSimulateResponse(data);
-    } catch (error) {
-      throw new SignerError(
-        `invalid guarded simulate response: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-
-    return data;
-  }
-
-  /**
    * Sync public sentry reference candidates into the connected signer.
    */
   async adminSyncSentryReferences(
@@ -3318,7 +3278,6 @@ export class SignerClient {
     return data;
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private normalizeMutationReport(raw: any): MutationReport {
     return {
       dummiesAdded: raw.dummies_added ?? raw.dummiesAdded,
@@ -3538,95 +3497,38 @@ export class SignerClient {
   }
 
   /**
-   * Send raw signing request entries to /simulate.
-   *
-   * The signer signs internally, runs algod simulation, and returns
-   * diagnostics plus final unsigned transaction bytes. Signed bytes are never
-   * returned by this endpoint.
-   */
-  async simulateRequests(
-    requests: SignRequest[],
-    options?: { requestId?: string; signal?: AbortSignal },
-  ): Promise<GroupSimulateResponse> {
-    if (requests.length === 0) {
-      throw new SignerError("requests must not be empty");
-    }
-
-    const requestId = options?.requestId ?? "";
-    if (requestId) {
-      validateSignRequestId(requestId);
-    }
-    const requestBody: GroupSignRequest = requestId
-      ? { request_id: requestId, requests }
-      : { requests };
-
-    const response = await this.fetch("/simulate", {
-      method: "POST",
-      body: JSON.stringify(requestBody),
-      timeout: this.timeoutFor(GROUP_SIMULATE_TIMEOUT),
-      signal: options?.signal,
-    });
-
-    if (response.status === 401) {
-      throw new AuthenticationError();
-    }
-
-    if (response.status === 400) {
-      throw await this.badRequestError(response);
-    }
-
-    if (response.status === 403) {
-      throw await this.signerHTTPError(response, "Forbidden");
-    }
-
-    if (response.status === 503) {
-      const error = await this.errorMessage(response, "Signer unavailable");
-      throw new SignerUnavailableError(error);
-    }
-
-    if (response.status !== 200) {
-      throw await this.signerHTTPError(response, `Simulation failed: HTTP ${response.status}`);
-    }
-
-    let data: GroupSimulateResponse;
-    try {
-      data = (await response.json()) as GroupSimulateResponse;
-    } catch {
-      throw new SignerError("Server returned invalid JSON");
-    }
-
-    if (data.error) {
-      throw new SignerError(data.error);
-    }
-
-    if (data.mutations) {
-      data = {
-        ...data,
-        mutations: this.normalizeMutationReport(data.mutations),
-      };
-    }
-
-    return data;
-  }
-
-  /**
-   * Simulate a prepared group through apsigner /simulate.
+   * Sign a prepared group through the ordinary approval path, then send the
+   * exact executable group to the caller-provided algod simulation endpoint.
    */
   async simulatePreparedGroup(
+    algodClient: Algodv2,
     group: PreparedGroup,
-    options?: { requestId?: string; signal?: AbortSignal },
-  ): Promise<GroupSimulateResponse> {
-    return this.simulateRequests(preparedGroupToSignRequests(group), options);
+    options?: SignOptions,
+  ): Promise<SimulationResult> {
+    if (!algodClient) {
+      throw new SignerError("algodClient is required");
+    }
+    const response = await this.signRequests(preparedGroupToSignRequests(group), options);
+    const mutations = response.mutations
+      ? this.normalizeMutationReport(response.mutations)
+      : undefined;
+    if ((mutations?.foreignCount ?? 0) > 0) {
+      throw new SignerError(
+        `signed simulation requires a complete group; signer returned ${mutations?.foreignCount} foreign transaction(s)`
+      );
+    }
+    return simulateSignedGroup(algodClient, response.signed ?? [], mutations);
   }
 
   /**
-   * Simulate one prepared transaction through apsigner /simulate.
+   * Sign and simulate one prepared transaction.
    */
   async simulatePreparedTransaction(
+    algodClient: Algodv2,
     prepared: PreparedTransaction,
-    options?: { requestId?: string; signal?: AbortSignal },
-  ): Promise<GroupSimulateResponse> {
-    return this.simulatePreparedGroup({ transactions: [prepared] }, options);
+    options?: SignOptions,
+  ): Promise<SimulationResult> {
+    return this.simulatePreparedGroup(algodClient, { transactions: [prepared] }, options);
   }
 
   /**

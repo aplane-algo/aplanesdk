@@ -147,13 +147,10 @@ func TestGoSDKContractFixturesRoundTrip(t *testing.T) {
 		{"group_sign_request_mixed.json", assertSDKContractRoundTrip[GroupSignRequest]},
 		{"group_sign_response_mutated.json", assertSDKContractRoundTrip[GroupSignResponse]},
 		{"group_plan_response_mutated.json", assertSDKContractRoundTrip[PlanGroupResponse]},
-		{"group_simulate_response_mutated.json", assertSDKContractRoundTrip[GroupSimulateResponse]},
 		{"component_sign_request_sentry.json", assertSDKContractRoundTrip[ComponentSignRequest]},
 		{"component_sign_response_sentry.json", assertSDKContractRoundTrip[ComponentSignResponse]},
 		{"guarded_assembly_request_mixed.json", assertSDKContractRoundTrip[GuardedAssemblyRequest]},
 		{"guarded_assembly_response.json", assertSDKContractRoundTrip[GuardedAssemblyResponse]},
-		{"guarded_simulate_request_mixed.json", assertSDKContractRoundTrip[GuardedSimulateRequest]},
-		{"guarded_simulate_response.json", assertSDKContractRoundTrip[GuardedSimulateResponse]},
 		{"keys_response_generic.json", assertSDKContractRoundTrip[KeysResponse]},
 		{"keys_response_component.json", assertSDKContractRoundTrip[KeysResponse]},
 		{"keys_response_guarded.json", assertSDKContractRoundTrip[KeysResponse]},
@@ -269,8 +266,8 @@ func TestGoSDKContractStatusMetadata(t *testing.T) {
 	if resp.NodeRole != "signer" {
 		t.Fatalf("NodeRole = %q, want signer", resp.NodeRole)
 	}
-	if resp.ProtocolVersion.Major != 1 || resp.ProtocolVersion.Minor != 0 {
-		t.Fatalf("ProtocolVersion = %d.%d, want 1.0", resp.ProtocolVersion.Major, resp.ProtocolVersion.Minor)
+	if resp.ProtocolVersion.Major != 2 || resp.ProtocolVersion.Minor != 0 {
+		t.Fatalf("ProtocolVersion = %d.%d, want 2.0", resp.ProtocolVersion.Major, resp.ProtocolVersion.Minor)
 	}
 	if !strings.Contains(resp.BuildVersion, "v0.30.0") {
 		t.Fatalf("BuildVersion = %q, want v0.30.0 fixture", resp.BuildVersion)
