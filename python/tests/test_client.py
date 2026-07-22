@@ -9,7 +9,7 @@ from unittest.mock import patch, MagicMock
 import os
 
 import pytest
-from algosdk import encoding as algo_encoding, transaction
+from algosdk import account, encoding as algo_encoding, transaction
 
 from aplanesdk.signer import (
     SignerClient,
@@ -22,6 +22,7 @@ from aplanesdk.signer import (
     assemble_group,
     sign_guarded_group,
     sign_prepared_guarded_group,
+    simulate_guarded_group,
     load_config,
     SSHConfig,
     ClientConfig,
@@ -908,75 +909,71 @@ class TestPlanGroup:
                 client.plan_group([self._make_mock_txn()])
 
 
-class TestSimulateRequests:
-    def test_simulate_requests_sends_raw_request(self):
-        client = make_client()
-        resp = mock_response(200, {
-            "tx_ids": ["SIMTXID1"],
-            "transactions": ["545801"],
-            "mutations": {"dummies_added": 1},
-            "output": "Simulation failed\nlogic eval error",
-            "failed": True,
-        })
+class TestClientSideSignedSimulation:
+    def test_simulate_prepared_group_signs_then_calls_client_algod(self):
+        private_key, sender = account.generate_account()
+        receiver = sdk_test_address(2)
+        params = transaction.SuggestedParams(
+            1000,
+            1,
+            100,
+            base64.b64encode(bytes(32)).decode(),
+            "testnet-v1.0",
+            flat_fee=True,
+        )
+        txn = transaction.PaymentTxn(sender, params, receiver, 1)
+        signed = txn.sign(private_key)
+        signed_b64 = algo_encoding.msgpack_encode(signed)
+        signed_hex = base64.b64decode(signed_b64).hex()
 
-        with patch.object(client.session, "post", return_value=resp) as mock_post:
-            result = client.simulate_requests(
-                [
-                    {
-                        "txn_bytes_hex": "545801",
-                        "auth_address": "AUTH",
-                        "txn_sender": "SENDER",
-                    },
-                ],
+        client = make_client()
+        sign_response = mock_response(200, {
+            "signed": [signed_hex],
+            "mutations": {"original_count": 1, "final_count": 1},
+        })
+        algod_client = MagicMock()
+        algod_client.simulate_transactions.return_value = {
+            "last-round": 7,
+            "version": 2,
+            "txn-groups": [{"failure-message": "logic eval error"}],
+        }
+        prepared = PreparedTransaction(
+            transaction=txn,
+            auth_address=sender,
+        )
+
+        with patch.object(client, "_discover_approval_wait"), \
+             patch.object(client.session, "post", return_value=sign_response) as mock_post:
+            result = client.simulate_prepared_group(
+                algod_client,
+                PreparedGroup([prepared]),
                 request_id="simulate-id",
             )
 
-        assert result.tx_ids == ["SIMTXID1"]
-        assert result.transactions == ["545801"]
-        assert result.mutations == {"dummies_added": 1}
+        assert mock_post.call_args.args[0] == "http://localhost:11270/sign"
+        assert mock_post.call_args.kwargs["json"]["request_id"] == "simulate-id"
+        assert algod_client.simulate_transactions.call_count == 1
+        simulate_request = algod_client.simulate_transactions.call_args.args[0]
+        assert simulate_request.allow_empty_signatures is False
+        assert simulate_request.exec_trace_config.enable is True
+        assert algo_encoding.msgpack_encode(
+            simulate_request.txn_groups[0].txns[0]
+        ) == signed_b64
+        assert result.signed_group == [signed_hex]
+        assert result.tx_ids == [txn.get_txid()]
+        assert result.mutations == {"original_count": 1, "final_count": 1}
         assert result.failed is True
-        assert "logic eval error" in result.output
-        assert mock_post.call_args.args[0] == "http://localhost:11270/simulate"
-        assert mock_post.call_args.kwargs["json"] == {
-            "request_id": "simulate-id",
-            "requests": [
-                {
-                    "txn_bytes_hex": "545801",
-                    "auth_address": "AUTH",
-                    "txn_sender": "SENDER",
-                },
-            ],
-        }
 
-    def test_simulate_prepared_group(self):
+    def test_requires_algod_before_contacting_signer(self):
         client = make_client()
-        resp = mock_response(200, {"tx_ids": ["SIMTXID1"]})
-        prepared = PreparedTransaction(
-            transaction=MagicMock(),
-            auth_address="AUTH",
-            txn_sender="SENDER",
-        )
+        with patch.object(client.session, "post") as mock_post:
+            with pytest.raises(ValueError, match="algod_client is required"):
+                client.simulate_prepared_group(None, PreparedGroup([]))
+        mock_post.assert_not_called()
 
-        with patch.object(client.session, "post", return_value=resp) as mock_post, \
-             patch("aplanesdk.signer.encode_transaction", return_value=("545801", "SENDER")):
-            result = client.simulate_prepared_group(PreparedGroup([prepared]))
-
-        assert result.tx_ids == ["SIMTXID1"]
-        assert mock_post.call_args.args[0] == "http://localhost:11270/simulate"
-        assert mock_post.call_args.kwargs["json"]["requests"][0]["auth_address"] == "AUTH"
-
-    def test_simulate_requests_response_error(self):
-        client = make_client()
-        resp = mock_response(200, {"error": "simulation unavailable"})
-
-        with patch.object(client.session, "post", return_value=resp):
-            with pytest.raises(SignerError, match="simulation unavailable"):
-                client.simulate_requests([{"txn_bytes_hex": "545801", "auth_address": "AUTH"}])
-
-    def test_simulate_requests_validates_request_id(self):
-        client = make_client()
-        with pytest.raises(ValueError, match="invalid character"):
-            client.simulate_requests([{"txn_bytes_hex": "545801"}], request_id="bad id")
+    def test_guarded_requires_algod_before_signing(self):
+        with pytest.raises(ValueError, match="algod_client is required"):
+            simulate_guarded_group(None)
 
 
 class TestConfigAndConstruction:

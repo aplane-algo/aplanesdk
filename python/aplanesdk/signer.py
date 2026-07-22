@@ -53,6 +53,7 @@ from dataclasses import asdict, dataclass, is_dataclass
 from typing import Optional, Dict, List, Any, Callable
 
 from algosdk import abi, encoding, transaction
+from algosdk.v2client import models
 
 import paramiko
 
@@ -72,9 +73,7 @@ STATUS_TIMEOUT = 5
 INVENTORY_TIMEOUT = 30
 MUTATION_TIMEOUT = 60
 GROUP_PLAN_TIMEOUT = 60
-GROUP_SIMULATE_TIMEOUT = 60
 COMPONENT_SIGN_TIMEOUT = 120
-GUARDED_SIMULATE_TIMEOUT = 120
 GUARDED_ASSEMBLY_TIMEOUT = 120
 SIGN_CANCEL_TIMEOUT = 5
 SIGN_APPROVAL_SLACK = 30
@@ -418,14 +417,14 @@ class GroupSignResponse:
 
 
 @dataclass
-class GroupSimulateResponse:
-    """Response from /simulate"""
+class SimulationResult:
+    """Result of ordinary signing followed by client-side algod simulation."""
     tx_ids: List[str]
     transactions: List[str]
+    signed_group: List[str]
+    response: Dict[str, Any]
     mutations: Optional[Dict[str, Any]] = None
-    output: str = ""
     failed: bool = False
-    error: str = ""
 
 
 @dataclass
@@ -487,51 +486,6 @@ class GuardedAssemblyResponse:
     """Response payload from /sign/assemble"""
     request_id: str
     signed_group: List[str]
-
-
-@dataclass
-class GuardedSimulateTarget:
-    """One guarded-account position for /simulate/guarded.
-
-    Carries the sentry component signature only; the user component signature
-    is produced inside the signer and never crosses the wire.
-    """
-    target_index: int
-    guarded_account: str
-    sentry_signature: str
-    sentry_source_request_id: str = ""
-    runtime_args: Optional[List[str]] = None
-
-
-@dataclass
-class GuardedSimulateRequest:
-    """Request payload for /simulate/guarded (contained guarded simulation).
-
-    ``requests`` carries the full frozen group, one entry per position, in the
-    same shape the mixed guarded flow sends to /sign: positions the signer
-    signs with ordinary keys are sign-mode entries (auth_address set); guarded
-    positions and externally signed positions carry only txn_bytes_hex and are
-    covered by ``targets`` and ``passthrough`` respectively.
-    """
-    requests: List[Any]
-    targets: List[GuardedSimulateTarget]
-    request_id: str = ""
-    passthrough: Optional[List[GuardedPassthroughItem]] = None
-
-
-@dataclass
-class GuardedSimulateResponse:
-    """Response payload from /simulate/guarded.
-
-    Intentionally carries no signed bytes: only transaction IDs, the final
-    unsigned transactions, and the simulation report.
-    """
-    request_id: str
-    tx_ids: List[str]
-    transactions: List[str]
-    output: str = ""
-    failed: bool = False
-    error: str = ""
 
 
 @dataclass
@@ -604,6 +558,13 @@ class GuardedSignResult:
     sentry_component_responses: List[ComponentSignResponse]
     assembly_response: GuardedAssemblyResponse
     primary_sign_response: Optional[GroupSignResponse] = None
+
+
+@dataclass
+class GuardedSimulationResult:
+    """Complete guarded signing result and client-side simulation result."""
+    signing: GuardedSignResult
+    simulation: SimulationResult
 
 
 @dataclass
@@ -783,6 +744,78 @@ def encode_transaction(txn: transaction.Transaction) -> tuple:
     txn_bytes = b"TX" + base64.b64decode(msgpack_b64)
 
     return txn_bytes.hex(), txn.sender
+
+
+def _simulate_signed_group(
+    algod_client: Any,
+    signed_group: List[str],
+    mutations: Optional[Dict[str, Any]] = None,
+) -> SimulationResult:
+    if algod_client is None:
+        raise ValueError("algod_client is required")
+    if not signed_group:
+        raise SignerError("signed group is empty")
+
+    signed_transactions = []
+    for index, signed_hex in enumerate(signed_group, start=1):
+        if not signed_hex:
+            raise SignerError(f"signed group position {index} is empty")
+        try:
+            signed_bytes = bytes.fromhex(signed_hex)
+            signed = encoding.msgpack_decode(
+                base64.b64encode(signed_bytes).decode()
+            )
+        except Exception as e:
+            raise SignerError(
+                f"signed group position {index} is invalid: {e}"
+            ) from e
+        if not hasattr(signed, "transaction"):
+            raise SignerError(
+                f"signed group position {index} does not contain a signed transaction"
+            )
+        signed_transactions.append(signed)
+
+    def simulation_request(trace: bool) -> models.SimulateRequest:
+        return models.SimulateRequest(
+            txn_groups=[models.SimulateRequestTransactionGroup(
+                txns=signed_transactions
+            )],
+            allow_empty_signatures=False,
+            allow_more_logs=trace,
+            exec_trace_config=(
+                models.SimulateTraceConfig(enable=True, state_change=True)
+                if trace else None
+            ),
+        )
+
+    try:
+        response = algod_client.simulate_transactions(simulation_request(True))
+    except Exception:
+        try:
+            response = algod_client.simulate_transactions(simulation_request(False))
+        except Exception as e:
+            raise SignerError(f"simulation API call failed: {e}") from e
+
+    if not isinstance(response, dict):
+        raise SignerError("simulation API returned an invalid response")
+    groups = response.get("txn-groups") or response.get("txn_groups") or []
+    failure = ""
+    if groups:
+        failure = groups[0].get("failure-message") or groups[0].get(
+            "failure_message", ""
+        )
+
+    return SimulationResult(
+        tx_ids=[signed.get_txid() for signed in signed_transactions],
+        transactions=[
+            encode_transaction(signed.transaction)[0]
+            for signed in signed_transactions
+        ],
+        signed_group=list(signed_group),
+        mutations=mutations,
+        response=response,
+        failed=bool(failure),
+    )
 
 
 def _validate_group_sign_response(
@@ -1029,64 +1062,6 @@ def _validate_guarded_assembly_response(data: Dict[str, Any]) -> None:
     for index, signed in enumerate(signed_group):
         if not signed:
             raise ValueError(f"signed_group {index} is empty")
-
-
-def _validate_guarded_simulate_request(data: Dict[str, Any]) -> None:
-    _validate_sign_request_id(str(data.get("request_id", "")))
-    requests_list = data.get("requests") or []
-    if not requests_list:
-        raise ValueError("requests is empty")
-    if len(requests_list) > MAX_COMPONENT_GROUP_SIZE:
-        raise ValueError(
-            f"requests length {len(requests_list)} exceeds max {MAX_COMPONENT_GROUP_SIZE}"
-        )
-    targets = data.get("targets") or []
-    if not targets:
-        raise ValueError("targets is required")
-    for i, entry in enumerate(requests_list, start=1):
-        if not entry.get("txn_bytes_hex"):
-            raise ValueError(f"request {i}: txn_bytes_hex is required")
-        if entry.get("signed_txn_hex"):
-            raise ValueError(
-                f"request {i}: signed_txn_hex is not valid in guarded simulation; use passthrough"
-            )
-
-    covered = set()
-    for i, target in enumerate(targets, start=1):
-        _validate_assembly_index(target.get("target_index"), len(requests_list), covered)
-        if not target.get("guarded_account"):
-            raise ValueError(f"target {i}: guarded_account is required")
-        if not target.get("sentry_signature"):
-            raise ValueError(f"target {i}: sentry_signature is required")
-        _validate_sign_request_id(str(target.get("sentry_source_request_id", "")))
-        if requests_list[target["target_index"]].get("auth_address"):
-            raise ValueError(
-                f"target {i}: position {target['target_index']} must not also be a sign-mode request"
-            )
-
-    for i, item in enumerate(data.get("passthrough") or [], start=1):
-        _validate_assembly_index(item.get("target_index"), len(requests_list), covered)
-        if not item.get("signed_txn_hex"):
-            raise ValueError(f"passthrough {i}: signed_txn_hex is required")
-        if requests_list[item["target_index"]].get("auth_address"):
-            raise ValueError(
-                f"passthrough {i}: position {item['target_index']} must not also be a sign-mode request"
-            )
-
-    for index in range(len(requests_list)):
-        if index in covered:
-            continue
-        if not requests_list[index].get("auth_address"):
-            raise ValueError(
-                f"group position {index} is not covered by targets, passthrough, or a sign-mode request"
-            )
-
-
-def _validate_guarded_simulate_response(data: Dict[str, Any]) -> None:
-    request_id = data.get("request_id", "")
-    if not request_id:
-        raise ValueError("request_id is required")
-    _validate_sign_request_id(str(request_id))
 
 
 def _extract_auth_address(account_info: Any) -> str:
@@ -3407,67 +3382,6 @@ class SignerClient:
             signed_group=data.get("signed_group", []),
         )
 
-    def request_guarded_simulate(
-        self,
-        request: Any,
-    ) -> GuardedSimulateResponse:
-        """
-        Send a contained guarded simulation request to /simulate/guarded.
-
-        The signer produces user component signatures internally and returns
-        only simulation results, never signed bytes.
-        """
-        request_body = _compact_payload(request)
-        if not isinstance(request_body, dict):
-            raise ValueError("guarded simulate request must be a mapping or dataclass")
-        if not request_body.get("request_id"):
-            request_body["request_id"] = _new_sign_request_id()
-        try:
-            _validate_guarded_simulate_request(request_body)
-        except ValueError as e:
-            raise ValueError(f"invalid guarded simulate request: {e}") from e
-
-        try:
-            resp = self.session.post(
-                f"{self.base_url}/simulate/guarded",
-                json=request_body,
-                timeout=self._timeout_for(GUARDED_SIMULATE_TIMEOUT),
-            )
-        except requests.RequestException as e:
-            raise SignerUnavailableError(f"Failed to connect: {e}")
-
-        if resp.status_code == 401:
-            raise AuthenticationError("Invalid or missing token")
-
-        if resp.status_code == 403:
-            raise self._forbidden_rejected_error(resp, "Guarded simulate request rejected")
-
-        if resp.status_code == 503:
-            raise SignerUnavailableError(self._error_message(resp, "Signer unavailable"))
-
-        if resp.status_code != 200:
-            raise self._signer_http_error(
-                resp,
-                f"Guarded simulation failed: HTTP {resp.status_code}",
-                )
-
-        data = self._safe_json(resp)
-        if data.get("error"):
-            raise SignerError(data["error"])
-        try:
-            _validate_guarded_simulate_response(data)
-        except ValueError as e:
-            raise SignerError(f"invalid guarded simulate response: {e}") from e
-
-        return GuardedSimulateResponse(
-            request_id=data["request_id"],
-            tx_ids=data.get("tx_ids", []),
-            transactions=data.get("transactions", []),
-            output=data.get("output", ""),
-            failed=data.get("failed", False),
-            error=data.get("error", ""),
-        )
-
     def admin_sync_sentry_references(
         self,
         candidates: List[Any],
@@ -3862,91 +3776,39 @@ class SignerClient:
 
         return data
 
-    def simulate_requests(
-        self,
-        sign_entries: List[Dict[str, Any]],
-        *,
-        request_id: Optional[str] = None,
-    ) -> GroupSimulateResponse:
-        """
-        Send raw signing request entries to /simulate.
-
-        The signer signs internally, runs algod simulation, and returns
-        diagnostics plus final unsigned transaction bytes. Signed bytes are
-        never returned by this endpoint.
-        """
-        if not sign_entries:
-            raise ValueError("sign_entries must not be empty")
-
-        if request_id is not None:
-            _validate_sign_request_id(request_id)
-
-        request_body: Dict[str, Any] = {"requests": sign_entries}
-        if request_id:
-            request_body["request_id"] = request_id
-
-        try:
-            resp = self.session.post(
-                f"{self.base_url}/simulate",
-                json=request_body,
-                timeout=self._timeout_for(GROUP_SIMULATE_TIMEOUT)
-            )
-        except requests.RequestException as e:
-            raise SignerUnavailableError(f"Failed to connect: {e}")
-
-        if resp.status_code == 401:
-            raise AuthenticationError("Invalid or missing token")
-
-        if resp.status_code == 400:
-            raise self._bad_request_error(resp)
-
-        if resp.status_code == 403:
-            raise self._signer_http_error(resp, "Forbidden")
-
-        if resp.status_code == 503:
-            error = self._error_message(resp, "Signer unavailable")
-            raise SignerUnavailableError(error)
-
-        if resp.status_code != 200:
-            raise self._signer_http_error(resp, f"Simulation failed: HTTP {resp.status_code}")
-
-        try:
-            data = resp.json()
-        except json.JSONDecodeError:
-            raise SignerError(f"Server returned invalid JSON: {resp.text[:200]}")
-
-        if data.get("error"):
-            raise SignerError(data["error"])
-
-        return GroupSimulateResponse(
-            tx_ids=data.get("tx_ids", []),
-            transactions=data.get("transactions", []),
-            mutations=data.get("mutations"),
-            output=data.get("output", ""),
-            failed=bool(data.get("failed", False)),
-            error=data.get("error", ""),
-        )
-
     def simulate_prepared_group(
         self,
+        algod_client: Any,
         prepared_group: PreparedGroup,
         *,
         request_id: Optional[str] = None,
-    ) -> GroupSimulateResponse:
-        """Simulate a prepared group through apsigner /simulate."""
-        return self.simulate_requests(
-            prepared_group.to_sign_requests(),
-            request_id=request_id,
+    ) -> SimulationResult:
+        """Sign normally, then simulate the exact group through client algod."""
+        if algod_client is None:
+            raise ValueError("algod_client is required")
+        response = self.sign_requests(
+            prepared_group.to_sign_requests(), request_id=request_id
+        )
+        foreign_count = int((response.mutations or {}).get("foreign_count", 0))
+        if foreign_count:
+            raise SignerError(
+                "signed simulation requires a complete group; signer returned "
+                f"{foreign_count} foreign transaction(s)"
+            )
+        return _simulate_signed_group(
+            algod_client, response.signed, response.mutations
         )
 
     def simulate_prepared_transaction(
         self,
+        algod_client: Any,
         prepared: PreparedTransaction,
         *,
         request_id: Optional[str] = None,
-    ) -> GroupSimulateResponse:
-        """Simulate one prepared transaction through apsigner /simulate."""
+    ) -> SimulationResult:
+        """Sign and simulate one prepared transaction."""
         return self.simulate_prepared_group(
+            algod_client,
             PreparedGroup([prepared]),
             request_id=request_id,
         )
@@ -4544,6 +4406,34 @@ def sign_guarded_group(
         sentry_component_responses=sentry_component_responses,
         primary_sign_response=primary_sign_response,
         assembly_response=assembly_response,
+    )
+
+
+def simulate_guarded_group(
+    algod_client: Any,
+    **sign_options: Any,
+) -> GuardedSimulationResult:
+    """Run ordinary guarded signing, then simulate through client algod."""
+    if algod_client is None:
+        raise ValueError("algod_client is required")
+    signing = sign_guarded_group(**sign_options)
+    return GuardedSimulationResult(
+        signing=signing,
+        simulation=_simulate_signed_group(algod_client, signing.signed_group),
+    )
+
+
+def simulate_prepared_guarded_group(
+    algod_client: Any,
+    **sign_options: Any,
+) -> GuardedSimulationResult:
+    """Prepare and sign a guarded group, then simulate through client algod."""
+    if algod_client is None:
+        raise ValueError("algod_client is required")
+    signing = sign_prepared_guarded_group(**sign_options)
+    return GuardedSimulationResult(
+        signing=signing,
+        simulation=_simulate_signed_group(algod_client, signing.signed_group),
     )
 
 

@@ -23,7 +23,7 @@ classifiers = [
 ]
 keywords = ["algorand", "blockchain", "signing", "post-quantum", "falcon"]
 dependencies = [
-    "py-algorand-sdk>=2.0.0",
+    "py-algorand-sdk>=2.11.0",
     "paramiko>=3.0.0",
     "pyyaml>=6.0",
     "requests>=2.25.0",
