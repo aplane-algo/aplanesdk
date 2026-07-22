@@ -747,7 +747,6 @@ function validateComponentSignResponse(response: ComponentSignResponse): void {
   });
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function mapRuntimeArg(raw: any): RuntimeArg {
   return {
     name: raw.name || "",
@@ -760,7 +759,6 @@ function mapRuntimeArg(raw: any): RuntimeArg {
   };
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function mapBoundedAuthorization(raw: any): BoundedAuthorizationInfo | undefined {
   if (!raw) return undefined;
   return {
@@ -2075,10 +2073,8 @@ export class SignerClient {
     for (const k of data.keys || []) {
       // Parse signing_args, mapping snake_case API fields to camelCase TypeScript
       let signingArgs: SigningArg[] | undefined;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const rawArgs = (k as any).signing_args;
       if (rawArgs) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         signingArgs = rawArgs.map((arg: any) => ({
           name: arg.name,
           type: arg.type || "bytes",
@@ -2091,7 +2087,6 @@ export class SignerClient {
       }
 
       // Map snake_case API fields to camelCase TypeScript interface
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const raw = k as any;
       const templateProvenanceStatus = raw.template_provenance_status || raw.template_status;
       const templateProvenanceNote = raw.template_provenance_note || raw.template_warning;
@@ -2846,11 +2841,9 @@ export class SignerClient {
     const data = (await response.json()) as KeyTypesResponse;
     const result: KeyTypeInfo[] = [];
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     for (const kt of (data as any).key_types || []) {
       let creationParams: CreationParam[] | undefined;
       if (kt.creation_params) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         creationParams = kt.creation_params.map((p: any) => ({
           name: p.name,
           label: p.label || "",
@@ -2880,7 +2873,6 @@ export class SignerClient {
 
       let runtimeArgs: RuntimeArg[] | undefined;
       if (kt.runtime_args) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         runtimeArgs = kt.runtime_args.map((arg: any) => ({
           name: arg.name,
           type: arg.type || "bytes",
@@ -2923,7 +2915,6 @@ export class SignerClient {
     keyType: string,
     parameters?: Record<string, string>
   ): Promise<GenerateResult> {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const body: any = { key_type: keyType };
     if (parameters) {
       body.parameters = parameters;
@@ -3287,7 +3278,6 @@ export class SignerClient {
     return data;
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private normalizeMutationReport(raw: any): MutationReport {
     return {
       dummiesAdded: raw.dummies_added ?? raw.dummiesAdded,
