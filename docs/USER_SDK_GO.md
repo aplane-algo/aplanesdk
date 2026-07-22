@@ -492,15 +492,33 @@ signer's `approval_wait_seconds` and sizes the request deadline accordingly,
 exactly like `/sign`; sentry-role component requests stay on the short
 deterministic deadline.
 
-Guarded simulation is contained inside the user signer: call
-`RequestGuardedSimulate` with the frozen group, sentry component signatures,
-and signed passthrough entries. The signer produces the user component
-signatures internally, assembles, simulates against its own algod, and returns
-only transaction IDs, final unsigned transactions, and the simulation report.
-Do not implement guarded simulation by requesting real user components and
-simulating client-side: that triggers a real operator approval for a
-transaction the caller only wants to preview, and leaves fully submittable
-signed bytes in the client's hands.
+Full simulation uses ordinary executable signing and the caller's algod. The
+signer does not have a simulation endpoint and does not know whether the caller
+will simulate or submit the released group. Policy, review, approval, assembly,
+and audit behavior are therefore identical to submission.
+
+```go
+simulation, err := userClient.SimulatePreparedGroup(
+	ctx,
+	algodClient,
+	preparedGroup,
+)
+if err != nil {
+	return err
+}
+if simulation.Failed {
+	// Inspect simulation.Response for algod diagnostics.
+}
+
+guarded, err := aplane.SimulateGuardedGroup(algodClient, guardedOptions)
+```
+
+`SimulationResult.SignedGroup` contains fully executable signed transactions
+that remain submittable until expiry. Keep them confidential. The helper sends
+the exact signed group to the supplied algod with empty-signature overrides
+disabled. A missing algod client fails before any signing request. Algod
+execution failure sets `Failed`; transport or decoding failures return an
+error and never trigger another signing request automatically.
 
 ## Transaction Semantics
 
@@ -511,6 +529,8 @@ signed bytes in the client's hands.
 - `SignTransactionsList(...)` returns per-slot base64 strings.
 - `PlanGroup(...)` returns unsigned `TX`-prefixed hex transactions plus a
   mutation report.
+- `SimulateGroup(...)` and `SimulatePreparedGroup(...)` perform ordinary
+  signing, then use the caller-provided algod simulation endpoint.
 - passthrough entries are supplied through `SignOptions.Passthrough`
 - foreign planning uses empty auth-address slots plus optional
   `SignOptions.LsigSizes`

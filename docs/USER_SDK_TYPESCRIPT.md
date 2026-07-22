@@ -545,15 +545,29 @@ signer's `approval_wait_seconds` and sizes the request deadline accordingly,
 exactly like `/sign`; sentry-role component requests stay on the short
 deterministic deadline.
 
-Guarded simulation is contained inside the user signer: call
-`requestGuardedSimulate()` with the frozen group, sentry component signatures,
-and signed passthrough entries. The signer produces the user component
-signatures internally, assembles, simulates against its own algod, and returns
-only transaction IDs, final unsigned transactions, and the simulation report.
-Do not implement guarded simulation by requesting real user components and
-simulating client-side: that triggers a real operator approval for a
-transaction the caller only wants to preview, and leaves fully submittable
-signed bytes in the client's hands.
+Full simulation uses ordinary executable signing and the caller's algod. The
+signer does not have a simulation endpoint and does not know whether the caller
+will simulate or submit the released group. Policy, review, approval, assembly,
+and audit behavior are therefore identical to submission.
+
+```ts
+const simulation = await userClient.simulatePreparedGroup(
+  algodClient,
+  preparedGroup,
+);
+if (simulation.failed) {
+  // Inspect simulation.response for algod diagnostics.
+}
+
+const guarded = await simulateGuardedGroup(algodClient, guardedOptions);
+```
+
+`SimulationResult.signedGroup` contains fully executable signed transactions
+that remain submittable until expiry. Keep them confidential. The helper sends
+the exact signed group to the supplied algod with empty-signature overrides
+disabled. A missing algod client fails before any signing request. Algod
+execution failure sets `failed`; transport or decoding failures throw and
+never trigger another signing request automatically.
 
 ## Transaction Semantics
 
@@ -567,6 +581,8 @@ signed bytes in the client's hands.
   `/sign` response.
 - `planGroup()` returns unsigned `TX`-prefixed hex transactions plus a mutation
   report.
+- `simulatePreparedGroup()` performs ordinary signing, then uses the
+  caller-provided algod simulation endpoint.
 - passthrough entries are base64-encoded signed transaction msgpack slots that
   already carry the intended group ID
 - foreign planning can include `lsigSizes` hints for LogicSig budget planning
