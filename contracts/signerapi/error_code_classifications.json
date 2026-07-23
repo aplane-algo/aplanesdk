@@ -10,6 +10,7 @@
     "unavailable": "temporary",
     "cache_refresh": "cache_refresh",
     "internal": "internal",
-	"bounded_admin_required": "request_error"
+    "bounded_admin_required": "request_error",
+    "bounded_sentry_required": "request_error"
   }
 }

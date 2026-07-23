@@ -897,6 +897,7 @@ export const ErrorCodes = {
   Unavailable: "unavailable",
   CacheRefresh: "cache_refresh",
   BoundedAdminRequired: "bounded_admin_required",
+  BoundedSentryRequired: "bounded_sentry_required",
   Internal: "internal",
 } as const;
 

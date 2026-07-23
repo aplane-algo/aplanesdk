@@ -10,6 +10,7 @@
     "unavailable",
     "cache_refresh",
     "internal",
-	"bounded_admin_required"
+    "bounded_admin_required",
+    "bounded_sentry_required"
   ]
 }

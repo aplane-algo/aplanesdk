@@ -147,6 +147,7 @@ ERR_CODE_UNAVAILABLE = "unavailable"
 ERR_CODE_CACHE_REFRESH = "cache_refresh"
 ERR_CODE_INTERNAL = "internal"
 ERR_CODE_BOUNDED_ADMIN_REQUIRED = "bounded_admin_required"
+ERR_CODE_BOUNDED_SENTRY_REQUIRED = "bounded_sentry_required"
 
 
 class SignerError(Exception):
