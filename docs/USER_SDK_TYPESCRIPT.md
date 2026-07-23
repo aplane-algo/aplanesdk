@@ -556,9 +556,15 @@ const signedGroup = result.signedGroup;
 The sequence is user approval and base-component release through
 `requestBoundedComponent()`, sentry signing over the frozen group, signing of
 ordinary group positions, and final `requestBoundedAssemble()` on the user
-signer. The SDK verifies that every assembled transaction matches the frozen
-canonical bytes. Those two bounded methods are also public for applications
-that own the orchestration.
+signer. Before requesting any additional signature, the SDK accepts only
+mutation-report-declared fee pooling and group-ID assignment to the caller's
+prepared positions, and requires every appended position to be a canonical
+budget dummy. It verifies ordinary signed positions and every assembled
+transaction against the frozen canonical bytes. Those two bounded methods are
+also public for applications that own the orchestration.
+
+The `minFee` option applies only to `sentry1`. `bounded-sentry1` uses
+signer-owned planning and reported fee mutations.
 
 The v1 sentry gate applies only to spends. Contract-admin rekeys use the
 external `aprekey` witness ceremony and are outside SDK completion.

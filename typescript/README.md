@@ -461,8 +461,15 @@ const signedGroup = result.signedGroup;
 The user signer first approves and freezes the complete canonical group through
 `requestBoundedComponent()`. Only then does the SDK request sentry signatures
 over those exact bytes, sign any ordinary positions, and call
-`requestBoundedAssemble()`. The SDK verifies that every returned signed
-transaction still contains the frozen transaction bytes.
+`requestBoundedAssemble()`. Before signing anything, the SDK compares the
+signer-produced plan with the caller's prepared group: only reported fee
+pooling and group-ID assignment are accepted, and appended positions must be
+canonical budget dummies. It also verifies ordinary signed positions and every
+assembled transaction against the frozen transaction bytes.
+
+The `minFee` option applies to the legacy `sentry1` path. The
+`bounded-sentry1` signer planner owns fee selection and reports its mutations,
+so that path ignores `minFee`.
 
 Applications that own orchestration can call `requestBoundedComponent()` and
 `requestBoundedAssemble()` directly. Sentry authorization is spend-only in this
