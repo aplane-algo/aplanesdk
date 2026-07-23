@@ -396,7 +396,8 @@ def test_sentry_dtos_round_trip_fixtures():
 def test_bounded_inventory_projects_layer3_policy():
     client = make_client()
     with patch.object(client.session, "get", return_value=mock_response(200, fixture("keys_response_bounded.json"))):
-        key = client.list_keys(refresh=True)[0]
+        keys = client.list_keys(refresh=True)
+        key = keys[0]
     assert key.signing_flow == "bounded1"
     assert key.lsig_size == 6592
     assert key.bounded_authorization.layer3_policy == "fixed_allowlist"
@@ -408,8 +409,19 @@ def test_bounded_inventory_projects_layer3_policy():
     assert key.bounded_authorization.spend_effects == ["pay", "axfer", "asset_opt_in"]
     assert key.bounded_authorization.admin_operations[0].policy_gate == "none"
     assert key.bounded_authorization.argument_layout[1].source == "admin"
+    corridor = keys[1]
+    assert corridor.signing_flow == "bounded-sentry1"
+    assert corridor.sentry_component_key_type == "aplane.witness-falcon1024.v1"
+    assert corridor.bounded_authorization.sentry.public_key_hex
+    assert corridor.bounded_authorization.sentry.component_key_id
+    assert corridor.bounded_authorization.sentry.required_on == ["spend"]
 
     with patch.object(client.session, "get", return_value=mock_response(200, fixture("keytypes_response_bounded.json"))):
-        key_type = client.list_key_types()[0]
+        key_types = client.list_key_types()
+        key_type = key_types[0]
     assert key_type.bounded_authorization.layer3_policy == "fixed_allowlist"
     assert key_type.bounded_authorization.admin_key_id == ""
+    corridor_type = key_types[1]
+    assert corridor_type.signing_flow == "bounded-sentry1"
+    assert corridor_type.sentry_component_key_type == "aplane.witness-falcon1024.v1"
+    assert corridor_type.bounded_authorization.sentry.required_on == ["spend"]

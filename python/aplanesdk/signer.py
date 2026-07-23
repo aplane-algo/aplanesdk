@@ -1066,7 +1066,7 @@ def _parse_bounded_authorization(data: Any) -> Optional[BoundedAuthorizationInfo
             BoundedSentryAuthorizationInfo(
                 contract=sentry.get("contract", ""),
                 component_key_type=sentry.get("component_key_type", ""),
-                public_key_hex=sentry.get("public_key", ""),
+                public_key_hex=sentry.get("public_key_hex", ""),
                 component_key_id=sentry.get("component_key_id", ""),
                 signature_max_size=sentry.get("signature_max_size", 0),
                 required_on=list(sentry.get("required_on") or []),

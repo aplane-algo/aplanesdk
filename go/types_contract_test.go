@@ -190,8 +190,8 @@ func TestBoundedInventoryUsesSpendPathLogicSigSize(t *testing.T) {
 	if err := json.Unmarshal(raw, &response); err != nil {
 		t.Fatalf("decode bounded keys fixture: %v", err)
 	}
-	if len(response.Keys) != 1 {
-		t.Fatalf("bounded key count = %d, want 1", len(response.Keys))
+	if len(response.Keys) != 2 {
+		t.Fatalf("bounded key count = %d, want 2", len(response.Keys))
 	}
 	key := response.Keys[0]
 	if key.SigningFlow != SigningFlowBounded1 {
@@ -211,6 +211,37 @@ func TestBoundedInventoryUsesSpendPathLogicSigSize(t *testing.T) {
 	}
 	if operation := key.BoundedAuthorization.AdminOperations[0]; operation.PolicyGate != "none" {
 		t.Fatalf("admin operation = %+v, want policy_gate none", operation)
+	}
+
+	corridor := response.Keys[1]
+	if corridor.SigningFlow != SigningFlowBoundedSentry1 ||
+		corridor.SentryComponentKeyType != KeyTypeWitnessFalcon1024 {
+		t.Fatalf("Corridor routing = %q/%q, want bounded sentry flow", corridor.SigningFlow, corridor.SentryComponentKeyType)
+	}
+	if corridor.BoundedAuthorization == nil || corridor.BoundedAuthorization.Sentry == nil {
+		t.Fatalf("Corridor bounded authorization = %+v, want sentry metadata", corridor.BoundedAuthorization)
+	}
+	if sentry := corridor.BoundedAuthorization.Sentry; sentry.PublicKeyHex == "" ||
+		sentry.ComponentKeyID == "" || len(sentry.RequiredOn) != 1 || sentry.RequiredOn[0] != "spend" {
+		t.Fatalf("Corridor sentry metadata = %+v, want routable spend authorization", sentry)
+	}
+
+	raw, err = os.ReadFile(sdkContractFixturePath(t, "keytypes_response_bounded.json"))
+	if err != nil {
+		t.Fatalf("read bounded keytypes fixture: %v", err)
+	}
+	var keyTypes KeyTypesResponse
+	if err := json.Unmarshal(raw, &keyTypes); err != nil {
+		t.Fatalf("decode bounded keytypes fixture: %v", err)
+	}
+	if len(keyTypes.KeyTypes) != 2 {
+		t.Fatalf("bounded key type count = %d, want 2", len(keyTypes.KeyTypes))
+	}
+	corridorType := keyTypes.KeyTypes[1]
+	if corridorType.SigningFlow != SigningFlowBoundedSentry1 ||
+		corridorType.SentryComponentKeyType != KeyTypeWitnessFalcon1024 ||
+		corridorType.BoundedAuthorization == nil || corridorType.BoundedAuthorization.Sentry == nil {
+		t.Fatalf("Corridor key type routing = %+v, want bounded sentry metadata", corridorType)
 	}
 }
 

@@ -413,7 +413,8 @@ describe("signer API contract fixtures", () => {
       json: async () => fixture("keys_response_bounded.json"),
     });
     const client = new SignerClient("http://localhost:11270", "test-token");
-    const key = (await client.listKeys(true))[0];
+    const keys = await client.listKeys(true);
+    const key = keys[0];
     assert.equal(key.signingFlow, "bounded1");
     assert.equal(key.lsigSize, 6592);
     assert.equal(key.boundedAuthorization?.layer3Policy, "fixed_allowlist");
@@ -426,15 +427,26 @@ describe("signer API contract fixtures", () => {
     assert.deepEqual(key.boundedAuthorization?.spendEffects, ["pay", "axfer", "asset_opt_in"]);
     assert.equal(key.boundedAuthorization?.adminOperations[0].policyGate, "none");
     assert.equal(key.boundedAuthorization?.argumentLayout[1].source, "admin");
+    const corridor = keys[1];
+    assert.equal(corridor.signingFlow, "bounded-sentry1");
+    assert.equal(corridor.sentryComponentKeyType, "aplane.witness-falcon1024.v1");
+    assert.ok(corridor.boundedAuthorization?.sentry?.publicKeyHex);
+    assert.ok(corridor.boundedAuthorization?.sentry?.componentKeyId);
+    assert.deepEqual(corridor.boundedAuthorization?.sentry?.requiredOn, ["spend"]);
 
     mockFetch.mockResolvedValueOnce({
       status: 200,
       ok: true,
       json: async () => fixture("keytypes_response_bounded.json"),
     });
-    const keyType = (await client.listKeyTypes())[0];
+    const keyTypes = await client.listKeyTypes();
+    const keyType = keyTypes[0];
     assert.equal(keyType.boundedAuthorization?.layer3Policy, "fixed_allowlist");
     assert.equal(keyType.boundedAuthorization?.adminKeyId, undefined);
+    const corridorType = keyTypes[1];
+    assert.equal(corridorType.signingFlow, "bounded-sentry1");
+    assert.equal(corridorType.sentryComponentKeyType, "aplane.witness-falcon1024.v1");
+    assert.deepEqual(corridorType.boundedAuthorization?.sentry?.requiredOn, ["spend"]);
   });
 
   it("round-trips admin sentry sync fixture DTOs", () => {

@@ -1095,7 +1095,7 @@ function mapBoundedAuthorization(raw: any): BoundedAuthorizationInfo | undefined
       ? {
           contract: raw.sentry.contract || "",
           componentKeyType: raw.sentry.component_key_type || "",
-          publicKeyHex: raw.sentry.public_key || undefined,
+          publicKeyHex: raw.sentry.public_key_hex || undefined,
           componentKeyId: raw.sentry.component_key_id || undefined,
           signatureMaxSize: raw.sentry.signature_max_size || 0,
           requiredOn: raw.sentry.required_on || [],

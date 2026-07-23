@@ -602,7 +602,7 @@ type BoundedArgumentSlotInfo struct {
 type BoundedSentryAuthorizationInfo struct {
 	Contract         string   `json:"contract"`
 	ComponentKeyType string   `json:"component_key_type"`
-	PublicKeyHex     string   `json:"public_key,omitempty"`
+	PublicKeyHex     string   `json:"public_key_hex,omitempty"`
 	ComponentKeyID   string   `json:"component_key_id,omitempty"`
 	SignatureMaxSize int      `json:"signature_max_size"`
 	RequiredOn       []string `json:"required_on"`
