@@ -371,7 +371,7 @@ client.close()
 | `aplane.ed25519.v1` | Ed25519 DSA LogicSig | Library-visible plain DSA account |
 | `aplane.witness-falcon1024.v1` | Witness key | Sentry-custodied policy signature key; not a spending account |
 | `aplane.falcon1024-sentry1024.v1` | Guarded account | Requires user and sentry component signatures |
-| `aplane.corridor.v1` | Corridor account | Falcon user and sentry signatures with corridor policy |
+| `aplane.corridor.v1` | Bounded Corridor account | `bounded1` contract; `bounded-sentry1` spend flow |
 | `aplane.falcon1024-allowlist.v1` | Bounded allowlist | Inline allowlist; `bounded1` signing flow |
 | `aplane.falcon1024-allowlist.v2` | Bounded allowlist | Merkle allowlist; `bounded1` signing flow |
 | `aplane.falcon1024-timelock.v1` | Bounded timelock | Round-gated `bounded1` signing flow |
@@ -431,6 +431,48 @@ signed_group = result.signed_group
 
 `assemble_group()` remains the local multi-party concatenation helper; it is
 not the same operation as server-side guarded assembly.
+
+### Bounded Sentry Accounts
+
+Corridor uses the bounded contract `bounded1` with the distinct
+`bounded-sentry1` online signing flow. The contract identifies the LogicSig
+rules; the flow identifies the user-first multi-endpoint choreography. The
+prepared helper detects that flow from signer inventory and routes it
+automatically:
+
+```python
+result = sign_prepared_guarded_group(
+    user_client=user_client,
+    sentry_resolver=sentry_resolver,
+    prepared_group=prepared_group,
+)
+signed_group = result.signed_group
+```
+
+The user signer first approves and freezes the complete canonical group through
+`request_bounded_component()`. Only then does the SDK request sentry signatures
+over those exact bytes, sign any ordinary positions, and call
+`request_bounded_assemble()`. Before signing anything, the SDK compares the
+signer-produced plan with the caller's prepared group: only reported fee
+pooling and group-ID assignment are accepted, and appended positions must be
+canonical budget dummies. The returned group must use canonical transaction
+encoding and a group ID recomputed from the presented membership. The SDK also
+verifies ordinary signed positions and every assembled transaction against the
+frozen transaction bytes.
+
+`request_bounded_component()` sends best-effort `/sign/cancel` when its
+approval-bearing HTTP request times out or disconnects.
+`request_bounded_assemble()` does not open an approval request and is not a
+cancellation handle.
+
+The `min_fee` option applies to the legacy `sentry1` path. The
+`bounded-sentry1` signer planner owns fee selection and reports its mutations,
+so that path ignores `min_fee`.
+
+Applications that own orchestration can call `request_bounded_component()` and
+`request_bounded_assemble()` directly. Sentry authorization is spend-only in
+this contract; bounded contract-admin rekeys remain an external `aprekey`
+ceremony and are not completed by the SDK.
 
 ## Error Handling
 

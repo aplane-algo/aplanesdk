@@ -1,0 +1,17 @@
+{
+  "request_id": "basm-contract-1",
+  "group_bytes_hex": ["5458a1", "5458a2"],
+  "targets": [
+    {
+      "target_index": 0,
+      "bounded_account": "BOUNDEDADDR000000000000000000000000000000000000000000000",
+      "base_signatures": ["aabbcc"],
+      "runtime_args": {"preimage": "aabb"},
+      "assembly_receipt": "ddeeff",
+      "base_source_request_id": "bcmp-contract-1",
+      "sentry_signature": "112233",
+      "sentry_source_request_id": "cmp-contract-1"
+    }
+  ],
+  "passthrough": [{"target_index": 1, "signed_txn_hex": "82aabb"}]
+}

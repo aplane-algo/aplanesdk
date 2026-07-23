@@ -15,6 +15,7 @@ import {
   KEY_TYPE_GUARDED_FALCON1024_SENTRY1024,
   KEY_TYPE_WITNESS_FALCON1024,
   SIGNING_FLOW_SENTRY1,
+  SIGNING_FLOW_BOUNDED_SENTRY1,
 } from "../src/types.js";
 import {
   AuthenticationError,
@@ -1195,6 +1196,7 @@ describe("SignerClient", () => {
 
       const client = new SignerClient("http://localhost:11270", "test-token");
       const result = await client.requestComponentSign({
+        request_id: "sdk-generated",
         role: COMPONENT_SIGN_ROLE_SENTRY,
         component_key: "COMPONENT",
         group_bytes_hex: ["5458aa"],
@@ -1226,6 +1228,32 @@ describe("SignerClient", () => {
           target_indices: [0],
         }),
         { message: /invalid component sign response/ },
+      );
+    });
+
+    it("rejects component signatures for unrequested targets", async () => {
+      mockFetch.mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: async () => ({
+          request_id: "sdk-component",
+          signatures: [{
+            target_index: 1,
+            signature: "aabb",
+            signature_scheme: KEY_TYPE_WITNESS_FALCON1024,
+          }],
+        }),
+      });
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      await assert.rejects(
+        client.requestComponentSign({
+          request_id: "sdk-component",
+          role: COMPONENT_SIGN_ROLE_SENTRY,
+          group_bytes_hex: ["5458aa", "5458bb"],
+          target_indices: [0],
+        }),
+        { message: /indices do not match request/ },
       );
     });
 
@@ -1276,6 +1304,169 @@ describe("SignerClient", () => {
         { message: /not covered/ },
       );
       assert.equal(mockFetch.mock.calls.length, 0);
+    });
+
+    it("posts bounded component and assembly requests", async () => {
+      queueStatusResponse();
+      mockFetch.mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: async () => ({
+          request_id: "bounded-base-id",
+          transactions: ["5458aa"],
+          components: [{
+            target_index: 0,
+            bounded_account: "BOUNDED",
+            base_signatures: ["base-sig"],
+            assembly_receipt: "receipt",
+            signature_scheme: "aplane.falcon1024.v1",
+          }],
+          mutations: {
+            dummies_added: 1,
+            original_count: 1,
+            final_count: 2,
+          },
+        }),
+      });
+      mockFetch.mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: async () => ({
+          request_id: "bounded-assembly-id",
+          signed_group: ["signed"],
+        }),
+      });
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const component = await client.requestBoundedComponent({
+        request_id: "bounded-base-id",
+        requests: [{ auth_address: "BOUNDED", txn_bytes_hex: "5458aa" }],
+      });
+      const assembly = await client.requestBoundedAssemble({
+        request_id: "bounded-assembly-id",
+        group_bytes_hex: ["5458aa"],
+        targets: [{
+          target_index: 0,
+          bounded_account: "BOUNDED",
+          base_signatures: ["base-sig"],
+          assembly_receipt: "receipt",
+          sentry_signature: "sentry-sig",
+        }],
+      });
+
+      assert.equal(component.components[0].assembly_receipt, "receipt");
+      assert.equal(component.mutations?.dummiesAdded, 1);
+      assert.equal(component.mutations?.originalCount, 1);
+      assert.deepEqual(assembly.signed_group, ["signed"]);
+      assert.equal(mockFetch.mock.calls[1][0], "http://localhost:11270/sign/bounded-component");
+      assert.equal(mockFetch.mock.calls[2][0], "http://localhost:11270/sign/bounded-assemble");
+    });
+
+    it("cancels bounded component approval after timeout", async () => {
+      const abortError = new Error("Abort");
+      abortError.name = "AbortError";
+      queueStatusResponse();
+      mockFetch.mockRejectedValueOnce(abortError);
+      mockFetch.mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: async () => ({ success: true, state: "canceled" }),
+      });
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      await assert.rejects(
+        client.requestBoundedComponent({
+          request_id: "bounded-cancel-id",
+          requests: [{ auth_address: "BOUNDED", txn_bytes_hex: "5458aa" }],
+        }),
+        SignerUnavailableError,
+      );
+
+      assert.equal(mockFetch.mock.calls[1][0], "http://localhost:11270/sign/bounded-component");
+      assert.equal(mockFetch.mock.calls[2][0], "http://localhost:11270/sign/cancel");
+      assert.equal(
+        JSON.parse(mockFetch.mock.calls[2][1].body).request_id,
+        "bounded-cancel-id",
+      );
+    });
+
+    it("classifies bounded endpoint not_found responses", async () => {
+      queueStatusResponse();
+      mockFetch.mockResolvedValueOnce({
+        status: 400,
+        ok: false,
+        json: async () => ({ error: "key not found", code: "not_found" }),
+        text: async () => "key not found",
+      });
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      await assert.rejects(
+        client.requestBoundedComponent({
+          request_id: "bounded-not-found",
+          requests: [{ auth_address: "BOUNDED", txn_bytes_hex: "5458aa" }],
+        }),
+        KeyNotFoundError,
+      );
+    });
+
+    it("rejects bounded component passthrough before fetch", async () => {
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      await assert.rejects(
+        client.requestBoundedComponent({
+          request_id: "bounded-base-id",
+          requests: [{ signed_txn_hex: "abcd" }],
+        }),
+        /does not accept signed passthrough/,
+      );
+      assert.equal(mockFetch.mock.calls.length, 0);
+    });
+
+    it("wraps malformed bounded endpoint JSON", async () => {
+      queueStatusResponse();
+      mockFetch.mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: async () => {
+          throw new SyntaxError("bad json");
+        },
+      });
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      await assert.rejects(
+        client.requestBoundedComponent({
+          request_id: "bounded-base-id",
+          requests: [{ auth_address: "BOUNDED", txn_bytes_hex: "5458aa" }],
+        }),
+        (error: unknown) => error instanceof SignerError &&
+          error.message === "Server returned invalid JSON",
+      );
+    });
+
+    it("rejects malformed bounded component targets", async () => {
+      queueStatusResponse();
+      const component = {
+        target_index: 0,
+        bounded_account: "BOUNDED",
+        base_signatures: ["base"],
+        assembly_receipt: "receipt",
+        signature_scheme: "aplane.falcon1024.v1",
+      };
+      mockFetch.mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: async () => ({
+          request_id: "bounded-base-id",
+          transactions: ["5458aa"],
+          components: [component, component],
+        }),
+      });
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      await assert.rejects(
+        client.requestBoundedComponent({
+          request_id: "bounded-base-id",
+          requests: [{ auth_address: "BOUNDED", txn_bytes_hex: "5458aa" }],
+        }),
+        /invalid or duplicate target_index/,
+      );
     });
 
     it("posts sentry reference sync requests to the admin endpoint", async () => {
@@ -1516,6 +1707,442 @@ describe("SignerClient", () => {
 
       assert.equal(result.signedGroup.length, 4);
       assert.equal(result.primarySignResponse, undefined);
+    });
+
+    it("routes prepared bounded-sentry groups through the user-first flow", async () => {
+      const bounded = testAddress(11);
+      const receiver = testAddress(12);
+      const user = new SignerClient("http://localhost:11270", "test-token");
+      const sentry = new SignerClient("http://sentry:11270", "sentry-token");
+      let plannedTransactions: string[] | undefined;
+      let plannedMutations: any;
+
+      (user as any).requestBoundedComponent = async (request: any) => {
+        assert.equal(request.requests[0].auth_address, bounded);
+        return {
+          request_id: "base-id",
+          transactions: plannedTransactions ?? [request.requests[0].txn_bytes_hex],
+          components: [{
+            target_index: 0,
+            bounded_account: bounded,
+            base_signatures: ["base-sig"],
+            runtime_args: { proof: "aabb" },
+            assembly_receipt: "receipt",
+            signature_scheme: "aplane.falcon1024.v1",
+          }],
+          mutations: plannedMutations,
+        };
+      };
+      (sentry as any).requestComponentSign = async (request: any) => {
+        assert.equal(request.component_key, "SENTRY_COMPONENT");
+        assert.deepEqual(request.target_indices, [0]);
+        assert.equal(request.group_bytes_hex.length, 1);
+        return {
+          request_id: "sentry-id",
+          signatures: [{
+            target_index: 0,
+            signature: "sentry-sig",
+            signature_scheme: KEY_TYPE_WITNESS_FALCON1024,
+          }],
+        };
+      };
+      (user as any).signRequests = async () => {
+        throw new Error("all-bounded path must not call /sign");
+      };
+      let assembledTxn: algosdk.Transaction;
+      const signedTxnHex = (txn: algosdk.Transaction): string => {
+        const signature = new Uint8Array(64);
+        signature[63] = 1;
+        return bytesToHex(algosdk.encodeMsgpack(
+          new algosdk.SignedTransaction({ txn, sig: signature }),
+        ));
+      };
+      (user as any).requestBoundedAssemble = async (request: any) => {
+        assert.deepEqual(request.targets[0].base_signatures, ["base-sig"]);
+        assert.equal(request.targets[0].assembly_receipt, "receipt");
+        assert.equal(request.targets[0].sentry_signature, "sentry-sig");
+        return { request_id: "assembly-id", signed_group: [signedTxnHex(assembledTxn)] };
+      };
+
+      const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+        sender: bounded,
+        receiver,
+        amount: 1000n,
+        suggestedParams: {
+          fee: 1000n,
+          minFee: 1000n,
+          firstValid: 1n,
+          lastValid: 100n,
+          genesisHash: new Uint8Array(32),
+          genesisID: "testnet-v1",
+          flatFee: true,
+        },
+      });
+      const options = {
+        userClient: user,
+        sentryClient: sentry,
+        sentryComponentKey: "SENTRY_COMPONENT",
+        preparedGroup: {
+          transactions: [{
+            transaction: txn,
+            authAddress: bounded,
+            signerKey: {
+              address: bounded,
+              publicKeyHex: "",
+              keyType: "aplane.corridor.v1",
+              signingFlow: SIGNING_FLOW_BOUNDED_SENTRY1,
+              sentryComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
+              lsigSize: 9012,
+              isGenericLsig: false,
+              boundedAuthorization: {
+                contract: "bounded1",
+                baseSignatureArgLayout: { count: 1, maxSizes: [1280] },
+                spendEffects: ["pay"],
+                maxFee: 1000,
+                adminOperations: [],
+                sentry: {
+                  contract: "sentry1",
+                  componentKeyType: KEY_TYPE_WITNESS_FALCON1024,
+                  publicKeyHex: "aabb",
+                  signatureMaxSize: 1280,
+                  requiredOn: ["spend"],
+                },
+                runtimeArgs: [],
+                derivedArgs: [],
+                argumentLayout: [],
+                layer3Policy: "merkle_allowlist",
+              },
+            },
+          }],
+        },
+      };
+      const fabricatedFirst = algosdk.decodeUnsignedTransaction(txn.toByte());
+      const fabricatedSecond = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+        sender: bounded,
+        receiver,
+        amount: 2n,
+        suggestedParams: {
+          fee: 1000n,
+          minFee: 1000n,
+          firstValid: 1n,
+          lastValid: 100n,
+          genesisHash: new Uint8Array(32),
+          genesisID: "testnet-v1",
+          flatFee: true,
+        },
+      });
+      fabricatedFirst.group = new Uint8Array(32).fill(0x44);
+      fabricatedSecond.group = new Uint8Array(32).fill(0x44);
+      plannedTransactions = [
+        encodeTransaction(fabricatedFirst)[0],
+        encodeTransaction(fabricatedSecond)[0],
+      ];
+      plannedMutations = {
+        dummiesAdded: 1,
+        groupIdChanged: true,
+        feesModified: [],
+        totalFeesDelta: 0,
+        originalCount: 1,
+        finalCount: 2,
+      };
+      await assert.rejects(
+        signPreparedGuardedGroup(options),
+        /group ID does not match decoded transactions/,
+      );
+
+      const changedPlanTxn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+        sender: bounded,
+        receiver,
+        amount: 2000n,
+        suggestedParams: {
+          fee: 1000n,
+          minFee: 1000n,
+          firstValid: 1n,
+          lastValid: 100n,
+          genesisHash: new Uint8Array(32),
+          genesisID: "testnet-v1",
+          flatFee: true,
+        },
+      });
+      plannedTransactions = [encodeTransaction(changedPlanTxn)[0]];
+      plannedMutations = undefined;
+      await assert.rejects(
+        signPreparedGuardedGroup(options),
+        /changed unreported fields/,
+      );
+
+      const inflatedFeeTxn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+        sender: bounded,
+        receiver,
+        amount: 1000n,
+        suggestedParams: {
+          fee: 2000n,
+          minFee: 1000n,
+          firstValid: 1n,
+          lastValid: 100n,
+          genesisHash: new Uint8Array(32),
+          genesisID: "testnet-v1",
+          flatFee: true,
+        },
+      });
+      plannedTransactions = [encodeTransaction(inflatedFeeTxn)[0]];
+      plannedMutations = {
+        dummiesAdded: 0,
+        groupIdChanged: false,
+        feesModified: [0],
+        totalFeesDelta: 1000,
+        originalCount: 1,
+        finalCount: 1,
+      };
+      await assert.rejects(
+        signPreparedGuardedGroup(options),
+        /exceeds advertised max_fee/,
+      );
+
+      const badDummy = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+        sender: bounded,
+        receiver: bounded,
+        amount: 1n,
+        note: new Uint8Array([0]),
+        suggestedParams: {
+          fee: 0n,
+          minFee: 1000n,
+          firstValid: 1n,
+          lastValid: 100n,
+          genesisHash: new Uint8Array(32),
+          genesisID: "testnet-v1",
+          flatFee: true,
+        },
+      });
+      const badDummyGroup = [
+        algosdk.decodeUnsignedTransaction(txn.toByte()),
+        badDummy,
+      ];
+      algosdk.assignGroupID(badDummyGroup);
+      plannedTransactions = badDummyGroup.map((item) => encodeTransaction(item)[0]);
+      plannedMutations = {
+        dummiesAdded: 1,
+        groupIdChanged: true,
+        feesModified: [],
+        totalFeesDelta: 0,
+        originalCount: 1,
+        finalCount: 2,
+      };
+      await assert.rejects(
+        signPreparedGuardedGroup(options),
+        /canonical guarded budget dummy/,
+      );
+      plannedTransactions = undefined;
+      plannedMutations = undefined;
+
+      assembledTxn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+        sender: bounded,
+        receiver,
+        amount: 2000n,
+        suggestedParams: {
+          fee: 1000n,
+          minFee: 1000n,
+          firstValid: 1n,
+          lastValid: 100n,
+          genesisHash: new Uint8Array(32),
+          genesisID: "testnet-v1",
+          flatFee: true,
+        },
+      });
+      await assert.rejects(
+        signPreparedGuardedGroup(options),
+        /does not match the submitted canonical bytes/,
+      );
+
+      assembledTxn = txn;
+      const result = await signPreparedGuardedGroup(options);
+
+      assert.deepEqual(result.signedGroup, [signedTxnHex(txn)]);
+      assert.deepEqual(result.assemblyResponse, result.boundedAssemblyResponse);
+      assert.ok(result.boundedComponentResponse);
+      assert.ok(result.boundedAssemblyResponse);
+    });
+
+    it("rejects mixed sentry1 and bounded-sentry1 prepared groups", async () => {
+      const user = new SignerClient("http://localhost:11270", "test-token");
+      await assert.rejects(
+        signPreparedGuardedGroup({
+          userClient: user,
+          preparedGroup: {
+            transactions: [
+              {
+                signerKey: {
+                  address: "bounded",
+                  publicKeyHex: "",
+                  keyType: "bounded",
+                  signingFlow: SIGNING_FLOW_BOUNDED_SENTRY1,
+                  lsigSize: 0,
+                  isGenericLsig: false,
+                },
+              },
+              {
+                signerKey: {
+                  address: "guarded",
+                  publicKeyHex: "",
+                  keyType: "guarded",
+                  signingFlow: SIGNING_FLOW_SENTRY1,
+                  lsigSize: 0,
+                  isGenericLsig: false,
+                },
+              },
+            ],
+          },
+        }),
+        /cannot mix sentry1 and bounded-sentry1/,
+      );
+    });
+
+    it("verifies bounded primary passthrough transaction identity", async () => {
+      const bounded = testAddress(21);
+      const primary = testAddress(22);
+      const receiver = testAddress(23);
+      const user = new SignerClient("http://localhost:11270", "test-token");
+      const sentry = new SignerClient("http://sentry:11270", "sentry-token");
+      const suggestedParams = {
+        fee: 1000n,
+        minFee: 1000n,
+        firstValid: 1n,
+        lastValid: 100n,
+        genesisHash: new Uint8Array(32),
+        genesisID: "testnet-v1",
+        flatFee: true,
+      };
+      const boundedTxn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+        sender: bounded,
+        receiver,
+        amount: 1000n,
+        suggestedParams,
+      });
+      const primaryTxn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+        sender: primary,
+        receiver,
+        amount: 2000n,
+        suggestedParams,
+      });
+      const wrongPrimaryTxn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+        sender: primary,
+        receiver,
+        amount: 3000n,
+        suggestedParams,
+      });
+      const signedTxnHex = (txn: algosdk.Transaction): string => {
+        const logicSig = new algosdk.LogicSigAccount(
+          new Uint8Array([0x03, 0x31, 0x20, 0x32, 0x03, 0x12]),
+        );
+        return bytesToHex(algosdk.signLogicSigTransactionObject(txn, logicSig).blob);
+      };
+      let plannedGroup: algosdk.Transaction[] = [];
+
+      (user as any).requestBoundedComponent = async (request: any) => {
+        const planned = request.requests.map((entry: any) =>
+          algosdk.decodeUnsignedTransaction(hexToBytes(entry.txn_bytes_hex).slice(2))
+        );
+        algosdk.assignGroupID(planned);
+        plannedGroup = planned;
+        return {
+          request_id: "base-id",
+          transactions: planned.map((item: algosdk.Transaction) => encodeTransaction(item)[0]),
+          components: [{
+            target_index: 0,
+            bounded_account: bounded,
+            base_signatures: ["base-sig"],
+            assembly_receipt: "receipt",
+            signature_scheme: "aplane.falcon1024.v1",
+          }],
+          mutations: {
+            dummiesAdded: 0,
+            groupIdChanged: true,
+            feesModified: [],
+            totalFeesDelta: 0,
+            originalCount: planned.length,
+            finalCount: planned.length,
+          },
+        };
+      };
+      (sentry as any).requestComponentSign = async () => ({
+        request_id: "sentry-id",
+        signatures: [{
+          target_index: 0,
+          signature: "sentry-sig",
+          signature_scheme: KEY_TYPE_WITNESS_FALCON1024,
+        }],
+      });
+      let useWrongPrimary = true;
+      (user as any).signRequests = async () => {
+        const primarySignedTxn = algosdk.decodeUnsignedTransaction(
+          (useWrongPrimary ? wrongPrimaryTxn : plannedGroup[1]).toByte(),
+        );
+        primarySignedTxn.group = plannedGroup[1].group;
+        return { signed: ["", signedTxnHex(primarySignedTxn)] };
+      };
+      (user as any).requestBoundedAssemble = async () => ({
+        request_id: "assembly-id",
+        signed_group: plannedGroup.map(signedTxnHex),
+      });
+
+      const options = {
+        userClient: user,
+        sentryClient: sentry,
+        sentryComponentKey: "SENTRY_COMPONENT",
+        preparedGroup: {
+          transactions: [
+            {
+              transaction: boundedTxn,
+              authAddress: bounded,
+              signerKey: {
+                address: bounded,
+                publicKeyHex: "",
+                keyType: "aplane.corridor.v1",
+                signingFlow: SIGNING_FLOW_BOUNDED_SENTRY1,
+                sentryComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
+                lsigSize: 9012,
+                isGenericLsig: false,
+                boundedAuthorization: {
+                  contract: "bounded1",
+                  baseSignatureArgLayout: { count: 1, maxSizes: [1280] },
+                  spendEffects: ["pay"],
+                  maxFee: 1000,
+                  adminOperations: [],
+                  sentry: {
+                    contract: "sentry1",
+                    componentKeyType: KEY_TYPE_WITNESS_FALCON1024,
+                    publicKeyHex: "aabb",
+                    signatureMaxSize: 1280,
+                    requiredOn: ["spend"],
+                  },
+                  runtimeArgs: [],
+                  derivedArgs: [],
+                  argumentLayout: [],
+                },
+              },
+            },
+            {
+              transaction: primaryTxn,
+              authAddress: primary,
+              signerKey: {
+                address: primary,
+                publicKeyHex: "",
+                keyType: "aplane.falcon1024.v1",
+                signingFlow: "",
+                lsigSize: 0,
+                isGenericLsig: false,
+              },
+            },
+          ],
+        },
+      };
+      await assert.rejects(
+        signPreparedGuardedGroup(options),
+        /primary passthrough 1 does not match/,
+      );
+      useWrongPrimary = false;
+      const result = await signPreparedGuardedGroup(options);
+      assert.equal(result.signedGroup.length, 2);
     });
 
     it("rejects prepared groups whose keys require an unsupported signing flow", async () => {

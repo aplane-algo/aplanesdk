@@ -560,6 +560,11 @@ const SigningFlowSentry1 = "sentry1"
 // SigningFlowBounded1 names the transaction-aware LogicSig choreography.
 const SigningFlowBounded1 = "bounded1"
 
+// SigningFlowBoundedSentry1 names the combined bounded spend choreography:
+// user-signer bounded base release, sentry component signing, and source-bound
+// bounded assembly.
+const SigningFlowBoundedSentry1 = "bounded-sentry1"
+
 type BoundedSignatureArgLayout struct {
 	Count    int   `json:"count"`
 	MaxSizes []int `json:"max_sizes"`
@@ -592,19 +597,31 @@ type BoundedArgumentSlotInfo struct {
 	Paths   BoundedArgumentPathMask `json:"paths"`
 }
 
+// BoundedSentryAuthorizationInfo is the public non-secret projection of the
+// optional sentry authority embedded in a bounded account.
+type BoundedSentryAuthorizationInfo struct {
+	Contract         string   `json:"contract"`
+	ComponentKeyType string   `json:"component_key_type"`
+	PublicKeyHex     string   `json:"public_key_hex,omitempty"`
+	ComponentKeyID   string   `json:"component_key_id,omitempty"`
+	SignatureMaxSize int      `json:"signature_max_size"`
+	RequiredOn       []string `json:"required_on"`
+}
+
 type BoundedAuthorizationInfo struct {
-	Contract                string                      `json:"contract"`
-	BaseSignatureArgLayout  BoundedSignatureArgLayout   `json:"base_signature_arg_layout"`
-	SpendEffects            []string                    `json:"spend_effects"`
-	MaxFee                  uint64                      `json:"max_fee"`
-	AdminOperations         []BoundedAdminOperationInfo `json:"admin_operations"`
-	RuntimeArgs             []RuntimeArg                `json:"runtime_args"`
-	DerivedArgs             []BoundedDerivedArgInfo     `json:"derived_args"`
-	ArgumentLayout          []BoundedArgumentSlotInfo   `json:"argument_layout"`
-	Layer3Policy            string                      `json:"layer3_policy"`
-	AdminKeyID              string                      `json:"admin_key_id,omitempty"`
-	ProgramBindingHex       string                      `json:"program_binding,omitempty"`
-	PostSigningLogicSigSize int                         `json:"post_signing_lsig_size,omitempty"` // Admin-inclusive bounded size
+	Contract                string                          `json:"contract"`
+	BaseSignatureArgLayout  BoundedSignatureArgLayout       `json:"base_signature_arg_layout"`
+	SpendEffects            []string                        `json:"spend_effects"`
+	MaxFee                  uint64                          `json:"max_fee"`
+	AdminOperations         []BoundedAdminOperationInfo     `json:"admin_operations"`
+	Sentry                  *BoundedSentryAuthorizationInfo `json:"sentry,omitempty"`
+	RuntimeArgs             []RuntimeArg                    `json:"runtime_args"`
+	DerivedArgs             []BoundedDerivedArgInfo         `json:"derived_args"`
+	ArgumentLayout          []BoundedArgumentSlotInfo       `json:"argument_layout"`
+	Layer3Policy            string                          `json:"layer3_policy"`
+	AdminKeyID              string                          `json:"admin_key_id,omitempty"`
+	ProgramBindingHex       string                          `json:"program_binding,omitempty"`
+	PostSigningLogicSigSize int                             `json:"post_signing_lsig_size,omitempty"` // Admin-inclusive bounded size
 }
 
 // KeyInfo represents a key returned from the /keys endpoint.

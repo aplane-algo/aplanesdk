@@ -1,0 +1,11 @@
+{
+  "request_id": "bcmp-contract-1",
+  "requests": [
+    {
+      "auth_address": "BOUNDEDADDR000000000000000000000000000000000000000000000",
+      "txn_bytes_hex": "5458a1",
+      "lsig_args": {"preimage": "aabb"}
+    },
+    {"txn_bytes_hex": "5458a2", "lsig_size": 2100}
+  ]
+}

@@ -17,6 +17,10 @@ import type {
   ComponentSignResponse,
   GuardedAssemblyRequest,
   GuardedAssemblyResponse,
+  BoundedComponentRequest,
+  BoundedComponentResponse,
+  BoundedAssemblyRequest,
+  BoundedAssemblyResponse,
 } from "../src/types.js";
 
 interface MockFetch {
@@ -391,6 +395,15 @@ describe("signer API contract fixtures", () => {
 
     const assemblyResp = fixture("guarded_assembly_response.json") as GuardedAssemblyResponse;
     assert.equal(assemblyResp.signed_group.length, 2);
+
+    const boundedComponentReq = fixture("bounded_component_request.json") as BoundedComponentRequest;
+    assert.ok(boundedComponentReq.requests[0].auth_address);
+    const boundedComponentResp = fixture("bounded_component_response.json") as BoundedComponentResponse;
+    assert.ok(boundedComponentResp.components[0].assembly_receipt);
+    const boundedAssemblyReq = fixture("bounded_assembly_request.json") as BoundedAssemblyRequest;
+    assert.ok(boundedAssemblyReq.targets[0].sentry_signature);
+    const boundedAssemblyResp = fixture("bounded_assembly_response.json") as BoundedAssemblyResponse;
+    assert.equal(boundedAssemblyResp.signed_group.length, 2);
   });
 
   it("projects bounded inventory layer3 policy", async () => {
@@ -400,7 +413,8 @@ describe("signer API contract fixtures", () => {
       json: async () => fixture("keys_response_bounded.json"),
     });
     const client = new SignerClient("http://localhost:11270", "test-token");
-    const key = (await client.listKeys(true))[0];
+    const keys = await client.listKeys(true);
+    const key = keys[0];
     assert.equal(key.signingFlow, "bounded1");
     assert.equal(key.lsigSize, 6592);
     assert.equal(key.boundedAuthorization?.layer3Policy, "fixed_allowlist");
@@ -413,15 +427,26 @@ describe("signer API contract fixtures", () => {
     assert.deepEqual(key.boundedAuthorization?.spendEffects, ["pay", "axfer", "asset_opt_in"]);
     assert.equal(key.boundedAuthorization?.adminOperations[0].policyGate, "none");
     assert.equal(key.boundedAuthorization?.argumentLayout[1].source, "admin");
+    const corridor = keys[1];
+    assert.equal(corridor.signingFlow, "bounded-sentry1");
+    assert.equal(corridor.sentryComponentKeyType, "aplane.witness-falcon1024.v1");
+    assert.ok(corridor.boundedAuthorization?.sentry?.publicKeyHex);
+    assert.ok(corridor.boundedAuthorization?.sentry?.componentKeyId);
+    assert.deepEqual(corridor.boundedAuthorization?.sentry?.requiredOn, ["spend"]);
 
     mockFetch.mockResolvedValueOnce({
       status: 200,
       ok: true,
       json: async () => fixture("keytypes_response_bounded.json"),
     });
-    const keyType = (await client.listKeyTypes())[0];
+    const keyTypes = await client.listKeyTypes();
+    const keyType = keyTypes[0];
     assert.equal(keyType.boundedAuthorization?.layer3Policy, "fixed_allowlist");
     assert.equal(keyType.boundedAuthorization?.adminKeyId, undefined);
+    const corridorType = keyTypes[1];
+    assert.equal(corridorType.signingFlow, "bounded-sentry1");
+    assert.equal(corridorType.sentryComponentKeyType, "aplane.witness-falcon1024.v1");
+    assert.deepEqual(corridorType.boundedAuthorization?.sentry?.requiredOn, ["spend"]);
   });
 
   it("round-trips admin sentry sync fixture DTOs", () => {

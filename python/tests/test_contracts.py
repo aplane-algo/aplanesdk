@@ -15,11 +15,16 @@ from aplanesdk.signer import (
     CancelSignResponse,
     ComponentSignRequest,
     ComponentSignResponse,
+    BoundedComponentRequest,
+    BoundedComponentResponse,
+    BoundedAssemblyRequest,
+    BoundedAssemblyResponse,
     ERR_CODE_BAD_REQUEST,
     ERR_CODE_CACHE_REFRESH,
     ERR_CODE_FORBIDDEN,
     ERR_CODE_INTERNAL,
     ERR_CODE_BOUNDED_ADMIN_REQUIRED,
+    ERR_CODE_BOUNDED_SENTRY_REQUIRED,
     ERR_CODE_INVALID_PASSPHRASE,
     ERR_CODE_LOCKED,
     ERR_CODE_NOT_FOUND,
@@ -91,6 +96,7 @@ def sdk_error_codes() -> list[str]:
         ERR_CODE_CACHE_REFRESH,
         ERR_CODE_INTERNAL,
         ERR_CODE_BOUNDED_ADMIN_REQUIRED,
+        ERR_CODE_BOUNDED_SENTRY_REQUIRED,
     ]
 
 
@@ -361,6 +367,28 @@ def test_sentry_dtos_round_trip_fixtures():
     assembly_resp = GuardedAssemblyResponse(**fixture("guarded_assembly_response.json"))
     assert len(assembly_resp.signed_group) == 2
 
+    bounded_component_req = BoundedComponentRequest(
+        **fixture("bounded_component_request.json")
+    )
+    assert bounded_component_req.requests[0]["auth_address"]
+    bounded_component_data = fixture("bounded_component_response.json")
+    bounded_component_resp = BoundedComponentResponse(
+        request_id=bounded_component_data["request_id"],
+        transactions=bounded_component_data["transactions"],
+        components=bounded_component_data["components"],
+        mutations=bounded_component_data.get("mutations"),
+    )
+    assert bounded_component_resp.components[0]["assembly_receipt"]
+
+    bounded_assembly_req = BoundedAssemblyRequest(
+        **fixture("bounded_assembly_request.json")
+    )
+    assert bounded_assembly_req.targets[0]["sentry_signature"]
+    bounded_assembly_resp = BoundedAssemblyResponse(
+        **fixture("bounded_assembly_response.json")
+    )
+    assert len(bounded_assembly_resp.signed_group) == 2
+
     sync_req = AdminSyncSentryReferencesRequest(**fixture("admin_sync_sentries_request.json"))
     assert sync_req.candidates[0]["component_key"]
     sync_resp = AdminSyncSentryReferencesResponse(**fixture("admin_sync_sentries_response.json"))
@@ -370,7 +398,8 @@ def test_sentry_dtos_round_trip_fixtures():
 def test_bounded_inventory_projects_layer3_policy():
     client = make_client()
     with patch.object(client.session, "get", return_value=mock_response(200, fixture("keys_response_bounded.json"))):
-        key = client.list_keys(refresh=True)[0]
+        keys = client.list_keys(refresh=True)
+        key = keys[0]
     assert key.signing_flow == "bounded1"
     assert key.lsig_size == 6592
     assert key.bounded_authorization.layer3_policy == "fixed_allowlist"
@@ -382,8 +411,19 @@ def test_bounded_inventory_projects_layer3_policy():
     assert key.bounded_authorization.spend_effects == ["pay", "axfer", "asset_opt_in"]
     assert key.bounded_authorization.admin_operations[0].policy_gate == "none"
     assert key.bounded_authorization.argument_layout[1].source == "admin"
+    corridor = keys[1]
+    assert corridor.signing_flow == "bounded-sentry1"
+    assert corridor.sentry_component_key_type == "aplane.witness-falcon1024.v1"
+    assert corridor.bounded_authorization.sentry.public_key_hex
+    assert corridor.bounded_authorization.sentry.component_key_id
+    assert corridor.bounded_authorization.sentry.required_on == ["spend"]
 
     with patch.object(client.session, "get", return_value=mock_response(200, fixture("keytypes_response_bounded.json"))):
-        key_type = client.list_key_types()[0]
+        key_types = client.list_key_types()
+        key_type = key_types[0]
     assert key_type.bounded_authorization.layer3_policy == "fixed_allowlist"
     assert key_type.bounded_authorization.admin_key_id == ""
+    corridor_type = key_types[1]
+    assert corridor_type.signing_flow == "bounded-sentry1"
+    assert corridor_type.sentry_component_key_type == "aplane.witness-falcon1024.v1"
+    assert corridor_type.bounded_authorization.sentry.required_on == ["spend"]

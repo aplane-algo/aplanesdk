@@ -6,6 +6,7 @@ package aplane
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Signing errors
@@ -57,16 +58,17 @@ var (
 // These mirror the signer wire contract (pkg/signerapi/error_codes.go in the
 // aplane repo). An empty code means the signer predates code support.
 const (
-	ErrCodeBadRequest           = "bad_request"
-	ErrCodeUnauthorized         = "unauthorized"
-	ErrCodeForbidden            = "forbidden"
-	ErrCodeLocked               = "locked"
-	ErrCodeNotFound             = "not_found"
-	ErrCodeInvalidPassphrase    = "invalid_passphrase"
-	ErrCodeUnavailable          = "unavailable"
-	ErrCodeCacheRefresh         = "cache_refresh"
-	ErrCodeInternal             = "internal"
-	ErrCodeBoundedAdminRequired = "bounded_admin_required"
+	ErrCodeBadRequest            = "bad_request"
+	ErrCodeUnauthorized          = "unauthorized"
+	ErrCodeForbidden             = "forbidden"
+	ErrCodeLocked                = "locked"
+	ErrCodeNotFound              = "not_found"
+	ErrCodeInvalidPassphrase     = "invalid_passphrase"
+	ErrCodeUnavailable           = "unavailable"
+	ErrCodeCacheRefresh          = "cache_refresh"
+	ErrCodeInternal              = "internal"
+	ErrCodeBoundedAdminRequired  = "bounded_admin_required"
+	ErrCodeBoundedSentryRequired = "bounded_sentry_required"
 )
 
 // APIError preserves the HTTP status, stable wire error code, and message of
@@ -91,6 +93,18 @@ func (e *APIError) Error() string {
 		op = "signer error"
 	}
 	return fmt.Sprintf("%s (%d): %s", op, e.StatusCode, e.Message)
+}
+
+// Unwrap maps stable signer error codes to public sentinel errors.
+func (e *APIError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	if e.Code == ErrCodeNotFound ||
+		(e.Code == "" && strings.Contains(strings.ToLower(e.Message), "not found")) {
+		return ErrKeyNotFound
+	}
+	return nil
 }
 
 // TransactionError wraps a transaction rejection with details.

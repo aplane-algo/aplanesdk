@@ -4,6 +4,7 @@
 """Tests for aplane Python SDK client."""
 
 import base64
+import copy
 import json
 from unittest.mock import patch, MagicMock
 import os
@@ -34,6 +35,13 @@ from aplanesdk.signer import (
     GuardedAssemblyRequest,
     GuardedAssemblyTarget,
     GuardedAssemblyResponse,
+    BoundedComponentRequest,
+    BoundedBaseComponent,
+    BoundedComponentResponse,
+    BoundedAssemblyResponse,
+    BoundedSentryAuthorizationInfo,
+    BoundedAuthorizationInfo,
+    BoundedSignatureArgLayout,
     GuardedSignTarget,
     GuardedPrimarySignTarget,
     SentryReferenceCandidate,
@@ -43,9 +51,19 @@ from aplanesdk.signer import (
     KEY_TYPE_GUARDED_FALCON1024_SENTRY1024,
     KEY_TYPE_WITNESS_FALCON1024,
     SIGNING_FLOW_SENTRY1,
+    SIGNING_FLOW_BOUNDED_SENTRY1,
     request_token,
     request_token_to_file,
+    encode_transaction,
     _validate_sign_request_id,
+    _create_guarded_dummies,
+    _request_bounded_primary_passthrough,
+    _sign_guarded_dummies,
+    _validate_bounded_component_request,
+    _validate_bounded_component_response,
+    _validate_bounded_component_plan,
+    _validate_bounded_target_fees,
+    _decode_canonical_group,
 )
 
 
@@ -556,6 +574,7 @@ class TestSpecializedLowLevelEndpoints:
 
         with patch.object(client.session, "post", return_value=resp) as mock_post:
             result = client.request_component_sign(ComponentSignRequest(
+                request_id="sdk-generated",
                 role=COMPONENT_SIGN_ROLE_SENTRY,
                 component_key="COMPONENT",
                 group_bytes_hex=["5458aa"],
@@ -578,6 +597,26 @@ class TestSpecializedLowLevelEndpoints:
                 client.request_component_sign({
                     "role": COMPONENT_SIGN_ROLE_SENTRY,
                     "group_bytes_hex": ["5458aa"],
+                    "target_indices": [0],
+                })
+
+    def test_request_component_sign_rejects_foreign_target_index(self):
+        client = make_client()
+        resp = mock_response(200, {
+            "request_id": "sdk-component",
+            "signatures": [{
+                "target_index": 1,
+                "signature": "aabb",
+                "signature_scheme": KEY_TYPE_WITNESS_FALCON1024,
+            }],
+        })
+
+        with patch.object(client.session, "post", return_value=resp):
+            with pytest.raises(SignerError, match="indices do not match"):
+                client.request_component_sign({
+                    "request_id": "sdk-component",
+                    "role": COMPONENT_SIGN_ROLE_SENTRY,
+                    "group_bytes_hex": ["5458aa", "5458bb"],
                     "target_indices": [0],
                 })
 
@@ -624,6 +663,134 @@ class TestSpecializedLowLevelEndpoints:
                 ))
 
         mock_post.assert_not_called()
+
+    def test_bounded_component_and_assembly_endpoints(self):
+        client = make_client()
+        component_response = mock_response(
+            200,
+            {
+                "request_id": "bounded-base-id",
+                "transactions": ["5458aa"],
+                "components": [{
+                    "target_index": 0,
+                    "bounded_account": "BOUNDED",
+                    "base_signatures": ["base-sig"],
+                    "assembly_receipt": "receipt",
+                    "signature_scheme": "aplane.falcon1024.v1",
+                }],
+            },
+        )
+        assembly_response = mock_response(
+            200,
+            {"request_id": "bounded-assembly-id", "signed_group": ["signed"]},
+        )
+        with patch.object(
+            client.session,
+            "post",
+            side_effect=[component_response, assembly_response],
+        ) as mock_post, patch.object(client, "_discover_approval_wait"):
+            component = client.request_bounded_component(BoundedComponentRequest(
+                request_id="bounded-base-id",
+                requests=[{
+                    "auth_address": "BOUNDED",
+                    "txn_bytes_hex": "5458aa",
+                }],
+            ))
+            assembly = client.request_bounded_assemble({
+                "request_id": "bounded-assembly-id",
+                "group_bytes_hex": ["5458aa"],
+                "targets": [{
+                    "target_index": 0,
+                    "bounded_account": "BOUNDED",
+                    "base_signatures": ["base-sig"],
+                    "assembly_receipt": "receipt",
+                    "sentry_signature": "sentry-sig",
+                }],
+            })
+
+        assert component.components[0].assembly_receipt == "receipt"
+        assert assembly.signed_group == ["signed"]
+        assert mock_post.call_args_list[0].args[0].endswith(
+            "/sign/bounded-component"
+        )
+        assert mock_post.call_args_list[1].args[0].endswith(
+            "/sign/bounded-assemble"
+        )
+
+    def test_bounded_component_timeout_sends_best_effort_cancel(self):
+        import requests
+
+        client = make_client()
+        cancel_response = mock_response(
+            200, {"success": True, "state": "canceled"}
+        )
+        with patch.object(
+            client.session,
+            "post",
+            side_effect=[requests.Timeout("timed out"), cancel_response],
+        ) as mock_post, patch.object(client, "_discover_approval_wait"):
+            with pytest.raises(SignerUnavailableError):
+                client.request_bounded_component(BoundedComponentRequest(
+                    request_id="bounded-cancel-id",
+                    requests=[{
+                        "auth_address": "BOUNDED",
+                        "txn_bytes_hex": "5458aa",
+                    }],
+                ))
+
+        assert mock_post.call_args_list[0].args[0].endswith(
+            "/sign/bounded-component"
+        )
+        assert mock_post.call_args_list[1].args[0].endswith("/sign/cancel")
+        assert mock_post.call_args_list[1].kwargs["json"] == {
+            "request_id": "bounded-cancel-id"
+        }
+
+    def test_bounded_endpoints_classify_not_found(self):
+        client = make_client()
+        response = mock_response(
+            400, {"error": "key not found", "code": "not_found"}
+        )
+        with patch.object(
+            client.session, "post", return_value=response
+        ), patch.object(client, "_discover_approval_wait"):
+            with pytest.raises(KeyNotFoundError):
+                client.request_bounded_component(BoundedComponentRequest(
+                    request_id="bounded-not-found",
+                    requests=[{
+                        "auth_address": "BOUNDED",
+                        "txn_bytes_hex": "5458aa",
+                    }],
+                ))
+
+    def test_bounded_endpoints_surface_200_error_bodies(self):
+        client = make_client()
+        error_response = mock_response(200, {"error": "bounded failed"})
+        with patch.object(
+            client.session, "post", return_value=error_response
+        ), patch.object(client, "_discover_approval_wait"):
+            with pytest.raises(SignerError, match="bounded failed"):
+                client.request_bounded_component(BoundedComponentRequest(
+                    request_id="bounded-base-id",
+                    requests=[{
+                        "auth_address": "BOUNDED",
+                        "txn_bytes_hex": "5458aa",
+                    }],
+                ))
+
+        with patch.object(client.session, "post", return_value=error_response):
+            with pytest.raises(SignerError, match="bounded failed"):
+                client.request_bounded_assemble({
+                    "request_id": "bounded-assembly-id",
+                    "group_bytes_hex": ["5458aa"],
+                    "targets": [{
+                        "target_index": 0,
+                        "bounded_account": "BOUNDED",
+                        "base_signatures": ["base-sig"],
+                        "assembly_receipt": "receipt",
+                        "sentry_signature": "sentry-sig",
+                    }],
+                })
 
     def test_admin_sync_sentry_references_posts_to_admin_endpoint(self):
         client = make_client()
@@ -725,6 +892,22 @@ class TestSignGuardedGroup:
     def test_mixed_primary_and_guarded_group(self):
         user = make_client()
         sentry = make_client("http://sentry:11270")
+        sender = sdk_test_address(7)
+        receiver = sdk_test_address(8)
+        params = transaction.SuggestedParams(
+            1000,
+            1,
+            100,
+            base64.b64encode(bytes(32)).decode(),
+            "testnet-v1.0",
+            flat_fee=True,
+        )
+        primary_txn = transaction.PaymentTxn(sender, params, receiver, 1000)
+        primary_hex, _ = encode_transaction(primary_txn)
+        logic_sig = transaction.LogicSigAccount(bytes.fromhex("033120320312"))
+        primary_signed = base64.b64decode(algo_encoding.msgpack_encode(
+            transaction.LogicSigTransaction(primary_txn, logic_sig)
+        )).hex()
         user.request_component_sign = MagicMock(return_value=ComponentSignResponse(
             request_id="user-id",
             signatures=[ComponentSignature(1, "user-sig", KEY_TYPE_WITNESS_FALCON1024)],
@@ -734,15 +917,15 @@ class TestSignGuardedGroup:
             signatures=[ComponentSignature(1, "sentry-sig", KEY_TYPE_WITNESS_FALCON1024)],
         ))
         user.sign_requests = MagicMock(return_value=GroupSignResponse(
-            signed=["primary-signed", ""],
+            signed=[primary_signed, ""],
         ))
 
         def assemble(req):
             assert req.passthrough[0].target_index == 0
-            assert req.passthrough[0].signed_txn_hex == "primary-signed"
+            assert req.passthrough[0].signed_txn_hex == primary_signed
             return GuardedAssemblyResponse(
                 request_id="assembly-id",
-                signed_group=["primary-signed", "guarded-signed"],
+                signed_group=[primary_signed, "guarded-signed"],
             )
 
         user.request_guarded_assemble = MagicMock(side_effect=assemble)
@@ -751,7 +934,7 @@ class TestSignGuardedGroup:
             user_client=user,
             sentry_client=sentry,
             sentry_component_key="SENTRY_COMPONENT",
-            group_bytes_hex=["5458aa", "5458bb"],
+            group_bytes_hex=[primary_hex, "5458bb"],
             primary_targets=[
                 GuardedPrimarySignTarget(target_index=0, auth_address="AUTH"),
             ],
@@ -829,6 +1012,345 @@ class TestSignGuardedGroup:
         sentry_req = sentry.request_component_sign.call_args.args[0]
         assert sentry_req.component_key == "SENTRY_COMPONENT"
         assert len(sentry_req.group_bytes_hex) == 4
+
+    def test_bounded_component_plan_rejects_unreported_changes_and_bad_dummies(self):
+        sender = sdk_test_address(21)
+        receiver = sdk_test_address(22)
+        params = transaction.SuggestedParams(
+            1000,
+            1,
+            100,
+            base64.b64encode(bytes(32)).decode(),
+            "testnet-v1.0",
+            flat_fee=True,
+        )
+        original = transaction.PaymentTxn(sender, params, receiver, 1000)
+        planned_original = transaction.PaymentTxn(sender, params, receiver, 1000)
+        planned_original.fee += 1000
+        dummy = _create_guarded_dummies(original, 1)[0]
+        planned = [planned_original, dummy]
+        transaction.assign_group_id(planned)
+        mutations = {
+            "dummies_added": 1,
+            "group_id_changed": True,
+            "fees_modified": [0],
+            "total_fees_delta": 1000,
+            "original_count": 1,
+            "final_count": 2,
+        }
+
+        _validate_bounded_component_plan([original], planned, mutations)
+
+        changed = copy.deepcopy(planned)
+        changed[0].receiver = sdk_test_address(23)
+        with pytest.raises(SignerError, match="unreported fields"):
+            _validate_bounded_component_plan([original], changed, mutations)
+
+        changed = copy.deepcopy(planned)
+        changed[1].amt = 1
+        with pytest.raises(SignerError, match="canonical guarded budget dummy"):
+            _validate_bounded_component_plan([original], changed, mutations)
+        with pytest.raises(SignerError, match="canonical guarded budget dummy"):
+            _sign_guarded_dummies(changed[1:], 1)
+
+        grouped = copy.deepcopy(original)
+        grouped.group = bytes([0x31]) * 32
+        regrouped = copy.deepcopy(grouped)
+        regrouped.group = bytes([0x32]) * 32
+        with pytest.raises(SignerError, match="existing bounded group ID"):
+            _validate_bounded_component_plan(
+                [grouped],
+                [regrouped],
+                {
+                    "group_id_changed": True,
+                    "original_count": 1,
+                    "final_count": 1,
+                },
+            )
+
+        with pytest.raises(SignerError, match="exceeds advertised max_fee"):
+            _validate_bounded_target_fees(planned, {0: planned[0].fee - 1})
+
+    def test_bounded_canonical_group_recomputes_group_id(self):
+        import msgpack
+
+        sender = sdk_test_address(61)
+        receiver = sdk_test_address(62)
+        params = transaction.SuggestedParams(
+            1000,
+            1,
+            100,
+            base64.b64encode(bytes(32)).decode(),
+            "testnet-v1.0",
+            flat_fee=True,
+        )
+        first = transaction.PaymentTxn(sender, params, receiver, 1)
+        second = transaction.PaymentTxn(sender, params, receiver, 2)
+
+        def encode(txn):
+            return (
+                b"TX" + base64.b64decode(algo_encoding.msgpack_encode(txn))
+            ).hex()
+
+        assert len(_decode_canonical_group([encode(first)])) == 1
+
+        grouped = [copy.deepcopy(first), copy.deepcopy(second)]
+        transaction.assign_group_id(grouped)
+        assert len(_decode_canonical_group([encode(txn) for txn in grouped])) == 2
+
+        fabricated = [copy.deepcopy(first), copy.deepcopy(second)]
+        for txn in fabricated:
+            txn.group = bytes([0x44]) * 32
+        with pytest.raises(SignerError, match="does not match decoded transactions"):
+            _decode_canonical_group([encode(txn) for txn in fabricated])
+
+        singleton = copy.deepcopy(first)
+        singleton.group = bytes([0x44]) * 32
+        with pytest.raises(SignerError, match="singleton"):
+            _decode_canonical_group([encode(singleton)])
+
+        canonical = base64.b64decode(algo_encoding.msgpack_encode(first))
+        fields = msgpack.unpackb(canonical, raw=False)
+        noncanonical = msgpack.packb(
+            dict(reversed(list(fields.items()))), use_bin_type=True
+        )
+        assert noncanonical != canonical
+        with pytest.raises(SignerError, match="bytes are not canonical"):
+            _decode_canonical_group([(b"TX" + noncanonical).hex()])
+
+    def test_bounded_component_rejects_passthrough_and_mixed_flows(self):
+        with pytest.raises(ValueError, match="does not accept signed passthrough"):
+            _validate_bounded_component_request({
+                "request_id": "bounded-request",
+                "requests": [{"signed_txn_hex": "abcd"}],
+            })
+
+        with pytest.raises(ValueError, match="invalid or duplicate target_index"):
+            _validate_bounded_component_response({
+                "request_id": "bounded-response",
+                "transactions": ["5458aa"],
+                "components": [
+                    {
+                        "target_index": 0,
+                        "bounded_account": "BOUNDED",
+                        "base_signatures": ["base"],
+                        "assembly_receipt": "receipt",
+                        "signature_scheme": "aplane.falcon1024.v1",
+                    },
+                    {
+                        "target_index": 0,
+                        "bounded_account": "BOUNDED",
+                        "base_signatures": ["base"],
+                        "assembly_receipt": "receipt",
+                        "signature_scheme": "aplane.falcon1024.v1",
+                    },
+                ],
+            })
+
+        with pytest.raises(ValueError, match="cannot mix sentry1 and bounded-sentry1"):
+            sign_prepared_guarded_group(
+                user_client=make_client(),
+                prepared_group=PreparedGroup([
+                    PreparedTransaction(
+                        signer_key=KeyInfo(
+                            address="bounded",
+                            key_type="bounded",
+                            signing_flow=SIGNING_FLOW_BOUNDED_SENTRY1,
+                        )
+                    ),
+                    PreparedTransaction(
+                        signer_key=KeyInfo(
+                            address="guarded",
+                            key_type="guarded",
+                            signing_flow=SIGNING_FLOW_SENTRY1,
+                        )
+                    ),
+                ]),
+            )
+
+        user = make_client()
+        user.get_key_info = MagicMock(
+            side_effect=AuthenticationError("Invalid or missing token")
+        )
+        with pytest.raises(AuthenticationError):
+            sign_prepared_guarded_group(
+                user_client=user,
+                prepared_group=PreparedGroup([
+                    PreparedTransaction(auth_address=sdk_test_address(24))
+                ]),
+            )
+
+    def test_bounded_primary_passthrough_verifies_transaction_identity(self):
+        sender = sdk_test_address(31)
+        receiver = sdk_test_address(32)
+        params = transaction.SuggestedParams(
+            1000,
+            1,
+            100,
+            base64.b64encode(bytes(32)).decode(),
+            "testnet-v1.0",
+            flat_fee=True,
+        )
+        txn = transaction.PaymentTxn(sender, params, receiver, 1000)
+        other = transaction.PaymentTxn(sender, params, receiver, 2000)
+        canonical, _ = encode_transaction(txn)
+        logic_sig = transaction.LogicSigAccount(bytes.fromhex("033120320312"))
+
+        def signed_hex(value):
+            encoded = algo_encoding.msgpack_encode(
+                transaction.LogicSigTransaction(value, logic_sig)
+            )
+            return base64.b64decode(encoded).hex()
+
+        user = make_client()
+        user.sign_requests = MagicMock(
+            return_value=GroupSignResponse(signed=[signed_hex(txn)])
+        )
+        _, passthrough = _request_bounded_primary_passthrough(
+            user,
+            [canonical],
+            1,
+            set(),
+            {},
+            [{"target_index": 0, "auth_address": sender}],
+        )
+        assert len(passthrough) == 1
+
+        user.sign_requests.return_value = GroupSignResponse(signed=[signed_hex(other)])
+        with pytest.raises(SignerError, match="does not match"):
+            _request_bounded_primary_passthrough(
+                user,
+                [canonical],
+                1,
+                set(),
+                {},
+                [{"target_index": 0, "auth_address": sender}],
+            )
+
+    def test_prepared_bounded_sentry_uses_user_first_flow(self):
+        bounded = sdk_test_address(11)
+        receiver = sdk_test_address(12)
+        user = make_client()
+        sentry = make_client("http://sentry:11270")
+
+        def bounded_component(req):
+            assert isinstance(req, BoundedComponentRequest)
+            assert req.requests[0]["auth_address"] == bounded
+            return BoundedComponentResponse(
+                request_id="base-id",
+                transactions=[req.requests[0]["txn_bytes_hex"]],
+                components=[BoundedBaseComponent(
+                    target_index=0,
+                    bounded_account=bounded,
+                    base_signatures=["base-sig"],
+                    runtime_args={"proof": "aabb"},
+                    assembly_receipt="receipt",
+                    signature_scheme="aplane.falcon1024.v1",
+                )],
+            )
+
+        user.request_bounded_component = MagicMock(side_effect=bounded_component)
+        sentry.request_component_sign = MagicMock(return_value=ComponentSignResponse(
+            request_id="sentry-id",
+            signatures=[ComponentSignature(
+                0, "sentry-sig", KEY_TYPE_WITNESS_FALCON1024
+            )],
+        ))
+
+        def signed_txn_hex(signed_txn):
+            logic_sig = transaction.LogicSigAccount(bytes.fromhex("033120320312"))
+            encoded = algo_encoding.msgpack_encode(
+                transaction.LogicSigTransaction(signed_txn, logic_sig)
+            )
+            return base64.b64decode(encoded).hex()
+
+        assembled_txn = [None]
+
+        def bounded_assemble(req):
+            assert req.targets[0].base_signatures == ["base-sig"]
+            assert req.targets[0].assembly_receipt == "receipt"
+            assert req.targets[0].sentry_signature == "sentry-sig"
+            return BoundedAssemblyResponse(
+                request_id="assembly-id",
+                signed_group=[signed_txn_hex(assembled_txn[0])],
+            )
+
+        user.request_bounded_assemble = MagicMock(side_effect=bounded_assemble)
+        user.sign_requests = MagicMock(
+            side_effect=AssertionError("all-bounded path must not call /sign")
+        )
+
+        params = transaction.SuggestedParams(
+            1000,
+            1,
+            100,
+            base64.b64encode(bytes(32)).decode(),
+            "testnet-v1.0",
+            flat_fee=True,
+        )
+        txn = transaction.PaymentTxn(bounded, params, receiver, 1000)
+        prepared_group = PreparedGroup(
+            [
+                PreparedTransaction(
+                    transaction=txn,
+                    auth_address=bounded,
+                    signer_key=KeyInfo(
+                        address=bounded,
+                        key_type="aplane.corridor.v1",
+                        signing_flow=SIGNING_FLOW_BOUNDED_SENTRY1,
+                        sentry_component_key_type=KEY_TYPE_WITNESS_FALCON1024,
+                        lsig_size=9012,
+                        bounded_authorization=BoundedAuthorizationInfo(
+                            contract="bounded1",
+                            base_signature_arg_layout=BoundedSignatureArgLayout(
+                                count=1, max_sizes=[1280]
+                            ),
+                            spend_effects=["pay"],
+                            max_fee=1000,
+                            admin_operations=[],
+                            runtime_args=[],
+                            derived_args=[],
+                            argument_layout=[],
+                            layer3_policy="merkle_allowlist",
+                            sentry=BoundedSentryAuthorizationInfo(
+                                contract="sentry1",
+                                component_key_type=KEY_TYPE_WITNESS_FALCON1024,
+                                public_key_hex="aabb",
+                            ),
+                        ),
+                    ),
+                )
+            ]
+        )
+        assembled_txn[0] = transaction.PaymentTxn(
+            bounded, params, receiver, 2000
+        )
+        with pytest.raises(
+            SignerError, match="does not match the submitted canonical bytes"
+        ):
+            sign_prepared_guarded_group(
+                user_client=user,
+                sentry_client=sentry,
+                sentry_component_key="SENTRY_COMPONENT",
+                prepared_group=prepared_group,
+            )
+
+        assembled_txn[0] = txn
+        result = sign_prepared_guarded_group(
+            user_client=user,
+            sentry_client=sentry,
+            sentry_component_key="SENTRY_COMPONENT",
+            prepared_group=prepared_group,
+        )
+
+        assert result.signed_group == [signed_txn_hex(txn)]
+        assert result.assembly_response is None
+        assert result.bounded_component_response is not None
+        assert result.bounded_assembly_response is not None
+        sentry_req = sentry.request_component_sign.call_args.args[0]
+        assert len(sentry_req.group_bytes_hex) == 1
+        assert sentry_req.group_bytes_hex[0].startswith("5458")
+        assert sentry_req.target_indices == [0]
 
     def test_prepared_group_rejects_unsupported_signing_flow(self):
         guarded = sdk_test_address(1)

@@ -86,6 +86,8 @@ type GuardedSignResult struct {
 	SentryComponentResponses []*ComponentSignResponse
 	PrimarySignResponse      *GroupSignResponse
 	AssemblyResponse         *GuardedAssemblyResponse
+	BoundedComponentResponse *BoundedComponentResponse
+	BoundedAssemblyResponse  *BoundedAssemblyResponse
 }
 
 // PreparedGuardedGroupOptions configures SignPreparedGuardedGroup.
@@ -262,11 +264,58 @@ func SignPreparedGuardedGroup(opts PreparedGuardedGroupOptions) (*GuardedSignRes
 // SignPreparedGuardedGroupWithContext is the context-aware form of
 // SignPreparedGuardedGroup.
 func SignPreparedGuardedGroupWithContext(ctx context.Context, opts PreparedGuardedGroupOptions) (*GuardedSignResult, error) {
-	signOpts, err := buildPreparedGuardedSignOptions(opts)
+	resolvedOpts, hasBoundedSentry, hasLegacyGuarded, err := resolvePreparedSentryFlowKinds(opts)
+	if err != nil {
+		return nil, err
+	}
+	if hasBoundedSentry {
+		if hasLegacyGuarded {
+			return nil, fmt.Errorf("cannot mix sentry1 and bounded-sentry1 targets in one group")
+		}
+		return signPreparedBoundedSentryGroupWithContext(ctx, resolvedOpts)
+	}
+	signOpts, err := buildPreparedGuardedSignOptions(resolvedOpts)
 	if err != nil {
 		return nil, err
 	}
 	return SignGuardedGroupWithContext(ctx, signOpts)
+}
+
+func resolvePreparedSentryFlowKinds(opts PreparedGuardedGroupOptions) (
+	resolved PreparedGuardedGroupOptions,
+	boundedSentry bool,
+	legacyGuarded bool,
+	err error,
+) {
+	if opts.UserClient == nil {
+		return opts, false, false, fmt.Errorf("user client is required")
+	}
+	resolved = opts
+	resolved.PreparedGroup.Transactions = append(
+		[]PreparedTransaction(nil),
+		opts.PreparedGroup.Transactions...,
+	)
+	for i := range resolved.PreparedGroup.Transactions {
+		item := &resolved.PreparedGroup.Transactions[i]
+		key := item.SignerKey
+		if key == nil && item.AuthAddress != "" {
+			key, err = opts.UserClient.GetKeyInfo(item.AuthAddress)
+			if err != nil {
+				return opts, false, false, fmt.Errorf("prepared transaction %d: resolve signer key: %w", i, err)
+			}
+			item.SignerKey = key
+		}
+		if key == nil {
+			continue
+		}
+		switch key.SigningFlow {
+		case SigningFlowBoundedSentry1:
+			boundedSentry = true
+		case SigningFlowSentry1:
+			legacyGuarded = true
+		}
+	}
+	return resolved, boundedSentry, legacyGuarded, nil
 }
 
 func buildPreparedGuardedSignOptions(opts PreparedGuardedGroupOptions) (GuardedSignOptions, error) {
@@ -507,6 +556,9 @@ func signGuardedDummies(dummies []types.Transaction, startIndex int) ([]GuardedP
 	if len(dummies) == 0 {
 		return nil, nil
 	}
+	if err := validateGuardedDummies(dummies); err != nil {
+		return nil, err
+	}
 	logicSig := types.LogicSig{Logic: guardedDummyProgram}
 	passthrough := make([]GuardedPassthroughItem, len(dummies))
 	for i, txn := range dummies {
@@ -520,6 +572,22 @@ func signGuardedDummies(dummies []types.Transaction, startIndex int) ([]GuardedP
 		}
 	}
 	return passthrough, nil
+}
+
+func validateGuardedDummies(dummies []types.Transaction) error {
+	dummyAcct := crypto.LogicSigAccount{Lsig: types.LogicSig{Logic: guardedDummyProgram}}
+	dummyAddr, err := dummyAcct.Address()
+	if err != nil {
+		return fmt.Errorf("failed to compute dummy address: %w", err)
+	}
+	for i, txn := range dummies {
+		if txn.Type != types.PaymentTx || txn.Sender != dummyAddr || txn.Receiver != dummyAddr ||
+			txn.Amount != 0 || txn.Fee != 0 || len(txn.Note) != 1 || txn.Note[0] != byte(i) ||
+			!txn.RekeyTo.IsZero() || !txn.CloseRemainderTo.IsZero() {
+			return fmt.Errorf("signer-appended transaction %d is not a canonical guarded budget dummy", i)
+		}
+	}
+	return nil
 }
 
 func requestUserComponentSignatures(ctx context.Context, client *SignerClient, groupBytesHex []string, userGroups map[string][]int, result *GuardedSignResult) (map[int]guardedComponentSignature, error) {

@@ -486,6 +486,36 @@ For manual orchestration, use `RequestComponentSign` on the user and sentry
 clients, then `RequestGuardedAssemble` on the user client. `AssembleGroup`
 remains only the local multi-party concatenation helper.
 
+Corridor is a bounded sentry account: its LogicSig contract is `bounded1`, and
+its online spend flow is `bounded-sentry1`. These are separate compatibility
+dimensions. `SignPreparedGuardedGroup` discovers the flow from signer
+inventory and performs the user-first sequence:
+
+```go
+result, err := aplane.SignPreparedGuardedGroup(aplane.PreparedGuardedGroupOptions{
+	UserClient:     userClient,
+	SentryResolver: sentryResolver,
+	PreparedGroup:  preparedGroup,
+})
+signedGroup := result.SignedGroup
+```
+
+The sequence is user approval and base-component release through
+`RequestBoundedComponent`, sentry signing over the frozen group, signing of
+ordinary group positions, and final `RequestBoundedAssemble` on the user
+signer. Before requesting any additional signature, the SDK accepts only
+mutation-report-declared fee pooling and group-ID assignment to the caller's
+prepared positions, and requires every appended position to be a canonical
+budget dummy. It verifies ordinary signed positions and every assembled
+transaction against the frozen canonical bytes. Those two bounded methods are
+also public for applications that own the orchestration.
+
+`PreparedGuardedGroupOptions.MinFee` applies only to `sentry1`.
+`bounded-sentry1` uses signer-owned planning and reported fee mutations.
+
+The v1 sentry gate applies only to spends. Contract-admin rekeys use the
+external `aprekey` witness ceremony and are outside SDK completion.
+
 User-role component signing runs the signer-domain approval gates and can
 block on a manual operator decision. The SDK automatically discovers the
 signer's `approval_wait_seconds` and sizes the request deadline accordingly,

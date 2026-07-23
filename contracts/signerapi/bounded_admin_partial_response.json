@@ -18,9 +18,15 @@
 	"transaction_id": "EXAMPLETXID",
 	"message_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
     "base_signature_arg_count": 1,
-    "admin_signature_arg_index": 1,
+    "admin_signature_arg_index": 2,
     "spend_effects": ["pay", "axfer", "asset_opt_in"],
-    "max_fee": 10000
+    "max_fee": 10000,
+    "sentry": {
+      "component_key_type": "aplane.witness-falcon1024.v1",
+      "public_key_hex": "606162636465666768696a6b6c6d6e6f",
+      "component_key_id": "ROGAFDACF7ASC3EMZRWNKVM73NXHO4P6O4EB7ZXWER37SM63BMFQ",
+      "signature_arg_index": 1
+    }
   },
   "mutations": {
     "dummies_added": 1,
