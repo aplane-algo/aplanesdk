@@ -595,6 +595,30 @@ For manual orchestration, use `request_component_sign()` on the user and
 sentry clients, then `request_guarded_assemble()` on the user client.
 `assemble_group()` remains only the local multi-party concatenation helper.
 
+Corridor is a bounded sentry account: its LogicSig contract is `bounded1`, and
+its online spend flow is `bounded-sentry1`. These are separate compatibility
+dimensions. `sign_prepared_guarded_group()` discovers the flow from signer
+inventory and performs the user-first sequence:
+
+```python
+result = sign_prepared_guarded_group(
+    user_client=user_client,
+    sentry_resolver=sentry_resolver,
+    prepared_group=prepared_group,
+)
+signed_group = result.signed_group
+```
+
+The sequence is user approval and base-component release through
+`request_bounded_component()`, sentry signing over the frozen group, signing of
+ordinary group positions, and final `request_bounded_assemble()` on the user
+signer. The SDK verifies that every assembled transaction matches the frozen
+canonical bytes. Those two bounded methods are also public for applications
+that own the orchestration.
+
+The v1 sentry gate applies only to spends. Contract-admin rekeys use the
+external `aprekey` witness ceremony and are outside SDK completion.
+
 User-role component signing runs the signer-domain approval gates and can
 block on a manual operator decision. The SDK automatically discovers the
 signer's `approval_wait_seconds` and sizes the request deadline accordingly,

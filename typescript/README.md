@@ -380,7 +380,7 @@ controller.abort();
 | `aplane.ed25519.v1` | Ed25519 DSA LogicSig | Library-visible plain DSA account |
 | `aplane.witness-falcon1024.v1` | Witness key | Sentry-custodied policy signature key; not a spending account |
 | `aplane.falcon1024-sentry1024.v1` | Guarded account | Requires user and sentry component signatures |
-| `aplane.corridor.v1` | Corridor account | Falcon user and sentry signatures with corridor policy |
+| `aplane.corridor.v1` | Bounded Corridor account | `bounded1` contract; `bounded-sentry1` spend flow |
 | `aplane.falcon1024-allowlist.v1` | Bounded allowlist | Inline allowlist; `bounded1` signing flow |
 | `aplane.falcon1024-allowlist.v2` | Bounded allowlist | Merkle allowlist; `bounded1` signing flow |
 | `aplane.falcon1024-timelock.v1` | Bounded timelock | Round-gated `bounded1` signing flow |
@@ -440,6 +440,34 @@ const signedGroup = result.signedGroup;
 
 `assembleGroup()` remains the local multi-party concatenation helper; it is not
 the same operation as server-side guarded assembly.
+
+### Bounded Sentry Accounts
+
+Corridor uses the bounded contract `bounded1` with the distinct
+`bounded-sentry1` online signing flow. The contract identifies the LogicSig
+rules; the flow identifies the user-first multi-endpoint choreography. The
+prepared helper detects that flow from signer inventory and routes it
+automatically:
+
+```typescript
+const result = await signPreparedGuardedGroup({
+  userClient,
+  sentryResolver,
+  preparedGroup,
+});
+const signedGroup = result.signedGroup;
+```
+
+The user signer first approves and freezes the complete canonical group through
+`requestBoundedComponent()`. Only then does the SDK request sentry signatures
+over those exact bytes, sign any ordinary positions, and call
+`requestBoundedAssemble()`. The SDK verifies that every returned signed
+transaction still contains the frozen transaction bytes.
+
+Applications that own orchestration can call `requestBoundedComponent()` and
+`requestBoundedAssemble()` directly. Sentry authorization is spend-only in this
+contract; bounded contract-admin rekeys remain an external `aprekey` ceremony
+and are not completed by the SDK.
 
 ## Error Handling
 
