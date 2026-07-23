@@ -922,10 +922,9 @@ class TestSignGuardedGroup:
         ))
 
         def signed_txn_hex(signed_txn):
+            logic_sig = transaction.LogicSigAccount(bytes.fromhex("033120320312"))
             encoded = algo_encoding.msgpack_encode(
-                transaction.SignedTransaction(
-                    signed_txn, base64.b64encode(bytes(64)).decode()
-                )
+                transaction.LogicSigTransaction(signed_txn, logic_sig)
             )
             return base64.b64decode(encoded).hex()
 

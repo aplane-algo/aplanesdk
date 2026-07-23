@@ -4604,7 +4604,14 @@ def _verify_bounded_assembled_group(
             raise SignerError(
                 f"assembled transaction {index}: decode failed: {e}"
             ) from e
-        if not isinstance(decoded, transaction.SignedTransaction):
+        if not isinstance(
+            decoded,
+            (
+                transaction.SignedTransaction,
+                transaction.LogicSigTransaction,
+                transaction.MultisigTransaction,
+            ),
+        ):
             raise SignerError(
                 f"assembled transaction {index} did not decode as a signed transaction"
             )
