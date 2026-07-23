@@ -34,6 +34,13 @@ from aplanesdk.signer import (
     GuardedAssemblyRequest,
     GuardedAssemblyTarget,
     GuardedAssemblyResponse,
+    BoundedComponentRequest,
+    BoundedBaseComponent,
+    BoundedComponentResponse,
+    BoundedAssemblyResponse,
+    BoundedSentryAuthorizationInfo,
+    BoundedAuthorizationInfo,
+    BoundedSignatureArgLayout,
     GuardedSignTarget,
     GuardedPrimarySignTarget,
     SentryReferenceCandidate,
@@ -43,6 +50,7 @@ from aplanesdk.signer import (
     KEY_TYPE_GUARDED_FALCON1024_SENTRY1024,
     KEY_TYPE_WITNESS_FALCON1024,
     SIGNING_FLOW_SENTRY1,
+    SIGNING_FLOW_BOUNDED_SENTRY1,
     request_token,
     request_token_to_file,
     _validate_sign_request_id,
@@ -625,6 +633,59 @@ class TestSpecializedLowLevelEndpoints:
 
         mock_post.assert_not_called()
 
+    def test_bounded_component_and_assembly_endpoints(self):
+        client = make_client()
+        component_response = mock_response(
+            200,
+            {
+                "request_id": "bounded-base-id",
+                "transactions": ["5458aa"],
+                "components": [{
+                    "target_index": 0,
+                    "bounded_account": "BOUNDED",
+                    "base_signatures": ["base-sig"],
+                    "assembly_receipt": "receipt",
+                    "signature_scheme": "aplane.falcon1024.v1",
+                }],
+            },
+        )
+        assembly_response = mock_response(
+            200,
+            {"request_id": "bounded-assembly-id", "signed_group": ["signed"]},
+        )
+        with patch.object(
+            client.session,
+            "post",
+            side_effect=[component_response, assembly_response],
+        ) as mock_post, patch.object(client, "_discover_approval_wait"):
+            component = client.request_bounded_component(BoundedComponentRequest(
+                request_id="bounded-base-id",
+                requests=[{
+                    "auth_address": "BOUNDED",
+                    "txn_bytes_hex": "5458aa",
+                }],
+            ))
+            assembly = client.request_bounded_assemble({
+                "request_id": "bounded-assembly-id",
+                "group_bytes_hex": ["5458aa"],
+                "targets": [{
+                    "target_index": 0,
+                    "bounded_account": "BOUNDED",
+                    "base_signatures": ["base-sig"],
+                    "assembly_receipt": "receipt",
+                    "sentry_signature": "sentry-sig",
+                }],
+            })
+
+        assert component.components[0].assembly_receipt == "receipt"
+        assert assembly.signed_group == ["signed"]
+        assert mock_post.call_args_list[0].args[0].endswith(
+            "/sign/bounded-component"
+        )
+        assert mock_post.call_args_list[1].args[0].endswith(
+            "/sign/bounded-assemble"
+        )
+
     def test_admin_sync_sentry_references_posts_to_admin_endpoint(self):
         client = make_client()
         resp = mock_response(200, {"added": 1, "updated": 0, "removed": 0, "count": 1})
@@ -829,6 +890,105 @@ class TestSignGuardedGroup:
         sentry_req = sentry.request_component_sign.call_args.args[0]
         assert sentry_req.component_key == "SENTRY_COMPONENT"
         assert len(sentry_req.group_bytes_hex) == 4
+
+    def test_prepared_bounded_sentry_uses_user_first_flow(self):
+        bounded = sdk_test_address(11)
+        receiver = sdk_test_address(12)
+        user = make_client()
+        sentry = make_client("http://sentry:11270")
+
+        def bounded_component(req):
+            assert isinstance(req, BoundedComponentRequest)
+            assert req.requests[0]["auth_address"] == bounded
+            return BoundedComponentResponse(
+                request_id="base-id",
+                transactions=[req.requests[0]["txn_bytes_hex"]],
+                components=[BoundedBaseComponent(
+                    target_index=0,
+                    bounded_account=bounded,
+                    base_signatures=["base-sig"],
+                    runtime_args={"proof": "aabb"},
+                    assembly_receipt="receipt",
+                    signature_scheme="aplane.falcon1024.v1",
+                )],
+            )
+
+        user.request_bounded_component = MagicMock(side_effect=bounded_component)
+        sentry.request_component_sign = MagicMock(return_value=ComponentSignResponse(
+            request_id="sentry-id",
+            signatures=[ComponentSignature(
+                0, "sentry-sig", KEY_TYPE_WITNESS_FALCON1024
+            )],
+        ))
+
+        def bounded_assemble(req):
+            assert req.targets[0].base_signatures == ["base-sig"]
+            assert req.targets[0].assembly_receipt == "receipt"
+            assert req.targets[0].sentry_signature == "sentry-sig"
+            return BoundedAssemblyResponse(
+                request_id="assembly-id",
+                signed_group=["bounded-signed"],
+            )
+
+        user.request_bounded_assemble = MagicMock(side_effect=bounded_assemble)
+        user.sign_requests = MagicMock(
+            side_effect=AssertionError("all-bounded path must not call /sign")
+        )
+
+        params = transaction.SuggestedParams(
+            1000,
+            1,
+            100,
+            base64.b64encode(bytes(32)).decode(),
+            "testnet-v1.0",
+            flat_fee=True,
+        )
+        txn = transaction.PaymentTxn(bounded, params, receiver, 1000)
+        result = sign_prepared_guarded_group(
+            user_client=user,
+            sentry_client=sentry,
+            sentry_component_key="SENTRY_COMPONENT",
+            prepared_group=PreparedGroup([
+                PreparedTransaction(
+                    transaction=txn,
+                    auth_address=bounded,
+                    signer_key=KeyInfo(
+                        address=bounded,
+                        key_type="aplane.corridor.v1",
+                        signing_flow=SIGNING_FLOW_BOUNDED_SENTRY1,
+                        sentry_component_key_type=KEY_TYPE_WITNESS_FALCON1024,
+                        lsig_size=9012,
+                        bounded_authorization=BoundedAuthorizationInfo(
+                            contract="bounded1",
+                            base_signature_arg_layout=BoundedSignatureArgLayout(
+                                count=1, max_sizes=[1280]
+                            ),
+                            spend_effects=["pay"],
+                            max_fee=1000,
+                            admin_operations=[],
+                            runtime_args=[],
+                            derived_args=[],
+                            argument_layout=[],
+                            layer3_policy="merkle_allowlist",
+                            sentry=BoundedSentryAuthorizationInfo(
+                                contract="sentry1",
+                                component_key_type=KEY_TYPE_WITNESS_FALCON1024,
+                                public_key_hex="aabb",
+                            ),
+                        ),
+                    ),
+                )
+            ]),
+        )
+
+        assert result.signed_group == ["bounded-signed"]
+        assert result.assembly_response is None
+        assert result.bounded_component_response is not None
+        assert result.bounded_assembly_response is not None
+        sentry_req = sentry.request_component_sign.call_args.args[0]
+        assert len(sentry_req.group_bytes_hex) == 1
+        assert sentry_req.group_bytes_hex[0].startswith("5458")
+        assert sentry_req.target_indices == [0]
 
     def test_prepared_group_rejects_unsupported_signing_flow(self):
         guarded = sdk_test_address(1)

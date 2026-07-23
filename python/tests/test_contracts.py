@@ -15,6 +15,10 @@ from aplanesdk.signer import (
     CancelSignResponse,
     ComponentSignRequest,
     ComponentSignResponse,
+    BoundedComponentRequest,
+    BoundedComponentResponse,
+    BoundedAssemblyRequest,
+    BoundedAssemblyResponse,
     ERR_CODE_BAD_REQUEST,
     ERR_CODE_CACHE_REFRESH,
     ERR_CODE_FORBIDDEN,
@@ -360,6 +364,28 @@ def test_sentry_dtos_round_trip_fixtures():
     assert assembly_target.runtime_args == ["aa01", "bb02"]
     assembly_resp = GuardedAssemblyResponse(**fixture("guarded_assembly_response.json"))
     assert len(assembly_resp.signed_group) == 2
+
+    bounded_component_req = BoundedComponentRequest(
+        **fixture("bounded_component_request.json")
+    )
+    assert bounded_component_req.requests[0]["auth_address"]
+    bounded_component_data = fixture("bounded_component_response.json")
+    bounded_component_resp = BoundedComponentResponse(
+        request_id=bounded_component_data["request_id"],
+        transactions=bounded_component_data["transactions"],
+        components=bounded_component_data["components"],
+        mutations=bounded_component_data.get("mutations"),
+    )
+    assert bounded_component_resp.components[0]["assembly_receipt"]
+
+    bounded_assembly_req = BoundedAssemblyRequest(
+        **fixture("bounded_assembly_request.json")
+    )
+    assert bounded_assembly_req.targets[0]["sentry_signature"]
+    bounded_assembly_resp = BoundedAssemblyResponse(
+        **fixture("bounded_assembly_response.json")
+    )
+    assert len(bounded_assembly_resp.signed_group) == 2
 
     sync_req = AdminSyncSentryReferencesRequest(**fixture("admin_sync_sentries_request.json"))
     assert sync_req.candidates[0]["component_key"]

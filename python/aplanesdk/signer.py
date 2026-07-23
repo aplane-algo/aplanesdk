@@ -99,6 +99,7 @@ COMPONENT_SIGN_ROLE_SENTRY = "sentry"
 # implement. An empty signing_flow means the ordinary /sign path.
 SIGNING_FLOW_SENTRY1 = "sentry1"
 SIGNING_FLOW_BOUNDED1 = "bounded1"
+SIGNING_FLOW_BOUNDED_SENTRY1 = "bounded-sentry1"
 
 KEY_TYPE_WITNESS_FALCON1024 = "aplane.witness-falcon1024.v1"
 KEY_TYPE_GUARDED_FALCON1024_SENTRY1024 = "aplane.falcon1024-sentry1024.v1"
@@ -273,6 +274,17 @@ class BoundedArgumentSlotInfo:
 
 
 @dataclass
+class BoundedSentryAuthorizationInfo:
+    """Public sentry authority embedded in a bounded account."""
+    contract: str
+    component_key_type: str
+    public_key_hex: str = ""
+    component_key_id: str = ""
+    signature_max_size: int = 0
+    required_on: Optional[List[str]] = None
+
+
+@dataclass
 class BoundedAuthorizationInfo:
     contract: str
     base_signature_arg_layout: BoundedSignatureArgLayout
@@ -283,6 +295,7 @@ class BoundedAuthorizationInfo:
     derived_args: List[BoundedDerivedArgInfo]
     argument_layout: List[BoundedArgumentSlotInfo]
     layer3_policy: str
+    sentry: Optional[BoundedSentryAuthorizationInfo] = None
     admin_key_id: str = ""
     program_binding: str = ""
     post_signing_lsig_size: int = 0  # Admin-inclusive bounded size
@@ -489,6 +502,62 @@ class GuardedAssemblyResponse:
 
 
 @dataclass
+class BoundedComponentRequest:
+    """Request payload for /sign/bounded-component."""
+    requests: List[Dict[str, Any]]
+    request_id: str = ""
+
+
+@dataclass
+class BoundedBaseComponent:
+    """One user-signer contribution to bounded assembly."""
+    target_index: int
+    bounded_account: str
+    base_signatures: List[str]
+    assembly_receipt: str
+    signature_scheme: str
+    runtime_args: Optional[Dict[str, str]] = None
+
+
+@dataclass
+class BoundedComponentResponse:
+    """Response payload from /sign/bounded-component."""
+    request_id: str
+    transactions: List[str]
+    components: List[BoundedBaseComponent]
+    mutations: Optional[Dict[str, Any]] = None
+
+
+@dataclass
+class BoundedAssemblyTarget:
+    """One source-bound bounded-sentry assembly target."""
+    target_index: int
+    bounded_account: str
+    base_signatures: List[str]
+    assembly_receipt: str
+    sentry_signature: str
+    runtime_args: Optional[Dict[str, str]] = None
+    base_source_request_id: str = ""
+    sentry_source_request_id: str = ""
+
+
+@dataclass
+class BoundedAssemblyRequest:
+    """Request payload for /sign/bounded-assemble."""
+    group_bytes_hex: List[str]
+    targets: List[BoundedAssemblyTarget]
+    request_id: str = ""
+    passthrough: Optional[List[GuardedPassthroughItem]] = None
+
+
+@dataclass
+class BoundedAssemblyResponse:
+    """Response payload from /sign/bounded-assemble."""
+    request_id: str
+    signed_group: List[str]
+
+
+@dataclass
 class SentryReferenceCandidate:
     """Public sentry metadata synced into the signer reference catalog"""
     endpoint_alias: str
@@ -556,8 +625,10 @@ class GuardedSignResult:
     signed_group: List[str]
     user_component_responses: List[ComponentSignResponse]
     sentry_component_responses: List[ComponentSignResponse]
-    assembly_response: GuardedAssemblyResponse
+    assembly_response: Optional[GuardedAssemblyResponse]
     primary_sign_response: Optional[GroupSignResponse] = None
+    bounded_component_response: Optional[BoundedComponentResponse] = None
+    bounded_assembly_response: Optional[BoundedAssemblyResponse] = None
 
 
 @dataclass
@@ -939,6 +1010,7 @@ def _parse_bounded_authorization(data: Any) -> Optional[BoundedAuthorizationInfo
     runtime_args = data.get("runtime_args") or []
     derived_args = data.get("derived_args") or []
     argument_layout = data.get("argument_layout") or []
+    sentry = data.get("sentry")
     return BoundedAuthorizationInfo(
         contract=data.get("contract", ""),
         base_signature_arg_layout=BoundedSignatureArgLayout(
@@ -990,6 +1062,18 @@ def _parse_bounded_authorization(data: Any) -> Optional[BoundedAuthorizationInfo
             for item in argument_layout
         ],
         layer3_policy=data.get("layer3_policy", ""),
+        sentry=(
+            BoundedSentryAuthorizationInfo(
+                contract=sentry.get("contract", ""),
+                component_key_type=sentry.get("component_key_type", ""),
+                public_key_hex=sentry.get("public_key", ""),
+                component_key_id=sentry.get("component_key_id", ""),
+                signature_max_size=sentry.get("signature_max_size", 0),
+                required_on=list(sentry.get("required_on") or []),
+            )
+            if isinstance(sentry, dict)
+            else None
+        ),
         admin_key_id=data.get("admin_key_id", ""),
         program_binding=data.get("program_binding", ""),
         post_signing_lsig_size=data.get("post_signing_lsig_size", 0),
@@ -1062,6 +1146,95 @@ def _validate_guarded_assembly_response(data: Dict[str, Any]) -> None:
     for index, signed in enumerate(signed_group):
         if not signed:
             raise ValueError(f"signed_group {index} is empty")
+
+
+def _validate_bounded_component_request(data: Dict[str, Any]) -> None:
+    _validate_sign_request_id(str(data.get("request_id", "")))
+    requests_data = data.get("requests") or []
+    if not requests_data:
+        raise ValueError("requests array is empty")
+    sign_count = 0
+    passthrough_count = 0
+    foreign_count = 0
+    for index, item in enumerate(requests_data, start=1):
+        has_auth = bool(item.get("auth_address"))
+        has_txn = bool(item.get("txn_bytes_hex"))
+        has_passthrough = bool(item.get("signed_txn_hex"))
+        if has_passthrough and (has_auth or has_txn):
+            raise ValueError(f"transaction {index}: sign and passthrough fields cannot be mixed")
+        if has_passthrough:
+            passthrough_count += 1
+        elif has_auth and has_txn:
+            sign_count += 1
+        elif has_txn:
+            foreign_count += 1
+        else:
+            raise ValueError(f"transaction {index}: unsupported request mode")
+    if passthrough_count and foreign_count:
+        raise ValueError("cannot mix passthrough and foreign transactions")
+    if sign_count == 0 and foreign_count:
+        raise ValueError("no signable transactions")
+
+
+def _validate_bounded_component_response(data: Dict[str, Any]) -> None:
+    request_id = data.get("request_id", "")
+    _validate_sign_request_id(str(request_id), required=True)
+    transactions = data.get("transactions") or []
+    components = data.get("components") or []
+    if not transactions or not components:
+        raise ValueError("transactions and components are required")
+    seen = set()
+    for index, component in enumerate(components, start=1):
+        target = component.get("target_index")
+        if (
+            not isinstance(target, int)
+            or target < 0
+            or target >= len(transactions)
+            or target in seen
+        ):
+            raise ValueError(f"component {index} has invalid or duplicate target_index")
+        seen.add(target)
+        if (
+            not component.get("bounded_account")
+            or not component.get("base_signatures")
+            or not component.get("assembly_receipt")
+            or not component.get("signature_scheme")
+        ):
+            raise ValueError(f"component {index} is incomplete")
+
+
+def _validate_bounded_assembly_request(data: Dict[str, Any]) -> None:
+    _validate_sign_request_id(str(data.get("request_id", "")))
+    group_bytes_hex = data.get("group_bytes_hex") or []
+    targets = data.get("targets") or []
+    passthrough = data.get("passthrough") or []
+    _validate_component_group_bytes(group_bytes_hex)
+    if not targets:
+        raise ValueError("targets array is empty")
+    covered: set[int] = set()
+    for index, target in enumerate(targets, start=1):
+        _validate_assembly_index(target.get("target_index"), len(group_bytes_hex), covered)
+        if (
+            not target.get("bounded_account")
+            or not target.get("base_signatures")
+            or not target.get("assembly_receipt")
+            or not target.get("sentry_signature")
+        ):
+            raise ValueError(
+                f"target {index}: bounded_account, base_signatures, "
+                "assembly_receipt, and sentry_signature are required"
+            )
+    for index, item in enumerate(passthrough, start=1):
+        _validate_assembly_index(item.get("target_index"), len(group_bytes_hex), covered)
+        if not item.get("signed_txn_hex"):
+            raise ValueError(f"passthrough {index}: signed_txn_hex is required")
+    for index in range(len(group_bytes_hex)):
+        if index not in covered:
+            raise ValueError(f"group position {index} is not covered by targets or passthrough")
+
+
+def _validate_bounded_assembly_response(data: Dict[str, Any]) -> None:
+    _validate_guarded_assembly_response(data)
 
 
 def _extract_auth_address(account_info: Any) -> str:
@@ -3382,6 +3555,112 @@ class SignerClient:
             signed_group=data.get("signed_group", []),
         )
 
+    def request_bounded_component(
+        self,
+        request: Any,
+    ) -> BoundedComponentResponse:
+        """Request approved bounded base components from the user signer."""
+        request_body = _compact_payload(request)
+        if not isinstance(request_body, dict):
+            raise ValueError("bounded component request must be a mapping or dataclass")
+        if not request_body.get("request_id"):
+            request_body["request_id"] = _new_sign_request_id()
+        try:
+            _validate_bounded_component_request(request_body)
+        except ValueError as e:
+            raise ValueError(f"invalid bounded component request: {e}") from e
+
+        self._discover_approval_wait()
+        try:
+            resp = self.session.post(
+                f"{self.base_url}/sign/bounded-component",
+                json=request_body,
+                timeout=self._sign_request_timeout(),
+            )
+        except requests.RequestException as e:
+            raise SignerUnavailableError(f"Failed to connect: {e}")
+
+        if resp.status_code == 401:
+            raise AuthenticationError("Invalid or missing token")
+        if resp.status_code == 403:
+            raise self._forbidden_rejected_error(resp, "Bounded component signing request rejected")
+        if resp.status_code == 503:
+            raise SignerUnavailableError(self._error_message(resp, "Signer unavailable"))
+        if resp.status_code != 200:
+            raise self._signer_http_error(
+                resp,
+                f"Bounded component signing failed: HTTP {resp.status_code}",
+            )
+
+        data = self._safe_json(resp)
+        try:
+            _validate_bounded_component_response(data)
+        except ValueError as e:
+            raise SignerError(f"invalid bounded component response: {e}") from e
+        if data["request_id"] != request_body["request_id"]:
+            raise SignerError("bounded component response request_id does not match request")
+        return BoundedComponentResponse(
+            request_id=data["request_id"],
+            transactions=list(data.get("transactions") or []),
+            components=[
+                BoundedBaseComponent(
+                    target_index=item["target_index"],
+                    bounded_account=item["bounded_account"],
+                    base_signatures=list(item.get("base_signatures") or []),
+                    runtime_args=dict(item.get("runtime_args") or {}) or None,
+                    assembly_receipt=item["assembly_receipt"],
+                    signature_scheme=item["signature_scheme"],
+                )
+                for item in data.get("components", [])
+            ],
+            mutations=data.get("mutations"),
+        )
+
+    def request_bounded_assemble(
+        self,
+        request: Any,
+    ) -> BoundedAssemblyResponse:
+        """Send source-bound bounded-sentry material to the user signer."""
+        request_body = _compact_payload(request)
+        if not isinstance(request_body, dict):
+            raise ValueError("bounded assembly request must be a mapping or dataclass")
+        if not request_body.get("request_id"):
+            request_body["request_id"] = _new_sign_request_id()
+        try:
+            _validate_bounded_assembly_request(request_body)
+        except ValueError as e:
+            raise ValueError(f"invalid bounded assembly request: {e}") from e
+
+        try:
+            resp = self.session.post(
+                f"{self.base_url}/sign/bounded-assemble",
+                json=request_body,
+                timeout=self._timeout_for(GUARDED_ASSEMBLY_TIMEOUT),
+            )
+        except requests.RequestException as e:
+            raise SignerUnavailableError(f"Failed to connect: {e}")
+
+        if resp.status_code == 401:
+            raise AuthenticationError("Invalid or missing token")
+        if resp.status_code == 403:
+            raise self._forbidden_rejected_error(resp, "Bounded assembly request rejected")
+        if resp.status_code == 503:
+            raise SignerUnavailableError(self._error_message(resp, "Signer unavailable"))
+        if resp.status_code != 200:
+            raise self._signer_http_error(resp, f"Bounded assembly failed: HTTP {resp.status_code}")
+
+        data = self._safe_json(resp)
+        try:
+            _validate_bounded_assembly_response(data)
+        except ValueError as e:
+            raise SignerError(f"invalid bounded assembly response: {e}") from e
+        if data["request_id"] != request_body["request_id"]:
+            raise SignerError("bounded assembly response request_id does not match request")
+        return BoundedAssemblyResponse(
+            request_id=data["request_id"],
+            signed_group=list(data.get("signed_group") or []),
+        )
+
     def admin_sync_sentry_references(
         self,
         candidates: List[Any],
@@ -4256,6 +4535,286 @@ def _request_primary_guarded_passthrough(
     return response, passthrough
 
 
+def _prepared_sentry_flow_kinds(
+    user_client: SignerClient,
+    prepared_group: PreparedGroup,
+) -> tuple:
+    bounded_sentry = False
+    legacy_guarded = False
+    for index, item in enumerate(prepared_group.transactions):
+        key = item.signer_key
+        if key is None and item.auth_address:
+            try:
+                key = user_client.get_key_info(item.auth_address)
+            except Exception as e:
+                raise SignerError(
+                    f"prepared transaction {index}: resolve signer key: {e}"
+                ) from e
+        if key is None:
+            continue
+        if key.signing_flow == SIGNING_FLOW_BOUNDED_SENTRY1:
+            bounded_sentry = True
+        elif key.signing_flow == SIGNING_FLOW_SENTRY1:
+            legacy_guarded = True
+    return bounded_sentry, legacy_guarded
+
+
+def _decode_canonical_group(group_bytes_hex: List[str]) -> List[transaction.Transaction]:
+    result = []
+    for index, encoded in enumerate(group_bytes_hex):
+        try:
+            raw = bytes.fromhex(encoded)
+        except ValueError as e:
+            raise SignerError(f"transaction {index} is invalid hex: {e}") from e
+        if len(raw) < 3 or raw[:2] != b"TX":
+            raise SignerError(f"transaction {index} is missing TX prefix")
+        try:
+            decoded = encoding.msgpack_decode(base64.b64encode(raw[2:]).decode())
+        except Exception as e:
+            raise SignerError(f"transaction {index} is invalid: {e}") from e
+        if not isinstance(decoded, transaction.Transaction):
+            raise SignerError(f"transaction {index} did not decode as a transaction")
+        result.append(decoded)
+    return result
+
+
+def _bounded_sentry_public_key(key: KeyInfo) -> str:
+    if key.bounded_authorization and key.bounded_authorization.sentry:
+        if key.bounded_authorization.sentry.public_key_hex:
+            return key.bounded_authorization.sentry.public_key_hex
+    return (key.parameters or {}).get("sentry_public_key", "")
+
+
+def _bounded_sentry_component_key_type(key: KeyInfo) -> str:
+    if key.sentry_component_key_type:
+        return key.sentry_component_key_type
+    if key.bounded_authorization and key.bounded_authorization.sentry:
+        return key.bounded_authorization.sentry.component_key_type
+    return ""
+
+
+def _request_bounded_primary_passthrough(
+    user_client: SignerClient,
+    group_bytes_hex: List[str],
+    original_count: int,
+    bounded_indices: set,
+    target_lsig_sizes: Dict[int, int],
+    primary_targets: List[Dict[str, Any]],
+) -> tuple:
+    if not primary_targets:
+        return None, []
+    primary_by_index = {target["target_index"]: target for target in primary_targets}
+    requests_data = []
+    for index, txn_hex in enumerate(group_bytes_hex):
+        if index >= original_count:
+            requests_data.append({"txn_bytes_hex": txn_hex})
+        elif index in bounded_indices:
+            request: Dict[str, Any] = {"txn_bytes_hex": txn_hex}
+            if target_lsig_sizes.get(index):
+                request["lsig_size"] = target_lsig_sizes[index]
+            requests_data.append(request)
+        else:
+            target = primary_by_index.get(index)
+            if target is None:
+                raise ValueError(f"group position {index} has no bounded or primary target")
+            request = {
+                "txn_bytes_hex": txn_hex,
+                "auth_address": target["auth_address"],
+            }
+            for field in ("txn_sender", "lsig_args", "lsig_size", "app_call_info"):
+                if target.get(field):
+                    request[field] = target[field]
+            requests_data.append(request)
+    response = user_client.sign_requests(requests_data)
+    passthrough = []
+    for index in sorted(primary_by_index):
+        if index >= len(response.signed) or not response.signed[index]:
+            raise SignerError(
+                f"primary signer returned no signed transaction for target {index}"
+            )
+        passthrough.append(GuardedPassthroughItem(
+            target_index=index,
+            signed_txn_hex=response.signed[index],
+        ))
+    return response, passthrough
+
+
+def sign_prepared_bounded_sentry_group(
+    *,
+    user_client: SignerClient,
+    prepared_group: PreparedGroup,
+    sentry_client: Optional[SignerClient] = None,
+    sentry_resolver: Optional[Any] = None,
+    sentry_component_key: str = "",
+    assembly_request_id: str = "",
+    min_fee: int = GUARDED_DEFAULT_MIN_FEE,
+) -> GuardedSignResult:
+    """Sign a prepared bounded-sentry1 group using the user-first flow."""
+    del min_fee  # Planning, dummy insertion, and fee pooling are signer-owned.
+    if user_client is None:
+        raise SignerError("user_client is required")
+    prepared = prepared_group.transactions
+    if not prepared:
+        raise ValueError("prepared group is empty")
+
+    requests_data: List[Dict[str, Any]] = []
+    targets: List[Dict[str, Any]] = []
+    primary_targets: List[Dict[str, Any]] = []
+    target_lsig_sizes: Dict[int, int] = {}
+    for index, item in enumerate(prepared):
+        if item.signed_transaction_base64:
+            raise ValueError(
+                f"prepared transaction {index}: passthrough entries are not "
+                "supported in prepared bounded-sentry groups"
+            )
+        if item.transaction is None:
+            raise ValueError(f"prepared transaction {index}: transaction is required")
+        key = item.signer_key
+        if key is None and item.auth_address:
+            key = user_client.get_key_info(item.auth_address)
+        if key is None:
+            raise ValueError(
+                f"prepared transaction {index}: signer key metadata is required"
+            )
+        lsig_size = key.lsig_size or item.lsig_size
+        if key.signing_flow == SIGNING_FLOW_BOUNDED_SENTRY1:
+            if not item.auth_address:
+                raise ValueError(
+                    f"prepared transaction {index}: bounded auth address is required"
+                )
+            requests_data.append(item.to_sign_request())
+            target_lsig_sizes[index] = lsig_size
+            targets.append({
+                "target_index": index,
+                "guarded_account": item.auth_address,
+                "sentry_public_key_hex": _bounded_sentry_public_key(key),
+                "sentry_component_key_type": _bounded_sentry_component_key_type(key),
+            })
+            continue
+        if key.signing_flow == SIGNING_FLOW_SENTRY1:
+            raise ValueError("cannot mix sentry1 and bounded-sentry1 targets in one group")
+        if key.signing_flow not in ("", SIGNING_FLOW_BOUNDED1):
+            raise ValueError(
+                f"prepared transaction {index}: signer key requires signing flow "
+                f"{key.signing_flow!r}, which this SDK does not support; upgrade the SDK"
+            )
+        if not item.auth_address:
+            raise ValueError(
+                f"prepared transaction {index}: primary auth address is required"
+            )
+        txn_hex, _ = encode_transaction(item.transaction)
+        request = {"txn_bytes_hex": txn_hex}
+        if lsig_size:
+            request["lsig_size"] = lsig_size
+        requests_data.append(request)
+        primary_targets.append({
+            "target_index": index,
+            "auth_address": item.auth_address,
+            "txn_sender": item.txn_sender,
+            "lsig_args": _encode_guarded_lsig_args(item.lsig_args),
+            "lsig_size": lsig_size,
+            "app_call_info": item.app_call_info,
+        })
+    if not targets:
+        raise ValueError("prepared group has no bounded-sentry targets")
+
+    component_response = user_client.request_bounded_component(
+        BoundedComponentRequest(requests=requests_data)
+    )
+    planned = _decode_canonical_group(component_response.transactions)
+    if len(planned) < len(prepared):
+        raise SignerError(
+            f"signer returned {len(planned)} bounded group positions, "
+            f"want at least {len(prepared)}"
+        )
+    target_by_index = {target["target_index"]: target for target in targets}
+    components: Dict[int, BoundedBaseComponent] = {}
+    for component in component_response.components:
+        target = target_by_index.get(component.target_index)
+        if target is None or component.bounded_account != target["guarded_account"]:
+            raise SignerError(
+                f"signer returned unexpected bounded component target "
+                f"{component.target_index}"
+            )
+        if component.target_index in components:
+            raise SignerError(
+                f"signer returned duplicate bounded component target "
+                f"{component.target_index}"
+            )
+        components[component.target_index] = component
+    for target in targets:
+        if target["target_index"] not in components:
+            raise SignerError(
+                f"signer returned no bounded component for target index "
+                f"{target['target_index']}"
+            )
+
+    sentry_groups: Dict[tuple, Dict[str, Any]] = {}
+    for target in targets:
+        client, component_key = _resolve_sentry_for_target(
+            target, sentry_client, sentry_component_key, sentry_resolver
+        )
+        group_key = (id(client), component_key)
+        sentry_groups.setdefault(group_key, {
+            "client": client, "component_key": component_key, "indices": [],
+        })["indices"].append(target["target_index"])
+    sentry_component_responses = []
+    sentry_signatures: Dict[int, Dict[str, str]] = {}
+    for group in sentry_groups.values():
+        response = group["client"].request_component_sign(ComponentSignRequest(
+            role=COMPONENT_SIGN_ROLE_SENTRY,
+            component_key=group["component_key"],
+            group_bytes_hex=component_response.transactions,
+            target_indices=sorted(group["indices"]),
+        ))
+        sentry_component_responses.append(response)
+        sentry_signatures.update(_component_signatures_by_index(response))
+
+    primary_response, passthrough = _request_bounded_primary_passthrough(
+        user_client,
+        component_response.transactions,
+        len(prepared),
+        set(target_by_index),
+        target_lsig_sizes,
+        primary_targets,
+    )
+    passthrough.extend(_sign_guarded_dummies(planned[len(prepared):], len(prepared)))
+    assembly_targets: List[BoundedAssemblyTarget] = []
+    for target in targets:
+        index = target["target_index"]
+        sentry = sentry_signatures.get(index)
+        if sentry is None:
+            raise SignerError(f"missing sentry component signature for target {index}")
+        component = components[index]
+        assembly_targets.append(BoundedAssemblyTarget(
+            target_index=index,
+            bounded_account=component.bounded_account,
+            base_signatures=list(component.base_signatures),
+            runtime_args=dict(component.runtime_args or {}) or None,
+            assembly_receipt=component.assembly_receipt,
+            base_source_request_id=component_response.request_id,
+            sentry_signature=sentry["signature"],
+            sentry_source_request_id=sentry["request_id"],
+        ))
+    assembly_response = user_client.request_bounded_assemble(
+        BoundedAssemblyRequest(
+            request_id=assembly_request_id,
+            group_bytes_hex=list(component_response.transactions),
+            targets=assembly_targets,
+            passthrough=passthrough,
+        )
+    )
+    return GuardedSignResult(
+        signed_group=list(assembly_response.signed_group),
+        user_component_responses=[],
+        sentry_component_responses=sentry_component_responses,
+        primary_sign_response=primary_response,
+        assembly_response=None,
+        bounded_component_response=component_response,
+        bounded_assembly_response=assembly_response,
+    )
+
+
 def sign_prepared_guarded_group(
     *,
     user_client: SignerClient,
@@ -4273,6 +4832,21 @@ def sign_prepared_guarded_group(
     This mirrors apshell's guarded client-side prep path and avoids sending an
     all-guarded group to /plan or /sign as all-foreign requests.
     """
+    has_bounded_sentry, has_legacy_guarded = _prepared_sentry_flow_kinds(
+        user_client, prepared_group
+    )
+    if has_bounded_sentry:
+        if has_legacy_guarded:
+            raise ValueError("cannot mix sentry1 and bounded-sentry1 targets in one group")
+        return sign_prepared_bounded_sentry_group(
+            user_client=user_client,
+            prepared_group=prepared_group,
+            sentry_client=sentry_client,
+            sentry_resolver=sentry_resolver,
+            sentry_component_key=sentry_component_key,
+            assembly_request_id=assembly_request_id,
+            min_fee=min_fee,
+        )
     inputs = _build_prepared_guarded_sign_inputs(
         user_client,
         prepared_group,
