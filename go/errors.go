@@ -6,6 +6,7 @@ package aplane
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Signing errors
@@ -92,6 +93,18 @@ func (e *APIError) Error() string {
 		op = "signer error"
 	}
 	return fmt.Sprintf("%s (%d): %s", op, e.StatusCode, e.Message)
+}
+
+// Unwrap maps stable signer error codes to public sentinel errors.
+func (e *APIError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	if e.Code == ErrCodeNotFound ||
+		(e.Code == "" && strings.Contains(strings.ToLower(e.Message), "not found")) {
+		return ErrKeyNotFound
+	}
+	return nil
 }
 
 // TransactionError wraps a transaction rejection with details.

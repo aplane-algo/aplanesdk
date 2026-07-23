@@ -464,8 +464,15 @@ over those exact bytes, sign any ordinary positions, and call
 `requestBoundedAssemble()`. Before signing anything, the SDK compares the
 signer-produced plan with the caller's prepared group: only reported fee
 pooling and group-ID assignment are accepted, and appended positions must be
-canonical budget dummies. It also verifies ordinary signed positions and every
-assembled transaction against the frozen transaction bytes.
+canonical budget dummies. The returned group must use canonical transaction
+encoding and a group ID recomputed from the presented membership. The SDK also
+verifies ordinary signed positions and every assembled transaction against the
+frozen transaction bytes.
+
+`requestBoundedComponent()` sends best-effort `/sign/cancel` when its
+approval-bearing request is aborted, times out, or disconnects.
+`requestBoundedAssemble()` does not open an approval request and is not a
+cancellation handle.
 
 The `minFee` option applies to the legacy `sentry1` path. The
 `bounded-sentry1` signer planner owns fee selection and reports its mutations,

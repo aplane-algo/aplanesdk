@@ -271,6 +271,26 @@ function cloneTransaction(txn: Transaction): Transaction {
   return algosdk.decodeUnsignedTransaction(txn.toByte());
 }
 
+function byteArraysEqual(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((value, index) => value === right[index]);
+}
+
+function groupIDBytes(txn: Transaction): Uint8Array | undefined {
+  const group = txn.group;
+  if (
+    group === undefined ||
+    group.length === 0 ||
+    group.every((value) => value === 0)
+  ) {
+    return undefined;
+  }
+  if (group.length !== 32) {
+    throw new SignerError("transaction has invalid group ID");
+  }
+  return group;
+}
+
 function createGuardedDummies(firstTxn: Transaction, count: number): Transaction[] {
   if (count === 0) {
     return [];
@@ -487,19 +507,65 @@ async function preparedSentryFlowKinds(
 }
 
 function decodeCanonicalGroup(groupBytesHex: string[]): Transaction[] {
-  return groupBytesHex.map((encoded, index) => {
+  if (groupBytesHex.length === 0) {
+    throw new SignerError("canonical group is empty");
+  }
+  if (groupBytesHex.length > GUARDED_MAX_GROUP_SIZE) {
+    throw new SignerError(
+      `canonical group size ${groupBytesHex.length} exceeds max ${GUARDED_MAX_GROUP_SIZE}`,
+    );
+  }
+  const txns = groupBytesHex.map((encoded, index) => {
     const raw = hexToBytes(encoded);
     if (raw.length < 3 || raw[0] !== 0x54 || raw[1] !== 0x58) {
       throw new SignerError(`transaction ${index} is missing TX prefix`);
     }
     try {
-      return algosdk.decodeUnsignedTransaction(raw.slice(2));
+      const txn = algosdk.decodeUnsignedTransaction(raw.slice(2));
+      const canonical = algosdk.encodeUnsignedTransaction(txn);
+      if (!byteArraysEqual(raw.slice(2), canonical)) {
+        throw new SignerError(`transaction ${index} bytes are not canonical`);
+      }
+      return txn;
     } catch (error) {
+      if (error instanceof SignerError) throw error;
       throw new SignerError(
         `transaction ${index} is invalid: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   });
+
+  if (txns.length === 1) {
+    if (groupIDBytes(txns[0]) !== undefined) {
+      throw new SignerError("singleton transaction must not have a group ID");
+    }
+    return txns;
+  }
+
+  const groupID = groupIDBytes(txns[0]);
+  if (groupID === undefined) {
+    throw new SignerError("group transaction 0 has empty group ID");
+  }
+  txns.slice(1).forEach((txn, offset) => {
+    const current = groupIDBytes(txn);
+    const index = offset + 1;
+    if (current === undefined) {
+      throw new SignerError(`group transaction ${index} has empty group ID`);
+    }
+    if (!byteArraysEqual(current, groupID)) {
+      throw new SignerError(`group transaction ${index} has divergent group ID`);
+    }
+  });
+
+  const cleared = txns.map(cloneTransaction);
+  cleared.forEach((txn) => {
+    txn.group = undefined;
+  });
+  const computed = algosdk.computeGroupID(cleared);
+  if (!byteArraysEqual(computed, groupID)) {
+    throw new SignerError("group ID does not match decoded transactions");
+  }
+  return txns;
 }
 
 function boundedMutationInteger(
@@ -577,7 +643,7 @@ function validateBoundedComponentPlan(
     mutations?.groupIdChanged &&
     appended === 0 &&
     feeModified.size === 0 &&
-    original.every((txn) => txn.group !== undefined)
+    original.every((txn) => groupIDBytes(txn) !== undefined)
   ) {
     throw new SignerError(
       "signer changed an existing bounded group ID without a fee or membership mutation",
@@ -1229,7 +1295,10 @@ function validateComponentSignRequest(request: ComponentSignRequest): void {
   validateComponentTargetIndices(request.target_indices, request.group_bytes_hex.length);
 }
 
-function validateComponentSignResponse(response: ComponentSignResponse): void {
+function validateComponentSignResponse(
+  response: ComponentSignResponse,
+  request?: ComponentSignRequest,
+): void {
   if (!response.request_id) {
     throw new SignerError("request_id is required");
   }
@@ -1254,6 +1323,20 @@ function validateComponentSignResponse(response: ComponentSignResponse): void {
       throw new SignerError(`signature ${item}: signature_scheme is required`);
     }
   });
+  if (request && response.request_id !== request.request_id) {
+    throw new SignerError("component sign response request_id does not match request");
+  }
+  if (request) {
+    const expected = new Set(request.target_indices);
+    if (
+      seen.size !== expected.size ||
+      [...seen].some((index) => !expected.has(index))
+    ) {
+      throw new SignerError(
+        "component sign response target indices do not match request",
+      );
+    }
+  }
 }
 
 function mapRuntimeArg(raw: any): RuntimeArg {
@@ -3699,7 +3782,7 @@ export class SignerClient {
     }
 
     try {
-      validateComponentSignResponse(data);
+      validateComponentSignResponse(data, requestBody);
     } catch (error) {
       throw new SignerError(
         `invalid component sign response: ${error instanceof Error ? error.message : String(error)}`
@@ -3780,9 +3863,10 @@ export class SignerClient {
     request: BoundedComponentRequest,
     options?: { signal?: AbortSignal },
   ): Promise<BoundedComponentResponse> {
+    const requestId = request.request_id || newSignRequestId();
     const requestBody: BoundedComponentRequest = {
       ...request,
-      request_id: request.request_id || newSignRequestId(),
+      request_id: requestId,
     };
     try {
       validateBoundedComponentRequest(requestBody);
@@ -3793,13 +3877,22 @@ export class SignerClient {
     }
 
     await this.discoverApprovalWait();
-    const response = await this.fetch("/sign/bounded-component", {
-      method: "POST",
-      body: JSON.stringify(requestBody),
-      timeout: this.signRequestTimeout(),
-      signal: options?.signal,
-    });
+    let response: Response;
+    try {
+      response = await this.fetch("/sign/bounded-component", {
+        method: "POST",
+        body: JSON.stringify(requestBody),
+        timeout: this.signRequestTimeout(),
+        signal: options?.signal,
+      });
+    } catch (error) {
+      await this.bestEffortCancelSignRequest(requestId);
+      throw error;
+    }
     if (response.status === 401) throw new AuthenticationError();
+    if (response.status === 400) {
+      throw await this.badRequestError(response);
+    }
     if (response.status === 403) {
       throw await this.forbiddenRejectedError(response, "Bounded component signing request rejected");
     }
@@ -3859,6 +3952,9 @@ export class SignerClient {
       signal: options?.signal,
     });
     if (response.status === 401) throw new AuthenticationError();
+    if (response.status === 400) {
+      throw await this.badRequestError(response);
+    }
     if (response.status === 403) {
       throw await this.forbiddenRejectedError(response, "Bounded assembly request rejected");
     }

@@ -52,7 +52,7 @@ import time
 from dataclasses import asdict, dataclass, is_dataclass
 from typing import Optional, Dict, List, Any, Callable, cast
 
-from algosdk import abi, encoding, transaction
+from algosdk import abi, constants, encoding, transaction
 from algosdk.v2client import models
 
 import paramiko
@@ -1006,6 +1006,13 @@ def _validate_component_sign_request(data: Dict[str, Any]) -> None:
 def _parse_bounded_authorization(data: Any) -> Optional[BoundedAuthorizationInfo]:
     if not isinstance(data, dict):
         return None
+    if "max_fee" not in data:
+        raise SignerError("invalid bounded_authorization: max_fee is required")
+    max_fee = data["max_fee"]
+    if isinstance(max_fee, bool) or not isinstance(max_fee, int) or max_fee < 0:
+        raise SignerError(
+            "invalid bounded_authorization: max_fee must be a non-negative integer"
+        )
     layout = data.get("base_signature_arg_layout") or {}
     operations = data.get("admin_operations") or []
     runtime_args = data.get("runtime_args") or []
@@ -1018,7 +1025,7 @@ def _parse_bounded_authorization(data: Any) -> Optional[BoundedAuthorizationInfo
             count=layout.get("count", 0), max_sizes=list(layout.get("max_sizes") or [])
         ),
         spend_effects=list(data.get("spend_effects") or []),
-        max_fee=data.get("max_fee", 0),
+        max_fee=max_fee,
         admin_operations=[
             BoundedAdminOperationInfo(
                 kind=item.get("kind", ""),
@@ -1082,6 +1089,8 @@ def _parse_bounded_authorization(data: Any) -> Optional[BoundedAuthorizationInfo
 
 
 def _validate_component_sign_response(data: Dict[str, Any]) -> None:
+    if not isinstance(data, dict):
+        raise ValueError("response must be a mapping")
     request_id = data.get("request_id", "")
     if not request_id:
         raise ValueError("request_id is required")
@@ -1091,6 +1100,8 @@ def _validate_component_sign_response(data: Dict[str, Any]) -> None:
         raise ValueError("signatures array is empty")
     seen = set()
     for i, signature in enumerate(signatures, start=1):
+        if not isinstance(signature, dict):
+            raise ValueError(f"signature {i}: must be a mapping")
         target_index = signature.get("target_index")
         if not isinstance(target_index, int) or target_index < 0:
             raise ValueError(f"signature {i}: target_index must be non-negative")
@@ -1177,14 +1188,26 @@ def _validate_bounded_component_request(data: Dict[str, Any]) -> None:
 
 
 def _validate_bounded_component_response(data: Dict[str, Any]) -> None:
+    if not isinstance(data, dict):
+        raise ValueError("response must be a mapping")
     request_id = data.get("request_id", "")
     _validate_sign_request_id(str(request_id), required=True)
     transactions = data.get("transactions") or []
     components = data.get("components") or []
-    if not transactions or not components:
+    if (
+        not isinstance(transactions, list)
+        or not isinstance(components, list)
+        or not transactions
+        or not components
+    ):
         raise ValueError("transactions and components are required")
+    for index, encoded in enumerate(transactions):
+        if not isinstance(encoded, str) or not encoded:
+            raise ValueError(f"transaction {index} must be a non-empty hex string")
     seen = set()
     for index, component in enumerate(components, start=1):
+        if not isinstance(component, dict):
+            raise ValueError(f"component {index} must be a mapping")
         target = component.get("target_index")
         if (
             not isinstance(target, int)
@@ -3487,6 +3510,16 @@ class SignerClient:
             _validate_component_sign_response(data)
         except ValueError as e:
             raise SignerError(f"invalid component sign response: {e}") from e
+        if data["request_id"] != request_body["request_id"]:
+            raise SignerError("component sign response request_id does not match request")
+        expected_indices = set(request_body["target_indices"])
+        actual_indices = {
+            item["target_index"] for item in data.get("signatures", [])
+        }
+        if actual_indices != expected_indices:
+            raise SignerError(
+                "component sign response target indices do not match request"
+            )
 
         return ComponentSignResponse(
             request_id=data["request_id"],
@@ -3578,6 +3611,7 @@ class SignerClient:
                 timeout=self._sign_request_timeout(),
             )
         except requests.RequestException as e:
+            self._best_effort_cancel_sign_request(request_body["request_id"])
             raise SignerUnavailableError(f"Failed to connect: {e}")
 
         if resp.status_code == 401:
@@ -3586,6 +3620,8 @@ class SignerClient:
             raise self._forbidden_rejected_error(resp, "Bounded component signing request rejected")
         if resp.status_code == 503:
             raise SignerUnavailableError(self._error_message(resp, "Signer unavailable"))
+        if resp.status_code == 400:
+            raise self._bad_request_error(resp)
         if resp.status_code != 200:
             raise self._signer_http_error(
                 resp,
@@ -3648,6 +3684,8 @@ class SignerClient:
             raise self._forbidden_rejected_error(resp, "Bounded assembly request rejected")
         if resp.status_code == 503:
             raise SignerUnavailableError(self._error_message(resp, "Signer unavailable"))
+        if resp.status_code == 400:
+            raise self._bad_request_error(resp)
         if resp.status_code != 200:
             raise self._signer_http_error(resp, f"Bounded assembly failed: HTTP {resp.status_code}")
 
@@ -4592,6 +4630,13 @@ def _prepared_sentry_flow_kinds(
 
 
 def _decode_canonical_group(group_bytes_hex: List[str]) -> List[transaction.Transaction]:
+    if not group_bytes_hex:
+        raise SignerError("canonical group is empty")
+    if len(group_bytes_hex) > constants.tx_group_limit:
+        raise SignerError(
+            f"canonical group size {len(group_bytes_hex)} exceeds max "
+            f"{constants.tx_group_limit}"
+        )
     result = []
     for index, encoded in enumerate(group_bytes_hex):
         try:
@@ -4606,7 +4651,49 @@ def _decode_canonical_group(group_bytes_hex: List[str]) -> List[transaction.Tran
             raise SignerError(f"transaction {index} is invalid: {e}") from e
         if not isinstance(decoded, transaction.Transaction):
             raise SignerError(f"transaction {index} did not decode as a transaction")
+        canonical = b"TX" + base64.b64decode(encoding.msgpack_encode(decoded))
+        if raw != canonical:
+            raise SignerError(f"transaction {index} bytes are not canonical")
         result.append(decoded)
+
+    def group_id_bytes(txn: transaction.Transaction) -> Optional[bytes]:
+        value = getattr(txn, "group", None)
+        if value is None:
+            return None
+        try:
+            encoded = bytes(value)
+        except (TypeError, ValueError) as e:
+            raise SignerError("transaction has invalid group ID") from e
+        if not encoded or encoded == bytes(32):
+            return None
+        if len(encoded) != 32:
+            raise SignerError("transaction has invalid group ID")
+        return encoded
+
+    if len(result) == 1:
+        if group_id_bytes(result[0]) is not None:
+            raise SignerError("singleton transaction must not have a group ID")
+        return result
+
+    group_id = group_id_bytes(result[0])
+    if group_id is None:
+        raise SignerError("group transaction 0 has empty group ID")
+    for index, txn in enumerate(result[1:], start=1):
+        current = group_id_bytes(txn)
+        if current is None:
+            raise SignerError(f"group transaction {index} has empty group ID")
+        if current != group_id:
+            raise SignerError(f"group transaction {index} has divergent group ID")
+
+    cleared = copy.deepcopy(result)
+    for txn in cleared:
+        txn.group = None
+    try:
+        computed = transaction.calculate_group_id(cleared)
+    except Exception as e:
+        raise SignerError(f"compute group ID: {e}") from e
+    if computed != group_id:
+        raise SignerError("group ID does not match decoded transactions")
     return result
 
 

@@ -63,6 +63,7 @@ from aplanesdk.signer import (
     _validate_bounded_component_response,
     _validate_bounded_component_plan,
     _validate_bounded_target_fees,
+    _decode_canonical_group,
 )
 
 
@@ -573,6 +574,7 @@ class TestSpecializedLowLevelEndpoints:
 
         with patch.object(client.session, "post", return_value=resp) as mock_post:
             result = client.request_component_sign(ComponentSignRequest(
+                request_id="sdk-generated",
                 role=COMPONENT_SIGN_ROLE_SENTRY,
                 component_key="COMPONENT",
                 group_bytes_hex=["5458aa"],
@@ -595,6 +597,26 @@ class TestSpecializedLowLevelEndpoints:
                 client.request_component_sign({
                     "role": COMPONENT_SIGN_ROLE_SENTRY,
                     "group_bytes_hex": ["5458aa"],
+                    "target_indices": [0],
+                })
+
+    def test_request_component_sign_rejects_foreign_target_index(self):
+        client = make_client()
+        resp = mock_response(200, {
+            "request_id": "sdk-component",
+            "signatures": [{
+                "target_index": 1,
+                "signature": "aabb",
+                "signature_scheme": KEY_TYPE_WITNESS_FALCON1024,
+            }],
+        })
+
+        with patch.object(client.session, "post", return_value=resp):
+            with pytest.raises(SignerError, match="indices do not match"):
+                client.request_component_sign({
+                    "request_id": "sdk-component",
+                    "role": COMPONENT_SIGN_ROLE_SENTRY,
+                    "group_bytes_hex": ["5458aa", "5458bb"],
                     "target_indices": [0],
                 })
 
@@ -694,6 +716,52 @@ class TestSpecializedLowLevelEndpoints:
         assert mock_post.call_args_list[1].args[0].endswith(
             "/sign/bounded-assemble"
         )
+
+    def test_bounded_component_timeout_sends_best_effort_cancel(self):
+        import requests
+
+        client = make_client()
+        cancel_response = mock_response(
+            200, {"success": True, "state": "canceled"}
+        )
+        with patch.object(
+            client.session,
+            "post",
+            side_effect=[requests.Timeout("timed out"), cancel_response],
+        ) as mock_post, patch.object(client, "_discover_approval_wait"):
+            with pytest.raises(SignerUnavailableError):
+                client.request_bounded_component(BoundedComponentRequest(
+                    request_id="bounded-cancel-id",
+                    requests=[{
+                        "auth_address": "BOUNDED",
+                        "txn_bytes_hex": "5458aa",
+                    }],
+                ))
+
+        assert mock_post.call_args_list[0].args[0].endswith(
+            "/sign/bounded-component"
+        )
+        assert mock_post.call_args_list[1].args[0].endswith("/sign/cancel")
+        assert mock_post.call_args_list[1].kwargs["json"] == {
+            "request_id": "bounded-cancel-id"
+        }
+
+    def test_bounded_endpoints_classify_not_found(self):
+        client = make_client()
+        response = mock_response(
+            400, {"error": "key not found", "code": "not_found"}
+        )
+        with patch.object(
+            client.session, "post", return_value=response
+        ), patch.object(client, "_discover_approval_wait"):
+            with pytest.raises(KeyNotFoundError):
+                client.request_bounded_component(BoundedComponentRequest(
+                    request_id="bounded-not-found",
+                    requests=[{
+                        "auth_address": "BOUNDED",
+                        "txn_bytes_hex": "5458aa",
+                    }],
+                ))
 
     def test_bounded_endpoints_surface_200_error_bodies(self):
         client = make_client()
@@ -1002,6 +1070,53 @@ class TestSignGuardedGroup:
 
         with pytest.raises(SignerError, match="exceeds advertised max_fee"):
             _validate_bounded_target_fees(planned, {0: planned[0].fee - 1})
+
+    def test_bounded_canonical_group_recomputes_group_id(self):
+        import msgpack
+
+        sender = sdk_test_address(61)
+        receiver = sdk_test_address(62)
+        params = transaction.SuggestedParams(
+            1000,
+            1,
+            100,
+            base64.b64encode(bytes(32)).decode(),
+            "testnet-v1.0",
+            flat_fee=True,
+        )
+        first = transaction.PaymentTxn(sender, params, receiver, 1)
+        second = transaction.PaymentTxn(sender, params, receiver, 2)
+
+        def encode(txn):
+            return (
+                b"TX" + base64.b64decode(algo_encoding.msgpack_encode(txn))
+            ).hex()
+
+        assert len(_decode_canonical_group([encode(first)])) == 1
+
+        grouped = [copy.deepcopy(first), copy.deepcopy(second)]
+        transaction.assign_group_id(grouped)
+        assert len(_decode_canonical_group([encode(txn) for txn in grouped])) == 2
+
+        fabricated = [copy.deepcopy(first), copy.deepcopy(second)]
+        for txn in fabricated:
+            txn.group = bytes([0x44]) * 32
+        with pytest.raises(SignerError, match="does not match decoded transactions"):
+            _decode_canonical_group([encode(txn) for txn in fabricated])
+
+        singleton = copy.deepcopy(first)
+        singleton.group = bytes([0x44]) * 32
+        with pytest.raises(SignerError, match="singleton"):
+            _decode_canonical_group([encode(singleton)])
+
+        canonical = base64.b64decode(algo_encoding.msgpack_encode(first))
+        fields = msgpack.unpackb(canonical, raw=False)
+        noncanonical = msgpack.packb(
+            dict(reversed(list(fields.items()))), use_bin_type=True
+        )
+        assert noncanonical != canonical
+        with pytest.raises(SignerError, match="bytes are not canonical"):
+            _decode_canonical_group([(b"TX" + noncanonical).hex()])
 
     def test_bounded_component_rejects_passthrough_and_mixed_flows(self):
         with pytest.raises(ValueError, match="does not accept signed passthrough"):

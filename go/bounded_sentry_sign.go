@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"sort"
 
+	algocrypto "github.com/algorand/go-algorand-sdk/v2/crypto"
 	"github.com/algorand/go-algorand-sdk/v2/encoding/msgpack"
 	"github.com/algorand/go-algorand-sdk/v2/types"
 )
@@ -291,6 +292,12 @@ func requestBoundedPrimaryPassthrough(
 }
 
 func decodeCanonicalGroup(groupHex []string) ([]types.Transaction, error) {
+	if len(groupHex) == 0 {
+		return nil, fmt.Errorf("canonical group is empty")
+	}
+	if len(groupHex) > types.MaxTxGroupSize {
+		return nil, fmt.Errorf("canonical group size %d exceeds max %d", len(groupHex), types.MaxTxGroupSize)
+	}
 	txns := make([]types.Transaction, len(groupHex))
 	for i, encoded := range groupHex {
 		raw, err := hex.DecodeString(encoded)
@@ -303,6 +310,41 @@ func decodeCanonicalGroup(groupHex []string) ([]types.Transaction, error) {
 		if err := msgpack.Decode(raw[2:], &txns[i]); err != nil {
 			return nil, fmt.Errorf("transaction %d is invalid: %w", i, err)
 		}
+		if !bytes.Equal(raw, encodeTxn(txns[i])) {
+			return nil, fmt.Errorf("transaction %d bytes are not canonical", i)
+		}
+	}
+
+	var empty types.Digest
+	if len(txns) == 1 {
+		if txns[0].Group != empty {
+			return nil, fmt.Errorf("singleton transaction must not have a group ID")
+		}
+		return txns, nil
+	}
+
+	groupID := txns[0].Group
+	if groupID == empty {
+		return nil, fmt.Errorf("group transaction 0 has empty group ID")
+	}
+	for i := 1; i < len(txns); i++ {
+		if txns[i].Group == empty {
+			return nil, fmt.Errorf("group transaction %d has empty group ID", i)
+		}
+		if txns[i].Group != groupID {
+			return nil, fmt.Errorf("group transaction %d has divergent group ID", i)
+		}
+	}
+	cleared := append([]types.Transaction(nil), txns...)
+	for i := range cleared {
+		cleared[i].Group = empty
+	}
+	computed, err := algocrypto.ComputeGroupID(cleared)
+	if err != nil {
+		return nil, fmt.Errorf("compute group ID: %w", err)
+	}
+	if computed != groupID {
+		return nil, fmt.Errorf("group ID does not match decoded transactions")
 	}
 	return txns, nil
 }

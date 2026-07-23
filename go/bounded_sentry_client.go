@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
 )
 
 // RequestBoundedComponent sends a bounded base-component request to the user
@@ -39,15 +40,42 @@ func (c *SignerClient) RequestBoundedComponentWithContext(ctx context.Context, r
 	reqCtx, cancel := c.requestContext(ctx, c.signRequestTimeout())
 	defer cancel()
 
+	var cancelOnce sync.Once
+	sendCancel := func() {
+		cancelOnce.Do(func() {
+			cancelCtx, cancel := context.WithTimeout(context.Background(), signCancelTimeout)
+			defer cancel()
+			_, _ = c.CancelSignRequestWithContext(cancelCtx, reqBody.RequestID)
+		})
+	}
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-done:
+			return
+		case <-reqCtx.Done():
+		}
+		select {
+		case <-done:
+		default:
+			sendCancel()
+		}
+	}()
+
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, c.baseURL+"/sign/bounded-component", bytes.NewReader(body))
 	if err != nil {
+		close(done)
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "aplane "+c.token)
 
 	resp, err := c.client.Do(req)
+	close(done)
 	if err != nil {
+		if reqCtx.Err() != nil {
+			sendCancel()
+		}
 		return nil, fmt.Errorf("failed to make request to Signer: %w", err)
 	}
 	defer resp.Body.Close()

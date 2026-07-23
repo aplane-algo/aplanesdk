@@ -7,13 +7,23 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 
+	algocrypto "github.com/algorand/go-algorand-sdk/v2/crypto"
+	"github.com/algorand/go-algorand-sdk/v2/encoding/msgpack"
 	"github.com/algorand/go-algorand-sdk/v2/transaction"
 	"github.com/algorand/go-algorand-sdk/v2/types"
+	"github.com/algorand/go-codec/codec"
 )
+
+type sdkNoncanonicalMap []interface{}
+
+func (sdkNoncanonicalMap) MapBySlice() {}
 
 func TestSignPreparedBoundedSentryGroupOneTarget(t *testing.T) {
 	bounded := sdkTestAddress(21)
@@ -191,6 +201,200 @@ func TestBoundedComponentResponseRejectsMalformedTargets(t *testing.T) {
 				t.Fatalf("Validate() error = %v, want %q", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestRequestBoundedComponentCancelsApprovalWhenContextCanceled(t *testing.T) {
+	signStarted := make(chan string, 1)
+	cancelReceived := make(chan string, 1)
+	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sign/bounded-component":
+			var req BoundedComponentRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode bounded component request: %v", err)
+			}
+			signStarted <- req.RequestID
+			<-r.Context().Done()
+		case "/sign/cancel":
+			var req CancelSignRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode cancel request: %v", err)
+			}
+			cancelReceived <- req.RequestID
+			json.NewEncoder(w).Encode(CancelSignResponse{
+				Success: true, State: SignCancelStateCanceled,
+			})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	})
+	defer server.Close()
+
+	client.cacheApprovalWait(60)
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := client.RequestBoundedComponentWithContext(ctx, BoundedComponentRequest{
+			RequestID: "bounded-cancel-id",
+			Requests: []SignRequest{{
+				AuthAddress: "AUTH", TxnBytesHex: "545801",
+			}},
+		})
+		result <- err
+	}()
+
+	select {
+	case got := <-signStarted:
+		if got != "bounded-cancel-id" {
+			t.Fatalf("request_id = %q, want bounded-cancel-id", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("bounded component request was not sent")
+	}
+	cancel()
+
+	select {
+	case got := <-cancelReceived:
+		if got != "bounded-cancel-id" {
+			t.Fatalf("cancel request_id = %q, want bounded-cancel-id", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("/sign/cancel was not sent")
+	}
+	select {
+	case err := <-result:
+		if err == nil || !strings.Contains(err.Error(), "context canceled") {
+			t.Fatalf("RequestBoundedComponentWithContext() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("RequestBoundedComponentWithContext() did not return")
+	}
+}
+
+func TestBoundedEndpointClassifiesNotFound(t *testing.T) {
+	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sign/bounded-component" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(ErrorResponse{Code: ErrCodeNotFound, Error: "key not found"})
+	})
+	defer server.Close()
+
+	client.cacheApprovalWait(60)
+	_, err := client.RequestBoundedComponent(BoundedComponentRequest{
+		RequestID: "bounded-not-found",
+		Requests: []SignRequest{{
+			AuthAddress: "AUTH", TxnBytesHex: "545801",
+		}},
+	})
+	if !errors.Is(err, ErrKeyNotFound) {
+		t.Fatalf("RequestBoundedComponent() error = %v, want ErrKeyNotFound", err)
+	}
+}
+
+func TestDecodeCanonicalGroupAnchorsGroupID(t *testing.T) {
+	sender := sdkTestAddress(71)
+	receiver := sdkTestAddress(72)
+	var genesisHash types.Digest
+	sp := types.SuggestedParams{
+		Fee: types.MicroAlgos(1000), FirstRoundValid: 1, LastRoundValid: 100,
+		GenesisID: "testnet-v1.0", GenesisHash: genesisHash[:], FlatFee: true,
+	}
+	first, err := transaction.MakePaymentTxn(sender, receiver, 1, nil, "", sp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := transaction.MakePaymentTxn(sender, receiver, 2, nil, "", sp)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := decodeCanonicalGroup([]string{hex.EncodeToString(encodeTxn(first))}); err != nil {
+		t.Fatalf("decode singleton: %v", err)
+	}
+
+	grouped := []types.Transaction{first, second}
+	groupID, err := algocrypto.ComputeGroupID(grouped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range grouped {
+		grouped[i].Group = groupID
+	}
+	valid := []string{
+		hex.EncodeToString(encodeTxn(grouped[0])),
+		hex.EncodeToString(encodeTxn(grouped[1])),
+	}
+	if _, err := decodeCanonicalGroup(valid); err != nil {
+		t.Fatalf("decode valid group: %v", err)
+	}
+
+	fabricated := types.Digest{0x44}
+	for i := range grouped {
+		grouped[i].Group = fabricated
+	}
+	invalid := []string{
+		hex.EncodeToString(encodeTxn(grouped[0])),
+		hex.EncodeToString(encodeTxn(grouped[1])),
+	}
+	if _, err := decodeCanonicalGroup(invalid); err == nil ||
+		!strings.Contains(err.Error(), "does not match decoded transactions") {
+		t.Fatalf("decode fabricated group error = %v", err)
+	}
+
+	grouped[0].Group = fabricated
+	if _, err := decodeCanonicalGroup([]string{
+		hex.EncodeToString(encodeTxn(grouped[0])),
+	}); err == nil || !strings.Contains(err.Error(), "singleton") {
+		t.Fatalf("decode grouped singleton error = %v", err)
+	}
+}
+
+func TestDecodeCanonicalGroupRejectsNoncanonicalBytes(t *testing.T) {
+	sender := sdkTestAddress(73)
+	receiver := sdkTestAddress(74)
+	var genesisHash types.Digest
+	sp := types.SuggestedParams{
+		Fee: types.MicroAlgos(1000), FirstRoundValid: 1, LastRoundValid: 100,
+		GenesisID: "testnet-v1.0", GenesisHash: genesisHash[:], FlatFee: true,
+	}
+	txn, err := transaction.MakePaymentTxn(sender, receiver, 1, nil, "", sp)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	canonical := msgpack.Encode(txn)
+	var fields map[string]interface{}
+	if err := msgpack.Decode(canonical, &fields); err != nil {
+		t.Fatalf("decode canonical transaction map: %v", err)
+	}
+	keys := make([]string, 0, len(fields))
+	for key := range fields {
+		keys = append(keys, key)
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(keys)))
+	reversed := make(sdkNoncanonicalMap, 0, len(keys)*2)
+	for _, key := range keys {
+		reversed = append(reversed, key, fields[key])
+	}
+
+	handle := *msgpack.CodecHandle
+	handle.Canonical = false
+	var noncanonical []byte
+	codec.NewEncoderBytes(&noncanonical, &handle).MustEncode(reversed)
+	if string(noncanonical) == string(canonical) {
+		t.Fatal("test setup produced canonical transaction bytes")
+	}
+	var decoded types.Transaction
+	if err := msgpack.Decode(noncanonical, &decoded); err != nil {
+		t.Fatalf("noncanonical transaction should remain decodable: %v", err)
+	}
+	raw := append([]byte{'T', 'X'}, noncanonical...)
+	_, err = decodeCanonicalGroup([]string{hex.EncodeToString(raw)})
+	if err == nil || !strings.Contains(err.Error(), "bytes are not canonical") {
+		t.Fatalf("decode noncanonical transaction error = %v", err)
 	}
 }
 
