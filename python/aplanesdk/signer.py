@@ -50,7 +50,7 @@ import socket
 import threading
 import time
 from dataclasses import asdict, dataclass, is_dataclass
-from typing import Optional, Dict, List, Any, Callable
+from typing import Optional, Dict, List, Any, Callable, cast
 
 from algosdk import abi, encoding, transaction
 from algosdk.v2client import models
@@ -4614,7 +4614,7 @@ def _bounded_mutation_int(mutations: Dict[str, Any], name: str) -> int:
     value = mutations.get(name, 0)
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise SignerError(f"bounded mutation {name} must be a non-negative integer")
-    return value
+    return cast(int, value)
 
 
 def _validate_bounded_component_plan(
@@ -4912,7 +4912,7 @@ def sign_prepared_bounded_sentry_group(
             f"want at least {len(prepared)}"
         )
     _validate_bounded_component_plan(
-        [item.transaction for item in prepared],
+        [cast(transaction.Transaction, item.transaction) for item in prepared],
         planned,
         component_response.mutations,
     )
