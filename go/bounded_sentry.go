@@ -15,7 +15,19 @@ type BoundedComponentRequest struct {
 
 // Validate checks the bounded component request shape.
 func (r BoundedComponentRequest) Validate() error {
-	return GroupSignRequest(r).Validate()
+	if err := GroupSignRequest(r).Validate(); err != nil {
+		return err
+	}
+	for i, request := range r.Requests {
+		mode, err := request.Mode()
+		if err != nil {
+			return fmt.Errorf("transaction %d: %w", i+1, err)
+		}
+		if mode == RequestModePassthrough {
+			return fmt.Errorf("bounded-component does not accept signed passthrough entries")
+		}
+	}
+	return nil
 }
 
 // BoundedBaseComponent is one user-signer contribution to bounded assembly.
@@ -39,8 +51,11 @@ type BoundedComponentResponse struct {
 
 // Validate checks the bounded component response shape.
 func (r BoundedComponentResponse) Validate() error {
-	if err := validateSignRequestID(r.RequestID); err != nil || r.RequestID == "" {
-		return fmt.Errorf("request_id is invalid or empty")
+	if r.RequestID == "" {
+		return fmt.Errorf("request_id is required")
+	}
+	if err := validateSignRequestID(r.RequestID); err != nil {
+		return err
 	}
 	if len(r.Transactions) == 0 || len(r.Components) == 0 {
 		return fmt.Errorf("transactions and components are required")
@@ -90,8 +105,11 @@ type BoundedAssemblyResponse struct {
 
 // Validate checks the bounded assembly response shape.
 func (r BoundedAssemblyResponse) Validate() error {
-	if err := validateSignRequestID(r.RequestID); err != nil || r.RequestID == "" {
-		return fmt.Errorf("request_id is invalid or empty")
+	if r.RequestID == "" {
+		return fmt.Errorf("request_id is required")
+	}
+	if err := validateSignRequestID(r.RequestID); err != nil {
+		return err
 	}
 	if len(r.SignedGroup) == 0 {
 		return fmt.Errorf("signed_group is empty")

@@ -1155,7 +1155,6 @@ def _validate_bounded_component_request(data: Dict[str, Any]) -> None:
     if not requests_data:
         raise ValueError("requests array is empty")
     sign_count = 0
-    passthrough_count = 0
     foreign_count = 0
     for index, item in enumerate(requests_data, start=1):
         has_auth = bool(item.get("auth_address"))
@@ -1164,15 +1163,15 @@ def _validate_bounded_component_request(data: Dict[str, Any]) -> None:
         if has_passthrough and (has_auth or has_txn):
             raise ValueError(f"transaction {index}: sign and passthrough fields cannot be mixed")
         if has_passthrough:
-            passthrough_count += 1
+            raise ValueError(
+                "bounded-component does not accept signed passthrough entries"
+            )
         elif has_auth and has_txn:
             sign_count += 1
         elif has_txn:
             foreign_count += 1
         else:
             raise ValueError(f"transaction {index}: unsupported request mode")
-    if passthrough_count and foreign_count:
-        raise ValueError("cannot mix passthrough and foreign transactions")
     if sign_count == 0 and foreign_count:
         raise ValueError("no signable transactions")
 
@@ -3594,6 +3593,8 @@ class SignerClient:
             )
 
         data = self._safe_json(resp)
+        if data.get("error"):
+            raise SignerError(data["error"])
         try:
             _validate_bounded_component_response(data)
         except ValueError as e:
@@ -3651,6 +3652,8 @@ class SignerClient:
             raise self._signer_http_error(resp, f"Bounded assembly failed: HTTP {resp.status_code}")
 
         data = self._safe_json(resp)
+        if data.get("error"):
+            raise SignerError(data["error"])
         try:
             _validate_bounded_assembly_response(data)
         except ValueError as e:
@@ -4324,6 +4327,7 @@ def _sign_guarded_dummies(
     dummies: List[transaction.Transaction],
     start_index: int,
 ) -> List[GuardedPassthroughItem]:
+    _validate_guarded_dummies(dummies)
     dummy_account = transaction.LogicSigAccount(GUARDED_DUMMY_PROGRAM)
     passthrough = []
     for offset, txn in enumerate(dummies):
@@ -4334,6 +4338,25 @@ def _sign_guarded_dummies(
             signed_txn_hex=signed_hex,
         ))
     return passthrough
+
+
+def _validate_guarded_dummies(dummies: List[transaction.Transaction]) -> None:
+    dummy_address = transaction.LogicSigAccount(GUARDED_DUMMY_PROGRAM).address()
+    for index, txn in enumerate(dummies):
+        if (
+            not isinstance(txn, transaction.PaymentTxn)
+            or txn.sender != dummy_address
+            or txn.receiver != dummy_address
+            or txn.amt != 0
+            or txn.fee != 0
+            or txn.note != bytes([index])
+            or txn.rekey_to is not None
+            or txn.close_remainder_to is not None
+        ):
+            raise SignerError(
+                f"signer-appended transaction {index} is not a canonical "
+                "guarded budget dummy"
+            )
 
 
 def _encode_guarded_lsig_args(args: Optional[Dict[str, bytes]]) -> Optional[Dict[str, str]]:
@@ -4527,6 +4550,12 @@ def _request_primary_guarded_passthrough(
             raise SignerError(
                 f"primary signer returned no signed transaction for target {index}"
             )
+        _verify_signed_transaction_matches_canonical(
+            "primary passthrough",
+            index,
+            response.signed[index],
+            group_bytes_hex[index],
+        )
         passthrough.append(
             GuardedPassthroughItem(
                 target_index=index,
@@ -4547,6 +4576,8 @@ def _prepared_sentry_flow_kinds(
         if key is None and item.auth_address:
             try:
                 key = user_client.get_key_info(item.auth_address)
+            except SignerError:
+                raise
             except Exception as e:
                 raise SignerError(
                     f"prepared transaction {index}: resolve signer key: {e}"
@@ -4579,6 +4610,106 @@ def _decode_canonical_group(group_bytes_hex: List[str]) -> List[transaction.Tran
     return result
 
 
+def _bounded_mutation_int(mutations: Dict[str, Any], name: str) -> int:
+    value = mutations.get(name, 0)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise SignerError(f"bounded mutation {name} must be a non-negative integer")
+    return value
+
+
+def _validate_bounded_component_plan(
+    original: List[transaction.Transaction],
+    planned: List[transaction.Transaction],
+    mutations: Optional[Dict[str, Any]],
+) -> None:
+    if len(planned) < len(original):
+        raise SignerError(
+            f"signer returned {len(planned)} bounded group positions, "
+            f"want at least {len(original)}"
+        )
+    appended = len(planned) - len(original)
+    if mutations is not None and not isinstance(mutations, dict):
+        raise SignerError("bounded mutation report must be a mapping")
+    if mutations is None:
+        if appended:
+            raise SignerError(
+                f"signer appended {appended} bounded group positions without "
+                "a mutation report"
+            )
+    else:
+        original_count = _bounded_mutation_int(mutations, "original_count")
+        final_count = _bounded_mutation_int(mutations, "final_count")
+        dummies_added = _bounded_mutation_int(mutations, "dummies_added")
+        if original_count != len(original):
+            raise SignerError(
+                f"bounded mutation original_count {original_count} does not "
+                f"match request count {len(original)}"
+            )
+        if final_count != len(planned):
+            raise SignerError(
+                f"bounded mutation final_count {final_count} does not match "
+                f"returned count {len(planned)}"
+            )
+        if dummies_added != appended:
+            raise SignerError(
+                f"bounded mutation dummies_added {dummies_added} does not "
+                f"match appended count {appended}"
+            )
+
+    fee_modified = set()
+    if mutations is not None:
+        group_id_changed = mutations.get("group_id_changed", False)
+        if not isinstance(group_id_changed, bool):
+            raise SignerError("bounded mutation group_id_changed must be a boolean")
+        raw_fee_modified = mutations.get("fees_modified") or []
+        if not isinstance(raw_fee_modified, list):
+            raise SignerError("bounded mutation fees_modified must be a list")
+        for index in raw_fee_modified:
+            if (
+                isinstance(index, bool)
+                or not isinstance(index, int)
+                or index < 0
+                or index >= len(original)
+            ):
+                raise SignerError(
+                    f"bounded mutation fee index {index!r} is outside "
+                    "original positions"
+                )
+            if index in fee_modified:
+                raise SignerError(
+                    f"bounded mutation fee index {index} is duplicated"
+                )
+            fee_modified.add(index)
+
+    total_fee_delta = 0
+    for index, (original_txn, planned_txn) in enumerate(zip(original, planned)):
+        expected = copy.deepcopy(original_txn)
+        if mutations is not None and mutations.get("group_id_changed") is True:
+            expected.group = planned_txn.group
+        if index in fee_modified:
+            if planned_txn.fee < expected.fee:
+                raise SignerError(
+                    f"bounded mutation decreased fee at original position {index}"
+                )
+            total_fee_delta += planned_txn.fee - expected.fee
+            expected.fee = planned_txn.fee
+        expected_hex, _ = encode_transaction(expected)
+        planned_hex, _ = encode_transaction(planned_txn)
+        if expected_hex != planned_hex:
+            raise SignerError(
+                f"signer changed unreported fields at bounded original "
+                f"position {index}"
+            )
+    if mutations is not None:
+        reported_delta = _bounded_mutation_int(mutations, "total_fees_delta")
+        if reported_delta != total_fee_delta:
+            raise SignerError(
+                f"bounded mutation total_fees_delta {reported_delta} does not "
+                f"match observed delta {total_fee_delta}"
+            )
+    _validate_guarded_dummies(planned[len(original):])
+
+
 def _verify_bounded_assembled_group(
     group_bytes_hex: List[str], signed_group: List[str]
 ) -> None:
@@ -4590,37 +4721,39 @@ def _verify_bounded_assembled_group(
     for index, (signed_hex, canonical_hex) in enumerate(
         zip(signed_group, group_bytes_hex)
     ):
-        try:
-            signed_bytes = bytes.fromhex(signed_hex)
-        except ValueError as e:
-            raise SignerError(
-                f"assembled transaction {index}: invalid hex: {e}"
-            ) from e
-        try:
-            decoded = encoding.msgpack_decode(
-                base64.b64encode(signed_bytes).decode()
-            )
-        except Exception as e:
-            raise SignerError(
-                f"assembled transaction {index}: decode failed: {e}"
-            ) from e
-        if not isinstance(
-            decoded,
-            (
-                transaction.SignedTransaction,
-                transaction.LogicSigTransaction,
-                transaction.MultisigTransaction,
-            ),
-        ):
-            raise SignerError(
-                f"assembled transaction {index} did not decode as a signed transaction"
-            )
-        encoded, _ = encode_transaction(decoded.transaction)
-        if encoded != canonical_hex.lower():
-            raise SignerError(
-                f"assembled transaction {index} does not match the submitted "
-                "canonical bytes"
-            )
+        _verify_signed_transaction_matches_canonical(
+            "assembled transaction", index, signed_hex, canonical_hex
+        )
+
+
+def _verify_signed_transaction_matches_canonical(
+    label: str,
+    index: int,
+    signed_hex: str,
+    canonical_hex: str,
+) -> None:
+    try:
+        signed_bytes = bytes.fromhex(signed_hex)
+    except ValueError as e:
+        raise SignerError(f"{label} {index}: invalid hex: {e}") from e
+    try:
+        decoded = encoding.msgpack_decode(base64.b64encode(signed_bytes).decode())
+    except Exception as e:
+        raise SignerError(f"{label} {index}: decode failed: {e}") from e
+    if not isinstance(
+        decoded,
+        (
+            transaction.SignedTransaction,
+            transaction.LogicSigTransaction,
+            transaction.MultisigTransaction,
+        ),
+    ):
+        raise SignerError(f"{label} {index} did not decode as a signed transaction")
+    encoded, _ = encode_transaction(decoded.transaction)
+    if encoded != canonical_hex.lower():
+        raise SignerError(
+            f"{label} {index} does not match the submitted canonical bytes"
+        )
 
 
 def _bounded_sentry_public_key(key: KeyInfo) -> str:
@@ -4677,6 +4810,12 @@ def _request_bounded_primary_passthrough(
             raise SignerError(
                 f"primary signer returned no signed transaction for target {index}"
             )
+        _verify_signed_transaction_matches_canonical(
+            "primary passthrough",
+            index,
+            response.signed[index],
+            group_bytes_hex[index],
+        )
         passthrough.append(GuardedPassthroughItem(
             target_index=index,
             signed_txn_hex=response.signed[index],
@@ -4772,6 +4911,11 @@ def sign_prepared_bounded_sentry_group(
             f"signer returned {len(planned)} bounded group positions, "
             f"want at least {len(prepared)}"
         )
+    _validate_bounded_component_plan(
+        [item.transaction for item in prepared],
+        planned,
+        component_response.mutations,
+    )
     target_by_index = {target["target_index"]: target for target in targets}
     components: Dict[int, BoundedBaseComponent] = {}
     for component in component_response.components:

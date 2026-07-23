@@ -306,6 +306,7 @@ function signGuardedDummies(dummies: Transaction[], startIndex: number): Guarded
   if (dummies.length === 0) {
     return [];
   }
+  validateGuardedDummies(dummies);
   const dummyAccount = new algosdk.LogicSigAccount(GUARDED_DUMMY_PROGRAM);
   return dummies.map((txn, offset) => {
     const signed = algosdk.signLogicSigTransactionObject(txn, dummyAccount);
@@ -313,6 +314,28 @@ function signGuardedDummies(dummies: Transaction[], startIndex: number): Guarded
       target_index: startIndex + offset,
       signed_txn_hex: bytesToHex(signed.blob),
     };
+  });
+}
+
+function validateGuardedDummies(dummies: Transaction[]): void {
+  const dummyAddress = new algosdk.LogicSigAccount(GUARDED_DUMMY_PROGRAM).address().toString();
+  dummies.forEach((txn, index) => {
+    const payment = txn.payment;
+    if (
+      txn.type !== algosdk.TransactionType.pay ||
+      txn.sender.toString() !== dummyAddress ||
+      payment?.receiver.toString() !== dummyAddress ||
+      payment.amount !== 0n ||
+      txn.fee !== 0n ||
+      txn.note.length !== 1 ||
+      txn.note[0] !== index ||
+      txn.rekeyTo !== undefined ||
+      payment.closeRemainderTo !== undefined
+    ) {
+      throw new SignerError(
+        `signer-appended transaction ${index} is not a canonical guarded budget dummy`,
+      );
+    }
   });
 }
 
@@ -479,6 +502,111 @@ function decodeCanonicalGroup(groupBytesHex: string[]): Transaction[] {
   });
 }
 
+function boundedMutationInteger(
+  mutations: MutationReport,
+  name: keyof MutationReport,
+): number {
+  const value = mutations[name] ?? 0;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new SignerError(`bounded mutation ${name} must be a non-negative safe integer`);
+  }
+  return value;
+}
+
+function validateBoundedComponentPlan(
+  original: Transaction[],
+  planned: Transaction[],
+  mutations?: MutationReport,
+): void {
+  if (planned.length < original.length) {
+    throw new SignerError(
+      `signer returned ${planned.length} bounded group positions, want at least ${original.length}`,
+    );
+  }
+  const appended = planned.length - original.length;
+  if (!mutations) {
+    if (appended !== 0) {
+      throw new SignerError(
+        `signer appended ${appended} bounded group positions without a mutation report`,
+      );
+    }
+  } else {
+    const originalCount = boundedMutationInteger(mutations, "originalCount");
+    const finalCount = boundedMutationInteger(mutations, "finalCount");
+    const dummiesAdded = boundedMutationInteger(mutations, "dummiesAdded");
+    if (originalCount !== original.length) {
+      throw new SignerError(
+        `bounded mutation original_count ${originalCount} does not match request count ${original.length}`,
+      );
+    }
+    if (finalCount !== planned.length) {
+      throw new SignerError(
+        `bounded mutation final_count ${finalCount} does not match returned count ${planned.length}`,
+      );
+    }
+    if (dummiesAdded !== appended) {
+      throw new SignerError(
+        `bounded mutation dummies_added ${dummiesAdded} does not match appended count ${appended}`,
+      );
+    }
+  }
+
+  const feeModified = new Set<number>();
+  if (
+    mutations?.groupIdChanged !== undefined &&
+    typeof mutations.groupIdChanged !== "boolean"
+  ) {
+    throw new SignerError("bounded mutation group_id_changed must be a boolean");
+  }
+  if (mutations?.feesModified !== undefined && !Array.isArray(mutations.feesModified)) {
+    throw new SignerError("bounded mutation fees_modified must be an array");
+  }
+  for (const index of mutations?.feesModified ?? []) {
+    if (!Number.isInteger(index) || index < 0 || index >= original.length) {
+      throw new SignerError(
+        `bounded mutation fee index ${index} is outside original positions`,
+      );
+    }
+    if (feeModified.has(index)) {
+      throw new SignerError(`bounded mutation fee index ${index} is duplicated`);
+    }
+    feeModified.add(index);
+  }
+
+  let totalFeeDelta = 0n;
+  original.forEach((originalTxn, index) => {
+    const expected = cloneTransaction(originalTxn);
+    const actual = planned[index];
+    if (mutations?.groupIdChanged) {
+      expected.group = actual.group;
+    }
+    if (feeModified.has(index)) {
+      if (actual.fee < expected.fee) {
+        throw new SignerError(
+          `bounded mutation decreased fee at original position ${index}`,
+        );
+      }
+      totalFeeDelta += actual.fee - expected.fee;
+      expected.fee = actual.fee;
+    }
+    if (encodeTransaction(expected)[0] !== encodeTransaction(actual)[0]) {
+      throw new SignerError(
+        `signer changed unreported fields at bounded original position ${index}`,
+      );
+    }
+  });
+  if (
+    mutations &&
+    BigInt(boundedMutationInteger(mutations, "totalFeesDelta")) !== totalFeeDelta
+  ) {
+    throw new SignerError(
+      `bounded mutation total_fees_delta ${mutations.totalFeesDelta ?? 0} ` +
+      `does not match observed delta ${totalFeeDelta}`,
+    );
+  }
+  validateGuardedDummies(planned.slice(original.length));
+}
+
 function verifyBoundedAssembledGroup(
   groupBytesHex: string[],
   signedGroup: string[],
@@ -489,23 +617,37 @@ function verifyBoundedAssembledGroup(
     );
   }
   signedGroup.forEach((signedHex, index) => {
-    let signed: algosdk.SignedTransaction;
-    try {
-      signed = algosdk.decodeSignedTransaction(hexToBytes(signedHex));
-    } catch (error) {
-      throw new SignerError(
-        `assembled transaction ${index}: decode failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    }
-    const encoded = encodeTransaction(signed.txn)[0];
-    if (encoded !== groupBytesHex[index].toLowerCase()) {
-      throw new SignerError(
-        `assembled transaction ${index} does not match the submitted canonical bytes`,
-      );
-    }
+    signedTransactionMatchesCanonical(
+      "assembled transaction",
+      index,
+      signedHex,
+      groupBytesHex[index],
+    );
   });
+}
+
+function signedTransactionMatchesCanonical(
+  label: string,
+  index: number,
+  signedHex: string,
+  canonicalHex: string,
+): void {
+  let signed: algosdk.SignedTransaction;
+  try {
+    signed = algosdk.decodeSignedTransaction(hexToBytes(signedHex));
+  } catch (error) {
+    throw new SignerError(
+      `${label} ${index}: decode failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  const encoded = encodeTransaction(signed.txn)[0];
+  if (encoded !== canonicalHex.toLowerCase()) {
+    throw new SignerError(
+      `${label} ${index} does not match the submitted canonical bytes`,
+    );
+  }
 }
 
 function boundedSentryPublicKey(key: KeyInfo): string {
@@ -553,6 +695,12 @@ async function requestBoundedPrimaryPassthrough(
     if (!response.signed?.[index]) {
       throw new SignerError(`primary signer returned no signed transaction for target ${index}`);
     }
+    signedTransactionMatchesCanonical(
+      "primary passthrough",
+      index,
+      response.signed[index],
+      groupBytesHex[index],
+    );
     passthrough.push({ target_index: index, signed_txn_hex: response.signed[index] });
   }
   return { response, passthrough };
@@ -642,6 +790,11 @@ export async function signPreparedBoundedSentryGroup(
       `signer returned ${planned.length} bounded group positions, want at least ${prepared.length}`,
     );
   }
+  validateBoundedComponentPlan(
+    prepared.map((item) => item.transaction as Transaction),
+    planned,
+    componentResponse.mutations,
+  );
   const targetsByIndex = new Map(targets.map((target) => [target.targetIndex, target]));
   const components = new Map<number, (typeof componentResponse.components)[number]>();
   for (const component of componentResponse.components) {
@@ -745,6 +898,7 @@ export async function signPreparedBoundedSentryGroup(
     userComponentResponses: [],
     sentryComponentResponses,
     primarySignResponse: primary.response,
+    assemblyResponse,
     boundedComponentResponse: componentResponse,
     boundedAssemblyResponse: assemblyResponse,
   };
@@ -1197,7 +1351,6 @@ function validateBoundedComponentRequest(request: BoundedComponentRequest): void
     throw new SignerError("requests array is empty");
   }
   let signCount = 0;
-  let passthroughCount = 0;
   let foreignCount = 0;
   request.requests.forEach((entry, index) => {
     const hasAuth = Boolean(entry.auth_address);
@@ -1206,14 +1359,13 @@ function validateBoundedComponentRequest(request: BoundedComponentRequest): void
     if (hasPassthrough && (hasAuth || hasTxn)) {
       throw new SignerError(`transaction ${index + 1}: sign and passthrough fields cannot be mixed`);
     }
-    if (hasPassthrough) passthroughCount++;
+    if (hasPassthrough) {
+      throw new SignerError("bounded-component does not accept signed passthrough entries");
+    }
     else if (hasAuth && hasTxn) signCount++;
     else if (hasTxn) foreignCount++;
     else throw new SignerError(`transaction ${index + 1}: unsupported request mode`);
   });
-  if (passthroughCount > 0 && foreignCount > 0) {
-    throw new SignerError("cannot mix passthrough and foreign transactions");
-  }
   if (signCount === 0 && foreignCount > 0) {
     throw new SignerError("no signable transactions");
   }
@@ -1588,7 +1740,7 @@ export interface GuardedSignResult {
   userComponentResponses: ComponentSignResponse[];
   sentryComponentResponses: ComponentSignResponse[];
   primarySignResponse?: GroupSignResponse;
-  assemblyResponse?: GuardedAssemblyResponse;
+  assemblyResponse: GuardedAssemblyResponse;
   boundedComponentResponse?: BoundedComponentResponse;
   boundedAssemblyResponse?: BoundedAssemblyResponse;
 }
@@ -3623,8 +3775,19 @@ export class SignerClient {
       );
     }
 
-    const data = (await response.json()) as BoundedComponentResponse & { error?: string };
+    let data: BoundedComponentResponse & { error?: string };
+    try {
+      data = (await response.json()) as BoundedComponentResponse & { error?: string };
+    } catch {
+      throw new SignerError("Server returned invalid JSON");
+    }
     if (data.error) throw new SignerError(data.error);
+    if (data.mutations) {
+      data = {
+        ...data,
+        mutations: this.normalizeMutationReport(data.mutations),
+      };
+    }
     validateBoundedComponentResponse(data);
     if (data.request_id !== requestBody.request_id) {
       throw new SignerError("bounded component response request_id does not match request");
@@ -3671,7 +3834,12 @@ export class SignerClient {
       );
     }
 
-    const data = (await response.json()) as BoundedAssemblyResponse & { error?: string };
+    let data: BoundedAssemblyResponse & { error?: string };
+    try {
+      data = (await response.json()) as BoundedAssemblyResponse & { error?: string };
+    } catch {
+      throw new SignerError("Server returned invalid JSON");
+    }
     if (data.error) throw new SignerError(data.error);
     validateBoundedAssemblyResponse(data);
     if (data.request_id !== requestBody.request_id) {

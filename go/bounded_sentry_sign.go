@@ -4,6 +4,7 @@
 package aplane
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"fmt"
@@ -116,6 +117,13 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 	}
 	if len(planned) < len(prepared) {
 		return nil, fmt.Errorf("signer returned %d bounded group positions, want at least %d", len(planned), len(prepared))
+	}
+	original := make([]types.Transaction, len(prepared))
+	for i, item := range prepared {
+		original[i] = *item.Transaction
+	}
+	if err := validateBoundedComponentPlan(original, planned, componentResp.Mutations); err != nil {
+		return nil, err
 	}
 
 	components := make(map[int]BoundedBaseComponent, len(componentResp.Components))
@@ -289,6 +297,68 @@ func decodeCanonicalGroup(groupHex []string) ([]types.Transaction, error) {
 		}
 	}
 	return txns, nil
+}
+
+// validateBoundedComponentPlan permits only the planner's declared mutations
+// to original positions. Appended positions must be canonical budget dummies.
+func validateBoundedComponentPlan(original, planned []types.Transaction, mutations *MutationReport) error {
+	if len(planned) < len(original) {
+		return fmt.Errorf("signer returned %d bounded group positions, want at least %d", len(planned), len(original))
+	}
+	appended := len(planned) - len(original)
+	if mutations == nil {
+		if appended != 0 {
+			return fmt.Errorf("signer appended %d bounded group positions without a mutation report", appended)
+		}
+	} else {
+		if mutations.OriginalCount != len(original) {
+			return fmt.Errorf("bounded mutation original_count %d does not match request count %d", mutations.OriginalCount, len(original))
+		}
+		if mutations.FinalCount != len(planned) {
+			return fmt.Errorf("bounded mutation final_count %d does not match returned count %d", mutations.FinalCount, len(planned))
+		}
+		if mutations.DummiesAdded != appended {
+			return fmt.Errorf("bounded mutation dummies_added %d does not match appended count %d", mutations.DummiesAdded, appended)
+		}
+	}
+
+	feeModified := make(map[int]struct{})
+	if mutations != nil {
+		for _, index := range mutations.FeesModified {
+			if index < 0 || index >= len(original) {
+				return fmt.Errorf("bounded mutation fee index %d is outside original positions", index)
+			}
+			if _, duplicate := feeModified[index]; duplicate {
+				return fmt.Errorf("bounded mutation fee index %d is duplicated", index)
+			}
+			feeModified[index] = struct{}{}
+		}
+	}
+	totalFeeDelta := uint64(0)
+	for i := range original {
+		want := original[i]
+		got := planned[i]
+		if mutations != nil && mutations.GroupIDChanged {
+			want.Group = got.Group
+		}
+		if _, ok := feeModified[i]; ok {
+			if got.Fee < want.Fee {
+				return fmt.Errorf("bounded mutation decreased fee at original position %d", i)
+			}
+			totalFeeDelta += uint64(got.Fee - want.Fee)
+			want.Fee = got.Fee
+		}
+		if !bytes.Equal(encodeTxn(want), encodeTxn(got)) {
+			return fmt.Errorf("signer changed unreported fields at bounded original position %d", i)
+		}
+	}
+	if mutations != nil && uint64(mutations.TotalFeesDelta) != totalFeeDelta {
+		return fmt.Errorf("bounded mutation total_fees_delta %d does not match observed delta %d", mutations.TotalFeesDelta, totalFeeDelta)
+	}
+	if err := validateGuardedDummies(planned[len(original):]); err != nil {
+		return err
+	}
+	return nil
 }
 
 func boundedSentryPublicKey(key *KeyInfo) string {
