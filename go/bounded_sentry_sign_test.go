@@ -105,6 +105,7 @@ func TestSignPreparedBoundedSentryGroupOneTarget(t *testing.T) {
 				SigningFlow: SigningFlowBoundedSentry1, LsigSize: 9012,
 				SentryComponentKeyType: KeyTypeWitnessFalcon1024,
 				BoundedAuthorization: &BoundedAuthorizationInfo{
+					MaxFee: 1000,
 					Sentry: &BoundedSentryAuthorizationInfo{
 						ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: "aabb",
 					},
@@ -320,6 +321,23 @@ func TestValidateBoundedComponentPlan(t *testing.T) {
 		if _, err := signGuardedDummies(badPlanned[1:], 1); err == nil ||
 			!strings.Contains(err.Error(), "canonical guarded budget dummy") {
 			t.Fatalf("signGuardedDummies() error = %v, want dummy-shape rejection", err)
+		}
+	})
+	t.Run("gratuitous existing group change", func(t *testing.T) {
+		grouped := original
+		grouped.Group = types.Digest{0x31}
+		regrouped := grouped
+		regrouped.Group = types.Digest{0x32}
+		report := &MutationReport{GroupIDChanged: true, OriginalCount: 1, FinalCount: 1}
+		if err := validateBoundedComponentPlan([]types.Transaction{grouped}, []types.Transaction{regrouped}, report); err == nil ||
+			!strings.Contains(err.Error(), "existing bounded group ID") {
+			t.Fatalf("error = %v, want gratuitous regrouping rejection", err)
+		}
+	})
+	t.Run("fee exceeds advertised ceiling", func(t *testing.T) {
+		if err := validateBoundedTargetFees(planned, map[int]uint64{0: uint64(plannedOriginal.Fee) - 1}); err == nil ||
+			!strings.Contains(err.Error(), "exceeds advertised max_fee") {
+			t.Fatalf("error = %v, want max_fee rejection", err)
 		}
 	})
 }

@@ -157,14 +157,15 @@
           "placeholder": "ADDR1, ADDR2, ADDR3"
         },
         {
-          "name": "sentry_name",
-          "label": "Sentry Witness Key",
-          "type": "string",
+          "name": "sentry",
+          "label": "Witness Key ID",
+          "description": "Imported Witness Key ID to embed in the guarded account",
+          "type": "select",
           "required": true,
           "options": [
-            "sentry:falcon1024:EXAMPLE"
+            "ROGAFDACF7ASC3EMZRWNKVM73NXHO4P6O4EB7ZXWER37SM63BMFQ"
           ],
-          "default": "sentry:falcon1024:EXAMPLE"
+          "default": "ROGAFDACF7ASC3EMZRWNKVM73NXHO4P6O4EB7ZXWER37SM63BMFQ"
         },
         {
           "name": "bounded_admin_public_key",

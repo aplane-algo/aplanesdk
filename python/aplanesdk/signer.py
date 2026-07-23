@@ -4681,6 +4681,18 @@ def _validate_bounded_component_plan(
                 )
             fee_modified.add(index)
 
+    if (
+        mutations is not None
+        and mutations.get("group_id_changed") is True
+        and appended == 0
+        and not fee_modified
+        and all(getattr(txn, "group", None) for txn in original)
+    ):
+        raise SignerError(
+            "signer changed an existing bounded group ID without a fee or "
+            "membership mutation"
+        )
+
     total_fee_delta = 0
     for index, (original_txn, planned_txn) in enumerate(zip(original, planned)):
         expected = copy.deepcopy(original_txn)
@@ -4708,6 +4720,27 @@ def _validate_bounded_component_plan(
                 f"match observed delta {total_fee_delta}"
             )
     _validate_guarded_dummies(planned[len(original):])
+
+
+def _validate_bounded_target_fees(
+    planned: List[transaction.Transaction],
+    max_fees: Dict[int, int],
+) -> None:
+    for index, max_fee in max_fees.items():
+        if index < 0 or index >= len(planned):
+            raise SignerError(
+                f"bounded target index {index} is outside planned group"
+            )
+        if isinstance(max_fee, bool) or not isinstance(max_fee, int) or max_fee < 0:
+            raise SignerError(
+                f"bounded target {index} has invalid advertised max_fee"
+            )
+        fee = planned[index].fee
+        if fee > max_fee:
+            raise SignerError(
+                f"bounded target {index} fee {fee} exceeds advertised "
+                f"max_fee {max_fee}"
+            )
 
 
 def _verify_bounded_assembled_group(
@@ -4845,6 +4878,7 @@ def sign_prepared_bounded_sentry_group(
     targets: List[Dict[str, Any]] = []
     primary_targets: List[Dict[str, Any]] = []
     target_lsig_sizes: Dict[int, int] = {}
+    target_max_fees: Dict[int, int] = {}
     for index, item in enumerate(prepared):
         if item.signed_transaction_base64:
             raise ValueError(
@@ -4868,6 +4902,12 @@ def sign_prepared_bounded_sentry_group(
                 )
             requests_data.append(item.to_sign_request())
             target_lsig_sizes[index] = lsig_size
+            if key.bounded_authorization is None:
+                raise ValueError(
+                    f"prepared transaction {index}: bounded authorization "
+                    "metadata is required"
+                )
+            target_max_fees[index] = key.bounded_authorization.max_fee
             targets.append({
                 "target_index": index,
                 "guarded_account": item.auth_address,
@@ -4916,6 +4956,7 @@ def sign_prepared_bounded_sentry_group(
         planned,
         component_response.mutations,
     )
+    _validate_bounded_target_fees(planned, target_max_fees)
     target_by_index = {target["target_index"]: target for target in targets}
     components: Dict[int, BoundedBaseComponent] = {}
     for component in component_response.components:

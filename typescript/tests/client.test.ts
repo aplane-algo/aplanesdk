@@ -1762,6 +1762,34 @@ describe("SignerClient", () => {
         /changed unreported fields/,
       );
 
+      const inflatedFeeTxn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+        sender: bounded,
+        receiver,
+        amount: 1000n,
+        suggestedParams: {
+          fee: 2000n,
+          minFee: 1000n,
+          firstValid: 1n,
+          lastValid: 100n,
+          genesisHash: new Uint8Array(32),
+          genesisID: "testnet-v1",
+          flatFee: true,
+        },
+      });
+      plannedTransactions = [encodeTransaction(inflatedFeeTxn)[0]];
+      plannedMutations = {
+        dummiesAdded: 0,
+        groupIdChanged: false,
+        feesModified: [0],
+        totalFeesDelta: 1000,
+        originalCount: 1,
+        finalCount: 1,
+      };
+      await assert.rejects(
+        signPreparedGuardedGroup(options),
+        /exceeds advertised max_fee/,
+      );
+
       const badDummy = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
         sender: bounded,
         receiver: bounded,

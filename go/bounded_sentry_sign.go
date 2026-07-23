@@ -40,6 +40,7 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 	targets := make([]GuardedSignTarget, 0, len(prepared))
 	primaryTargets := make([]GuardedPrimarySignTarget, 0, len(prepared))
 	targetLsigSizes := make(map[int]int)
+	targetMaxFees := make(map[int]uint64)
 	for i, item := range prepared {
 		if item.SignedTransactionBase64 != "" {
 			return nil, fmt.Errorf("prepared transaction %d: passthrough entries are not supported in prepared bounded-sentry groups", i)
@@ -74,6 +75,10 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 			}
 			requests[i] = req
 			targetLsigSizes[i] = lsigSize
+			if key.BoundedAuthorization == nil {
+				return nil, fmt.Errorf("prepared transaction %d: bounded authorization metadata is required", i)
+			}
+			targetMaxFees[i] = key.BoundedAuthorization.MaxFee
 			targets = append(targets, GuardedSignTarget{
 				TargetIndex:            i,
 				GuardedAccount:         item.AuthAddress,
@@ -123,6 +128,9 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 		original[i] = *item.Transaction
 	}
 	if err := validateBoundedComponentPlan(original, planned, componentResp.Mutations); err != nil {
+		return nil, err
+	}
+	if err := validateBoundedTargetFees(planned, targetMaxFees); err != nil {
 		return nil, err
 	}
 
@@ -334,6 +342,16 @@ func validateBoundedComponentPlan(original, planned []types.Transaction, mutatio
 			feeModified[index] = struct{}{}
 		}
 	}
+	if mutations != nil && mutations.GroupIDChanged && appended == 0 && len(feeModified) == 0 {
+		var zero types.Digest
+		requiresAssignment := false
+		for i := range original {
+			requiresAssignment = requiresAssignment || original[i].Group == zero
+		}
+		if !requiresAssignment {
+			return fmt.Errorf("signer changed an existing bounded group ID without a fee or membership mutation")
+		}
+	}
 	totalFeeDelta := uint64(0)
 	for i := range original {
 		want := original[i]
@@ -357,6 +375,18 @@ func validateBoundedComponentPlan(original, planned []types.Transaction, mutatio
 	}
 	if err := validateGuardedDummies(planned[len(original):]); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateBoundedTargetFees(planned []types.Transaction, maxFees map[int]uint64) error {
+	for index, maxFee := range maxFees {
+		if index < 0 || index >= len(planned) {
+			return fmt.Errorf("bounded target index %d is outside planned group", index)
+		}
+		if fee := uint64(planned[index].Fee); fee > maxFee {
+			return fmt.Errorf("bounded target %d fee %d exceeds advertised max_fee %d", index, fee, maxFee)
+		}
 	}
 	return nil
 }

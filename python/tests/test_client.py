@@ -62,6 +62,7 @@ from aplanesdk.signer import (
     _validate_bounded_component_request,
     _validate_bounded_component_response,
     _validate_bounded_component_plan,
+    _validate_bounded_target_fees,
 )
 
 
@@ -983,6 +984,24 @@ class TestSignGuardedGroup:
             _validate_bounded_component_plan([original], changed, mutations)
         with pytest.raises(SignerError, match="canonical guarded budget dummy"):
             _sign_guarded_dummies(changed[1:], 1)
+
+        grouped = copy.deepcopy(original)
+        grouped.group = bytes([0x31]) * 32
+        regrouped = copy.deepcopy(grouped)
+        regrouped.group = bytes([0x32]) * 32
+        with pytest.raises(SignerError, match="existing bounded group ID"):
+            _validate_bounded_component_plan(
+                [grouped],
+                [regrouped],
+                {
+                    "group_id_changed": True,
+                    "original_count": 1,
+                    "final_count": 1,
+                },
+            )
+
+        with pytest.raises(SignerError, match="exceeds advertised max_fee"):
+            _validate_bounded_target_fees(planned, {0: planned[0].fee - 1})
 
     def test_bounded_component_rejects_passthrough_and_mixed_flows(self):
         with pytest.raises(ValueError, match="does not accept signed passthrough"):

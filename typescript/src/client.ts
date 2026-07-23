@@ -573,6 +573,17 @@ function validateBoundedComponentPlan(
     feeModified.add(index);
   }
 
+  if (
+    mutations?.groupIdChanged &&
+    appended === 0 &&
+    feeModified.size === 0 &&
+    original.every((txn) => txn.group !== undefined)
+  ) {
+    throw new SignerError(
+      "signer changed an existing bounded group ID without a fee or membership mutation",
+    );
+  }
+
   let totalFeeDelta = 0n;
   original.forEach((originalTxn, index) => {
     const expected = cloneTransaction(originalTxn);
@@ -605,6 +616,25 @@ function validateBoundedComponentPlan(
     );
   }
   validateGuardedDummies(planned.slice(original.length));
+}
+
+function validateBoundedTargetFees(
+  planned: Transaction[],
+  maxFees: Map<number, number>,
+): void {
+  for (const [index, maxFee] of maxFees) {
+    if (index < 0 || index >= planned.length) {
+      throw new SignerError(`bounded target index ${index} is outside planned group`);
+    }
+    if (!Number.isSafeInteger(maxFee) || maxFee < 0) {
+      throw new SignerError(`bounded target ${index} has invalid advertised max_fee`);
+    }
+    if (planned[index].fee > BigInt(maxFee)) {
+      throw new SignerError(
+        `bounded target ${index} fee ${planned[index].fee} exceeds advertised max_fee ${maxFee}`,
+      );
+    }
+  }
 }
 
 function verifyBoundedAssembledGroup(
@@ -720,6 +750,7 @@ export async function signPreparedBoundedSentryGroup(
   const targets: GuardedSignTarget[] = [];
   const primaryTargets: GuardedPrimarySignTarget[] = [];
   const targetLsigSizes = new Map<number, number>();
+  const targetMaxFees = new Map<number, number>();
   for (let index = 0; index < prepared.length; index++) {
     const item = prepared[index];
     if (item.signedTransactionBase64) {
@@ -744,6 +775,12 @@ export async function signPreparedBoundedSentryGroup(
       }
       requests.push(preparedTransactionToSignRequest(item));
       targetLsigSizes.set(index, lsigSize);
+      if (!key.boundedAuthorization) {
+        throw new SignerError(
+          `prepared transaction ${index}: bounded authorization metadata is required`,
+        );
+      }
+      targetMaxFees.set(index, key.boundedAuthorization.maxFee);
       targets.push({
         targetIndex: index,
         guardedAccount: item.authAddress,
@@ -795,6 +832,7 @@ export async function signPreparedBoundedSentryGroup(
     planned,
     componentResponse.mutations,
   );
+  validateBoundedTargetFees(planned, targetMaxFees);
   const targetsByIndex = new Map(targets.map((target) => [target.targetIndex, target]));
   const components = new Map<number, (typeof componentResponse.components)[number]>();
   for (const component of componentResponse.components) {
