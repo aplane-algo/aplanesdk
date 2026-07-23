@@ -380,10 +380,12 @@ func TestDecodeCanonicalGroupRejectsNoncanonicalBytes(t *testing.T) {
 		reversed = append(reversed, key, fields[key])
 	}
 
-	handle := *msgpack.CodecHandle
-	handle.Canonical = false
+	handle := &codec.MsgpackHandle{}
+	handle.RecursiveEmptyCheck = true
+	handle.WriteExt = true
+	handle.PositiveIntUnsigned = true
 	var noncanonical []byte
-	codec.NewEncoderBytes(&noncanonical, &handle).MustEncode(reversed)
+	codec.NewEncoderBytes(&noncanonical, handle).MustEncode(reversed)
 	if string(noncanonical) == string(canonical) {
 		t.Fatal("test setup produced canonical transaction bytes")
 	}
