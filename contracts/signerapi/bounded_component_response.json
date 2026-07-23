@@ -1,0 +1,15 @@
+{
+  "request_id": "bcmp-contract-1",
+  "transactions": ["5458a1", "5458a2", "5458a3"],
+  "components": [
+    {
+      "target_index": 0,
+      "bounded_account": "BOUNDEDADDR000000000000000000000000000000000000000000000",
+      "base_signatures": ["aabbcc"],
+      "runtime_args": {"preimage": "aabb"},
+      "assembly_receipt": "ddeeff",
+      "signature_scheme": "aplane.falcon1024.v1"
+    }
+  ],
+  "mutations": {"dummies_added": 1, "original_count": 2, "final_count": 3, "reason": "lsig_budget"}
+}

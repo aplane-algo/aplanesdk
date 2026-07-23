@@ -86,6 +86,8 @@ type GuardedSignResult struct {
 	SentryComponentResponses []*ComponentSignResponse
 	PrimarySignResponse      *GroupSignResponse
 	AssemblyResponse         *GuardedAssemblyResponse
+	BoundedComponentResponse *BoundedComponentResponse
+	BoundedAssemblyResponse  *BoundedAssemblyResponse
 }
 
 // PreparedGuardedGroupOptions configures SignPreparedGuardedGroup.
@@ -262,11 +264,46 @@ func SignPreparedGuardedGroup(opts PreparedGuardedGroupOptions) (*GuardedSignRes
 // SignPreparedGuardedGroupWithContext is the context-aware form of
 // SignPreparedGuardedGroup.
 func SignPreparedGuardedGroupWithContext(ctx context.Context, opts PreparedGuardedGroupOptions) (*GuardedSignResult, error) {
+	hasBoundedSentry, hasLegacyGuarded, err := preparedSentryFlowKinds(opts)
+	if err != nil {
+		return nil, err
+	}
+	if hasBoundedSentry {
+		if hasLegacyGuarded {
+			return nil, fmt.Errorf("cannot mix sentry1 and bounded-sentry1 targets in one group")
+		}
+		return signPreparedBoundedSentryGroupWithContext(ctx, opts)
+	}
 	signOpts, err := buildPreparedGuardedSignOptions(opts)
 	if err != nil {
 		return nil, err
 	}
 	return SignGuardedGroupWithContext(ctx, signOpts)
+}
+
+func preparedSentryFlowKinds(opts PreparedGuardedGroupOptions) (boundedSentry, legacyGuarded bool, err error) {
+	if opts.UserClient == nil {
+		return false, false, fmt.Errorf("user client is required")
+	}
+	for i, item := range opts.PreparedGroup.Transactions {
+		key := item.SignerKey
+		if key == nil && item.AuthAddress != "" {
+			key, err = opts.UserClient.GetKeyInfo(item.AuthAddress)
+			if err != nil {
+				return false, false, fmt.Errorf("prepared transaction %d: resolve signer key: %w", i, err)
+			}
+		}
+		if key == nil {
+			continue
+		}
+		switch key.SigningFlow {
+		case SigningFlowBoundedSentry1:
+			boundedSentry = true
+		case SigningFlowSentry1:
+			legacyGuarded = true
+		}
+	}
+	return boundedSentry, legacyGuarded, nil
 }
 
 func buildPreparedGuardedSignOptions(opts PreparedGuardedGroupOptions) (GuardedSignOptions, error) {
