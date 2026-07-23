@@ -479,6 +479,35 @@ function decodeCanonicalGroup(groupBytesHex: string[]): Transaction[] {
   });
 }
 
+function verifyBoundedAssembledGroup(
+  groupBytesHex: string[],
+  signedGroup: string[],
+): void {
+  if (signedGroup.length !== groupBytesHex.length) {
+    throw new SignerError(
+      `assembled group has ${signedGroup.length} transaction(s), want ${groupBytesHex.length}`,
+    );
+  }
+  signedGroup.forEach((signedHex, index) => {
+    let signed: algosdk.SignedTransaction;
+    try {
+      signed = algosdk.decodeSignedTransaction(hexToBytes(signedHex));
+    } catch (error) {
+      throw new SignerError(
+        `assembled transaction ${index}: decode failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    const encoded = encodeTransaction(signed.txn)[0];
+    if (encoded !== groupBytesHex[index].toLowerCase()) {
+      throw new SignerError(
+        `assembled transaction ${index} does not match the submitted canonical bytes`,
+      );
+    }
+  });
+}
+
 function boundedSentryPublicKey(key: KeyInfo): string {
   return key.boundedAuthorization?.sentry?.publicKeyHex || key.parameters?.sentry_public_key || "";
 }
@@ -707,6 +736,10 @@ export async function signPreparedBoundedSentryGroup(
     targets: assemblyTargets,
     passthrough,
   }, { signal: options.signal });
+  verifyBoundedAssembledGroup(
+    componentResponse.transactions,
+    assemblyResponse.signed_group,
+  );
   return {
     signedGroup: [...assemblyResponse.signed_group],
     userComponentResponses: [],

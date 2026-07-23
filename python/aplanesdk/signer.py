@@ -4578,6 +4578,43 @@ def _decode_canonical_group(group_bytes_hex: List[str]) -> List[transaction.Tran
     return result
 
 
+def _verify_bounded_assembled_group(
+    group_bytes_hex: List[str], signed_group: List[str]
+) -> None:
+    if len(signed_group) != len(group_bytes_hex):
+        raise SignerError(
+            f"assembled group has {len(signed_group)} transaction(s), "
+            f"want {len(group_bytes_hex)}"
+        )
+    for index, (signed_hex, canonical_hex) in enumerate(
+        zip(signed_group, group_bytes_hex)
+    ):
+        try:
+            signed_bytes = bytes.fromhex(signed_hex)
+        except ValueError as e:
+            raise SignerError(
+                f"assembled transaction {index}: invalid hex: {e}"
+            ) from e
+        try:
+            decoded = encoding.msgpack_decode(
+                base64.b64encode(signed_bytes).decode()
+            )
+        except Exception as e:
+            raise SignerError(
+                f"assembled transaction {index}: decode failed: {e}"
+            ) from e
+        if not isinstance(decoded, transaction.SignedTransaction):
+            raise SignerError(
+                f"assembled transaction {index} did not decode as a signed transaction"
+            )
+        encoded, _ = encode_transaction(decoded.transaction)
+        if encoded != canonical_hex.lower():
+            raise SignerError(
+                f"assembled transaction {index} does not match the submitted "
+                "canonical bytes"
+            )
+
+
 def _bounded_sentry_public_key(key: KeyInfo) -> str:
     if key.bounded_authorization and key.bounded_authorization.sentry:
         if key.bounded_authorization.sentry.public_key_hex:
@@ -4803,6 +4840,9 @@ def sign_prepared_bounded_sentry_group(
             targets=assembly_targets,
             passthrough=passthrough,
         )
+    )
+    _verify_bounded_assembled_group(
+        component_response.transactions, assembly_response.signed_group
     )
     return GuardedSignResult(
         signed_group=list(assembly_response.signed_group),

@@ -921,13 +921,23 @@ class TestSignGuardedGroup:
             )],
         ))
 
+        def signed_txn_hex(signed_txn):
+            encoded = algo_encoding.msgpack_encode(
+                transaction.SignedTransaction(
+                    signed_txn, base64.b64encode(bytes(64)).decode()
+                )
+            )
+            return base64.b64decode(encoded).hex()
+
+        assembled_txn = [None]
+
         def bounded_assemble(req):
             assert req.targets[0].base_signatures == ["base-sig"]
             assert req.targets[0].assembly_receipt == "receipt"
             assert req.targets[0].sentry_signature == "sentry-sig"
             return BoundedAssemblyResponse(
                 request_id="assembly-id",
-                signed_group=["bounded-signed"],
+                signed_group=[signed_txn_hex(assembled_txn[0])],
             )
 
         user.request_bounded_assemble = MagicMock(side_effect=bounded_assemble)
@@ -944,11 +954,8 @@ class TestSignGuardedGroup:
             flat_fee=True,
         )
         txn = transaction.PaymentTxn(bounded, params, receiver, 1000)
-        result = sign_prepared_guarded_group(
-            user_client=user,
-            sentry_client=sentry,
-            sentry_component_key="SENTRY_COMPONENT",
-            prepared_group=PreparedGroup([
+        prepared_group = PreparedGroup(
+            [
                 PreparedTransaction(
                     transaction=txn,
                     auth_address=bounded,
@@ -978,10 +985,30 @@ class TestSignGuardedGroup:
                         ),
                     ),
                 )
-            ]),
+            ]
+        )
+        assembled_txn[0] = transaction.PaymentTxn(
+            bounded, params, receiver, 2000
+        )
+        with pytest.raises(
+            SignerError, match="does not match the submitted canonical bytes"
+        ):
+            sign_prepared_guarded_group(
+                user_client=user,
+                sentry_client=sentry,
+                sentry_component_key="SENTRY_COMPONENT",
+                prepared_group=prepared_group,
+            )
+
+        assembled_txn[0] = txn
+        result = sign_prepared_guarded_group(
+            user_client=user,
+            sentry_client=sentry,
+            sentry_component_key="SENTRY_COMPONENT",
+            prepared_group=prepared_group,
         )
 
-        assert result.signed_group == ["bounded-signed"]
+        assert result.signed_group == [signed_txn_hex(txn)]
         assert result.assembly_response is None
         assert result.bounded_component_response is not None
         assert result.bounded_assembly_response is not None

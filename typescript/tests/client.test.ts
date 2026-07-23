@@ -1605,11 +1605,19 @@ describe("SignerClient", () => {
       (user as any).signRequests = async () => {
         throw new Error("all-bounded path must not call /sign");
       };
+      let assembledTxn: algosdk.Transaction;
+      const signedTxnHex = (txn: algosdk.Transaction): string => {
+        const signature = new Uint8Array(64);
+        signature[63] = 1;
+        return bytesToHex(algosdk.encodeMsgpack(
+          new algosdk.SignedTransaction({ txn, sig: signature }),
+        ));
+      };
       (user as any).requestBoundedAssemble = async (request: any) => {
         assert.deepEqual(request.targets[0].base_signatures, ["base-sig"]);
         assert.equal(request.targets[0].assembly_receipt, "receipt");
         assert.equal(request.targets[0].sentry_signature, "sentry-sig");
-        return { request_id: "assembly-id", signed_group: ["bounded-signed"] };
+        return { request_id: "assembly-id", signed_group: [signedTxnHex(assembledTxn)] };
       };
 
       const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
@@ -1626,7 +1634,7 @@ describe("SignerClient", () => {
           flatFee: true,
         },
       });
-      const result = await signPreparedGuardedGroup({
+      const options = {
         userClient: user,
         sentryClient: sentry,
         sentryComponentKey: "SENTRY_COMPONENT",
@@ -1663,9 +1671,30 @@ describe("SignerClient", () => {
             },
           }],
         },
+      };
+      assembledTxn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+        sender: bounded,
+        receiver,
+        amount: 2000n,
+        suggestedParams: {
+          fee: 1000n,
+          minFee: 1000n,
+          firstValid: 1n,
+          lastValid: 100n,
+          genesisHash: new Uint8Array(32),
+          genesisID: "testnet-v1",
+          flatFee: true,
+        },
       });
+      await assert.rejects(
+        signPreparedGuardedGroup(options),
+        /does not match the submitted canonical bytes/,
+      );
 
-      assert.deepEqual(result.signedGroup, ["bounded-signed"]);
+      assembledTxn = txn;
+      const result = await signPreparedGuardedGroup(options);
+
+      assert.deepEqual(result.signedGroup, [signedTxnHex(txn)]);
       assert.equal(result.assemblyResponse, undefined);
       assert.ok(result.boundedComponentResponse);
       assert.ok(result.boundedAssemblyResponse);
