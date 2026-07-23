@@ -15,6 +15,7 @@ import {
   KEY_TYPE_GUARDED_FALCON1024_SENTRY1024,
   KEY_TYPE_WITNESS_FALCON1024,
   SIGNING_FLOW_SENTRY1,
+  SIGNING_FLOW_BOUNDED_SENTRY1,
 } from "../src/types.js";
 import {
   AuthenticationError,
@@ -1278,6 +1279,55 @@ describe("SignerClient", () => {
       assert.equal(mockFetch.mock.calls.length, 0);
     });
 
+    it("posts bounded component and assembly requests", async () => {
+      queueStatusResponse();
+      mockFetch.mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: async () => ({
+          request_id: "bounded-base-id",
+          transactions: ["5458aa"],
+          components: [{
+            target_index: 0,
+            bounded_account: "BOUNDED",
+            base_signatures: ["base-sig"],
+            assembly_receipt: "receipt",
+            signature_scheme: "aplane.falcon1024.v1",
+          }],
+        }),
+      });
+      mockFetch.mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: async () => ({
+          request_id: "bounded-assembly-id",
+          signed_group: ["signed"],
+        }),
+      });
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const component = await client.requestBoundedComponent({
+        request_id: "bounded-base-id",
+        requests: [{ auth_address: "BOUNDED", txn_bytes_hex: "5458aa" }],
+      });
+      const assembly = await client.requestBoundedAssemble({
+        request_id: "bounded-assembly-id",
+        group_bytes_hex: ["5458aa"],
+        targets: [{
+          target_index: 0,
+          bounded_account: "BOUNDED",
+          base_signatures: ["base-sig"],
+          assembly_receipt: "receipt",
+          sentry_signature: "sentry-sig",
+        }],
+      });
+
+      assert.equal(component.components[0].assembly_receipt, "receipt");
+      assert.deepEqual(assembly.signed_group, ["signed"]);
+      assert.equal(mockFetch.mock.calls[1][0], "http://localhost:11270/sign/bounded-component");
+      assert.equal(mockFetch.mock.calls[2][0], "http://localhost:11270/sign/bounded-assemble");
+    });
+
     it("posts sentry reference sync requests to the admin endpoint", async () => {
       mockFetch.mockResolvedValueOnce({
         status: 200,
@@ -1516,6 +1566,109 @@ describe("SignerClient", () => {
 
       assert.equal(result.signedGroup.length, 4);
       assert.equal(result.primarySignResponse, undefined);
+    });
+
+    it("routes prepared bounded-sentry groups through the user-first flow", async () => {
+      const bounded = testAddress(11);
+      const receiver = testAddress(12);
+      const user = new SignerClient("http://localhost:11270", "test-token");
+      const sentry = new SignerClient("http://sentry:11270", "sentry-token");
+
+      (user as any).requestBoundedComponent = async (request: any) => {
+        assert.equal(request.requests[0].auth_address, bounded);
+        return {
+          request_id: "base-id",
+          transactions: [request.requests[0].txn_bytes_hex],
+          components: [{
+            target_index: 0,
+            bounded_account: bounded,
+            base_signatures: ["base-sig"],
+            runtime_args: { proof: "aabb" },
+            assembly_receipt: "receipt",
+            signature_scheme: "aplane.falcon1024.v1",
+          }],
+        };
+      };
+      (sentry as any).requestComponentSign = async (request: any) => {
+        assert.equal(request.component_key, "SENTRY_COMPONENT");
+        assert.deepEqual(request.target_indices, [0]);
+        assert.equal(request.group_bytes_hex.length, 1);
+        return {
+          request_id: "sentry-id",
+          signatures: [{
+            target_index: 0,
+            signature: "sentry-sig",
+            signature_scheme: KEY_TYPE_WITNESS_FALCON1024,
+          }],
+        };
+      };
+      (user as any).signRequests = async () => {
+        throw new Error("all-bounded path must not call /sign");
+      };
+      (user as any).requestBoundedAssemble = async (request: any) => {
+        assert.deepEqual(request.targets[0].base_signatures, ["base-sig"]);
+        assert.equal(request.targets[0].assembly_receipt, "receipt");
+        assert.equal(request.targets[0].sentry_signature, "sentry-sig");
+        return { request_id: "assembly-id", signed_group: ["bounded-signed"] };
+      };
+
+      const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+        sender: bounded,
+        receiver,
+        amount: 1000n,
+        suggestedParams: {
+          fee: 1000n,
+          minFee: 1000n,
+          firstValid: 1n,
+          lastValid: 100n,
+          genesisHash: new Uint8Array(32),
+          genesisID: "testnet-v1",
+          flatFee: true,
+        },
+      });
+      const result = await signPreparedGuardedGroup({
+        userClient: user,
+        sentryClient: sentry,
+        sentryComponentKey: "SENTRY_COMPONENT",
+        preparedGroup: {
+          transactions: [{
+            transaction: txn,
+            authAddress: bounded,
+            signerKey: {
+              address: bounded,
+              publicKeyHex: "",
+              keyType: "aplane.corridor.v1",
+              signingFlow: SIGNING_FLOW_BOUNDED_SENTRY1,
+              sentryComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
+              lsigSize: 9012,
+              isGenericLsig: false,
+              boundedAuthorization: {
+                contract: "bounded1",
+                baseSignatureArgLayout: { count: 1, maxSizes: [1280] },
+                spendEffects: ["pay"],
+                maxFee: 1000,
+                adminOperations: [],
+                sentry: {
+                  contract: "sentry1",
+                  componentKeyType: KEY_TYPE_WITNESS_FALCON1024,
+                  publicKeyHex: "aabb",
+                  signatureMaxSize: 1280,
+                  requiredOn: ["spend"],
+                },
+                runtimeArgs: [],
+                derivedArgs: [],
+                argumentLayout: [],
+                layer3Policy: "merkle_allowlist",
+              },
+            },
+          }],
+        },
+      });
+
+      assert.deepEqual(result.signedGroup, ["bounded-signed"]);
+      assert.equal(result.assemblyResponse, undefined);
+      assert.ok(result.boundedComponentResponse);
+      assert.ok(result.boundedAssemblyResponse);
     });
 
     it("rejects prepared groups whose keys require an unsupported signing flow", async () => {

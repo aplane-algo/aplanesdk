@@ -17,6 +17,10 @@ import type {
   ComponentSignResponse,
   GuardedAssemblyRequest,
   GuardedAssemblyResponse,
+  BoundedComponentRequest,
+  BoundedComponentResponse,
+  BoundedAssemblyRequest,
+  BoundedAssemblyResponse,
 } from "../src/types.js";
 
 interface MockFetch {
@@ -391,6 +395,15 @@ describe("signer API contract fixtures", () => {
 
     const assemblyResp = fixture("guarded_assembly_response.json") as GuardedAssemblyResponse;
     assert.equal(assemblyResp.signed_group.length, 2);
+
+    const boundedComponentReq = fixture("bounded_component_request.json") as BoundedComponentRequest;
+    assert.ok(boundedComponentReq.requests[0].auth_address);
+    const boundedComponentResp = fixture("bounded_component_response.json") as BoundedComponentResponse;
+    assert.ok(boundedComponentResp.components[0].assembly_receipt);
+    const boundedAssemblyReq = fixture("bounded_assembly_request.json") as BoundedAssemblyRequest;
+    assert.ok(boundedAssemblyReq.targets[0].sentry_signature);
+    const boundedAssemblyResp = fixture("bounded_assembly_response.json") as BoundedAssemblyResponse;
+    assert.equal(boundedAssemblyResp.signed_group.length, 2);
   });
 
   it("projects bounded inventory layer3 policy", async () => {

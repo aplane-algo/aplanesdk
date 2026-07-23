@@ -19,6 +19,7 @@ export const COMPONENT_SIGN_ROLE_SENTRY = "sentry";
  */
 export const SIGNING_FLOW_SENTRY1 = "sentry1";
 export const SIGNING_FLOW_BOUNDED1 = "bounded1";
+export const SIGNING_FLOW_BOUNDED_SENTRY1 = "bounded-sentry1";
 
 export const KEY_TYPE_WITNESS_FALCON1024 = "aplane.witness-falcon1024.v1";
 export const KEY_TYPE_GUARDED_FALCON1024_SENTRY1024 =
@@ -78,12 +79,22 @@ export interface BoundedArgumentSlotInfo {
   paths: BoundedArgumentPathMask;
 }
 
+export interface BoundedSentryAuthorizationInfo {
+  contract: string;
+  componentKeyType: string;
+  publicKeyHex?: string;
+  componentKeyId?: string;
+  signatureMaxSize: number;
+  requiredOn: string[];
+}
+
 export interface BoundedAuthorizationInfo {
   contract: string;
   baseSignatureArgLayout: BoundedSignatureArgLayout;
   spendEffects: string[];
   maxFee: number;
   adminOperations: BoundedAdminOperationInfo[];
+  sentry?: BoundedSentryAuthorizationInfo;
   runtimeArgs: RuntimeArg[];
   derivedArgs: BoundedDerivedArgInfo[];
   argumentLayout: BoundedArgumentSlotInfo[];
@@ -445,6 +456,56 @@ export interface GuardedAssemblyRequest {
  * Response payload from /sign/assemble.
  */
 export interface GuardedAssemblyResponse {
+  request_id: string;
+  signed_group: string[];
+}
+
+/** Request payload for /sign/bounded-component. */
+export interface BoundedComponentRequest {
+  request_id?: string;
+  requests: SignRequest[];
+}
+
+/** One user-signer contribution to bounded assembly. */
+export interface BoundedBaseComponent {
+  target_index: number;
+  bounded_account: string;
+  base_signatures: string[];
+  runtime_args?: Record<string, string>;
+  assembly_receipt: string;
+  signature_scheme: string;
+}
+
+/** Response payload from /sign/bounded-component. */
+export interface BoundedComponentResponse {
+  request_id: string;
+  transactions: string[];
+  components: BoundedBaseComponent[];
+  mutations?: MutationReport;
+}
+
+/** One source-bound bounded-sentry assembly target. */
+export interface BoundedAssemblyTarget {
+  target_index: number;
+  bounded_account: string;
+  base_signatures: string[];
+  runtime_args?: Record<string, string>;
+  assembly_receipt: string;
+  base_source_request_id?: string;
+  sentry_signature: string;
+  sentry_source_request_id?: string;
+}
+
+/** Request payload for /sign/bounded-assemble. */
+export interface BoundedAssemblyRequest {
+  request_id?: string;
+  group_bytes_hex: string[];
+  targets: BoundedAssemblyTarget[];
+  passthrough?: GuardedPassthroughItem[];
+}
+
+/** Response payload from /sign/bounded-assemble. */
+export interface BoundedAssemblyResponse {
   request_id: string;
   signed_group: string[];
 }
