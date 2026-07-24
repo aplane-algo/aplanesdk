@@ -155,6 +155,15 @@ def test_live_signer_client_workflow():
         client.close()
 
 
+@pytest.mark.skipif(not _integration_enabled(), reason="set APLANE_SDK_INTEGRATION=1")
+def test_endpoint_registry_connection():
+    data_dir = os.environ.get("APCLIENT_DATA")
+    if not data_dir or not (Path(data_dir) / "endpoints.yaml").exists():
+        pytest.skip("APCLIENT_DATA/endpoints.yaml is not available")
+    with SignerClient.from_env(data_dir=data_dir) as client:
+        assert client.health() is True
+
+
 def _self_payment_txn(address: str) -> transaction.PaymentTxn:
     params = transaction.SuggestedParams(
         fee=1000,

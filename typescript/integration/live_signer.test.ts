@@ -170,6 +170,24 @@ test(
   }
 );
 
+test(
+  "integration: endpoints.yaml connection",
+  { skip: integrationEnabled() ? false : "set APLANE_SDK_INTEGRATION=1" },
+  async (context) => {
+    const dataDir = process.env.APCLIENT_DATA;
+    if (!dataDir || !fs.existsSync(path.join(dataDir, "endpoints.yaml"))) {
+      context.skip("APCLIENT_DATA/endpoints.yaml is not available");
+      return;
+    }
+    const client = await SignerClient.fromEnv({ dataDir });
+    try {
+      assert.equal(await client.health(), true);
+    } finally {
+      await client.close();
+    }
+  },
+);
+
 function selfPaymentTxn(address: string): algosdk.Transaction {
   return algosdk.makePaymentTxnWithSuggestedParamsFromObject({
     sender: address,

@@ -125,26 +125,30 @@ const client = await SignerClient.fromEnv({ dataDir: "~/aplane/apclient" });
 Data directory structure (installer default: `~/aplane/apclient`):
 ```
 <data_dir>/
-  config.yaml          # Connection settings
+  config.yaml          # Non-routing client settings
+  endpoints.yaml       # Signer and sentry routing
   aplane.token         # Authentication token
   .ssh/
     id_ed25519         # SSH key
     known_hosts        # Trusted signer host keys
 ```
 
-Example `config.yaml` (remote via SSH):
+Example `endpoints.yaml` (remote via SSH):
 ```yaml
-endpoint:
-  signer_port: 11270
-  ssh:
-    host: signer.example.com
-    port: 1127
+schema_version: 1
+default: primary
+endpoints:
+  primary:
+    role: signer
+    url: ssh://signer.example.com:1127
+    signer_port: 11270
     identity_file: .ssh/id_ed25519
     known_hosts_path: .ssh/known_hosts
-    trust_on_first_use: false
 ```
 
-If you want Trust-On-First-Use host enrollment, set `endpoint.ssh.trust_on_first_use: true`. On first connection, the SDK will trust and save the signer's SSH host key into `known_hosts`.
+Pass `trustOnFirstUse: true` to `SignerClient.fromEnv` only when the call may
+trust and save an unknown host key. Use `endpoint: "sentry.qa"` to select a
+named endpoint.
 
 ## Authentication
 

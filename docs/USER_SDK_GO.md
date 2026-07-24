@@ -69,6 +69,7 @@ Typical client layout (installer default: `~/aplane/apclient`):
 ```text
 <data_dir>/
   config.yaml
+  endpoints.yaml
   aplane.token
   .ssh/
     id_ed25519
@@ -77,33 +78,29 @@ Typical client layout (installer default: `~/aplane/apclient`):
 
 The SDK reads:
 
-- `config.yaml` for SSH host/port, signer REST port, and optional algod config
-- `aplane.token` for HTTP bearer authentication and the SSH mutual proof
+- `config.yaml` for network and optional algod config
+- `endpoints.yaml` for signer/sentry URLs, ports, paths, and token files
+- the selected endpoint's token for HTTP authentication and SSH mutual proof
 - `.ssh/id_ed25519` for client SSH auth
 - `.ssh/known_hosts` for SSH host key verification
 
-Example `config.yaml`:
+Example `endpoints.yaml`:
 
 ```yaml
-network: testnet
-networks_allowed: [testnet]
-endpoint:
-  signer_port: 11270
-  ssh:
-    host: signer.example.com
-    port: 1127
+schema_version: 1
+default: primary
+endpoints:
+  primary:
+    role: signer
+    url: ssh://signer.example.com:1127
+    signer_port: 11270
     identity_file: .ssh/id_ed25519
     known_hosts_path: .ssh/known_hosts
-    trust_on_first_use: false
-algod:
-  testnet:
-    server: https://testnet-api.4160.nodely.dev
-    token: ""
 ```
 
-If `endpoint.ssh.trust_on_first_use: true` is set, the SDK can auto-trust an unknown
-host key on first connection and save it to `known_hosts`. Otherwise, unknown
-hosts are rejected until the host key is already trusted.
+First-use trust is a runtime option:
+`FromEnvOptions{TrustOnFirstUse: true}`. It is not stored in
+`endpoints.yaml`.
 
 ## First-Time Setup
 
@@ -117,13 +114,13 @@ path is:
 4. connect with `aplane.FromEnv(...)`
 
 Unlike the Python and TypeScript SDKs, the Go SDK does **not** currently ship
-its own token-provisioning helper. The token file must already exist at
-`<dataDir>/aplane.token`, or you must provide the token directly to
+its own token-provisioning helper. The selected endpoint's token file must
+already exist, or you must provide the token directly to
 `ConnectSSH(...)` or `NewSignerClientWithToken(...)`.
 
 The simplest way to provision the token file is to run `apshell` and execute
 the `request-token` command; an operator approves the request in `apadmin`
-and `apshell` writes the token to `<dataDir>/aplane.token`.
+and `apshell` writes it to the endpoint's configured token file.
 
 ## Connection Methods
 
@@ -142,22 +139,24 @@ healthy, _ := client.Health()
 This path:
 
 - resolves the client data dir
-- loads `config.yaml`
-- loads `aplane.token`
+- validates `config.yaml` contains no obsolete routing
+- loads and selects an endpoint from `endpoints.yaml`
+- loads that endpoint's token
 - resolves SSH paths relative to the client data dir
 - establishes the SSH tunnel automatically
 
 `FromEnv(...)` requires:
 
-- a token file at `<dataDir>/aplane.token`
-- an `endpoint.ssh` block in `config.yaml`
-- a readable SSH private key at the configured `identity_file`
+- a default signer endpoint, or an explicit endpoint alias
+- that endpoint's token file
+- for SSH endpoints, a readable private key at `identity_file`
 
 You can override the defaults:
 
 ```go
 client, err := aplane.FromEnv(&aplane.FromEnvOptions{
 	DataDir: "/custom/path",
+	Endpoint: "sentry.qa",
 	Timeout: 30,
 })
 ```

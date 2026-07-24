@@ -2804,8 +2804,8 @@ describe("loadConfig", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-test-"));
     try {
       const config = loadConfig(tmpDir);
-      assert.equal(config.signerPort, 11270);
-      assert.equal(config.ssh, undefined);
+      assert.equal(config.network, "testnet");
+      assert.equal(config.theme, "auto");
     } finally {
       fs.rmSync(tmpDir, { recursive: true });
     }

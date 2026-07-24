@@ -1270,12 +1270,9 @@ func TestAssembleGroup_MultipleSigners(t *testing.T) {
 
 func TestLoadConfig_Default(t *testing.T) {
 	dir := t.TempDir()
-	config, err := LoadConfig(dir)
+	_, err := LoadConfig(dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if config.SSH != nil {
-		t.Fatal("expected no SSH config")
 	}
 }
 

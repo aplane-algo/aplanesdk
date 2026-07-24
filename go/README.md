@@ -118,42 +118,35 @@ client, err := aplane.FromEnv(&aplane.FromEnvOptions{
 Data directory structure (installer default: `~/aplane/apclient`):
 ```
 <data_dir>/
-  config.yaml          # Connection settings
+  config.yaml          # Network and algod settings
+  endpoints.yaml       # Signer and sentry routing
   aplane.token         # Authentication token
   .ssh/
     id_ed25519         # SSH key
     known_hosts        # Trusted signer host keys
 ```
 
-Example `config.yaml`:
+Example `endpoints.yaml`:
 ```yaml
-network: testnet
-networks_allowed: [testnet]
-theme: auto
-endpoint:
-  signer_port: 11270
-  ssh:
-    host: signer.example.com
-    port: 1127
+schema_version: 1
+default: primary
+endpoints:
+  primary:
+    role: signer
+    url: ssh://signer.example.com:1127
+    signer_port: 11270
     identity_file: .ssh/id_ed25519
     known_hosts_path: .ssh/known_hosts
-    trust_on_first_use: false
-networks:
-  testnet:
-    algod:
-      server: https://testnet-api.4160.nodely.dev
-      token: ""
 ```
 
-If you want Trust-On-First-Use host enrollment, set:
+Select a named endpoint or explicitly allow first-use trust for one call:
 
-```yaml
-endpoint:
-  ssh:
-    trust_on_first_use: true
+```go
+client, err := aplane.FromEnv(&aplane.FromEnvOptions{
+	Endpoint:        "sentry.qa",
+	TrustOnFirstUse: true,
+})
 ```
-
-That allows the SDK to trust and save the signer's SSH host key into `known_hosts` on first connection.
 
 ### Caller-Owned Transport
 
@@ -313,7 +306,8 @@ the SDK sends best-effort `/sign/cancel` for the generated or supplied
 #### `LoadConfig(dataDir) (*Config, error)`
 
 Load client configuration from `config.yaml`, applying SDK defaults where the
-file omits values.
+file omits network or algod values. Routing is loaded separately with
+`LoadClientEndpointRegistry`.
 
 #### `(*Config).NewAlgodClient(network) (*algod.Client, error)`
 

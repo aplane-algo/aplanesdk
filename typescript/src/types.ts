@@ -144,29 +144,12 @@ export interface KeyInfo {
 }
 
 /**
- * SSH tunnel configuration.
- */
-export interface SSHConfig {
-  /** Remote host to SSH to */
-  host: string;
-  /** SSH port (default: 1127) */
-  port: number;
-  /** Path to SSH private key, relative to data directory */
-  identityFile: string;
-  /** Path to known_hosts file, relative to data directory */
-  knownHostsPath: string;
-  /** If true, automatically trust and save unknown host keys (TOFU). Default: false */
-  trustOnFirstUse: boolean;
-}
-
-/**
- * Client configuration for connecting to apsigner.
+ * Non-routing client configuration from config.yaml.
  */
 export interface ClientConfig {
-  /** @deprecated Routing is loaded from endpoints.yaml. */
-  signerPort: number;
-  /** @deprecated Routing is loaded from endpoints.yaml. */
-  ssh?: SSHConfig;
+  network: string;
+  networksAllowed: string[];
+  theme: string;
 }
 
 /** Endpoint-local sentry discovery metadata. */

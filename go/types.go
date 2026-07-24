@@ -761,15 +761,6 @@ type LsigArgs map[string][]byte
 // LsigArgsMap maps addresses to their LogicSig arguments.
 type LsigArgsMap map[string]LsigArgs
 
-// SSHConfig contains SSH tunnel configuration.
-type SSHConfig struct {
-	Host            string `yaml:"host"`
-	Port            int    `yaml:"port"`
-	IdentityFile    string `yaml:"identity_file"`
-	KnownHostsPath  string `yaml:"known_hosts_path"`
-	TrustOnFirstUse bool   `yaml:"trust_on_first_use"`
-}
-
 // AlgodNetworkConfig contains algod settings for one network.
 type AlgodNetworkConfig struct {
 	Server string `yaml:"server"`
@@ -794,10 +785,6 @@ type Config struct {
 	Theme           string         `yaml:"theme"`
 	Networks        NetworkConfigs `yaml:"networks"`
 	Algod           AlgodConfig    `yaml:"algod"`
-	// Deprecated routing projections retained for source compatibility.
-	// LoadConfig never populates them; use LoadClientEndpointRegistry.
-	SignerPort int        `yaml:"-"`
-	SSH        *SSHConfig `yaml:"-"`
 }
 
 // SSHConnectOptions contains options for SSH tunnel connections.

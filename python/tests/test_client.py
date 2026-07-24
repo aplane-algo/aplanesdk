@@ -27,8 +27,6 @@ from aplanesdk.signer import (
     load_config,
     load_client_endpoint_registry,
     resolve_client_endpoint,
-    SSHConfig,
-    ClientConfig,
     ComponentSignRequest,
     ComponentSignature,
     ComponentSignResponse,
@@ -2609,8 +2607,9 @@ class TestEncoding:
 class TestLoadConfig:
     def test_default_config(self, tmp_path):
         config = load_config(str(tmp_path))
-        assert config.signer_port == 11270
-        assert config.ssh is None
+        assert config.network == "testnet"
+        assert config.networks_allowed == []
+        assert config.theme == "auto"
 
     def test_rejects_obsolete_endpoint_routing(self, tmp_path):
         config_file = tmp_path / "config.yaml"

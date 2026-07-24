@@ -59,7 +59,8 @@ print(f"Submitted: {txid}")
 
 ## Connection Methods
 
-All SDK connections use the configured SSH-backed signer path. Direct local HTTP connection is not a supported SDK mode.
+Data-directory connections use `endpoints.yaml`. SSH endpoints create a
+managed tunnel; HTTPS and loopback HTTP endpoints connect directly.
 
 ### Environment-Based Connection (Recommended)
 
@@ -79,20 +80,23 @@ client = SignerClient.from_env(data_dir="~/aplane/apclient")
 Data directory structure (installer default: `~/aplane/apclient`):
 ```
 <data_dir>/
-  config.yaml          # Connection settings
+  config.yaml          # Non-routing client settings
+  endpoints.yaml       # Signer and sentry routing
   aplane.token         # Authentication token
   .ssh/
     id_ed25519         # SSH private key for authentication
     known_hosts        # Trusted server host keys
 ```
 
-Example `config.yaml`:
+Example `endpoints.yaml`:
 ```yaml
-endpoint:
-  signer_port: 11270
-  ssh:
-    host: localhost            # Change to remote host if signer is on another machine
-    port: 1127
+schema_version: 1
+default: primary
+endpoints:
+  primary:
+    role: signer
+    url: ssh://localhost:1127
+    signer_port: 11270
     identity_file: .ssh/id_ed25519
     known_hosts_path: .ssh/known_hosts
 ```
@@ -133,7 +137,10 @@ with SignerClient.connect_ssh(host="...", token="...", ssh_key_path="...") as cl
 
 ## Authentication
 
-The recommended way to obtain a token is via the `request-token` flow, which enrolls your SSH key and provisions a token in a single operator-approved step. The token is saved automatically to `$APCLIENT_DATA/aplane.token`.
+The recommended way to obtain a token is via the endpoint-based
+`request-token` flow. `request_token_to_file(endpoint="sentry.qa")` selects a
+named endpoint; without an alias it selects the default signer. The selected
+endpoint determines the token destination.
 
 If your token was provisioned separately (e.g. copied by the operator), you can load it explicitly:
 

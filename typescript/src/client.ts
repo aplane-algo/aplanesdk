@@ -1756,7 +1756,7 @@ class SSHTunnel {
             if (!options.trustOnFirstUse) {
               hostKeyError =
                 `Unknown SSH host key for ${formatHostEntry(options.host, options.sshPort)}; ` +
-        `to trust this host, set endpoint.ssh.trust_on_first_use: true in config.yaml, ` +
+                `pass trustOnFirstUse: true for explicit first-use trust, ` +
                 `or connect via apshell first to save the host key to ${options.knownHostsPath}`;
               return false;
             }
@@ -2559,11 +2559,11 @@ export class SignerClient {
   }
 
   /**
-   * Connect using config file from data directory.
+   * Connect using the endpoint registry from a data directory.
    *
    * Data directory contents:
-   *   - config.yaml: Connection settings (endpoint.signer_port, endpoint.ssh)
-   *   - aplane.token: Authentication token
+   *   - endpoints.yaml: Signer and sentry routing
+   *   - aplane.token or tokens/<alias>.token: Authentication token
    *   - .ssh/id_ed25519: SSH key (if using SSH tunnel)
    *
    * The data directory is required: pass `options.dataDir` or set the

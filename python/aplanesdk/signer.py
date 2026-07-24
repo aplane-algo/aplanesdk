@@ -7,17 +7,17 @@ APlane Python SDK - Transaction signing via apsigner
 Data directory (required via APCLIENT_DATA env var or data_dir parameter):
     <data_dir>/
     ├── aplane.token         # API token (from request_token_to_file)
-    ├── config.yaml          # Connection settings
+    ├── endpoints.yaml       # Signer and sentry routing
     └── .ssh/
         └── id_ed25519       # SSH key for authentication
 
-Example config.yaml:
-    endpoint:
-      signer_port: 11270
-      ssh:
-        host: signer.example.com
-        port: 1127
-        identity_file: .ssh/id_ed25519
+Example endpoints.yaml:
+    schema_version: 1
+    endpoints:
+      primary:
+        role: signer
+        url: ssh://signer.example.com:1127
+        signer_port: 11270
 
 Token Provisioning:
     from aplanesdk import request_token_to_file
@@ -50,7 +50,7 @@ import secrets
 import socket
 import threading
 import time
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Optional, Dict, List, Any, Callable, cast
 from urllib.parse import urlparse
 
@@ -328,22 +328,11 @@ class KeyInfo:
 
 
 @dataclass
-class SSHConfig:
-    """SSH tunnel configuration for public-key plus mutual token-proof auth."""
-    host: str  # Remote host to SSH to
-    port: int = DEFAULT_SSH_PORT
-    identity_file: str = ".ssh/id_ed25519"  # Relative to data_dir
-    known_hosts_path: str = ".ssh/known_hosts"  # Relative to data_dir
-    trust_on_first_use: bool = False  # If true, auto-trust unknown host keys (TOFU)
-
-
-@dataclass
 class ClientConfig:
-    """Client configuration loaded from config.yaml"""
-    # Deprecated routing projections retained for source compatibility.
-    # load_config never populates them; use load_client_endpoint_registry.
-    signer_port: int = DEFAULT_SIGNER_PORT
-    ssh: Optional[SSHConfig] = None  # Required in config.yaml
+    """Non-routing client configuration loaded from config.yaml."""
+    network: str = "testnet"
+    networks_allowed: List[str] = field(default_factory=list)
+    theme: str = "auto"
 
 
 @dataclass
@@ -818,6 +807,14 @@ def load_config(data_dir: str) -> ClientConfig:
                 f'unsupported client routing in config.yaml: remove "{field}" '
                 "and configure endpoints.yaml"
             )
+    if isinstance(data.get("network"), str):
+        config.network = data["network"]
+    if isinstance(data.get("networks_allowed"), list) and all(
+        isinstance(item, str) for item in data["networks_allowed"]
+    ):
+        config.networks_allowed = data["networks_allowed"]
+    if isinstance(data.get("theme"), str) and data["theme"]:
+        config.theme = data["theme"]
 
     return config
 
@@ -2150,7 +2147,7 @@ class _SSHTunnel:
         if not self._trust_on_first_use:
             raise SignerError(
                 f"Unknown SSH host key for {self._ssh_host}:{self._ssh_port}; "
-                f"to trust this host, set endpoint.ssh.trust_on_first_use: true in config.yaml, "
+                f"pass trust_on_first_use=True for explicit first-use trust, "
                 f"or connect via apshell first to save the host key to "
                 f"{self._known_hosts_path}"
             )
@@ -2386,17 +2383,19 @@ class SignerClient:
         trust_on_first_use: bool = False,
     ) -> "SignerClient":
         """
-        Connect using config file from data directory.
+        Connect using the endpoint registry from a data directory.
 
         Data directory contents:
-            - config.yaml: Connection settings
-            - aplane.token: Authentication token
+            - endpoints.yaml: Signer and sentry routing
+            - aplane.token or tokens/<alias>.token: Authentication token
             - .ssh/id_ed25519: SSH key for authentication
 
         Args:
             data_dir: Client data directory. Required unless APCLIENT_DATA
                 environment variable is set.
             timeout: Optional explicit request timeout in seconds
+            endpoint: Optional signer or sentry endpoint alias
+            trust_on_first_use: Explicitly trust an unknown SSH host key
 
         Returns:
             SignerClient instance

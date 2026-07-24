@@ -17,6 +17,10 @@ the AGPL-licensed `aplane-algo/aplane` repository.
 Shared signer API contract fixtures live under `contracts/signerapi/` and are
 used by all SDK test suites.
 
+Data-directory routing is shared with APlane through `endpoints.yaml`. See the
+[endpoint migration guide](docs/MIGRATION_ENDPOINTS.md) when upgrading from
+the former SDK-only `config.yaml endpoint:` layout.
+
 ## Development
 
 Go:
@@ -75,9 +79,8 @@ set -a && . ~/aplane/.env.test && set +a
 make integration-test
 ```
 
-The tests discover the signer URL from `APSIGNER_DATA/config.yaml` and the
-token from `APCLIENT_DATA/aplane.token`. You can also pass explicit SDK-facing
-values:
+The tests exercise `APCLIENT_DATA/endpoints.yaml` when the APlane fixture
+provides it. The main workflow also accepts explicit SDK-facing values:
 
 ```bash
 APLANE_SDK_SIGNER_URL=http://127.0.0.1:11270 \

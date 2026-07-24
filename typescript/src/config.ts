@@ -37,7 +37,11 @@ export function expandPath(filePath: string): string {
  * @returns ClientConfig with values from file, defaults for missing fields
  */
 export function loadConfig(dataDir: string): ClientConfig {
-  const config: ClientConfig = { signerPort: DEFAULT_SIGNER_PORT };
+  const config: ClientConfig = {
+    network: "testnet",
+    networksAllowed: [],
+    theme: "auto",
+  };
 
   const configPath = path.join(dataDir, "config.yaml");
 
@@ -56,6 +60,14 @@ export function loadConfig(dataDir: string): ClientConfig {
         );
       }
     }
+    if (typeof data.network === "string") config.network = data.network;
+    if (
+      Array.isArray(data.networks_allowed) &&
+      data.networks_allowed.every((item) => typeof item === "string")
+    ) {
+      config.networksAllowed = data.networks_allowed;
+    }
+    if (typeof data.theme === "string" && data.theme) config.theme = data.theme;
   } catch (error) {
     if (error instanceof SignerError) throw error;
     throw new SignerError(`failed to parse config.yaml: ${errorMessage(error)}`);
