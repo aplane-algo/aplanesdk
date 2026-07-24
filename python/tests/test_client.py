@@ -2483,19 +2483,30 @@ class TestSignReturnFormat:
 
 class TestRequestTokenToFile:
     def test_creates_token_file_with_secure_permissions(self, tmp_path):
-        (tmp_path / "config.yaml").write_text("endpoint:\n  ssh:\n    host: example.com\n    port: 1127\n")
+        (tmp_path / "endpoints.yaml").write_text(
+            "schema_version: 1\nendpoints:\n"
+            "  primary:\n    role: signer\n    url: ssh://signer.example.com\n"
+            "  qa:\n    role: sentry\n    url: ssh://sentry.example.com:2222\n"
+        )
         ssh_dir = tmp_path / ".ssh"
         ssh_dir.mkdir()
         (ssh_dir / "id_ed25519").write_text("dummy-private-key")
 
-        with patch("aplanesdk.signer.request_token", return_value="test-token"):
+        with patch(
+            "aplanesdk.signer.request_token", return_value="test-token"
+        ) as provision:
             path = request_token_to_file(
                 data_dir=str(tmp_path),
-                host="example.com",
+                endpoint="qa",
             )
 
         assert os.path.exists(path)
-        assert (tmp_path / "aplane.token").read_text() == "test-token"
+        assert (tmp_path / "tokens" / "qa.token").read_text() == "test-token"
+        assert provision.call_args.kwargs["host"] == "sentry.example.com"
+        assert provision.call_args.kwargs["ssh_port"] == 2222
+        assert provision.call_args.kwargs["known_hosts_path"] == str(
+            tmp_path / ".ssh" / "known_hosts"
+        )
         mode = os.stat(path).st_mode & 0o777
         assert mode == 0o600
 

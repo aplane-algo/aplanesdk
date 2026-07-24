@@ -5931,8 +5931,7 @@ class _InteractiveHostKeyPolicy(paramiko.MissingHostKeyPolicy):
 
 def request_token_to_file(
     data_dir: Optional[str] = None,
-    host: Optional[str] = None,
-    ssh_port: Optional[int] = None,
+    endpoint: Optional[str] = None,
     identity: str = DEFAULT_PRODUCT_IDENTITY,
     auto_add_host: bool = False,
 ) -> str:
@@ -5940,14 +5939,11 @@ def request_token_to_file(
     Request a token and save it to the data directory.
 
     Convenience function that:
-    1. Loads SSH key from config's identity_file
-    2. Uses config's known_hosts_path for host verification
-    3. Saves the token to data_dir/aplane.token
+    The selected endpoint supplies all SSH routing and the token destination.
 
     Args:
         data_dir: Client data directory. Required unless APCLIENT_DATA env var is set.
-        host: Signer host (default: from config.yaml endpoint.ssh.host)
-        ssh_port: SSH port (default: from config.yaml endpoint.ssh.port or 1127)
+        endpoint: Endpoint alias (default: the registry's signer endpoint)
         identity: Identity ID for the token (default: current product identity).
                   Non-product identities are rejected in the current single-operator mode.
         auto_add_host: If True, automatically trust unknown hosts
@@ -5964,33 +5960,25 @@ def request_token_to_file(
         request_token_to_file()
 
         # Or with explicit parameters
-        request_token_to_file(data_dir="/custom/path", host="signer.example.com")
+        request_token_to_file(data_dir="/custom/path", endpoint="sentry.qa")
 
         # Now you can use SignerClient.from_env()
         client = SignerClient.from_env()
     """
     data_dir = _resolve_data_dir(data_dir)
 
-    # Load config to get host/port if not specified
-    config = load_config(data_dir)
-    if host is None:
-        if config.ssh is None:
-            raise SignerError(
-                "No host specified and no endpoint.ssh.host in config.yaml. "
-                "Pass host parameter or add endpoint.ssh block to config.yaml."
-            )
-        host = config.ssh.host
-    if ssh_port is None:
-        ssh_port = config.ssh.port if config.ssh else DEFAULT_SSH_PORT
-
-    # Use paths from config, or defaults
-    if config.ssh:
-        ssh_key_path = os.path.join(data_dir, config.ssh.identity_file)
-        known_hosts_path = os.path.join(data_dir, config.ssh.known_hosts_path)
-    else:
-        ssh_key_path = os.path.join(data_dir, ".ssh", "id_ed25519")
-        known_hosts_path = os.path.join(data_dir, ".ssh", "known_hosts")
-    token_path = os.path.join(data_dir, "aplane.token")
+    load_config(data_dir)
+    registry = load_client_endpoint_registry(data_dir)
+    _, selected = resolve_client_endpoint(registry, endpoint)
+    if not selected.url.startswith("ssh://"):
+        raise SignerError(
+            f'endpoint "{selected.url}" cannot provision tokens; '
+            "request_token_to_file requires ssh://"
+        )
+    host, ssh_port = client_endpoint_ssh_host_port(selected)
+    ssh_key_path = selected.identity_file
+    known_hosts_path = selected.known_hosts_path
+    token_path = selected.token_file
 
     if not os.path.exists(ssh_key_path):
         raise SignerError(
@@ -6012,9 +6000,13 @@ def request_token_to_file(
     )
 
     # Save token with secure permissions
+    token_dir = os.path.dirname(token_path)
+    if token_dir:
+        os.makedirs(token_dir, mode=0o700, exist_ok=True)
     fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         f.write(token)
+    os.chmod(token_path, 0o600)
 
     print(f"✓ Token saved to {token_path}")
     return token_path

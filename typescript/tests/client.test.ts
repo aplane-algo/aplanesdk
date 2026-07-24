@@ -25,7 +25,7 @@ import {
   KeyNotFoundError,
   KeyDeletionError,
 } from "../src/errors.js";
-import { requestToken } from "../src/utils.js";
+import { requestToken, requestTokenToFile } from "../src/utils.js";
 import { bytesToHex, hexToBytes, concatenateSignedTxns, encodeTransaction, encodeLsigArgs } from "../src/encoding.js";
 import { assembleGroup } from "../src/utils.js";
 import {
@@ -2934,6 +2934,44 @@ describe("requestToken", () => {
       requestToken("signer.example.com", "~/.ssh/id_ed25519"),
       { message: /known_hosts path is required/ },
     );
+  });
+});
+
+describe("requestTokenToFile", () => {
+  it("selects a named SSH endpoint", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-token-"));
+    try {
+      fs.writeFileSync(
+        path.join(tmpDir, "endpoints.yaml"),
+        "schema_version: 1\nendpoints:\n" +
+        "  primary:\n    role: signer\n    url: ssh://signer.example.com\n" +
+        "  qa:\n    role: sentry\n    url: ssh://sentry.example.com:2222\n" +
+        "    identity_file: .ssh/qa\n",
+      );
+      await assert.rejects(
+        requestTokenToFile({ dataDir: tmpDir, endpoint: "qa" }),
+        { message: /SSH key not found at .*qa/ },
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  it("rejects non-SSH enrollment endpoints", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-token-"));
+    try {
+      fs.writeFileSync(
+        path.join(tmpDir, "endpoints.yaml"),
+        "schema_version: 1\nendpoints:\n" +
+        "  primary:\n    role: signer\n    url: https://signer.example.com\n",
+      );
+      await assert.rejects(
+        requestTokenToFile({ dataDir: tmpDir }),
+        { message: /requires ssh:\/\// },
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
   });
 });
 
