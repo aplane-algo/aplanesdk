@@ -2314,6 +2314,7 @@ class SignerClient:
         timeout: Optional[int] = None,
         known_hosts_path: str = "",
         trust_on_first_use: bool = False,
+        local_port: int = 0,
     ) -> "SignerClient":
         """
         Connect to remote apsigner via SSH tunnel.
@@ -2342,8 +2343,8 @@ class SignerClient:
         import os
         ssh_key_path = os.path.expanduser(ssh_key_path)
 
-        # Find a free local port
-        local_port = _find_free_port()
+        # Find a free local port unless the endpoint pins one.
+        local_port = local_port or _find_free_port()
 
         try:
             tunnel = _SSHTunnel(
@@ -2380,7 +2381,9 @@ class SignerClient:
     def from_env(
         cls,
         data_dir: Optional[str] = None,
-        timeout: Optional[int] = None
+        timeout: Optional[int] = None,
+        endpoint: Optional[str] = None,
+        trust_on_first_use: bool = False,
     ) -> "SignerClient":
         """
         Connect using config file from data directory.
@@ -2410,43 +2413,36 @@ class SignerClient:
         """
         data_dir = _resolve_data_dir(data_dir)
 
-        # Load config from data_dir/config.yaml
-        config = load_config(data_dir)
-
-        # Load token from data directory
-        token_path = os.path.join(data_dir, "aplane.token")
+        load_config(data_dir)
+        registry = load_client_endpoint_registry(data_dir)
+        _, selected = resolve_client_endpoint(registry, endpoint)
+        if selected.url == "self":
+            raise SignerError(
+                f'endpoint URL "{selected.url}" is not supported by the external SDK'
+            )
+        token_path = selected.token_file
         if not os.path.exists(token_path):
             raise SignerError(f"No token found at {token_path}")
         token = load_token(token_path)
 
-        # Check if SSH is configured
-        if config.ssh:
-            # Resolve SSH key path (relative to data_dir)
-            ssh_key_path = os.path.join(data_dir, config.ssh.identity_file)
-            if not os.path.exists(ssh_key_path):
+        if selected.url.startswith("ssh://"):
+            host, ssh_port = client_endpoint_ssh_host_port(selected)
+            if not os.path.exists(selected.identity_file):
                 raise SignerError(
-                    f"SSH configured but key not found at {ssh_key_path}"
+                    f"SSH configured but key not found at {selected.identity_file}"
                 )
-
-            # Resolve known_hosts path (relative to data_dir, or use config override)
-            known_hosts_path = os.path.join(data_dir, config.ssh.known_hosts_path)
-
             return cls.connect_ssh(
-                host=config.ssh.host,
+                host=host,
                 token=token,
-                ssh_key_path=ssh_key_path,
-                ssh_port=config.ssh.port,
-                signer_port=config.signer_port,
+                ssh_key_path=selected.identity_file,
+                ssh_port=ssh_port,
+                signer_port=selected.signer_port,
                 timeout=timeout,
-                known_hosts_path=known_hosts_path,
-                trust_on_first_use=config.ssh.trust_on_first_use,
+                known_hosts_path=selected.known_hosts_path,
+                trust_on_first_use=trust_on_first_use,
+                local_port=selected.local_port,
             )
-
-        # SSH is required
-        raise SignerError(
-            "No endpoint.ssh block in config.yaml. "
-            "Add endpoint.ssh with host, port, and identity_file."
-        )
+        return cls(selected.url, token, timeout)
 
     def close(self):
         """Close the client and any SSH tunnel."""

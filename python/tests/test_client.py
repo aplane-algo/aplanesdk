@@ -2397,30 +2397,31 @@ class TestPrepHelpers:
 
 
 class TestFromEnv:
-    def test_throws_when_ssh_not_configured(self, tmp_path):
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("endpoint:\n  signer_port: 11270\n")
-        token_file = tmp_path / "aplane.token"
-        token_file.write_text("test-token")
-
-        with pytest.raises(SignerError, match="No endpoint.ssh block"):
+    def test_throws_when_default_endpoint_missing(self, tmp_path):
+        with pytest.raises(SignerError, match="no default signer endpoint"):
             SignerClient.from_env(data_dir=str(tmp_path))
 
-    def test_throws_when_ssh_host_empty(self, tmp_path):
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("endpoint:\n  signer_port: 11270\n  ssh:\n    port: 1127\n")
-        token_file = tmp_path / "aplane.token"
-        token_file.write_text("test-token")
+    def test_uses_named_direct_endpoint_and_token(self, tmp_path):
+        (tmp_path / "tokens").mkdir()
+        (tmp_path / "tokens" / "qa.token").write_text("qa-token")
+        (tmp_path / "endpoints.yaml").write_text(
+            "schema_version: 1\nendpoints:\n"
+            "  primary:\n    role: signer\n    url: https://signer.example.com/\n"
+            "  qa:\n    role: sentry\n    url: http://127.0.0.1:11271/\n"
+        )
+        client = SignerClient.from_env(
+            data_dir=str(tmp_path), endpoint="qa", timeout=7
+        )
+        assert client.base_url == "http://127.0.0.1:11271"
+        assert client.token == "qa-token"
+        assert client.timeout == 7
 
-        with pytest.raises(SignerError, match="endpoint.ssh.host is required"):
-            SignerClient.from_env(data_dir=str(tmp_path))
-
-    def test_throws_when_token_missing(self, tmp_path):
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("endpoint:\n  ssh:\n    host: example.com\n    port: 1127\n")
-        # No token file
-
-        with pytest.raises(SignerError, match="No token"):
+    def test_rejects_self_endpoint(self, tmp_path):
+        (tmp_path / "endpoints.yaml").write_text(
+            "schema_version: 1\nendpoints:\n"
+            "  primary:\n    role: signer\n    url: self\n"
+        )
+        with pytest.raises(SignerError, match="not supported by the external SDK"):
             SignerClient.from_env(data_dir=str(tmp_path))
 
 

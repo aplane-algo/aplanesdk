@@ -203,6 +203,8 @@ export interface ConnectSshOptions {
   sshPort?: number;
   /** Signer REST port on remote (default: 11270) */
   signerPort?: number;
+  /** Local tunnel port (default: choose automatically) */
+  localPort?: number;
   /** Optional explicit shorter request timeout in milliseconds */
   timeout?: number;
   /** Path to known_hosts file for SSH host key verification (required) */
@@ -217,8 +219,12 @@ export interface ConnectSshOptions {
 export interface FromEnvOptions {
   /** Override default data directory */
   dataDir?: string;
+  /** Endpoint alias (default: the registry's signer endpoint) */
+  endpoint?: string;
   /** Optional explicit shorter request timeout in milliseconds */
   timeout?: number;
+  /** If true, explicitly trust and save an unknown SSH host key */
+  trustOnFirstUse?: boolean;
 }
 
 /**

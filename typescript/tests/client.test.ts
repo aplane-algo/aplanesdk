@@ -3067,51 +3067,59 @@ describe("preparedGroupToSignRequests", () => {
 });
 
 describe("fromEnv", () => {
-  it("throws when SSH not configured", async () => {
+  it("throws when no default endpoint is configured", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-test-"));
     try {
-      fs.writeFileSync(path.join(tmpDir, "config.yaml"), "endpoint:\n  signer_port: 11270\n");
-      fs.writeFileSync(path.join(tmpDir, "aplane.token"), "test-token");
-
       await assert.rejects(
         SignerClient.fromEnv({ dataDir: tmpDir }),
-        { message: /No endpoint.ssh block/ },
+        { message: /no default signer endpoint/ },
       );
     } finally {
       fs.rmSync(tmpDir, { recursive: true });
     }
   });
 
-  it("throws when SSH host is empty", async () => {
+  it("uses a named direct endpoint and its token", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-test-"));
     try {
+      fs.mkdirSync(path.join(tmpDir, "tokens"));
       fs.writeFileSync(
-        path.join(tmpDir, "config.yaml"),
-        "endpoint:\n  signer_port: 11270\n  ssh:\n    port: 1127\n"
+        path.join(tmpDir, "endpoints.yaml"),
+        "schema_version: 1\nendpoints:\n" +
+        "  primary:\n    role: signer\n    url: https://signer.example.com/\n" +
+        "  qa:\n    role: sentry\n    url: http://127.0.0.1:11271/\n",
       );
-      fs.writeFileSync(path.join(tmpDir, "aplane.token"), "test-token");
-
-      await assert.rejects(
-        SignerClient.fromEnv({ dataDir: tmpDir }),
-        { message: /No endpoint.ssh block/ },
+      fs.writeFileSync(path.join(tmpDir, "tokens", "qa.token"), "qa-token");
+      const client = await SignerClient.fromEnv({
+        dataDir: tmpDir,
+        endpoint: "qa",
+        timeout: 7000,
+      });
+      assert.equal(
+        (client as unknown as { baseUrl: string }).baseUrl,
+        "http://127.0.0.1:11271",
+      );
+      assert.equal(
+        (client as unknown as { token: string }).token,
+        "qa-token",
       );
     } finally {
       fs.rmSync(tmpDir, { recursive: true });
     }
   });
 
-  it("throws when token is missing", async () => {
+  it("rejects self endpoints", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-test-"));
     try {
       fs.writeFileSync(
-        path.join(tmpDir, "config.yaml"),
-        "endpoint:\n  ssh:\n    host: example.com\n    port: 1127\n"
+        path.join(tmpDir, "endpoints.yaml"),
+        "schema_version: 1\nendpoints:\n" +
+        "  primary:\n    role: signer\n    url: self\n",
       );
-      // No token file
 
       await assert.rejects(
         SignerClient.fromEnv({ dataDir: tmpDir }),
-        { message: /No token/ },
+        { message: /not supported by the external SDK/ },
       );
     } finally {
       fs.rmSync(tmpDir, { recursive: true });

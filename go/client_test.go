@@ -19,38 +19,59 @@ import (
 	"github.com/algorand/go-algorand-sdk/v2/types"
 )
 
-func TestFromEnv_RequiresSSH(t *testing.T) {
+func TestFromEnv_RequiresDefaultEndpoint(t *testing.T) {
 	dir := t.TempDir()
-
-	// Write token
-	os.WriteFile(filepath.Join(dir, "aplane.token"), []byte("test-token"), 0600)
-
-	// Write config without SSH block
-	os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("endpoint:\n  signer_port: 11270\n"), 0600)
 
 	_, err := FromEnv(&FromEnvOptions{DataDir: dir})
 	if err == nil {
-		t.Fatal("expected error when SSH not configured")
+		t.Fatal("expected error when no endpoint is configured")
 	}
-	if !strings.Contains(err.Error(), "no endpoint.ssh block") {
-		t.Fatalf("expected 'no endpoint.ssh block' error, got: %s", err)
+	if !strings.Contains(err.Error(), "no default signer endpoint") {
+		t.Fatalf("unexpected error: %s", err)
 	}
 }
 
-func TestFromEnv_RequiresSSHHost(t *testing.T) {
+func TestFromEnv_UsesNamedDirectEndpointAndToken(t *testing.T) {
 	dir := t.TempDir()
-
-	os.WriteFile(filepath.Join(dir, "aplane.token"), []byte("test-token"), 0600)
-
-	// SSH block with empty host
-	os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("endpoint:\n  signer_port: 11270\n  ssh:\n    port: 1127\n"), 0600)
-
-	_, err := FromEnv(&FromEnvOptions{DataDir: dir})
-	if err == nil {
-		t.Fatal("expected error when SSH host is empty")
+	if err := os.MkdirAll(filepath.Join(dir, "tokens"), 0o700); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "no endpoint.ssh block") {
-		t.Fatalf("expected 'no endpoint.ssh block' error, got: %s", err)
+	os.WriteFile(filepath.Join(dir, "tokens", "qa.token"), []byte("qa-token"), 0o600)
+	os.WriteFile(filepath.Join(dir, "endpoints.yaml"), []byte(`
+schema_version: 1
+endpoints:
+  primary:
+    role: signer
+    url: https://signer.example.com/
+  qa:
+    role: sentry
+    url: http://127.0.0.1:11271/
+`), 0o600)
+
+	client, err := FromEnv(&FromEnvOptions{DataDir: dir, Endpoint: "qa", Timeout: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.baseURL != "http://127.0.0.1:11271" || client.token != "qa-token" {
+		t.Fatalf("client routing = %q token %q", client.baseURL, client.token)
+	}
+	if client.requestTimeout != 7*time.Second || !client.requestTimeoutSet {
+		t.Fatalf("timeout = %s set %v", client.requestTimeout, client.requestTimeoutSet)
+	}
+}
+
+func TestFromEnvRejectsSelfEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "endpoints.yaml"), []byte(`
+schema_version: 1
+endpoints:
+  primary:
+    role: signer
+    url: self
+`), 0o600)
+	_, err := FromEnv(&FromEnvOptions{DataDir: dir})
+	if err == nil || !strings.Contains(err.Error(), "not supported by the external SDK") {
+		t.Fatalf("expected self endpoint error, got %v", err)
 	}
 }
 

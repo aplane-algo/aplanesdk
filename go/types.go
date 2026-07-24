@@ -804,6 +804,7 @@ type Config struct {
 type SSHConnectOptions struct {
 	SSHPort         int
 	SignerPort      int
+	LocalPort       int
 	Timeout         int
 	KnownHostsPath  string
 	TrustOnFirstUse bool
@@ -811,8 +812,10 @@ type SSHConnectOptions struct {
 
 // FromEnvOptions contains options for FromEnv().
 type FromEnvOptions struct {
-	DataDir string
-	Timeout int
+	DataDir         string
+	Endpoint        string
+	Timeout         int
+	TrustOnFirstUse bool
 }
 
 // SignOptions contains options for signing with passthrough and foreign support.
