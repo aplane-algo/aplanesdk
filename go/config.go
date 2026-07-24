@@ -125,11 +125,15 @@ func LoadToken(tokenPath string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "", ErrTokenNotFound
+			return "", fmt.Errorf("token file %s not found: %w", path, ErrTokenNotFound)
 		}
 		return "", err
 	}
-	return strings.TrimSpace(string(data)), nil
+	token := strings.TrimSpace(string(data))
+	if token == "" {
+		return "", fmt.Errorf("token file %s is empty", path)
+	}
+	return token, nil
 }
 
 // LoadTokenFromDir loads the token from dataDir/aplane.token.

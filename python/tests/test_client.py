@@ -2414,6 +2414,16 @@ class TestFromEnv:
         assert client.token == "qa-token"
         assert client.timeout == 7
 
+    def test_rejects_empty_token(self, tmp_path):
+        (tmp_path / "endpoints.yaml").write_text(
+            "schema_version: 1\nendpoints:\n"
+            "  primary:\n    role: signer\n    url: https://signer.example.com\n"
+        )
+        token_path = tmp_path / "aplane.token"
+        token_path.write_text(" \n\t")
+        with pytest.raises(SignerError, match=rf"{token_path}.*empty"):
+            SignerClient.from_env(data_dir=str(tmp_path))
+
     def test_rejects_self_endpoint(self, tmp_path):
         (tmp_path / "endpoints.yaml").write_text(
             "schema_version: 1\nendpoints:\n"
@@ -2656,16 +2666,34 @@ class TestLoadClientEndpointRegistry:
     @pytest.mark.parametrize(
         "name",
         [
+            "invalid_default_type.yaml",
+            "invalid_identity_file_type.yaml",
             "invalid_multiple_signers.yaml",
             "invalid_remote_http.yaml",
+            "invalid_schema_version_float.yaml",
             "invalid_ssh_port_zero.yaml",
+            "invalid_token_file_type.yaml",
             "invalid_unknown_field.yaml",
+            "invalid_unknown_tag.yaml",
         ],
     )
     def test_rejects_shared_invalid_fixtures(self, tmp_path, name):
         self._fixture(tmp_path, name)
         with pytest.raises(SignerError):
             load_client_endpoint_registry(str(tmp_path))
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "valid_empty_signer_published_sentries.yaml",
+            "valid_schema_version_null.yaml",
+            "valid_schema_version_zero.yaml",
+        ],
+    )
+    def test_accepts_shared_edge_fixtures(self, tmp_path, name):
+        self._fixture(tmp_path, name)
+        registry = load_client_endpoint_registry(str(tmp_path))
+        assert registry.schema_version == 1
 
     def test_derives_default_and_alias_token_paths(self, tmp_path):
         (tmp_path / "endpoints.yaml").write_text(

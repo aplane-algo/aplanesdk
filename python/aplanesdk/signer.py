@@ -840,6 +840,14 @@ def _optional_integer(value: Any, field: str) -> int:
     return cast(int, value)
 
 
+def _optional_string(value: Any, field: str) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise SignerError(f"{field} must be a string")
+    return value
+
+
 def _resolve_path(file_path: str, data_dir: str) -> str:
     if not file_path:
         return ""
@@ -882,15 +890,13 @@ def _normalize_client_endpoint(
         },
         f'endpoint "{alias}"',
     )
-    role = raw.get("role", "")
-    role = role.strip() if isinstance(role, str) else ""
+    role = _optional_string(raw.get("role"), "role").strip()
     if role not in ("signer", "sentry"):
         raise SignerError(
             f'endpoint "{alias}": unsupported role "{role}" '
             '(expected "signer" or "sentry")'
         )
-    endpoint_url = raw.get("url", "")
-    endpoint_url = endpoint_url.strip().rstrip("/") if isinstance(endpoint_url, str) else ""
+    endpoint_url = _optional_string(raw.get("url"), "url").strip().rstrip("/")
     if not endpoint_url:
         raise SignerError(f'endpoint "{alias}": url is required')
 
@@ -924,18 +930,17 @@ def _normalize_client_endpoint(
                 f'for remote endpoint "{alias}"'
             )
 
-    token_file = raw.get("token_file", "")
-    token_file = token_file if isinstance(token_file, str) else ""
+    token_file = _optional_string(raw.get("token_file"), "token_file")
     if not token_file and endpoint_url != "self":
         token_file = (
             "aplane.token"
             if alias == DEFAULT_CLIENT_ENDPOINT_NAME
             else os.path.join("tokens", f"{alias}.token")
         )
-    identity_file = raw.get("identity_file", "")
-    identity_file = identity_file if isinstance(identity_file, str) else ""
-    known_hosts_path = raw.get("known_hosts_path", "")
-    known_hosts_path = known_hosts_path if isinstance(known_hosts_path, str) else ""
+    identity_file = _optional_string(raw.get("identity_file"), "identity_file")
+    known_hosts_path = _optional_string(
+        raw.get("known_hosts_path"), "known_hosts_path"
+    )
     if endpoint_url.startswith("ssh://"):
         signer_port = signer_port or DEFAULT_SIGNER_PORT
         identity_file = identity_file or ".ssh/id_ed25519"
@@ -949,7 +954,7 @@ def _normalize_client_endpoint(
         published_map = _require_mapping(
             published_raw, f'endpoint "{alias}" published_sentries'
         )
-        if role != "sentry":
+        if role != "sentry" and published_map:
             raise SignerError(
                 f'endpoint "{alias}": published_sentries are only valid on "sentry" endpoints'
             )
@@ -967,11 +972,13 @@ def _normalize_client_endpoint(
                 raise SignerError(
                     f'published sentry "{public_key}" requires component_key and key_type'
                 )
-            last_seen_at = published.get("last_seen_at", "")
+            last_seen_at = _optional_string(
+                published.get("last_seen_at"), "last_seen_at"
+            )
             published_sentries[str(public_key)] = ClientEndpointPublishedSentry(
                 component_key=component_key,
                 key_type=key_type,
-                last_seen_at=last_seen_at.strip() if isinstance(last_seen_at, str) else "",
+                last_seen_at=last_seen_at.strip(),
             )
 
     return ClientEndpointConfig(
@@ -1005,10 +1012,19 @@ def load_client_endpoint_registry(data_dir: str) -> ClientEndpointRegistry:
         raw, {"schema_version", "default", "endpoints"}, CLIENT_ENDPOINTS_FILE
     )
     schema_version = raw.get("schema_version", 1)
-    if isinstance(schema_version, bool) or schema_version != 1:
+    if schema_version is None:
+        schema_version = 1
+    if isinstance(schema_version, bool) or not isinstance(schema_version, int):
         raise SignerError(
             f"{CLIENT_ENDPOINTS_FILE} schema_version = {schema_version}, want 1"
         )
+    if schema_version == 0:
+        schema_version = 1
+    if schema_version != 1:
+        raise SignerError(
+            f"{CLIENT_ENDPOINTS_FILE} schema_version = {schema_version}, want 1"
+        )
+    registry.schema_version = schema_version
     endpoints_value = raw.get("endpoints")
     if endpoints_value is None:
         endpoints_value = {}
@@ -1023,8 +1039,8 @@ def load_client_endpoint_registry(data_dir: str) -> ClientEndpointRegistry:
             data_dir, raw_alias, endpoint_raw
         )
 
-    default = raw.get("default", "")
-    registry.default = default.strip() if isinstance(default, str) else ""
+    default = _optional_string(raw.get("default"), "default")
+    registry.default = default.strip()
     if registry.default:
         _validate_endpoint_alias(registry.default)
     signer_aliases = [
@@ -5768,7 +5784,10 @@ def load_token(path: str) -> str:
         Token string
     """
     with open(path, "r") as f:
-        return f.read().strip()
+        token = f.read().strip()
+    if not token:
+        raise SignerError(f"Token file {path} is empty")
+    return token
 
 
 def request_token(

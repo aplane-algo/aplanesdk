@@ -31,6 +31,13 @@ Relative paths resolve against `APCLIENT_DATA`. The alias `primary` defaults
 to `aplane.token`; every other alias defaults to `tokens/<alias>.token`.
 `token_file` may override either location.
 
+For registries shared with APlane tooling, prefer paths relative to
+`APCLIENT_DATA` or absolute paths. SDK helpers expand `~`, while APlane
+currently treats it as a literal path segment. Use lowercase SSH hostnames so
+URL normalization and `known_hosts` lookup remain consistent across runtimes.
+Treat `published_sentries` as APlane-managed discovery metadata rather than
+hand-edited SDK configuration.
+
 Go `FromEnv`, Python `SignerClient.from_env`, and TypeScript
 `SignerClient.fromEnv` select the default signer unless given an endpoint
 alias. SSH URLs create a managed tunnel. HTTPS and loopback HTTP URLs connect

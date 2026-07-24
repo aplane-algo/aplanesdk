@@ -65,6 +65,9 @@ func LoadClientEndpointRegistry(dataDir string) (*ClientEndpointRegistry, error)
 		}
 		return nil, fmt.Errorf("failed to read %s: %w", endpointsPath, err)
 	}
+	if err := validateClientEndpointRegistryScalarTypes(data); err != nil {
+		return nil, fmt.Errorf("failed to parse %s: %w", endpointsPath, err)
+	}
 
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	decoder.KnownFields(true)
@@ -95,6 +98,109 @@ func LoadClientEndpointRegistry(dataDir string) (*ClientEndpointRegistry, error)
 		return nil, err
 	}
 	return registry, nil
+}
+
+func validateClientEndpointRegistryScalarTypes(data []byte) error {
+	var document yaml.Node
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		return err
+	}
+	if err := rejectUnknownYAMLTags(&document); err != nil {
+		return err
+	}
+	if len(document.Content) == 0 {
+		return nil
+	}
+	root := document.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return nil
+	}
+
+	if err := requireYAMLScalarType(yamlMappingValue(root, "schema_version"), "schema_version", "!!int", "!!null"); err != nil {
+		return err
+	}
+	if err := requireYAMLScalarType(yamlMappingValue(root, "default"), "default", "!!str", "!!null"); err != nil {
+		return err
+	}
+	endpoints := yamlMappingValue(root, "endpoints")
+	if endpoints == nil || endpoints.ShortTag() == "!!null" || endpoints.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(endpoints.Content); i += 2 {
+		alias := endpoints.Content[i]
+		endpoint := endpoints.Content[i+1]
+		if err := requireYAMLScalarType(alias, "endpoint alias", "!!str"); err != nil {
+			return err
+		}
+		if endpoint.Kind != yaml.MappingNode {
+			continue
+		}
+		label := fmt.Sprintf("endpoint %q", alias.Value)
+		for _, field := range []string{"role", "url", "identity_file", "known_hosts_path", "token_file"} {
+			if err := requireYAMLScalarType(yamlMappingValue(endpoint, field), label+" "+field, "!!str", "!!null"); err != nil {
+				return err
+			}
+		}
+		for _, field := range []string{"signer_port", "local_port"} {
+			if err := requireYAMLScalarType(yamlMappingValue(endpoint, field), label+" "+field, "!!int", "!!null"); err != nil {
+				return err
+			}
+		}
+		published := yamlMappingValue(endpoint, "published_sentries")
+		if published == nil || published.ShortTag() == "!!null" || published.Kind != yaml.MappingNode {
+			continue
+		}
+		for j := 0; j+1 < len(published.Content); j += 2 {
+			entry := published.Content[j+1]
+			if entry.Kind != yaml.MappingNode {
+				continue
+			}
+			for _, field := range []string{"component_key", "key_type", "last_seen_at"} {
+				if err := requireYAMLScalarType(yamlMappingValue(entry, field), "published sentry "+field, "!!str", "!!null"); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func rejectUnknownYAMLTags(node *yaml.Node) error {
+	tag := node.ShortTag()
+	if strings.HasPrefix(tag, "!") && !strings.HasPrefix(tag, "!!") {
+		return fmt.Errorf("unsupported YAML tag %q", tag)
+	}
+	for _, child := range node.Content {
+		if err := rejectUnknownYAMLTags(child); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func yamlMappingValue(mapping *yaml.Node, key string) *yaml.Node {
+	if mapping == nil || mapping.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value == key {
+			return mapping.Content[i+1]
+		}
+	}
+	return nil
+}
+
+func requireYAMLScalarType(node *yaml.Node, label string, allowed ...string) error {
+	if node == nil {
+		return nil
+	}
+	tag := node.ShortTag()
+	for _, candidate := range allowed {
+		if tag == candidate {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s must be %s, got %s", label, strings.Join(allowed, " or "), tag)
 }
 
 func validateClientEndpointAlias(alias string) error {

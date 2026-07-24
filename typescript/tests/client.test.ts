@@ -2884,15 +2884,36 @@ describe("loadClientEndpointRegistry", () => {
   });
 
   for (const fixture of [
+    "invalid_default_type.yaml",
+    "invalid_identity_file_type.yaml",
     "invalid_multiple_signers.yaml",
     "invalid_remote_http.yaml",
+    "invalid_schema_version_float.yaml",
     "invalid_ssh_port_zero.yaml",
+    "invalid_token_file_type.yaml",
     "invalid_unknown_field.yaml",
+    "invalid_unknown_tag.yaml",
   ]) {
     it(`rejects ${fixture}`, () => {
       const tmpDir = fixtureDir(fixture);
       try {
         assert.throws(() => loadClientEndpointRegistry(tmpDir));
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true });
+      }
+    });
+  }
+
+  for (const fixture of [
+    "valid_empty_signer_published_sentries.yaml",
+    "valid_schema_version_null.yaml",
+    "valid_schema_version_zero.yaml",
+  ]) {
+    it(`accepts ${fixture}`, () => {
+      const tmpDir = fixtureDir(fixture);
+      try {
+        const registry = loadClientEndpointRegistry(tmpDir);
+        assert.equal(registry.schemaVersion, 1);
       } finally {
         fs.rmSync(tmpDir, { recursive: true });
       }
@@ -3150,6 +3171,25 @@ describe("fromEnv", () => {
       assert.equal(
         (client as unknown as { token: string }).token,
         "qa-token",
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  it("rejects empty tokens", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-test-"));
+    try {
+      fs.writeFileSync(
+        path.join(tmpDir, "endpoints.yaml"),
+        "schema_version: 1\nendpoints:\n" +
+        "  primary:\n    role: signer\n    url: https://signer.example.com\n",
+      );
+      fs.writeFileSync(path.join(tmpDir, "aplane.token"), " \n\t");
+
+      await assert.rejects(
+        SignerClient.fromEnv({ dataDir: tmpDir }),
+        { message: /aplane\.token.*empty/ },
       );
     } finally {
       fs.rmSync(tmpDir, { recursive: true });

@@ -5,7 +5,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import * as net from "net";
-import { parse as parseYaml } from "yaml";
+import { isScalar, parse as parseYaml, parseDocument } from "yaml";
 import type {
   ClientConfig,
   ClientEndpointConfig,
@@ -107,6 +107,14 @@ function optionalInteger(value: unknown, field: string): number {
   return value as number;
 }
 
+function optionalString(value: unknown, field: string): string {
+  if (value === undefined || value === null) return "";
+  if (typeof value !== "string") {
+    throw new SignerError(`${field} must be a string`);
+  }
+  return value;
+}
+
 function resolvePath(filePath: string, dataDir: string): string {
   if (!filePath) return "";
   const expanded = expandPath(filePath);
@@ -144,15 +152,13 @@ function normalizeEndpoint(
     "published_sentries",
   ], `endpoint "${alias}"`);
 
-  const role = typeof raw.role === "string" ? raw.role.trim() : "";
+  const role = optionalString(raw.role, "role").trim();
   if (role !== "signer" && role !== "sentry") {
     throw new SignerError(
       `endpoint "${alias}": unsupported role "${role}" (expected "signer" or "sentry")`,
     );
   }
-  const endpointUrl = typeof raw.url === "string"
-    ? raw.url.trim().replace(/\/+$/, "")
-    : "";
+  const endpointUrl = optionalString(raw.url, "url").trim().replace(/\/+$/, "");
   if (!endpointUrl) {
     throw new SignerError(`endpoint "${alias}": url is required`);
   }
@@ -190,14 +196,14 @@ function normalizeEndpoint(
     }
   }
 
-  let tokenFile = typeof raw.token_file === "string" ? raw.token_file : "";
+  let tokenFile = optionalString(raw.token_file, "token_file");
   if (!tokenFile && endpointUrl !== "self") {
     tokenFile = alias === DEFAULT_CLIENT_ENDPOINT_NAME
       ? "aplane.token"
       : path.join("tokens", `${alias}.token`);
   }
-  let identityFile = typeof raw.identity_file === "string" ? raw.identity_file : "";
-  let knownHostsPath = typeof raw.known_hosts_path === "string" ? raw.known_hosts_path : "";
+  let identityFile = optionalString(raw.identity_file, "identity_file");
+  let knownHostsPath = optionalString(raw.known_hosts_path, "known_hosts_path");
   let normalizedSignerPort = signerPort;
   if (endpointUrl.startsWith("ssh://")) {
     normalizedSignerPort ||= DEFAULT_SIGNER_PORT;
@@ -210,7 +216,7 @@ function normalizeEndpoint(
   let publishedSentries: Record<string, ClientEndpointPublishedSentry> | undefined;
   if (raw.published_sentries !== undefined && raw.published_sentries !== null) {
     requireMapping(raw.published_sentries, `endpoint "${alias}" published_sentries`);
-    if (role !== "sentry") {
+    if (role !== "sentry" && Object.keys(raw.published_sentries).length > 0) {
       throw new SignerError(`endpoint "${alias}": published_sentries are only valid on "sentry" endpoints`);
     }
     publishedSentries = {};
@@ -220,10 +226,11 @@ function normalizeEndpoint(
       if (typeof value.component_key !== "string" || typeof value.key_type !== "string") {
         throw new SignerError(`published sentry "${publicKey}" requires component_key and key_type`);
       }
+      const lastSeenAt = optionalString(value.last_seen_at, "last_seen_at").trim();
       publishedSentries[publicKey] = {
         componentKey: value.component_key,
         keyType: value.key_type,
-        ...(typeof value.last_seen_at === "string" ? { lastSeenAt: value.last_seen_at.trim() } : {}),
+        ...(lastSeenAt ? { lastSeenAt } : {}),
       };
     }
   }
@@ -251,15 +258,36 @@ export function loadClientEndpointRegistry(dataDir: string): ClientEndpointRegis
   if (!fs.existsSync(endpointsPath)) return registry;
 
   let raw: unknown;
+  let schemaVersionSource = "";
   try {
-    raw = parseYaml(fs.readFileSync(endpointsPath, "utf-8")) || {};
+    const document = parseDocument(fs.readFileSync(endpointsPath, "utf-8"));
+    const problem = document.errors[0] ?? document.warnings[0];
+    if (problem) throw problem;
+    const schemaVersionNode = document.get("schema_version", true);
+    if (isScalar(schemaVersionNode)) {
+      schemaVersionSource = String(schemaVersionNode.source ?? "");
+    }
+    raw = document.toJS() ?? {};
   } catch (error) {
     throw new SignerError(`failed to parse ${endpointsPath}: ${errorMessage(error)}`);
   }
   requireMapping(raw, CLIENT_ENDPOINTS_FILE);
   requireKnownFields(raw, ["schema_version", "default", "endpoints"], CLIENT_ENDPOINTS_FILE);
-  const schemaVersion = raw.schema_version === undefined ? 1 : raw.schema_version;
-  if (schemaVersion !== 1) {
+  const rawSchemaVersion = raw.schema_version;
+  let schemaVersion = rawSchemaVersion;
+  if (schemaVersion === undefined || schemaVersion === null || schemaVersion === 0) {
+    schemaVersion = 1;
+  }
+  if (
+    typeof schemaVersion !== "number"
+    || !Number.isInteger(schemaVersion)
+    || (
+      typeof rawSchemaVersion === "number"
+      && schemaVersionSource !== ""
+      && !/^[+-]?\d+$/.test(schemaVersionSource)
+    )
+    || schemaVersion !== 1
+  ) {
     throw new SignerError(`${CLIENT_ENDPOINTS_FILE} schema_version = ${String(schemaVersion)}, want 1`);
   }
   const endpointsRaw = raw.endpoints ?? {};
@@ -269,7 +297,7 @@ export function loadClientEndpointRegistry(dataDir: string): ClientEndpointRegis
     registry.endpoints[alias] = normalizeEndpoint(dataDir, alias, endpointRaw);
   }
 
-  registry.default = typeof raw.default === "string" ? raw.default.trim() : "";
+  registry.default = optionalString(raw.default, "default").trim();
   if (registry.default) validateAlias(registry.default);
   const signerAliases = Object.entries(registry.endpoints)
     .filter(([, endpoint]) => endpoint.role === "signer")
@@ -339,7 +367,11 @@ export function loadToken(tokenPath: string): string {
     throw new SignerError(`No token found at ${expandedPath}`);
   }
 
-  return fs.readFileSync(expandedPath, "utf-8").trim();
+  const token = fs.readFileSync(expandedPath, "utf-8").trim();
+  if (!token) {
+    throw new SignerError(`Token file ${expandedPath} is empty`);
+  }
+  return token;
 }
 
 /**

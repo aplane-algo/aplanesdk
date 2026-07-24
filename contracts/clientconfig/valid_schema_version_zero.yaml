@@ -1,0 +1,5 @@
+schema_version: 0
+endpoints:
+  primary:
+    role: signer
+    url: ssh://signer.example.com

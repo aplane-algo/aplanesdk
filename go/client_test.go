@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -57,6 +58,53 @@ endpoints:
 	}
 	if client.requestTimeout != 7*time.Second || !client.requestTimeoutSet {
 		t.Fatalf("timeout = %s set %v", client.requestTimeout, client.requestTimeoutSet)
+	}
+}
+
+func TestFromEnv_ReportsResolvedMissingTokenPath(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "endpoints.yaml"), []byte(`
+schema_version: 1
+endpoints:
+  primary:
+    role: signer
+    url: https://signer.example.com
+  qa:
+    role: sentry
+    url: http://127.0.0.1:11271
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := FromEnv(&FromEnvOptions{DataDir: dir, Endpoint: "qa"})
+	wantPath := filepath.Join(dir, "tokens", "qa.token")
+	if err == nil || !strings.Contains(err.Error(), wantPath) {
+		t.Fatalf("FromEnv error = %v, want resolved token path %q", err, wantPath)
+	}
+	if !errors.Is(err, ErrTokenNotFound) {
+		t.Fatalf("FromEnv error = %v, want ErrTokenNotFound", err)
+	}
+}
+
+func TestFromEnv_RejectsEmptyToken(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "endpoints.yaml"), []byte(`
+schema_version: 1
+endpoints:
+  primary:
+    role: signer
+    url: https://signer.example.com
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tokenPath := filepath.Join(dir, "aplane.token")
+	if err := os.WriteFile(tokenPath, []byte(" \n\t"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := FromEnv(&FromEnvOptions{DataDir: dir})
+	if err == nil || !strings.Contains(err.Error(), tokenPath) || !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("FromEnv error = %v, want empty token error with path %q", err, tokenPath)
 	}
 }
 
