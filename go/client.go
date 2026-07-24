@@ -177,6 +177,7 @@ func ConnectSSH(host, token, sshKeyPath string, opts *SSHConnectOptions) (*Signe
 	sshPort := DefaultSSHPort
 	signerPort := DefaultSignerPort
 	timeout := DefaultTimeout
+	localPort := 0
 
 	var knownHostsPath string
 
@@ -190,6 +191,9 @@ func ConnectSSH(host, token, sshKeyPath string, opts *SSHConnectOptions) (*Signe
 		if opts.Timeout > 0 {
 			timeout = opts.Timeout
 		}
+		if opts.LocalPort > 0 {
+			localPort = opts.LocalPort
+		}
 		if opts.KnownHostsPath != "" {
 			knownHostsPath = opts.KnownHostsPath
 		}
@@ -197,13 +201,13 @@ func ConnectSSH(host, token, sshKeyPath string, opts *SSHConnectOptions) (*Signe
 
 	trustOnFirstUse := opts != nil && opts.TrustOnFirstUse
 	tunnel := &sshTunnel{knownHostsPath: knownHostsPath, trustOnFirstUse: trustOnFirstUse}
-	localPort, err := tunnel.connect(host, sshPort, signerPort, token, ExpandPath(sshKeyPath))
+	resolvedLocalPort, err := tunnel.connect(host, sshPort, signerPort, localPort, token, ExpandPath(sshKeyPath))
 	if err != nil {
 		return nil, fmt.Errorf("failed to establish SSH tunnel: %w", err)
 	}
 
 	return &SignerClient{
-		baseURL:           fmt.Sprintf("http://localhost:%d", localPort),
+		baseURL:           fmt.Sprintf("http://localhost:%d", resolvedLocalPort),
 		token:             token,
 		client:            &http.Client{},
 		sshTunnel:         tunnel,
@@ -213,19 +217,23 @@ func ConnectSSH(host, token, sshKeyPath string, opts *SSHConnectOptions) (*Signe
 }
 
 // FromEnv creates a client from environment configuration.
-// Reads token from dataDir/aplane.token and config from dataDir/config.yaml.
-// If config contains SSH settings, connects via SSH tunnel.
+// Routing and token paths come from dataDir/endpoints.yaml. An empty endpoint
+// option selects the default signer.
 func FromEnv(opts *FromEnvOptions) (*SignerClient, error) {
 	dataDir := ""
+	endpointAlias := ""
 	timeout := 0
+	trustOnFirstUse := false
 
 	if opts != nil {
 		if opts.DataDir != "" {
 			dataDir = opts.DataDir
 		}
+		endpointAlias = opts.Endpoint
 		if opts.Timeout > 0 {
 			timeout = opts.Timeout
 		}
+		trustOnFirstUse = opts.TrustOnFirstUse
 	}
 
 	dataDir, err := ResolveDataDir(dataDir)
@@ -233,35 +241,49 @@ func FromEnv(opts *FromEnvOptions) (*SignerClient, error) {
 		return nil, err
 	}
 
-	// Load token
-	token, err := LoadTokenFromDir(dataDir)
+	if _, err := LoadConfig(dataDir); err != nil {
+		return nil, err
+	}
+	registry, err := LoadClientEndpointRegistry(dataDir)
+	if err != nil {
+		return nil, err
+	}
+	_, endpoint, err := ResolveClientEndpoint(registry, endpointAlias)
+	if err != nil {
+		return nil, err
+	}
+	if endpoint.URL == "self" {
+		return nil, fmt.Errorf("endpoint URL %q is not supported by the external SDK", endpoint.URL)
+	}
+	token, err := LoadToken(endpoint.TokenFile)
 	if err != nil {
 		return nil, err
 	}
 
-	// Load config
-	config, err := LoadConfig(dataDir)
-	if err != nil {
-		return nil, err
+	if strings.HasPrefix(endpoint.URL, "ssh://") {
+		host, sshPort, err := ClientEndpointSSHHostPort(endpoint)
+		if err != nil {
+			return nil, err
+		}
+		sshOpts := &SSHConnectOptions{
+			SSHPort:         sshPort,
+			SignerPort:      endpoint.SignerPort,
+			LocalPort:       endpoint.LocalPort,
+			KnownHostsPath:  endpoint.KnownHostsPath,
+			TrustOnFirstUse: trustOnFirstUse,
+		}
+		if timeout > 0 {
+			sshOpts.Timeout = timeout
+		}
+		return ConnectSSH(host, token, endpoint.IdentityFile, sshOpts)
 	}
 
-	// SSH is required
-	if config.SSH == nil || config.SSH.Host == "" {
-		return nil, fmt.Errorf("no endpoint.ssh block in config.yaml; add endpoint.ssh with host, port, and identity_file")
-	}
-
-	sshKeyPath := ResolvePath(config.SSH.IdentityFile, dataDir)
-	knownHostsPath := ResolvePath(config.SSH.KnownHostsPath, dataDir)
-	sshOpts := &SSHConnectOptions{
-		SSHPort:         config.SSH.Port,
-		SignerPort:      config.SignerPort,
-		KnownHostsPath:  knownHostsPath,
-		TrustOnFirstUse: config.SSH.TrustOnFirstUse,
-	}
+	client := NewSignerClientWithToken(endpoint.URL, token)
 	if timeout > 0 {
-		sshOpts.Timeout = timeout
+		client.requestTimeout = time.Duration(timeout) * time.Second
+		client.requestTimeoutSet = true
 	}
-	return ConnectSSH(config.SSH.Host, token, sshKeyPath, sshOpts)
+	return client, nil
 }
 
 // Close closes the client and any SSH tunnel.

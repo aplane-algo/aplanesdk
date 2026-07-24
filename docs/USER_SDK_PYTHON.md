@@ -116,6 +116,7 @@ Typical client layout (installer default: `~/aplane/apclient`):
 ```text
 <data_dir>/
   config.yaml
+  endpoints.yaml
   aplane.token
   .ssh/
     id_ed25519
@@ -124,27 +125,27 @@ Typical client layout (installer default: `~/aplane/apclient`):
 
 The SDK reads:
 
-- `config.yaml` for SSH host/port and signer REST port
-- `aplane.token` for HTTP bearer authentication and the SSH mutual proof
+- `endpoints.yaml` for signer/sentry URLs, ports, paths, and token files
+- the selected endpoint's token for HTTP authentication and SSH mutual proof
 - `.ssh/id_ed25519` for client SSH auth
 - `.ssh/known_hosts` for SSH host key verification
 
-Example `config.yaml`:
+Example `endpoints.yaml`:
 
 ```yaml
-endpoint:
-  signer_port: 11270
-  ssh:
-    host: signer.example.com
-    port: 1127
+schema_version: 1
+default: primary
+endpoints:
+  primary:
+    role: signer
+    url: ssh://signer.example.com:1127
+    signer_port: 11270
     identity_file: .ssh/id_ed25519
     known_hosts_path: .ssh/known_hosts
-    trust_on_first_use: false
 ```
 
-If `endpoint.ssh.trust_on_first_use: true` is set, the SDK will auto-trust an unknown
-host key on first connection and save it to `known_hosts`. Otherwise, unknown
-hosts are rejected until the host key is already trusted.
+First-use trust is a runtime option:
+`SignerClient.from_env(trust_on_first_use=True)`.
 
 ## First-Time Setup
 
@@ -161,16 +162,17 @@ Provision and save a token with the Python helper:
 ```python
 from aplanesdk import request_token_to_file
 
-token_path = request_token_to_file()
+token_path = request_token_to_file(endpoint="sentry.qa")
 print(f"Saved token to {token_path}")
 ```
 
 `request_token_to_file()`:
 
 - uses the same data-dir resolution as `SignerClient.from_env()`
-- loads SSH host, port, key path, and `known_hosts` path from `config.yaml`
+- selects the default signer or named endpoint from `endpoints.yaml`
+- uses that endpoint's SSH host, port, key, and `known_hosts` path
 - requests a token over SSH as `request-token:default`
-- saves the token to `<data_dir>/aplane.token` with mode `0600`
+- saves the token to that endpoint's `token_file` with mode `0600`
 
 The provisioning helper only supports the current product identity
 `default`. An operator must approve the request in `apadmin`.
@@ -196,17 +198,18 @@ finally:
 This path:
 
 - resolves the client data dir,
-- loads `config.yaml`,
-- loads `aplane.token`,
+- validates `config.yaml` contains no obsolete routing,
+- loads and selects an endpoint from `endpoints.yaml`,
+- loads that endpoint's token,
 - resolves SSH paths relative to the client data dir,
 - establishes the SSH tunnel automatically,
 - verifies that the signer answers on the forwarded REST port.
 
 `SignerClient.from_env()` requires:
 
-- a token file at `<data_dir>/aplane.token`
-- an `endpoint.ssh` block in `config.yaml`
-- a readable SSH private key at the configured `identity_file`
+- a default signer endpoint, or an explicit `endpoint=...` alias
+- that endpoint's token file
+- for SSH endpoints, a readable private key at `identity_file`
 
 ### Explicit SSH Connection
 

@@ -7,17 +7,17 @@ APlane Python SDK - Transaction signing via apsigner
 Data directory (required via APCLIENT_DATA env var or data_dir parameter):
     <data_dir>/
     ├── aplane.token         # API token (from request_token_to_file)
-    ├── config.yaml          # Connection settings
+    ├── endpoints.yaml       # Signer and sentry routing
     └── .ssh/
         └── id_ed25519       # SSH key for authentication
 
-Example config.yaml:
-    endpoint:
-      signer_port: 11270
-      ssh:
-        host: signer.example.com
-        port: 1127
-        identity_file: .ssh/id_ed25519
+Example endpoints.yaml:
+    schema_version: 1
+    endpoints:
+      primary:
+        role: signer
+        url: ssh://signer.example.com:1127
+        signer_port: 11270
 
 Token Provisioning:
     from aplanesdk import request_token_to_file
@@ -42,6 +42,7 @@ from __future__ import annotations
 import base64
 import copy
 import json
+import ipaddress
 import os
 import re
 import requests
@@ -49,8 +50,9 @@ import secrets
 import socket
 import threading
 import time
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Optional, Dict, List, Any, Callable, cast
+from urllib.parse import urlparse
 
 from algosdk import abi, constants, encoding, transaction
 from algosdk.v2client import models
@@ -68,6 +70,8 @@ from ._ssh_tokenproof import TokenProofClient
 # Default ports (match apshell/apsigner defaults)
 DEFAULT_SSH_PORT = 1127
 DEFAULT_SIGNER_PORT = 11270
+CLIENT_ENDPOINTS_FILE = "endpoints.yaml"
+DEFAULT_CLIENT_ENDPOINT_NAME = "primary"
 HEALTH_TIMEOUT = 3
 STATUS_TIMEOUT = 5
 INVENTORY_TIMEOUT = 30
@@ -324,20 +328,40 @@ class KeyInfo:
 
 
 @dataclass
-class SSHConfig:
-    """SSH tunnel configuration for public-key plus mutual token-proof auth."""
-    host: str  # Remote host to SSH to
-    port: int = DEFAULT_SSH_PORT
-    identity_file: str = ".ssh/id_ed25519"  # Relative to data_dir
-    known_hosts_path: str = ".ssh/known_hosts"  # Relative to data_dir
-    trust_on_first_use: bool = False  # If true, auto-trust unknown host keys (TOFU)
+class ClientConfig:
+    """Non-routing client configuration loaded from config.yaml."""
+    network: str = "testnet"
+    networks_allowed: List[str] = field(default_factory=list)
+    theme: str = "auto"
 
 
 @dataclass
-class ClientConfig:
-    """Client configuration loaded from config.yaml"""
-    signer_port: int = DEFAULT_SIGNER_PORT
-    ssh: Optional[SSHConfig] = None  # Required in config.yaml
+class ClientEndpointPublishedSentry:
+    """Endpoint-local sentry discovery metadata."""
+    component_key: str
+    key_type: str
+    last_seen_at: str = ""
+
+
+@dataclass
+class ClientEndpointConfig:
+    """One signer or sentry connection profile from endpoints.yaml."""
+    role: str
+    url: str
+    signer_port: int = 0
+    local_port: int = 0
+    identity_file: str = ""
+    known_hosts_path: str = ""
+    token_file: str = ""
+    published_sentries: Optional[Dict[str, ClientEndpointPublishedSentry]] = None
+
+
+@dataclass
+class ClientEndpointRegistry:
+    """Normalized client-local endpoint registry."""
+    schema_version: int = 1
+    default: str = ""
+    endpoints: Dict[str, ClientEndpointConfig] = field(default_factory=dict)
 
 
 @dataclass
@@ -775,27 +799,295 @@ def load_config(data_dir: str) -> ClientConfig:
     except yaml.YAMLError as e:
         raise SignerError(f"failed to parse config.yaml: {e}") from e
 
-    endpoint_data = data.get("endpoint") or {}
-    if not isinstance(endpoint_data, dict):
-        raise SignerError("endpoint must be a mapping in config.yaml")
-
-    if "signer_port" in endpoint_data:
-        config.signer_port = int(endpoint_data["signer_port"])
-
-    # Parse nested SSH config (if present, SSH tunnel is enabled)
-    if "ssh" in endpoint_data and endpoint_data["ssh"]:
-        ssh_data = endpoint_data["ssh"]
-        if "host" not in ssh_data:
-            raise SignerError("endpoint.ssh.host is required when endpoint.ssh block is present")
-        config.ssh = SSHConfig(
-            host=ssh_data["host"],
-            port=ssh_data.get("port", DEFAULT_SSH_PORT),
-            identity_file=ssh_data.get("identity_file", ".ssh/id_ed25519"),
-            known_hosts_path=ssh_data.get("known_hosts_path", ".ssh/known_hosts"),
-            trust_on_first_use=ssh_data.get("trust_on_first_use", False),
-        )
+    if not isinstance(data, dict):
+        raise SignerError("config.yaml must be a mapping")
+    for field in ("endpoint", "ssh", "signer_port"):
+        if field in data:
+            raise SignerError(
+                f'unsupported client routing in config.yaml: remove "{field}" '
+                "and configure endpoints.yaml"
+            )
+    if isinstance(data.get("network"), str):
+        config.network = data["network"]
+    if isinstance(data.get("networks_allowed"), list) and all(
+        isinstance(item, str) for item in data["networks_allowed"]
+    ):
+        config.networks_allowed = data["networks_allowed"]
+    if isinstance(data.get("theme"), str) and data["theme"]:
+        config.theme = data["theme"]
 
     return config
+
+
+def _require_mapping(value: Any, label: str) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        raise SignerError(f"{label} must be a mapping")
+    return cast(Dict[str, Any], value)
+
+
+def _require_known_fields(value: Dict[str, Any], allowed: set[str], label: str) -> None:
+    unknown = set(value) - allowed
+    if unknown:
+        field = sorted(str(item) for item in unknown)[0]
+        raise SignerError(f'{label} contains unknown field "{field}"')
+
+
+def _optional_integer(value: Any, field: str) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise SignerError(f"{field} must be an integer")
+    return cast(int, value)
+
+
+def _optional_string(value: Any, field: str) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise SignerError(f"{field} must be a string")
+    return value
+
+
+def _resolve_path(file_path: str, data_dir: str) -> str:
+    if not file_path:
+        return ""
+    expanded = os.path.expanduser(file_path)
+    return expanded if os.path.isabs(expanded) else os.path.join(data_dir, expanded)
+
+
+def _validate_endpoint_alias(alias: str) -> None:
+    if not alias or re.fullmatch(r"[A-Za-z0-9._-]+", alias) is None:
+        raise SignerError(
+            f'alias "{alias}" must contain only ASCII letters, digits, \'.\', \'_\', or \'-\''
+        )
+
+
+def _is_loopback_endpoint_host(host: str) -> bool:
+    normalized = host.lower().strip("[]")
+    if normalized == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def _normalize_client_endpoint(
+    data_dir: str, alias: str, raw_value: Any
+) -> ClientEndpointConfig:
+    raw = _require_mapping(raw_value, f'endpoint "{alias}"')
+    _require_known_fields(
+        raw,
+        {
+            "role",
+            "url",
+            "signer_port",
+            "local_port",
+            "identity_file",
+            "known_hosts_path",
+            "token_file",
+            "published_sentries",
+        },
+        f'endpoint "{alias}"',
+    )
+    role = _optional_string(raw.get("role"), "role").strip()
+    if role not in ("signer", "sentry"):
+        raise SignerError(
+            f'endpoint "{alias}": unsupported role "{role}" '
+            '(expected "signer" or "sentry")'
+        )
+    endpoint_url = _optional_string(raw.get("url"), "url").strip().rstrip("/")
+    if not endpoint_url:
+        raise SignerError(f'endpoint "{alias}": url is required')
+
+    signer_port = _optional_integer(raw.get("signer_port"), "signer_port")
+    local_port = _optional_integer(raw.get("local_port"), "local_port")
+    for field, port in (("signer_port", signer_port), ("local_port", local_port)):
+        if port < 0 or port > 65535:
+            raise SignerError(
+                f'endpoint "{alias}": {field} must be 1-65535 when set'
+            )
+
+    if endpoint_url != "self":
+        try:
+            parsed = urlparse(endpoint_url)
+            parsed_port = parsed.port
+        except ValueError as exc:
+            raise SignerError(f'endpoint "{alias}": invalid url: {exc}') from exc
+        if parsed.scheme not in ("ssh", "https", "http"):
+            raise SignerError(
+                f'endpoint "{alias}": unsupported url scheme "{parsed.scheme}"'
+            )
+        if not parsed.hostname:
+            raise SignerError(f'endpoint "{alias}": url host is required')
+        if parsed_port is not None and not 1 <= parsed_port <= 65535:
+            raise SignerError(
+                f'endpoint "{alias}": invalid url port "{parsed_port}"'
+            )
+        if parsed.scheme == "http" and not _is_loopback_endpoint_host(parsed.hostname):
+            raise SignerError(
+                "raw http endpoints must be loopback; use ssh:// or https:// "
+                f'for remote endpoint "{alias}"'
+            )
+
+    token_file = _optional_string(raw.get("token_file"), "token_file")
+    if not token_file and endpoint_url != "self":
+        token_file = (
+            "aplane.token"
+            if alias == DEFAULT_CLIENT_ENDPOINT_NAME
+            else os.path.join("tokens", f"{alias}.token")
+        )
+    identity_file = _optional_string(raw.get("identity_file"), "identity_file")
+    known_hosts_path = _optional_string(
+        raw.get("known_hosts_path"), "known_hosts_path"
+    )
+    if endpoint_url.startswith("ssh://"):
+        signer_port = signer_port or DEFAULT_SIGNER_PORT
+        identity_file = identity_file or ".ssh/id_ed25519"
+        known_hosts_path = known_hosts_path or ".ssh/known_hosts"
+        identity_file = _resolve_path(identity_file, data_dir)
+        known_hosts_path = _resolve_path(known_hosts_path, data_dir)
+
+    published_sentries = None
+    published_raw = raw.get("published_sentries")
+    if published_raw is not None:
+        published_map = _require_mapping(
+            published_raw, f'endpoint "{alias}" published_sentries'
+        )
+        if role != "sentry" and published_map:
+            raise SignerError(
+                f'endpoint "{alias}": published_sentries are only valid on "sentry" endpoints'
+            )
+        published_sentries = {}
+        for public_key, value in published_map.items():
+            published = _require_mapping(value, f'published sentry "{public_key}"')
+            _require_known_fields(
+                published,
+                {"component_key", "key_type", "last_seen_at"},
+                f'published sentry "{public_key}"',
+            )
+            component_key = published.get("component_key")
+            key_type = published.get("key_type")
+            if not isinstance(component_key, str) or not isinstance(key_type, str):
+                raise SignerError(
+                    f'published sentry "{public_key}" requires component_key and key_type'
+                )
+            last_seen_at = _optional_string(
+                published.get("last_seen_at"), "last_seen_at"
+            )
+            published_sentries[str(public_key)] = ClientEndpointPublishedSentry(
+                component_key=component_key,
+                key_type=key_type,
+                last_seen_at=last_seen_at.strip(),
+            )
+
+    return ClientEndpointConfig(
+        role=role,
+        url=endpoint_url,
+        signer_port=signer_port,
+        local_port=local_port,
+        identity_file=identity_file,
+        known_hosts_path=known_hosts_path,
+        token_file=_resolve_path(token_file, data_dir),
+        published_sentries=published_sentries,
+    )
+
+
+def load_client_endpoint_registry(data_dir: str) -> ClientEndpointRegistry:
+    """Load and normalize data_dir/endpoints.yaml."""
+    registry = ClientEndpointRegistry()
+    endpoints_path = os.path.join(data_dir, CLIENT_ENDPOINTS_FILE)
+    if not os.path.exists(endpoints_path):
+        return registry
+
+    import yaml
+
+    try:
+        with open(endpoints_path, "r") as handle:
+            raw_value = yaml.safe_load(handle) or {}
+    except yaml.YAMLError as exc:
+        raise SignerError(f"failed to parse {endpoints_path}: {exc}") from exc
+    raw = _require_mapping(raw_value, CLIENT_ENDPOINTS_FILE)
+    _require_known_fields(
+        raw, {"schema_version", "default", "endpoints"}, CLIENT_ENDPOINTS_FILE
+    )
+    schema_version = raw.get("schema_version", 1)
+    if schema_version is None:
+        schema_version = 1
+    if isinstance(schema_version, bool) or not isinstance(schema_version, int):
+        raise SignerError(
+            f"{CLIENT_ENDPOINTS_FILE} schema_version = {schema_version}, want 1"
+        )
+    if schema_version == 0:
+        schema_version = 1
+    if schema_version != 1:
+        raise SignerError(
+            f"{CLIENT_ENDPOINTS_FILE} schema_version = {schema_version}, want 1"
+        )
+    registry.schema_version = schema_version
+    endpoints_value = raw.get("endpoints")
+    if endpoints_value is None:
+        endpoints_value = {}
+    endpoints_raw = _require_mapping(
+        endpoints_value, f"{CLIENT_ENDPOINTS_FILE} endpoints"
+    )
+    for raw_alias, endpoint_raw in endpoints_raw.items():
+        if not isinstance(raw_alias, str):
+            raise SignerError("endpoint aliases must be strings")
+        _validate_endpoint_alias(raw_alias)
+        registry.endpoints[raw_alias] = _normalize_client_endpoint(
+            data_dir, raw_alias, endpoint_raw
+        )
+
+    default = _optional_string(raw.get("default"), "default")
+    registry.default = default.strip()
+    if registry.default:
+        _validate_endpoint_alias(registry.default)
+    signer_aliases = [
+        alias
+        for alias, endpoint in registry.endpoints.items()
+        if endpoint.role == "signer"
+    ]
+    if len(signer_aliases) > 1:
+        raise SignerError(
+            f'{CLIENT_ENDPOINTS_FILE} may contain at most one "signer" endpoint'
+        )
+    if not signer_aliases:
+        if registry.default:
+            raise SignerError(
+                f'{CLIENT_ENDPOINTS_FILE} default endpoint "{registry.default}" '
+                'is set but no "signer" endpoint is configured'
+            )
+    elif registry.default and registry.default != signer_aliases[0]:
+        raise SignerError(
+            f'{CLIENT_ENDPOINTS_FILE} default endpoint "{registry.default}" must be '
+            f'the "signer" endpoint "{signer_aliases[0]}"'
+        )
+    else:
+        registry.default = signer_aliases[0]
+    return registry
+
+
+def resolve_client_endpoint(
+    registry: ClientEndpointRegistry, alias: Optional[str] = None
+) -> tuple[str, ClientEndpointConfig]:
+    """Resolve an explicit endpoint alias or the registry's default signer."""
+    selected = alias or registry.default
+    if not selected:
+        raise SignerError(f"{CLIENT_ENDPOINTS_FILE} has no default signer endpoint")
+    if selected not in registry.endpoints:
+        raise SignerError(f'endpoint alias "{selected}" is not defined')
+    return selected, registry.endpoints[selected]
+
+
+def client_endpoint_ssh_host_port(
+    endpoint: ClientEndpointConfig,
+) -> tuple[str, int]:
+    """Resolve host and SSH port from an ssh:// endpoint."""
+    parsed = urlparse(endpoint.url)
+    if parsed.scheme != "ssh":
+        raise SignerError(f'endpoint "{endpoint.url}" requires ssh://')
+    return parsed.hostname or "", parsed.port or DEFAULT_SSH_PORT
 
 
 # -----------------------------------------------------------------------------
@@ -1872,7 +2164,7 @@ class _SSHTunnel:
         if not self._trust_on_first_use:
             raise SignerError(
                 f"Unknown SSH host key for {self._ssh_host}:{self._ssh_port}; "
-                f"to trust this host, set endpoint.ssh.trust_on_first_use: true in config.yaml, "
+                f"pass trust_on_first_use=True for explicit first-use trust, "
                 f"or connect via apshell first to save the host key to "
                 f"{self._known_hosts_path}"
             )
@@ -2036,6 +2328,7 @@ class SignerClient:
         timeout: Optional[int] = None,
         known_hosts_path: str = "",
         trust_on_first_use: bool = False,
+        local_port: int = 0,
     ) -> "SignerClient":
         """
         Connect to remote apsigner via SSH tunnel.
@@ -2064,8 +2357,8 @@ class SignerClient:
         import os
         ssh_key_path = os.path.expanduser(ssh_key_path)
 
-        # Find a free local port
-        local_port = _find_free_port()
+        # Find a free local port unless the endpoint pins one.
+        local_port = local_port or _find_free_port()
 
         try:
             tunnel = _SSHTunnel(
@@ -2102,20 +2395,24 @@ class SignerClient:
     def from_env(
         cls,
         data_dir: Optional[str] = None,
-        timeout: Optional[int] = None
+        timeout: Optional[int] = None,
+        endpoint: Optional[str] = None,
+        trust_on_first_use: bool = False,
     ) -> "SignerClient":
         """
-        Connect using config file from data directory.
+        Connect using the endpoint registry from a data directory.
 
         Data directory contents:
-            - config.yaml: Connection settings
-            - aplane.token: Authentication token
+            - endpoints.yaml: Signer and sentry routing
+            - aplane.token or tokens/<alias>.token: Authentication token
             - .ssh/id_ed25519: SSH key for authentication
 
         Args:
             data_dir: Client data directory. Required unless APCLIENT_DATA
                 environment variable is set.
             timeout: Optional explicit request timeout in seconds
+            endpoint: Optional signer or sentry endpoint alias
+            trust_on_first_use: Explicitly trust an unknown SSH host key
 
         Returns:
             SignerClient instance
@@ -2132,43 +2429,36 @@ class SignerClient:
         """
         data_dir = _resolve_data_dir(data_dir)
 
-        # Load config from data_dir/config.yaml
-        config = load_config(data_dir)
-
-        # Load token from data directory
-        token_path = os.path.join(data_dir, "aplane.token")
+        load_config(data_dir)
+        registry = load_client_endpoint_registry(data_dir)
+        _, selected = resolve_client_endpoint(registry, endpoint)
+        if selected.url == "self":
+            raise SignerError(
+                f'endpoint URL "{selected.url}" is not supported by the external SDK'
+            )
+        token_path = selected.token_file
         if not os.path.exists(token_path):
             raise SignerError(f"No token found at {token_path}")
         token = load_token(token_path)
 
-        # Check if SSH is configured
-        if config.ssh:
-            # Resolve SSH key path (relative to data_dir)
-            ssh_key_path = os.path.join(data_dir, config.ssh.identity_file)
-            if not os.path.exists(ssh_key_path):
+        if selected.url.startswith("ssh://"):
+            host, ssh_port = client_endpoint_ssh_host_port(selected)
+            if not os.path.exists(selected.identity_file):
                 raise SignerError(
-                    f"SSH configured but key not found at {ssh_key_path}"
+                    f"SSH configured but key not found at {selected.identity_file}"
                 )
-
-            # Resolve known_hosts path (relative to data_dir, or use config override)
-            known_hosts_path = os.path.join(data_dir, config.ssh.known_hosts_path)
-
             return cls.connect_ssh(
-                host=config.ssh.host,
+                host=host,
                 token=token,
-                ssh_key_path=ssh_key_path,
-                ssh_port=config.ssh.port,
-                signer_port=config.signer_port,
+                ssh_key_path=selected.identity_file,
+                ssh_port=ssh_port,
+                signer_port=selected.signer_port,
                 timeout=timeout,
-                known_hosts_path=known_hosts_path,
-                trust_on_first_use=config.ssh.trust_on_first_use,
+                known_hosts_path=selected.known_hosts_path,
+                trust_on_first_use=trust_on_first_use,
+                local_port=selected.local_port,
             )
-
-        # SSH is required
-        raise SignerError(
-            "No endpoint.ssh block in config.yaml. "
-            "Add endpoint.ssh with host, port, and identity_file."
-        )
+        return cls(selected.url, token, timeout)
 
     def close(self):
         """Close the client and any SSH tunnel."""
@@ -5494,7 +5784,10 @@ def load_token(path: str) -> str:
         Token string
     """
     with open(path, "r") as f:
-        return f.read().strip()
+        token = f.read().strip()
+    if not token:
+        raise SignerError(f"Token file {path} is empty")
+    return token
 
 
 def request_token(
@@ -5657,8 +5950,7 @@ class _InteractiveHostKeyPolicy(paramiko.MissingHostKeyPolicy):
 
 def request_token_to_file(
     data_dir: Optional[str] = None,
-    host: Optional[str] = None,
-    ssh_port: Optional[int] = None,
+    endpoint: Optional[str] = None,
     identity: str = DEFAULT_PRODUCT_IDENTITY,
     auto_add_host: bool = False,
 ) -> str:
@@ -5666,14 +5958,11 @@ def request_token_to_file(
     Request a token and save it to the data directory.
 
     Convenience function that:
-    1. Loads SSH key from config's identity_file
-    2. Uses config's known_hosts_path for host verification
-    3. Saves the token to data_dir/aplane.token
+    The selected endpoint supplies all SSH routing and the token destination.
 
     Args:
         data_dir: Client data directory. Required unless APCLIENT_DATA env var is set.
-        host: Signer host (default: from config.yaml endpoint.ssh.host)
-        ssh_port: SSH port (default: from config.yaml endpoint.ssh.port or 1127)
+        endpoint: Endpoint alias (default: the registry's signer endpoint)
         identity: Identity ID for the token (default: current product identity).
                   Non-product identities are rejected in the current single-operator mode.
         auto_add_host: If True, automatically trust unknown hosts
@@ -5690,33 +5979,25 @@ def request_token_to_file(
         request_token_to_file()
 
         # Or with explicit parameters
-        request_token_to_file(data_dir="/custom/path", host="signer.example.com")
+        request_token_to_file(data_dir="/custom/path", endpoint="sentry.qa")
 
         # Now you can use SignerClient.from_env()
         client = SignerClient.from_env()
     """
     data_dir = _resolve_data_dir(data_dir)
 
-    # Load config to get host/port if not specified
-    config = load_config(data_dir)
-    if host is None:
-        if config.ssh is None:
-            raise SignerError(
-                "No host specified and no endpoint.ssh.host in config.yaml. "
-                "Pass host parameter or add endpoint.ssh block to config.yaml."
-            )
-        host = config.ssh.host
-    if ssh_port is None:
-        ssh_port = config.ssh.port if config.ssh else DEFAULT_SSH_PORT
-
-    # Use paths from config, or defaults
-    if config.ssh:
-        ssh_key_path = os.path.join(data_dir, config.ssh.identity_file)
-        known_hosts_path = os.path.join(data_dir, config.ssh.known_hosts_path)
-    else:
-        ssh_key_path = os.path.join(data_dir, ".ssh", "id_ed25519")
-        known_hosts_path = os.path.join(data_dir, ".ssh", "known_hosts")
-    token_path = os.path.join(data_dir, "aplane.token")
+    load_config(data_dir)
+    registry = load_client_endpoint_registry(data_dir)
+    _, selected = resolve_client_endpoint(registry, endpoint)
+    if not selected.url.startswith("ssh://"):
+        raise SignerError(
+            f'endpoint "{selected.url}" cannot provision tokens; '
+            "request_token_to_file requires ssh://"
+        )
+    host, ssh_port = client_endpoint_ssh_host_port(selected)
+    ssh_key_path = selected.identity_file
+    known_hosts_path = selected.known_hosts_path
+    token_path = selected.token_file
 
     if not os.path.exists(ssh_key_path):
         raise SignerError(
@@ -5738,9 +6019,13 @@ def request_token_to_file(
     )
 
     # Save token with secure permissions
+    token_dir = os.path.dirname(token_path)
+    if token_dir:
+        os.makedirs(token_dir, mode=0o700, exist_ok=True)
     fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         f.write(token)
+    os.chmod(token_path, 0o600)
 
     print(f"✓ Token saved to {token_path}")
     return token_path

@@ -16,10 +16,6 @@ func TestLoadConfig_WithClientRuntimeFields(t *testing.T) {
 network: mainnet
 networks_allowed: [mainnet, testnet]
 theme: light
-endpoint:
-  signer_port: 11271
-  ssh:
-    host: signer.example.com
 algod:
   mainnet:
     server: https://mainnet-api.example.com
@@ -42,9 +38,6 @@ algod:
 	if cfg.Theme != "light" {
 		t.Fatalf("expected light theme, got %q", cfg.Theme)
 	}
-	if cfg.SignerPort != 11271 {
-		t.Fatalf("expected signer port 11271, got %d", cfg.SignerPort)
-	}
 	algodCfg, err := cfg.GetAlgodConfig("mainnet")
 	if err != nil {
 		t.Fatalf("GetAlgodConfig: %v", err)
@@ -57,7 +50,7 @@ algod:
 	}
 }
 
-func TestLoadConfig_ResolvesSSHPathsAndDefaults(t *testing.T) {
+func TestLoadConfig_RejectsObsoleteEndpointRouting(t *testing.T) {
 	dir := t.TempDir()
 	err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`
 endpoint:
@@ -68,21 +61,9 @@ endpoint:
 		t.Fatalf("write config: %v", err)
 	}
 
-	cfg, err := LoadConfig(dir)
-	if err != nil {
-		t.Fatalf("LoadConfig: %v", err)
-	}
-	if cfg.SSH == nil {
-		t.Fatal("expected SSH config")
-	}
-	if cfg.SSH.Port != DefaultSSHPort {
-		t.Fatalf("expected default ssh port %d, got %d", DefaultSSHPort, cfg.SSH.Port)
-	}
-	if cfg.SSH.IdentityFile != filepath.Join(dir, ".ssh/id_ed25519") {
-		t.Fatalf("unexpected identity path %q", cfg.SSH.IdentityFile)
-	}
-	if cfg.SSH.KnownHostsPath != filepath.Join(dir, ".ssh/known_hosts") {
-		t.Fatalf("unexpected known_hosts path %q", cfg.SSH.KnownHostsPath)
+	_, err = LoadConfig(dir)
+	if err == nil || !strings.Contains(err.Error(), `configure endpoints.yaml`) {
+		t.Fatalf("expected endpoints.yaml migration error, got %v", err)
 	}
 }
 

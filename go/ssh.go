@@ -29,7 +29,7 @@ type sshTunnel struct {
 // The bearer token is proven through a host-key-bound challenge and is never
 // sent as the SSH username.
 // Returns the local port that forwards to the signer.
-func (t *sshTunnel) connect(host string, sshPort, signerPort int, token, sshKeyPath string) (int, error) {
+func (t *sshTunnel) connect(host string, sshPort, signerPort, localPort int, token, sshKeyPath string) (int, error) {
 	// Load SSH private key
 	keyData, err := os.ReadFile(sshKeyPath)
 	if err != nil {
@@ -78,7 +78,7 @@ func (t *sshTunnel) connect(host string, sshPort, signerPort int, token, sshKeyP
 	t.client = client
 
 	// Create local listener on random port
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", localPort))
 	if err != nil {
 		client.Close()
 		return 0, fmt.Errorf("failed to create local listener: %w", err)
@@ -86,7 +86,7 @@ func (t *sshTunnel) connect(host string, sshPort, signerPort int, token, sshKeyP
 	t.listener = listener
 	t.done = make(chan struct{})
 
-	localPort := listener.Addr().(*net.TCPAddr).Port
+	boundPort := listener.Addr().(*net.TCPAddr).Port
 	remoteAddr := fmt.Sprintf("127.0.0.1:%d", signerPort)
 
 	// Start accepting connections
@@ -121,7 +121,7 @@ func (t *sshTunnel) connect(host string, sshPort, signerPort int, token, sshKeyP
 		}
 	}()
 
-	return localPort, nil
+	return boundPort, nil
 }
 
 // close closes the SSH tunnel.
@@ -174,7 +174,7 @@ func (t *sshTunnel) buildHostKeyCallback() (ssh.HostKeyCallback, error) {
 
 		// Unknown host
 		if !t.trustOnFirstUse {
-			return fmt.Errorf("unknown SSH host key for %s; to trust this host, set endpoint.ssh.trust_on_first_use: true in config.yaml, or connect via apshell first to save the host key to %s", hostname, t.knownHostsPath)
+			return fmt.Errorf("unknown SSH host key for %s; pass TrustOnFirstUse for explicit first-use trust, or connect via apshell first to save the host key to %s", hostname, t.knownHostsPath)
 		}
 
 		// TOFU enabled — trust and save key

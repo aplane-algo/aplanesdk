@@ -17,6 +17,9 @@ import {
 } from "./errors.js";
 import {
   loadConfig,
+  loadClientEndpointRegistry,
+  resolveClientEndpoint,
+  clientEndpointSshHostPort,
   loadToken,
   resolveDataDir,
   expandPath,
@@ -24,7 +27,14 @@ import {
 } from "./config.js";
 
 // Re-export config utilities
-export { loadToken, loadConfig, resolveDataDir, expandPath };
+export {
+  loadToken,
+  loadConfig,
+  loadClientEndpointRegistry,
+  resolveClientEndpoint,
+  resolveDataDir,
+  expandPath,
+};
 
 // Current product identity for token provisioning helpers.
 export const DEFAULT_PRODUCT_IDENTITY = "default";
@@ -383,44 +393,40 @@ export async function requestToken(
  * Request a token and save it to the data directory.
  *
  * Convenience function that:
- * 1. Loads SSH key from config's identity_file
- * 2. Uses config's known_hosts_path for host verification
- * 3. Saves the token to data_dir/aplane.token
+ * The selected endpoint supplies all SSH routing and the token destination.
  *
- * @param options - Optional: dataDir, host, sshPort, identity, autoAddHost.
+ * @param options - Optional dataDir, endpoint alias, identity, and first-use trust.
  * Non-product identities are rejected in the current single-operator mode.
  * @returns Path to the saved token file
  */
 export async function requestTokenToFile(
   options: {
     dataDir?: string;
-    host?: string;
-    sshPort?: number;
+    endpoint?: string;
     identity?: string;
     autoAddHost?: boolean;
   } = {}
 ): Promise<string> {
-  const dataDir = resolveDataDir(options.dataDir);
-  const config = loadConfig(dataDir);
-
-  let host = options.host;
-  if (!host) {
-    if (!config.ssh?.host) {
+  const rawOptions = options as Record<string, unknown>;
+  for (const removed of ["host", "sshPort"]) {
+    if (removed in rawOptions) {
       throw new SignerError(
-        "No host specified and no endpoint.ssh.host in config.yaml. " +
-        "Pass host option or add endpoint.ssh block to config.yaml."
+        `requestTokenToFile option "${removed}" was removed; configure and select an endpoints.yaml alias`,
       );
     }
-    host = config.ssh.host;
   }
-
-  const sshPort = options.sshPort ?? config.ssh?.port ?? DEFAULT_SSH_PORT;
-  const sshKeyPath = config.ssh
-    ? path.join(dataDir, config.ssh.identityFile)
-    : path.join(dataDir, ".ssh", "id_ed25519");
-  const knownHostsPath = config.ssh
-    ? path.join(dataDir, config.ssh.knownHostsPath)
-    : path.join(dataDir, ".ssh", "known_hosts");
+  const dataDir = resolveDataDir(options.dataDir);
+  loadConfig(dataDir);
+  const registry = loadClientEndpointRegistry(dataDir);
+  const { endpoint } = resolveClientEndpoint(registry, options.endpoint);
+  if (!endpoint.url.startsWith("ssh://")) {
+    throw new SignerError(
+      `endpoint "${endpoint.url}" cannot provision tokens; requestTokenToFile requires ssh://`,
+    );
+  }
+  const { host, port: sshPort } = clientEndpointSshHostPort(endpoint);
+  const sshKeyPath = endpoint.identityFile;
+  const knownHostsPath = endpoint.knownHostsPath;
 
   if (!fs.existsSync(sshKeyPath)) {
     throw new SignerError(
@@ -437,8 +443,10 @@ export async function requestTokenToFile(
   });
 
   // Save token with secure permissions
-  const tokenPath = path.join(dataDir, "aplane.token");
+  const tokenPath = endpoint.tokenFile;
+  fs.mkdirSync(path.dirname(tokenPath), { recursive: true, mode: 0o700 });
   fs.writeFileSync(tokenPath, token, { mode: 0o600 });
+  fs.chmodSync(tokenPath, 0o600);
 
   return tokenPath;
 }

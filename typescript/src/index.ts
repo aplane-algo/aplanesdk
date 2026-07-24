@@ -7,15 +7,15 @@
  * Data directory (required via APCLIENT_DATA env var or dataDir option):
  *     <data_dir>/
  *     ├── aplane.token         # API token
- *     └── config.yaml          # Connection settings
+ *     └── endpoints.yaml       # Signer and sentry routing
  *
- * Example config.yaml:
- *     endpoint:
- *       signer_port: 11270
- *       ssh:
- *         host: signer.example.com
- *         port: 1127
- *         identity_file: .ssh/id_ed25519
+ * Example endpoints.yaml:
+ *     schema_version: 1
+ *     endpoints:
+ *       primary:
+ *         role: signer
+ *         url: ssh://signer.example.com:1127
+ *         signer_port: 11270
  *
  * Usage:
  *     import { SignerClient, sendRawTransaction } from "aplanesdk";
@@ -62,6 +62,8 @@ export {
   requestTokenToFile,
   loadToken,
   loadConfig,
+  loadClientEndpointRegistry,
+  resolveClientEndpoint,
   resolveDataDir,
   expandPath,
 } from "./utils.js";
@@ -115,7 +117,9 @@ export type {
   StatusResponse,
   GenerateResult,
   ClientConfig,
-  SSHConfig,
+  ClientEndpointConfig,
+  ClientEndpointPublishedSentry,
+  ClientEndpointRegistry,
   FromEnvOptions,
   ConnectSshOptions,
   LsigArgs,

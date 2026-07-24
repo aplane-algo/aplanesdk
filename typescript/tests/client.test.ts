@@ -25,10 +25,15 @@ import {
   KeyNotFoundError,
   KeyDeletionError,
 } from "../src/errors.js";
-import { requestToken } from "../src/utils.js";
+import { requestToken, requestTokenToFile } from "../src/utils.js";
 import { bytesToHex, hexToBytes, concatenateSignedTxns, encodeTransaction, encodeLsigArgs } from "../src/encoding.js";
 import { assembleGroup } from "../src/utils.js";
-import { loadConfig, loadTokenFromDir } from "../src/config.js";
+import {
+  loadClientEndpointRegistry,
+  loadConfig,
+  loadTokenFromDir,
+  resolveClientEndpoint,
+} from "../src/config.js";
 import { preparedGroupToSignRequests } from "../src/prepared.js";
 import * as fs from "fs";
 import * as os from "os";
@@ -2799,14 +2804,14 @@ describe("loadConfig", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-test-"));
     try {
       const config = loadConfig(tmpDir);
-      assert.equal(config.signerPort, 11270);
-      assert.equal(config.ssh, undefined);
+      assert.equal(config.network, "testnet");
+      assert.equal(config.theme, "auto");
     } finally {
       fs.rmSync(tmpDir, { recursive: true });
     }
   });
 
-  it("parses SSH config", () => {
+  it("rejects obsolete endpoint routing", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-test-"));
     try {
       fs.writeFileSync(
@@ -2820,28 +2825,118 @@ describe("loadConfig", () => {
         "    known_hosts_path: .ssh/hosts\n" +
         "    trust_on_first_use: true\n"
       );
-      const config = loadConfig(tmpDir);
-      assert.equal(config.signerPort, 12345);
-      assert.notEqual(config.ssh, undefined);
-      assert.equal(config.ssh!.host, "signer.example.com");
-      assert.equal(config.ssh!.port, 2222);
-      assert.equal(config.ssh!.identityFile, ".ssh/mykey");
-      assert.equal(config.ssh!.knownHostsPath, ".ssh/hosts");
-      assert.equal(config.ssh!.trustOnFirstUse, true);
+      assert.throws(
+        () => loadConfig(tmpDir),
+        /remove "endpoint" and configure endpoints.yaml/,
+      );
     } finally {
       fs.rmSync(tmpDir, { recursive: true });
     }
   });
 
-  it("defaults trust_on_first_use to false", () => {
+  it("rejects malformed YAML", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-test-"));
     try {
       fs.writeFileSync(
         path.join(tmpDir, "config.yaml"),
-        "endpoint:\n  ssh:\n    host: example.com\n"
+        "network: ["
       );
-      const config = loadConfig(tmpDir);
-      assert.equal(config.ssh!.trustOnFirstUse, false);
+      assert.throws(() => loadConfig(tmpDir), /failed to parse config.yaml/);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+});
+
+describe("loadClientEndpointRegistry", () => {
+  function fixtureDir(name: string): string {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-endpoints-"));
+    fs.copyFileSync(
+      path.join("..", "contracts", "clientconfig", name),
+      path.join(tmpDir, "endpoints.yaml"),
+    );
+    return tmpDir;
+  }
+
+  it("loads the shared valid fixture", () => {
+    const tmpDir = fixtureDir("valid.yaml");
+    try {
+      const registry = loadClientEndpointRegistry(tmpDir);
+      assert.equal(registry.default, "primary");
+      assert.equal(registry.endpoints.primary.url, "ssh://signer.example.com:2222");
+      assert.equal(registry.endpoints.primary.signerPort, 11271);
+      assert.equal(registry.endpoints.primary.localPort, 18080);
+      assert.equal(
+        registry.endpoints.primary.identityFile,
+        path.join(tmpDir, ".ssh", "primary"),
+      );
+      assert.equal(
+        registry.endpoints.primary.tokenFile,
+        path.join(tmpDir, "aplane.token"),
+      );
+      assert.equal(
+        registry.endpoints["sentry.qa"].tokenFile,
+        path.join(tmpDir, "credentials", "sentry.token"),
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  for (const fixture of [
+    "invalid_default_type.yaml",
+    "invalid_identity_file_type.yaml",
+    "invalid_multiple_signers.yaml",
+    "invalid_remote_http.yaml",
+    "invalid_schema_version_float.yaml",
+    "invalid_ssh_port_zero.yaml",
+    "invalid_token_file_type.yaml",
+    "invalid_unknown_field.yaml",
+    "invalid_unknown_tag.yaml",
+  ]) {
+    it(`rejects ${fixture}`, () => {
+      const tmpDir = fixtureDir(fixture);
+      try {
+        assert.throws(() => loadClientEndpointRegistry(tmpDir));
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true });
+      }
+    });
+  }
+
+  for (const fixture of [
+    "valid_empty_signer_published_sentries.yaml",
+    "valid_schema_version_null.yaml",
+    "valid_schema_version_zero.yaml",
+  ]) {
+    it(`accepts ${fixture}`, () => {
+      const tmpDir = fixtureDir(fixture);
+      try {
+        const registry = loadClientEndpointRegistry(tmpDir);
+        assert.equal(registry.schemaVersion, 1);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true });
+      }
+    });
+  }
+
+  it("derives the signer default and alias-based token paths", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-endpoints-"));
+    try {
+      fs.writeFileSync(
+        path.join(tmpDir, "endpoints.yaml"),
+        "schema_version: 1\nendpoints:\n" +
+        "  main:\n    role: signer\n    url: ssh://localhost\n" +
+        "  qa:\n    role: sentry\n    url: http://127.0.0.1:11271\n",
+      );
+      const registry = loadClientEndpointRegistry(tmpDir);
+      assert.equal(registry.default, "main");
+      assert.equal(
+        registry.endpoints.main.tokenFile,
+        path.join(tmpDir, "tokens", "main.token"),
+      );
+      assert.equal(resolveClientEndpoint(registry).alias, "main");
+      assert.equal(resolveClientEndpoint(registry, "qa").endpoint.role, "sentry");
     } finally {
       fs.rmSync(tmpDir, { recursive: true });
     }
@@ -2861,6 +2956,53 @@ describe("requestToken", () => {
       requestToken("signer.example.com", "~/.ssh/id_ed25519"),
       { message: /known_hosts path is required/ },
     );
+  });
+});
+
+describe("requestTokenToFile", () => {
+  it("rejects removed host routing options at runtime", async () => {
+    await assert.rejects(
+      requestTokenToFile({
+        host: "signer.example.com",
+      } as unknown as Parameters<typeof requestTokenToFile>[0]),
+      { message: /option "host" was removed/ },
+    );
+  });
+
+  it("selects a named SSH endpoint", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-token-"));
+    try {
+      fs.writeFileSync(
+        path.join(tmpDir, "endpoints.yaml"),
+        "schema_version: 1\nendpoints:\n" +
+        "  primary:\n    role: signer\n    url: ssh://signer.example.com\n" +
+        "  qa:\n    role: sentry\n    url: ssh://sentry.example.com:2222\n" +
+        "    identity_file: .ssh/qa\n",
+      );
+      await assert.rejects(
+        requestTokenToFile({ dataDir: tmpDir, endpoint: "qa" }),
+        { message: /SSH key not found at .*qa/ },
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  it("rejects non-SSH enrollment endpoints", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-token-"));
+    try {
+      fs.writeFileSync(
+        path.join(tmpDir, "endpoints.yaml"),
+        "schema_version: 1\nendpoints:\n" +
+        "  primary:\n    role: signer\n    url: https://signer.example.com\n",
+      );
+      await assert.rejects(
+        requestTokenToFile({ dataDir: tmpDir }),
+        { message: /requires ssh:\/\// },
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
   });
 });
 
@@ -2994,51 +3136,78 @@ describe("preparedGroupToSignRequests", () => {
 });
 
 describe("fromEnv", () => {
-  it("throws when SSH not configured", async () => {
+  it("throws when no default endpoint is configured", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-test-"));
     try {
-      fs.writeFileSync(path.join(tmpDir, "config.yaml"), "endpoint:\n  signer_port: 11270\n");
-      fs.writeFileSync(path.join(tmpDir, "aplane.token"), "test-token");
-
       await assert.rejects(
         SignerClient.fromEnv({ dataDir: tmpDir }),
-        { message: /No endpoint.ssh block/ },
+        { message: /no default signer endpoint/ },
       );
     } finally {
       fs.rmSync(tmpDir, { recursive: true });
     }
   });
 
-  it("throws when SSH host is empty", async () => {
+  it("uses a named direct endpoint and its token", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-test-"));
     try {
+      fs.mkdirSync(path.join(tmpDir, "tokens"));
       fs.writeFileSync(
-        path.join(tmpDir, "config.yaml"),
-        "endpoint:\n  signer_port: 11270\n  ssh:\n    port: 1127\n"
+        path.join(tmpDir, "endpoints.yaml"),
+        "schema_version: 1\nendpoints:\n" +
+        "  primary:\n    role: signer\n    url: https://signer.example.com/\n" +
+        "  qa:\n    role: sentry\n    url: http://127.0.0.1:11271/\n",
       );
-      fs.writeFileSync(path.join(tmpDir, "aplane.token"), "test-token");
-
-      await assert.rejects(
-        SignerClient.fromEnv({ dataDir: tmpDir }),
-        { message: /No endpoint.ssh block/ },
+      fs.writeFileSync(path.join(tmpDir, "tokens", "qa.token"), "qa-token");
+      const client = await SignerClient.fromEnv({
+        dataDir: tmpDir,
+        endpoint: "qa",
+        timeout: 7000,
+      });
+      assert.equal(
+        (client as unknown as { baseUrl: string }).baseUrl,
+        "http://127.0.0.1:11271",
+      );
+      assert.equal(
+        (client as unknown as { token: string }).token,
+        "qa-token",
       );
     } finally {
       fs.rmSync(tmpDir, { recursive: true });
     }
   });
 
-  it("throws when token is missing", async () => {
+  it("rejects empty tokens", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-test-"));
     try {
       fs.writeFileSync(
-        path.join(tmpDir, "config.yaml"),
-        "endpoint:\n  ssh:\n    host: example.com\n    port: 1127\n"
+        path.join(tmpDir, "endpoints.yaml"),
+        "schema_version: 1\nendpoints:\n" +
+        "  primary:\n    role: signer\n    url: https://signer.example.com\n",
       );
-      // No token file
+      fs.writeFileSync(path.join(tmpDir, "aplane.token"), " \n\t");
 
       await assert.rejects(
         SignerClient.fromEnv({ dataDir: tmpDir }),
-        { message: /No token/ },
+        { message: /aplane\.token.*empty/ },
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  it("rejects self endpoints", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-test-"));
+    try {
+      fs.writeFileSync(
+        path.join(tmpDir, "endpoints.yaml"),
+        "schema_version: 1\nendpoints:\n" +
+        "  primary:\n    role: signer\n    url: self\n",
+      );
+
+      await assert.rejects(
+        SignerClient.fromEnv({ dataDir: tmpDir }),
+        { message: /not supported by the external SDK/ },
       );
     } finally {
       fs.rmSync(tmpDir, { recursive: true });

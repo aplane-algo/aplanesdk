@@ -144,29 +144,38 @@ export interface KeyInfo {
 }
 
 /**
- * SSH tunnel configuration.
- */
-export interface SSHConfig {
-  /** Remote host to SSH to */
-  host: string;
-  /** SSH port (default: 1127) */
-  port: number;
-  /** Path to SSH private key, relative to data directory */
-  identityFile: string;
-  /** Path to known_hosts file, relative to data directory */
-  knownHostsPath: string;
-  /** If true, automatically trust and save unknown host keys (TOFU). Default: false */
-  trustOnFirstUse: boolean;
-}
-
-/**
- * Client configuration for connecting to apsigner.
+ * Non-routing client configuration from config.yaml.
  */
 export interface ClientConfig {
-  /** Signer REST port (default: 11270) */
+  network: string;
+  networksAllowed: string[];
+  theme: string;
+}
+
+/** Endpoint-local sentry discovery metadata. */
+export interface ClientEndpointPublishedSentry {
+  componentKey: string;
+  keyType: string;
+  lastSeenAt?: string;
+}
+
+/** One signer or sentry connection profile from endpoints.yaml. */
+export interface ClientEndpointConfig {
+  role: "signer" | "sentry";
+  url: string;
   signerPort: number;
-  /** SSH configuration (if present, use SSH tunnel) */
-  ssh?: SSHConfig;
+  localPort: number;
+  identityFile: string;
+  knownHostsPath: string;
+  tokenFile: string;
+  publishedSentries?: Record<string, ClientEndpointPublishedSentry>;
+}
+
+/** Normalized client-local endpoint registry. */
+export interface ClientEndpointRegistry {
+  schemaVersion: 1;
+  default: string;
+  endpoints: Record<string, ClientEndpointConfig>;
 }
 
 /**
@@ -177,6 +186,8 @@ export interface ConnectSshOptions {
   sshPort?: number;
   /** Signer REST port on remote (default: 11270) */
   signerPort?: number;
+  /** Local tunnel port (default: choose automatically) */
+  localPort?: number;
   /** Optional explicit shorter request timeout in milliseconds */
   timeout?: number;
   /** Path to known_hosts file for SSH host key verification (required) */
@@ -191,8 +202,12 @@ export interface ConnectSshOptions {
 export interface FromEnvOptions {
   /** Override default data directory */
   dataDir?: string;
+  /** Endpoint alias (default: the registry's signer endpoint) */
+  endpoint?: string;
   /** Optional explicit shorter request timeout in milliseconds */
   timeout?: number;
+  /** If true, explicitly trust and save an unknown SSH host key */
+  trustOnFirstUse?: boolean;
 }
 
 /**

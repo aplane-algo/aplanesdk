@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,38 +20,106 @@ import (
 	"github.com/algorand/go-algorand-sdk/v2/types"
 )
 
-func TestFromEnv_RequiresSSH(t *testing.T) {
+func TestFromEnv_RequiresDefaultEndpoint(t *testing.T) {
 	dir := t.TempDir()
-
-	// Write token
-	os.WriteFile(filepath.Join(dir, "aplane.token"), []byte("test-token"), 0600)
-
-	// Write config without SSH block
-	os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("endpoint:\n  signer_port: 11270\n"), 0600)
 
 	_, err := FromEnv(&FromEnvOptions{DataDir: dir})
 	if err == nil {
-		t.Fatal("expected error when SSH not configured")
+		t.Fatal("expected error when no endpoint is configured")
 	}
-	if !strings.Contains(err.Error(), "no endpoint.ssh block") {
-		t.Fatalf("expected 'no endpoint.ssh block' error, got: %s", err)
+	if !strings.Contains(err.Error(), "no default signer endpoint") {
+		t.Fatalf("unexpected error: %s", err)
 	}
 }
 
-func TestFromEnv_RequiresSSHHost(t *testing.T) {
+func TestFromEnv_UsesNamedDirectEndpointAndToken(t *testing.T) {
 	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "tokens"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(dir, "tokens", "qa.token"), []byte("qa-token"), 0o600)
+	os.WriteFile(filepath.Join(dir, "endpoints.yaml"), []byte(`
+schema_version: 1
+endpoints:
+  primary:
+    role: signer
+    url: https://signer.example.com/
+  qa:
+    role: sentry
+    url: http://127.0.0.1:11271/
+`), 0o600)
 
-	os.WriteFile(filepath.Join(dir, "aplane.token"), []byte("test-token"), 0600)
+	client, err := FromEnv(&FromEnvOptions{DataDir: dir, Endpoint: "qa", Timeout: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.baseURL != "http://127.0.0.1:11271" || client.token != "qa-token" {
+		t.Fatalf("client routing = %q token %q", client.baseURL, client.token)
+	}
+	if client.requestTimeout != 7*time.Second || !client.requestTimeoutSet {
+		t.Fatalf("timeout = %s set %v", client.requestTimeout, client.requestTimeoutSet)
+	}
+}
 
-	// SSH block with empty host
-	os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("endpoint:\n  signer_port: 11270\n  ssh:\n    port: 1127\n"), 0600)
+func TestFromEnv_ReportsResolvedMissingTokenPath(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "endpoints.yaml"), []byte(`
+schema_version: 1
+endpoints:
+  primary:
+    role: signer
+    url: https://signer.example.com
+  qa:
+    role: sentry
+    url: http://127.0.0.1:11271
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := FromEnv(&FromEnvOptions{DataDir: dir, Endpoint: "qa"})
+	wantPath := filepath.Join(dir, "tokens", "qa.token")
+	if err == nil || !strings.Contains(err.Error(), wantPath) {
+		t.Fatalf("FromEnv error = %v, want resolved token path %q", err, wantPath)
+	}
+	if !errors.Is(err, ErrTokenNotFound) {
+		t.Fatalf("FromEnv error = %v, want ErrTokenNotFound", err)
+	}
+}
+
+func TestFromEnv_RejectsEmptyToken(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "endpoints.yaml"), []byte(`
+schema_version: 1
+endpoints:
+  primary:
+    role: signer
+    url: https://signer.example.com
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tokenPath := filepath.Join(dir, "aplane.token")
+	if err := os.WriteFile(tokenPath, []byte(" \n\t"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	_, err := FromEnv(&FromEnvOptions{DataDir: dir})
-	if err == nil {
-		t.Fatal("expected error when SSH host is empty")
+	if err == nil || !strings.Contains(err.Error(), tokenPath) || !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("FromEnv error = %v, want empty token error with path %q", err, tokenPath)
 	}
-	if !strings.Contains(err.Error(), "no endpoint.ssh block") {
-		t.Fatalf("expected 'no endpoint.ssh block' error, got: %s", err)
+}
+
+func TestFromEnvRejectsSelfEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "endpoints.yaml"), []byte(`
+schema_version: 1
+endpoints:
+  primary:
+    role: signer
+    url: self
+`), 0o600)
+	_, err := FromEnv(&FromEnvOptions{DataDir: dir})
+	if err == nil || !strings.Contains(err.Error(), "not supported by the external SDK") {
+		t.Fatalf("expected self endpoint error, got %v", err)
 	}
 }
 
@@ -1249,51 +1318,33 @@ func TestAssembleGroup_MultipleSigners(t *testing.T) {
 
 func TestLoadConfig_Default(t *testing.T) {
 	dir := t.TempDir()
-	config, err := LoadConfig(dir)
+	_, err := LoadConfig(dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if config.SignerPort != DefaultSignerPort {
-		t.Fatalf("expected default port %d, got %d", DefaultSignerPort, config.SignerPort)
-	}
-	if config.SSH != nil {
-		t.Fatal("expected no SSH config")
-	}
 }
 
-func TestLoadConfig_WithSSH(t *testing.T) {
+func TestLoadConfig_RejectsNestedEndpoint(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
 		"endpoint:\n  signer_port: 11271\n  ssh:\n    host: example.com\n    port: 1128\n    identity_file: .ssh/id\n    trust_on_first_use: true\n",
 	), 0600)
 
-	config, err := LoadConfig(dir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if config.SSH == nil {
-		t.Fatal("expected SSH config")
-	}
-	if config.SSH.Host != "example.com" {
-		t.Fatalf("expected example.com, got %s", config.SSH.Host)
-	}
-	if !config.SSH.TrustOnFirstUse {
-		t.Fatal("expected trust_on_first_use true")
+	_, err := LoadConfig(dir)
+	if err == nil || !strings.Contains(err.Error(), "configure endpoints.yaml") {
+		t.Fatalf("expected endpoints.yaml migration error, got %v", err)
 	}
 }
 
-func TestLoadConfig_TrustOnFirstUseDefaultsFalse(t *testing.T) {
+func TestLoadConfig_RejectsTopLevelSignerRouting(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
-		"endpoint:\n  signer_port: 11270\n  ssh:\n    host: localhost\n    port: 1127\n",
+		"signer_port: 11270\n",
 	), 0600)
 
-	config, err := LoadConfig(dir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if config.SSH.TrustOnFirstUse {
-		t.Fatal("expected trust_on_first_use to default to false")
+	_, err := LoadConfig(dir)
+	if err == nil || !strings.Contains(err.Error(), "configure endpoints.yaml") {
+		t.Fatalf("expected endpoints.yaml migration error, got %v", err)
 	}
 }
 

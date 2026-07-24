@@ -1,0 +1,5 @@
+schema_version: 1
+endpoints:
+  primary:
+    role: signer
+    url: !aplane ssh://signer.example.com

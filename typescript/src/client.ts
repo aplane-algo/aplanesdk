@@ -88,7 +88,10 @@ import { preparedGroupToSignRequests, preparedTransactionToSignRequest } from ".
 import { SSH_TOKEN_PROOF_IDENTITY, SSHTokenProofClient } from "./ssh-tokenproof.js";
 import {
   loadConfig,
-  loadTokenFromDir,
+  loadClientEndpointRegistry,
+  loadToken,
+  resolveClientEndpoint,
+  clientEndpointSshHostPort,
   resolveDataDir,
   expandPath,
   DEFAULT_SIGNER_PORT,
@@ -1643,6 +1646,7 @@ class SSHTunnel {
     privateKeyPath: string;
     remoteHost: string;
     remotePort: number;
+    localPort: number;
     knownHostsPath: string;
     trustOnFirstUse: boolean;
   }): Promise<void> {
@@ -1656,7 +1660,7 @@ class SSHTunnel {
     const { Client } = await import("ssh2");
 
     const privateKey = fs.readFileSync(options.privateKeyPath, "utf-8");
-    this.localPort = await findFreePort();
+    this.localPort = options.localPort || await findFreePort();
     const proof = new SSHTokenProofClient(options.token);
 
     // Track host key error for meaningful rejection messages
@@ -1752,7 +1756,7 @@ class SSHTunnel {
             if (!options.trustOnFirstUse) {
               hostKeyError =
                 `Unknown SSH host key for ${formatHostEntry(options.host, options.sshPort)}; ` +
-        `to trust this host, set endpoint.ssh.trust_on_first_use: true in config.yaml, ` +
+                `pass trustOnFirstUse: true for explicit first-use trust, ` +
                 `or connect via apshell first to save the host key to ${options.knownHostsPath}`;
               return false;
             }
@@ -2500,6 +2504,7 @@ export class SignerClient {
   ): Promise<SignerClient> {
     const sshPort = options.sshPort ?? DEFAULT_SSH_PORT;
     const signerPort = options.signerPort ?? DEFAULT_SIGNER_PORT;
+    const localPort = options.localPort ?? 0;
     const timeout = options.timeout;
     const knownHostsPath = options.knownHostsPath ?? "";
     if (!knownHostsPath) {
@@ -2523,6 +2528,7 @@ export class SignerClient {
         privateKeyPath: expandedKeyPath,
         remoteHost: "127.0.0.1",
         remotePort: signerPort,
+        localPort,
         knownHostsPath,
         trustOnFirstUse,
       });
@@ -2553,11 +2559,11 @@ export class SignerClient {
   }
 
   /**
-   * Connect using config file from data directory.
+   * Connect using the endpoint registry from a data directory.
    *
    * Data directory contents:
-   *   - config.yaml: Connection settings (endpoint.signer_port, endpoint.ssh)
-   *   - aplane.token: Authentication token
+   *   - endpoints.yaml: Signer and sentry routing
+   *   - aplane.token or tokens/<alias>.token: Authentication token
    *   - .ssh/id_ed25519: SSH key (if using SSH tunnel)
    *
    * The data directory is required: pass `options.dataDir` or set the
@@ -2579,38 +2585,33 @@ export class SignerClient {
     const dataDir = resolveDataDir(options.dataDir);
     const timeout = options.timeout;
 
-    // Load config from data_dir/config.yaml
-    const config = loadConfig(dataDir);
+    loadConfig(dataDir);
+    const registry = loadClientEndpointRegistry(dataDir);
+    const { endpoint } = resolveClientEndpoint(registry, options.endpoint);
+    if (endpoint.url === "self") {
+      throw new SignerError(
+        `endpoint URL "${endpoint.url}" is not supported by the external SDK`,
+      );
+    }
+    const token = loadToken(endpoint.tokenFile);
 
-    // Load token from data directory
-    const token = loadTokenFromDir(dataDir);
-
-    // Check if SSH is configured
-    if (config.ssh) {
-      // Resolve SSH key path (relative to data_dir)
-      const sshKeyPath = path.join(dataDir, config.ssh.identityFile);
-
-      if (!fs.existsSync(sshKeyPath)) {
-        throw new SignerError(`SSH configured but key not found at ${sshKeyPath}`);
+    if (endpoint.url.startsWith("ssh://")) {
+      const { host, port: sshPort } = clientEndpointSshHostPort(endpoint);
+      if (!fs.existsSync(endpoint.identityFile)) {
+        throw new SignerError(
+          `SSH configured but key not found at ${endpoint.identityFile}`,
+        );
       }
-
-      // Resolve known_hosts path (relative to data dir, or use config override)
-      const knownHostsPath = path.join(dataDir, config.ssh.knownHostsPath);
-
-      return SignerClient.connectSsh(config.ssh.host, token, sshKeyPath, {
-        sshPort: config.ssh.port,
-        signerPort: config.signerPort,
+      return SignerClient.connectSsh(host, token, endpoint.identityFile, {
+        sshPort,
+        signerPort: endpoint.signerPort,
+        localPort: endpoint.localPort,
         timeout,
-        knownHostsPath,
-        trustOnFirstUse: config.ssh.trustOnFirstUse,
+        knownHostsPath: endpoint.knownHostsPath,
+        trustOnFirstUse: options.trustOnFirstUse ?? false,
       });
     }
-
-    // SSH is required
-    throw new SignerError(
-      "No endpoint.ssh block in config.yaml. " +
-      "Add endpoint.ssh with host, port, and identity_file."
-    );
+    return new SignerClient(endpoint.url, token, timeout);
   }
 
   /**

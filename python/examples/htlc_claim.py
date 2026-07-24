@@ -9,15 +9,16 @@ Setup:
     1. Create data directory: mkdir -p ~/aplane/apclient/.ssh
     2. Copy token: cp /path/to/aplane.token ~/aplane/apclient/
     3. Copy SSH key: cp ~/.ssh/your_key ~/aplane/apclient/.ssh/id_ed25519
-    4. Create config.yaml (see below)
+    4. Create endpoints.yaml (see below)
     5. Set env: export APCLIENT_DATA=~/aplane/apclient
 
-Example config.yaml (SSH tunnel):
-    endpoint:
-      signer_port: 11270
-      ssh:
-        host: 192.168.86.73
-        port: 1127
+Example endpoints.yaml (SSH tunnel):
+    schema_version: 1
+    endpoints:
+      primary:
+        role: signer
+        url: ssh://192.168.86.73:1127
+        signer_port: 11270
         identity_file: .ssh/id_ed25519
 
 Prerequisites:

@@ -221,6 +221,28 @@ func TestIntegrationLiveSignerClientWorkflow(t *testing.T) {
 	}
 }
 
+func TestIntegrationEndpointRegistryConnection(t *testing.T) {
+	if os.Getenv("APLANE_SDK_INTEGRATION") != "1" {
+		t.Skip("set APLANE_SDK_INTEGRATION=1 to run live signer integration tests")
+	}
+	dataDir := os.Getenv("APCLIENT_DATA")
+	if dataDir == "" {
+		t.Skip("APCLIENT_DATA is not set")
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, ClientEndpointsFile)); err != nil {
+		t.Skip("APCLIENT_DATA/endpoints.yaml is not available")
+	}
+	client, err := FromEnv(&FromEnvOptions{DataDir: dataDir})
+	if err != nil {
+		t.Fatalf("connect through endpoints.yaml: %v", err)
+	}
+	defer client.Close()
+	healthy, err := client.Health()
+	if err != nil || !healthy {
+		t.Fatalf("endpoint-routed health check: healthy=%v err=%v", healthy, err)
+	}
+}
+
 func selfPaymentTxn(address string) (types.Transaction, error) {
 	genesisHash, err := base64.StdEncoding.DecodeString("SGO1GKSzyE7IEPItTxCByw9x8FmnrCDexi9/cOUJOiI=")
 	if err != nil {

@@ -58,9 +58,8 @@ func ExpandPath(path string) string {
 // LoadConfig loads client configuration from dataDir/config.yaml.
 func LoadConfig(dataDir string) (*Config, error) {
 	config := &Config{
-		Network:    "testnet",
-		SignerPort: DefaultSignerPort,
-		Theme:      "auto",
+		Network: "testnet",
+		Theme:   "auto",
 	}
 
 	configPath := filepath.Join(dataDir, "config.yaml")
@@ -72,14 +71,17 @@ func LoadConfig(dataDir string) (*Config, error) {
 		return nil, err
 	}
 
-	if err := yaml.Unmarshal(data, config); err != nil {
+	var raw map[string]yaml.Node
+	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("failed to parse config.yaml: %w", err)
 	}
-	if config.Endpoint.SignerPort != 0 {
-		config.SignerPort = config.Endpoint.SignerPort
+	for _, field := range []string{"endpoint", "ssh", "signer_port"} {
+		if _, ok := raw[field]; ok {
+			return nil, fmt.Errorf("unsupported client routing in config.yaml: remove %q and configure endpoints.yaml", field)
+		}
 	}
-	if config.Endpoint.SSH != nil {
-		config.SSH = config.Endpoint.SSH
+	if err := yaml.Unmarshal(data, config); err != nil {
+		return nil, fmt.Errorf("failed to parse config.yaml: %w", err)
 	}
 	if config.Algod == nil && len(config.Networks) > 0 {
 		config.Algod = make(AlgodConfig, len(config.Networks))
@@ -110,26 +112,8 @@ func LoadConfig(dataDir string) (*Config, error) {
 			return nil, fmt.Errorf("invalid network in algod config: %w", err)
 		}
 	}
-	if config.SignerPort == 0 {
-		config.SignerPort = DefaultSignerPort
-	}
-	config.Endpoint.SignerPort = config.SignerPort
 	if config.Theme == "" {
 		config.Theme = "auto"
-	}
-	if config.SSH != nil {
-		if config.SSH.Port == 0 {
-			config.SSH.Port = DefaultSSHPort
-		}
-		if config.SSH.IdentityFile == "" {
-			config.SSH.IdentityFile = ".ssh/id_ed25519"
-		}
-		if config.SSH.KnownHostsPath == "" {
-			config.SSH.KnownHostsPath = ".ssh/known_hosts"
-		}
-		config.SSH.IdentityFile = ResolvePath(config.SSH.IdentityFile, dataDir)
-		config.SSH.KnownHostsPath = ResolvePath(config.SSH.KnownHostsPath, dataDir)
-		config.Endpoint.SSH = config.SSH
 	}
 
 	return config, nil
@@ -141,11 +125,15 @@ func LoadToken(tokenPath string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "", ErrTokenNotFound
+			return "", fmt.Errorf("token file %s not found: %w", path, ErrTokenNotFound)
 		}
 		return "", err
 	}
-	return strings.TrimSpace(string(data)), nil
+	token := strings.TrimSpace(string(data))
+	if token == "" {
+		return "", fmt.Errorf("token file %s is empty", path)
+	}
+	return token, nil
 }
 
 // LoadTokenFromDir loads the token from dataDir/aplane.token.

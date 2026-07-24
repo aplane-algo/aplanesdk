@@ -1,0 +1,5 @@
+schema_version: 1
+endpoints:
+  primary:
+    role: signer
+    url: http://signer.example.com:11270

@@ -50,8 +50,8 @@ var (
 	// ErrConfigNotFound indicates config.yaml was not found.
 	ErrConfigNotFound = errors.New("config.yaml not found")
 
-	// ErrTokenNotFound indicates aplane.token was not found.
-	ErrTokenNotFound = errors.New("aplane.token not found")
+	// ErrTokenNotFound indicates the resolved endpoint token file was not found.
+	ErrTokenNotFound = errors.New("token file not found")
 )
 
 // Stable machine-readable error codes carried in ErrorResponse.Code.

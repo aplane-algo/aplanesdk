@@ -48,8 +48,9 @@ SSH tunnel connection:
 		nil,
 	)
 
-From environment (reads config.yaml and aplane.token from APCLIENT_DATA or the
-data_dir passed via FromEnvOptions — the SDK has no implicit default):
+From environment (reads endpoints.yaml and the selected endpoint token from
+APCLIENT_DATA or the data_dir passed via FromEnvOptions — the SDK has no
+implicit default):
 
 	client, err := aplane.FromEnv(nil)
 

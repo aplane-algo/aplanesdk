@@ -40,6 +40,8 @@ from .signer import (
     # Utility
     load_token,
     load_config,
+    load_client_endpoint_registry,
+    resolve_client_endpoint,
 
     # Exceptions
     ERR_CODE_BAD_REQUEST,
@@ -77,8 +79,10 @@ from .signer import (
     BoundedAuthorizationInfo,
     InputModeInfo,
     KeyInfo,
-    SSHConfig,
     ClientConfig,
+    ClientEndpointConfig,
+    ClientEndpointPublishedSentry,
+    ClientEndpointRegistry,
     CreationParam,
     KeyTypeInfo,
     ProtocolVersion,
@@ -142,6 +146,8 @@ __all__ = [
     # Utility
     "load_token",
     "load_config",
+    "load_client_endpoint_registry",
+    "resolve_client_endpoint",
 
     # Exceptions
     "ERR_CODE_BAD_REQUEST",
@@ -179,8 +185,10 @@ __all__ = [
     "BoundedAuthorizationInfo",
     "InputModeInfo",
     "KeyInfo",
-    "SSHConfig",
     "ClientConfig",
+    "ClientEndpointConfig",
+    "ClientEndpointPublishedSentry",
+    "ClientEndpointRegistry",
     "CreationParam",
     "KeyTypeInfo",
     "ProtocolVersion",
