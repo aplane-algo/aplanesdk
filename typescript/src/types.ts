@@ -163,10 +163,36 @@ export interface SSHConfig {
  * Client configuration for connecting to apsigner.
  */
 export interface ClientConfig {
-  /** Signer REST port (default: 11270) */
+  /** @deprecated Routing is loaded from endpoints.yaml. */
   signerPort: number;
-  /** SSH configuration (if present, use SSH tunnel) */
+  /** @deprecated Routing is loaded from endpoints.yaml. */
   ssh?: SSHConfig;
+}
+
+/** Endpoint-local sentry discovery metadata. */
+export interface ClientEndpointPublishedSentry {
+  componentKey: string;
+  keyType: string;
+  lastSeenAt?: string;
+}
+
+/** One signer or sentry connection profile from endpoints.yaml. */
+export interface ClientEndpointConfig {
+  role: "signer" | "sentry";
+  url: string;
+  signerPort: number;
+  localPort: number;
+  identityFile: string;
+  knownHostsPath: string;
+  tokenFile: string;
+  publishedSentries?: Record<string, ClientEndpointPublishedSentry>;
+}
+
+/** Normalized client-local endpoint registry. */
+export interface ClientEndpointRegistry {
+  schemaVersion: 1;
+  default: string;
+  endpoints: Record<string, ClientEndpointConfig>;
 }
 
 /**

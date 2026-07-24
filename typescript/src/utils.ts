@@ -17,6 +17,8 @@ import {
 } from "./errors.js";
 import {
   loadConfig,
+  loadClientEndpointRegistry,
+  resolveClientEndpoint,
   loadToken,
   resolveDataDir,
   expandPath,
@@ -24,7 +26,14 @@ import {
 } from "./config.js";
 
 // Re-export config utilities
-export { loadToken, loadConfig, resolveDataDir, expandPath };
+export {
+  loadToken,
+  loadConfig,
+  loadClientEndpointRegistry,
+  resolveClientEndpoint,
+  resolveDataDir,
+  expandPath,
+};
 
 // Current product identity for token provisioning helpers.
 export const DEFAULT_PRODUCT_IDENTITY = "default";

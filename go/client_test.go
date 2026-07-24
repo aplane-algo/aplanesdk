@@ -1253,47 +1253,32 @@ func TestLoadConfig_Default(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if config.SignerPort != DefaultSignerPort {
-		t.Fatalf("expected default port %d, got %d", DefaultSignerPort, config.SignerPort)
-	}
 	if config.SSH != nil {
 		t.Fatal("expected no SSH config")
 	}
 }
 
-func TestLoadConfig_WithSSH(t *testing.T) {
+func TestLoadConfig_RejectsNestedEndpoint(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
 		"endpoint:\n  signer_port: 11271\n  ssh:\n    host: example.com\n    port: 1128\n    identity_file: .ssh/id\n    trust_on_first_use: true\n",
 	), 0600)
 
-	config, err := LoadConfig(dir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if config.SSH == nil {
-		t.Fatal("expected SSH config")
-	}
-	if config.SSH.Host != "example.com" {
-		t.Fatalf("expected example.com, got %s", config.SSH.Host)
-	}
-	if !config.SSH.TrustOnFirstUse {
-		t.Fatal("expected trust_on_first_use true")
+	_, err := LoadConfig(dir)
+	if err == nil || !strings.Contains(err.Error(), "configure endpoints.yaml") {
+		t.Fatalf("expected endpoints.yaml migration error, got %v", err)
 	}
 }
 
-func TestLoadConfig_TrustOnFirstUseDefaultsFalse(t *testing.T) {
+func TestLoadConfig_RejectsTopLevelSignerRouting(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
-		"endpoint:\n  signer_port: 11270\n  ssh:\n    host: localhost\n    port: 1127\n",
+		"signer_port: 11270\n",
 	), 0600)
 
-	config, err := LoadConfig(dir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if config.SSH.TrustOnFirstUse {
-		t.Fatal("expected trust_on_first_use to default to false")
+	_, err := LoadConfig(dir)
+	if err == nil || !strings.Contains(err.Error(), "configure endpoints.yaml") {
+		t.Fatalf("expected endpoints.yaml migration error, got %v", err)
 	}
 }
 

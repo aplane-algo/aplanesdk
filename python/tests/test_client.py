@@ -25,6 +25,8 @@ from aplanesdk.signer import (
     sign_prepared_guarded_group,
     simulate_guarded_group,
     load_config,
+    load_client_endpoint_registry,
+    resolve_client_endpoint,
     SSHConfig,
     ClientConfig,
     ComponentSignRequest,
@@ -2598,7 +2600,7 @@ class TestLoadConfig:
         assert config.signer_port == 11270
         assert config.ssh is None
 
-    def test_with_ssh(self, tmp_path):
+    def test_rejects_obsolete_endpoint_routing(self, tmp_path):
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
             "endpoint:\n"
@@ -2610,24 +2612,63 @@ class TestLoadConfig:
             "    known_hosts_path: .ssh/hosts\n"
             "    trust_on_first_use: true\n"
         )
-        config = load_config(str(tmp_path))
-        assert config.signer_port == 12345
-        assert config.ssh is not None
-        assert config.ssh.host == "signer.example.com"
-        assert config.ssh.port == 2222
-        assert config.ssh.identity_file == ".ssh/mykey"
-        assert config.ssh.known_hosts_path == ".ssh/hosts"
-        assert config.ssh.trust_on_first_use is True
+        with pytest.raises(SignerError, match="configure endpoints.yaml"):
+            load_config(str(tmp_path))
 
-    def test_trust_on_first_use_defaults_false(self, tmp_path):
+    def test_rejects_malformed_yaml(self, tmp_path):
         config_file = tmp_path / "config.yaml"
-        config_file.write_text(
-            "endpoint:\n"
-            "  ssh:\n"
-            "    host: example.com\n"
+        config_file.write_text("network: [")
+        with pytest.raises(SignerError, match="failed to parse config.yaml"):
+            load_config(str(tmp_path))
+
+
+class TestLoadClientEndpointRegistry:
+    @staticmethod
+    def _fixture(tmp_path, name):
+        source = os.path.join("..", "contracts", "clientconfig", name)
+        (tmp_path / "endpoints.yaml").write_bytes(open(source, "rb").read())
+
+    def test_loads_shared_valid_fixture(self, tmp_path):
+        self._fixture(tmp_path, "valid.yaml")
+        registry = load_client_endpoint_registry(str(tmp_path))
+        assert registry.default == "primary"
+        assert registry.endpoints is not None
+        primary = registry.endpoints["primary"]
+        assert primary.url == "ssh://signer.example.com:2222"
+        assert primary.signer_port == 11271
+        assert primary.local_port == 18080
+        assert primary.identity_file == str(tmp_path / ".ssh" / "primary")
+        assert primary.token_file == str(tmp_path / "aplane.token")
+        sentry = registry.endpoints["sentry.qa"]
+        assert sentry.token_file == str(tmp_path / "credentials" / "sentry.token")
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "invalid_multiple_signers.yaml",
+            "invalid_remote_http.yaml",
+            "invalid_unknown_field.yaml",
+        ],
+    )
+    def test_rejects_shared_invalid_fixtures(self, tmp_path, name):
+        self._fixture(tmp_path, name)
+        with pytest.raises(SignerError):
+            load_client_endpoint_registry(str(tmp_path))
+
+    def test_derives_default_and_alias_token_paths(self, tmp_path):
+        (tmp_path / "endpoints.yaml").write_text(
+            "schema_version: 1\nendpoints:\n"
+            "  main:\n    role: signer\n    url: ssh://localhost\n"
+            "  qa:\n    role: sentry\n    url: http://127.0.0.1:11271\n"
         )
-        config = load_config(str(tmp_path))
-        assert config.ssh.trust_on_first_use is False
+        registry = load_client_endpoint_registry(str(tmp_path))
+        assert registry.default == "main"
+        assert registry.endpoints is not None
+        assert registry.endpoints["main"].token_file == str(
+            tmp_path / "tokens" / "main.token"
+        )
+        assert resolve_client_endpoint(registry)[0] == "main"
+        assert resolve_client_endpoint(registry, "qa")[1].role == "sentry"
 
 
 class TestRequestToken:

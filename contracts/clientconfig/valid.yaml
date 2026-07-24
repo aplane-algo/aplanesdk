@@ -1,0 +1,14 @@
+schema_version: 1
+default: primary
+endpoints:
+  primary:
+    role: signer
+    url: ssh://signer.example.com:2222/
+    signer_port: 11271
+    local_port: 18080
+    identity_file: .ssh/primary
+    known_hosts_path: .ssh/known_hosts
+  sentry.qa:
+    role: sentry
+    url: https://sentry.example.com/
+    token_file: credentials/sentry.token

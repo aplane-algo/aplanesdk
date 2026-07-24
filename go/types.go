@@ -787,22 +787,17 @@ type NetworkConfig struct {
 // NetworkConfigs maps network names to grouped settings.
 type NetworkConfigs map[string]*NetworkConfig
 
-// EndpointConfig contains signer endpoint settings from config.yaml.
-type EndpointConfig struct {
-	SignerPort int        `yaml:"signer_port"`
-	SSH        *SSHConfig `yaml:"ssh,omitempty"`
-}
-
 // Config contains client configuration loaded from config.yaml.
 type Config struct {
 	Network         string         `yaml:"network"`
 	NetworksAllowed []string       `yaml:"networks_allowed"`
-	Endpoint        EndpointConfig `yaml:"endpoint"`
-	SignerPort      int            `yaml:"-"`
 	Theme           string         `yaml:"theme"`
-	SSH             *SSHConfig     `yaml:"-"`
 	Networks        NetworkConfigs `yaml:"networks"`
 	Algod           AlgodConfig    `yaml:"algod"`
+	// Deprecated routing projections retained for source compatibility.
+	// LoadConfig never populates them; use LoadClientEndpointRegistry.
+	SignerPort int        `yaml:"-"`
+	SSH        *SSHConfig `yaml:"-"`
 }
 
 // SSHConnectOptions contains options for SSH tunnel connections.

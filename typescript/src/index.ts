@@ -62,6 +62,8 @@ export {
   requestTokenToFile,
   loadToken,
   loadConfig,
+  loadClientEndpointRegistry,
+  resolveClientEndpoint,
   resolveDataDir,
   expandPath,
 } from "./utils.js";
@@ -115,6 +117,9 @@ export type {
   StatusResponse,
   GenerateResult,
   ClientConfig,
+  ClientEndpointConfig,
+  ClientEndpointPublishedSentry,
+  ClientEndpointRegistry,
   SSHConfig,
   FromEnvOptions,
   ConnectSshOptions,
