@@ -361,7 +361,7 @@ class ClientEndpointRegistry:
     """Normalized client-local endpoint registry."""
     schema_version: int = 1
     default: str = ""
-    endpoints: Optional[Dict[str, ClientEndpointConfig]] = None
+    endpoints: Dict[str, ClientEndpointConfig] = field(default_factory=dict)
 
 
 @dataclass
@@ -988,7 +988,7 @@ def _normalize_client_endpoint(
 
 def load_client_endpoint_registry(data_dir: str) -> ClientEndpointRegistry:
     """Load and normalize data_dir/endpoints.yaml."""
-    registry = ClientEndpointRegistry(endpoints={})
+    registry = ClientEndpointRegistry()
     endpoints_path = os.path.join(data_dir, CLIENT_ENDPOINTS_FILE)
     if not os.path.exists(endpoints_path):
         return registry
@@ -1005,14 +1005,16 @@ def load_client_endpoint_registry(data_dir: str) -> ClientEndpointRegistry:
         raw, {"schema_version", "default", "endpoints"}, CLIENT_ENDPOINTS_FILE
     )
     schema_version = raw.get("schema_version", 1)
-    if schema_version != 1:
+    if isinstance(schema_version, bool) or schema_version != 1:
         raise SignerError(
             f"{CLIENT_ENDPOINTS_FILE} schema_version = {schema_version}, want 1"
         )
+    endpoints_value = raw.get("endpoints")
+    if endpoints_value is None:
+        endpoints_value = {}
     endpoints_raw = _require_mapping(
-        raw.get("endpoints") or {}, f"{CLIENT_ENDPOINTS_FILE} endpoints"
+        endpoints_value, f"{CLIENT_ENDPOINTS_FILE} endpoints"
     )
-    assert registry.endpoints is not None
     for raw_alias, endpoint_raw in endpoints_raw.items():
         if not isinstance(raw_alias, str):
             raise SignerError("endpoint aliases must be strings")
@@ -1057,10 +1059,9 @@ def resolve_client_endpoint(
     selected = alias or registry.default
     if not selected:
         raise SignerError(f"{CLIENT_ENDPOINTS_FILE} has no default signer endpoint")
-    endpoints = registry.endpoints or {}
-    if selected not in endpoints:
+    if selected not in registry.endpoints:
         raise SignerError(f'endpoint alias "{selected}" is not defined')
-    return selected, endpoints[selected]
+    return selected, registry.endpoints[selected]
 
 
 def client_endpoint_ssh_host_port(

@@ -2886,6 +2886,7 @@ describe("loadClientEndpointRegistry", () => {
   for (const fixture of [
     "invalid_multiple_signers.yaml",
     "invalid_remote_http.yaml",
+    "invalid_ssh_port_zero.yaml",
     "invalid_unknown_field.yaml",
   ]) {
     it(`rejects ${fixture}`, () => {
@@ -2938,6 +2939,15 @@ describe("requestToken", () => {
 });
 
 describe("requestTokenToFile", () => {
+  it("rejects removed host routing options at runtime", async () => {
+    await assert.rejects(
+      requestTokenToFile({
+        host: "signer.example.com",
+      } as unknown as Parameters<typeof requestTokenToFile>[0]),
+      { message: /option "host" was removed/ },
+    );
+  });
+
   it("selects a named SSH endpoint", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-token-"));
     try {

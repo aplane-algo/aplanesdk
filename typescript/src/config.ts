@@ -177,6 +177,12 @@ function normalizeEndpoint(
     if (!parsed.hostname) {
       throw new SignerError(`endpoint "${alias}": url host is required`);
     }
+    if (parsed.port) {
+      const urlPort = Number(parsed.port);
+      if (!Number.isInteger(urlPort) || urlPort < 1 || urlPort > 65535) {
+        throw new SignerError(`endpoint "${alias}": invalid url port "${parsed.port}"`);
+      }
+    }
     if (parsed.protocol === "http:" && !isLoopbackHost(parsed.hostname)) {
       throw new SignerError(
         `raw http endpoints must be loopback; use ssh:// or https:// for remote endpoint "${alias}"`,

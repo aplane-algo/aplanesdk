@@ -407,6 +407,14 @@ export async function requestTokenToFile(
     autoAddHost?: boolean;
   } = {}
 ): Promise<string> {
+  const rawOptions = options as Record<string, unknown>;
+  for (const removed of ["host", "sshPort"]) {
+    if (removed in rawOptions) {
+      throw new SignerError(
+        `requestTokenToFile option "${removed}" was removed; configure and select an endpoints.yaml alias`,
+      );
+    }
+  }
   const dataDir = resolveDataDir(options.dataDir);
   loadConfig(dataDir);
   const registry = loadClientEndpointRegistry(dataDir);

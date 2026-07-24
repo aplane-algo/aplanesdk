@@ -224,6 +224,9 @@ func normalizeClientEndpointRoles(registry *ClientEndpointRegistry) error {
 
 // ResolveClientEndpoint selects an explicit alias or the default signer.
 func ResolveClientEndpoint(registry *ClientEndpointRegistry, alias string) (string, ClientEndpointConfig, error) {
+	if registry == nil {
+		return "", ClientEndpointConfig{}, fmt.Errorf("%s registry is required", ClientEndpointsFile)
+	}
 	if alias == "" {
 		alias = registry.Default
 		if alias == "" {

@@ -2658,6 +2658,7 @@ class TestLoadClientEndpointRegistry:
         [
             "invalid_multiple_signers.yaml",
             "invalid_remote_http.yaml",
+            "invalid_ssh_port_zero.yaml",
             "invalid_unknown_field.yaml",
         ],
     )
