@@ -182,7 +182,7 @@ func TestGoSDKContractFixturesRoundTrip(t *testing.T) {
 	}
 }
 
-func TestBoundedInventoryUsesSpendPathLogicSigSize(t *testing.T) {
+func TestBoundedInventoryUsesStructuredResources(t *testing.T) {
 	raw, err := os.ReadFile(sdkContractFixturePath(t, "keys_response_bounded.json"))
 	if err != nil {
 		t.Fatalf("read bounded keys fixture: %v", err)
@@ -198,11 +198,11 @@ func TestBoundedInventoryUsesSpendPathLogicSigSize(t *testing.T) {
 	if key.SigningFlow != SigningFlowBounded1 {
 		t.Fatalf("signing flow = %q, want %q", key.SigningFlow, SigningFlowBounded1)
 	}
-	if key.LsigSize != 6592 {
-		t.Fatalf("spend-path lsig size = %d, want 6592", key.LsigSize)
+	if key.LogicSigResources == nil || key.LogicSigResources.Spend == nil || key.LogicSigResources.Spend.ProgramBytes != 5169 || key.LogicSigResources.Spend.ArgumentBytes != 1423 {
+		t.Fatalf("spend resources = %#v", key.LogicSigResources)
 	}
-	if key.BoundedAuthorization == nil || key.BoundedAuthorization.PostSigningLogicSigSize != 7872 {
-		t.Fatalf("bounded authorization = %+v, want admin-inclusive size 7872", key.BoundedAuthorization)
+	if key.BoundedAuthorization == nil {
+		t.Fatal("bounded authorization is missing")
 	}
 	if key.BoundedAuthorization.ProgramBindingHex != "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f" {
 		t.Fatalf("program binding = %q, want fixture binding", key.BoundedAuthorization.ProgramBindingHex)

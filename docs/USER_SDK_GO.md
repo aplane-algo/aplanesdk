@@ -247,7 +247,7 @@ if err != nil {
 	return err
 }
 for _, key := range keys {
-	fmt.Println(key.Address, key.KeyType, key.LsigSize)
+	fmt.Println(key.Address, key.KeyType, key.LogicSigResources)
 }
 ```
 
@@ -256,7 +256,7 @@ for _, key := range keys {
 - `Address`
 - `PublicKeyHex`
 - `KeyType`
-- `LsigSize`
+- `LogicSigResources`
 - `IsGenericLsig`
 - `SigningArgs`
 - `TemplateProvenanceStatus`
@@ -264,9 +264,9 @@ for _, key := range keys {
 - `TemplateStatus`
 - `TemplateWarning`
 
-`LsigSize` is the spend-path LogicSig budget. For `bounded1`, it excludes the
-external contract-admin signature slot;
-`BoundedAuthorization.PostSigningLogicSigSize` is admin-inclusive.
+`LogicSigResources` publishes independent program-byte, argument-byte, and
+maximum-opcode-cost demand by authorization path. Bounded keys may publish
+different `Spend`, `SpendingRekey`, and `AdminRekey` profiles.
 
 `KeyTypeInfo.AuthorizationKind` distinguishes `ed25519`, `native_pq`, and
 `logic_sig`. Do not infer Ed25519 from `RequiresLogicSig == false`: native
@@ -417,8 +417,8 @@ opts := &aplane.SignOptions{
 	Passthrough: map[int]string{
 		1: otherSignerBase64,
 	},
-	LsigSizes: map[int]int{
-		2: 3035,
+	LsigResources: map[int]aplane.LogicSigResourceUsage{
+		2: {ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000},
 	},
 }
 
@@ -427,13 +427,14 @@ plan, err := client.PlanGroup(txns, authAddresses, lsigArgsMap, opts)
 
 `SignOptions.Passthrough` values are base64-encoded signed transaction msgpack
 from another signer and must already carry the intended group ID. The SDK
-decodes them and sends them as passthrough slots. `SignOptions.LsigSizes`
-marks unsigned foreign slots for `/plan` only so the signer can reserve dummy
-and fee budget for another participant's LogicSig.
+decodes them and sends them as passthrough slots. `SignOptions.LsigResources`
+describes unsigned foreign slots for `/plan` only so the signer can plan
+argument capacity, opcode capacity, and priced program bytes.
 
 For a foreign native Falcon-1024 slot, use raw `SignRequest.PQScheme` or
 `PreparedTransaction.PQScheme` with value `"f1"`. It is mutually exclusive
-with `LsigSize` and declares protocol fee usage rather than a LogicSig budget.
+with `LsigResources` and declares native-PQ fee usage rather than LogicSig
+resources.
 
 For actual signing with passthrough slots, use:
 
@@ -570,7 +571,7 @@ error and never trigger another signing request automatically.
   signing, then use the caller-provided algod simulation endpoint.
 - passthrough entries are supplied through `SignOptions.Passthrough`
 - foreign planning uses empty auth-address slots plus optional
-  `SignOptions.LsigSizes`
+  `SignOptions.LsigResources`
 
 The Go SDK does not provide a `SendRawTransaction(...)` helper. Decode the
 returned base64 string and submit it with the standard Algorand Go SDK.

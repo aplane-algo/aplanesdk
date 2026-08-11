@@ -61,6 +61,8 @@ import type {
   AdminSyncSentryReferencesResponse,
   ErrorResponse,
   BoundedAuthorizationInfo,
+  LogicSigResourceUsage,
+  LogicSigResourceProfile,
 } from "./types.js";
 import {
   ErrorCodes,
@@ -116,9 +118,7 @@ const COMPONENT_SIGN_ROLE_USER = "user";
 const COMPONENT_SIGN_ROLE_SENTRY = "sentry";
 const APP_CALL_MAX_APP_ARGS = 16;
 const APP_CALL_METHOD_ARGS_TUPLE_THRESHOLD = APP_CALL_MAX_APP_ARGS - 2;
-const GUARDED_LSIG_BUDGET_BYTES = 1000;
 const GUARDED_MAX_GROUP_SIZE = 16;
-const GUARDED_DEFAULT_MIN_FEE = 1000;
 const GUARDED_DUMMY_PROGRAM = new Uint8Array([0x03, 0x31, 0x20, 0x32, 0x03, 0x12]);
 function newSignRequestId(): string {
   return `sdk-${randomBytes(16).toString("hex")}`;
@@ -178,7 +178,7 @@ async function resolveSentryForTarget(
 async function requestPrimaryGuardedPassthrough(
   userClient: SignerClient,
   groupBytesHex: string[],
-  guardedIndices: Set<number>,
+  guardedByIndex: Map<number, GuardedSignTarget>,
   primaryTargets: GuardedPrimarySignTarget[],
   signal?: AbortSignal,
 ): Promise<{ response: GroupSignResponse; passthrough: GuardedPassthroughItem[] }> {
@@ -187,7 +187,7 @@ async function requestPrimaryGuardedPassthrough(
     if (!Number.isInteger(target.targetIndex) || target.targetIndex < 0 || target.targetIndex >= groupBytesHex.length) {
       throw new SignerError(`primary target ${target.targetIndex} out of range`);
     }
-    if (guardedIndices.has(target.targetIndex)) {
+    if (guardedByIndex.has(target.targetIndex)) {
       throw new SignerError(`primary target ${target.targetIndex} overlaps guarded target`);
     }
     if (primaryByIndex.has(target.targetIndex)) {
@@ -202,7 +202,15 @@ async function requestPrimaryGuardedPassthrough(
   const requests: SignRequest[] = groupBytesHex.map((txnHex, index) => {
     const target = primaryByIndex.get(index);
     if (!target) {
-      return { txn_bytes_hex: txnHex };
+      const guarded = guardedByIndex.get(index);
+      return {
+        txn_bytes_hex: txnHex,
+        lsig_resources: wireLogicSigResources(guarded?.logicSigResources || {
+          programBytes: GUARDED_DUMMY_PROGRAM.length,
+          argumentBytes: 0,
+          maxOpcodeCost: 1,
+        }),
+      };
     }
     const request: SignRequest = {
       txn_bytes_hex: txnHex,
@@ -213,9 +221,6 @@ async function requestPrimaryGuardedPassthrough(
     }
     if (target.lsigArgs) {
       request.lsig_args = target.lsigArgs;
-    }
-    if (target.lsigSize) {
-      request.lsig_size = target.lsigSize;
     }
     if (target.appCallInfo) {
       request.app_call_info = target.appCallInfo;
@@ -235,39 +240,6 @@ async function requestPrimaryGuardedPassthrough(
     });
   }
   return { response, passthrough };
-}
-
-function guardedDummiesNeeded(totalLsigBytes: number, txnCount: number): number {
-  const currentBudget = txnCount * GUARDED_LSIG_BUDGET_BYTES;
-  if (totalLsigBytes <= currentBudget) {
-    return 0;
-  }
-  const extraBudget = totalLsigBytes - currentBudget;
-  return Math.ceil(extraBudget / GUARDED_LSIG_BUDGET_BYTES);
-}
-
-function applyGuardedDummyFees(
-  txns: Transaction[],
-  lsigIndices: number[],
-  dummyCount: number,
-  minFee: number,
-): void {
-  const totalFees = BigInt(dummyCount) * BigInt(minFee);
-  if (lsigIndices.length === 0) {
-    if (txns.length === 0) {
-      throw new SignerError("no transactions to apply dummy fees to");
-    }
-    (txns[0] as any).fee = BigInt((txns[0] as any).fee || 0) + totalFees;
-    return;
-  }
-
-  const feePerLsig = totalFees / BigInt(lsigIndices.length);
-  const remainder = totalFees % BigInt(lsigIndices.length);
-  for (let offset = 0; offset < lsigIndices.length; offset++) {
-    const index = lsigIndices[offset];
-    const extra = feePerLsig + (offset === 0 ? remainder : 0n);
-    (txns[index] as any).fee = BigInt((txns[index] as any).fee || 0) + extra;
-  }
 }
 
 function cloneTransaction(txn: Transaction): Transaction {
@@ -292,37 +264,6 @@ function groupIDBytes(txn: Transaction): Uint8Array | undefined {
     throw new SignerError("transaction has invalid group ID");
   }
   return group;
-}
-
-function createGuardedDummies(firstTxn: Transaction, count: number): Transaction[] {
-  if (count === 0) {
-    return [];
-  }
-  const dummyAccount = new algosdk.LogicSigAccount(GUARDED_DUMMY_PROGRAM);
-  const dummyAddress = dummyAccount.address().toString();
-  const first = firstTxn as any;
-  const suggestedParams: any = {
-    fee: Number(first.fee || GUARDED_DEFAULT_MIN_FEE),
-    firstValid: first.firstValid ?? first.firstValidRound ?? 0,
-    lastValid: first.lastValid ?? first.lastValidRound ?? 0,
-    genesisHash: first.genesisHash,
-    genesisID: first.genesisID,
-    flatFee: true,
-  };
-
-  const dummies: Transaction[] = [];
-  for (let index = 0; index < count; index++) {
-    const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
-      sender: dummyAddress,
-      receiver: dummyAddress,
-      amount: 0,
-      note: new Uint8Array([index]),
-      suggestedParams,
-    });
-    (txn as any).fee = 0n;
-    dummies.push(txn);
-  }
-  return dummies;
 }
 
 function signGuardedDummies(dummies: Transaction[], startIndex: number): GuardedPassthroughItem[] {
@@ -376,8 +317,8 @@ async function buildPreparedGuardedSignOptions(
   const txns: Transaction[] = [];
   const guardedTargets: GuardedSignTarget[] = [];
   const primaryTargets: GuardedPrimarySignTarget[] = [];
-  const lsigIndices: number[] = [];
-  let totalLsigBytes = 0;
+  const authAddresses: string[] = [];
+  const planArgs: LsigArgsMap = {};
 
   for (let index = 0; index < prepared.length; index++) {
     const item = prepared[index];
@@ -399,14 +340,11 @@ async function buildPreparedGuardedSignOptions(
       throw new SignerError(`prepared transaction ${index}: signer key metadata is required`);
     }
 
-    let lsigSize = item.lsigSize || 0;
-    if (key.lsigSize && key.lsigSize > 0) {
-      lsigSize = key.lsigSize;
+    if (!item.authAddress) {
+      throw new SignerError(`prepared transaction ${index}: auth address is required`);
     }
-    if (lsigSize > 0) {
-      totalLsigBytes += lsigSize;
-      lsigIndices.push(index);
-    }
+    authAddresses.push(item.authAddress);
+    if (item.lsigArgs) planArgs[item.authAddress] = item.lsigArgs;
 
     if (key.signingFlow) {
       if (key.signingFlow === SIGNING_FLOW_BOUNDED1) {
@@ -418,7 +356,6 @@ async function buildPreparedGuardedSignOptions(
           authAddress: item.authAddress,
           txnSender: item.txnSender,
           lsigArgs: item.lsigArgs ? encodeLsigArgs(item.lsigArgs) : undefined,
-          lsigSize,
           appCallInfo: item.appCallInfo,
         });
         continue;
@@ -436,6 +373,7 @@ async function buildPreparedGuardedSignOptions(
         guardedAccount: item.authAddress,
         sentryPublicKeyHex: key.parameters?.sentry_public_key || "",
         sentryComponentKeyType: key.sentryComponentKeyType || "",
+        logicSigResources: selectedSpendResources(key, item.lsigResources),
       });
       continue;
     }
@@ -448,7 +386,6 @@ async function buildPreparedGuardedSignOptions(
       authAddress: item.authAddress,
       txnSender: item.txnSender,
       lsigArgs: item.lsigArgs ? encodeLsigArgs(item.lsigArgs) : undefined,
-      lsigSize,
       appCallInfo: item.appCallInfo,
     });
   }
@@ -457,26 +394,9 @@ async function buildPreparedGuardedSignOptions(
     throw new SignerError("prepared group has no guarded targets");
   }
 
-  const minFee = options.minFee || GUARDED_DEFAULT_MIN_FEE;
-  const dummyCount = guardedDummiesNeeded(totalLsigBytes, txns.length);
-  if (txns.length + dummyCount > GUARDED_MAX_GROUP_SIZE) {
-    throw new SignerError(
-      `group would be ${txns.length + dummyCount} transactions (max ${GUARDED_MAX_GROUP_SIZE}) ` +
-      `- cannot add ${dummyCount} dummies for LSig budget`
-    );
-  }
-  if (dummyCount > 0) {
-    applyGuardedDummyFees(txns, lsigIndices, dummyCount, minFee);
-  }
-
-  const dummies = createGuardedDummies(txns[0], dummyCount);
-  const allTxns = [...txns, ...dummies];
-  if (allTxns.length > 1) {
-    for (const txn of allTxns) {
-      (txn as any).group = undefined;
-    }
-    algosdk.assignGroupID(allTxns);
-  }
+  const plan = await options.userClient.planGroup(txns, authAddresses, planArgs);
+  const allTxns = decodeCanonicalGroup(plan.transactions || []);
+  validateBoundedComponentPlan(txns, allTxns, plan.mutations);
 
   return {
     userClient: options.userClient,
@@ -762,7 +682,7 @@ async function requestBoundedPrimaryPassthrough(
   groupBytesHex: string[],
   originalCount: number,
   boundedIndices: Set<number>,
-  targetLsigSizes: Map<number, number>,
+  targetResources: Map<number, LogicSigResourceUsage | undefined>,
   primaryTargets: GuardedPrimarySignTarget[],
   signal?: AbortSignal,
 ): Promise<{ response?: GroupSignResponse; passthrough: GuardedPassthroughItem[] }> {
@@ -771,9 +691,16 @@ async function requestBoundedPrimaryPassthrough(
   }
   const primaryByIndex = new Map(primaryTargets.map((target) => [target.targetIndex, target]));
   const requests: SignRequest[] = groupBytesHex.map((txnHex, index) => {
-    if (index >= originalCount) return { txn_bytes_hex: txnHex };
+    if (index >= originalCount) return {
+      txn_bytes_hex: txnHex,
+      lsig_resources: wireLogicSigResources({
+        programBytes: GUARDED_DUMMY_PROGRAM.length,
+        argumentBytes: 0,
+        maxOpcodeCost: 1,
+      }),
+    };
     if (boundedIndices.has(index)) {
-      return { txn_bytes_hex: txnHex, lsig_size: targetLsigSizes.get(index) || undefined };
+      return { txn_bytes_hex: txnHex, lsig_resources: wireLogicSigResources(targetResources.get(index)) };
     }
     const target = primaryByIndex.get(index);
     if (!target) {
@@ -784,7 +711,6 @@ async function requestBoundedPrimaryPassthrough(
       auth_address: target.authAddress,
       txn_sender: target.txnSender,
       lsig_args: target.lsigArgs,
-      lsig_size: target.lsigSize,
       app_call_info: target.appCallInfo,
     };
   });
@@ -818,7 +744,7 @@ export async function signPreparedBoundedSentryGroup(
   const requests: SignRequest[] = [];
   const targets: GuardedSignTarget[] = [];
   const primaryTargets: GuardedPrimarySignTarget[] = [];
-  const targetLsigSizes = new Map<number, number>();
+  const targetResources = new Map<number, LogicSigResourceUsage | undefined>();
   const targetMaxFees = new Map<number, number>();
   for (let index = 0; index < prepared.length; index++) {
     const item = prepared[index];
@@ -837,13 +763,13 @@ export async function signPreparedBoundedSentryGroup(
     if (!key) {
       throw new SignerError(`prepared transaction ${index}: signer key metadata is required`);
     }
-    const lsigSize = key.lsigSize || item.lsigSize || 0;
+    const resources = selectedSpendResources(key, item.lsigResources);
     if (key.signingFlow === SIGNING_FLOW_BOUNDED_SENTRY1) {
       if (!item.authAddress) {
         throw new SignerError(`prepared transaction ${index}: bounded auth address is required`);
       }
       requests.push(preparedTransactionToSignRequest(item));
-      targetLsigSizes.set(index, lsigSize);
+      targetResources.set(index, resources);
       if (!key.boundedAuthorization) {
         throw new SignerError(
           `prepared transaction ${index}: bounded authorization metadata is required`,
@@ -855,6 +781,7 @@ export async function signPreparedBoundedSentryGroup(
         guardedAccount: item.authAddress,
         sentryPublicKeyHex: boundedSentryPublicKey(key),
         sentryComponentKeyType: boundedSentryComponentKeyType(key),
+        logicSigResources: resources,
       });
       continue;
     }
@@ -871,14 +798,13 @@ export async function signPreparedBoundedSentryGroup(
     }
     requests.push({
       txn_bytes_hex: encodeTransaction(item.transaction)[0],
-      lsig_size: lsigSize || undefined,
+      lsig_resources: wireLogicSigResources(resources),
     });
     primaryTargets.push({
       targetIndex: index,
       authAddress: item.authAddress,
       txnSender: item.txnSender,
       lsigArgs: item.lsigArgs ? encodeLsigArgs(item.lsigArgs) : undefined,
-      lsigSize,
       appCallInfo: item.appCallInfo,
     });
   }
@@ -962,7 +888,7 @@ export async function signPreparedBoundedSentryGroup(
     componentResponse.transactions,
     prepared.length,
     new Set(targetsByIndex.keys()),
-    targetLsigSizes,
+    targetResources,
     primaryTargets,
     options.signal,
   );
@@ -1207,7 +1133,7 @@ export async function signGuardedGroup(options: GuardedSignOptions): Promise<Gua
     const primary = await requestPrimaryGuardedPassthrough(
       options.userClient,
       options.groupBytesHex,
-      guardedIndices,
+      new Map(targets.map((target) => [target.targetIndex, target])),
       options.primaryTargets,
       options.signal,
     );
@@ -1400,8 +1326,40 @@ function mapBoundedAuthorization(raw: any): BoundedAuthorizationInfo | undefined
     layer3Policy: raw.layer3_policy || "",
     adminKeyId: raw.admin_key_id || undefined,
     programBinding: raw.program_binding || undefined,
-    postSigningLsigSize: raw.post_signing_lsig_size || undefined,
   };
+}
+
+function wireLogicSigResources(resources?: LogicSigResourceUsage): SignRequest["lsig_resources"] {
+  if (!resources) return undefined;
+  return {
+    program_bytes: resources.programBytes,
+    argument_bytes: resources.argumentBytes,
+    max_opcode_cost: resources.maxOpcodeCost,
+  };
+}
+
+function mapLogicSigResourceUsage(raw: any): LogicSigResourceUsage | undefined {
+  if (!raw) return undefined;
+  return {
+    programBytes: raw.program_bytes || 0,
+    argumentBytes: raw.argument_bytes || 0,
+    maxOpcodeCost: raw.max_opcode_cost || 0,
+  };
+}
+
+function mapLogicSigResourceProfile(raw: any): LogicSigResourceProfile | undefined {
+  if (!raw) return undefined;
+  return {
+    default: mapLogicSigResourceUsage(raw.default),
+    spend: mapLogicSigResourceUsage(raw.spend),
+    spendingRekey: mapLogicSigResourceUsage(raw.spending_rekey),
+    adminRekey: mapLogicSigResourceUsage(raw.admin_rekey),
+  };
+}
+
+function selectedSpendResources(key?: KeyInfo, fallback?: LogicSigResourceUsage): LogicSigResourceUsage | undefined {
+  const selected = key?.logicSigResources?.spend || key?.logicSigResources?.default || fallback;
+  return selected ? { ...selected } : undefined;
 }
 
 function validateAssemblyIndex(index: number, groupLen: number, covered: Set<number>): void {
@@ -1816,6 +1774,7 @@ export interface GuardedSignTarget {
   sentryComponentKeyType?: string;
   sentryComponentKey?: string;
   runtimeArgs?: string[];
+  logicSigResources?: LogicSigResourceUsage;
 }
 
 export interface GuardedPrimarySignTarget {
@@ -1823,7 +1782,6 @@ export interface GuardedPrimarySignTarget {
   authAddress: string;
   txnSender?: string;
   lsigArgs?: Record<string, string>;
-  lsigSize?: number;
   appCallInfo?: { mode?: string; method?: string };
 }
 
@@ -2792,7 +2750,7 @@ export class SignerClient {
         keyType: raw.key_type || "",
         signingFlow: raw.signing_flow || undefined,
         sentryComponentKeyType: raw.sentry_component_key_type || undefined,
-        lsigSize: raw.lsig_size || 0,
+        logicSigResources: mapLogicSigResourceProfile(raw.logic_sig_resources),
         isGenericLsig: raw.is_generic_lsig || false,
         isWitnessKey: raw.is_witness_key || false,
         isSpendingAccount: typeof raw.is_spending_account === "boolean" ? raw.is_spending_account : undefined,
@@ -4041,7 +3999,7 @@ export class SignerClient {
    * @param authAddresses - List of auth addresses (one per txn)
    * @param lsigArgsMap - Optional mapping of address -> lsigArgs
    * @param passthrough - Optional mapping of group index -> base64-encoded pre-signed transaction
-   * @param lsigSizes - Optional mapping of group index -> LSig size hint for foreign transactions
+   * @param lsigResources - Optional mapping of group index to independent LogicSig resource demand
    * @returns PlanGroupResponse with transactions and mutations
    */
   async planGroup(
@@ -4049,7 +4007,7 @@ export class SignerClient {
     authAddresses?: (string | null)[],
     lsigArgsMap?: LsigArgsMap,
     passthrough?: Record<number, string>,
-    lsigSizes?: Record<number, number>,
+    lsigResources?: Record<number, LogicSigResourceUsage>,
   ): Promise<PlanGroupResponse> {
     const authAddrs = authAddresses ?? txns.map((txn) => txn?.sender?.toString() ?? null);
 
@@ -4058,7 +4016,7 @@ export class SignerClient {
     }
 
     const requestBody = this.buildSignRequestBody(
-      txns, authAddrs, lsigArgsMap, passthrough, lsigSizes,
+      txns, authAddrs, lsigArgsMap, passthrough, lsigResources,
     );
 
     const response = await this.fetch("/plan", {
@@ -4173,7 +4131,7 @@ export class SignerClient {
    * @param authAddresses - List of auth addresses (one per txn, null for foreign)
    * @param lsigArgsMap - Optional mapping of address -> lsigArgs
    * @param passthrough - Optional mapping of group index -> base64-encoded pre-signed transaction
-   * @param lsigSizes - Optional mapping of group index -> LSig size hint for foreign transactions
+   * @param lsigResources - Optional mapping of group index to independent LogicSig resource demand
    * @returns Base64-encoded concatenated signed transactions for the entire group
    */
   async signTransactions(
@@ -4181,7 +4139,7 @@ export class SignerClient {
     authAddresses?: (string | null)[],
     lsigArgsMap?: LsigArgsMap,
     passthrough?: Record<number, string>,
-    lsigSizes?: Record<number, number>,
+    lsigResources?: Record<number, LogicSigResourceUsage>,
     options?: SignOptions,
   ): Promise<string> {
     const authAddrs =
@@ -4192,7 +4150,7 @@ export class SignerClient {
     }
 
     const signedList = await this.signRequest(
-      txns, authAddrs, lsigArgsMap, passthrough, lsigSizes, options,
+      txns, authAddrs, lsigArgsMap, passthrough, lsigResources, options,
     );
 
     // Reject if any foreign (empty) slots exist
@@ -4219,7 +4177,7 @@ export class SignerClient {
    * @param authAddresses - List of auth addresses (one per txn, passthrough slots may be null)
    * @param lsigArgsMap - Optional mapping of address -> lsigArgs
    * @param passthrough - Optional mapping of group index -> base64-encoded pre-signed transaction
-   * @param lsigSizes - Optional mapping of group index -> LSig size hint for planning foreign transactions
+   * @param lsigResources - Optional mapping of group index to independent LogicSig resource demand
    * @returns List of base64-encoded signed transactions
    */
   async signTransactionsList(
@@ -4227,7 +4185,7 @@ export class SignerClient {
     authAddresses?: (string | null)[],
     lsigArgsMap?: LsigArgsMap,
     passthrough?: Record<number, string>,
-    lsigSizes?: Record<number, number>,
+    lsigResources?: Record<number, LogicSigResourceUsage>,
     options?: SignOptions,
   ): Promise<string[]> {
     const authAddrs =
@@ -4238,7 +4196,7 @@ export class SignerClient {
     }
 
     const signedHexes = await this.signRequest(
-      txns, authAddrs, lsigArgsMap, passthrough, lsigSizes, options,
+      txns, authAddrs, lsigArgsMap, passthrough, lsigResources, options,
     );
 
     // Convert each hex to base64 (empty strings stay empty for foreign entries)
@@ -4362,7 +4320,7 @@ export class SignerClient {
     authAddresses: (string | null)[],
     lsigArgsMap?: LsigArgsMap,
     passthrough?: Record<number, string>,
-    lsigSizes?: Record<number, number>,
+    lsigResources?: Record<number, LogicSigResourceUsage>,
     allowForeign = true,
   ): { requests: SignRequest[] } {
     if (txns.length === 0) {
@@ -4378,14 +4336,16 @@ export class SignerClient {
       }
     }
 
-    // Validate lsigSizes indices
-    if (lsigSizes) {
-      for (const [idx, size] of Object.entries(lsigSizes).map(([k, v]) => [Number(k), v] as const)) {
+    // Validate lsigResources indices
+    if (lsigResources) {
+      for (const [idx, resources] of Object.entries(lsigResources).map(([k, v]) => [Number(k), v] as const)) {
         if (idx < 0 || idx >= txns.length) {
-          throw new SignerError(`lsigSizes index ${idx} out of range for ${txns.length} transactions`);
+          throw new SignerError(`lsigResources index ${idx} out of range for ${txns.length} transactions`);
         }
-        if (typeof size !== "number" || size < 0) {
-          throw new SignerError(`lsigSizes[${idx}] must be a non-negative integer`);
+        if (!resources || !Number.isInteger(resources.programBytes) || resources.programBytes <= 0 || resources.programBytes > 16000 ||
+            !Number.isInteger(resources.argumentBytes) || resources.argumentBytes < 0 ||
+            !Number.isInteger(resources.maxOpcodeCost) || resources.maxOpcodeCost <= 0 || resources.maxOpcodeCost > 320000) {
+          throw new SignerError(`lsigResources[${idx}] is invalid`);
         }
       }
     }
@@ -4414,8 +4374,8 @@ export class SignerClient {
         }
         const [txnBytesHex] = encodeTransaction(txn);
         const req: SignRequest = { txn_bytes_hex: txnBytesHex };
-        if (lsigSizes && i in lsigSizes) {
-          req.lsig_size = lsigSizes[i];
+        if (lsigResources && i in lsigResources) {
+          req.lsig_resources = wireLogicSigResources(lsigResources[i]);
         }
         signRequests.push(req);
         continue;
@@ -4453,11 +4413,11 @@ export class SignerClient {
     authAddresses: (string | null)[],
     lsigArgsMap?: LsigArgsMap,
     passthrough?: Record<number, string>,
-    lsigSizes?: Record<number, number>,
+    lsigResources?: Record<number, LogicSigResourceUsage>,
     options?: SignOptions,
   ): Promise<string[]> {
     const requestBody = this.buildSignRequestBody(
-      txns, authAddresses, lsigArgsMap, passthrough, lsigSizes, false,
+      txns, authAddresses, lsigArgsMap, passthrough, lsigResources, false,
     );
     const data = await this.signRequests(requestBody.requests, options);
 

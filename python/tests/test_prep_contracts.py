@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from algosdk import transaction
 
-from aplanesdk.signer import PreparedGroup, PreparedTransaction
+from aplanesdk.signer import LogicSigResourceUsage, PreparedGroup, PreparedTransaction
 
 FIXTURE_PATH = (
     Path(__file__).resolve().parents[2] / "contracts" / "prep" / "sign_request_shapes.json"
@@ -131,7 +131,10 @@ def build_groups(addresses: dict) -> dict[str, PreparedGroup]:
         return PreparedTransaction(transaction=txn, auth_address=auth, **kwargs)
 
     def foreign_slot(txn):
-        return PreparedTransaction(transaction=txn, lsig_size=3035)
+        return PreparedTransaction(
+            transaction=txn,
+            lsig_resources=LogicSigResourceUsage(1612, 1423, 20000),
+        )
 
     passthrough_slot = PreparedTransaction(signed_transaction_base64=passthrough)
 
@@ -198,15 +201,15 @@ def test_prepared_native_pq_foreign_request():
         pq_scheme="f1",
     ).to_sign_request()
     assert request["pq_scheme"] == "f1"
-    assert "lsig_size" not in request
+    assert "lsig_resources" not in request
 
 
 def test_prepared_native_pq_rejects_conflicting_hints():
     groups = build_groups(load_fixture()["addresses"])
     transaction_slot = groups["foreign_lsig_context"].transactions[0].transaction
-    with pytest.raises(ValueError, match="both pq_scheme and lsig_size"):
+    with pytest.raises(ValueError, match="both pq_scheme and lsig_resources"):
         PreparedTransaction(
             transaction=transaction_slot,
-            lsig_size=3035,
+            lsig_resources=LogicSigResourceUsage(1600, 1423, 20000),
             pq_scheme="f1",
         ).to_sign_request()

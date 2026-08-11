@@ -297,7 +297,7 @@ minutes.
 ```python
 keys = client.list_keys()
 for key in keys:
-    print(key.address, key.key_type, key.lsig_size)
+    print(key.address, key.key_type, key.logic_sig_resources)
 ```
 
 Useful `KeyInfo` fields include:
@@ -305,7 +305,7 @@ Useful `KeyInfo` fields include:
 - `address`
 - `key_type`
 - `public_key_hex`
-- `lsig_size`
+- `logic_sig_resources`
 - `is_generic_lsig`
 - `signing_args`
 - `template_provenance_status`
@@ -313,9 +313,9 @@ Useful `KeyInfo` fields include:
 - `template_status`
 - `template_warning`
 
-`lsig_size` is the spend-path LogicSig budget. For `bounded1`, it excludes the
-external contract-admin signature slot;
-`bounded_authorization.post_signing_lsig_size` is admin-inclusive.
+`logic_sig_resources` publishes independent program-byte, argument-byte, and
+maximum-opcode-cost demand by authorization path. Bounded keys may publish
+different `spend`, `spending_rekey`, and `admin_rekey` profiles.
 
 `KeyTypeInfo.authorization_kind` distinguishes `ed25519`, `native_pq`, and
 `logic_sig`. A false `requires_logicsig` value may mean either native Ed25519
@@ -549,8 +549,8 @@ In practice, that means:
 
 For a foreign native Falcon-1024 slot, set `pq_scheme="f1"` on
 `PreparedTransaction` (or `"pq_scheme": "f1"` in a raw request). It is
-mutually exclusive with `lsig_size` and declares protocol fee usage rather
-than a LogicSig byte budget.
+mutually exclusive with `lsig_resources` and declares native-PQ fee usage
+rather than LogicSig resources.
 
 ### Passthrough And Multi-Party Assembly
 
@@ -564,7 +564,7 @@ When passthrough entries are present:
 
 For multi-party workflows, the standard high-level flow is:
 
-1. use `plan_group()` with foreign slots and `lsig_sizes`
+1. use `plan_group()` with foreign slots and `lsig_resources`
 2. collect the finalized foreign signatures from the other party
 3. resubmit those signed slots as `passthrough` for final signing
 

@@ -87,8 +87,6 @@ MAX_SIGN_REQUEST_ID_LENGTH = 128
 MAX_COMPONENT_GROUP_SIZE = 16
 APP_CALL_MAX_APP_ARGS = 16
 APP_CALL_METHOD_ARGS_TUPLE_THRESHOLD = APP_CALL_MAX_APP_ARGS - 2
-GUARDED_LSIG_BUDGET_BYTES = 1000
-GUARDED_MAX_GROUP_SIZE = 16
 GUARDED_DEFAULT_MIN_FEE = 1000
 GUARDED_DUMMY_PROGRAM = bytes.fromhex("033120320312")
 
@@ -300,6 +298,25 @@ class BoundedSentryAuthorizationInfo:
 
 
 @dataclass
+class LogicSigResourceUsage:
+    """Independent program, argument, and opcode demand for one path."""
+
+    program_bytes: int
+    argument_bytes: int
+    max_opcode_cost: int
+
+
+@dataclass
+class LogicSigResourceProfile:
+    """Closed LogicSig resource paths published by signer inventory."""
+
+    default: Optional[LogicSigResourceUsage] = None
+    spend: Optional[LogicSigResourceUsage] = None
+    spending_rekey: Optional[LogicSigResourceUsage] = None
+    admin_rekey: Optional[LogicSigResourceUsage] = None
+
+
+@dataclass
 class BoundedAuthorizationInfo:
     contract: str
     base_signature_arg_layout: BoundedSignatureArgLayout
@@ -313,7 +330,6 @@ class BoundedAuthorizationInfo:
     sentry: Optional[BoundedSentryAuthorizationInfo] = None
     admin_key_id: str = ""
     program_binding: str = ""
-    post_signing_lsig_size: int = 0  # Admin-inclusive bounded size
 
 
 @dataclass
@@ -325,7 +341,7 @@ class KeyInfo:
     public_key_hex: str = ""
     signing_flow: str = ""  # Signing choreography label (e.g. "sentry1"); empty = plain /sign
     sentry_component_key_type: str = ""  # Sentry component key type for signing flow "sentry1"
-    lsig_size: int = 0  # Spend-path size for bounded1
+    logic_sig_resources: Optional[LogicSigResourceProfile] = None
     is_generic_lsig: bool = False
     is_witness_key: bool = False
     bounded_authorization: Optional[BoundedAuthorizationInfo] = None
@@ -673,6 +689,7 @@ class GuardedSignTarget:
     sentry_component_key_type: str = ""
     sentry_component_key: str = ""
     runtime_args: Optional[List[str]] = None
+    logic_sig_resources: Optional[LogicSigResourceUsage] = None
 
 
 @dataclass
@@ -683,7 +700,6 @@ class GuardedPrimarySignTarget:
     auth_address: str
     txn_sender: str = ""
     lsig_args: Optional[Dict[str, str]] = None
-    lsig_size: int = 0
     app_call_info: Optional[Dict[str, str]] = None
 
 
@@ -727,7 +743,7 @@ class PreparedTransaction:
     txn_sender: str = ""
     signer_key: Optional[KeyInfo] = None
     lsig_args: Optional[Dict[str, bytes]] = None
-    lsig_size: int = 0
+    lsig_resources: Optional[LogicSigResourceUsage] = None
     pq_scheme: str = ""
     app_call_info: Optional[Dict[str, str]] = None
     signed_transaction_base64: str = ""
@@ -751,12 +767,12 @@ class PreparedTransaction:
         txn_bytes_hex, txn_sender = encode_transaction(self.transaction)
         if not self.auth_address:
             request: Dict[str, Any] = {"txn_bytes_hex": txn_bytes_hex}
-            if self.lsig_size > 0:
-                request["lsig_size"] = self.lsig_size
+            if self.lsig_resources is not None:
+                request["lsig_resources"] = _wire_lsig_resources(self.lsig_resources)
             if self.pq_scheme:
-                if self.lsig_size > 0:
+                if self.lsig_resources is not None:
                     raise ValueError(
-                        "foreign transaction cannot specify both pq_scheme and lsig_size"
+                        "foreign transaction cannot specify both pq_scheme and lsig_resources"
                     )
                 request["pq_scheme"] = self.pq_scheme
             return request
@@ -1300,6 +1316,45 @@ def _validate_component_sign_request(data: Dict[str, Any]) -> None:
     _validate_component_target_indices(target_indices, len(group_bytes_hex))
 
 
+def _wire_lsig_resources(resources: LogicSigResourceUsage) -> Dict[str, int]:
+    return {
+        "program_bytes": resources.program_bytes,
+        "argument_bytes": resources.argument_bytes,
+        "max_opcode_cost": resources.max_opcode_cost,
+    }
+
+
+def _parse_lsig_resource_usage(data: Any) -> Optional[LogicSigResourceUsage]:
+    if not isinstance(data, dict):
+        return None
+    return LogicSigResourceUsage(
+        program_bytes=int(data.get("program_bytes", 0)),
+        argument_bytes=int(data.get("argument_bytes", 0)),
+        max_opcode_cost=int(data.get("max_opcode_cost", 0)),
+    )
+
+
+def _parse_lsig_resource_profile(data: Any) -> Optional[LogicSigResourceProfile]:
+    if not isinstance(data, dict):
+        return None
+    return LogicSigResourceProfile(
+        default=_parse_lsig_resource_usage(data.get("default")),
+        spend=_parse_lsig_resource_usage(data.get("spend")),
+        spending_rekey=_parse_lsig_resource_usage(data.get("spending_rekey")),
+        admin_rekey=_parse_lsig_resource_usage(data.get("admin_rekey")),
+    )
+
+
+def _selected_spend_resources(
+    key: Optional[KeyInfo], fallback: Optional[LogicSigResourceUsage]
+) -> Optional[LogicSigResourceUsage]:
+    if key and key.logic_sig_resources:
+        selected = key.logic_sig_resources.spend or key.logic_sig_resources.default
+        if selected:
+            return LogicSigResourceUsage(**vars(selected))
+    return LogicSigResourceUsage(**vars(fallback)) if fallback else None
+
+
 def _parse_bounded_authorization(data: Any) -> Optional[BoundedAuthorizationInfo]:
     if not isinstance(data, dict):
         return None
@@ -1379,7 +1434,6 @@ def _parse_bounded_authorization(data: Any) -> Optional[BoundedAuthorizationInfo
         ),
         admin_key_id=data.get("admin_key_id", ""),
         program_binding=data.get("program_binding", ""),
-        post_signing_lsig_size=data.get("post_signing_lsig_size", 0),
     )
 
 
@@ -2622,7 +2676,7 @@ class SignerClient:
                 public_key_hex=k.get("public_key_hex", ""),
                 signing_flow=k.get("signing_flow", ""),
                 sentry_component_key_type=k.get("sentry_component_key_type", ""),
-                lsig_size=k.get("lsig_size", 0),
+                logic_sig_resources=_parse_lsig_resource_profile(k.get("logic_sig_resources")),
                 is_generic_lsig=k.get("is_generic_lsig", False),
                 is_witness_key=k.get("is_witness_key", False),
                 bounded_authorization=_parse_bounded_authorization(k.get("bounded_authorization")),
@@ -4052,7 +4106,7 @@ class SignerClient:
         auth_addresses: List[Optional[str]],
         lsig_args_map: Optional[Dict[str, Dict[str, bytes]]] = None,
         passthrough: Optional[Dict[int, str]] = None,
-        lsig_sizes: Optional[Dict[int, int]] = None,
+        lsig_resources: Optional[Dict[int, LogicSigResourceUsage]] = None,
         allow_foreign: bool = True,
     ) -> dict:
         """
@@ -4064,9 +4118,9 @@ class SignerClient:
             lsig_args_map: Optional mapping of address -> lsig_args
             passthrough: Optional mapping of group index -> base64-encoded
                 pre-signed transaction
-            lsig_sizes: Optional mapping of group index -> LSig size hint
-                for foreign transactions (no auth_address). This tells the
-                signer how much LSig budget to reserve for the foreign party.
+            lsig_resources: Optional mapping of group index -> independent
+                LogicSig program-byte, argument-byte, and opcode-cost demand
+                for foreign transactions (no auth_address).
 
         Returns:
             Dict ready for JSON serialization as request body
@@ -4083,16 +4137,20 @@ class SignerClient:
                         f"passthrough index {idx} out of range for {len(txns)} transactions"
                     )
 
-        # Validate lsig_sizes indices and values
-        if lsig_sizes:
-            for idx, size in lsig_sizes.items():
+        # Validate lsig_resources indices and values
+        if lsig_resources:
+            for idx, resources in lsig_resources.items():
                 if idx < 0 or idx >= len(txns):
                     raise ValueError(
-                        f"lsig_sizes index {idx} out of range for {len(txns)} transactions"
+                        f"lsig_resources index {idx} out of range for {len(txns)} transactions"
                     )
-                if not isinstance(size, int) or size < 0:
+                if not isinstance(resources, LogicSigResourceUsage) or not (
+                    0 < resources.program_bytes <= 16_000
+                    and resources.argument_bytes >= 0
+                    and 0 < resources.max_opcode_cost <= 320_000
+                ):
                     raise ValueError(
-                        f"lsig_sizes[{idx}] must be a non-negative integer, got {size!r}"
+                        f"lsig_resources[{idx}] is invalid"
                     )
 
         # Build request array
@@ -4118,8 +4176,8 @@ class SignerClient:
                     raise ValueError(f"transaction is required for foreign-mode entry at index {i}")
                 txn_bytes_hex, _ = encode_transaction(txn)
                 req: Dict[str, Any] = {"txn_bytes_hex": txn_bytes_hex}
-                if lsig_sizes and i in lsig_sizes:
-                    req["lsig_size"] = lsig_sizes[i]
+                if lsig_resources and i in lsig_resources:
+                    req["lsig_resources"] = _wire_lsig_resources(lsig_resources[i])
                 sign_requests.append(req)
                 continue
 
@@ -4150,7 +4208,7 @@ class SignerClient:
         auth_addresses: List[Optional[str]],
         lsig_args_map: Optional[Dict[str, Dict[str, bytes]]] = None,
         passthrough: Optional[Dict[int, str]] = None,
-        lsig_sizes: Optional[Dict[int, int]] = None,
+        lsig_resources: Optional[Dict[int, LogicSigResourceUsage]] = None,
         request_id: Optional[str] = None,
     ) -> List[str]:
         """
@@ -4176,8 +4234,8 @@ class SignerClient:
                 for multi-party workflows where another signer has already
                 signed their transaction. All indices must be in range
                 [0, len(txns)).
-            lsig_sizes: Optional mapping of group index -> LSig size hint
-                for planning foreign transactions.
+            lsig_resources: Optional mapping of group index -> independent
+                LogicSig resource demand for planning foreign transactions.
             request_id: Optional caller-owned /sign request ID. Applications
                 can use the same ID with cancel_sign_request() to cancel a
                 pending approval from another thread.
@@ -4191,7 +4249,7 @@ class SignerClient:
                 non-passthrough, non-foreign entry has a missing auth_address.
         """
         request_body = self._build_sign_request_body(
-            txns, auth_addresses, lsig_args_map, passthrough, lsig_sizes, False
+            txns, auth_addresses, lsig_args_map, passthrough, lsig_resources, False
         )
         data = self.sign_requests(request_body["requests"], request_id=request_id)
 
@@ -4286,7 +4344,7 @@ class SignerClient:
         auth_addresses: Optional[List[Optional[str]]] = None,
         lsig_args_map: Optional[Dict[str, Dict[str, bytes]]] = None,
         passthrough: Optional[Dict[int, str]] = None,
-        lsig_sizes: Optional[Dict[int, int]] = None,
+        lsig_resources: Optional[Dict[int, LogicSigResourceUsage]] = None,
     ) -> dict:
         """
         Preview group building without signing or approval.
@@ -4299,7 +4357,7 @@ class SignerClient:
         Use cases:
         - Transaction simulation (feed planned group to algod /simulate)
         - Fee visibility before committing to approval
-        - Multi-party signing coordination (use foreign entries with lsig_sizes)
+        - Multi-party signing coordination (use foreign entries with lsig_resources)
         - Scripting dry-runs and debugging group mutations
 
         Args:
@@ -4311,8 +4369,9 @@ class SignerClient:
             lsig_args_map: Optional mapping of address -> lsig_args
             passthrough: Optional mapping of group index -> base64-encoded
                 pre-signed transaction
-            lsig_sizes: Optional mapping of group index -> LSig size hint
-                for foreign transactions (auth_address is None).
+            lsig_resources: Optional mapping of group index -> independent
+                LogicSig resource demand for foreign transactions
+                (auth_address is None).
 
         Returns:
             Dict with:
@@ -4331,7 +4390,7 @@ class SignerClient:
             raise ValueError("auth_addresses length must match txns length")
 
         request_body = self._build_sign_request_body(
-            txns, auth_addresses, lsig_args_map, passthrough, lsig_sizes
+            txns, auth_addresses, lsig_args_map, passthrough, lsig_resources
         )
 
         try:
@@ -4446,7 +4505,7 @@ class SignerClient:
         auth_addresses: Optional[List[Optional[str]]] = None,
         lsig_args_map: Optional[Dict[str, Dict[str, bytes]]] = None,
         passthrough: Optional[Dict[int, str]] = None,
-        lsig_sizes: Optional[Dict[int, int]] = None,
+        lsig_resources: Optional[Dict[int, LogicSigResourceUsage]] = None,
         *,
         request_id: Optional[str] = None,
     ) -> str:
@@ -4480,8 +4539,8 @@ class SignerClient:
                 pre-signed transaction. These transactions are included as-is
                 in the group without re-signing. Use for multi-party workflows.
                 All indices must be in range [0, len(txns)).
-            lsig_sizes: Optional mapping of group index -> LSig size hint
-                for planning foreign transactions.
+            lsig_resources: Optional mapping of group index -> independent
+                LogicSig resource demand for planning foreign transactions.
             request_id: Optional caller-owned /sign request ID. Use the same
                 ID with cancel_sign_request() to cancel a pending approval from
                 another thread.
@@ -4497,7 +4556,7 @@ class SignerClient:
             raise ValueError("auth_addresses length must match txns length")
 
         signed_list = self._sign_request(
-            txns, auth_addresses, lsig_args_map, passthrough, lsig_sizes, request_id=request_id
+            txns, auth_addresses, lsig_args_map, passthrough, lsig_resources, request_id=request_id
         )
 
         # Concatenate all signed txns and return as single base64 string
@@ -4510,7 +4569,7 @@ class SignerClient:
         auth_addresses: Optional[List[Optional[str]]] = None,
         lsig_args_map: Optional[Dict[str, Dict[str, bytes]]] = None,
         passthrough: Optional[Dict[int, str]] = None,
-        lsig_sizes: Optional[Dict[int, int]] = None,
+        lsig_resources: Optional[Dict[int, LogicSigResourceUsage]] = None,
         *,
         request_id: Optional[str] = None,
     ) -> List[str]:
@@ -4534,8 +4593,8 @@ class SignerClient:
                 pre-signed transaction. These transactions are included as-is
                 in the group without re-signing. Use for multi-party workflows.
                 All indices must be in range [0, len(txns)).
-            lsig_sizes: Optional mapping of group index -> LSig size hint
-                for planning foreign transactions.
+            lsig_resources: Optional mapping of group index -> independent
+                LogicSig resource demand for planning foreign transactions.
             request_id: Optional caller-owned /sign request ID. Use the same
                 ID with cancel_sign_request() to cancel a pending approval from
                 another thread.
@@ -4550,7 +4609,7 @@ class SignerClient:
             raise ValueError("auth_addresses length must match txns length")
 
         return self._sign_request(
-            txns, auth_addresses, lsig_args_map, passthrough, lsig_sizes, request_id=request_id
+            txns, auth_addresses, lsig_args_map, passthrough, lsig_resources, request_id=request_id
         )
 
 
@@ -4564,34 +4623,6 @@ def _component_signatures_by_index(
         }
         for item in response.signatures
     }
-
-
-def _guarded_dummies_needed(total_lsig_bytes: int, txn_count: int) -> int:
-    current_budget = txn_count * GUARDED_LSIG_BUDGET_BYTES
-    if total_lsig_bytes <= current_budget:
-        return 0
-    extra_budget = total_lsig_bytes - current_budget
-    return (extra_budget + GUARDED_LSIG_BUDGET_BYTES - 1) // GUARDED_LSIG_BUDGET_BYTES
-
-
-def _apply_guarded_dummy_fees(
-    txns: List[transaction.Transaction],
-    lsig_indices: List[int],
-    dummy_count: int,
-    min_fee: int,
-) -> None:
-    total_fees = dummy_count * min_fee
-    if not lsig_indices:
-        if not txns:
-            raise ValueError("no transactions to apply dummy fees to")
-        txns[0].fee = int(getattr(txns[0], "fee", 0)) + total_fees
-        return
-
-    fee_per_lsig = total_fees // len(lsig_indices)
-    remainder = total_fees % len(lsig_indices)
-    for offset, index in enumerate(lsig_indices):
-        extra = fee_per_lsig + (remainder if offset == 0 else 0)
-        txns[index].fee = int(getattr(txns[index], "fee", 0)) + extra
 
 
 def _create_guarded_dummies(
@@ -4683,6 +4714,7 @@ def _build_prepared_guarded_sign_inputs(
     assembly_request_id: str,
     min_fee: int,
 ) -> Dict[str, Any]:
+    del min_fee  # Planning, dummy insertion, and fee pooling are signer-owned.
     if user_client is None:
         raise SignerError("user_client is required")
     prepared = prepared_group.transactions
@@ -4692,8 +4724,8 @@ def _build_prepared_guarded_sign_inputs(
     txns = []
     guarded_targets = []
     primary_targets = []
-    lsig_indices = []
-    total_lsig_bytes = 0
+    auth_addresses = []
+    plan_args: Dict[str, Dict[str, bytes]] = {}
 
     for index, item in enumerate(prepared):
         if item.signed_transaction_base64:
@@ -4710,12 +4742,11 @@ def _build_prepared_guarded_sign_inputs(
         if key is None:
             raise ValueError(f"prepared transaction {index}: signer key metadata is required")
 
-        lsig_size = item.lsig_size
-        if key.lsig_size > 0:
-            lsig_size = key.lsig_size
-        if lsig_size > 0:
-            total_lsig_bytes += lsig_size
-            lsig_indices.append(index)
+        if not item.auth_address:
+            raise ValueError(f"prepared transaction {index}: auth address is required")
+        auth_addresses.append(item.auth_address)
+        if item.lsig_args:
+            plan_args[item.auth_address] = item.lsig_args
 
         if key.signing_flow:
             if key.signing_flow == SIGNING_FLOW_BOUNDED1:
@@ -4736,7 +4767,6 @@ def _build_prepared_guarded_sign_inputs(
                         auth_address=item.auth_address,
                         txn_sender=item.txn_sender,
                         lsig_args=_encode_guarded_lsig_args(item.lsig_args),
-                        lsig_size=lsig_size,
                         app_call_info=item.app_call_info,
                     )
                 )
@@ -4749,6 +4779,7 @@ def _build_prepared_guarded_sign_inputs(
                     guarded_account=item.auth_address,
                     sentry_public_key_hex=(key.parameters or {}).get("sentry_public_key", ""),
                     sentry_component_key_type=key.sentry_component_key_type,
+                    logic_sig_resources=_selected_spend_resources(key, item.lsig_resources),
                 )
             )
             continue
@@ -4761,7 +4792,6 @@ def _build_prepared_guarded_sign_inputs(
                 auth_address=item.auth_address,
                 txn_sender=item.txn_sender,
                 lsig_args=_encode_guarded_lsig_args(item.lsig_args),
-                lsig_size=lsig_size,
                 app_call_info=item.app_call_info,
             )
         )
@@ -4769,23 +4799,23 @@ def _build_prepared_guarded_sign_inputs(
     if not guarded_targets:
         raise ValueError("prepared group has no guarded targets")
 
-    dummy_count = _guarded_dummies_needed(total_lsig_bytes, len(txns))
-    if len(txns) + dummy_count > GUARDED_MAX_GROUP_SIZE:
-        raise ValueError(
-            f"group would be {len(txns) + dummy_count} transactions (max {GUARDED_MAX_GROUP_SIZE}) "
-            f"- cannot add {dummy_count} dummies for LSig budget"
+    try:
+        plan = user_client.plan_group(
+            txns,
+            auth_addresses,
+            plan_args or None,
         )
-    if dummy_count > 0:
-        _apply_guarded_dummy_fees(
-            txns, lsig_indices, dummy_count, min_fee or GUARDED_DEFAULT_MIN_FEE
-        )
-
-    dummies = _create_guarded_dummies(txns[0], dummy_count)
-    all_txns = txns + dummies
-    if len(all_txns) > 1:
-        for txn in all_txns:
-            txn.group = None
-        transaction.assign_group_id(all_txns)
+    except Exception as e:
+        if isinstance(e, SignerError):
+            raise
+        raise SignerError(f"guarded group planning failed: {e}") from e
+    try:
+        all_txns = _decode_canonical_group(plan.get("transactions") or [])
+        _validate_bounded_component_plan(txns, all_txns, plan.get("mutations"))
+    except Exception as e:
+        if isinstance(e, SignerError):
+            raise SignerError(f"invalid guarded group plan: {e}") from e
+        raise
 
     dummy_passthrough = _sign_guarded_dummies(all_txns[len(txns) :], len(txns))
     group_bytes_hex = [encode_transaction(txn)[0] for txn in all_txns]
@@ -4854,8 +4884,6 @@ def _request_primary_guarded_passthrough(
                 request["txn_sender"] = target["txn_sender"]
             if target.get("lsig_args"):
                 request["lsig_args"] = target["lsig_args"]
-            if target.get("lsig_size"):
-                request["lsig_size"] = target["lsig_size"]
             if target.get("app_call_info"):
                 request["app_call_info"] = target["app_call_info"]
             requests.append(request)
@@ -5154,7 +5182,7 @@ def _request_bounded_primary_passthrough(
     group_bytes_hex: List[str],
     original_count: int,
     bounded_indices: set,
-    target_lsig_sizes: Dict[int, int],
+    target_resources: Dict[int, Optional[LogicSigResourceUsage]],
     primary_targets: List[Dict[str, Any]],
 ) -> tuple:
     if not primary_targets:
@@ -5163,11 +5191,24 @@ def _request_bounded_primary_passthrough(
     requests_data = []
     for index, txn_hex in enumerate(group_bytes_hex):
         if index >= original_count:
-            requests_data.append({"txn_bytes_hex": txn_hex})
+            requests_data.append(
+                {
+                    "txn_bytes_hex": txn_hex,
+                    "lsig_resources": _wire_lsig_resources(
+                        LogicSigResourceUsage(
+                            program_bytes=len(GUARDED_DUMMY_PROGRAM),
+                            argument_bytes=0,
+                            max_opcode_cost=1,
+                        )
+                    ),
+                }
+            )
         elif index in bounded_indices:
             request: Dict[str, Any] = {"txn_bytes_hex": txn_hex}
-            if target_lsig_sizes.get(index):
-                request["lsig_size"] = target_lsig_sizes[index]
+            if target_resources.get(index):
+                request["lsig_resources"] = _wire_lsig_resources(
+                    cast(LogicSigResourceUsage, target_resources[index])
+                )
             requests_data.append(request)
         else:
             target = primary_by_index.get(index)
@@ -5177,7 +5218,7 @@ def _request_bounded_primary_passthrough(
                 "txn_bytes_hex": txn_hex,
                 "auth_address": target["auth_address"],
             }
-            for field in ("txn_sender", "lsig_args", "lsig_size", "app_call_info"):
+            for field in ("txn_sender", "lsig_args", "app_call_info"):
                 if target.get(field):
                     request[field] = target[field]
             requests_data.append(request)
@@ -5222,7 +5263,7 @@ def sign_prepared_bounded_sentry_group(
     requests_data: List[Dict[str, Any]] = []
     targets: List[Dict[str, Any]] = []
     primary_targets: List[Dict[str, Any]] = []
-    target_lsig_sizes: Dict[int, int] = {}
+    target_resources: Dict[int, Optional[LogicSigResourceUsage]] = {}
     target_max_fees: Dict[int, int] = {}
     for index, item in enumerate(prepared):
         if item.signed_transaction_base64:
@@ -5237,12 +5278,12 @@ def sign_prepared_bounded_sentry_group(
             key = user_client.get_key_info(item.auth_address)
         if key is None:
             raise ValueError(f"prepared transaction {index}: signer key metadata is required")
-        lsig_size = key.lsig_size or item.lsig_size
+        resources = _selected_spend_resources(key, item.lsig_resources)
         if key.signing_flow == SIGNING_FLOW_BOUNDED_SENTRY1:
             if not item.auth_address:
                 raise ValueError(f"prepared transaction {index}: bounded auth address is required")
             requests_data.append(item.to_sign_request())
-            target_lsig_sizes[index] = lsig_size
+            target_resources[index] = resources
             if key.bounded_authorization is None:
                 raise ValueError(
                     f"prepared transaction {index}: bounded authorization " "metadata is required"
@@ -5254,6 +5295,7 @@ def sign_prepared_bounded_sentry_group(
                     "guarded_account": item.auth_address,
                     "sentry_public_key_hex": _bounded_sentry_public_key(key),
                     "sentry_component_key_type": _bounded_sentry_component_key_type(key),
+                    "logic_sig_resources": resources,
                 }
             )
             continue
@@ -5268,8 +5310,8 @@ def sign_prepared_bounded_sentry_group(
             raise ValueError(f"prepared transaction {index}: primary auth address is required")
         txn_hex, _ = encode_transaction(item.transaction)
         request = {"txn_bytes_hex": txn_hex}
-        if lsig_size:
-            request["lsig_size"] = lsig_size
+        if resources:
+            request["lsig_resources"] = _wire_lsig_resources(resources)
         requests_data.append(request)
         primary_targets.append(
             {
@@ -5277,7 +5319,6 @@ def sign_prepared_bounded_sentry_group(
                 "auth_address": item.auth_address,
                 "txn_sender": item.txn_sender,
                 "lsig_args": _encode_guarded_lsig_args(item.lsig_args),
-                "lsig_size": lsig_size,
                 "app_call_info": item.app_call_info,
             }
         )
@@ -5352,7 +5393,7 @@ def sign_prepared_bounded_sentry_group(
         component_response.transactions,
         len(prepared),
         set(target_by_index),
-        target_lsig_sizes,
+        target_resources,
         primary_targets,
     )
     passthrough.extend(_sign_guarded_dummies(planned[len(prepared) :], len(prepared)))

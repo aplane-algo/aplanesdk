@@ -197,9 +197,8 @@ the SDK to size `/sign` deadlines.
 
 List available signing keys.
 
-`KeyInfo.LsigSize` is the spend-path LogicSig budget. For `bounded1`, it
-excludes the external contract-admin signature slot; the admin-inclusive size
-is available as `KeyInfo.BoundedAuthorization.PostSigningLogicSigSize`.
+`KeyInfo.LogicSigResources` publishes independent program-byte,
+argument-byte, and maximum-opcode-cost demand by authorization path.
 
 The SDK exposes bounded inventory and ordinary spend signing only. It does not
 build, partially sign, or complete contract-admin rekey transactions; use the
@@ -268,7 +267,9 @@ Post raw `/plan` requests directly without rebuilding them from
 
 ```go
 planResp, err := client.PlanRequestsWithContext(ctx, []aplane.SignRequest{
-	{TxnBytesHex: txnHex, LsigSize: 3035},
+	{TxnBytesHex: txnHex, LsigResources: &aplane.LogicSigResourceUsage{
+		ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000,
+	}},
 })
 ```
 
@@ -468,24 +469,19 @@ if err != nil {
 }
 ```
 
-## Fee Pooling (Large LogicSigs)
+## LogicSig Resource Planning
 
-Algorand limits LogicSig size to 1000 bytes per transaction. Large signatures like Falcon-1024 (~3000 bytes) exceed this limit.
-
-The server automatically creates dummy transactions to expand the LogicSig budget pool:
+The signer plans LogicSig program bytes, argument bytes, and opcode cost as
+independent consensus resources. Under v42, excess program bytes are paid by
+the group fee; dummies are added only when argument or opcode capacity
+requires them. The SDK submits transactions and lets the signer finalize fees,
+membership, and the group ID before signing:
 
 ```go
-// Falcon-1024 has lsigSize ~3035 bytes, needs 3 dummies
-// Server automatically handles this - just sign and submit
 signed, err := client.SignTransaction(txn, "", nil)
 signedBytes, _ := aplane.Base64ToBytes(signed)
 txid, _ := algodClient.SendRawTransaction(signedBytes).Do(ctx)
 ```
-
-| Key Type | LogicSig Size | Dummies Needed | Extra Fee |
-|----------|---------------|----------------|-----------|
-| Ed25519 | 0 | 0 | 0 |
-| Falcon-1024 | ~3035 | 3 | ~3000 uA |
 
 ## License
 

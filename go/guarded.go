@@ -12,14 +12,7 @@ import (
 
 	"github.com/algorand/go-algorand-sdk/v2/crypto"
 	"github.com/algorand/go-algorand-sdk/v2/encoding/msgpack"
-	"github.com/algorand/go-algorand-sdk/v2/transaction"
 	"github.com/algorand/go-algorand-sdk/v2/types"
-)
-
-const (
-	guardedLsigBudgetBytes = 1000
-	guardedMaxGroupSize    = 16
-	guardedDefaultMinFee   = 1000
 )
 
 var guardedDummyProgram = []byte{0x03, 0x31, 0x20, 0x32, 0x03, 0x12}
@@ -52,6 +45,7 @@ type GuardedSignTarget struct {
 	SentryComponentKeyType string
 	SentryComponentKey     string
 	RuntimeArgs            []string
+	LogicSigResources      *LogicSigResourceUsage
 }
 
 // GuardedPrimarySignTarget describes one non-guarded group position that the
@@ -61,7 +55,6 @@ type GuardedPrimarySignTarget struct {
 	AuthAddress string
 	TxnSender   string
 	LsigArgs    map[string]string
-	LsigSize    int
 	AppCallInfo *AppCallInfo
 }
 
@@ -274,7 +267,7 @@ func SignPreparedGuardedGroupWithContext(ctx context.Context, opts PreparedGuard
 		}
 		return signPreparedBoundedSentryGroupWithContext(ctx, resolvedOpts)
 	}
-	signOpts, err := buildPreparedGuardedSignOptions(resolvedOpts)
+	signOpts, err := buildPreparedGuardedSignOptions(ctx, resolvedOpts)
 	if err != nil {
 		return nil, err
 	}
@@ -318,7 +311,7 @@ func resolvePreparedSentryFlowKinds(opts PreparedGuardedGroupOptions) (
 	return resolved, boundedSentry, legacyGuarded, nil
 }
 
-func buildPreparedGuardedSignOptions(opts PreparedGuardedGroupOptions) (GuardedSignOptions, error) {
+func buildPreparedGuardedSignOptions(ctx context.Context, opts PreparedGuardedGroupOptions) (GuardedSignOptions, error) {
 	if opts.UserClient == nil {
 		return GuardedSignOptions{}, fmt.Errorf("user client is required")
 	}
@@ -330,8 +323,7 @@ func buildPreparedGuardedSignOptions(opts PreparedGuardedGroupOptions) (GuardedS
 	txns := make([]types.Transaction, len(prepared))
 	targets := make([]GuardedSignTarget, 0, len(prepared))
 	primaryTargets := make([]GuardedPrimarySignTarget, 0, len(prepared))
-	lsigIndices := make([]int, 0, len(prepared))
-	totalLsigBytes := 0
+	planRequests := make([]SignRequest, len(prepared))
 
 	for i, item := range prepared {
 		if item.SignedTransactionBase64 != "" {
@@ -354,14 +346,14 @@ func buildPreparedGuardedSignOptions(opts PreparedGuardedGroupOptions) (GuardedS
 			return GuardedSignOptions{}, fmt.Errorf("prepared transaction %d: signer key metadata is required", i)
 		}
 
-		lsigSize := item.LsigSize
-		if key.LsigSize > 0 {
-			lsigSize = key.LsigSize
+		if item.AuthAddress == "" {
+			return GuardedSignOptions{}, fmt.Errorf("prepared transaction %d: auth address is required", i)
 		}
-		if lsigSize > 0 {
-			totalLsigBytes += lsigSize
-			lsigIndices = append(lsigIndices, i)
+		planRequest, err := item.SignRequest()
+		if err != nil {
+			return GuardedSignOptions{}, fmt.Errorf("prepared transaction %d: %w", i, err)
 		}
+		planRequests[i] = planRequest
 
 		if key.SigningFlow != "" {
 			if key.SigningFlow == SigningFlowBounded1 {
@@ -373,7 +365,6 @@ func buildPreparedGuardedSignOptions(opts PreparedGuardedGroupOptions) (GuardedS
 					AuthAddress: item.AuthAddress,
 					TxnSender:   item.TxnSender,
 					LsigArgs:    encodeGuardedLsigArgs(item.LsigArgs),
-					LsigSize:    lsigSize,
 					AppCallInfo: item.AppCallInfo,
 				})
 				continue
@@ -389,6 +380,7 @@ func buildPreparedGuardedSignOptions(opts PreparedGuardedGroupOptions) (GuardedS
 				GuardedAccount:         item.AuthAddress,
 				SentryPublicKeyHex:     guardedSentryPublicKey(key),
 				SentryComponentKeyType: key.SentryComponentKeyType,
+				LogicSigResources:      selectedSpendResources(key, item.LsigResources),
 			})
 			continue
 		}
@@ -401,7 +393,6 @@ func buildPreparedGuardedSignOptions(opts PreparedGuardedGroupOptions) (GuardedS
 			AuthAddress: item.AuthAddress,
 			TxnSender:   item.TxnSender,
 			LsigArgs:    encodeGuardedLsigArgs(item.LsigArgs),
-			LsigSize:    lsigSize,
 			AppCallInfo: item.AppCallInfo,
 		})
 	}
@@ -410,37 +401,16 @@ func buildPreparedGuardedSignOptions(opts PreparedGuardedGroupOptions) (GuardedS
 		return GuardedSignOptions{}, fmt.Errorf("prepared group has no guarded targets")
 	}
 
-	minFee := opts.MinFee
-	if minFee == 0 {
-		minFee = guardedDefaultMinFee
-	}
-	dummiesNeeded := guardedDummiesNeeded(totalLsigBytes, len(txns))
-	if len(txns)+dummiesNeeded > guardedMaxGroupSize {
-		return GuardedSignOptions{}, fmt.Errorf("group would be %d transactions (max %d) - cannot add %d dummies for LSig budget",
-			len(txns)+dummiesNeeded, guardedMaxGroupSize, dummiesNeeded)
-	}
-	if dummiesNeeded > 0 {
-		if err := applyGuardedDummyFees(txns, lsigIndices, dummiesNeeded, minFee); err != nil {
-			return GuardedSignOptions{}, err
-		}
-	}
-
-	dummyTxns, err := createGuardedDummies(txns[0], dummiesNeeded)
+	plan, err := opts.UserClient.PlanRequestsWithContext(ctx, planRequests)
 	if err != nil {
-		return GuardedSignOptions{}, err
+		return GuardedSignOptions{}, fmt.Errorf("guarded group planning failed: %w", err)
 	}
-	allTxns := append(txns, dummyTxns...)
-	if len(allTxns) > 1 {
-		for i := range allTxns {
-			allTxns[i].Group = types.Digest{}
-		}
-		gid, err := crypto.ComputeGroupID(allTxns)
-		if err != nil {
-			return GuardedSignOptions{}, fmt.Errorf("failed to compute group ID: %w", err)
-		}
-		for i := range allTxns {
-			allTxns[i].Group = gid
-		}
+	allTxns, err := decodeCanonicalGroup(plan.Transactions)
+	if err != nil {
+		return GuardedSignOptions{}, fmt.Errorf("signer returned invalid guarded group plan: %w", err)
+	}
+	if err := validateBoundedComponentPlan(txns, allTxns, plan.Mutations); err != nil {
+		return GuardedSignOptions{}, fmt.Errorf("invalid guarded group plan: %w", err)
 	}
 
 	dummyPassthrough, err := signGuardedDummies(allTxns[len(txns):], len(txns))
@@ -466,6 +436,24 @@ func buildPreparedGuardedSignOptions(opts PreparedGuardedGroupOptions) (GuardedS
 	}, nil
 }
 
+func selectedSpendResources(key *KeyInfo, fallback *LogicSigResourceUsage) *LogicSigResourceUsage {
+	if key != nil && key.LogicSigResources != nil {
+		selected := key.LogicSigResources.Default
+		if key.LogicSigResources.Spend != nil {
+			selected = key.LogicSigResources.Spend
+		}
+		if selected != nil {
+			copy := *selected
+			return &copy
+		}
+	}
+	if fallback == nil {
+		return nil
+	}
+	copy := *fallback
+	return &copy
+}
+
 func guardedSentryPublicKey(key *KeyInfo) string {
 	if key == nil || key.Parameters == nil {
 		return ""
@@ -482,74 +470,6 @@ func encodeGuardedLsigArgs(args LsigArgs) map[string]string {
 		out[name] = hex.EncodeToString(value)
 	}
 	return out
-}
-
-func guardedDummiesNeeded(totalLsigBytes, txnCount int) int {
-	currentBudget := txnCount * guardedLsigBudgetBytes
-	if totalLsigBytes <= currentBudget {
-		return 0
-	}
-	extraBudgetNeeded := totalLsigBytes - currentBudget
-	return (extraBudgetNeeded + guardedLsigBudgetBytes - 1) / guardedLsigBudgetBytes
-}
-
-func applyGuardedDummyFees(txns []types.Transaction, lsigIndices []int, dummyCount int, minFee uint64) error {
-	totalFees := uint64(dummyCount) * minFee
-	if len(lsigIndices) == 0 {
-		if len(txns) == 0 {
-			return fmt.Errorf("no transactions to apply dummy fees to")
-		}
-		txns[0].Fee += types.MicroAlgos(totalFees)
-		return nil
-	}
-
-	feePerLSig := totalFees / uint64(len(lsigIndices))
-	remainder := totalFees % uint64(len(lsigIndices))
-	for i, idx := range lsigIndices {
-		extra := feePerLSig
-		if i == 0 {
-			extra += remainder
-		}
-		txns[idx].Fee += types.MicroAlgos(extra)
-	}
-	return nil
-}
-
-func createGuardedDummies(firstTxn types.Transaction, count int) ([]types.Transaction, error) {
-	if count == 0 {
-		return nil, nil
-	}
-	dummyAcct := crypto.LogicSigAccount{Lsig: types.LogicSig{Logic: guardedDummyProgram}}
-	dummyAddr, err := dummyAcct.Address()
-	if err != nil {
-		return nil, fmt.Errorf("failed to compute dummy address: %w", err)
-	}
-
-	sp := types.SuggestedParams{
-		Fee:             firstTxn.Fee,
-		FirstRoundValid: types.Round(firstTxn.FirstValid),
-		LastRoundValid:  types.Round(firstTxn.LastValid),
-		GenesisID:       firstTxn.GenesisID,
-		GenesisHash:     firstTxn.GenesisHash[:],
-		FlatFee:         true,
-	}
-	dummies := make([]types.Transaction, count)
-	for i := 0; i < count; i++ {
-		txn, err := transaction.MakePaymentTxn(
-			dummyAddr.String(),
-			dummyAddr.String(),
-			0,
-			[]byte{byte(i)},
-			"",
-			sp,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create dummy transaction %d: %w", i+1, err)
-		}
-		txn.Fee = 0
-		dummies[i] = txn
-	}
-	return dummies, nil
 }
 
 func signGuardedDummies(dummies []types.Transaction, startIndex int) ([]GuardedPassthroughItem, error) {
@@ -702,11 +622,20 @@ func requestPrimaryGuardedPassthrough(ctx context.Context, client *SignerClient,
 				TxnSender:   target.TxnSender,
 				TxnBytesHex: txnHex,
 				LsigArgs:    target.LsigArgs,
-				LsigSize:    target.LsigSize,
 				AppCallInfo: target.AppCallInfo,
 			}
+		} else if guarded, ok := guardedByIndex[i]; ok {
+			resources := guarded.LogicSigResources
+			if resources == nil {
+				if key, err := client.GetKeyInfo(guarded.GuardedAccount); err == nil {
+					resources = selectedSpendResources(key, nil)
+				}
+			}
+			requests[i] = SignRequest{TxnBytesHex: txnHex, LsigResources: resources}
 		} else {
-			requests[i] = SignRequest{TxnBytesHex: txnHex}
+			requests[i] = SignRequest{TxnBytesHex: txnHex, LsigResources: &LogicSigResourceUsage{
+				ProgramBytes: uint64(len(guardedDummyProgram)), MaxOpcodeCost: 1,
+			}}
 		}
 	}
 

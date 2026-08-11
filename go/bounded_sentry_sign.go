@@ -40,7 +40,7 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 	requests := make([]SignRequest, len(prepared))
 	targets := make([]GuardedSignTarget, 0, len(prepared))
 	primaryTargets := make([]GuardedPrimarySignTarget, 0, len(prepared))
-	targetLsigSizes := make(map[int]int)
+	targetResources := make(map[int]*LogicSigResourceUsage)
 	targetMaxFees := make(map[int]uint64)
 	for i, item := range prepared {
 		if item.SignedTransactionBase64 != "" {
@@ -61,10 +61,7 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 			return nil, fmt.Errorf("prepared transaction %d: signer key metadata is required", i)
 		}
 
-		lsigSize := item.LsigSize
-		if key.LsigSize > 0 {
-			lsigSize = key.LsigSize
-		}
+		resources := selectedSpendResources(key, item.LsigResources)
 		switch key.SigningFlow {
 		case SigningFlowBoundedSentry1:
 			if item.AuthAddress == "" {
@@ -75,7 +72,7 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 				return nil, fmt.Errorf("prepared transaction %d: %w", i, err)
 			}
 			requests[i] = req
-			targetLsigSizes[i] = lsigSize
+			targetResources[i] = resources
 			if key.BoundedAuthorization == nil {
 				return nil, fmt.Errorf("prepared transaction %d: bounded authorization metadata is required", i)
 			}
@@ -85,6 +82,7 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 				GuardedAccount:         item.AuthAddress,
 				SentryPublicKeyHex:     boundedSentryPublicKey(key),
 				SentryComponentKeyType: boundedSentryComponentKeyType(key),
+				LogicSigResources:      resources,
 			})
 		case SigningFlowSentry1:
 			return nil, fmt.Errorf("cannot mix sentry1 and bounded-sentry1 targets in one group")
@@ -93,8 +91,8 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 				return nil, fmt.Errorf("prepared transaction %d: signer key requires signing flow %q, which this SDK does not support; upgrade the SDK", i, key.SigningFlow)
 			}
 			requests[i] = SignRequest{
-				TxnBytesHex: hex.EncodeToString(encodeTxn(*item.Transaction)),
-				LsigSize:    lsigSize,
+				TxnBytesHex:   hex.EncodeToString(encodeTxn(*item.Transaction)),
+				LsigResources: resources,
 			}
 			if item.AuthAddress == "" {
 				return nil, fmt.Errorf("prepared transaction %d: primary auth address is required", i)
@@ -104,7 +102,6 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 				AuthAddress: item.AuthAddress,
 				TxnSender:   item.TxnSender,
 				LsigArgs:    encodeGuardedLsigArgs(item.LsigArgs),
-				LsigSize:    lsigSize,
 				AppCallInfo: item.AppCallInfo,
 			})
 		}
@@ -171,7 +168,7 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 
 	primary, err := requestBoundedPrimaryPassthrough(
 		ctx, opts.UserClient, componentResp.Transactions, len(prepared),
-		targetsByIndex, targetLsigSizes, primaryTargets,
+		targetsByIndex, targetResources, primaryTargets,
 	)
 	if err != nil {
 		return nil, err
@@ -231,7 +228,7 @@ func requestBoundedPrimaryPassthrough(
 	groupBytesHex []string,
 	originalCount int,
 	targets map[int]GuardedSignTarget,
-	targetLsigSizes map[int]int,
+	targetResources map[int]*LogicSigResourceUsage,
 	primaryTargets []GuardedPrimarySignTarget,
 ) (*primaryGuardedPassthrough, error) {
 	if len(primaryTargets) == 0 {
@@ -251,9 +248,11 @@ func requestBoundedPrimaryPassthrough(
 	for i, txnHex := range groupBytesHex {
 		switch {
 		case i >= originalCount:
-			requests[i] = SignRequest{TxnBytesHex: txnHex}
+			requests[i] = SignRequest{TxnBytesHex: txnHex, LsigResources: &LogicSigResourceUsage{
+				ProgramBytes: uint64(len(guardedDummyProgram)), MaxOpcodeCost: 1,
+			}}
 		case targets[i].GuardedAccount != "":
-			requests[i] = SignRequest{TxnBytesHex: txnHex, LsigSize: targetLsigSizes[i]}
+			requests[i] = SignRequest{TxnBytesHex: txnHex, LsigResources: targetResources[i]}
 		default:
 			target, ok := primaryByIndex[i]
 			if !ok {
@@ -264,7 +263,6 @@ func requestBoundedPrimaryPassthrough(
 				TxnSender:   target.TxnSender,
 				TxnBytesHex: txnHex,
 				LsigArgs:    cloneStringMap(target.LsigArgs),
-				LsigSize:    target.LsigSize,
 				AppCallInfo: target.AppCallInfo,
 			}
 		}

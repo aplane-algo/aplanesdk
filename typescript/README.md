@@ -205,9 +205,8 @@ for (const key of keys) {
 Returns list of `KeyInfo`:
 - `address`: Algorand address
 - `keyType`: "ed25519", "aplane.falcon1024.v1", "aplane.htlc.v1", etc.
-- `lsigSize`: spend-path LogicSig size used for budget calculation. For
-  `bounded1`, this excludes the external contract-admin signature slot;
-  `boundedAuthorization.postSigningLsigSize` is admin-inclusive.
+- `logicSigResources`: independent program-byte, argument-byte, and
+  maximum-opcode-cost demand by authorization path.
 - `isGenericLsig`: True if no cryptographic signature needed
 - `signingArgs`: List of `SigningArg` for LogicSigs
 
@@ -609,28 +608,25 @@ async function main() {
 main().catch(console.error);
 ```
 
-## Fee Pooling (Large LogicSigs)
+## LogicSig Resource Planning
 
-Algorand limits LogicSig size to 1000 bytes per transaction. Large signatures like Falcon-1024 (~3000 bytes) exceed this limit.
-
-**Solution**: The server automatically creates dummy transactions to expand the LogicSig budget pool. Each transaction in a group contributes 1000 bytes to the shared pool.
+The signer plans LogicSig program bytes, argument bytes, and opcode cost as
+independent consensus resources. Under v42, excess program bytes are paid by
+the group fee; dummies are added only when argument or opcode capacity
+requires them.
 
 ### How It Works (Server-Side)
 
-1. Server detects key's `lsigSize` exceeds available budget
-2. Server calculates dummies needed: `ceil(total_lsig_bytes / 1000) - num_txns`
-3. Server creates dummy self-payment transactions (0 amount, min fee)
-4. Server distributes dummy fees across LogicSig transactions in the group
-5. Server computes group ID and signs all transactions
-6. SDK returns concatenated signed group ready for submission
+1. Server selects the authorization-path resource profile.
+2. Server solves argument and opcode capacity, adding canonical dummies only
+   when required.
+3. Server adds the v42 program-byte fee contribution.
+4. Server computes the final group ID and signs all transactions.
+5. SDK returns the complete signed group ready for submission.
 
 ### Example: Falcon-1024 Key
 
 ```typescript
-// Falcon-1024 has lsigSize ~3035 bytes, needs 3 dummies
-// Total group: 1 main + 3 dummies = 4 transactions
-// Pool budget: 4 x 1000 = 4000 bytes (enough for 3035)
-
 const params = await algodClient.getTransactionParams().do();
 const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
   sender: falconAddr,

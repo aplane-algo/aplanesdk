@@ -33,6 +33,7 @@ from aplanesdk.signer import (
     GuardedAssemblyRequest,
     GuardedAssemblyTarget,
     GuardedAssemblyResponse,
+    LogicSigResourceUsage,
     SignerClient,
     StatusResponse,
 )
@@ -168,7 +169,7 @@ def test_encodes_mixed_group_sign_request_wire_fields():
                 }
             },
             {1: passthrough},
-            {2: 3035},
+            {2: LogicSigResourceUsage(1600, 1423, 20000)},
         )
 
     expected = fixture("group_sign_request_mixed.json")
@@ -187,7 +188,7 @@ def test_list_keys_maps_generic_lsig_metadata():
     generic = keys[1]
     assert generic.public_key_hex == "ffeeddccbbaa99887766554433221100"
     assert generic.key_type == "example.generic-policy.v1"
-    assert generic.lsig_size == 512
+    assert generic.logic_sig_resources.default == LogicSigResourceUsage(512, 32, 20000)
     assert generic.is_generic_lsig is True
     assert generic.signing_args is not None
     assert generic.signing_args[0].name == "preimage"
@@ -413,13 +414,12 @@ def test_bounded_inventory_projects_layer3_policy():
         keys = client.list_keys(refresh=True)
         key = keys[0]
     assert key.signing_flow == "bounded1"
-    assert key.lsig_size == 6592
+    assert key.logic_sig_resources.spend == LogicSigResourceUsage(5169, 1423, 20000)
     assert key.bounded_authorization.layer3_policy == "fixed_allowlist"
     assert key.bounded_authorization.admin_key_id
     assert key.bounded_authorization.program_binding == (
         "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
     )
-    assert key.bounded_authorization.post_signing_lsig_size == 7872
     assert key.bounded_authorization.spend_effects == ["pay", "axfer", "asset_opt_in"]
     assert key.bounded_authorization.admin_operations[0].policy_gate == "none"
     assert key.bounded_authorization.argument_layout[1].source == "admin"

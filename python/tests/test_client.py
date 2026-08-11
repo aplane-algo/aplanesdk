@@ -32,6 +32,8 @@ from aplanesdk.signer import (
     ComponentSignResponse,
     GroupSignResponse,
     KeyInfo,
+    LogicSigResourceProfile,
+    LogicSigResourceUsage,
     GuardedAssemblyRequest,
     GuardedAssemblyTarget,
     GuardedAssemblyResponse,
@@ -195,11 +197,17 @@ class TestListKeys:
         resp = mock_response(200, {
             "count": 2,
             "keys": [
-                {"address": "ADDR1", "key_type": "ed25519", "public_key_hex": "abcd", "lsig_size": 0},
+                {"address": "ADDR1", "key_type": "ed25519", "public_key_hex": "abcd"},
                 {
                     "address": "ADDR2",
                     "key_type": "aplane.falcon1024.v1",
-                    "lsig_size": 3035,
+                    "logic_sig_resources": {
+                        "default": {
+                            "program_bytes": 1612,
+                            "argument_bytes": 1423,
+                            "max_opcode_cost": 20000,
+                        }
+                    },
                     "template_status": "unavailable",
                     "template_warning": "template fingerprint unavailable",
                 },
@@ -212,7 +220,11 @@ class TestListKeys:
         assert keys[0].address == "ADDR1"
         assert keys[0].key_type == "ed25519"
         assert keys[0].public_key_hex == "abcd"
-        assert keys[1].lsig_size == 3035
+        assert keys[1].logic_sig_resources.default == LogicSigResourceUsage(
+            program_bytes=1612,
+            argument_bytes=1423,
+            max_opcode_cost=20000,
+        )
         assert keys[1].template_status == "unavailable"
         assert keys[1].template_warning == "template fingerprint unavailable"
         assert keys[1].template_provenance_status == "unavailable"
@@ -961,16 +973,15 @@ class TestSignGuardedGroup:
             signatures=[ComponentSignature(0, "sentry-sig", KEY_TYPE_WITNESS_FALCON1024)],
         ))
         user.sign_requests = MagicMock(side_effect=AssertionError("all-guarded path must not call /sign"))
-        user.plan_group = MagicMock(side_effect=AssertionError("all-guarded path must not call /plan"))
 
         def assemble(req):
-            assert len(req.group_bytes_hex) == 4
-            assert len(req.passthrough) == 3
-            assert [item.target_index for item in req.passthrough] == [1, 2, 3]
+            assert len(req.group_bytes_hex) == 2
+            assert len(req.passthrough) == 1
+            assert [item.target_index for item in req.passthrough] == [1]
             assert all(item.signed_txn_hex for item in req.passthrough)
             return GuardedAssemblyResponse(
                 request_id="assembly-id",
-                signed_group=["guarded-signed", "dummy-1", "dummy-2", "dummy-3"],
+                signed_group=[signed_txn_hex(planned[0]), signed_txn_hex(planned[1])],
             )
 
         user.request_guarded_assemble = MagicMock(side_effect=assemble)
@@ -984,6 +995,29 @@ class TestSignGuardedGroup:
             flat_fee=True,
         )
         txn = transaction.PaymentTxn(guarded, params, receiver, 1000)
+        planned = [copy.deepcopy(txn), _create_guarded_dummies(txn, 1)[0]]
+        transaction.assign_group_id(planned)
+        user.plan_group = MagicMock(
+            return_value={
+                "transactions": [encode_transaction(item)[0] for item in planned],
+                "mutations": {
+                    "dummies_added": 1,
+                    "group_id_changed": True,
+                    "fees_modified": [],
+                    "total_fees_delta": 0,
+                    "original_count": 1,
+                    "final_count": 2,
+                },
+            }
+        )
+
+        def signed_txn_hex(inner):
+            logic_sig = transaction.LogicSigAccount(bytes.fromhex("033120320312"))
+            encoded = algo_encoding.msgpack_encode(
+                transaction.LogicSigTransaction(inner, logic_sig)
+            )
+            return base64.b64decode(encoded).hex()
+
         result = sign_prepared_guarded_group(
             user_client=user,
             sentry_client=sentry,
@@ -997,21 +1031,24 @@ class TestSignGuardedGroup:
                         key_type=KEY_TYPE_GUARDED_FALCON1024_SENTRY1024,
                         signing_flow=SIGNING_FLOW_SENTRY1,
                         sentry_component_key_type=KEY_TYPE_WITNESS_FALCON1024,
-                        lsig_size=3035,
+                        logic_sig_resources=LogicSigResourceProfile(
+                            spend=LogicSigResourceUsage(1612, 1423, 20000)
+                        ),
                         parameters={"sentry_public_key": "aabbcc"},
                     ),
                 )
             ]),
         )
 
-        assert len(result.signed_group) == 4
+        assert len(result.signed_group) == 2
         assert result.primary_sign_response is None
+        user.plan_group.assert_called_once()
         user_req = user.request_component_sign.call_args.args[0]
         assert user_req.component_key == guarded
-        assert len(user_req.group_bytes_hex) == 4
+        assert len(user_req.group_bytes_hex) == 2
         sentry_req = sentry.request_component_sign.call_args.args[0]
         assert sentry_req.component_key == "SENTRY_COMPONENT"
-        assert len(sentry_req.group_bytes_hex) == 4
+        assert len(sentry_req.group_bytes_hex) == 2
 
     def test_bounded_component_plan_rejects_unreported_changes_and_bad_dummies(self):
         sender = sdk_test_address(21)
@@ -1299,7 +1336,9 @@ class TestSignGuardedGroup:
                         key_type="aplane.corridor.v1",
                         signing_flow=SIGNING_FLOW_BOUNDED_SENTRY1,
                         sentry_component_key_type=KEY_TYPE_WITNESS_FALCON1024,
-                        lsig_size=9012,
+                        logic_sig_resources=LogicSigResourceProfile(
+                            spend=LogicSigResourceUsage(5308, 3358, 20000)
+                        ),
                         bounded_authorization=BoundedAuthorizationInfo(
                             contract="bounded1",
                             base_signature_arg_layout=BoundedSignatureArgLayout(
@@ -1377,7 +1416,9 @@ class TestSignGuardedGroup:
                             address=guarded,
                             key_type="aplane.future-guarded.v1",
                             signing_flow="sentry2",
-                            lsig_size=3035,
+                            logic_sig_resources=LogicSigResourceProfile(
+                                spend=LogicSigResourceUsage(1612, 1423, 20000)
+                            ),
                         ),
                     )
                 ]),
@@ -1809,7 +1850,7 @@ class TestPreparedGroup:
         prepared = PreparedGroup([
             PreparedTransaction(
                 transaction=self._make_mock_txn(),
-                lsig_size=3035,
+                lsig_resources=LogicSigResourceUsage(1612, 1423, 20000),
             )
         ])
 
@@ -1818,7 +1859,11 @@ class TestPreparedGroup:
 
         assert requests == [{
             "txn_bytes_hex": "deadbeef",
-            "lsig_size": 3035,
+            "lsig_resources": {
+                "program_bytes": 1612,
+                "argument_bytes": 1423,
+                "max_opcode_cost": 20000,
+            },
         }]
 
     def test_to_sign_requests_passthrough_mode(self):

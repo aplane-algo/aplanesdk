@@ -6,12 +6,16 @@
       "public_key_hex": "00112233445566778899aabbccddeeff",
       "key_type": "aplane.falcon1024-allowlist-alock.v1",
       "signing_flow": "bounded1",
-      "lsig_size": 6592,
+      "logic_sig_resources": {
+        "spend": {"program_bytes": 5169, "argument_bytes": 1423, "max_opcode_cost": 20000},
+        "spending_rekey": {"program_bytes": 5169, "argument_bytes": 1423, "max_opcode_cost": 20000},
+        "admin_rekey": {"program_bytes": 5169, "argument_bytes": 2846, "max_opcode_cost": 20000}
+      },
       "bounded_authorization": {
         "contract": "bounded1",
         "base_signature_arg_layout": {
           "count": 1,
-          "max_sizes": [1280]
+          "max_sizes": [1423]
         },
         "spend_effects": ["pay", "axfer", "asset_opt_in"],
         "max_fee": 10000,
@@ -21,13 +25,12 @@
         "runtime_args": [],
         "derived_args": [],
         "argument_layout": [
-          {"index": 0, "name": "base_signature_0", "source": "base_signature", "max_size": 1280, "paths": {"spend": "required", "spending_rekey": "required", "admin_rekey": "required"}},
-          {"index": 1, "name": "admin_signature", "source": "admin", "max_size": 1280, "paths": {"spend": "forbidden", "spending_rekey": "forbidden", "admin_rekey": "required"}}
+          {"index": 0, "name": "base_signature_0", "source": "base_signature", "max_size": 1423, "paths": {"spend": "required", "spending_rekey": "required", "admin_rekey": "required"}},
+          {"index": 1, "name": "admin_signature", "source": "admin", "max_size": 1423, "paths": {"spend": "forbidden", "spending_rekey": "forbidden", "admin_rekey": "required"}}
         ],
         "layer3_policy": "fixed_allowlist",
         "admin_key_id": "bounded-admin:falcon1024:EXAMPLE",
-        "program_binding": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
-        "post_signing_lsig_size": 7872
+        "program_binding": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
       },
       "parameters": {
         "recipients": "ADDR1,ADDR2",
@@ -40,13 +43,17 @@
       "key_type": "aplane.corridor.v1",
       "signing_flow": "bounded-sentry1",
       "sentry_component_key_type": "aplane.witness-falcon1024.v1",
-      "lsig_size": 8384,
+      "logic_sig_resources": {
+        "spend": {"program_bytes": 5308, "argument_bytes": 3358, "max_opcode_cost": 20000},
+        "spending_rekey": {"program_bytes": 5308, "argument_bytes": 1423, "max_opcode_cost": 20000},
+        "admin_rekey": {"program_bytes": 5308, "argument_bytes": 2846, "max_opcode_cost": 20000}
+      },
       "bounded_authorization": {
         "contract": "bounded1",
         "base_signature_arg_layout": {
           "count": 1,
           "max_sizes": [
-            1280
+            1423
           ]
         },
         "spend_effects": [
@@ -67,7 +74,7 @@
           "component_key_type": "aplane.witness-falcon1024.v1",
           "public_key_hex": "11223344556677889900aabbccddeeff",
           "component_key_id": "sentry:falcon1024:EXAMPLE",
-          "signature_max_size": 1280,
+          "signature_max_size": 1423,
           "required_on": [
             "spend"
           ]
@@ -86,7 +93,7 @@
             "index": 0,
             "name": "base_signature_0",
             "source": "base_signature",
-            "max_size": 1280,
+            "max_size": 1423,
             "paths": {
               "spend": "required",
               "spending_rekey": "required",
@@ -108,7 +115,7 @@
             "index": 2,
             "name": "sentry_signature",
             "source": "sentry",
-            "max_size": 1280,
+            "max_size": 1423,
             "paths": {
               "spend": "required",
               "spending_rekey": "forbidden",
@@ -119,7 +126,7 @@
             "index": 3,
             "name": "admin_signature",
             "source": "admin",
-            "max_size": 1280,
+            "max_size": 1423,
             "paths": {
               "spend": "forbidden",
               "spending_rekey": "forbidden",
@@ -129,8 +136,7 @@
         ],
         "layer3_policy": "merkle_allowlist",
         "admin_key_id": "bounded-admin:falcon1024:CORRIDOR",
-        "program_binding": "303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f",
-        "post_signing_lsig_size": 9664
+        "program_binding": "303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f"
       },
       "parameters": {
         "recipients": "ADDR1,ADDR2",

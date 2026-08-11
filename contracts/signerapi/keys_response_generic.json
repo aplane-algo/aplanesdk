@@ -10,7 +10,13 @@
       "address": "GENERICADDR00000000000000000000000000000000000000000000",
       "public_key_hex": "ffeeddccbbaa99887766554433221100",
       "key_type": "example.generic-policy.v1",
-      "lsig_size": 512,
+      "logic_sig_resources": {
+        "default": {
+          "program_bytes": 512,
+          "argument_bytes": 32,
+          "max_opcode_cost": 20000
+        }
+      },
       "is_generic_lsig": true,
       "signing_args": [
         {

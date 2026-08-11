@@ -19,7 +19,7 @@ used by all SDK test suites.
 
 Key-type inventory exposes `authorization_kind` values `ed25519`, `native_pq`,
 and `logic_sig`. Raw and prepared foreign transaction slots may set
-`pq_scheme: "f1"` instead of `lsig_size` when coordinating an Algorand
+`pq_scheme: "f1"` instead of `lsig_resources` when coordinating an Algorand
 protocol-native Falcon-1024 signer; the two hints are mutually exclusive.
 
 Data-directory routing is shared with APlane through `endpoints.yaml`. See the

@@ -179,7 +179,7 @@ describe("signer API contract fixtures", () => {
         },
       },
       { 1: Buffer.from("82a3736967c440", "hex").toString("base64") },
-      { 2: 3035 },
+      { 2: { programBytes: 1600, argumentBytes: 1423, maxOpcodeCost: 20000 } },
     );
 
     const expected = fixture("group_sign_request_mixed.json");
@@ -200,7 +200,7 @@ describe("signer API contract fixtures", () => {
     assert.equal(keys.length, 2);
     assert.equal(keys[1].publicKeyHex, "ffeeddccbbaa99887766554433221100");
     assert.equal(keys[1].keyType, "example.generic-policy.v1");
-    assert.equal(keys[1].lsigSize, 512);
+    assert.equal(keys[1].logicSigResources?.default?.programBytes, 512);
     assert.equal(keys[1].isGenericLsig, true);
     assert.equal(keys[1].signingArgs?.[0].name, "preimage");
     assert.equal(keys[1].signingArgs?.[0].label, "Preimage");
@@ -422,14 +422,14 @@ describe("signer API contract fixtures", () => {
     const keys = await client.listKeys(true);
     const key = keys[0];
     assert.equal(key.signingFlow, "bounded1");
-    assert.equal(key.lsigSize, 6592);
+    assert.equal(key.logicSigResources?.spend?.programBytes, 5169);
+    assert.equal(key.logicSigResources?.spend?.argumentBytes, 1423);
     assert.equal(key.boundedAuthorization?.layer3Policy, "fixed_allowlist");
     assert.ok(key.boundedAuthorization?.adminKeyId);
     assert.equal(
       key.boundedAuthorization?.programBinding,
       "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
     );
-    assert.equal(key.boundedAuthorization?.postSigningLsigSize, 7872);
     assert.deepEqual(key.boundedAuthorization?.spendEffects, ["pay", "axfer", "asset_opt_in"]);
     assert.equal(key.boundedAuthorization?.adminOperations[0].policyGate, "none");
     assert.equal(key.boundedAuthorization?.argumentLayout[1].source, "admin");

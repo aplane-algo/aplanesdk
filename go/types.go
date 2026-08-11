@@ -23,6 +23,23 @@ const (
 	KeyTypeGuardedFalcon1024Sentry1024 = "aplane.falcon1024-sentry1024.v1"
 )
 
+// LogicSigResourceUsage is one selected authorization path's independent
+// program, argument, and opcode demand.
+type LogicSigResourceUsage struct {
+	ProgramBytes  uint64 `json:"program_bytes"`
+	ArgumentBytes uint64 `json:"argument_bytes"`
+	MaxOpcodeCost uint64 `json:"max_opcode_cost"`
+}
+
+// LogicSigResourceProfile publishes either a default path or the three closed
+// bounded paths for one stored LogicSig program.
+type LogicSigResourceProfile struct {
+	Default       *LogicSigResourceUsage `json:"default,omitempty"`
+	Spend         *LogicSigResourceUsage `json:"spend,omitempty"`
+	SpendingRekey *LogicSigResourceUsage `json:"spending_rekey,omitempty"`
+	AdminRekey    *LogicSigResourceUsage `json:"admin_rekey,omitempty"`
+}
+
 // The signer HTTP DTOs and validation semantics in this file intentionally
 // mirror contracts/signerapi fixtures and server pkg/signerapi/types.go. Keep JSON
 // fields, request-mode validation, and response field meanings in sync without
@@ -34,14 +51,14 @@ const (
 //   - Passthrough mode: signed_txn_hex
 //   - Foreign mode: txn_bytes_hex without auth_address
 type SignRequest struct {
-	AuthAddress  string            `json:"auth_address,omitempty"`
-	TxnSender    string            `json:"txn_sender,omitempty"` // Advisory display hint; signer authority comes from txn bytes
-	TxnBytesHex  string            `json:"txn_bytes_hex,omitempty"`
-	LsigArgs     map[string]string `json:"lsig_args,omitempty"`
-	LsigSize     int               `json:"lsig_size,omitempty"`
-	PQScheme     string            `json:"pq_scheme,omitempty"`
-	AppCallInfo  *AppCallInfo      `json:"app_call_info,omitempty"`
-	SignedTxnHex string            `json:"signed_txn_hex,omitempty"`
+	AuthAddress   string                 `json:"auth_address,omitempty"`
+	TxnSender     string                 `json:"txn_sender,omitempty"` // Advisory display hint; signer authority comes from txn bytes
+	TxnBytesHex   string                 `json:"txn_bytes_hex,omitempty"`
+	LsigArgs      map[string]string      `json:"lsig_args,omitempty"`
+	LsigResources *LogicSigResourceUsage `json:"lsig_resources,omitempty"`
+	PQScheme      string                 `json:"pq_scheme,omitempty"`
+	AppCallInfo   *AppCallInfo           `json:"app_call_info,omitempty"`
+	SignedTxnHex  string                 `json:"signed_txn_hex,omitempty"`
 }
 
 // AppCallInfo carries optional high-level app-call metadata.
@@ -189,8 +206,19 @@ func (r SignRequest) Validate() error {
 	if r.PQScheme != "" && mode != RequestModeForeign {
 		return fmt.Errorf("pq_scheme is allowed only for foreign transactions")
 	}
-	if r.PQScheme != "" && r.LsigSize != 0 {
-		return fmt.Errorf("foreign transaction cannot specify both pq_scheme and lsig_size")
+	if r.LsigResources != nil && mode != RequestModeForeign {
+		return fmt.Errorf("lsig_resources is allowed only for foreign transactions")
+	}
+	if r.PQScheme != "" && r.LsigResources != nil {
+		return fmt.Errorf("foreign transaction cannot specify both pq_scheme and lsig_resources")
+	}
+	if r.LsigResources != nil {
+		if r.LsigResources.ProgramBytes == 0 || r.LsigResources.ProgramBytes > 16_000 {
+			return fmt.Errorf("invalid lsig_resources: program_bytes must be between 1 and 16000")
+		}
+		if r.LsigResources.MaxOpcodeCost == 0 || r.LsigResources.MaxOpcodeCost > 320_000 {
+			return fmt.Errorf("invalid lsig_resources: max_opcode_cost must be between 1 and 320000")
+		}
 	}
 	return nil
 }
@@ -627,19 +655,18 @@ type BoundedSentryAuthorizationInfo struct {
 }
 
 type BoundedAuthorizationInfo struct {
-	Contract                string                          `json:"contract"`
-	BaseSignatureArgLayout  BoundedSignatureArgLayout       `json:"base_signature_arg_layout"`
-	SpendEffects            []string                        `json:"spend_effects"`
-	MaxFee                  uint64                          `json:"max_fee"`
-	AdminOperations         []BoundedAdminOperationInfo     `json:"admin_operations"`
-	Sentry                  *BoundedSentryAuthorizationInfo `json:"sentry,omitempty"`
-	RuntimeArgs             []RuntimeArg                    `json:"runtime_args"`
-	DerivedArgs             []BoundedDerivedArgInfo         `json:"derived_args"`
-	ArgumentLayout          []BoundedArgumentSlotInfo       `json:"argument_layout"`
-	Layer3Policy            string                          `json:"layer3_policy"`
-	AdminKeyID              string                          `json:"admin_key_id,omitempty"`
-	ProgramBindingHex       string                          `json:"program_binding,omitempty"`
-	PostSigningLogicSigSize int                             `json:"post_signing_lsig_size,omitempty"` // Admin-inclusive bounded size
+	Contract               string                          `json:"contract"`
+	BaseSignatureArgLayout BoundedSignatureArgLayout       `json:"base_signature_arg_layout"`
+	SpendEffects           []string                        `json:"spend_effects"`
+	MaxFee                 uint64                          `json:"max_fee"`
+	AdminOperations        []BoundedAdminOperationInfo     `json:"admin_operations"`
+	Sentry                 *BoundedSentryAuthorizationInfo `json:"sentry,omitempty"`
+	RuntimeArgs            []RuntimeArg                    `json:"runtime_args"`
+	DerivedArgs            []BoundedDerivedArgInfo         `json:"derived_args"`
+	ArgumentLayout         []BoundedArgumentSlotInfo       `json:"argument_layout"`
+	Layer3Policy           string                          `json:"layer3_policy"`
+	AdminKeyID             string                          `json:"admin_key_id,omitempty"`
+	ProgramBindingHex      string                          `json:"program_binding,omitempty"`
 }
 
 // KeyInfo represents a key returned from the /keys endpoint.
@@ -649,7 +676,7 @@ type KeyInfo struct {
 	KeyType                  string                    `json:"key_type"`
 	SigningFlow              string                    `json:"signing_flow,omitempty"`
 	SentryComponentKeyType   string                    `json:"sentry_component_key_type,omitempty"`
-	LsigSize                 int                       `json:"lsig_size,omitempty"` // Spend-path size for bounded1
+	LogicSigResources        *LogicSigResourceProfile  `json:"logic_sig_resources,omitempty"`
 	IsGenericLsig            bool                      `json:"is_generic_lsig,omitempty"`
 	IsWitnessKey             bool                      `json:"is_witness_key,omitempty"`
 	BoundedAuthorization     *BoundedAuthorizationInfo `json:"bounded_authorization,omitempty"`
@@ -825,6 +852,6 @@ type FromEnvOptions struct {
 
 // SignOptions contains options for signing with passthrough and foreign support.
 type SignOptions struct {
-	Passthrough map[int]string
-	LsigSizes   map[int]int
+	Passthrough   map[int]string
+	LsigResources map[int]LogicSigResourceUsage
 }

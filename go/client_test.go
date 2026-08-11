@@ -1195,7 +1195,7 @@ func TestBuildSignRequestsWithOptions_Foreign(t *testing.T) {
 		[]types.Transaction{txn, txn},
 		[]string{"ADDR1", ""},
 		nil,
-		&SignOptions{LsigSizes: map[int]int{1: 5000}},
+		&SignOptions{LsigResources: map[int]LogicSigResourceUsage{1: {ProgramBytes: 3577, ArgumentBytes: 1423, MaxOpcodeCost: 20000}}},
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1207,8 +1207,8 @@ func TestBuildSignRequestsWithOptions_Foreign(t *testing.T) {
 	if requests[1].TxnBytesHex == "" {
 		t.Fatal("foreign request should have txn bytes")
 	}
-	if requests[1].LsigSize != 5000 {
-		t.Fatalf("expected lsig_size 5000, got %d", requests[1].LsigSize)
+	if got := requests[1].LsigResources; got == nil || got.ProgramBytes != 3577 || got.ArgumentBytes != 1423 {
+		t.Fatalf("unexpected lsig_resources: %#v", got)
 	}
 }
 
@@ -1234,7 +1234,7 @@ func TestSignTransactionsWithOptions_RejectsForeignEntries(t *testing.T) {
 		[]types.Transaction{txn, txn},
 		[]string{"AUTH1", ""},
 		nil,
-		&SignOptions{LsigSizes: map[int]int{1: 5000}},
+		&SignOptions{LsigResources: map[int]LogicSigResourceUsage{1: {ProgramBytes: 3577, ArgumentBytes: 1423, MaxOpcodeCost: 20000}}},
 	)
 	if err == nil || !strings.Contains(err.Error(), "foreign entries are only supported on /plan") {
 		t.Fatalf("expected foreign /plan-only error, got %v", err)
@@ -1249,7 +1249,7 @@ func TestSignTransactionsListWithOptions_RejectsForeignEntries(t *testing.T) {
 		[]types.Transaction{txn, txn},
 		[]string{"AUTH1", ""},
 		nil,
-		&SignOptions{LsigSizes: map[int]int{1: 5000}},
+		&SignOptions{LsigResources: map[int]LogicSigResourceUsage{1: {ProgramBytes: 3577, ArgumentBytes: 1423, MaxOpcodeCost: 20000}}},
 	)
 	if err == nil || !strings.Contains(err.Error(), "foreign entries are only supported on /plan") {
 		t.Fatalf("expected foreign /plan-only error, got %v", err)

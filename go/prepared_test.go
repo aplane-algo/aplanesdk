@@ -55,8 +55,8 @@ func TestPreparedGroupSignRequestsSignMode(t *testing.T) {
 func TestPreparedGroupSignRequestsForeignMode(t *testing.T) {
 	txn := types.Transaction{Type: types.PaymentTx}
 	group := NewPreparedGroup(PreparedTransaction{
-		Transaction: &txn,
-		LsigSize:    3035,
+		Transaction:   &txn,
+		LsigResources: &LogicSigResourceUsage{ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000},
 	})
 
 	requests, err := group.SignRequests()
@@ -70,8 +70,8 @@ func TestPreparedGroupSignRequestsForeignMode(t *testing.T) {
 	if req.TxnBytesHex == "" {
 		t.Fatal("txn bytes hex is empty")
 	}
-	if req.LsigSize != 3035 {
-		t.Fatalf("lsig size = %d, want 3035", req.LsigSize)
+	if req.LsigResources == nil || req.LsigResources.ProgramBytes != 1612 {
+		t.Fatalf("lsig resources = %#v", req.LsigResources)
 	}
 }
 
@@ -94,11 +94,11 @@ func TestPreparedGroupSignRequestsNativePQForeignMode(t *testing.T) {
 func TestPreparedGroupSignRequestsRejectsConflictingForeignHints(t *testing.T) {
 	txn := types.Transaction{Type: types.PaymentTx}
 	_, err := NewPreparedGroup(PreparedTransaction{
-		Transaction: &txn,
-		LsigSize:    3035,
-		PQScheme:    "f1",
+		Transaction:   &txn,
+		LsigResources: &LogicSigResourceUsage{ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000},
+		PQScheme:      "f1",
 	}).SignRequests()
-	if err == nil || !strings.Contains(err.Error(), "both pq_scheme and lsig_size") {
+	if err == nil || !strings.Contains(err.Error(), "both pq_scheme and lsig_resources") {
 		t.Fatalf("expected conflicting hint error, got %v", err)
 	}
 }

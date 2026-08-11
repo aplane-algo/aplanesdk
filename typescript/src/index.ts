@@ -101,6 +101,8 @@ export {
 // Types
 export type {
   KeyInfo,
+  LogicSigResourceUsage,
+  LogicSigResourceProfile,
   BoundedSignatureArgLayout,
   BoundedAdminOperationInfo,
   BoundedDerivedArgInfo,

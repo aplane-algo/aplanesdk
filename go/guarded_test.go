@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/algorand/go-algorand-sdk/v2/crypto"
 	"github.com/algorand/go-algorand-sdk/v2/encoding/msgpack"
 	"github.com/algorand/go-algorand-sdk/v2/transaction"
 	"github.com/algorand/go-algorand-sdk/v2/types"
@@ -28,6 +29,29 @@ func canonicalTxnHex(seed byte) string {
 		PaymentTxnFields: types.PaymentTxnFields{Receiver: addr, Amount: 0},
 	}
 	return hex.EncodeToString(encodeTxn(txn))
+}
+
+func createGuardedDummies(firstTxn types.Transaction, count int) ([]types.Transaction, error) {
+	dummyAcct := crypto.LogicSigAccount{Lsig: types.LogicSig{Logic: guardedDummyProgram}}
+	dummyAddr, err := dummyAcct.Address()
+	if err != nil {
+		return nil, err
+	}
+	sp := types.SuggestedParams{
+		Fee: firstTxn.Fee, FirstRoundValid: types.Round(firstTxn.FirstValid),
+		LastRoundValid: types.Round(firstTxn.LastValid), GenesisID: firstTxn.GenesisID,
+		GenesisHash: firstTxn.GenesisHash[:], FlatFee: true,
+	}
+	dummies := make([]types.Transaction, count)
+	for i := range dummies {
+		txn, err := transaction.MakePaymentTxn(dummyAddr.String(), dummyAddr.String(), 0, []byte{byte(i)}, "", sp)
+		if err != nil {
+			return nil, err
+		}
+		txn.Fee = 0
+		dummies[i] = txn
+	}
+	return dummies, nil
 }
 
 // signedGroupFor echoes a signed group whose inner transactions match the given
@@ -360,8 +384,9 @@ func TestSignGuardedGroupMixedPrimaryAndGuarded(t *testing.T) {
 			AuthAddress: "AUTH",
 		}},
 		Targets: []GuardedSignTarget{{
-			TargetIndex:    1,
-			GuardedAccount: "GUARDED",
+			TargetIndex:       1,
+			GuardedAccount:    "GUARDED",
+			LogicSigResources: &LogicSigResourceUsage{ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000},
 		}},
 	})
 	if err != nil {
@@ -375,7 +400,7 @@ func TestSignGuardedGroupMixedPrimaryAndGuarded(t *testing.T) {
 	}
 }
 
-func TestSignPreparedGuardedGroupAllGuardedAddsDummiesWithoutPlanOrSign(t *testing.T) {
+func TestSignPreparedGuardedGroupUsesSignerPlan(t *testing.T) {
 	guarded := sdkTestAddress(1)
 	receiver := sdkTestAddress(2)
 
@@ -420,7 +445,36 @@ func TestSignPreparedGuardedGroupAllGuardedAddsDummiesWithoutPlanOrSign(t *testi
 				RequestID:   req.RequestID,
 				SignedGroup: signedGroupFor(t, req.GroupBytesHex),
 			})
-		case "/plan", "/sign":
+		case "/plan":
+			var req GroupSignRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode plan request: %v", err)
+			}
+			if len(req.Requests) != 1 || req.Requests[0].AuthAddress != guarded {
+				t.Fatalf("plan requests = %+v", req.Requests)
+			}
+			original, err := decodeCanonicalGroup([]string{req.Requests[0].TxnBytesHex})
+			if err != nil {
+				t.Fatal(err)
+			}
+			dummies, err := createGuardedDummies(original[0], 3)
+			if err != nil {
+				t.Fatal(err)
+			}
+			planned := append(original, dummies...)
+			gid, err := crypto.ComputeGroupID(planned)
+			if err != nil {
+				t.Fatal(err)
+			}
+			encoded := make([]string, len(planned))
+			for i := range planned {
+				planned[i].Group = gid
+				encoded[i] = hex.EncodeToString(encodeTxn(planned[i]))
+			}
+			json.NewEncoder(w).Encode(PlanGroupResponse{Transactions: encoded, Mutations: &MutationReport{
+				DummiesAdded: 3, OriginalCount: 1, FinalCount: 4, GroupIDChanged: true,
+			}})
+		case "/sign":
 			t.Fatalf("prepared all-guarded path must not call %s", r.URL.Path)
 		case "/status":
 			json.NewEncoder(w).Encode(StatusResponse{
@@ -482,8 +536,10 @@ func TestSignPreparedGuardedGroupAllGuardedAddsDummiesWithoutPlanOrSign(t *testi
 				KeyType:                KeyTypeGuardedFalcon1024Sentry1024,
 				SigningFlow:            SigningFlowSentry1,
 				SentryComponentKeyType: KeyTypeWitnessFalcon1024,
-				LsigSize:               3035,
-				Parameters:             map[string]string{"sentry_public_key": "aabbcc"},
+				LogicSigResources: &LogicSigResourceProfile{
+					Spend: &LogicSigResourceUsage{ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000},
+				},
+				Parameters: map[string]string{"sentry_public_key": "aabbcc"},
 			},
 		}),
 	})
@@ -521,7 +577,9 @@ func TestSignPreparedGuardedGroupRejectsUnsupportedSigningFlow(t *testing.T) {
 				Address:     guarded,
 				KeyType:     "aplane.future-guarded.v1",
 				SigningFlow: "sentry2",
-				LsigSize:    3035,
+				LogicSigResources: &LogicSigResourceProfile{
+					Spend: &LogicSigResourceUsage{ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000},
+				},
 			},
 		}),
 	})
