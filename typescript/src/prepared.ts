@@ -43,6 +43,12 @@ export function preparedTransactionToSignRequest(
     if (prepared.lsigSize && prepared.lsigSize > 0) {
       request.lsig_size = prepared.lsigSize;
     }
+    if (prepared.pqScheme) {
+      if (request.lsig_size) {
+        throw new SignerError("foreign transaction cannot specify both pqScheme and lsigSize");
+      }
+      request.pq_scheme = prepared.pqScheme;
+    }
     return request;
   }
 

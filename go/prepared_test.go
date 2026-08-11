@@ -75,6 +75,34 @@ func TestPreparedGroupSignRequestsForeignMode(t *testing.T) {
 	}
 }
 
+func TestPreparedGroupSignRequestsNativePQForeignMode(t *testing.T) {
+	txn := types.Transaction{Type: types.PaymentTx}
+	group := NewPreparedGroup(PreparedTransaction{
+		Transaction: &txn,
+		PQScheme:    "f1",
+	})
+
+	requests, err := group.SignRequests()
+	if err != nil {
+		t.Fatalf("SignRequests() error = %v", err)
+	}
+	if requests[0].PQScheme != "f1" {
+		t.Fatalf("pq scheme = %q, want f1", requests[0].PQScheme)
+	}
+}
+
+func TestPreparedGroupSignRequestsRejectsConflictingForeignHints(t *testing.T) {
+	txn := types.Transaction{Type: types.PaymentTx}
+	_, err := NewPreparedGroup(PreparedTransaction{
+		Transaction: &txn,
+		LsigSize:    3035,
+		PQScheme:    "f1",
+	}).SignRequests()
+	if err == nil || !strings.Contains(err.Error(), "both pq_scheme and lsig_size") {
+		t.Fatalf("expected conflicting hint error, got %v", err)
+	}
+}
+
 func TestPreparedGroupSignRequestsPassthroughMode(t *testing.T) {
 	signed := []byte("signed-txn")
 	group := NewPreparedGroup(PreparedTransaction{

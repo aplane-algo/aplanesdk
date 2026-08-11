@@ -317,6 +317,10 @@ Useful `KeyInfo` fields include:
 external contract-admin signature slot;
 `bounded_authorization.post_signing_lsig_size` is admin-inclusive.
 
+`KeyTypeInfo.authorization_kind` distinguishes `ed25519`, `native_pq`, and
+`logic_sig`. A false `requires_logicsig` value may mean either native Ed25519
+or native Falcon-1024.
+
 The Python SDK exposes bounded inventory and ordinary spend signing only. It
 does not expose `/sign/bounded-admin` or build and complete contract-admin
 rekeys; use the APlane `aprekey` workflow for those operations.
@@ -542,6 +546,11 @@ In practice, that means:
 - use `plan_group()` first when some slots are signed by another party
 - do not mix foreign entries and `passthrough` entries in the same request
 - then resubmit the finalized foreign slots as `passthrough`
+
+For a foreign native Falcon-1024 slot, set `pq_scheme="f1"` on
+`PreparedTransaction` (or `"pq_scheme": "f1"` in a raw request). It is
+mutually exclusive with `lsig_size` and declares protocol fee usage rather
+than a LogicSig byte budget.
 
 ### Passthrough And Multi-Party Assembly
 

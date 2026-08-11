@@ -268,6 +268,10 @@ for _, key := range keys {
 external contract-admin signature slot;
 `BoundedAuthorization.PostSigningLogicSigSize` is admin-inclusive.
 
+`KeyTypeInfo.AuthorizationKind` distinguishes `ed25519`, `native_pq`, and
+`logic_sig`. Do not infer Ed25519 from `RequiresLogicSig == false`: native
+Falcon-1024 also has a false compatibility boolean.
+
 The Go SDK exposes bounded inventory and ordinary spend signing only. It does
 not expose `/sign/bounded-admin` or build and complete contract-admin rekeys;
 use the APlane `aprekey` workflow for those operations.
@@ -426,6 +430,10 @@ from another signer and must already carry the intended group ID. The SDK
 decodes them and sends them as passthrough slots. `SignOptions.LsigSizes`
 marks unsigned foreign slots for `/plan` only so the signer can reserve dummy
 and fee budget for another participant's LogicSig.
+
+For a foreign native Falcon-1024 slot, use raw `SignRequest.PQScheme` or
+`PreparedTransaction.PQScheme` with value `"f1"`. It is mutually exclusive
+with `LsigSize` and declares protocol fee usage rather than a LogicSig budget.
 
 For actual signing with passthrough slots, use:
 

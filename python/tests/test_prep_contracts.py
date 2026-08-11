@@ -12,12 +12,8 @@ from algosdk import transaction
 
 from aplanesdk.signer import PreparedGroup, PreparedTransaction
 
-
 FIXTURE_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "contracts"
-    / "prep"
-    / "sign_request_shapes.json"
+    Path(__file__).resolve().parents[2] / "contracts" / "prep" / "sign_request_shapes.json"
 )
 
 
@@ -49,7 +45,9 @@ def build_groups(addresses: dict) -> dict[str, PreparedGroup]:
 
     payment = transaction.PaymentTxn(sender, suggested_params(), receiver, 12345, note=b"pay")
     asa = transaction.AssetTransferTxn(sender, suggested_params(), receiver, 5, 1001, note=b"asa")
-    opt_in = transaction.AssetTransferTxn(sender, suggested_params(), sender, 0, 1001, note=b"optin")
+    opt_in = transaction.AssetTransferTxn(
+        sender, suggested_params(), sender, 0, 1001, note=b"optin"
+    )
     opt_out = transaction.AssetTransferTxn(
         sender,
         suggested_params(),
@@ -138,45 +136,49 @@ def build_groups(addresses: dict) -> dict[str, PreparedGroup]:
     passthrough_slot = PreparedTransaction(signed_transaction_base64=passthrough)
 
     return {
-        "payment_sign_mode_lsig_args": PreparedGroup([
-            signed(
-                payment,
-                lsig_args={
-                    "preimage": b"secret",
-                    "recipient": bytes.fromhex("aabbccdd"),
-                },
-            )
-        ]),
+        "payment_sign_mode_lsig_args": PreparedGroup(
+            [
+                signed(
+                    payment,
+                    lsig_args={
+                        "preimage": b"secret",
+                        "recipient": bytes.fromhex("aabbccdd"),
+                    },
+                )
+            ]
+        ),
         "asa_transfer": PreparedGroup([signed(asa)]),
         "asa_opt_in": PreparedGroup([signed(opt_in)]),
         "asa_opt_out": PreparedGroup([signed(opt_out)]),
         "account_close": PreparedGroup([signed(close)]),
         "rekey": PreparedGroup([signed(rekey)]),
         "keyreg_nonparticipation": PreparedGroup([signed(keyreg)]),
-        "raw_app_call_info": PreparedGroup([
-            signed(raw_app, app_call_info={"mode": "raw"})
-        ]),
-        "abi_app_call_info": PreparedGroup([
-            signed(
-                abi_app,
-                app_call_info={"mode": "abi", "method": "do(uint64)void"},
-            )
-        ]),
-        "app_deploy": PreparedGroup([
-            signed(app_deploy, app_call_info={"mode": "raw"})
-        ]),
-        "payment_plus_app_group": PreparedGroup([
-            signed(payment),
-            signed(raw_app, app_call_info={"mode": "raw"}),
-        ]),
+        "raw_app_call_info": PreparedGroup([signed(raw_app, app_call_info={"mode": "raw"})]),
+        "abi_app_call_info": PreparedGroup(
+            [
+                signed(
+                    abi_app,
+                    app_call_info={"mode": "abi", "method": "do(uint64)void"},
+                )
+            ]
+        ),
+        "app_deploy": PreparedGroup([signed(app_deploy, app_call_info={"mode": "raw"})]),
+        "payment_plus_app_group": PreparedGroup(
+            [
+                signed(payment),
+                signed(raw_app, app_call_info={"mode": "raw"}),
+            ]
+        ),
         "grouped_payments": PreparedGroup([signed(payment), signed(second_payment)]),
         "foreign_lsig_context": PreparedGroup([foreign_slot(foreign_payment)]),
         "passthrough_signed_slot": PreparedGroup([passthrough_slot]),
-        "mixed_sign_foreign_passthrough": PreparedGroup([
-            signed(payment),
-            foreign_slot(foreign_payment),
-            passthrough_slot,
-        ]),
+        "mixed_sign_foreign_passthrough": PreparedGroup(
+            [
+                signed(payment),
+                foreign_slot(foreign_payment),
+                passthrough_slot,
+            ]
+        ),
     }
 
 
@@ -186,3 +188,25 @@ def test_prepared_sign_request_parity_fixture(case):
     groups = build_groups(fixture["addresses"])
     assert case["name"] in groups
     assert groups[case["name"]].to_sign_requests() == case["expected_requests"]
+
+
+def test_prepared_native_pq_foreign_request():
+    groups = build_groups(load_fixture()["addresses"])
+    transaction_slot = groups["foreign_lsig_context"].transactions[0].transaction
+    request = PreparedTransaction(
+        transaction=transaction_slot,
+        pq_scheme="f1",
+    ).to_sign_request()
+    assert request["pq_scheme"] == "f1"
+    assert "lsig_size" not in request
+
+
+def test_prepared_native_pq_rejects_conflicting_hints():
+    groups = build_groups(load_fixture()["addresses"])
+    transaction_slot = groups["foreign_lsig_context"].transactions[0].transaction
+    with pytest.raises(ValueError, match="both pq_scheme and lsig_size"):
+        PreparedTransaction(
+            transaction=transaction_slot,
+            lsig_size=3035,
+            pq_scheme="f1",
+        ).to_sign_request()

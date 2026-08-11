@@ -29,6 +29,7 @@ type PreparedTransaction struct {
 	SignerKey               *KeyInfo
 	LsigArgs                LsigArgs
 	LsigSize                int
+	PQScheme                string
 	AppCallInfo             *AppCallInfo
 	SignedTransactionBase64 string
 	Checks                  []PreparedCheck
@@ -53,6 +54,12 @@ func (p PreparedTransaction) SignRequest() (SignRequest, error) {
 		req := SignRequest{TxnBytesHex: txnBytesHex}
 		if p.LsigSize > 0 {
 			req.LsigSize = p.LsigSize
+		}
+		if p.PQScheme != "" {
+			req.PQScheme = p.PQScheme
+		}
+		if err := req.Validate(); err != nil {
+			return SignRequest{}, err
 		}
 		return req, nil
 	}

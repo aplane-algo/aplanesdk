@@ -145,6 +145,7 @@ func TestGoSDKContractFixturesRoundTrip(t *testing.T) {
 		run  func(*testing.T, string)
 	}{
 		{"group_sign_request_mixed.json", assertSDKContractRoundTrip[GroupSignRequest]},
+		{"group_sign_request_native_pq.json", assertSDKContractRoundTrip[GroupSignRequest]},
 		{"group_sign_response_mutated.json", assertSDKContractRoundTrip[GroupSignResponse]},
 		{"group_plan_response_mutated.json", assertSDKContractRoundTrip[PlanGroupResponse]},
 		{"component_sign_request_sentry.json", assertSDKContractRoundTrip[ComponentSignRequest]},
@@ -327,22 +328,26 @@ func TestGoSDKContractKeyTypeMetadata(t *testing.T) {
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		t.Fatalf("unmarshal keytypes fixture: %v", err)
 	}
-	if len(resp.KeyTypes) != 2 {
-		t.Fatalf("KeyTypes length = %d, want 2", len(resp.KeyTypes))
+	if len(resp.KeyTypes) != 3 {
+		t.Fatalf("KeyTypes length = %d, want 3", len(resp.KeyTypes))
 	}
-	if !resp.KeyTypes[0].MnemonicImport {
+	if !resp.KeyTypes[0].MnemonicImport || resp.KeyTypes[0].AuthorizationKind != AuthorizationKindEd25519 {
 		t.Fatal("ed25519 fixture should allow mnemonic import")
 	}
-	if resp.KeyTypes[1].KeyType != "example.generic-policy.v1" {
-		t.Fatalf("generic key type = %q, want example.generic-policy.v1", resp.KeyTypes[1].KeyType)
+	if resp.KeyTypes[1].KeyType != "falcon1024" || resp.KeyTypes[1].AuthorizationKind != AuthorizationKindNativePQ {
+		t.Fatalf("native Falcon key type metadata = %#v", resp.KeyTypes[1])
 	}
-	if resp.KeyTypes[1].DisplayName != "Generic Policy" {
-		t.Fatalf("generic display name = %q, want Generic Policy", resp.KeyTypes[1].DisplayName)
+	generic := resp.KeyTypes[2]
+	if generic.KeyType != "example.generic-policy.v1" {
+		t.Fatalf("generic key type = %q, want example.generic-policy.v1", generic.KeyType)
 	}
-	if resp.KeyTypes[1].MnemonicImport {
+	if generic.DisplayName != "Generic Policy" || generic.AuthorizationKind != AuthorizationKindLogicSig {
+		t.Fatalf("generic key type metadata = %#v", generic)
+	}
+	if generic.MnemonicImport {
 		t.Fatal("generic template fixture should not allow mnemonic import")
 	}
-	modes := resp.KeyTypes[1].CreationParams[3].InputModes
+	modes := generic.CreationParams[3].InputModes
 	if len(modes) != 2 {
 		t.Fatalf("InputModes length = %d, want 2", len(modes))
 	}
@@ -358,7 +363,7 @@ func TestGoSDKContractKeyTypeMetadata(t *testing.T) {
 	if modes[1].InputType != "bytes" {
 		t.Fatalf("InputModes[1].InputType = %q, want bytes", modes[1].InputType)
 	}
-	sentryParam := resp.KeyTypes[1].CreationParams[4]
+	sentryParam := generic.CreationParams[4]
 	if sentryParam.Type != "select" {
 		t.Fatalf("sentry param type = %q, want select", sentryParam.Type)
 	}

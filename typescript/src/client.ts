@@ -3585,6 +3585,7 @@ export class SignerClient {
         family: kt.family || "",
         displayName: kt.display_name,
         description: kt.description,
+        authorizationKind: kt.authorization_kind,
         requiresLogicsig: kt.requires_logicsig,
         mnemonicWordCount: kt.mnemonic_word_count,
         mnemonicImport: kt.mnemonic_import,

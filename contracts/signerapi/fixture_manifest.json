@@ -21,6 +21,7 @@
     "bounded_assembly_response.json",
     "group_plan_response_mutated.json",
     "group_sign_request_mixed.json",
+    "group_sign_request_native_pq.json",
     "group_sign_response_mutated.json",
     "guarded_assembly_request_mixed.json",
     "guarded_assembly_response.json",

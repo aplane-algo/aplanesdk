@@ -290,6 +290,8 @@ export interface KeyTypeInfo {
   displayName?: string;
   /** Description of the key type */
   description?: string;
+  /** Consensus authorization envelope produced by this key type. */
+  authorizationKind?: "ed25519" | "native_pq" | "logic_sig";
   /** Whether this key type requires a LogicSig */
   requiresLogicsig?: boolean;
   /** Number of words in the mnemonic */
@@ -590,6 +592,8 @@ export interface SignRequest {
   signed_txn_hex?: string;
   /** LSig size hint for foreign transactions */
   lsig_size?: number;
+  /** Native-PQ scheme hint for foreign transactions (currently "f1") */
+  pq_scheme?: string;
 }
 
 /**
@@ -642,6 +646,8 @@ export interface PreparedTransaction {
   lsigArgs?: LsigArgs;
   /** Optional LogicSig size hint for foreign planning. */
   lsigSize?: number;
+  /** Optional native-PQ scheme hint for foreign planning. */
+  pqScheme?: string;
   /** Optional app-call approval metadata. */
   appCallInfo?: AppCallInfo;
   /** Base64-encoded signed transaction for passthrough mode. */

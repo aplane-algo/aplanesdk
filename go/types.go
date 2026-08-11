@@ -15,6 +15,10 @@ const (
 	ComponentSignRoleUser   ComponentSignRole = "user"
 	ComponentSignRoleSentry ComponentSignRole = "sentry"
 
+	AuthorizationKindEd25519  = "ed25519"
+	AuthorizationKindNativePQ = "native_pq"
+	AuthorizationKindLogicSig = "logic_sig"
+
 	KeyTypeWitnessFalcon1024           = "aplane.witness-falcon1024.v1"
 	KeyTypeGuardedFalcon1024Sentry1024 = "aplane.falcon1024-sentry1024.v1"
 )
@@ -35,6 +39,7 @@ type SignRequest struct {
 	TxnBytesHex  string            `json:"txn_bytes_hex,omitempty"`
 	LsigArgs     map[string]string `json:"lsig_args,omitempty"`
 	LsigSize     int               `json:"lsig_size,omitempty"`
+	PQScheme     string            `json:"pq_scheme,omitempty"`
 	AppCallInfo  *AppCallInfo      `json:"app_call_info,omitempty"`
 	SignedTxnHex string            `json:"signed_txn_hex,omitempty"`
 }
@@ -177,8 +182,17 @@ func (r SignRequest) Mode() (RequestMode, error) {
 
 // Validate checks that the request uses exactly one supported request mode.
 func (r SignRequest) Validate() error {
-	_, err := r.Mode()
-	return err
+	mode, err := r.Mode()
+	if err != nil {
+		return err
+	}
+	if r.PQScheme != "" && mode != RequestModeForeign {
+		return fmt.Errorf("pq_scheme is allowed only for foreign transactions")
+	}
+	if r.PQScheme != "" && r.LsigSize != 0 {
+		return fmt.Errorf("foreign transaction cannot specify both pq_scheme and lsig_size")
+	}
+	return nil
 }
 
 // Validate checks that all contained requests use a supported request mode.
@@ -194,6 +208,9 @@ func (r GroupSignRequest) Validate() error {
 	passthroughCount := 0
 	foreignCount := 0
 	for i, req := range r.Requests {
+		if err := req.Validate(); err != nil {
+			return fmt.Errorf("transaction %d: %w", i+1, err)
+		}
 		mode, err := req.Mode()
 		if err != nil {
 			return fmt.Errorf("transaction %d: %w", i+1, err)
@@ -539,6 +556,7 @@ type KeyTypeInfo struct {
 	Family                 string                    `json:"family"`
 	DisplayName            string                    `json:"display_name"`
 	Description            string                    `json:"description"`
+	AuthorizationKind      string                    `json:"authorization_kind,omitempty"`
 	RequiresLogicSig       bool                      `json:"requires_logicsig"`
 	MnemonicWordCount      int                       `json:"mnemonic_word_count"`
 	MnemonicImport         bool                      `json:"mnemonic_import"`

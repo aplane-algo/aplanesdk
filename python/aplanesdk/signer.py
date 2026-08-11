@@ -62,7 +62,6 @@ import paramiko
 from ._ssh_tokenproof import IDENTITY as SSH_TOKEN_PROOF_IDENTITY
 from ._ssh_tokenproof import TokenProofClient
 
-
 # -----------------------------------------------------------------------------
 # Constants
 # -----------------------------------------------------------------------------
@@ -119,9 +118,7 @@ def _resolve_data_dir(data_dir: Optional[str]) -> str:
     """
     resolved = data_dir or os.environ.get("APCLIENT_DATA")
     if not resolved:
-        raise SignerError(
-            "client data directory not specified: pass data_dir or set APCLIENT_DATA"
-        )
+        raise SignerError("client data directory not specified: pass data_dir or set APCLIENT_DATA")
     return os.path.expanduser(resolved)
 
 
@@ -170,36 +167,43 @@ class SignerError(Exception):
 
 class AuthenticationError(SignerError):
     """Token invalid or missing"""
+
     pass
 
 
 class SigningRejectedError(SignerError):
     """Operator rejected the signing request"""
+
     pass
 
 
 class SignerUnavailableError(SignerError):
     """Signer not reachable or locked"""
+
     pass
 
 
 class KeyNotFoundError(SignerError):
     """Requested auth_address not found in signer"""
+
     pass
 
 
 class TokenProvisioningError(SignerError):
     """Token provisioning failed (rejected or no operator)"""
+
     pass
 
 
 class KeyDeletionError(SignerError):
     """Key deletion failed (not found or other error)"""
+
     pass
 
 
 class TransactionRejectedError(SignerError):
     """Transaction was rejected by the network."""
+
     def __init__(self, txid: str, reason: str):
         self.txid = txid
         self.reason = reason
@@ -208,16 +212,19 @@ class TransactionRejectedError(SignerError):
 
 class LogicSigRejectedError(TransactionRejectedError):
     """LogicSig program returned false."""
+
     pass
 
 
 class InsufficientFundsError(TransactionRejectedError):
     """Account has insufficient funds for the transaction."""
+
     pass
 
 
 class InvalidTransactionError(TransactionRejectedError):
     """Transaction is malformed or invalid."""
+
     pass
 
 
@@ -225,9 +232,11 @@ class InvalidTransactionError(TransactionRejectedError):
 # Types
 # -----------------------------------------------------------------------------
 
+
 @dataclass
 class RuntimeArg:
     """Runtime argument specification for a generic LogicSig"""
+
     name: str
     arg_type: str  # "bytes", "uint64", etc.
     description: str = ""
@@ -281,6 +290,7 @@ class BoundedArgumentSlotInfo:
 @dataclass
 class BoundedSentryAuthorizationInfo:
     """Public sentry authority embedded in a bounded account."""
+
     contract: str
     component_key_type: str
     public_key_hex: str = ""
@@ -309,6 +319,7 @@ class BoundedAuthorizationInfo:
 @dataclass
 class KeyInfo:
     """Information about a signing key"""
+
     address: str
     key_type: str
     public_key_hex: str = ""
@@ -330,6 +341,7 @@ class KeyInfo:
 @dataclass
 class ClientConfig:
     """Non-routing client configuration loaded from config.yaml."""
+
     network: str = "testnet"
     networks_allowed: List[str] = field(default_factory=list)
     theme: str = "auto"
@@ -338,6 +350,7 @@ class ClientConfig:
 @dataclass
 class ClientEndpointPublishedSentry:
     """Endpoint-local sentry discovery metadata."""
+
     component_key: str
     key_type: str
     last_seen_at: str = ""
@@ -346,6 +359,7 @@ class ClientEndpointPublishedSentry:
 @dataclass
 class ClientEndpointConfig:
     """One signer or sentry connection profile from endpoints.yaml."""
+
     role: str
     url: str
     signer_port: int = 0
@@ -359,6 +373,7 @@ class ClientEndpointConfig:
 @dataclass
 class ClientEndpointRegistry:
     """Normalized client-local endpoint registry."""
+
     schema_version: int = 1
     default: str = ""
     endpoints: Dict[str, ClientEndpointConfig] = field(default_factory=dict)
@@ -367,6 +382,7 @@ class ClientEndpointRegistry:
 @dataclass
 class InputModeInfo:
     """Alternate UI input mode for a creation parameter"""
+
     name: str
     label: str = ""
     transform: str = ""
@@ -377,6 +393,7 @@ class InputModeInfo:
 @dataclass
 class CreationParam:
     """Parameter specification for key generation"""
+
     name: str
     label: str
     description: str = ""
@@ -397,10 +414,12 @@ class CreationParam:
 @dataclass
 class KeyTypeInfo:
     """Information about an available key type"""
+
     key_type: str
     family: str
     display_name: str = ""
     description: str = ""
+    authorization_kind: str = ""
     requires_logicsig: bool = False
     mnemonic_word_count: int = 0
     mnemonic_import: bool = False
@@ -415,6 +434,7 @@ class KeyTypeInfo:
 @dataclass
 class ProtocolVersion:
     """Signer wire-protocol version."""
+
     major: int = 0
     minor: int = 0
 
@@ -422,6 +442,7 @@ class ProtocolVersion:
 @dataclass
 class StatusResponse:
     """Authenticated signer status from /status"""
+
     identity_id: str
     state: str
     signer_locked: bool
@@ -441,6 +462,7 @@ class StatusResponse:
 @dataclass
 class CancelSignResponse:
     """Response from /sign/cancel"""
+
     success: bool
     state: str = ""
     error: str = ""
@@ -449,6 +471,7 @@ class CancelSignResponse:
 @dataclass
 class GroupSignResponse:
     """Response from /sign"""
+
     signed: List[str]
     mutations: Optional[Dict[str, Any]] = None
     error: str = ""
@@ -457,6 +480,7 @@ class GroupSignResponse:
 @dataclass
 class SimulationResult:
     """Result of ordinary signing followed by client-side algod simulation."""
+
     tx_ids: List[str]
     transactions: List[str]
     signed_group: List[str]
@@ -468,6 +492,7 @@ class SimulationResult:
 @dataclass
 class ComponentSignRequest:
     """Request payload for /sign/component"""
+
     role: str
     group_bytes_hex: List[str]
     target_indices: List[int]
@@ -478,6 +503,7 @@ class ComponentSignRequest:
 @dataclass
 class ComponentSignature:
     """One component signature returned from /sign/component"""
+
     target_index: int
     signature: str
     signature_scheme: str
@@ -486,6 +512,7 @@ class ComponentSignature:
 @dataclass
 class ComponentSignResponse:
     """Response payload from /sign/component"""
+
     request_id: str
     signatures: List[ComponentSignature]
     component_key: str = ""
@@ -494,6 +521,7 @@ class ComponentSignResponse:
 @dataclass
 class GuardedAssemblyTarget:
     """One guarded-account position for /sign/assemble"""
+
     target_index: int
     guarded_account: str
     user_signature: str
@@ -506,6 +534,7 @@ class GuardedAssemblyTarget:
 @dataclass
 class GuardedPassthroughItem:
     """Already-signed group position for /sign/assemble"""
+
     target_index: int
     signed_txn_hex: str
 
@@ -513,6 +542,7 @@ class GuardedPassthroughItem:
 @dataclass
 class GuardedAssemblyRequest:
     """Request payload for /sign/assemble"""
+
     group_bytes_hex: List[str]
     request_id: str = ""
     targets: Optional[List[GuardedAssemblyTarget]] = None
@@ -522,6 +552,7 @@ class GuardedAssemblyRequest:
 @dataclass
 class GuardedAssemblyResponse:
     """Response payload from /sign/assemble"""
+
     request_id: str
     signed_group: List[str]
 
@@ -529,6 +560,7 @@ class GuardedAssemblyResponse:
 @dataclass
 class BoundedComponentRequest:
     """Request payload for /sign/bounded-component."""
+
     requests: List[Dict[str, Any]]
     request_id: str = ""
 
@@ -536,6 +568,7 @@ class BoundedComponentRequest:
 @dataclass
 class BoundedBaseComponent:
     """One user-signer contribution to bounded assembly."""
+
     target_index: int
     bounded_account: str
     base_signatures: List[str]
@@ -547,6 +580,7 @@ class BoundedBaseComponent:
 @dataclass
 class BoundedComponentResponse:
     """Response payload from /sign/bounded-component."""
+
     request_id: str
     transactions: List[str]
     components: List[BoundedBaseComponent]
@@ -556,6 +590,7 @@ class BoundedComponentResponse:
 @dataclass
 class BoundedAssemblyTarget:
     """One source-bound bounded-sentry assembly target."""
+
     target_index: int
     bounded_account: str
     base_signatures: List[str]
@@ -569,6 +604,7 @@ class BoundedAssemblyTarget:
 @dataclass
 class BoundedAssemblyRequest:
     """Request payload for /sign/bounded-assemble."""
+
     group_bytes_hex: List[str]
     targets: List[BoundedAssemblyTarget]
     request_id: str = ""
@@ -578,6 +614,7 @@ class BoundedAssemblyRequest:
 @dataclass
 class BoundedAssemblyResponse:
     """Response payload from /sign/bounded-assemble."""
+
     request_id: str
     signed_group: List[str]
 
@@ -585,6 +622,7 @@ class BoundedAssemblyResponse:
 @dataclass
 class SentryReferenceCandidate:
     """Public sentry metadata synced into the signer reference catalog"""
+
     endpoint_alias: str
     component_key: str
     key_type: str
@@ -595,12 +633,14 @@ class SentryReferenceCandidate:
 @dataclass
 class AdminSyncSentryReferencesRequest:
     """Request payload for /admin/sentries/sync"""
+
     candidates: List[SentryReferenceCandidate]
 
 
 @dataclass
 class SyncedSentryReferenceInfo:
     """Signer-local sentry reference after sync"""
+
     name: str
     source: str
     component_key: str
@@ -614,6 +654,7 @@ class SyncedSentryReferenceInfo:
 @dataclass
 class AdminSyncSentryReferencesResponse:
     """Response payload from /admin/sentries/sync"""
+
     added: int
     updated: int
     removed: int
@@ -625,6 +666,7 @@ class AdminSyncSentryReferencesResponse:
 @dataclass
 class GuardedSignTarget:
     """One guarded-account slot for the high-level guarded signing helper"""
+
     target_index: int
     guarded_account: str
     sentry_public_key_hex: str = ""
@@ -636,6 +678,7 @@ class GuardedSignTarget:
 @dataclass
 class GuardedPrimarySignTarget:
     """One non-guarded slot signed by the primary/user signer before assembly"""
+
     target_index: int
     auth_address: str
     txn_sender: str = ""
@@ -647,6 +690,7 @@ class GuardedPrimarySignTarget:
 @dataclass
 class GuardedSignResult:
     """Result from sign_guarded_group"""
+
     signed_group: List[str]
     user_component_responses: List[ComponentSignResponse]
     sentry_component_responses: List[ComponentSignResponse]
@@ -659,6 +703,7 @@ class GuardedSignResult:
 @dataclass
 class GuardedSimulationResult:
     """Complete guarded signing result and client-side simulation result."""
+
     signing: GuardedSignResult
     simulation: SimulationResult
 
@@ -666,6 +711,7 @@ class GuardedSimulationResult:
 @dataclass
 class PreparedCheck:
     """SDK-side preflight information collected during intent preparation."""
+
     name: str
     status: str = ""
     message: str = ""
@@ -675,12 +721,14 @@ class PreparedCheck:
 @dataclass
 class PreparedTransaction:
     """One prepared transaction slot before apsigner planning/signing."""
+
     transaction: Optional[transaction.Transaction] = None
     auth_address: Optional[str] = None
     txn_sender: str = ""
     signer_key: Optional[KeyInfo] = None
     lsig_args: Optional[Dict[str, bytes]] = None
     lsig_size: int = 0
+    pq_scheme: str = ""
     app_call_info: Optional[Dict[str, str]] = None
     signed_transaction_base64: str = ""
     checks: Optional[List[PreparedCheck]] = None
@@ -694,9 +742,7 @@ class PreparedTransaction:
                     validate=True,
                 ).hex()
             except Exception as e:
-                raise ValueError(
-                    f"invalid passthrough transaction: {e}"
-                ) from e
+                raise ValueError(f"invalid passthrough transaction: {e}") from e
             return {"signed_txn_hex": signed_hex}
 
         if self.transaction is None:
@@ -707,6 +753,12 @@ class PreparedTransaction:
             request: Dict[str, Any] = {"txn_bytes_hex": txn_bytes_hex}
             if self.lsig_size > 0:
                 request["lsig_size"] = self.lsig_size
+            if self.pq_scheme:
+                if self.lsig_size > 0:
+                    raise ValueError(
+                        "foreign transaction cannot specify both pq_scheme and lsig_size"
+                    )
+                request["pq_scheme"] = self.pq_scheme
             return request
 
         request = {
@@ -715,10 +767,7 @@ class PreparedTransaction:
             "txn_sender": self.txn_sender or txn_sender,
         }
         if self.lsig_args:
-            request["lsig_args"] = {
-                name: value.hex()
-                for name, value in self.lsig_args.items()
-            }
+            request["lsig_args"] = {name: value.hex() for name, value in self.lsig_args.items()}
         if self.app_call_info:
             request["app_call_info"] = self.app_call_info
         return request
@@ -727,6 +776,7 @@ class PreparedTransaction:
 @dataclass
 class PreparedGroup:
     """Ordered group of prepared transaction slots."""
+
     transactions: List[PreparedTransaction]
     checks: Optional[List[PreparedCheck]] = None
 
@@ -746,6 +796,7 @@ class PreparedGroup:
 @dataclass
 class ResolvedAuthAddress:
     """Effective signer information for one account."""
+
     address: str
     auth_address: str
     is_rekeyed: bool
@@ -760,6 +811,7 @@ class ErrorResponse:
     ERR_CODE_* constants); branch on ``code``, never on ``error`` message
     text. Empty when the signer predates wire error codes.
     """
+
     error: str
     code: str = ""
 
@@ -767,6 +819,7 @@ class ErrorResponse:
 @dataclass
 class GenerateResult:
     """Result of key generation"""
+
     address: str
     key_type: str
     public_key_hex: str = ""
@@ -858,7 +911,7 @@ def _resolve_path(file_path: str, data_dir: str) -> str:
 def _validate_endpoint_alias(alias: str) -> None:
     if not alias or re.fullmatch(r"[A-Za-z0-9._-]+", alias) is None:
         raise SignerError(
-            f'alias "{alias}" must contain only ASCII letters, digits, \'.\', \'_\', or \'-\''
+            f"alias \"{alias}\" must contain only ASCII letters, digits, '.', '_', or '-'"
         )
 
 
@@ -872,9 +925,7 @@ def _is_loopback_endpoint_host(host: str) -> bool:
         return False
 
 
-def _normalize_client_endpoint(
-    data_dir: str, alias: str, raw_value: Any
-) -> ClientEndpointConfig:
+def _normalize_client_endpoint(data_dir: str, alias: str, raw_value: Any) -> ClientEndpointConfig:
     raw = _require_mapping(raw_value, f'endpoint "{alias}"')
     _require_known_fields(
         raw,
@@ -893,8 +944,7 @@ def _normalize_client_endpoint(
     role = _optional_string(raw.get("role"), "role").strip()
     if role not in ("signer", "sentry"):
         raise SignerError(
-            f'endpoint "{alias}": unsupported role "{role}" '
-            '(expected "signer" or "sentry")'
+            f'endpoint "{alias}": unsupported role "{role}" ' '(expected "signer" or "sentry")'
         )
     endpoint_url = _optional_string(raw.get("url"), "url").strip().rstrip("/")
     if not endpoint_url:
@@ -904,9 +954,7 @@ def _normalize_client_endpoint(
     local_port = _optional_integer(raw.get("local_port"), "local_port")
     for field, port in (("signer_port", signer_port), ("local_port", local_port)):
         if port < 0 or port > 65535:
-            raise SignerError(
-                f'endpoint "{alias}": {field} must be 1-65535 when set'
-            )
+            raise SignerError(f'endpoint "{alias}": {field} must be 1-65535 when set')
 
     if endpoint_url != "self":
         try:
@@ -915,15 +963,11 @@ def _normalize_client_endpoint(
         except ValueError as exc:
             raise SignerError(f'endpoint "{alias}": invalid url: {exc}') from exc
         if parsed.scheme not in ("ssh", "https", "http"):
-            raise SignerError(
-                f'endpoint "{alias}": unsupported url scheme "{parsed.scheme}"'
-            )
+            raise SignerError(f'endpoint "{alias}": unsupported url scheme "{parsed.scheme}"')
         if not parsed.hostname:
             raise SignerError(f'endpoint "{alias}": url host is required')
         if parsed_port is not None and not 1 <= parsed_port <= 65535:
-            raise SignerError(
-                f'endpoint "{alias}": invalid url port "{parsed_port}"'
-            )
+            raise SignerError(f'endpoint "{alias}": invalid url port "{parsed_port}"')
         if parsed.scheme == "http" and not _is_loopback_endpoint_host(parsed.hostname):
             raise SignerError(
                 "raw http endpoints must be loopback; use ssh:// or https:// "
@@ -938,9 +982,7 @@ def _normalize_client_endpoint(
             else os.path.join("tokens", f"{alias}.token")
         )
     identity_file = _optional_string(raw.get("identity_file"), "identity_file")
-    known_hosts_path = _optional_string(
-        raw.get("known_hosts_path"), "known_hosts_path"
-    )
+    known_hosts_path = _optional_string(raw.get("known_hosts_path"), "known_hosts_path")
     if endpoint_url.startswith("ssh://"):
         signer_port = signer_port or DEFAULT_SIGNER_PORT
         identity_file = identity_file or ".ssh/id_ed25519"
@@ -951,9 +993,7 @@ def _normalize_client_endpoint(
     published_sentries = None
     published_raw = raw.get("published_sentries")
     if published_raw is not None:
-        published_map = _require_mapping(
-            published_raw, f'endpoint "{alias}" published_sentries'
-        )
+        published_map = _require_mapping(published_raw, f'endpoint "{alias}" published_sentries')
         if role != "sentry" and published_map:
             raise SignerError(
                 f'endpoint "{alias}": published_sentries are only valid on "sentry" endpoints'
@@ -972,9 +1012,7 @@ def _normalize_client_endpoint(
                 raise SignerError(
                     f'published sentry "{public_key}" requires component_key and key_type'
                 )
-            last_seen_at = _optional_string(
-                published.get("last_seen_at"), "last_seen_at"
-            )
+            last_seen_at = _optional_string(published.get("last_seen_at"), "last_seen_at")
             published_sentries[str(public_key)] = ClientEndpointPublishedSentry(
                 component_key=component_key,
                 key_type=key_type,
@@ -1008,29 +1046,21 @@ def load_client_endpoint_registry(data_dir: str) -> ClientEndpointRegistry:
     except yaml.YAMLError as exc:
         raise SignerError(f"failed to parse {endpoints_path}: {exc}") from exc
     raw = _require_mapping(raw_value, CLIENT_ENDPOINTS_FILE)
-    _require_known_fields(
-        raw, {"schema_version", "default", "endpoints"}, CLIENT_ENDPOINTS_FILE
-    )
+    _require_known_fields(raw, {"schema_version", "default", "endpoints"}, CLIENT_ENDPOINTS_FILE)
     schema_version = raw.get("schema_version", 1)
     if schema_version is None:
         schema_version = 1
     if isinstance(schema_version, bool) or not isinstance(schema_version, int):
-        raise SignerError(
-            f"{CLIENT_ENDPOINTS_FILE} schema_version = {schema_version}, want 1"
-        )
+        raise SignerError(f"{CLIENT_ENDPOINTS_FILE} schema_version = {schema_version}, want 1")
     if schema_version == 0:
         schema_version = 1
     if schema_version != 1:
-        raise SignerError(
-            f"{CLIENT_ENDPOINTS_FILE} schema_version = {schema_version}, want 1"
-        )
+        raise SignerError(f"{CLIENT_ENDPOINTS_FILE} schema_version = {schema_version}, want 1")
     registry.schema_version = schema_version
     endpoints_value = raw.get("endpoints")
     if endpoints_value is None:
         endpoints_value = {}
-    endpoints_raw = _require_mapping(
-        endpoints_value, f"{CLIENT_ENDPOINTS_FILE} endpoints"
-    )
+    endpoints_raw = _require_mapping(endpoints_value, f"{CLIENT_ENDPOINTS_FILE} endpoints")
     for raw_alias, endpoint_raw in endpoints_raw.items():
         if not isinstance(raw_alias, str):
             raise SignerError("endpoint aliases must be strings")
@@ -1044,14 +1074,10 @@ def load_client_endpoint_registry(data_dir: str) -> ClientEndpointRegistry:
     if registry.default:
         _validate_endpoint_alias(registry.default)
     signer_aliases = [
-        alias
-        for alias, endpoint in registry.endpoints.items()
-        if endpoint.role == "signer"
+        alias for alias, endpoint in registry.endpoints.items() if endpoint.role == "signer"
     ]
     if len(signer_aliases) > 1:
-        raise SignerError(
-            f'{CLIENT_ENDPOINTS_FILE} may contain at most one "signer" endpoint'
-        )
+        raise SignerError(f'{CLIENT_ENDPOINTS_FILE} may contain at most one "signer" endpoint')
     if not signer_aliases:
         if registry.default:
             raise SignerError(
@@ -1094,6 +1120,7 @@ def client_endpoint_ssh_host_port(
 # Transaction Encoding
 # -----------------------------------------------------------------------------
 
+
 def encode_transaction(txn: transaction.Transaction) -> tuple:
     """
     Encode transaction for signing.
@@ -1126,13 +1153,9 @@ def _simulate_signed_group(
             raise SignerError(f"signed group position {index} is empty")
         try:
             signed_bytes = bytes.fromhex(signed_hex)
-            signed = encoding.msgpack_decode(
-                base64.b64encode(signed_bytes).decode()
-            )
+            signed = encoding.msgpack_decode(base64.b64encode(signed_bytes).decode())
         except Exception as e:
-            raise SignerError(
-                f"signed group position {index} is invalid: {e}"
-            ) from e
+            raise SignerError(f"signed group position {index} is invalid: {e}") from e
         if not hasattr(signed, "transaction"):
             raise SignerError(
                 f"signed group position {index} does not contain a signed transaction"
@@ -1141,14 +1164,11 @@ def _simulate_signed_group(
 
     def simulation_request(trace: bool) -> models.SimulateRequest:
         return models.SimulateRequest(
-            txn_groups=[models.SimulateRequestTransactionGroup(
-                txns=signed_transactions
-            )],
+            txn_groups=[models.SimulateRequestTransactionGroup(txns=signed_transactions)],
             allow_empty_signatures=False,
             allow_more_logs=trace,
             exec_trace_config=(
-                models.SimulateTraceConfig(enable=True, state_change=True)
-                if trace else None
+                models.SimulateTraceConfig(enable=True, state_change=True) if trace else None
             ),
         )
 
@@ -1165,16 +1185,11 @@ def _simulate_signed_group(
     groups = response.get("txn-groups") or response.get("txn_groups") or []
     failure = ""
     if groups:
-        failure = groups[0].get("failure-message") or groups[0].get(
-            "failure_message", ""
-        )
+        failure = groups[0].get("failure-message") or groups[0].get("failure_message", "")
 
     return SimulationResult(
         tx_ids=[signed.get_txid() for signed in signed_transactions],
-        transactions=[
-            encode_transaction(signed.transaction)[0]
-            for signed in signed_transactions
-        ],
+        transactions=[encode_transaction(signed.transaction)[0] for signed in signed_transactions],
         signed_group=list(signed_group),
         mutations=mutations,
         response=response,
@@ -1182,9 +1197,7 @@ def _simulate_signed_group(
     )
 
 
-def _validate_group_sign_response(
-    sign_entries: List[Dict[str, Any]], signed: List[str]
-) -> None:
+def _validate_group_sign_response(sign_entries: List[Dict[str, Any]], signed: List[str]) -> None:
     """Reject truncated or partially empty /sign responses.
 
     A malformed signer reply must never submit an incomplete group. The
@@ -1205,14 +1218,10 @@ def _validate_group_sign_response(
         if foreign:
             continue
         if not signed[index]:
-            raise SignerError(
-                f"Server returned no signature for position {index + 1}"
-            )
+            raise SignerError(f"Server returned no signature for position {index + 1}")
     for index in range(len(sign_entries), len(signed)):
         if not signed[index]:
-            raise SignerError(
-                f"Server returned empty dummy transaction at position {index + 1}"
-            )
+            raise SignerError(f"Server returned empty dummy transaction at position {index + 1}")
 
 
 def _new_sign_request_id() -> str:
@@ -1237,11 +1246,7 @@ def _compact_payload(value: Any) -> Any:
     if is_dataclass(value):
         value = asdict(value)
     if isinstance(value, dict):
-        return {
-            key: _compact_payload(item)
-            for key, item in value.items()
-            if item is not None
-        }
+        return {key: _compact_payload(item) for key, item in value.items() if item is not None}
     if isinstance(value, list):
         return [_compact_payload(item) for item in value]
     return value
@@ -1302,9 +1307,7 @@ def _parse_bounded_authorization(data: Any) -> Optional[BoundedAuthorizationInfo
         raise SignerError("invalid bounded_authorization: max_fee is required")
     max_fee = data["max_fee"]
     if isinstance(max_fee, bool) or not isinstance(max_fee, int) or max_fee < 0:
-        raise SignerError(
-            "invalid bounded_authorization: max_fee must be a non-negative integer"
-        )
+        raise SignerError("invalid bounded_authorization: max_fee must be a non-negative integer")
     layout = data.get("base_signature_arg_layout") or {}
     operations = data.get("admin_operations") or []
     runtime_args = data.get("runtime_args") or []
@@ -1434,9 +1437,7 @@ def _validate_guarded_assembly_request(data: Dict[str, Any]) -> None:
 
     for index in range(len(group_bytes_hex)):
         if index not in covered:
-            raise ValueError(
-                f"group position {index} is not covered by targets or passthrough"
-            )
+            raise ValueError(f"group position {index} is not covered by targets or passthrough")
 
 
 def _validate_guarded_assembly_response(data: Dict[str, Any]) -> None:
@@ -1466,9 +1467,7 @@ def _validate_bounded_component_request(data: Dict[str, Any]) -> None:
         if has_passthrough and (has_auth or has_txn):
             raise ValueError(f"transaction {index}: sign and passthrough fields cannot be mixed")
         if has_passthrough:
-            raise ValueError(
-                "bounded-component does not accept signed passthrough entries"
-            )
+            raise ValueError("bounded-component does not accept signed passthrough entries")
         elif has_auth and has_txn:
             sign_count += 1
         elif has_txn:
@@ -1604,14 +1603,15 @@ def _account_amount(account_info: Any) -> int:
 def _account_min_balance(account_info: Any) -> int:
     if isinstance(account_info, dict):
         return int(account_info.get("min-balance") or account_info.get("min_balance") or 0)
-    return int(
-        getattr(account_info, "min_balance", None)
-        or getattr(account_info, "minBalance", 0)
-    )
+    return int(getattr(account_info, "min_balance", None) or getattr(account_info, "minBalance", 0))
 
 
 def _account_asset_holding(account_info: Any, asset_id: int) -> Optional[Any]:
-    assets = account_info.get("assets", []) if isinstance(account_info, dict) else getattr(account_info, "assets", [])
+    assets = (
+        account_info.get("assets", [])
+        if isinstance(account_info, dict)
+        else getattr(account_info, "assets", [])
+    )
     for holding in assets or []:
         if isinstance(holding, dict):
             holding_id = holding.get("asset-id") or holding.get("asset_id")
@@ -1680,7 +1680,9 @@ def _asa_opt_in_checks(account_info: Any, asset_id: int, fee: int) -> List[Prepa
     ]
 
 
-def _asa_opt_out_checks(sender_info: Any, close_info: Any, asset_id: int, close_to: str) -> List[PreparedCheck]:
+def _asa_opt_out_checks(
+    sender_info: Any, close_info: Any, asset_id: int, close_to: str
+) -> List[PreparedCheck]:
     holding = _account_asset_holding(sender_info, asset_id)
     if holding is None:
         raise SignerError(f"sender is not opted into asset {asset_id}")
@@ -1704,22 +1706,34 @@ def _account_close_checks(account_info: Any, fee: int) -> List[PreparedCheck]:
         raise SignerError("cannot close an online account")
     if (
         _account_list(account_info, "assets")
-        or _account_int(account_info, "total-assets-opted-in", "total_assets_opted_in", "totalAssetsOptedIn") > 0
+        or _account_int(
+            account_info, "total-assets-opted-in", "total_assets_opted_in", "totalAssetsOptedIn"
+        )
+        > 0
     ):
         raise SignerError("cannot close account with ASA holdings")
     if (
         _account_list(account_info, "created-assets", "created_assets", "createdAssets")
-        or _account_int(account_info, "total-created-assets", "total_created_assets", "totalCreatedAssets") > 0
+        or _account_int(
+            account_info, "total-created-assets", "total_created_assets", "totalCreatedAssets"
+        )
+        > 0
     ):
         raise SignerError("cannot close account with created assets")
     if (
         _account_list(account_info, "apps-local-state", "apps_local_state", "appsLocalState")
-        or _account_int(account_info, "total-apps-opted-in", "total_apps_opted_in", "totalAppsOptedIn") > 0
+        or _account_int(
+            account_info, "total-apps-opted-in", "total_apps_opted_in", "totalAppsOptedIn"
+        )
+        > 0
     ):
         raise SignerError("cannot close account with app opt-ins")
     if (
         _account_list(account_info, "created-apps", "created_apps", "createdApps")
-        or _account_int(account_info, "total-created-apps", "total_created_apps", "totalCreatedApps") > 0
+        or _account_int(
+            account_info, "total-created-apps", "total_created_apps", "totalCreatedApps"
+        )
+        > 0
     ):
         raise SignerError("cannot close account with created apps")
     if _account_amount(account_info) < fee:
@@ -1990,7 +2004,7 @@ def _marshal_abi_address(value: Any) -> str:
 def _find_free_port() -> int:
     """Find an available local port."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(('127.0.0.1', 0))
+        s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
 
 
@@ -2069,9 +2083,7 @@ class _SSHTunnel:
         import threading
 
         if not self._known_hosts_path:
-            raise SignerError(
-                "known_hosts path is required for SSH host key verification"
-            )
+            raise SignerError("known_hosts path is required for SSH host key verification")
 
         # Load key
         try:
@@ -2131,7 +2143,7 @@ class _SSHTunnel:
         # Start local listener
         self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._server_socket.bind(('127.0.0.1', self.local_bind_port))
+        self._server_socket.bind(("127.0.0.1", self.local_bind_port))
         self._server_socket.listen(5)
         self._server_socket.settimeout(1.0)
         self._running = True
@@ -2143,9 +2155,7 @@ class _SSHTunnel:
     def _verify_host_key(self, server_key: paramiko.PKey) -> None:
         """Verify or persist the negotiated key before authentication."""
         host_entry = (
-            self._ssh_host
-            if self._ssh_port == 22
-            else f"[{self._ssh_host}]:{self._ssh_port}"
+            self._ssh_host if self._ssh_port == 22 else f"[{self._ssh_host}]:{self._ssh_port}"
         )
         host_keys = paramiko.HostKeys()
         if os.path.exists(self._known_hosts_path):
@@ -2190,7 +2200,7 @@ class _SSHTunnel:
 
             try:
                 channel = self._transport.open_channel(
-                    'direct-tcpip',
+                    "direct-tcpip",
                     (self._remote_host, self._remote_port),
                     client_sock.getpeername(),
                 )
@@ -2203,12 +2213,8 @@ class _SSHTunnel:
                 continue
 
             # Shuttle data in both directions
-            t1 = threading.Thread(
-                target=self._forward, args=(client_sock, channel), daemon=True
-            )
-            t2 = threading.Thread(
-                target=self._forward, args=(channel, client_sock), daemon=True
-            )
+            t1 = threading.Thread(target=self._forward, args=(client_sock, channel), daemon=True)
+            t2 = threading.Thread(target=self._forward, args=(channel, client_sock), daemon=True)
             t1.start()
             t2.start()
             self._threads.extend([t1, t2])
@@ -2285,11 +2291,7 @@ class SignerClient:
     """
 
     def __init__(
-        self,
-        base_url: str,
-        token: str,
-        timeout: Optional[int] = None,
-        tunnel: Optional[Any] = None
+        self, base_url: str, token: str, timeout: Optional[int] = None, tunnel: Optional[Any] = None
     ):
         """
         Initialize signer client (use class methods instead).
@@ -2355,6 +2357,7 @@ class SignerClient:
             SignerUnavailableError: If SSH connection fails
         """
         import os
+
         ssh_key_path = os.path.expanduser(ssh_key_path)
 
         # Find a free local port unless the endpoint pins one.
@@ -2366,7 +2369,7 @@ class SignerClient:
                 ssh_port=ssh_port,
                 token=token,
                 ssh_pkey_path=ssh_key_path,
-                remote_host='127.0.0.1',
+                remote_host="127.0.0.1",
                 remote_port=signer_port,
                 local_port=local_port,
                 known_hosts_path=known_hosts_path,
@@ -2433,9 +2436,7 @@ class SignerClient:
         registry = load_client_endpoint_registry(data_dir)
         _, selected = resolve_client_endpoint(registry, endpoint)
         if selected.url == "self":
-            raise SignerError(
-                f'endpoint URL "{selected.url}" is not supported by the external SDK'
-            )
+            raise SignerError(f'endpoint URL "{selected.url}" is not supported by the external SDK')
         token_path = selected.token_file
         if not os.path.exists(token_path):
             raise SignerError(f"No token found at {token_path}")
@@ -2444,9 +2445,7 @@ class SignerClient:
         if selected.url.startswith("ssh://"):
             host, ssh_port = client_endpoint_ssh_host_port(selected)
             if not os.path.exists(selected.identity_file):
-                raise SignerError(
-                    f"SSH configured but key not found at {selected.identity_file}"
-                )
+                raise SignerError(f"SSH configured but key not found at {selected.identity_file}")
             return cls.connect_ssh(
                 host=host,
                 token=token,
@@ -2485,8 +2484,7 @@ class SignerClient:
         """Check if signer is healthy and reachable."""
         try:
             resp = self.session.get(
-                f"{self.base_url}/health",
-                timeout=self._timeout_for(HEALTH_TIMEOUT)
+                f"{self.base_url}/health", timeout=self._timeout_for(HEALTH_TIMEOUT)
             )
             return resp.status_code == 200
         except requests.RequestException:
@@ -2501,8 +2499,7 @@ class SignerClient:
         """
         try:
             resp = self.session.get(
-                f"{self.base_url}/status",
-                timeout=self._timeout_for(STATUS_TIMEOUT)
+                f"{self.base_url}/status", timeout=self._timeout_for(STATUS_TIMEOUT)
             )
         except requests.RequestException as e:
             raise SignerUnavailableError(f"Failed to connect: {e}")
@@ -2517,7 +2514,7 @@ class SignerClient:
             raise self._signer_http_error(
                 resp,
                 f"Failed to get signer status: HTTP {resp.status_code}",
-                )
+            )
 
         data = resp.json()
         identity = StatusResponse(
@@ -2537,9 +2534,7 @@ class SignerClient:
 
     def _cache_approval_wait(self, seconds: int) -> None:
         self._approval_wait_seconds = (
-            seconds
-            if seconds > 0 and seconds <= MAX_DISCOVERED_APPROVAL_WAIT
-            else None
+            seconds if seconds > 0 and seconds <= MAX_DISCOVERED_APPROVAL_WAIT else None
         )
         self._approval_wait_fetched_at = time.monotonic()
         self._approval_wait_known = True
@@ -2571,11 +2566,7 @@ class SignerClient:
 
     def _sign_request_timeout(self) -> int:
         wait = self._cached_approval_wait()
-        default = (
-            wait + SIGN_APPROVAL_SLACK
-            if wait is not None
-            else DEFAULT_SIGN_REQUEST_TIMEOUT
-        )
+        default = wait + SIGN_APPROVAL_SLACK if wait is not None else DEFAULT_SIGN_REQUEST_TIMEOUT
         return self._timeout_for(default)
 
     def list_keys(self, refresh: bool = False) -> List[KeyInfo]:
@@ -2593,8 +2584,7 @@ class SignerClient:
 
         try:
             resp = self.session.get(
-                f"{self.base_url}/keys",
-                timeout=self._timeout_for(INVENTORY_TIMEOUT)
+                f"{self.base_url}/keys", timeout=self._timeout_for(INVENTORY_TIMEOUT)
             )
         except requests.RequestException as e:
             raise SignerUnavailableError(f"Failed to connect: {e}")
@@ -2640,12 +2630,10 @@ class SignerClient:
                 signing_args=signing_args,
                 parameters=k.get("parameters"),
                 template_provenance_status=(
-                    k.get("template_provenance_status")
-                    or k.get("template_status", "")
+                    k.get("template_provenance_status") or k.get("template_status", "")
                 ),
                 template_provenance_note=(
-                    k.get("template_provenance_note")
-                    or k.get("template_warning", "")
+                    k.get("template_provenance_note") or k.get("template_warning", "")
                 ),
             )
             key_info.template_status = key_info.template_provenance_status
@@ -2767,9 +2755,7 @@ class SignerClient:
         available = _account_amount(sender_info) - _account_min_balance(sender_info)
         required = amount + txn_fee
         if available < required:
-            raise SignerError(
-                f"insufficient funds: available {available}, required {required}"
-            )
+            raise SignerError(f"insufficient funds: available {available}, required {required}")
 
         resolved = self.resolve_auth_address(sender, lambda _: sender_info)
         return PreparedTransaction(
@@ -3209,7 +3195,9 @@ class SignerClient:
             raise ValueError("sender is required")
         if not app_id:
             raise ValueError("app_id is required")
-        if int(on_complete) < 0 or int(on_complete) > int(transaction.OnComplete.DeleteApplicationOC):
+        if int(on_complete) < 0 or int(on_complete) > int(
+            transaction.OnComplete.DeleteApplicationOC
+        ):
             raise ValueError(f"invalid on_complete: {on_complete}")
 
         params = algod_client.suggested_params()
@@ -3356,9 +3344,9 @@ class SignerClient:
             )
         ]
         if asa_transfers:
-            checks.append(_validate_asa_transfer_group(prepared[:len(asa_transfers)]))
+            checks.append(_validate_asa_transfer_group(prepared[: len(asa_transfers)]))
         if payments:
-            checks.append(_validate_payment_group(prepared[len(asa_transfers):]))
+            checks.append(_validate_payment_group(prepared[len(asa_transfers) :]))
         return PreparedGroup(prepared, checks=checks)
 
     def prepare_payment_group(
@@ -3445,8 +3433,7 @@ class SignerClient:
         """
         try:
             resp = self.session.get(
-                f"{self.base_url}/keytypes",
-                timeout=self._timeout_for(INVENTORY_TIMEOUT)
+                f"{self.base_url}/keytypes", timeout=self._timeout_for(INVENTORY_TIMEOUT)
             )
         except requests.RequestException as e:
             raise SignerUnavailableError(f"Failed to connect: {e}")
@@ -3458,7 +3445,7 @@ class SignerClient:
             raise self._signer_http_error(
                 resp,
                 f"Failed to list key types: HTTP {resp.status_code}",
-                )
+            )
 
         data = resp.json()
         result = []
@@ -3482,7 +3469,8 @@ class SignerClient:
                                 input_type=mode.get("input_type", ""),
                             )
                             for mode in p.get("input_modes", [])
-                        ] or None,
+                        ]
+                        or None,
                         min_items=p.get("min_items", 0),
                         max_items=p.get("max_items", 0),
                         options=p.get("options"),
@@ -3510,28 +3498,31 @@ class SignerClient:
                     for arg in kt["runtime_args"]
                 ]
 
-            result.append(KeyTypeInfo(
-                key_type=kt["key_type"],
-                family=kt.get("family", ""),
-                display_name=kt.get("display_name", ""),
-                description=kt.get("description", ""),
-                requires_logicsig=kt.get("requires_logicsig", False),
-                mnemonic_word_count=kt.get("mnemonic_word_count", 0),
-                mnemonic_import=kt.get("mnemonic_import", False),
-                mnemonic_scheme=kt.get("mnemonic_scheme", ""),
-                signing_flow=kt.get("signing_flow", ""),
-                sentry_component_key_type=kt.get("sentry_component_key_type", ""),
-                bounded_authorization=_parse_bounded_authorization(kt.get("bounded_authorization")),
-                creation_params=creation_params,
-                runtime_args=runtime_args,
-            ))
+            result.append(
+                KeyTypeInfo(
+                    key_type=kt["key_type"],
+                    family=kt.get("family", ""),
+                    display_name=kt.get("display_name", ""),
+                    description=kt.get("description", ""),
+                    authorization_kind=kt.get("authorization_kind", ""),
+                    requires_logicsig=kt.get("requires_logicsig", False),
+                    mnemonic_word_count=kt.get("mnemonic_word_count", 0),
+                    mnemonic_import=kt.get("mnemonic_import", False),
+                    mnemonic_scheme=kt.get("mnemonic_scheme", ""),
+                    signing_flow=kt.get("signing_flow", ""),
+                    sentry_component_key_type=kt.get("sentry_component_key_type", ""),
+                    bounded_authorization=_parse_bounded_authorization(
+                        kt.get("bounded_authorization")
+                    ),
+                    creation_params=creation_params,
+                    runtime_args=runtime_args,
+                )
+            )
 
         return result
 
     def generate_key(
-        self,
-        key_type: str,
-        parameters: Optional[Dict[str, str]] = None
+        self, key_type: str, parameters: Optional[Dict[str, str]] = None
     ) -> GenerateResult:
         """
         Generate a new key on the signer.
@@ -3551,7 +3542,7 @@ class SignerClient:
             resp = self.session.post(
                 f"{self.base_url}/admin/generate",
                 json=body,
-                timeout=self._timeout_for(MUTATION_TIMEOUT)
+                timeout=self._timeout_for(MUTATION_TIMEOUT),
             )
         except requests.RequestException as e:
             raise SignerUnavailableError(f"Failed to connect: {e}")
@@ -3601,7 +3592,7 @@ class SignerClient:
             resp = self.session.delete(
                 f"{self.base_url}/admin/keys",
                 params={"address": address},
-                timeout=self._timeout_for(MUTATION_TIMEOUT)
+                timeout=self._timeout_for(MUTATION_TIMEOUT),
             )
         except requests.RequestException as e:
             raise SignerUnavailableError(f"Failed to connect: {e}")
@@ -3791,7 +3782,7 @@ class SignerClient:
             raise self._signer_http_error(
                 resp,
                 f"Component signing failed: HTTP {resp.status_code}",
-                )
+            )
 
         data = self._safe_json(resp)
         if data.get("error"):
@@ -3803,13 +3794,9 @@ class SignerClient:
         if data["request_id"] != request_body["request_id"]:
             raise SignerError("component sign response request_id does not match request")
         expected_indices = set(request_body["target_indices"])
-        actual_indices = {
-            item["target_index"] for item in data.get("signatures", [])
-        }
+        actual_indices = {item["target_index"] for item in data.get("signatures", [])}
         if actual_indices != expected_indices:
-            raise SignerError(
-                "component sign response target indices do not match request"
-            )
+            raise SignerError("component sign response target indices do not match request")
 
         return ComponentSignResponse(
             request_id=data["request_id"],
@@ -3863,7 +3850,7 @@ class SignerClient:
             raise self._signer_http_error(
                 resp,
                 f"Guarded assembly failed: HTTP {resp.status_code}",
-                )
+            )
 
         data = self._safe_json(resp)
         if data.get("error"):
@@ -4021,7 +4008,7 @@ class SignerClient:
             raise self._signer_http_error(
                 resp,
                 f"Sentry reference sync failed: HTTP {resp.status_code}",
-                )
+            )
 
         data = self._safe_json(resp)
         if data.get("error"):
@@ -4116,9 +4103,7 @@ class SignerClient:
                 try:
                     signed_hex = base64.b64decode(passthrough[i], validate=True).hex()
                 except Exception as e:
-                    raise ValueError(
-                        f"invalid base64 in passthrough[{i}]: {e}"
-                    ) from e
+                    raise ValueError(f"invalid base64 in passthrough[{i}]: {e}") from e
                 sign_requests.append({"signed_txn_hex": signed_hex})
                 continue
 
@@ -4130,9 +4115,7 @@ class SignerClient:
                         f"plan_group() first, then resubmit slot {i} as passthrough"
                     )
                 if txn is None:
-                    raise ValueError(
-                        f"transaction is required for foreign-mode entry at index {i}"
-                    )
+                    raise ValueError(f"transaction is required for foreign-mode entry at index {i}")
                 txn_bytes_hex, _ = encode_transaction(txn)
                 req: Dict[str, Any] = {"txn_bytes_hex": txn_bytes_hex}
                 if lsig_sizes and i in lsig_sizes:
@@ -4141,9 +4124,7 @@ class SignerClient:
                 continue
 
             if txn is None:
-                raise ValueError(
-                    f"transaction is required for sign-mode entry at index {i}"
-                )
+                raise ValueError(f"transaction is required for sign-mode entry at index {i}")
 
             txn_bytes_hex, txn_sender = encode_transaction(txn)
 
@@ -4156,8 +4137,7 @@ class SignerClient:
             # Add LogicSig args if provided
             if lsig_args_map and auth_addr in lsig_args_map:
                 req["lsig_args"] = {
-                    name: value.hex()
-                    for name, value in lsig_args_map[auth_addr].items()
+                    name: value.hex() for name, value in lsig_args_map[auth_addr].items()
                 }
 
             sign_requests.append(req)
@@ -4258,9 +4238,7 @@ class SignerClient:
 
         try:
             resp = self.session.post(
-                f"{self.base_url}/sign",
-                json=request_body,
-                timeout=self._sign_request_timeout()
+                f"{self.base_url}/sign", json=request_body, timeout=self._sign_request_timeout()
             )
         except requests.RequestException as e:
             self._best_effort_cancel_sign_request(request_id)
@@ -4360,7 +4338,7 @@ class SignerClient:
             resp = self.session.post(
                 f"{self.base_url}/plan",
                 json=request_body,
-                timeout=self._timeout_for(GROUP_PLAN_TIMEOUT)
+                timeout=self._timeout_for(GROUP_PLAN_TIMEOUT),
             )
         except requests.RequestException as e:
             raise SignerUnavailableError(f"Failed to connect: {e}")
@@ -4397,18 +4375,14 @@ class SignerClient:
         """Sign normally, then simulate the exact group through client algod."""
         if algod_client is None:
             raise ValueError("algod_client is required")
-        response = self.sign_requests(
-            prepared_group.to_sign_requests(), request_id=request_id
-        )
+        response = self.sign_requests(prepared_group.to_sign_requests(), request_id=request_id)
         foreign_count = int((response.mutations or {}).get("foreign_count", 0))
         if foreign_count:
             raise SignerError(
                 "signed simulation requires a complete group; signer returned "
                 f"{foreign_count} foreign transaction(s)"
             )
-        return _simulate_signed_group(
-            algod_client, response.signed, response.mutations
-        )
+        return _simulate_signed_group(algod_client, response.signed, response.mutations)
 
     def simulate_prepared_transaction(
         self,
@@ -4458,7 +4432,9 @@ class SignerClient:
 
         lsig_args_map = {auth_address: lsig_args} if lsig_args else None
 
-        signed_list = self._sign_request([txn], [auth_address], lsig_args_map, request_id=request_id)
+        signed_list = self._sign_request(
+            [txn], [auth_address], lsig_args_map, request_id=request_id
+        )
 
         # Concatenate all signed txns and return as single base64 string
         all_bytes = b"".join(base64.b64decode(s) for s in signed_list)
@@ -4618,7 +4594,9 @@ def _apply_guarded_dummy_fees(
         txns[index].fee = int(getattr(txns[index], "fee", 0)) + extra
 
 
-def _create_guarded_dummies(first_txn: transaction.Transaction, count: int) -> List[transaction.Transaction]:
+def _create_guarded_dummies(
+    first_txn: transaction.Transaction, count: int
+) -> List[transaction.Transaction]:
     if count == 0:
         return []
     # The dummies must share the real transactions' network. A missing genesis
@@ -4626,7 +4604,9 @@ def _create_guarded_dummies(first_txn: transaction.Transaction, count: int) -> L
     # loudly instead of defaulting to "".
     genesis_hash = getattr(first_txn, "genesis_hash", None)
     if not genesis_hash:
-        raise SignerError("cannot build guarded dummy transactions: first transaction has no genesis hash")
+        raise SignerError(
+            "cannot build guarded dummy transactions: first transaction has no genesis hash"
+        )
     dummy_account = transaction.LogicSigAccount(GUARDED_DUMMY_PROGRAM)
     dummy_address = dummy_account.address()
     params = transaction.SuggestedParams(
@@ -4661,10 +4641,12 @@ def _sign_guarded_dummies(
     for offset, txn in enumerate(dummies):
         signed = transaction.LogicSigTransaction(txn, dummy_account)
         signed_hex = base64.b64decode(encoding.msgpack_encode(signed)).hex()
-        passthrough.append(GuardedPassthroughItem(
-            target_index=start_index + offset,
-            signed_txn_hex=signed_hex,
-        ))
+        passthrough.append(
+            GuardedPassthroughItem(
+                target_index=start_index + offset,
+                signed_txn_hex=signed_hex,
+            )
+        )
     return passthrough
 
 
@@ -4682,8 +4664,7 @@ def _validate_guarded_dummies(dummies: List[transaction.Transaction]) -> None:
             or txn.close_remainder_to is not None
         ):
             raise SignerError(
-                f"signer-appended transaction {index} is not a canonical "
-                "guarded budget dummy"
+                f"signer-appended transaction {index} is not a canonical " "guarded budget dummy"
             )
 
 
@@ -4746,36 +4727,44 @@ def _build_prepared_guarded_sign_inputs(
                 )
             if key.signing_flow == SIGNING_FLOW_BOUNDED1:
                 if not item.auth_address:
-                    raise ValueError(f"prepared transaction {index}: primary auth address is required")
-                primary_targets.append(GuardedPrimarySignTarget(
-                    target_index=index,
-                    auth_address=item.auth_address,
-                    txn_sender=item.txn_sender,
-                    lsig_args=_encode_guarded_lsig_args(item.lsig_args),
-                    lsig_size=lsig_size,
-                    app_call_info=item.app_call_info,
-                ))
+                    raise ValueError(
+                        f"prepared transaction {index}: primary auth address is required"
+                    )
+                primary_targets.append(
+                    GuardedPrimarySignTarget(
+                        target_index=index,
+                        auth_address=item.auth_address,
+                        txn_sender=item.txn_sender,
+                        lsig_args=_encode_guarded_lsig_args(item.lsig_args),
+                        lsig_size=lsig_size,
+                        app_call_info=item.app_call_info,
+                    )
+                )
                 continue
             if not item.auth_address:
                 raise ValueError(f"prepared transaction {index}: guarded auth address is required")
-            guarded_targets.append(GuardedSignTarget(
-                target_index=index,
-                guarded_account=item.auth_address,
-                sentry_public_key_hex=(key.parameters or {}).get("sentry_public_key", ""),
-                sentry_component_key_type=key.sentry_component_key_type,
-            ))
+            guarded_targets.append(
+                GuardedSignTarget(
+                    target_index=index,
+                    guarded_account=item.auth_address,
+                    sentry_public_key_hex=(key.parameters or {}).get("sentry_public_key", ""),
+                    sentry_component_key_type=key.sentry_component_key_type,
+                )
+            )
             continue
 
         if not item.auth_address:
             raise ValueError(f"prepared transaction {index}: primary auth address is required")
-        primary_targets.append(GuardedPrimarySignTarget(
-            target_index=index,
-            auth_address=item.auth_address,
-            txn_sender=item.txn_sender,
-            lsig_args=_encode_guarded_lsig_args(item.lsig_args),
-            lsig_size=lsig_size,
-            app_call_info=item.app_call_info,
-        ))
+        primary_targets.append(
+            GuardedPrimarySignTarget(
+                target_index=index,
+                auth_address=item.auth_address,
+                txn_sender=item.txn_sender,
+                lsig_args=_encode_guarded_lsig_args(item.lsig_args),
+                lsig_size=lsig_size,
+                app_call_info=item.app_call_info,
+            )
+        )
 
     if not guarded_targets:
         raise ValueError("prepared group has no guarded targets")
@@ -4787,7 +4776,9 @@ def _build_prepared_guarded_sign_inputs(
             f"- cannot add {dummy_count} dummies for LSig budget"
         )
     if dummy_count > 0:
-        _apply_guarded_dummy_fees(txns, lsig_indices, dummy_count, min_fee or GUARDED_DEFAULT_MIN_FEE)
+        _apply_guarded_dummy_fees(
+            txns, lsig_indices, dummy_count, min_fee or GUARDED_DEFAULT_MIN_FEE
+        )
 
     dummies = _create_guarded_dummies(txns[0], dummy_count)
     all_txns = txns + dummies
@@ -4796,7 +4787,7 @@ def _build_prepared_guarded_sign_inputs(
             txn.group = None
         transaction.assign_group_id(all_txns)
 
-    dummy_passthrough = _sign_guarded_dummies(all_txns[len(txns):], len(txns))
+    dummy_passthrough = _sign_guarded_dummies(all_txns[len(txns) :], len(txns))
     group_bytes_hex = [encode_transaction(txn)[0] for txn in all_txns]
     return {
         "user_client": user_client,
@@ -4875,9 +4866,7 @@ def _request_primary_guarded_passthrough(
     passthrough = []
     for index in sorted(primary_by_index):
         if index >= len(response.signed) or not response.signed[index]:
-            raise SignerError(
-                f"primary signer returned no signed transaction for target {index}"
-            )
+            raise SignerError(f"primary signer returned no signed transaction for target {index}")
         _verify_signed_transaction_matches_canonical(
             "primary passthrough",
             index,
@@ -4907,9 +4896,7 @@ def _prepared_sentry_flow_kinds(
             except SignerError:
                 raise
             except Exception as e:
-                raise SignerError(
-                    f"prepared transaction {index}: resolve signer key: {e}"
-                ) from e
+                raise SignerError(f"prepared transaction {index}: resolve signer key: {e}") from e
         if key is None:
             continue
         if key.signing_flow == SIGNING_FLOW_BOUNDED_SENTRY1:
@@ -5010,8 +4997,7 @@ def _validate_bounded_component_plan(
     if mutations is None:
         if appended:
             raise SignerError(
-                f"signer appended {appended} bounded group positions without "
-                "a mutation report"
+                f"signer appended {appended} bounded group positions without " "a mutation report"
             )
     else:
         original_count = _bounded_mutation_int(mutations, "original_count")
@@ -5049,13 +5035,10 @@ def _validate_bounded_component_plan(
                 or index >= len(original)
             ):
                 raise SignerError(
-                    f"bounded mutation fee index {index!r} is outside "
-                    "original positions"
+                    f"bounded mutation fee index {index!r} is outside " "original positions"
                 )
             if index in fee_modified:
-                raise SignerError(
-                    f"bounded mutation fee index {index} is duplicated"
-                )
+                raise SignerError(f"bounded mutation fee index {index} is duplicated")
             fee_modified.add(index)
 
     if (
@@ -5066,8 +5049,7 @@ def _validate_bounded_component_plan(
         and all(getattr(txn, "group", None) for txn in original)
     ):
         raise SignerError(
-            "signer changed an existing bounded group ID without a fee or "
-            "membership mutation"
+            "signer changed an existing bounded group ID without a fee or " "membership mutation"
         )
 
     total_fee_delta = 0
@@ -5077,17 +5059,14 @@ def _validate_bounded_component_plan(
             expected.group = planned_txn.group
         if index in fee_modified:
             if planned_txn.fee < expected.fee:
-                raise SignerError(
-                    f"bounded mutation decreased fee at original position {index}"
-                )
+                raise SignerError(f"bounded mutation decreased fee at original position {index}")
             total_fee_delta += planned_txn.fee - expected.fee
             expected.fee = planned_txn.fee
         expected_hex, _ = encode_transaction(expected)
         planned_hex, _ = encode_transaction(planned_txn)
         if expected_hex != planned_hex:
             raise SignerError(
-                f"signer changed unreported fields at bounded original "
-                f"position {index}"
+                f"signer changed unreported fields at bounded original " f"position {index}"
             )
     if mutations is not None:
         reported_delta = _bounded_mutation_int(mutations, "total_fees_delta")
@@ -5096,7 +5075,7 @@ def _validate_bounded_component_plan(
                 f"bounded mutation total_fees_delta {reported_delta} does not "
                 f"match observed delta {total_fee_delta}"
             )
-    _validate_guarded_dummies(planned[len(original):])
+    _validate_guarded_dummies(planned[len(original) :])
 
 
 def _validate_bounded_target_fees(
@@ -5105,32 +5084,23 @@ def _validate_bounded_target_fees(
 ) -> None:
     for index, max_fee in max_fees.items():
         if index < 0 or index >= len(planned):
-            raise SignerError(
-                f"bounded target index {index} is outside planned group"
-            )
+            raise SignerError(f"bounded target index {index} is outside planned group")
         if isinstance(max_fee, bool) or not isinstance(max_fee, int) or max_fee < 0:
-            raise SignerError(
-                f"bounded target {index} has invalid advertised max_fee"
-            )
+            raise SignerError(f"bounded target {index} has invalid advertised max_fee")
         fee = planned[index].fee
         if fee > max_fee:
             raise SignerError(
-                f"bounded target {index} fee {fee} exceeds advertised "
-                f"max_fee {max_fee}"
+                f"bounded target {index} fee {fee} exceeds advertised " f"max_fee {max_fee}"
             )
 
 
-def _verify_bounded_assembled_group(
-    group_bytes_hex: List[str], signed_group: List[str]
-) -> None:
+def _verify_bounded_assembled_group(group_bytes_hex: List[str], signed_group: List[str]) -> None:
     if len(signed_group) != len(group_bytes_hex):
         raise SignerError(
             f"assembled group has {len(signed_group)} transaction(s), "
             f"want {len(group_bytes_hex)}"
         )
-    for index, (signed_hex, canonical_hex) in enumerate(
-        zip(signed_group, group_bytes_hex)
-    ):
+    for index, (signed_hex, canonical_hex) in enumerate(zip(signed_group, group_bytes_hex)):
         _verify_signed_transaction_matches_canonical(
             "assembled transaction", index, signed_hex, canonical_hex
         )
@@ -5161,9 +5131,7 @@ def _verify_signed_transaction_matches_canonical(
         raise SignerError(f"{label} {index} did not decode as a signed transaction")
     encoded, _ = encode_transaction(decoded.transaction)
     if encoded != canonical_hex.lower():
-        raise SignerError(
-            f"{label} {index} does not match the submitted canonical bytes"
-        )
+        raise SignerError(f"{label} {index} does not match the submitted canonical bytes")
 
 
 def _bounded_sentry_public_key(key: KeyInfo) -> str:
@@ -5217,19 +5185,19 @@ def _request_bounded_primary_passthrough(
     passthrough = []
     for index in sorted(primary_by_index):
         if index >= len(response.signed) or not response.signed[index]:
-            raise SignerError(
-                f"primary signer returned no signed transaction for target {index}"
-            )
+            raise SignerError(f"primary signer returned no signed transaction for target {index}")
         _verify_signed_transaction_matches_canonical(
             "primary passthrough",
             index,
             response.signed[index],
             group_bytes_hex[index],
         )
-        passthrough.append(GuardedPassthroughItem(
-            target_index=index,
-            signed_txn_hex=response.signed[index],
-        ))
+        passthrough.append(
+            GuardedPassthroughItem(
+                target_index=index,
+                signed_txn_hex=response.signed[index],
+            )
+        )
     return response, passthrough
 
 
@@ -5268,29 +5236,26 @@ def sign_prepared_bounded_sentry_group(
         if key is None and item.auth_address:
             key = user_client.get_key_info(item.auth_address)
         if key is None:
-            raise ValueError(
-                f"prepared transaction {index}: signer key metadata is required"
-            )
+            raise ValueError(f"prepared transaction {index}: signer key metadata is required")
         lsig_size = key.lsig_size or item.lsig_size
         if key.signing_flow == SIGNING_FLOW_BOUNDED_SENTRY1:
             if not item.auth_address:
-                raise ValueError(
-                    f"prepared transaction {index}: bounded auth address is required"
-                )
+                raise ValueError(f"prepared transaction {index}: bounded auth address is required")
             requests_data.append(item.to_sign_request())
             target_lsig_sizes[index] = lsig_size
             if key.bounded_authorization is None:
                 raise ValueError(
-                    f"prepared transaction {index}: bounded authorization "
-                    "metadata is required"
+                    f"prepared transaction {index}: bounded authorization " "metadata is required"
                 )
             target_max_fees[index] = key.bounded_authorization.max_fee
-            targets.append({
-                "target_index": index,
-                "guarded_account": item.auth_address,
-                "sentry_public_key_hex": _bounded_sentry_public_key(key),
-                "sentry_component_key_type": _bounded_sentry_component_key_type(key),
-            })
+            targets.append(
+                {
+                    "target_index": index,
+                    "guarded_account": item.auth_address,
+                    "sentry_public_key_hex": _bounded_sentry_public_key(key),
+                    "sentry_component_key_type": _bounded_sentry_component_key_type(key),
+                }
+            )
             continue
         if key.signing_flow == SIGNING_FLOW_SENTRY1:
             raise ValueError("cannot mix sentry1 and bounded-sentry1 targets in one group")
@@ -5300,22 +5265,22 @@ def sign_prepared_bounded_sentry_group(
                 f"{key.signing_flow!r}, which this SDK does not support; upgrade the SDK"
             )
         if not item.auth_address:
-            raise ValueError(
-                f"prepared transaction {index}: primary auth address is required"
-            )
+            raise ValueError(f"prepared transaction {index}: primary auth address is required")
         txn_hex, _ = encode_transaction(item.transaction)
         request = {"txn_bytes_hex": txn_hex}
         if lsig_size:
             request["lsig_size"] = lsig_size
         requests_data.append(request)
-        primary_targets.append({
-            "target_index": index,
-            "auth_address": item.auth_address,
-            "txn_sender": item.txn_sender,
-            "lsig_args": _encode_guarded_lsig_args(item.lsig_args),
-            "lsig_size": lsig_size,
-            "app_call_info": item.app_call_info,
-        })
+        primary_targets.append(
+            {
+                "target_index": index,
+                "auth_address": item.auth_address,
+                "txn_sender": item.txn_sender,
+                "lsig_args": _encode_guarded_lsig_args(item.lsig_args),
+                "lsig_size": lsig_size,
+                "app_call_info": item.app_call_info,
+            }
+        )
     if not targets:
         raise ValueError("prepared group has no bounded-sentry targets")
 
@@ -5340,13 +5305,11 @@ def sign_prepared_bounded_sentry_group(
         target = target_by_index.get(component.target_index)
         if target is None or component.bounded_account != target["guarded_account"]:
             raise SignerError(
-                f"signer returned unexpected bounded component target "
-                f"{component.target_index}"
+                f"signer returned unexpected bounded component target " f"{component.target_index}"
             )
         if component.target_index in components:
             raise SignerError(
-                f"signer returned duplicate bounded component target "
-                f"{component.target_index}"
+                f"signer returned duplicate bounded component target " f"{component.target_index}"
             )
         components[component.target_index] = component
     for target in targets:
@@ -5362,18 +5325,25 @@ def sign_prepared_bounded_sentry_group(
             target, sentry_client, sentry_component_key, sentry_resolver
         )
         group_key = (id(client), component_key)
-        sentry_groups.setdefault(group_key, {
-            "client": client, "component_key": component_key, "indices": [],
-        })["indices"].append(target["target_index"])
+        sentry_groups.setdefault(
+            group_key,
+            {
+                "client": client,
+                "component_key": component_key,
+                "indices": [],
+            },
+        )["indices"].append(target["target_index"])
     sentry_component_responses = []
     sentry_signatures: Dict[int, Dict[str, str]] = {}
     for group in sentry_groups.values():
-        response = group["client"].request_component_sign(ComponentSignRequest(
-            role=COMPONENT_SIGN_ROLE_SENTRY,
-            component_key=group["component_key"],
-            group_bytes_hex=component_response.transactions,
-            target_indices=sorted(group["indices"]),
-        ))
+        response = group["client"].request_component_sign(
+            ComponentSignRequest(
+                role=COMPONENT_SIGN_ROLE_SENTRY,
+                component_key=group["component_key"],
+                group_bytes_hex=component_response.transactions,
+                target_indices=sorted(group["indices"]),
+            )
+        )
         sentry_component_responses.append(response)
         sentry_signatures.update(_component_signatures_by_index(response))
 
@@ -5385,7 +5355,7 @@ def sign_prepared_bounded_sentry_group(
         target_lsig_sizes,
         primary_targets,
     )
-    passthrough.extend(_sign_guarded_dummies(planned[len(prepared):], len(prepared)))
+    passthrough.extend(_sign_guarded_dummies(planned[len(prepared) :], len(prepared)))
     assembly_targets: List[BoundedAssemblyTarget] = []
     for target in targets:
         index = target["target_index"]
@@ -5393,16 +5363,18 @@ def sign_prepared_bounded_sentry_group(
         if sentry is None:
             raise SignerError(f"missing sentry component signature for target {index}")
         component = components[index]
-        assembly_targets.append(BoundedAssemblyTarget(
-            target_index=index,
-            bounded_account=component.bounded_account,
-            base_signatures=list(component.base_signatures),
-            runtime_args=dict(component.runtime_args or {}) or None,
-            assembly_receipt=component.assembly_receipt,
-            base_source_request_id=component_response.request_id,
-            sentry_signature=sentry["signature"],
-            sentry_source_request_id=sentry["request_id"],
-        ))
+        assembly_targets.append(
+            BoundedAssemblyTarget(
+                target_index=index,
+                bounded_account=component.bounded_account,
+                base_signatures=list(component.base_signatures),
+                runtime_args=dict(component.runtime_args or {}) or None,
+                assembly_receipt=component.assembly_receipt,
+                base_source_request_id=component_response.request_id,
+                sentry_signature=sentry["signature"],
+                sentry_source_request_id=sentry["request_id"],
+            )
+        )
     assembly_response = user_client.request_bounded_assemble(
         BoundedAssemblyRequest(
             request_id=assembly_request_id,
@@ -5411,9 +5383,7 @@ def sign_prepared_bounded_sentry_group(
             passthrough=passthrough,
         )
     )
-    _verify_bounded_assembled_group(
-        component_response.transactions, assembly_response.signed_group
-    )
+    _verify_bounded_assembled_group(component_response.transactions, assembly_response.signed_group)
     return GuardedSignResult(
         signed_group=list(assembly_response.signed_group),
         user_component_responses=[],
@@ -5511,12 +5481,14 @@ def sign_guarded_group(
     user_component_responses = []
     user_signatures: Dict[int, Dict[str, str]] = {}
     for guarded_account in sorted(user_groups):
-        response = user_client.request_component_sign(ComponentSignRequest(
-            role=COMPONENT_SIGN_ROLE_USER,
-            component_key=guarded_account,
-            group_bytes_hex=group_bytes_hex,
-            target_indices=sorted(user_groups[guarded_account]),
-        ))
+        response = user_client.request_component_sign(
+            ComponentSignRequest(
+                role=COMPONENT_SIGN_ROLE_USER,
+                component_key=guarded_account,
+                group_bytes_hex=group_bytes_hex,
+                target_indices=sorted(user_groups[guarded_account]),
+            )
+        )
         user_component_responses.append(response)
         user_signatures.update(_component_signatures_by_index(response))
 
@@ -5537,19 +5509,24 @@ def sign_guarded_group(
     sentry_component_responses = []
     sentry_signatures: Dict[int, Dict[str, str]] = {}
     for group in sentry_groups.values():
-        response = group["client"].request_component_sign(ComponentSignRequest(
-            role=COMPONENT_SIGN_ROLE_SENTRY,
-            component_key=group["component_key"],
-            group_bytes_hex=group_bytes_hex,
-            target_indices=sorted(group["indices"]),
-        ))
+        response = group["client"].request_component_sign(
+            ComponentSignRequest(
+                role=COMPONENT_SIGN_ROLE_SENTRY,
+                component_key=group["component_key"],
+                group_bytes_hex=group_bytes_hex,
+                target_indices=sorted(group["indices"]),
+            )
+        )
         sentry_component_responses.append(response)
         sentry_signatures.update(_component_signatures_by_index(response))
 
     primary_sign_response = None
     assembly_passthrough = [
-        item if isinstance(item, GuardedPassthroughItem)
-        else GuardedPassthroughItem(**_compact_payload(item))
+        (
+            item
+            if isinstance(item, GuardedPassthroughItem)
+            else GuardedPassthroughItem(**_compact_payload(item))
+        )
         for item in (passthrough or [])
     ]
     if primary_targets:
@@ -5568,22 +5545,26 @@ def sign_guarded_group(
             raise SignerError(f"missing user component signature for target {index}")
         if index not in sentry_signatures:
             raise SignerError(f"missing sentry component signature for target {index}")
-        assembly_targets.append(GuardedAssemblyTarget(
-            target_index=index,
-            guarded_account=target["guarded_account"],
-            user_signature=user_signatures[index]["signature"],
-            user_source_request_id=user_signatures[index]["request_id"],
-            sentry_signature=sentry_signatures[index]["signature"],
-            sentry_source_request_id=sentry_signatures[index]["request_id"],
-            runtime_args=target.get("runtime_args"),
-        ))
+        assembly_targets.append(
+            GuardedAssemblyTarget(
+                target_index=index,
+                guarded_account=target["guarded_account"],
+                user_signature=user_signatures[index]["signature"],
+                user_source_request_id=user_signatures[index]["request_id"],
+                sentry_signature=sentry_signatures[index]["signature"],
+                sentry_source_request_id=sentry_signatures[index]["request_id"],
+                runtime_args=target.get("runtime_args"),
+            )
+        )
 
-    assembly_response = user_client.request_guarded_assemble(GuardedAssemblyRequest(
-        request_id=assembly_request_id,
-        group_bytes_hex=group_bytes_hex,
-        targets=assembly_targets,
-        passthrough=assembly_passthrough,
-    ))
+    assembly_response = user_client.request_guarded_assemble(
+        GuardedAssemblyRequest(
+            request_id=assembly_request_id,
+            group_bytes_hex=group_bytes_hex,
+            targets=assembly_targets,
+            passthrough=assembly_passthrough,
+        )
+    )
     return GuardedSignResult(
         signed_group=assembly_response.signed_group,
         user_component_responses=user_component_responses,
@@ -5657,9 +5638,7 @@ def assemble_group(signed_lists: List[List[str]]) -> str:
     group_len = len(signed_lists[0])
     for i, sl in enumerate(signed_lists):
         if len(sl) != group_len:
-            raise ValueError(
-                f"signed_lists[{i}] has {len(sl)} entries, expected {group_len}"
-            )
+            raise ValueError(f"signed_lists[{i}] has {len(sl)} entries, expected {group_len}")
 
     merged = []
     for idx in range(group_len):
@@ -5715,7 +5694,7 @@ def _parse_algod_error(e: Exception) -> Exception:
     # Try to extract transaction ID (appears before the colon in many errors)
     # Format: "TransactionPool.Remember: transaction XXXXX: error details"
     txid = "unknown"
-    txid_match = re.search(r'transaction ([A-Z0-9]{52}):', msg)
+    txid_match = re.search(r"transaction ([A-Z0-9]{52}):", msg)
     if txid_match:
         txid = txid_match.group(1)
 
@@ -5726,7 +5705,7 @@ def _parse_algod_error(e: Exception) -> Exception:
     # Insufficient funds / overspend
     if "overspend" in msg.lower() or "insufficient funds" in msg.lower():
         # Try to extract balance info if present
-        balance_match = re.search(r'tried to spend \{(\d+)\}', msg)
+        balance_match = re.search(r"tried to spend \{(\d+)\}", msg)
         if balance_match:
             return InsufficientFundsError(
                 txid, f"insufficient funds (tried to spend {balance_match.group(1)} microAlgos)"
@@ -5735,14 +5714,17 @@ def _parse_algod_error(e: Exception) -> Exception:
 
     # LogicSig pool budget exceeded
     if "logicsigs" in msg.lower() and "pool" in msg.lower():
-        pool_match = re.search(r'had (\d+) bytes.*pool of (\d+) bytes', msg)
+        pool_match = re.search(r"had (\d+) bytes.*pool of (\d+) bytes", msg)
         if pool_match:
             return InvalidTransactionError(
                 txid,
                 f"LogicSig too large ({pool_match.group(1)} bytes exceeds {pool_match.group(2)} byte pool). "
-                "Fee pooling should be automatic - ensure you're using sign_transaction() or sign_transactions()."
+                "Fee pooling should be automatic - ensure you're using sign_transaction() or sign_transactions().",
             )
-        return InvalidTransactionError(txid, "LogicSig exceeds pool budget - fee pooling should be automatic via sign_transaction()")
+        return InvalidTransactionError(
+            txid,
+            "LogicSig exceeds pool budget - fee pooling should be automatic via sign_transaction()",
+        )
 
     # Invalid group ID
     if "group" in msg.lower() and ("invalid" in msg.lower() or "mismatch" in msg.lower()):
@@ -5753,12 +5735,16 @@ def _parse_algod_error(e: Exception) -> Exception:
         return InvalidTransactionError(txid, "transaction fee too low")
 
     # Round range errors
-    if "round" in msg.lower() and ("past" in msg.lower() or "future" in msg.lower() or "invalid" in msg.lower()):
-        return InvalidTransactionError(txid, "transaction round range invalid (expired or too far in future)")
+    if "round" in msg.lower() and (
+        "past" in msg.lower() or "future" in msg.lower() or "invalid" in msg.lower()
+    ):
+        return InvalidTransactionError(
+            txid, "transaction round range invalid (expired or too far in future)"
+        )
 
     # Generic rejection - extract a cleaner message if possible
     # Look for the last meaningful phrase after struct dumps
-    reason_match = re.search(r'\}: (.+?)(?:\s*$|\s*\{)', msg)
+    reason_match = re.search(r"\}: (.+?)(?:\s*$|\s*\{)", msg)
     if reason_match:
         reason = reason_match.group(1).strip()
         if reason:
@@ -5772,6 +5758,7 @@ def _parse_algod_error(e: Exception) -> Exception:
 # -----------------------------------------------------------------------------
 # Utility Functions
 # -----------------------------------------------------------------------------
+
 
 def load_token(path: str) -> str:
     """
@@ -5920,7 +5907,9 @@ class _InteractiveHostKeyPolicy(paramiko.MissingHostKeyPolicy):
 
     def missing_host_key(self, client, hostname, key):
         fingerprint = key.get_fingerprint().hex()
-        fingerprint_formatted = ":".join(fingerprint[i:i+2] for i in range(0, len(fingerprint), 2))
+        fingerprint_formatted = ":".join(
+            fingerprint[i : i + 2] for i in range(0, len(fingerprint), 2)
+        )
         key_type = key.get_name()
 
         print(f"\nUnknown host: {hostname}")

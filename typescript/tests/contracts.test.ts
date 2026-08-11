@@ -217,11 +217,17 @@ describe("signer API contract fixtures", () => {
 
     const client = new SignerClient("http://localhost:11270", "test-token");
     const keyTypes = await client.listKeyTypes();
-    const genericPolicy = keyTypes[1];
+    const nativeFalcon = keyTypes[1];
+    assert.equal(nativeFalcon.keyType, "falcon1024");
+    assert.equal(nativeFalcon.authorizationKind, "native_pq");
+    assert.equal(nativeFalcon.requiresLogicsig, false);
+
+    const genericPolicy = keyTypes[2];
 
     assert.equal(genericPolicy.keyType, "example.generic-policy.v1");
     assert.equal(genericPolicy.displayName, "Generic Policy");
     assert.equal(genericPolicy.requiresLogicsig, true);
+    assert.equal(genericPolicy.authorizationKind, "logic_sig");
     assert.equal(genericPolicy.mnemonicWordCount, 0);
     assert.equal(genericPolicy.mnemonicImport, false);
     assert.equal(genericPolicy.creationParams?.[1].paramType, "address[]");

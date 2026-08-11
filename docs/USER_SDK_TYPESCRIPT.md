@@ -331,6 +331,9 @@ for (const key of keys) {
 external contract-admin signature slot;
 `boundedAuthorization.postSigningLsigSize` is admin-inclusive.
 
+`KeyTypeInfo.authorizationKind` distinguishes `ed25519`, `native_pq`, and
+`logic_sig`. `requiresLogicsig === false` alone does not imply Ed25519.
+
 The TypeScript SDK exposes bounded inventory and ordinary spend signing only.
 It does not expose `/sign/bounded-admin` or build and complete contract-admin
 rekeys; use the APlane `aprekey` workflow for those operations.
@@ -435,6 +438,11 @@ For multi-party workflows, the standard high-level flow is:
 3. resubmit those signed slots as `passthrough` for final signing
 
 Do not mix foreign entries and `passthrough` entries in the same request.
+
+For a foreign native Falcon-1024 slot, set `pq_scheme: "f1"` on a raw
+`SignRequest`, or `pqScheme: "f1"` on a `PreparedTransaction`. Do not combine
+it with `lsig_size`/`lsigSize`; it declares protocol fee usage rather than a
+LogicSig byte budget.
 
 `assembleGroup()` is a lower-level utility for workflows that already have
 partial list-per-slot outputs where unsigned slots are represented by empty

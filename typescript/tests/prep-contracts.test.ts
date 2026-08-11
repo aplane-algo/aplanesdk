@@ -215,4 +215,23 @@ describe("prepared sign request parity fixtures", () => {
       assert.deepEqual(preparedGroupToSignRequests(group), testCase.expected_requests);
     });
   }
+
+  it("projects native-PQ foreign authorization", () => {
+    const foreign = groups.foreign_lsig_context.transactions[0];
+    const requests = preparedGroupToSignRequests({
+      transactions: [{ ...foreign, lsigSize: undefined, pqScheme: "f1" }],
+    });
+    assert.equal(requests[0].pq_scheme, "f1");
+    assert.equal(requests[0].lsig_size, undefined);
+  });
+
+  it("rejects conflicting foreign authorization hints", () => {
+    const foreign = groups.foreign_lsig_context.transactions[0];
+    assert.throws(
+      () => preparedGroupToSignRequests({
+        transactions: [{ ...foreign, lsigSize: 3035, pqScheme: "f1" }],
+      }),
+      /both pqScheme and lsigSize/,
+    );
+  });
 });
