@@ -1817,6 +1817,26 @@ class TestBuildSignRequests:
         assert body["requests"][0]["lsig_args"] is not None
         assert body["requests"][0]["lsig_args"]["preimage"] == "736563726574"
 
+    def test_carries_lsig_resources_on_passthrough(self):
+        client = make_client()
+        body = client._build_sign_request_body(
+            [None],
+            [None],
+            passthrough={0: base64.b64encode(b"signed-txn").decode()},
+            lsig_resources={
+                0: LogicSigResourceUsage(1612, 1423, 20000),
+            },
+            allow_foreign=False,
+        )
+        assert body["requests"] == [{
+            "signed_txn_hex": b"signed-txn".hex(),
+            "lsig_resources": {
+                "program_bytes": 1612,
+                "argument_bytes": 1423,
+                "max_opcode_cost": 20000,
+            },
+        }]
+
 
 class TestPreparedGroup:
     def _make_mock_txn(self):
@@ -1870,11 +1890,17 @@ class TestPreparedGroup:
         prepared = PreparedGroup([
             PreparedTransaction(
                 signed_transaction_base64=base64.b64encode(b"signed-txn").decode(),
+                lsig_resources=LogicSigResourceUsage(1612, 1423, 20000),
             )
         ])
 
         assert prepared.to_sign_requests() == [{
             "signed_txn_hex": b"signed-txn".hex(),
+            "lsig_resources": {
+                "program_bytes": 1612,
+                "argument_bytes": 1423,
+                "max_opcode_cost": 20000,
+            },
         }]
 
     def test_rejects_empty_group(self):

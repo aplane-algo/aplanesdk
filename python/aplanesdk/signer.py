@@ -759,7 +759,10 @@ class PreparedTransaction:
                 ).hex()
             except Exception as e:
                 raise ValueError(f"invalid passthrough transaction: {e}") from e
-            return {"signed_txn_hex": signed_hex}
+            request = {"signed_txn_hex": signed_hex}
+            if self.lsig_resources is not None:
+                request["lsig_resources"] = _wire_lsig_resources(self.lsig_resources)
+            return request
 
         if self.transaction is None:
             raise ValueError("transaction is required")
@@ -4120,7 +4123,7 @@ class SignerClient:
                 pre-signed transaction
             lsig_resources: Optional mapping of group index -> independent
                 LogicSig program-byte, argument-byte, and opcode-cost demand
-                for foreign transactions (no auth_address).
+                for foreign or passthrough transactions.
 
         Returns:
             Dict ready for JSON serialization as request body
@@ -4162,7 +4165,12 @@ class SignerClient:
                     signed_hex = base64.b64decode(passthrough[i], validate=True).hex()
                 except Exception as e:
                     raise ValueError(f"invalid base64 in passthrough[{i}]: {e}") from e
-                sign_requests.append({"signed_txn_hex": signed_hex})
+                request = {"signed_txn_hex": signed_hex}
+                if lsig_resources and i in lsig_resources:
+                    request["lsig_resources"] = _wire_lsig_resources(
+                        lsig_resources[i]
+                    )
+                sign_requests.append(request)
                 continue
 
             # Foreign mode: txn_bytes_hex without auth_address
@@ -4235,7 +4243,7 @@ class SignerClient:
                 signed their transaction. All indices must be in range
                 [0, len(txns)).
             lsig_resources: Optional mapping of group index -> independent
-                LogicSig resource demand for planning foreign transactions.
+                LogicSig resource demand for foreign or passthrough transactions.
             request_id: Optional caller-owned /sign request ID. Applications
                 can use the same ID with cancel_sign_request() to cancel a
                 pending approval from another thread.
@@ -4540,7 +4548,7 @@ class SignerClient:
                 in the group without re-signing. Use for multi-party workflows.
                 All indices must be in range [0, len(txns)).
             lsig_resources: Optional mapping of group index -> independent
-                LogicSig resource demand for planning foreign transactions.
+                LogicSig resource demand for foreign or passthrough transactions.
             request_id: Optional caller-owned /sign request ID. Use the same
                 ID with cancel_sign_request() to cancel a pending approval from
                 another thread.

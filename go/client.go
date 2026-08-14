@@ -970,7 +970,17 @@ func buildSignRequestsWithOptions(txns []types.Transaction, authAddresses []stri
 				if err != nil {
 					return nil, fmt.Errorf("invalid passthrough transaction %d: invalid base64: %w", i+1, err)
 				}
-				requests[i] = SignRequest{SignedTxnHex: hex.EncodeToString(decoded)}
+				req := SignRequest{SignedTxnHex: hex.EncodeToString(decoded)}
+				if opts.LsigResources != nil {
+					if resources, present := opts.LsigResources[i]; present {
+						copy := resources
+						req.LsigResources = &copy
+					}
+				}
+				if err := req.Validate(); err != nil {
+					return nil, fmt.Errorf("invalid passthrough transaction %d: %w", i+1, err)
+				}
+				requests[i] = req
 				continue
 			}
 		}

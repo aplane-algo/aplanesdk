@@ -29,9 +29,13 @@ export function preparedTransactionToSignRequest(
   prepared: PreparedTransaction,
 ): SignRequest {
   if (prepared.signedTransactionBase64) {
-    return {
+    const request: SignRequest = {
       signed_txn_hex: base64ToHex(prepared.signedTransactionBase64),
     };
+    if (prepared.lsigResources) {
+      request.lsig_resources = toWireLogicSigResources(prepared.lsigResources);
+    }
+    return request;
   }
 
   if (!prepared.transaction) {

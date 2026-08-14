@@ -18,6 +18,7 @@ func TestGroupSignRequestValidate(t *testing.T) {
 		{name: "valid request id", request: GroupSignRequest{RequestID: "sdk:abc-123_DEF.456", Requests: []SignRequest{{AuthAddress: "ADDR", TxnBytesHex: "deadbeef"}}}},
 		{name: "mixed sign and foreign", request: GroupSignRequest{Requests: []SignRequest{{AuthAddress: "ADDR", TxnBytesHex: "deadbeef"}, {TxnBytesHex: "cafebabe"}}}},
 		{name: "passthrough mode", request: GroupSignRequest{Requests: []SignRequest{{SignedTxnHex: "cafebabe"}}}},
+		{name: "passthrough LogicSig resources", request: GroupSignRequest{Requests: []SignRequest{{SignedTxnHex: "cafebabe", LsigResources: &LogicSigResourceUsage{ProgramBytes: 3, MaxOpcodeCost: 20_000}}}}},
 		{
 			name:    "invalid request id",
 			request: GroupSignRequest{RequestID: "bad id", Requests: []SignRequest{{AuthAddress: "ADDR", TxnBytesHex: "deadbeef"}}},

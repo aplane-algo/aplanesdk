@@ -4358,7 +4358,11 @@ export class SignerClient {
       // Passthrough: include pre-signed transaction as-is
       if (passthrough && i in passthrough) {
         const signedHex = Buffer.from(passthrough[i], "base64").toString("hex");
-        signRequests.push({ signed_txn_hex: signedHex });
+        const request: SignRequest = { signed_txn_hex: signedHex };
+        if (lsigResources && i in lsigResources) {
+          request.lsig_resources = wireLogicSigResources(lsigResources[i]);
+        }
+        signRequests.push(request);
         continue;
       }
 

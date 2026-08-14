@@ -1168,7 +1168,12 @@ func TestBuildSignRequestsWithOptions_Passthrough(t *testing.T) {
 		[]types.Transaction{txn, txn},
 		[]string{"ADDR1", "ADDR2"},
 		nil,
-		&SignOptions{Passthrough: map[int]string{1: signed}},
+		&SignOptions{
+			Passthrough: map[int]string{1: signed},
+			LsigResources: map[int]LogicSigResourceUsage{
+				1: {ProgramBytes: 3577, ArgumentBytes: 1423, MaxOpcodeCost: 20000},
+			},
+		},
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1185,6 +1190,9 @@ func TestBuildSignRequestsWithOptions_Passthrough(t *testing.T) {
 	}
 	if requests[1].AuthAddress != "" {
 		t.Fatal("passthrough should not have auth address")
+	}
+	if got := requests[1].LsigResources; got == nil || got.ProgramBytes != 3577 || got.ArgumentBytes != 1423 || got.MaxOpcodeCost != 20000 {
+		t.Fatalf("passthrough LogicSig resources = %#v", got)
 	}
 }
 

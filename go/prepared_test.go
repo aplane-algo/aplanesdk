@@ -105,8 +105,10 @@ func TestPreparedGroupSignRequestsRejectsConflictingForeignHints(t *testing.T) {
 
 func TestPreparedGroupSignRequestsPassthroughMode(t *testing.T) {
 	signed := []byte("signed-txn")
+	resources := &LogicSigResourceUsage{ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000}
 	group := NewPreparedGroup(PreparedTransaction{
 		SignedTransactionBase64: base64.StdEncoding.EncodeToString(signed),
+		LsigResources:           resources,
 	})
 
 	requests, err := group.SignRequests()
@@ -118,6 +120,9 @@ func TestPreparedGroupSignRequestsPassthroughMode(t *testing.T) {
 	}
 	if requests[0].TxnBytesHex != "" || requests[0].AuthAddress != "" {
 		t.Fatalf("passthrough request should not include sign fields: %#v", requests[0])
+	}
+	if requests[0].LsigResources == nil || *requests[0].LsigResources != *resources {
+		t.Fatalf("passthrough request resources = %#v, want %#v", requests[0].LsigResources, resources)
 	}
 }
 

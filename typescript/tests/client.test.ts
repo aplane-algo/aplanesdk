@@ -2283,6 +2283,26 @@ describe("SignerClient", () => {
       toByte: () => new Uint8Array([1, 2, 3, 4]),
     });
 
+    it("carries LogicSig resources on passthrough entries", () => {
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const body = (client as any).buildSignRequestBody(
+        [null],
+        [null],
+        undefined,
+        { 0: Buffer.from("signed-txn").toString("base64") },
+        { 0: { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 } },
+        false,
+      );
+      assert.deepEqual(body.requests, [{
+        signed_txn_hex: Buffer.from("signed-txn").toString("hex"),
+        lsig_resources: {
+          program_bytes: 1612,
+          argument_bytes: 1423,
+          max_opcode_cost: 20000,
+        },
+      }]);
+    });
+
     it("rejects foreign entries before calling /sign", async () => {
       const client = new SignerClient("http://localhost:11270", "test-token");
       const mockTxn = createMockTxn() as Parameters<typeof client.signTransactions>[0][0];
@@ -3153,11 +3173,17 @@ describe("preparedGroupToSignRequests", () => {
     const requests = preparedGroupToSignRequests({
       transactions: [{
         signedTransactionBase64: Buffer.from("signed-txn").toString("base64"),
+        lsigResources: { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 },
       }],
     });
 
     assert.deepEqual(requests, [{
       signed_txn_hex: Buffer.from("signed-txn").toString("hex"),
+      lsig_resources: {
+        program_bytes: 1612,
+        argument_bytes: 1423,
+        max_opcode_cost: 20000,
+      },
     }]);
   });
 

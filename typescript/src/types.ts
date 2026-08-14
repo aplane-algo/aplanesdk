@@ -601,7 +601,7 @@ export interface SignRequest {
   app_call_info?: AppCallInfo;
   /** Pre-signed transaction hex (for passthrough) */
   signed_txn_hex?: string;
-  /** Selected-path LogicSig resource hint for foreign transactions */
+  /** Selected-path LogicSig resource hint for foreign or passthrough transactions */
   lsig_resources?: {
     program_bytes: number;
     argument_bytes: number;

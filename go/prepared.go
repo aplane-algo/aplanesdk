@@ -42,7 +42,15 @@ func (p PreparedTransaction) SignRequest() (SignRequest, error) {
 		if err != nil {
 			return SignRequest{}, fmt.Errorf("invalid passthrough transaction: invalid base64: %w", err)
 		}
-		return SignRequest{SignedTxnHex: hex.EncodeToString(decoded)}, nil
+		req := SignRequest{SignedTxnHex: hex.EncodeToString(decoded)}
+		if p.LsigResources != nil {
+			resources := *p.LsigResources
+			req.LsigResources = &resources
+		}
+		if err := req.Validate(); err != nil {
+			return SignRequest{}, err
+		}
+		return req, nil
 	}
 
 	if p.Transaction == nil {

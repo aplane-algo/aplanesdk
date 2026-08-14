@@ -206,8 +206,8 @@ func (r SignRequest) Validate() error {
 	if r.PQScheme != "" && mode != RequestModeForeign {
 		return fmt.Errorf("pq_scheme is allowed only for foreign transactions")
 	}
-	if r.LsigResources != nil && mode != RequestModeForeign {
-		return fmt.Errorf("lsig_resources is allowed only for foreign transactions")
+	if r.LsigResources != nil && mode != RequestModeForeign && mode != RequestModePassthrough {
+		return fmt.Errorf("lsig_resources is allowed only for foreign or passthrough transactions")
 	}
 	if r.PQScheme != "" && r.LsigResources != nil {
 		return fmt.Errorf("foreign transaction cannot specify both pq_scheme and lsig_resources")
