@@ -129,6 +129,11 @@ jobs:
           cat > release-notes.md <<EOF
           SDK release packages for $SDK_TAG.
 
+          Compatibility: this native-Falcon SDK release requires an APlane
+          signer release after v0.35.0 that includes the matching structured
+          lsig_resources and native pq_scheme API. It is not wire-compatible
+          with APlane v0.35.0 or earlier; upgrade the signer and SDK together.
+
           This is the aplanesdk repository release. GitHub release tarballs
           use language-qualified filenames; package registries retain their
           canonical package filenames:

@@ -251,9 +251,9 @@ func requestBoundedPrimaryPassthrough(
 	for i, txnHex := range groupBytesHex {
 		switch {
 		case i >= originalCount:
-			requests[i] = SignRequest{TxnBytesHex: txnHex, LsigResources: &LogicSigResourceUsage{
-				ProgramBytes: uint64(len(guardedDummyProgram)), MaxOpcodeCost: 1,
-			}}
+			requests[i] = SignRequest{
+				TxnBytesHex: txnHex, LsigResources: guardedDummyLogicSigResources(),
+			}
 		case targets[i].GuardedAccount != "":
 			requests[i] = SignRequest{TxnBytesHex: txnHex, LsigResources: targetResources[i]}
 		default:

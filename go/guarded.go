@@ -17,6 +17,16 @@ import (
 
 var guardedDummyProgram = []byte{0x03, 0x31, 0x20, 0x32, 0x03, 0x12}
 
+// guardedDummyLogicSigResources must exactly mirror apsigner's canonical
+// dummy lsigresource.Usage. /plan and /sign must see the same declaration to
+// keep fee planning idempotent across guarded assembly.
+func guardedDummyLogicSigResources() *LogicSigResourceUsage {
+	return &LogicSigResourceUsage{
+		ProgramBytes:  uint64(len(guardedDummyProgram)),
+		MaxOpcodeCost: 1,
+	}
+}
+
 // GuardedSentryResolver resolves a guarded target to the sentry client that
 // should provide the sentry component signature.
 type GuardedSentryResolver interface {
@@ -636,9 +646,9 @@ func requestPrimaryGuardedPassthrough(ctx context.Context, client *SignerClient,
 		} else if guarded, ok := guardedByIndex[i]; ok {
 			requests[i] = SignRequest{TxnBytesHex: txnHex, LsigResources: guarded.LogicSigResources}
 		} else {
-			requests[i] = SignRequest{TxnBytesHex: txnHex, LsigResources: &LogicSigResourceUsage{
-				ProgramBytes: uint64(len(guardedDummyProgram)), MaxOpcodeCost: 1,
-			}}
+			requests[i] = SignRequest{
+				TxnBytesHex: txnHex, LsigResources: guardedDummyLogicSigResources(),
+			}
 		}
 	}
 

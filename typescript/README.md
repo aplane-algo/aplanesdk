@@ -7,6 +7,9 @@ TypeScript SDK for signing Algorand transactions via apsigner.
 SDK packages are published only when the SDK changes. SDK versions track
 compatible APlane release tags and may skip product release numbers.
 
+The native-Falcon SDK release line requires an APlane signer release after
+`v0.35.0`; see [`docs/COMPATIBILITY.md`](../docs/COMPATIBILITY.md).
+
 ## Installation
 
 ```bash
@@ -38,7 +41,7 @@ npm pack
 
 # In your consuming project
 npm init -y   # if needed
-npm install ../path/to/aplanesdk-0.20.0.tgz algosdk
+npm install ../path/to/aplanesdk-<version>.tgz algosdk
 ```
 
 ### Troubleshooting

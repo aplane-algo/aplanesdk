@@ -1323,6 +1323,7 @@ def _validate_component_sign_request(data: Dict[str, Any]) -> None:
 
 
 def _wire_lsig_resources(resources: LogicSigResourceUsage) -> Dict[str, int]:
+    _validate_lsig_resources(resources, "lsig_resources")
     return {
         "program_bytes": resources.program_bytes,
         "argument_bytes": resources.argument_bytes,
@@ -1360,6 +1361,89 @@ def _require_lsig_resources(resources: Any, label: str) -> LogicSigResourceUsage
         raise ValueError(f"{label} LogicSig resources are invalid")
     _validate_lsig_resources(normalized, label)
     return normalized
+
+
+def _guarded_dummy_lsig_resources() -> LogicSigResourceUsage:
+    """Return apsigner's canonical dummy LogicSig resource declaration.
+
+    /plan and /sign must see these exact values to keep fee planning
+    idempotent across the guarded assembly choreography.
+    """
+    return LogicSigResourceUsage(
+        program_bytes=len(GUARDED_DUMMY_PROGRAM),
+        argument_bytes=0,
+        max_opcode_cost=1,
+    )
+
+
+def _sign_request_mode(entry: Dict[str, Any]) -> str:
+    has_passthrough = bool(entry.get("signed_txn_hex"))
+    has_txn = bool(entry.get("txn_bytes_hex"))
+    has_auth = bool(entry.get("auth_address"))
+    if has_passthrough and (has_txn or has_auth):
+        raise ValueError(
+            "cannot specify both sign fields (auth_address/txn_bytes_hex) "
+            "and passthrough field (signed_txn_hex)"
+        )
+    if has_passthrough:
+        return "passthrough"
+    if has_txn and has_auth:
+        return "sign"
+    if has_txn:
+        return "foreign"
+    if has_auth:
+        raise ValueError("txn_bytes_hex is required for sign mode")
+    raise ValueError(
+        "must specify either sign fields (auth_address + txn_bytes_hex), "
+        "foreign fields (txn_bytes_hex), or passthrough field (signed_txn_hex)"
+    )
+
+
+def _validate_sign_entries(sign_entries: List[Dict[str, Any]]) -> None:
+    if not sign_entries:
+        raise ValueError("sign_entries must not be empty")
+    sign_count = 0
+    passthrough_count = 0
+    foreign_count = 0
+    for index, entry in enumerate(sign_entries):
+        try:
+            if not isinstance(entry, dict):
+                raise ValueError("sign entry must be a mapping")
+            mode = _sign_request_mode(entry)
+            pq_scheme = entry.get("pq_scheme")
+            resources = entry.get("lsig_resources")
+            if pq_scheme and mode != "foreign":
+                raise ValueError("pq_scheme is allowed only for foreign transactions")
+            if pq_scheme and pq_scheme != PQ_SCHEME_FALCON1024:
+                raise ValueError(f"unsupported pq_scheme {pq_scheme!r}")
+            if resources is not None and mode not in ("foreign", "passthrough"):
+                raise ValueError(
+                    "lsig_resources is allowed only for foreign or passthrough transactions"
+                )
+            if pq_scheme and resources is not None:
+                raise ValueError(
+                    "foreign transaction cannot specify both pq_scheme and lsig_resources"
+                )
+            if resources is not None:
+                _require_lsig_resources(resources, "lsig_resources")
+            if mode == "sign":
+                sign_count += 1
+            elif mode == "passthrough":
+                passthrough_count += 1
+            else:
+                foreign_count += 1
+        except ValueError as e:
+            raise ValueError(f"transaction {index + 1}: {e}") from e
+    if passthrough_count and foreign_count:
+        raise ValueError(
+            "cannot mix passthrough and foreign transactions: passthrough requires "
+            "pre-grouped, foreign requires server-computed group ID"
+        )
+    if sign_count == 0 and foreign_count:
+        raise ValueError(
+            "no signable transactions: all entries are foreign. Build and submit "
+            "this group locally instead of using apsigner"
+        )
 
 
 def _parse_lsig_resource_usage(data: Any) -> Optional[LogicSigResourceUsage]:
@@ -4332,16 +4416,10 @@ class SignerClient:
         adapters can use this method directly when they already own transaction
         encoding.
         """
-        if not sign_entries:
-            raise ValueError("sign_entries must not be empty")
-        for index, entry in enumerate(sign_entries):
-            pq_scheme = entry.get("pq_scheme")
-            if pq_scheme and pq_scheme != PQ_SCHEME_FALCON1024:
-                raise ValueError(f"sign entry {index}: unsupported pq_scheme {pq_scheme!r}")
-
         if request_id is None:
             request_id = _new_sign_request_id()
         _validate_sign_request_id(request_id, required=True)
+        _validate_sign_entries(sign_entries)
         request_body = {
             "request_id": request_id,
             "requests": sign_entries,
@@ -4953,11 +5031,7 @@ def _request_primary_guarded_passthrough(
                     f"guarded target {index}",
                 )
             else:
-                resources = LogicSigResourceUsage(
-                    program_bytes=len(GUARDED_DUMMY_PROGRAM),
-                    argument_bytes=0,
-                    max_opcode_cost=1,
-                )
+                resources = _guarded_dummy_lsig_resources()
             requests.append(
                 {
                     "txn_bytes_hex": txn_hex,
@@ -5270,11 +5344,7 @@ def _request_bounded_primary_passthrough(
                 {
                     "txn_bytes_hex": txn_hex,
                     "lsig_resources": _wire_lsig_resources(
-                        LogicSigResourceUsage(
-                            program_bytes=len(GUARDED_DUMMY_PROGRAM),
-                            argument_bytes=0,
-                            max_opcode_cost=1,
-                        )
+                        _guarded_dummy_lsig_resources()
                     ),
                 }
             )

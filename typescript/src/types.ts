@@ -2,6 +2,7 @@
 // Copyright (C) 2026 APlane Project LLC
 
 import type { Transaction, modelsv2 } from "algosdk";
+import { SignerError } from "./errors.js";
 
 /**
  * Runtime argument specification for a generic LogicSig.
@@ -24,11 +25,39 @@ export const SIGNING_FLOW_BOUNDED_SENTRY1 = "bounded-sentry1";
 export const KEY_TYPE_WITNESS_FALCON1024 = "aplane.witness-falcon1024.v1";
 export const KEY_TYPE_GUARDED_FALCON1024_SENTRY1024 =
   "aplane.falcon1024-sentry1024.v1";
+export const PQ_SCHEME_FALCON1024 = "f1";
 
 export interface LogicSigResourceUsage {
   programBytes: number;
   argumentBytes: number;
   maxOpcodeCost: number;
+}
+
+/** Validate one selected-path LogicSig resource declaration. */
+export function validateLogicSigResources(
+  resources: LogicSigResourceUsage | undefined,
+  label: string,
+): void {
+  if (!resources ||
+      !Number.isInteger(resources.programBytes) || resources.programBytes <= 0 || resources.programBytes > 16000 ||
+      !Number.isInteger(resources.argumentBytes) || resources.argumentBytes < 0 ||
+      !Number.isInteger(resources.maxOpcodeCost) || resources.maxOpcodeCost <= 0 || resources.maxOpcodeCost > 320000) {
+    throw new SignerError(`${label} LogicSig resources are invalid`);
+  }
+}
+
+/** Validate and project one selected-path LogicSig resource declaration to the wire. */
+export function wireLogicSigResources(
+  resources: LogicSigResourceUsage | undefined,
+  label = "lsigResources",
+): SignRequest["lsig_resources"] {
+  if (!resources) return undefined;
+  validateLogicSigResources(resources, label);
+  return {
+    program_bytes: resources.programBytes,
+    argument_bytes: resources.argumentBytes,
+    max_opcode_cost: resources.maxOpcodeCost,
+  };
 }
 
 export interface LogicSigResourceProfile {
@@ -619,6 +648,84 @@ export interface GroupSignRequest {
   request_id?: string;
   /** Transaction slots to sign or pass through. */
   requests: SignRequest[];
+}
+
+type SignRequestMode = "sign" | "passthrough" | "foreign";
+
+function signRequestMode(request: SignRequest): SignRequestMode {
+  const hasPassthrough = Boolean(request.signed_txn_hex);
+  const hasTxnBytes = Boolean(request.txn_bytes_hex);
+  const hasAuthAddress = Boolean(request.auth_address);
+  if (hasPassthrough && (hasTxnBytes || hasAuthAddress)) {
+    throw new SignerError(
+      "cannot specify both sign fields (auth_address/txn_bytes_hex) and passthrough field (signed_txn_hex)",
+    );
+  }
+  if (hasPassthrough) return "passthrough";
+  if (hasTxnBytes && hasAuthAddress) return "sign";
+  if (hasTxnBytes) return "foreign";
+  if (hasAuthAddress) {
+    throw new SignerError("txn_bytes_hex is required for sign mode");
+  }
+  throw new SignerError(
+    "must specify either sign fields (auth_address + txn_bytes_hex), foreign fields (txn_bytes_hex), or passthrough field (signed_txn_hex)",
+  );
+}
+
+/** Validate raw /sign entries with the same mode and resource rules as apsigner. */
+export function validateSignRequests(requests: SignRequest[]): void {
+  if (requests.length === 0) {
+    throw new SignerError("requests must not be empty");
+  }
+  let signCount = 0;
+  let passthroughCount = 0;
+  let foreignCount = 0;
+  requests.forEach((request, index) => {
+    try {
+      const mode = signRequestMode(request);
+      if (request.pq_scheme && mode !== "foreign") {
+        throw new SignerError("pq_scheme is allowed only for foreign transactions");
+      }
+      if (request.pq_scheme && request.pq_scheme !== PQ_SCHEME_FALCON1024) {
+        throw new SignerError(
+          `unsupported pq_scheme ${JSON.stringify(request.pq_scheme)}`,
+        );
+      }
+      if (request.lsig_resources && mode !== "foreign" && mode !== "passthrough") {
+        throw new SignerError(
+          "lsig_resources is allowed only for foreign or passthrough transactions",
+        );
+      }
+      if (request.pq_scheme && request.lsig_resources) {
+        throw new SignerError(
+          "foreign transaction cannot specify both pq_scheme and lsig_resources",
+        );
+      }
+      if (request.lsig_resources) {
+        validateLogicSigResources({
+          programBytes: request.lsig_resources.program_bytes,
+          argumentBytes: request.lsig_resources.argument_bytes,
+          maxOpcodeCost: request.lsig_resources.max_opcode_cost,
+        }, "lsig_resources");
+      }
+      if (mode === "sign") signCount++;
+      else if (mode === "passthrough") passthroughCount++;
+      else foreignCount++;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new SignerError(`transaction ${index + 1}: ${message}`);
+    }
+  });
+  if (passthroughCount > 0 && foreignCount > 0) {
+    throw new SignerError(
+      "cannot mix passthrough and foreign transactions: passthrough requires pre-grouped, foreign requires server-computed group ID",
+    );
+  }
+  if (signCount === 0 && foreignCount > 0) {
+    throw new SignerError(
+      "no signable transactions: all entries are foreign. Build and submit this group locally instead of using apsigner",
+    );
+  }
 }
 
 /**

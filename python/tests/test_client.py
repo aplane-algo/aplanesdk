@@ -1795,6 +1795,56 @@ class TestSignRequests:
                 )
         mock_post.assert_not_called()
 
+    @pytest.mark.parametrize(
+        ("entries", "error"),
+        [
+            (
+                [
+                    {
+                        "txn_bytes_hex": "545801",
+                        "auth_address": "AUTH",
+                        "lsig_resources": {
+                            "program_bytes": 1,
+                            "argument_bytes": 0,
+                            "max_opcode_cost": 1,
+                        },
+                    }
+                ],
+                "lsig_resources is allowed only for foreign or passthrough",
+            ),
+            (
+                [
+                    {
+                        "signed_txn_hex": "aabb",
+                        "lsig_resources": {
+                            "program_bytes": 0,
+                            "argument_bytes": 0,
+                            "max_opcode_cost": 0,
+                        },
+                    }
+                ],
+                "LogicSig resources are invalid",
+            ),
+            (
+                [
+                    {"txn_bytes_hex": "545801", "pq_scheme": "f1"},
+                    {"signed_txn_hex": "aabb"},
+                ],
+                "cannot mix passthrough and foreign transactions",
+            ),
+            (
+                [{"txn_bytes_hex": "545801", "pq_scheme": "f1"}],
+                "no signable transactions",
+            ),
+        ],
+    )
+    def test_sign_requests_validates_full_raw_request_contract(self, entries, error):
+        client = make_client()
+        with patch.object(client.session, "post") as mock_post:
+            with pytest.raises(ValueError, match=error):
+                client.sign_requests(entries)
+        mock_post.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # sign_transactions with foreign entries

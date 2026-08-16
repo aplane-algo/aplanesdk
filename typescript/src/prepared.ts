@@ -5,12 +5,10 @@ import type {
   PreparedGroup,
   PreparedTransaction,
   SignRequest,
-  LogicSigResourceUsage,
 } from "./types.js";
+import { PQ_SCHEME_FALCON1024, wireLogicSigResources } from "./types.js";
 import { SignerError } from "./errors.js";
 import { encodeLsigArgs, encodeTransaction, bytesToHex } from "./encoding.js";
-
-const PQ_SCHEME_FALCON1024 = "f1";
 
 function base64ToHex(value: string): string {
   if (typeof Buffer !== "undefined") {
@@ -35,7 +33,10 @@ export function preparedTransactionToSignRequest(
       signed_txn_hex: base64ToHex(prepared.signedTransactionBase64),
     };
     if (prepared.lsigResources) {
-      request.lsig_resources = toWireLogicSigResources(prepared.lsigResources);
+      request.lsig_resources = wireLogicSigResources(
+        prepared.lsigResources,
+        "prepared passthrough lsigResources",
+      );
     }
     return request;
   }
@@ -48,7 +49,10 @@ export function preparedTransactionToSignRequest(
   if (!prepared.authAddress) {
     const request: SignRequest = { txn_bytes_hex: txnBytesHex };
     if (prepared.lsigResources) {
-      request.lsig_resources = toWireLogicSigResources(prepared.lsigResources);
+      request.lsig_resources = wireLogicSigResources(
+        prepared.lsigResources,
+        "prepared foreign lsigResources",
+      );
     }
     if (prepared.pqScheme) {
       if (request.lsig_resources) {
@@ -74,14 +78,6 @@ export function preparedTransactionToSignRequest(
     request.app_call_info = prepared.appCallInfo;
   }
   return request;
-}
-
-function toWireLogicSigResources(resources: LogicSigResourceUsage): NonNullable<SignRequest["lsig_resources"]> {
-  return {
-    program_bytes: resources.programBytes,
-    argument_bytes: resources.argumentBytes,
-    max_opcode_cost: resources.maxOpcodeCost,
-  };
 }
 
 /**

@@ -4,6 +4,9 @@ Go SDK for signing Algorand transactions via apsigner.
 
 SDK package versions are tracked independently across languages. Use the compatibility notes in each release rather than assuming Go, Python, and TypeScript package versions will match exactly.
 
+The native-Falcon SDK release line requires an APlane signer release after
+`v0.35.0`; see [`docs/COMPATIBILITY.md`](../docs/COMPATIBILITY.md).
+
 ## Installation
 
 ```bash

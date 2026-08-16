@@ -247,4 +247,29 @@ describe("prepared sign request parity fixtures", () => {
       /both pqScheme and lsigResources/,
     );
   });
+
+  it("rejects invalid prepared foreign LogicSig resources", () => {
+    const foreign = groups.foreign_lsig_context.transactions[0];
+    assert.throws(
+      () => preparedGroupToSignRequests({
+        transactions: [{
+          ...foreign,
+          lsigResources: { programBytes: 0, argumentBytes: 0, maxOpcodeCost: 0 },
+        }],
+      }),
+      /LogicSig resources are invalid/,
+    );
+  });
+
+  it("rejects invalid prepared passthrough LogicSig resources", () => {
+    assert.throws(
+      () => preparedGroupToSignRequests({
+        transactions: [{
+          signedTransactionBase64: Buffer.from("signed-txn").toString("base64"),
+          lsigResources: { programBytes: 0, argumentBytes: 0, maxOpcodeCost: 0 },
+        }],
+      }),
+      /LogicSig resources are invalid/,
+    );
+  });
 });

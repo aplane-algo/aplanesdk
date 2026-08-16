@@ -69,6 +69,9 @@ import {
   SIGNING_FLOW_SENTRY1,
   SIGNING_FLOW_BOUNDED1,
   SIGNING_FLOW_BOUNDED_SENTRY1,
+  validateLogicSigResources,
+  validateSignRequests,
+  wireLogicSigResources,
 } from "./types.js";
 import {
   SignerError,
@@ -120,6 +123,16 @@ const APP_CALL_MAX_APP_ARGS = 16;
 const APP_CALL_METHOD_ARGS_TUPLE_THRESHOLD = APP_CALL_MAX_APP_ARGS - 2;
 const GUARDED_MAX_GROUP_SIZE = 16;
 const GUARDED_DUMMY_PROGRAM = new Uint8Array([0x03, 0x31, 0x20, 0x32, 0x03, 0x12]);
+
+// This must exactly mirror apsigner's canonical dummy lsigresource.Usage.
+// /plan and /sign must see the same declaration to keep fee planning idempotent.
+function guardedDummyLogicSigResources(): LogicSigResourceUsage {
+  return {
+    programBytes: GUARDED_DUMMY_PROGRAM.length,
+    argumentBytes: 0,
+    maxOpcodeCost: 1,
+  };
+}
 function newSignRequestId(): string {
   return `sdk-${randomBytes(16).toString("hex")}`;
 }
@@ -211,11 +224,7 @@ async function requestPrimaryGuardedPassthrough(
       }
       return {
         txn_bytes_hex: txnHex,
-        lsig_resources: wireLogicSigResources({
-          programBytes: GUARDED_DUMMY_PROGRAM.length,
-          argumentBytes: 0,
-          maxOpcodeCost: 1,
-        }),
+        lsig_resources: wireLogicSigResources(guardedDummyLogicSigResources()),
       };
     }
     const request: SignRequest = {
@@ -704,11 +713,7 @@ async function requestBoundedPrimaryPassthrough(
   const requests: SignRequest[] = groupBytesHex.map((txnHex, index) => {
     if (index >= originalCount) return {
       txn_bytes_hex: txnHex,
-      lsig_resources: wireLogicSigResources({
-        programBytes: GUARDED_DUMMY_PROGRAM.length,
-        argumentBytes: 0,
-        maxOpcodeCost: 1,
-      }),
+      lsig_resources: wireLogicSigResources(guardedDummyLogicSigResources()),
     };
     if (boundedIndices.has(index)) {
       return {
@@ -1348,27 +1353,6 @@ function mapBoundedAuthorization(raw: any): BoundedAuthorizationInfo | undefined
     adminKeyId: raw.admin_key_id || undefined,
     programBinding: raw.program_binding || undefined,
   };
-}
-
-function wireLogicSigResources(resources?: LogicSigResourceUsage): SignRequest["lsig_resources"] {
-  if (!resources) return undefined;
-  return {
-    program_bytes: resources.programBytes,
-    argument_bytes: resources.argumentBytes,
-    max_opcode_cost: resources.maxOpcodeCost,
-  };
-}
-
-function validateLogicSigResources(
-  resources: LogicSigResourceUsage | undefined,
-  label: string,
-): void {
-  if (!resources ||
-      !Number.isInteger(resources.programBytes) || resources.programBytes <= 0 || resources.programBytes > 16000 ||
-      !Number.isInteger(resources.argumentBytes) || resources.argumentBytes < 0 ||
-      !Number.isInteger(resources.maxOpcodeCost) || resources.maxOpcodeCost <= 0 || resources.maxOpcodeCost > 320000) {
-    throw new SignerError(`${label} LogicSig resources are invalid`);
-  }
 }
 
 function requireLogicSigResources(
@@ -4268,19 +4252,9 @@ export class SignerClient {
     requests: SignRequest[],
     options?: SignOptions,
   ): Promise<GroupSignResponse> {
-    if (requests.length === 0) {
-      throw new SignerError("requests must not be empty");
-    }
-    requests.forEach((request, index) => {
-      if (request.pq_scheme && request.pq_scheme !== "f1") {
-        throw new SignerError(
-          `request ${index}: unsupported pq_scheme ${JSON.stringify(request.pq_scheme)}`,
-        );
-      }
-    });
-
     const requestId = options?.requestId ?? newSignRequestId();
     validateSignRequestId(requestId, true);
+    validateSignRequests(requests);
     const signBody: GroupSignRequest = { request_id: requestId, requests };
 
     await this.discoverApprovalWait();
