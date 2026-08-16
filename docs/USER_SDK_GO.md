@@ -428,8 +428,11 @@ plan, err := client.PlanGroup(txns, authAddresses, lsigArgsMap, opts)
 `SignOptions.Passthrough` values are base64-encoded signed transaction msgpack
 from another signer and must already carry the intended group ID. The SDK
 decodes them and sends them as passthrough slots. `SignOptions.LsigResources`
-describes unsigned foreign slots for `/plan` only so the signer can plan
-argument capacity, opcode capacity, and priced program bytes.
+describes unsigned foreign slots for `/plan` and must also accompany a final
+passthrough LogicSig slot on `/sign`. Reuse the same selected
+authorization-path values; the signer verifies the declared program and
+argument byte counts against the signed envelope before accepting the
+immutable group.
 
 For a foreign native Falcon-1024 slot, use raw `SignRequest.PQScheme` or
 `PreparedTransaction.PQScheme` with value `"f1"`. It is mutually exclusive
@@ -474,7 +477,8 @@ spending accounts, and must not be used as senders, receivers, auth addresses,
 or rekey targets.
 
 Use explicit clients; the SDK does not parse or mutate endpoint enrollment
-files:
+files. The direct helper does not perform inventory discovery, so pass the
+reviewed spend-path resource profile returned by `ListKeys`:
 
 ```go
 result, err := aplane.SignGuardedGroup(aplane.GuardedSignOptions{
@@ -483,8 +487,9 @@ result, err := aplane.SignGuardedGroup(aplane.GuardedSignOptions{
 	SentryComponentKey: "SENTRY_COMPONENT_SELECTOR",
 	GroupBytesHex:      []string{"5458..."},
 	Targets: []aplane.GuardedSignTarget{{
-		TargetIndex:    0,
-		GuardedAccount: "GUARDED_ACCOUNT_ADDRESS",
+		TargetIndex:       0,
+		GuardedAccount:    "GUARDED_ACCOUNT_ADDRESS",
+		LogicSigResources: reviewedSpendResources,
 	}},
 })
 signedGroup := result.SignedGroup
@@ -518,8 +523,8 @@ budget dummy. It verifies ordinary signed positions and every assembled
 transaction against the frozen canonical bytes. Those two bounded methods are
 also public for applications that own the orchestration.
 
-`PreparedGuardedGroupOptions.MinFee` applies only to `sentry1`.
-`bounded-sentry1` uses signer-owned planning and reported fee mutations.
+The signer planner owns fee selection, authorization-resource sizing, and any
+reported group mutations for both guarded flows.
 
 The v1 sentry gate applies only to spends. Contract-admin rekeys use the
 external `aprekey` witness ceremony and are outside SDK completion.

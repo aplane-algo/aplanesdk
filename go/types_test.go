@@ -19,6 +19,8 @@ func TestGroupSignRequestValidate(t *testing.T) {
 		{name: "mixed sign and foreign", request: GroupSignRequest{Requests: []SignRequest{{AuthAddress: "ADDR", TxnBytesHex: "deadbeef"}, {TxnBytesHex: "cafebabe"}}}},
 		{name: "passthrough mode", request: GroupSignRequest{Requests: []SignRequest{{SignedTxnHex: "cafebabe"}}}},
 		{name: "passthrough LogicSig resources", request: GroupSignRequest{Requests: []SignRequest{{SignedTxnHex: "cafebabe", LsigResources: &LogicSigResourceUsage{ProgramBytes: 3, MaxOpcodeCost: 20_000}}}}},
+		{name: "native PQ foreign", request: GroupSignRequest{Requests: []SignRequest{{AuthAddress: "ADDR", TxnBytesHex: "cafebabe"}, {TxnBytesHex: "deadbeef", PQScheme: PQSchemeFalcon1024}}}},
+		{name: "unsupported native PQ scheme", request: GroupSignRequest{Requests: []SignRequest{{TxnBytesHex: "deadbeef", PQScheme: "f2"}}}, wantErr: "unsupported pq_scheme"},
 		{
 			name:    "invalid request id",
 			request: GroupSignRequest{RequestID: "bad id", Requests: []SignRequest{{AuthAddress: "ADDR", TxnBytesHex: "deadbeef"}}},

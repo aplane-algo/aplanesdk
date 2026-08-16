@@ -89,6 +89,7 @@ APP_CALL_MAX_APP_ARGS = 16
 APP_CALL_METHOD_ARGS_TUPLE_THRESHOLD = APP_CALL_MAX_APP_ARGS - 2
 GUARDED_DEFAULT_MIN_FEE = 1000
 GUARDED_DUMMY_PROGRAM = bytes.fromhex("033120320312")
+PQ_SCHEME_FALCON1024 = "f1"
 
 COMPONENT_SIGN_ROLE_USER = "user"
 COMPONENT_SIGN_ROLE_SENTRY = "sentry"
@@ -685,11 +686,11 @@ class GuardedSignTarget:
 
     target_index: int
     guarded_account: str
+    logic_sig_resources: LogicSigResourceUsage
     sentry_public_key_hex: str = ""
     sentry_component_key_type: str = ""
     sentry_component_key: str = ""
     runtime_args: Optional[List[str]] = None
-    logic_sig_resources: Optional[LogicSigResourceUsage] = None
 
 
 @dataclass
@@ -777,6 +778,8 @@ class PreparedTransaction:
                     raise ValueError(
                         "foreign transaction cannot specify both pq_scheme and lsig_resources"
                     )
+                if self.pq_scheme != PQ_SCHEME_FALCON1024:
+                    raise ValueError(f"unsupported pq_scheme {self.pq_scheme!r}")
                 request["pq_scheme"] = self.pq_scheme
             return request
 
@@ -1327,6 +1330,38 @@ def _wire_lsig_resources(resources: LogicSigResourceUsage) -> Dict[str, int]:
     }
 
 
+def _validate_lsig_resources(resources: LogicSigResourceUsage, label: str) -> None:
+    if not (
+        type(resources.program_bytes) is int
+        and 0 < resources.program_bytes <= 16_000
+        and type(resources.argument_bytes) is int
+        and resources.argument_bytes >= 0
+        and type(resources.max_opcode_cost) is int
+        and 0 < resources.max_opcode_cost <= 320_000
+    ):
+        raise ValueError(f"{label} LogicSig resources are invalid")
+
+
+def _require_lsig_resources(resources: Any, label: str) -> LogicSigResourceUsage:
+    if resources is None:
+        raise ValueError(f"{label} LogicSig resources are unavailable")
+    if isinstance(resources, LogicSigResourceUsage):
+        normalized = LogicSigResourceUsage(**vars(resources))
+    elif isinstance(resources, dict):
+        expected = {"program_bytes", "argument_bytes", "max_opcode_cost"}
+        if set(resources) != expected:
+            raise ValueError(f"{label} LogicSig resources are invalid")
+        normalized = LogicSigResourceUsage(
+            program_bytes=resources["program_bytes"],
+            argument_bytes=resources["argument_bytes"],
+            max_opcode_cost=resources["max_opcode_cost"],
+        )
+    else:
+        raise ValueError(f"{label} LogicSig resources are invalid")
+    _validate_lsig_resources(normalized, label)
+    return normalized
+
+
 def _parse_lsig_resource_usage(data: Any) -> Optional[LogicSigResourceUsage]:
     if not isinstance(data, dict):
         return None
@@ -1356,6 +1391,14 @@ def _selected_spend_resources(
         if selected:
             return LogicSigResourceUsage(**vars(selected))
     return LogicSigResourceUsage(**vars(fallback)) if fallback else None
+
+
+def _required_spend_resources(
+    key: Optional[KeyInfo],
+    fallback: Optional[LogicSigResourceUsage],
+    label: str,
+) -> LogicSigResourceUsage:
+    return _require_lsig_resources(_selected_spend_resources(key, fallback), label)
 
 
 def _parse_bounded_authorization(data: Any) -> Optional[BoundedAuthorizationInfo]:
@@ -4291,6 +4334,10 @@ class SignerClient:
         """
         if not sign_entries:
             raise ValueError("sign_entries must not be empty")
+        for index, entry in enumerate(sign_entries):
+            pq_scheme = entry.get("pq_scheme")
+            if pq_scheme and pq_scheme != PQ_SCHEME_FALCON1024:
+                raise ValueError(f"sign entry {index}: unsupported pq_scheme {pq_scheme!r}")
 
         if request_id is None:
             request_id = _new_sign_request_id()
@@ -4720,9 +4767,7 @@ def _build_prepared_guarded_sign_inputs(
     sentry_resolver: Optional[Any],
     sentry_component_key: str,
     assembly_request_id: str,
-    min_fee: int,
 ) -> Dict[str, Any]:
-    del min_fee  # Planning, dummy insertion, and fee pooling are signer-owned.
     if user_client is None:
         raise SignerError("user_client is required")
     prepared = prepared_group.transactions
@@ -4781,13 +4826,18 @@ def _build_prepared_guarded_sign_inputs(
                 continue
             if not item.auth_address:
                 raise ValueError(f"prepared transaction {index}: guarded auth address is required")
+            resources = _required_spend_resources(
+                key,
+                item.lsig_resources,
+                f"prepared transaction {index}: guarded",
+            )
             guarded_targets.append(
                 GuardedSignTarget(
                     target_index=index,
                     guarded_account=item.auth_address,
+                    logic_sig_resources=resources,
                     sentry_public_key_hex=(key.parameters or {}).get("sentry_public_key", ""),
                     sentry_component_key_type=key.sentry_component_key_type,
-                    logic_sig_resources=_selected_spend_resources(key, item.lsig_resources),
                 )
             )
             continue
@@ -4864,7 +4914,7 @@ def _resolve_sentry_for_target(
 def _request_primary_guarded_passthrough(
     user_client: SignerClient,
     group_bytes_hex: List[str],
-    guarded_indices: set,
+    guarded_by_index: Dict[int, Dict[str, Any]],
     primary_targets: List[Dict[str, Any]],
 ) -> tuple:
     primary_by_index: Dict[int, Dict[str, Any]] = {}
@@ -4872,7 +4922,7 @@ def _request_primary_guarded_passthrough(
         index = target.get("target_index")
         if not isinstance(index, int) or index < 0 or index >= len(group_bytes_hex):
             raise ValueError(f"primary target {index} out of range")
-        if index in guarded_indices:
+        if index in guarded_by_index:
             raise ValueError(f"primary target {index} overlaps guarded target")
         if index in primary_by_index:
             raise ValueError(f"duplicate primary target index {index}")
@@ -4896,7 +4946,24 @@ def _request_primary_guarded_passthrough(
                 request["app_call_info"] = target["app_call_info"]
             requests.append(request)
         else:
-            requests.append({"txn_bytes_hex": txn_hex})
+            guarded = guarded_by_index.get(index)
+            if guarded is not None:
+                resources = _require_lsig_resources(
+                    guarded.get("logic_sig_resources"),
+                    f"guarded target {index}",
+                )
+            else:
+                resources = LogicSigResourceUsage(
+                    program_bytes=len(GUARDED_DUMMY_PROGRAM),
+                    argument_bytes=0,
+                    max_opcode_cost=1,
+                )
+            requests.append(
+                {
+                    "txn_bytes_hex": txn_hex,
+                    "lsig_resources": _wire_lsig_resources(resources),
+                }
+            )
 
     response = user_client.sign_requests(requests)
     passthrough = []
@@ -5212,12 +5279,16 @@ def _request_bounded_primary_passthrough(
                 }
             )
         elif index in bounded_indices:
-            request: Dict[str, Any] = {"txn_bytes_hex": txn_hex}
-            if target_resources.get(index):
-                request["lsig_resources"] = _wire_lsig_resources(
-                    cast(LogicSigResourceUsage, target_resources[index])
-                )
-            requests_data.append(request)
+            resources = _require_lsig_resources(
+                target_resources.get(index),
+                f"bounded target {index}",
+            )
+            requests_data.append(
+                {
+                    "txn_bytes_hex": txn_hex,
+                    "lsig_resources": _wire_lsig_resources(resources),
+                }
+            )
         else:
             target = primary_by_index.get(index)
             if target is None:
@@ -5258,10 +5329,8 @@ def sign_prepared_bounded_sentry_group(
     sentry_resolver: Optional[Any] = None,
     sentry_component_key: str = "",
     assembly_request_id: str = "",
-    min_fee: int = GUARDED_DEFAULT_MIN_FEE,
 ) -> GuardedSignResult:
     """Sign a prepared bounded-sentry1 group using the user-first flow."""
-    del min_fee  # Planning, dummy insertion, and fee pooling are signer-owned.
     if user_client is None:
         raise SignerError("user_client is required")
     prepared = prepared_group.transactions
@@ -5290,6 +5359,10 @@ def sign_prepared_bounded_sentry_group(
         if key.signing_flow == SIGNING_FLOW_BOUNDED_SENTRY1:
             if not item.auth_address:
                 raise ValueError(f"prepared transaction {index}: bounded auth address is required")
+            resources = _require_lsig_resources(
+                resources,
+                f"prepared transaction {index}: bounded",
+            )
             requests_data.append(item.to_sign_request())
             target_resources[index] = resources
             if key.bounded_authorization is None:
@@ -5452,14 +5525,13 @@ def sign_prepared_guarded_group(
     sentry_resolver: Optional[Any] = None,
     sentry_component_key: str = "",
     assembly_request_id: str = "",
-    min_fee: int = GUARDED_DEFAULT_MIN_FEE,
 ) -> GuardedSignResult:
     """
     Canonicalize a prepared group locally, classify guarded and primary slots,
     then sign and assemble it through guarded component endpoints.
 
-    This mirrors apshell's guarded client-side prep path and avoids sending an
-    all-guarded group to /plan or /sign as all-foreign requests.
+    The signer /plan endpoint owns canonical group sizing, dummy insertion,
+    and authorization-fee pooling before component signatures are collected.
     """
     has_bounded_sentry, has_legacy_guarded = _prepared_sentry_flow_kinds(
         user_client, prepared_group
@@ -5474,7 +5546,6 @@ def sign_prepared_guarded_group(
             sentry_resolver=sentry_resolver,
             sentry_component_key=sentry_component_key,
             assembly_request_id=assembly_request_id,
-            min_fee=min_fee,
         )
     inputs = _build_prepared_guarded_sign_inputs(
         user_client,
@@ -5483,7 +5554,6 @@ def sign_prepared_guarded_group(
         sentry_resolver,
         sentry_component_key,
         assembly_request_id,
-        min_fee,
     )
     return sign_guarded_group(**inputs)
 
@@ -5514,17 +5584,23 @@ def sign_guarded_group(
         raise ValueError("at least one guarded target is required")
     targets.sort(key=lambda item: item["target_index"])
 
-    guarded_indices = set()
+    guarded_by_index: Dict[int, Dict[str, Any]] = {}
     user_groups: Dict[str, List[int]] = {}
     for target in targets:
         index = target.get("target_index")
         if not isinstance(index, int) or index < 0 or index >= len(group_bytes_hex):
             raise ValueError(f"guarded target {index} out of range")
-        if index in guarded_indices:
+        if index in guarded_by_index:
             raise ValueError(f"duplicate guarded target index {index}")
         if not target.get("guarded_account"):
             raise ValueError(f"guarded target {index} missing guarded_account")
-        guarded_indices.add(index)
+        target["logic_sig_resources"] = _compact_payload(
+            _require_lsig_resources(
+                target.get("logic_sig_resources"),
+                f"guarded target {index}",
+            )
+        )
+        guarded_by_index[index] = target
         user_groups.setdefault(target["guarded_account"], []).append(index)
 
     user_component_responses = []
@@ -5582,7 +5658,7 @@ def sign_guarded_group(
         primary_sign_response, primary_passthrough = _request_primary_guarded_passthrough(
             user_client,
             group_bytes_hex,
-            guarded_indices,
+            guarded_by_index,
             [_compact_payload(target) for target in primary_targets],
         )
         assembly_passthrough.extend(primary_passthrough)

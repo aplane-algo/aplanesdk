@@ -168,6 +168,7 @@ const (
 	RequestModeSign        RequestMode = "sign"
 	RequestModePassthrough RequestMode = "passthrough"
 	RequestModeForeign     RequestMode = "foreign"
+	PQSchemeFalcon1024                 = "f1"
 
 	SignCancelStateCanceled SignCancelState = "canceled"
 	SignCancelStateNotFound SignCancelState = "not_found"
@@ -206,6 +207,9 @@ func (r SignRequest) Validate() error {
 	if r.PQScheme != "" && mode != RequestModeForeign {
 		return fmt.Errorf("pq_scheme is allowed only for foreign transactions")
 	}
+	if r.PQScheme != "" && r.PQScheme != PQSchemeFalcon1024 {
+		return fmt.Errorf("unsupported pq_scheme %q", r.PQScheme)
+	}
 	if r.LsigResources != nil && mode != RequestModeForeign && mode != RequestModePassthrough {
 		return fmt.Errorf("lsig_resources is allowed only for foreign or passthrough transactions")
 	}
@@ -213,12 +217,19 @@ func (r SignRequest) Validate() error {
 		return fmt.Errorf("foreign transaction cannot specify both pq_scheme and lsig_resources")
 	}
 	if r.LsigResources != nil {
-		if r.LsigResources.ProgramBytes == 0 || r.LsigResources.ProgramBytes > 16_000 {
-			return fmt.Errorf("invalid lsig_resources: program_bytes must be between 1 and 16000")
+		if err := r.LsigResources.validate(); err != nil {
+			return fmt.Errorf("invalid lsig_resources: %w", err)
 		}
-		if r.LsigResources.MaxOpcodeCost == 0 || r.LsigResources.MaxOpcodeCost > 320_000 {
-			return fmt.Errorf("invalid lsig_resources: max_opcode_cost must be between 1 and 320000")
-		}
+	}
+	return nil
+}
+
+func (r LogicSigResourceUsage) validate() error {
+	if r.ProgramBytes == 0 || r.ProgramBytes > 16_000 {
+		return fmt.Errorf("program_bytes must be between 1 and 16000")
+	}
+	if r.MaxOpcodeCost == 0 || r.MaxOpcodeCost > 320_000 {
+		return fmt.Errorf("max_opcode_cost must be between 1 and 320000")
 	}
 	return nil
 }

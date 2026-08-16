@@ -91,7 +91,6 @@ type PreparedGuardedGroupOptions struct {
 	SentryComponentKey string
 	PreparedGroup      PreparedGroup
 	AssemblyRequestID  string
-	MinFee             uint64
 }
 
 type guardedComponentSignature struct {
@@ -130,7 +129,8 @@ func SignGuardedGroupWithContext(ctx context.Context, opts GuardedSignOptions) (
 
 	guardedByIndex := make(map[int]GuardedSignTarget, len(targets))
 	userGroups := make(map[string][]int)
-	for _, target := range targets {
+	for i := range targets {
+		target := &targets[i]
 		if target.TargetIndex < 0 || target.TargetIndex >= len(opts.GroupBytesHex) {
 			return nil, fmt.Errorf("guarded target %d out of range", target.TargetIndex)
 		}
@@ -140,7 +140,13 @@ func SignGuardedGroupWithContext(ctx context.Context, opts GuardedSignOptions) (
 		if target.GuardedAccount == "" {
 			return nil, fmt.Errorf("guarded target %d missing guarded account", target.TargetIndex)
 		}
-		guardedByIndex[target.TargetIndex] = target
+		if target.LogicSigResources == nil {
+			return nil, fmt.Errorf("guarded target %d missing LogicSig resources", target.TargetIndex)
+		}
+		if err := target.LogicSigResources.validate(); err != nil {
+			return nil, fmt.Errorf("guarded target %d has invalid LogicSig resources: %w", target.TargetIndex, err)
+		}
+		guardedByIndex[target.TargetIndex] = *target
 		userGroups[target.GuardedAccount] = append(userGroups[target.GuardedAccount], target.TargetIndex)
 	}
 
@@ -247,9 +253,8 @@ func signedTxnMatchesCanonical(label string, index int, signedHex, canonicalHex 
 
 // SignPreparedGuardedGroup canonicalizes a prepared group locally, classifies
 // guarded and primary slots, then signs and assembles it through component
-// signing endpoints. This is the guarded equivalent of apshell's client-side
-// prep path; it does not send all-guarded groups to /plan or /sign as
-// all-foreign groups.
+// signing endpoints. The signer /plan endpoint owns canonical group sizing and
+// fee mutation before component signatures are collected.
 func SignPreparedGuardedGroup(opts PreparedGuardedGroupOptions) (*GuardedSignResult, error) {
 	return SignPreparedGuardedGroupWithContext(context.Background(), opts)
 }
@@ -257,7 +262,7 @@ func SignPreparedGuardedGroup(opts PreparedGuardedGroupOptions) (*GuardedSignRes
 // SignPreparedGuardedGroupWithContext is the context-aware form of
 // SignPreparedGuardedGroup.
 func SignPreparedGuardedGroupWithContext(ctx context.Context, opts PreparedGuardedGroupOptions) (*GuardedSignResult, error) {
-	resolvedOpts, hasBoundedSentry, hasLegacyGuarded, err := resolvePreparedSentryFlowKinds(opts)
+	resolvedOpts, hasBoundedSentry, hasLegacyGuarded, err := resolvePreparedSentryFlowKinds(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -274,7 +279,7 @@ func SignPreparedGuardedGroupWithContext(ctx context.Context, opts PreparedGuard
 	return SignGuardedGroupWithContext(ctx, signOpts)
 }
 
-func resolvePreparedSentryFlowKinds(opts PreparedGuardedGroupOptions) (
+func resolvePreparedSentryFlowKinds(ctx context.Context, opts PreparedGuardedGroupOptions) (
 	resolved PreparedGuardedGroupOptions,
 	boundedSentry bool,
 	legacyGuarded bool,
@@ -292,7 +297,7 @@ func resolvePreparedSentryFlowKinds(opts PreparedGuardedGroupOptions) (
 		item := &resolved.PreparedGroup.Transactions[i]
 		key := item.SignerKey
 		if key == nil && item.AuthAddress != "" {
-			key, err = opts.UserClient.GetKeyInfo(item.AuthAddress)
+			key, err = opts.UserClient.getKeyInfoWithContext(ctx, item.AuthAddress)
 			if err != nil {
 				return opts, false, false, fmt.Errorf("prepared transaction %d: resolve signer key: %w", i, err)
 			}
@@ -337,7 +342,7 @@ func buildPreparedGuardedSignOptions(ctx context.Context, opts PreparedGuardedGr
 		key := item.SignerKey
 		if key == nil && item.AuthAddress != "" {
 			var err error
-			key, err = opts.UserClient.GetKeyInfo(item.AuthAddress)
+			key, err = opts.UserClient.getKeyInfoWithContext(ctx, item.AuthAddress)
 			if err != nil {
 				return GuardedSignOptions{}, fmt.Errorf("prepared transaction %d: resolve signer key: %w", i, err)
 			}
@@ -375,12 +380,16 @@ func buildPreparedGuardedSignOptions(ctx context.Context, opts PreparedGuardedGr
 			if item.AuthAddress == "" {
 				return GuardedSignOptions{}, fmt.Errorf("prepared transaction %d: guarded auth address is required", i)
 			}
+			resources := selectedSpendResources(key, item.LsigResources)
+			if resources == nil {
+				return GuardedSignOptions{}, fmt.Errorf("prepared transaction %d: guarded LogicSig resources are unavailable", i)
+			}
 			targets = append(targets, GuardedSignTarget{
 				TargetIndex:            i,
 				GuardedAccount:         item.AuthAddress,
 				SentryPublicKeyHex:     guardedSentryPublicKey(key),
 				SentryComponentKeyType: key.SentryComponentKeyType,
-				LogicSigResources:      selectedSpendResources(key, item.LsigResources),
+				LogicSigResources:      resources,
 			})
 			continue
 		}
@@ -625,13 +634,7 @@ func requestPrimaryGuardedPassthrough(ctx context.Context, client *SignerClient,
 				AppCallInfo: target.AppCallInfo,
 			}
 		} else if guarded, ok := guardedByIndex[i]; ok {
-			resources := guarded.LogicSigResources
-			if resources == nil {
-				if key, err := client.GetKeyInfo(guarded.GuardedAccount); err == nil {
-					resources = selectedSpendResources(key, nil)
-				}
-			}
-			requests[i] = SignRequest{TxnBytesHex: txnHex, LsigResources: resources}
+			requests[i] = SignRequest{TxnBytesHex: txnHex, LsigResources: guarded.LogicSigResources}
 		} else {
 			requests[i] = SignRequest{TxnBytesHex: txnHex, LsigResources: &LogicSigResourceUsage{
 				ProgramBytes: uint64(len(guardedDummyProgram)), MaxOpcodeCost: 1,

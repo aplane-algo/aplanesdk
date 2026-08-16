@@ -52,7 +52,7 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 		key := item.SignerKey
 		if key == nil && item.AuthAddress != "" {
 			var err error
-			key, err = opts.UserClient.GetKeyInfo(item.AuthAddress)
+			key, err = opts.UserClient.getKeyInfoWithContext(ctx, item.AuthAddress)
 			if err != nil {
 				return nil, fmt.Errorf("prepared transaction %d: resolve signer key: %w", i, err)
 			}
@@ -66,6 +66,9 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 		case SigningFlowBoundedSentry1:
 			if item.AuthAddress == "" {
 				return nil, fmt.Errorf("prepared transaction %d: bounded auth address is required", i)
+			}
+			if resources == nil {
+				return nil, fmt.Errorf("prepared transaction %d: bounded LogicSig resources are unavailable", i)
 			}
 			req, err := item.SignRequest()
 			if err != nil {

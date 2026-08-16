@@ -78,6 +78,10 @@ function createMockFetch(): MockFetch {
   return fn;
 }
 
+function guardedTestResources() {
+  return { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 };
+}
+
 // --- Setup global fetch mock ---
 
 const originalFetch = globalThis.fetch;
@@ -1536,7 +1540,11 @@ describe("SignerClient", () => {
         sentryClient: sentry,
         sentryComponentKey: "SENTRY_COMPONENT",
         groupBytesHex: ["5458aa"],
-        guardedTargets: [{ targetIndex: 0, guardedAccount: "GUARDED" }],
+        guardedTargets: [{
+          targetIndex: 0,
+          guardedAccount: "GUARDED",
+          logicSigResources: guardedTestResources(),
+        }],
       });
 
       assert.deepEqual(result.signedGroup, ["signed-guarded"]);
@@ -1579,8 +1587,8 @@ describe("SignerClient", () => {
         sentryComponentKey: "SENTRY_COMPONENT",
         groupBytesHex: ["5458aa", "5458bb"],
         guardedTargets: [
-          { targetIndex: 0, guardedAccount: "GUARDED" },
-          { targetIndex: 1, guardedAccount: "GUARDED" },
+          { targetIndex: 0, guardedAccount: "GUARDED", logicSigResources: guardedTestResources() },
+          { targetIndex: 1, guardedAccount: "GUARDED", logicSigResources: guardedTestResources() },
         ],
       });
 
@@ -1606,6 +1614,11 @@ describe("SignerClient", () => {
       (user as any).signRequests = async (requests: any[]) => {
         assert.equal(requests[0].auth_address, "AUTH");
         assert.equal(requests[1].auth_address, undefined);
+        assert.deepEqual(requests[1].lsig_resources, {
+          program_bytes: 1612,
+          argument_bytes: 1423,
+          max_opcode_cost: 20000,
+        });
         return { signed: ["primary-signed", ""] };
       };
       (user as any).requestGuardedAssemble = async (request: any) => {
@@ -1620,11 +1633,34 @@ describe("SignerClient", () => {
         sentryComponentKey: "SENTRY_COMPONENT",
         groupBytesHex: ["5458aa", "5458bb"],
         primaryTargets: [{ targetIndex: 0, authAddress: "AUTH" }],
-        guardedTargets: [{ targetIndex: 1, guardedAccount: "GUARDED" }],
+        guardedTargets: [{
+          targetIndex: 1,
+          guardedAccount: "GUARDED",
+          logicSigResources: guardedTestResources(),
+        }],
       });
 
       assert.equal(result.signedGroup[1], "guarded-signed");
       assert.ok(result.primarySignResponse);
+    });
+
+    it("rejects missing resources before component signing", async () => {
+      const user = new SignerClient("http://localhost:11270", "test-token");
+      let componentCalls = 0;
+      (user as any).requestComponentSign = async () => {
+        componentCalls += 1;
+        throw new Error("unexpected component request");
+      };
+
+      await assert.rejects(
+        signGuardedGroup({
+          userClient: user,
+          groupBytesHex: ["5458aa"],
+          guardedTargets: [{ targetIndex: 0, guardedAccount: "GUARDED" }] as any,
+        }),
+        /LogicSig resources are unavailable/,
+      );
+      assert.equal(componentCalls, 0);
     });
 
     it("handles prepared all-guarded groups using the signer plan", async () => {
@@ -2681,6 +2717,16 @@ describe("SignerClient", () => {
         client.signRequests([{ txn_bytes_hex: "545801" }], { requestId: "bad id" }),
         { message: /invalid character/ },
       );
+    });
+
+    it("rejects unsupported raw native-PQ schemes before fetch", async () => {
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const callsBefore = mockFetch.mock.calls.length;
+      await assert.rejects(
+        client.signRequests([{ txn_bytes_hex: "545801", pq_scheme: "f2" }]),
+        /unsupported pq_scheme/,
+      );
+      assert.equal(mockFetch.mock.calls.length, callsBefore);
     });
   });
 

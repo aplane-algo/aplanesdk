@@ -203,9 +203,15 @@ async function requestPrimaryGuardedPassthrough(
     const target = primaryByIndex.get(index);
     if (!target) {
       const guarded = guardedByIndex.get(index);
+      if (guarded) {
+        return {
+          txn_bytes_hex: txnHex,
+          lsig_resources: wireLogicSigResources(guarded.logicSigResources),
+        };
+      }
       return {
         txn_bytes_hex: txnHex,
-        lsig_resources: wireLogicSigResources(guarded?.logicSigResources || {
+        lsig_resources: wireLogicSigResources({
           programBytes: GUARDED_DUMMY_PROGRAM.length,
           argumentBytes: 0,
           maxOpcodeCost: 1,
@@ -368,12 +374,17 @@ async function buildPreparedGuardedSignOptions(
       if (!item.authAddress) {
         throw new SignerError(`prepared transaction ${index}: guarded auth address is required`);
       }
+      const resources = requiredSpendResources(
+        key,
+        item.lsigResources,
+        `prepared transaction ${index}: guarded`,
+      );
       guardedTargets.push({
         targetIndex: index,
         guardedAccount: item.authAddress,
         sentryPublicKeyHex: key.parameters?.sentry_public_key || "",
         sentryComponentKeyType: key.sentryComponentKeyType || "",
-        logicSigResources: selectedSpendResources(key, item.lsigResources),
+        logicSigResources: resources,
       });
       continue;
     }
@@ -700,7 +711,12 @@ async function requestBoundedPrimaryPassthrough(
       }),
     };
     if (boundedIndices.has(index)) {
-      return { txn_bytes_hex: txnHex, lsig_resources: wireLogicSigResources(targetResources.get(index)) };
+      return {
+        txn_bytes_hex: txnHex,
+        lsig_resources: wireLogicSigResources(
+          requireLogicSigResources(targetResources.get(index), `bounded target ${index}`),
+        ),
+      };
     }
     const target = primaryByIndex.get(index);
     if (!target) {
@@ -768,8 +784,12 @@ export async function signPreparedBoundedSentryGroup(
       if (!item.authAddress) {
         throw new SignerError(`prepared transaction ${index}: bounded auth address is required`);
       }
+      const requiredResources = requireLogicSigResources(
+        resources,
+        `prepared transaction ${index}: bounded`,
+      );
       requests.push(preparedTransactionToSignRequest(item));
-      targetResources.set(index, resources);
+      targetResources.set(index, requiredResources);
       if (!key.boundedAuthorization) {
         throw new SignerError(
           `prepared transaction ${index}: bounded authorization metadata is required`,
@@ -781,7 +801,7 @@ export async function signPreparedBoundedSentryGroup(
         guardedAccount: item.authAddress,
         sentryPublicKeyHex: boundedSentryPublicKey(key),
         sentryComponentKeyType: boundedSentryComponentKeyType(key),
-        logicSigResources: resources,
+        logicSigResources: requiredResources,
       });
       continue;
     }
@@ -1074,6 +1094,7 @@ export async function signGuardedGroup(options: GuardedSignOptions): Promise<Gua
     if (!target.guardedAccount) {
       throw new SignerError(`guarded target ${target.targetIndex} missing guardedAccount`);
     }
+    requireLogicSigResources(target.logicSigResources, `guarded target ${target.targetIndex}`);
     guardedIndices.add(target.targetIndex);
     const indices = userGroups.get(target.guardedAccount) || [];
     indices.push(target.targetIndex);
@@ -1338,6 +1359,29 @@ function wireLogicSigResources(resources?: LogicSigResourceUsage): SignRequest["
   };
 }
 
+function validateLogicSigResources(
+  resources: LogicSigResourceUsage | undefined,
+  label: string,
+): void {
+  if (!resources ||
+      !Number.isInteger(resources.programBytes) || resources.programBytes <= 0 || resources.programBytes > 16000 ||
+      !Number.isInteger(resources.argumentBytes) || resources.argumentBytes < 0 ||
+      !Number.isInteger(resources.maxOpcodeCost) || resources.maxOpcodeCost <= 0 || resources.maxOpcodeCost > 320000) {
+    throw new SignerError(`${label} LogicSig resources are invalid`);
+  }
+}
+
+function requireLogicSigResources(
+  resources: LogicSigResourceUsage | undefined,
+  label: string,
+): LogicSigResourceUsage {
+  if (!resources) {
+    throw new SignerError(`${label} LogicSig resources are unavailable`);
+  }
+  validateLogicSigResources(resources, label);
+  return { ...resources };
+}
+
 function mapLogicSigResourceUsage(raw: any): LogicSigResourceUsage | undefined {
   if (!raw) return undefined;
   return {
@@ -1360,6 +1404,14 @@ function mapLogicSigResourceProfile(raw: any): LogicSigResourceProfile | undefin
 function selectedSpendResources(key?: KeyInfo, fallback?: LogicSigResourceUsage): LogicSigResourceUsage | undefined {
   const selected = key?.logicSigResources?.spend || key?.logicSigResources?.default || fallback;
   return selected ? { ...selected } : undefined;
+}
+
+function requiredSpendResources(
+  key: KeyInfo | undefined,
+  fallback: LogicSigResourceUsage | undefined,
+  label: string,
+): LogicSigResourceUsage {
+  return requireLogicSigResources(selectedSpendResources(key, fallback), label);
 }
 
 function validateAssemblyIndex(index: number, groupLen: number, covered: Set<number>): void {
@@ -1774,7 +1826,7 @@ export interface GuardedSignTarget {
   sentryComponentKeyType?: string;
   sentryComponentKey?: string;
   runtimeArgs?: string[];
-  logicSigResources?: LogicSigResourceUsage;
+  logicSigResources: LogicSigResourceUsage;
 }
 
 export interface GuardedPrimarySignTarget {
@@ -1814,7 +1866,6 @@ export interface PreparedGuardedGroupOptions {
   sentryResolver?: GuardedSentryResolver;
   sentryComponentKey?: string;
   assemblyRequestId?: string;
-  minFee?: number;
   signal?: AbortSignal;
 }
 
@@ -4220,6 +4271,13 @@ export class SignerClient {
     if (requests.length === 0) {
       throw new SignerError("requests must not be empty");
     }
+    requests.forEach((request, index) => {
+      if (request.pq_scheme && request.pq_scheme !== "f1") {
+        throw new SignerError(
+          `request ${index}: unsupported pq_scheme ${JSON.stringify(request.pq_scheme)}`,
+        );
+      }
+    });
 
     const requestId = options?.requestId ?? newSignRequestId();
     validateSignRequestId(requestId, true);
@@ -4342,11 +4400,7 @@ export class SignerClient {
         if (idx < 0 || idx >= txns.length) {
           throw new SignerError(`lsigResources index ${idx} out of range for ${txns.length} transactions`);
         }
-        if (!resources || !Number.isInteger(resources.programBytes) || resources.programBytes <= 0 || resources.programBytes > 16000 ||
-            !Number.isInteger(resources.argumentBytes) || resources.argumentBytes < 0 ||
-            !Number.isInteger(resources.maxOpcodeCost) || resources.maxOpcodeCost <= 0 || resources.maxOpcodeCost > 320000) {
-          throw new SignerError(`lsigResources[${idx}] is invalid`);
-        }
+        validateLogicSigResources(resources, `lsigResources[${idx}]`);
       }
     }
 

@@ -228,6 +228,16 @@ describe("prepared sign request parity fixtures", () => {
     assert.equal(requests[0].lsig_resources, undefined);
   });
 
+  it("rejects unsupported native-PQ schemes", () => {
+    const foreign = groups.foreign_lsig_context.transactions[0];
+    assert.throws(
+      () => preparedGroupToSignRequests({
+        transactions: [{ ...foreign, lsigResources: undefined, pqScheme: "f2" }],
+      }),
+      /unsupported pqScheme/,
+    );
+  });
+
   it("rejects conflicting foreign authorization hints", () => {
     const foreign = groups.foreign_lsig_context.transactions[0];
     assert.throws(

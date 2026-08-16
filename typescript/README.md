@@ -426,7 +426,9 @@ const assembled = await userClient.requestGuardedAssemble({
 });
 ```
 
-For the common explicit two-client flow, use `signGuardedGroup`:
+For the common explicit two-client flow, use `signGuardedGroup`. The direct
+helper does not perform inventory discovery, so pass the reviewed spend-path
+resource profile returned by `listKeys()`:
 
 ```typescript
 const result = await signGuardedGroup({
@@ -435,7 +437,11 @@ const result = await signGuardedGroup({
   sentryComponentKey: "SENTRY_COMPONENT_SELECTOR",
   groupBytesHex: ["5458..."],
   guardedTargets: [
-    { targetIndex: 0, guardedAccount: "GUARDED_ACCOUNT_ADDRESS" },
+    {
+      targetIndex: 0,
+      guardedAccount: "GUARDED_ACCOUNT_ADDRESS",
+      logicSigResources: reviewedSpendResources,
+    },
   ],
 });
 const signedGroup = result.signedGroup;
@@ -477,9 +483,8 @@ approval-bearing request is aborted, times out, or disconnects.
 `requestBoundedAssemble()` does not open an approval request and is not a
 cancellation handle.
 
-The `minFee` option applies to the legacy `sentry1` path. The
-`bounded-sentry1` signer planner owns fee selection and reports its mutations,
-so that path ignores `minFee`.
+The signer planner owns fee selection, authorization-resource sizing, and any
+reported group mutations for both guarded flows.
 
 Applications that own orchestration can call `requestBoundedComponent()` and
 `requestBoundedAssemble()` directly. Sentry authorization is spend-only in this

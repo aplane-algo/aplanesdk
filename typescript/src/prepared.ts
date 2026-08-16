@@ -10,6 +10,8 @@ import type {
 import { SignerError } from "./errors.js";
 import { encodeLsigArgs, encodeTransaction, bytesToHex } from "./encoding.js";
 
+const PQ_SCHEME_FALCON1024 = "f1";
+
 function base64ToHex(value: string): string {
   if (typeof Buffer !== "undefined") {
     return Buffer.from(value, "base64").toString("hex");
@@ -51,6 +53,9 @@ export function preparedTransactionToSignRequest(
     if (prepared.pqScheme) {
       if (request.lsig_resources) {
         throw new SignerError("foreign transaction cannot specify both pqScheme and lsigResources");
+      }
+      if (prepared.pqScheme !== PQ_SCHEME_FALCON1024) {
+        throw new SignerError(`unsupported pqScheme ${JSON.stringify(prepared.pqScheme)}`);
       }
       request.pq_scheme = prepared.pqScheme;
     }
