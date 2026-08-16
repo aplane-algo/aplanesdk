@@ -55,8 +55,8 @@ func TestPreparedGroupSignRequestsSignMode(t *testing.T) {
 func TestPreparedGroupSignRequestsForeignMode(t *testing.T) {
 	txn := types.Transaction{Type: types.PaymentTx}
 	group := NewPreparedGroup(PreparedTransaction{
-		Transaction: &txn,
-		LsigSize:    3035,
+		Transaction:   &txn,
+		LsigResources: &LogicSigResourceUsage{ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000},
 	})
 
 	requests, err := group.SignRequests()
@@ -70,15 +70,45 @@ func TestPreparedGroupSignRequestsForeignMode(t *testing.T) {
 	if req.TxnBytesHex == "" {
 		t.Fatal("txn bytes hex is empty")
 	}
-	if req.LsigSize != 3035 {
-		t.Fatalf("lsig size = %d, want 3035", req.LsigSize)
+	if req.LsigResources == nil || req.LsigResources.ProgramBytes != 1612 {
+		t.Fatalf("lsig resources = %#v", req.LsigResources)
+	}
+}
+
+func TestPreparedGroupSignRequestsNativePQForeignMode(t *testing.T) {
+	txn := types.Transaction{Type: types.PaymentTx}
+	group := NewPreparedGroup(PreparedTransaction{
+		Transaction: &txn,
+		PQScheme:    "f1",
+	})
+
+	requests, err := group.SignRequests()
+	if err != nil {
+		t.Fatalf("SignRequests() error = %v", err)
+	}
+	if requests[0].PQScheme != "f1" {
+		t.Fatalf("pq scheme = %q, want f1", requests[0].PQScheme)
+	}
+}
+
+func TestPreparedGroupSignRequestsRejectsConflictingForeignHints(t *testing.T) {
+	txn := types.Transaction{Type: types.PaymentTx}
+	_, err := NewPreparedGroup(PreparedTransaction{
+		Transaction:   &txn,
+		LsigResources: &LogicSigResourceUsage{ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000},
+		PQScheme:      "f1",
+	}).SignRequests()
+	if err == nil || !strings.Contains(err.Error(), "both pq_scheme and lsig_resources") {
+		t.Fatalf("expected conflicting hint error, got %v", err)
 	}
 }
 
 func TestPreparedGroupSignRequestsPassthroughMode(t *testing.T) {
 	signed := []byte("signed-txn")
+	resources := &LogicSigResourceUsage{ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000}
 	group := NewPreparedGroup(PreparedTransaction{
 		SignedTransactionBase64: base64.StdEncoding.EncodeToString(signed),
+		LsigResources:           resources,
 	})
 
 	requests, err := group.SignRequests()
@@ -90,6 +120,9 @@ func TestPreparedGroupSignRequestsPassthroughMode(t *testing.T) {
 	}
 	if requests[0].TxnBytesHex != "" || requests[0].AuthAddress != "" {
 		t.Fatalf("passthrough request should not include sign fields: %#v", requests[0])
+	}
+	if requests[0].LsigResources == nil || *requests[0].LsigResources != *resources {
+		t.Fatalf("passthrough request resources = %#v, want %#v", requests[0].LsigResources, resources)
 	}
 }
 

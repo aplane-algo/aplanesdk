@@ -245,14 +245,15 @@ describe("SignerClient", () => {
             address: "ADDR1",
             public_key_hex: "abc123",
             key_type: "ed25519",
-            lsig_size: 0,
             is_generic_lsig: false,
           },
           {
             address: "ADDR2",
             public_key_hex: "def456",
             key_type: "aplane.falcon1024.v1",
-            lsig_size: 3035,
+            logic_sig_resources: {
+              spend: { program_bytes: 1612, argument_bytes: 1423, max_opcode_cost: 20000 },
+            },
             is_generic_lsig: false,
             template_status: "unavailable",
             template_warning: "template fingerprint unavailable",
@@ -273,7 +274,7 @@ describe("SignerClient", () => {
       assert.equal(keys[0].address, "ADDR1");
       assert.equal(keys[0].keyType, "ed25519");
       assert.equal(keys[1].address, "ADDR2");
-      assert.equal(keys[1].lsigSize, 3035);
+      assert.equal(keys[1].logicSigResources?.spend?.programBytes, 1612);
       assert.equal(keys[1].templateStatus, "unavailable");
       assert.equal(keys[1].templateWarning, "template fingerprint unavailable");
       assert.equal(keys[1].templateProvenanceStatus, "unavailable");
@@ -1626,7 +1627,7 @@ describe("SignerClient", () => {
       assert.ok(result.primarySignResponse);
     });
 
-    it("handles prepared all-guarded groups without plan or sign", async () => {
+    it("handles prepared all-guarded groups using the signer plan", async () => {
       const guarded = testAddress(1);
       const receiver = testAddress(2);
       const user = new SignerClient("http://localhost:11270", "test-token");
@@ -1657,8 +1658,36 @@ describe("SignerClient", () => {
       (user as any).signRequests = async () => {
         throw new Error("all-guarded path must not call /sign");
       };
-      (user as any).planGroup = async () => {
-        throw new Error("all-guarded path must not call /plan");
+      (user as any).planGroup = async (txns: algosdk.Transaction[]) => {
+        const dummyAccount = new algosdk.LogicSigAccount(
+          new Uint8Array([0x03, 0x31, 0x20, 0x32, 0x03, 0x12]),
+        );
+        const dummyAddress = dummyAccount.address().toString();
+        const dummies = Array.from({ length: 3 }, (_, index) => {
+          const dummy = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+            sender: dummyAddress,
+            receiver: dummyAddress,
+            amount: 0n,
+            note: new Uint8Array([index]),
+            suggestedParams: {
+              fee: 0n,
+              minFee: 1000n,
+              firstValid: 1n,
+              lastValid: 100n,
+              genesisHash: new Uint8Array(32),
+              genesisID: "testnet-v1",
+              flatFee: true,
+            },
+          });
+          (dummy as any).fee = 0n;
+          return dummy;
+        });
+        const planned = [...txns.map((txn) => algosdk.decodeUnsignedTransaction(txn.toByte())), ...dummies];
+        algosdk.assignGroupID(planned);
+        return {
+          transactions: planned.map((txn) => encodeTransaction(txn)[0]),
+          mutations: { dummiesAdded: 3, originalCount: 1, finalCount: 4, groupIdChanged: true },
+        };
       };
       (user as any).requestGuardedAssemble = async (request: any) => {
         assert.equal(request.group_bytes_hex.length, 4);
@@ -1701,7 +1730,9 @@ describe("SignerClient", () => {
                 keyType: KEY_TYPE_GUARDED_FALCON1024_SENTRY1024,
                 signingFlow: SIGNING_FLOW_SENTRY1,
                 sentryComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
-                lsigSize: 3035,
+                logicSigResources: {
+                  spend: { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 },
+                },
                 isGenericLsig: false,
                 parameters: { sentry_public_key: "aabbcc" },
               },
@@ -1797,7 +1828,9 @@ describe("SignerClient", () => {
               keyType: "aplane.corridor.v1",
               signingFlow: SIGNING_FLOW_BOUNDED_SENTRY1,
               sentryComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
-              lsigSize: 9012,
+              logicSigResources: {
+                spend: { programBytes: 5308, argumentBytes: 3358, maxOpcodeCost: 20000 },
+              },
               isGenericLsig: false,
               boundedAuthorization: {
                 contract: "bounded1",
@@ -1981,7 +2014,6 @@ describe("SignerClient", () => {
                   publicKeyHex: "",
                   keyType: "bounded",
                   signingFlow: SIGNING_FLOW_BOUNDED_SENTRY1,
-                  lsigSize: 0,
                   isGenericLsig: false,
                 },
               },
@@ -1991,7 +2023,6 @@ describe("SignerClient", () => {
                   publicKeyHex: "",
                   keyType: "guarded",
                   signingFlow: SIGNING_FLOW_SENTRY1,
-                  lsigSize: 0,
                   isGenericLsig: false,
                 },
               },
@@ -2105,7 +2136,9 @@ describe("SignerClient", () => {
                 keyType: "aplane.corridor.v1",
                 signingFlow: SIGNING_FLOW_BOUNDED_SENTRY1,
                 sentryComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
-                lsigSize: 9012,
+                logicSigResources: {
+                  spend: { programBytes: 5308, argumentBytes: 3358, maxOpcodeCost: 20000 },
+                },
                 isGenericLsig: false,
                 boundedAuthorization: {
                   contract: "bounded1",
@@ -2134,7 +2167,6 @@ describe("SignerClient", () => {
                 publicKeyHex: "",
                 keyType: "aplane.falcon1024.v1",
                 signingFlow: "",
-                lsigSize: 0,
                 isGenericLsig: false,
               },
             },
@@ -2183,7 +2215,9 @@ describe("SignerClient", () => {
                   publicKeyHex: "",
                   keyType: "aplane.future-guarded.v1",
                   signingFlow: "sentry2",
-                  lsigSize: 3035,
+                  logicSigResources: {
+                    spend: { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 },
+                  },
                   isGenericLsig: false,
                 },
               },
@@ -2247,6 +2281,26 @@ describe("SignerClient", () => {
     const createMockTxn = () => ({
       sender: { toString: () => "SENDER_ADDRESS" },
       toByte: () => new Uint8Array([1, 2, 3, 4]),
+    });
+
+    it("carries LogicSig resources on passthrough entries", () => {
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const body = (client as any).buildSignRequestBody(
+        [null],
+        [null],
+        undefined,
+        { 0: Buffer.from("signed-txn").toString("base64") },
+        { 0: { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 } },
+        false,
+      );
+      assert.deepEqual(body.requests, [{
+        signed_txn_hex: Buffer.from("signed-txn").toString("hex"),
+        lsig_resources: {
+          program_bytes: 1612,
+          argument_bytes: 1423,
+          max_opcode_cost: 20000,
+        },
+      }]);
     });
 
     it("rejects foreign entries before calling /sign", async () => {
@@ -3105,25 +3159,31 @@ describe("preparedGroupToSignRequests", () => {
     const requests = preparedGroupToSignRequests({
       transactions: [{
         transaction: createMockTxn() as any,
-        lsigSize: 3035,
+        lsigResources: { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 },
       }],
     });
 
     assert.equal(requests.length, 1);
     assert.equal(requests[0].txn_bytes_hex, "5458010203");
     assert.equal(requests[0].auth_address, undefined);
-    assert.equal(requests[0].lsig_size, 3035);
+    assert.equal(requests[0].lsig_resources?.program_bytes, 1612);
   });
 
   it("builds passthrough requests", () => {
     const requests = preparedGroupToSignRequests({
       transactions: [{
         signedTransactionBase64: Buffer.from("signed-txn").toString("base64"),
+        lsigResources: { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 },
       }],
     });
 
     assert.deepEqual(requests, [{
       signed_txn_hex: Buffer.from("signed-txn").toString("hex"),
+      lsig_resources: {
+        program_bytes: 1612,
+        argument_bytes: 1423,
+        max_opcode_cost: 20000,
+      },
     }]);
   });
 

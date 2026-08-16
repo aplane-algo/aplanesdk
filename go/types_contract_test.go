@@ -145,6 +145,8 @@ func TestGoSDKContractFixturesRoundTrip(t *testing.T) {
 		run  func(*testing.T, string)
 	}{
 		{"group_sign_request_mixed.json", assertSDKContractRoundTrip[GroupSignRequest]},
+		{"group_sign_request_native_pq.json", assertSDKContractRoundTrip[GroupSignRequest]},
+		{"group_sign_request_passthrough_lsig.json", assertSDKContractRoundTrip[GroupSignRequest]},
 		{"group_sign_response_mutated.json", assertSDKContractRoundTrip[GroupSignResponse]},
 		{"group_plan_response_mutated.json", assertSDKContractRoundTrip[PlanGroupResponse]},
 		{"component_sign_request_sentry.json", assertSDKContractRoundTrip[ComponentSignRequest]},
@@ -181,7 +183,7 @@ func TestGoSDKContractFixturesRoundTrip(t *testing.T) {
 	}
 }
 
-func TestBoundedInventoryUsesSpendPathLogicSigSize(t *testing.T) {
+func TestBoundedInventoryUsesStructuredResources(t *testing.T) {
 	raw, err := os.ReadFile(sdkContractFixturePath(t, "keys_response_bounded.json"))
 	if err != nil {
 		t.Fatalf("read bounded keys fixture: %v", err)
@@ -197,11 +199,11 @@ func TestBoundedInventoryUsesSpendPathLogicSigSize(t *testing.T) {
 	if key.SigningFlow != SigningFlowBounded1 {
 		t.Fatalf("signing flow = %q, want %q", key.SigningFlow, SigningFlowBounded1)
 	}
-	if key.LsigSize != 6592 {
-		t.Fatalf("spend-path lsig size = %d, want 6592", key.LsigSize)
+	if key.LogicSigResources == nil || key.LogicSigResources.Spend == nil || key.LogicSigResources.Spend.ProgramBytes != 5169 || key.LogicSigResources.Spend.ArgumentBytes != 1423 {
+		t.Fatalf("spend resources = %#v", key.LogicSigResources)
 	}
-	if key.BoundedAuthorization == nil || key.BoundedAuthorization.PostSigningLogicSigSize != 7872 {
-		t.Fatalf("bounded authorization = %+v, want admin-inclusive size 7872", key.BoundedAuthorization)
+	if key.BoundedAuthorization == nil {
+		t.Fatal("bounded authorization is missing")
 	}
 	if key.BoundedAuthorization.ProgramBindingHex != "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f" {
 		t.Fatalf("program binding = %q, want fixture binding", key.BoundedAuthorization.ProgramBindingHex)
@@ -327,22 +329,26 @@ func TestGoSDKContractKeyTypeMetadata(t *testing.T) {
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		t.Fatalf("unmarshal keytypes fixture: %v", err)
 	}
-	if len(resp.KeyTypes) != 2 {
-		t.Fatalf("KeyTypes length = %d, want 2", len(resp.KeyTypes))
+	if len(resp.KeyTypes) != 3 {
+		t.Fatalf("KeyTypes length = %d, want 3", len(resp.KeyTypes))
 	}
-	if !resp.KeyTypes[0].MnemonicImport {
+	if !resp.KeyTypes[0].MnemonicImport || resp.KeyTypes[0].AuthorizationKind != AuthorizationKindEd25519 {
 		t.Fatal("ed25519 fixture should allow mnemonic import")
 	}
-	if resp.KeyTypes[1].KeyType != "example.generic-policy.v1" {
-		t.Fatalf("generic key type = %q, want example.generic-policy.v1", resp.KeyTypes[1].KeyType)
+	if resp.KeyTypes[1].KeyType != "falcon1024" || resp.KeyTypes[1].AuthorizationKind != AuthorizationKindNativePQ {
+		t.Fatalf("native Falcon key type metadata = %#v", resp.KeyTypes[1])
 	}
-	if resp.KeyTypes[1].DisplayName != "Generic Policy" {
-		t.Fatalf("generic display name = %q, want Generic Policy", resp.KeyTypes[1].DisplayName)
+	generic := resp.KeyTypes[2]
+	if generic.KeyType != "example.generic-policy.v1" {
+		t.Fatalf("generic key type = %q, want example.generic-policy.v1", generic.KeyType)
 	}
-	if resp.KeyTypes[1].MnemonicImport {
+	if generic.DisplayName != "Generic Policy" || generic.AuthorizationKind != AuthorizationKindLogicSig {
+		t.Fatalf("generic key type metadata = %#v", generic)
+	}
+	if generic.MnemonicImport {
 		t.Fatal("generic template fixture should not allow mnemonic import")
 	}
-	modes := resp.KeyTypes[1].CreationParams[3].InputModes
+	modes := generic.CreationParams[3].InputModes
 	if len(modes) != 2 {
 		t.Fatalf("InputModes length = %d, want 2", len(modes))
 	}
@@ -358,7 +364,7 @@ func TestGoSDKContractKeyTypeMetadata(t *testing.T) {
 	if modes[1].InputType != "bytes" {
 		t.Fatalf("InputModes[1].InputType = %q, want bytes", modes[1].InputType)
 	}
-	sentryParam := resp.KeyTypes[1].CreationParams[4]
+	sentryParam := generic.CreationParams[4]
 	if sentryParam.Type != "select" {
 		t.Fatalf("sentry param type = %q, want select", sentryParam.Type)
 	}

@@ -17,6 +17,14 @@ the AGPL-licensed `aplane-algo/aplane` repository.
 Shared signer API contract fixtures live under `contracts/signerapi/` and are
 used by all SDK test suites.
 
+Key-type inventory exposes `authorization_kind` values `ed25519`, `native_pq`,
+and `logic_sig`. Raw and prepared foreign transaction slots may set
+`pq_scheme: "f1"` instead of `lsig_resources` when coordinating an Algorand
+protocol-native Falcon-1024 signer; the two hints are mutually exclusive.
+Signed passthrough LogicSig slots must carry their selected-path
+`lsig_resources`; the SDK forwards the same per-slot resource declaration used
+for foreign LogicSig planning.
+
 Data-directory routing is shared with APlane through `endpoints.yaml`. See the
 [endpoint migration guide](docs/MIGRATION_ENDPOINTS.md) when upgrading from
 the former SDK-only `config.yaml endpoint:` layout.

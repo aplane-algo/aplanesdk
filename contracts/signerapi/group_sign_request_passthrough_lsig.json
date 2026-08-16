@@ -1,0 +1,12 @@
+{
+  "requests": [
+    {
+      "signed_txn_hex": "82a46c73696781a16cc403010203",
+      "lsig_resources": {
+        "program_bytes": 3,
+        "argument_bytes": 0,
+        "max_opcode_cost": 20000
+      }
+    }
+  ]
+}

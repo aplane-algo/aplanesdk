@@ -244,19 +244,43 @@ func TestIntegrationEndpointRegistryConnection(t *testing.T) {
 }
 
 func selfPaymentTxn(address string) (types.Transaction, error) {
-	genesisHash, err := base64.StdEncoding.DecodeString("SGO1GKSzyE7IEPItTxCByw9x8FmnrCDexi9/cOUJOiI=")
+	genesisHashText := strings.TrimSpace(os.Getenv("APLANE_INTEGRATION_GENESIS_HASH"))
+	if genesisHashText == "" {
+		genesisHashText = "SGO1GKSzyE7IEPItTxCByw9x8FmnrCDexi9/cOUJOiI="
+	}
+	genesisID := strings.TrimSpace(os.Getenv("APLANE_INTEGRATION_GENESIS_ID"))
+	if genesisID == "" {
+		genesisID = "testnet-v1.0"
+	}
+	genesisHash, err := base64.StdEncoding.DecodeString(genesisHashText)
 	if err != nil {
-		return types.Transaction{}, err
+		return types.Transaction{}, fmt.Errorf("decode APLANE_INTEGRATION_GENESIS_HASH: %w", err)
+	}
+	if len(genesisHash) != len(types.Digest{}) {
+		return types.Transaction{}, fmt.Errorf("APLANE_INTEGRATION_GENESIS_HASH decodes to %d bytes, want %d", len(genesisHash), len(types.Digest{}))
 	}
 	params := types.SuggestedParams{
 		Fee:             1000,
-		GenesisID:       "testnet-v1.0",
+		GenesisID:       genesisID,
 		GenesisHash:     genesisHash,
 		FirstRoundValid: 1,
 		LastRoundValid:  1000,
 		FlatFee:         true,
 	}
 	return transaction.MakePaymentTxn(address, address, 0, nil, "", params)
+}
+
+func TestIntegrationSelfPaymentTxnUsesConfiguredNetwork(t *testing.T) {
+	t.Setenv("APLANE_INTEGRATION_GENESIS_ID", "fnet-v1")
+	t.Setenv("APLANE_INTEGRATION_GENESIS_HASH", "kUt08LxeVAAGHnh4JoAoAMM9ql/hBwSoiFtlnKNeOxA=")
+	address := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAY5HFKQ"
+	txn, err := selfPaymentTxn(address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if txn.GenesisID != "fnet-v1" || base64.StdEncoding.EncodeToString(txn.GenesisHash[:]) != "kUt08LxeVAAGHnh4JoAoAMM9ql/hBwSoiFtlnKNeOxA=" {
+		t.Fatalf("configured network = %q/%q", txn.GenesisID, base64.StdEncoding.EncodeToString(txn.GenesisHash[:]))
+	}
 }
 
 func hasKeyType(keyTypes []KeyTypeInfo, keyType string) bool {

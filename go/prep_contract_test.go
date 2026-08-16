@@ -89,7 +89,7 @@ func prepParityBuilders(t *testing.T) map[string]func() PreparedGroup {
 		return prepared
 	}
 	foreignSlot := func(txn types.Transaction) PreparedTransaction {
-		return PreparedTransaction{Transaction: &txn, LsigSize: 3035}
+		return PreparedTransaction{Transaction: &txn, LsigResources: &LogicSigResourceUsage{ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000}}
 	}
 	passthroughSlot := func() PreparedTransaction {
 		return PreparedTransaction{SignedTransactionBase64: passthrough}

@@ -165,12 +165,17 @@ def test_endpoint_registry_connection():
 
 
 def _self_payment_txn(address: str) -> transaction.PaymentTxn:
+    genesis_hash = os.environ.get(
+        "APLANE_INTEGRATION_GENESIS_HASH",
+        "SGO1GKSzyE7IEPItTxCByw9x8FmnrCDexi9/cOUJOiI=",
+    ).strip()
+    genesis_id = os.environ.get("APLANE_INTEGRATION_GENESIS_ID", "testnet-v1.0").strip()
     params = transaction.SuggestedParams(
         fee=1000,
         first=1,
         last=1000,
-        gh="SGO1GKSzyE7IEPItTxCByw9x8FmnrCDexi9/cOUJOiI=",
-        gen="testnet-v1.0",
+        gh=genesis_hash,
+        gen=genesis_id,
         flat_fee=True,
     )
     return transaction.PaymentTxn(sender=address, sp=params, receiver=address, amt=0)

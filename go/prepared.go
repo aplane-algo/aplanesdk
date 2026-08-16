@@ -28,7 +28,8 @@ type PreparedTransaction struct {
 	TxnSender               string
 	SignerKey               *KeyInfo
 	LsigArgs                LsigArgs
-	LsigSize                int
+	LsigResources           *LogicSigResourceUsage
+	PQScheme                string
 	AppCallInfo             *AppCallInfo
 	SignedTransactionBase64 string
 	Checks                  []PreparedCheck
@@ -41,7 +42,15 @@ func (p PreparedTransaction) SignRequest() (SignRequest, error) {
 		if err != nil {
 			return SignRequest{}, fmt.Errorf("invalid passthrough transaction: invalid base64: %w", err)
 		}
-		return SignRequest{SignedTxnHex: hex.EncodeToString(decoded)}, nil
+		req := SignRequest{SignedTxnHex: hex.EncodeToString(decoded)}
+		if p.LsigResources != nil {
+			resources := *p.LsigResources
+			req.LsigResources = &resources
+		}
+		if err := req.Validate(); err != nil {
+			return SignRequest{}, err
+		}
+		return req, nil
 	}
 
 	if p.Transaction == nil {
@@ -51,8 +60,15 @@ func (p PreparedTransaction) SignRequest() (SignRequest, error) {
 	txnBytesHex := hex.EncodeToString(encodeTxn(*p.Transaction))
 	if p.AuthAddress == "" {
 		req := SignRequest{TxnBytesHex: txnBytesHex}
-		if p.LsigSize > 0 {
-			req.LsigSize = p.LsigSize
+		if p.LsigResources != nil {
+			resources := *p.LsigResources
+			req.LsigResources = &resources
+		}
+		if p.PQScheme != "" {
+			req.PQScheme = p.PQScheme
+		}
+		if err := req.Validate(); err != nil {
+			return SignRequest{}, err
 		}
 		return req, nil
 	}

@@ -18,7 +18,11 @@
     },
     {
       "txn_bytes_hex": "545802",
-      "lsig_size": 3035
+      "lsig_resources": {
+        "program_bytes": 1600,
+        "argument_bytes": 1423,
+        "max_opcode_cost": 20000
+      }
     }
   ]
 }

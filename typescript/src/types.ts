@@ -25,6 +25,19 @@ export const KEY_TYPE_WITNESS_FALCON1024 = "aplane.witness-falcon1024.v1";
 export const KEY_TYPE_GUARDED_FALCON1024_SENTRY1024 =
   "aplane.falcon1024-sentry1024.v1";
 
+export interface LogicSigResourceUsage {
+  programBytes: number;
+  argumentBytes: number;
+  maxOpcodeCost: number;
+}
+
+export interface LogicSigResourceProfile {
+  default?: LogicSigResourceUsage;
+  spend?: LogicSigResourceUsage;
+  spendingRekey?: LogicSigResourceUsage;
+  adminRekey?: LogicSigResourceUsage;
+}
+
 export interface RuntimeArg {
   /** Internal name for the argument (e.g., "preimage") */
   name: string;
@@ -101,8 +114,6 @@ export interface BoundedAuthorizationInfo {
   layer3Policy: string;
   adminKeyId?: string;
   programBinding?: string;
-  /** Admin-inclusive post-signing LogicSig size for bounded1 inventory. */
-  postSigningLsigSize?: number;
 }
 
 /**
@@ -119,8 +130,8 @@ export interface KeyInfo {
   signingFlow?: string;
   /** Sentry component key type for signing flow "sentry1" */
   sentryComponentKeyType?: string;
-  /** Spend-path LogicSig size for budget calculation; excludes the bounded1 admin signature slot. */
-  lsigSize: number;
+  /** Independent LogicSig resources by authorization path. */
+  logicSigResources?: LogicSigResourceProfile;
   /** True if this is a generic LogicSig (no cryptographic signature needed) */
   isGenericLsig: boolean;
   /** True when this is a witness key, not a spending account */
@@ -290,6 +301,8 @@ export interface KeyTypeInfo {
   displayName?: string;
   /** Description of the key type */
   description?: string;
+  /** Consensus authorization envelope produced by this key type. */
+  authorizationKind?: "ed25519" | "native_pq" | "logic_sig";
   /** Whether this key type requires a LogicSig */
   requiresLogicsig?: boolean;
   /** Number of words in the mnemonic */
@@ -588,8 +601,14 @@ export interface SignRequest {
   app_call_info?: AppCallInfo;
   /** Pre-signed transaction hex (for passthrough) */
   signed_txn_hex?: string;
-  /** LSig size hint for foreign transactions */
-  lsig_size?: number;
+  /** Selected-path LogicSig resource hint for foreign or passthrough transactions */
+  lsig_resources?: {
+    program_bytes: number;
+    argument_bytes: number;
+    max_opcode_cost: number;
+  };
+  /** Native-PQ scheme hint for foreign transactions (currently "f1") */
+  pq_scheme?: string;
 }
 
 /**
@@ -640,8 +659,10 @@ export interface PreparedTransaction {
   signerKey?: KeyInfo;
   /** Optional LogicSig runtime arguments. */
   lsigArgs?: LsigArgs;
-  /** Optional LogicSig size hint for foreign planning. */
-  lsigSize?: number;
+  /** Optional selected-path LogicSig resources for foreign planning. */
+  lsigResources?: LogicSigResourceUsage;
+  /** Optional native-PQ scheme hint for foreign planning. */
+  pqScheme?: string;
   /** Optional app-call approval metadata. */
   appCallInfo?: AppCallInfo;
   /** Base64-encoded signed transaction for passthrough mode. */

@@ -33,10 +33,10 @@ from aplanesdk.signer import (
     GuardedAssemblyRequest,
     GuardedAssemblyTarget,
     GuardedAssemblyResponse,
+    LogicSigResourceUsage,
     SignerClient,
     StatusResponse,
 )
-
 
 FIXTURE_DIR = Path(__file__).resolve().parents[2] / "contracts" / "signerapi"
 CONTRACT_SCHEMA_VERSION = 1
@@ -68,9 +68,7 @@ def mock_response(status_code=200, json_data=None, text=""):
 
 def committed_fixture_names() -> list[str]:
     return sorted(
-        path.name
-        for path in FIXTURE_DIR.glob("*.json")
-        if path.name not in CONTRACT_METADATA_FILES
+        path.name for path in FIXTURE_DIR.glob("*.json") if path.name not in CONTRACT_METADATA_FILES
     )
 
 
@@ -171,7 +169,7 @@ def test_encodes_mixed_group_sign_request_wire_fields():
                 }
             },
             {1: passthrough},
-            {2: 3035},
+            {2: LogicSigResourceUsage(1600, 1423, 20000)},
         )
 
     expected = fixture("group_sign_request_mixed.json")
@@ -190,7 +188,7 @@ def test_list_keys_maps_generic_lsig_metadata():
     generic = keys[1]
     assert generic.public_key_hex == "ffeeddccbbaa99887766554433221100"
     assert generic.key_type == "example.generic-policy.v1"
-    assert generic.lsig_size == 512
+    assert generic.logic_sig_resources.default == LogicSigResourceUsage(512, 32, 20000)
     assert generic.is_generic_lsig is True
     assert generic.signing_args is not None
     assert generic.signing_args[0].name == "preimage"
@@ -206,10 +204,16 @@ def test_list_key_types_maps_creation_and_runtime_metadata():
     with patch.object(client.session, "get", return_value=resp):
         key_types = client.list_key_types()
 
-    generic_policy = key_types[1]
+    native_falcon = key_types[1]
+    assert native_falcon.key_type == "falcon1024"
+    assert native_falcon.authorization_kind == "native_pq"
+    assert native_falcon.requires_logicsig is False
+
+    generic_policy = key_types[2]
     assert generic_policy.key_type == "example.generic-policy.v1"
     assert generic_policy.display_name == "Generic Policy"
     assert generic_policy.requires_logicsig is True
+    assert generic_policy.authorization_kind == "logic_sig"
     assert generic_policy.mnemonic_import is False
     assert generic_policy.creation_params is not None
     assert generic_policy.creation_params[1].param_type == "address[]"
@@ -259,18 +263,21 @@ def test_cancel_response_fixture_maps_state():
 
 def test_list_keys_maps_template_warning_fields():
     client = make_client()
-    resp = mock_response(200, {
-        "count": 1,
-        "keys": [
-            {
-                "address": "ADDR1",
-                "public_key_hex": "abcd",
+    resp = mock_response(
+        200,
+        {
+            "count": 1,
+            "keys": [
+                {
+                    "address": "ADDR1",
+                    "public_key_hex": "abcd",
                     "key_type": "example.generic-policy.v1",
-                "template_provenance_status": "conflict",
-                "template_provenance_note": "template fingerprint differs",
-            }
-        ],
-    })
+                    "template_provenance_status": "conflict",
+                    "template_provenance_note": "template fingerprint differs",
+                }
+            ],
+        },
+    )
 
     with patch.object(client.session, "get", return_value=resp):
         keys = client.list_keys(refresh=True)
@@ -283,13 +290,21 @@ def test_list_keys_maps_template_warning_fields():
 
 def test_list_keys_maps_component_and_guarded_metadata():
     client = make_client()
-    with patch.object(client.session, "get", return_value=mock_response(200, fixture("keys_response_component.json"))):
+    with patch.object(
+        client.session,
+        "get",
+        return_value=mock_response(200, fixture("keys_response_component.json")),
+    ):
         component = client.list_keys(refresh=True)[0]
     assert component.key_type == "aplane.witness-falcon1024.v1"
     assert component.is_witness_key is True
     assert component.is_spending_account is False
 
-    with patch.object(client.session, "get", return_value=mock_response(200, fixture("keys_response_guarded.json"))):
+    with patch.object(
+        client.session,
+        "get",
+        return_value=mock_response(200, fixture("keys_response_guarded.json")),
+    ):
         guarded = client.list_keys(refresh=True)[0]
     assert guarded.key_type == "aplane.falcon1024-sentry1024.v1"
     assert guarded.parameters is not None
@@ -367,9 +382,7 @@ def test_sentry_dtos_round_trip_fixtures():
     assembly_resp = GuardedAssemblyResponse(**fixture("guarded_assembly_response.json"))
     assert len(assembly_resp.signed_group) == 2
 
-    bounded_component_req = BoundedComponentRequest(
-        **fixture("bounded_component_request.json")
-    )
+    bounded_component_req = BoundedComponentRequest(**fixture("bounded_component_request.json"))
     assert bounded_component_req.requests[0]["auth_address"]
     bounded_component_data = fixture("bounded_component_response.json")
     bounded_component_resp = BoundedComponentResponse(
@@ -380,13 +393,9 @@ def test_sentry_dtos_round_trip_fixtures():
     )
     assert bounded_component_resp.components[0]["assembly_receipt"]
 
-    bounded_assembly_req = BoundedAssemblyRequest(
-        **fixture("bounded_assembly_request.json")
-    )
+    bounded_assembly_req = BoundedAssemblyRequest(**fixture("bounded_assembly_request.json"))
     assert bounded_assembly_req.targets[0]["sentry_signature"]
-    bounded_assembly_resp = BoundedAssemblyResponse(
-        **fixture("bounded_assembly_response.json")
-    )
+    bounded_assembly_resp = BoundedAssemblyResponse(**fixture("bounded_assembly_response.json"))
     assert len(bounded_assembly_resp.signed_group) == 2
 
     sync_req = AdminSyncSentryReferencesRequest(**fixture("admin_sync_sentries_request.json"))
@@ -397,17 +406,20 @@ def test_sentry_dtos_round_trip_fixtures():
 
 def test_bounded_inventory_projects_layer3_policy():
     client = make_client()
-    with patch.object(client.session, "get", return_value=mock_response(200, fixture("keys_response_bounded.json"))):
+    with patch.object(
+        client.session,
+        "get",
+        return_value=mock_response(200, fixture("keys_response_bounded.json")),
+    ):
         keys = client.list_keys(refresh=True)
         key = keys[0]
     assert key.signing_flow == "bounded1"
-    assert key.lsig_size == 6592
+    assert key.logic_sig_resources.spend == LogicSigResourceUsage(5169, 1423, 20000)
     assert key.bounded_authorization.layer3_policy == "fixed_allowlist"
     assert key.bounded_authorization.admin_key_id
     assert key.bounded_authorization.program_binding == (
         "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
     )
-    assert key.bounded_authorization.post_signing_lsig_size == 7872
     assert key.bounded_authorization.spend_effects == ["pay", "axfer", "asset_opt_in"]
     assert key.bounded_authorization.admin_operations[0].policy_gate == "none"
     assert key.bounded_authorization.argument_layout[1].source == "admin"
@@ -418,7 +430,11 @@ def test_bounded_inventory_projects_layer3_policy():
     assert corridor.bounded_authorization.sentry.component_key_id
     assert corridor.bounded_authorization.sentry.required_on == ["spend"]
 
-    with patch.object(client.session, "get", return_value=mock_response(200, fixture("keytypes_response_bounded.json"))):
+    with patch.object(
+        client.session,
+        "get",
+        return_value=mock_response(200, fixture("keytypes_response_bounded.json")),
+    ):
         key_types = client.list_key_types()
         key_type = key_types[0]
     assert key_type.bounded_authorization.layer3_policy == "fixed_allowlist"

@@ -160,7 +160,10 @@ function buildGroups(addresses: Record<string, string>): Record<string, Prepared
     authAddress: auth,
     ...extra,
   });
-  const foreignSlot = (transaction: any) => ({ transaction, lsigSize: 3035 });
+  const foreignSlot = (transaction: any) => ({
+    transaction,
+    lsigResources: { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 },
+  });
   const passthroughSlot = { signedTransactionBase64: passthrough };
 
   return {
@@ -215,4 +218,23 @@ describe("prepared sign request parity fixtures", () => {
       assert.deepEqual(preparedGroupToSignRequests(group), testCase.expected_requests);
     });
   }
+
+  it("projects native-PQ foreign authorization", () => {
+    const foreign = groups.foreign_lsig_context.transactions[0];
+    const requests = preparedGroupToSignRequests({
+      transactions: [{ ...foreign, lsigResources: undefined, pqScheme: "f1" }],
+    });
+    assert.equal(requests[0].pq_scheme, "f1");
+    assert.equal(requests[0].lsig_resources, undefined);
+  });
+
+  it("rejects conflicting foreign authorization hints", () => {
+    const foreign = groups.foreign_lsig_context.transactions[0];
+    assert.throws(
+      () => preparedGroupToSignRequests({
+        transactions: [{ ...foreign, lsigResources: { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 }, pqScheme: "f1" }],
+      }),
+      /both pqScheme and lsigResources/,
+    );
+  });
 });

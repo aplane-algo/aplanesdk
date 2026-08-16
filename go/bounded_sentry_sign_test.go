@@ -112,7 +112,10 @@ func TestSignPreparedBoundedSentryGroupOneTarget(t *testing.T) {
 			Transaction: &txn, AuthAddress: bounded,
 			SignerKey: &KeyInfo{
 				Address: bounded, KeyType: "aplane.corridor.v1",
-				SigningFlow: SigningFlowBoundedSentry1, LsigSize: 9012,
+				SigningFlow: SigningFlowBoundedSentry1,
+				LogicSigResources: &LogicSigResourceProfile{
+					Spend: &LogicSigResourceUsage{ProgramBytes: 5308, ArgumentBytes: 3358, MaxOpcodeCost: 20000},
+				},
 				SentryComponentKeyType: KeyTypeWitnessFalcon1024,
 				BoundedAuthorization: &BoundedAuthorizationInfo{
 					MaxFee: 1000,
@@ -455,7 +458,7 @@ func TestRequestBoundedPrimaryPassthroughVerifiesTransactionIdentity(t *testing.
 			[]string{canonical},
 			1,
 			map[int]GuardedSignTarget{},
-			map[int]int{},
+			map[int]*LogicSigResourceUsage{},
 			[]GuardedPrimarySignTarget{{TargetIndex: 0, AuthAddress: sender}},
 		)
 	}

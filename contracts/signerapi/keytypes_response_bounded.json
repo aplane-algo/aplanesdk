@@ -5,6 +5,7 @@
       "family": "falcon1024-allowlist-alock",
       "display_name": "Falcon-1024 Bounded Authorization Allowlist",
       "description": "Fixed allowlist with external Falcon contract administration",
+      "authorization_kind": "logic_sig",
       "requires_logicsig": true,
       "mnemonic_word_count": 0,
       "mnemonic_import": false,
@@ -14,7 +15,7 @@
         "contract": "bounded1",
         "base_signature_arg_layout": {
           "count": 1,
-          "max_sizes": [1280]
+          "max_sizes": [1423]
         },
         "spend_effects": ["pay", "axfer", "asset_opt_in"],
         "max_fee": 10000,
@@ -24,8 +25,8 @@
         "runtime_args": [],
         "derived_args": [],
         "argument_layout": [
-          {"index": 0, "name": "base_signature_0", "source": "base_signature", "max_size": 1280, "paths": {"spend": "required", "spending_rekey": "required", "admin_rekey": "required"}},
-          {"index": 1, "name": "admin_signature", "source": "admin", "max_size": 1280, "paths": {"spend": "forbidden", "spending_rekey": "forbidden", "admin_rekey": "required"}}
+          {"index": 0, "name": "base_signature_0", "source": "base_signature", "max_size": 1423, "paths": {"spend": "required", "spending_rekey": "required", "admin_rekey": "required"}},
+          {"index": 1, "name": "admin_signature", "source": "admin", "max_size": 1423, "paths": {"spend": "forbidden", "spending_rekey": "forbidden", "admin_rekey": "required"}}
         ],
         "layer3_policy": "fixed_allowlist"
       },
@@ -53,6 +54,7 @@
       "family": "corridor",
       "display_name": "Corridor",
       "description": "Bounded Falcon-1024 account with sentry authorization and a Merkle recipient allowlist.",
+      "authorization_kind": "logic_sig",
       "requires_logicsig": true,
       "mnemonic_word_count": 0,
       "mnemonic_import": false,
@@ -64,7 +66,7 @@
         "base_signature_arg_layout": {
           "count": 1,
           "max_sizes": [
-            1280
+            1423
           ]
         },
         "spend_effects": [
@@ -83,7 +85,7 @@
         "sentry": {
           "contract": "sentry1",
           "component_key_type": "aplane.witness-falcon1024.v1",
-          "signature_max_size": 1280,
+          "signature_max_size": 1423,
           "required_on": [
             "spend"
           ]
@@ -102,7 +104,7 @@
             "index": 0,
             "name": "base_signature_0",
             "source": "base_signature",
-            "max_size": 1280,
+            "max_size": 1423,
             "paths": {
               "spend": "required",
               "spending_rekey": "required",
@@ -124,7 +126,7 @@
             "index": 2,
             "name": "sentry_signature",
             "source": "sentry",
-            "max_size": 1280,
+            "max_size": 1423,
             "paths": {
               "spend": "required",
               "spending_rekey": "forbidden",
@@ -135,7 +137,7 @@
             "index": 3,
             "name": "admin_signature",
             "source": "admin",
-            "max_size": 1280,
+            "max_size": 1423,
             "paths": {
               "spend": "forbidden",
               "spending_rekey": "forbidden",

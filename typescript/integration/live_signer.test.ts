@@ -189,6 +189,11 @@ test(
 );
 
 function selfPaymentTxn(address: string): algosdk.Transaction {
+  const genesisHash =
+    (process.env.APLANE_INTEGRATION_GENESIS_HASH || "").trim() ||
+    "SGO1GKSzyE7IEPItTxCByw9x8FmnrCDexi9/cOUJOiI=";
+  const genesisID =
+    (process.env.APLANE_INTEGRATION_GENESIS_ID || "").trim() || "testnet-v1.0";
   return algosdk.makePaymentTxnWithSuggestedParamsFromObject({
     sender: address,
     receiver: address,
@@ -197,8 +202,8 @@ function selfPaymentTxn(address: string): algosdk.Transaction {
       fee: 1000,
       firstValid: 1,
       lastValid: 1000,
-      genesisHash: Buffer.from("SGO1GKSzyE7IEPItTxCByw9x8FmnrCDexi9/cOUJOiI=", "base64"),
-      genesisID: "testnet-v1.0",
+      genesisHash: Buffer.from(genesisHash, "base64"),
+      genesisID,
       flatFee: true,
     },
   });

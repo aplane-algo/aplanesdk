@@ -29,7 +29,6 @@ class MockSignerClient {
         address: zeroAddress,
         keyType: "ed25519",
         publicKeyHex: "",
-        lsigSize: 0,
         isGenericLsig: false,
       },
     ];

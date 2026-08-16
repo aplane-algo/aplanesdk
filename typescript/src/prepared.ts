@@ -5,6 +5,7 @@ import type {
   PreparedGroup,
   PreparedTransaction,
   SignRequest,
+  LogicSigResourceUsage,
 } from "./types.js";
 import { SignerError } from "./errors.js";
 import { encodeLsigArgs, encodeTransaction, bytesToHex } from "./encoding.js";
@@ -28,9 +29,13 @@ export function preparedTransactionToSignRequest(
   prepared: PreparedTransaction,
 ): SignRequest {
   if (prepared.signedTransactionBase64) {
-    return {
+    const request: SignRequest = {
       signed_txn_hex: base64ToHex(prepared.signedTransactionBase64),
     };
+    if (prepared.lsigResources) {
+      request.lsig_resources = toWireLogicSigResources(prepared.lsigResources);
+    }
+    return request;
   }
 
   if (!prepared.transaction) {
@@ -40,8 +45,14 @@ export function preparedTransactionToSignRequest(
   const [txnBytesHex, txnSender] = encodeTransaction(prepared.transaction);
   if (!prepared.authAddress) {
     const request: SignRequest = { txn_bytes_hex: txnBytesHex };
-    if (prepared.lsigSize && prepared.lsigSize > 0) {
-      request.lsig_size = prepared.lsigSize;
+    if (prepared.lsigResources) {
+      request.lsig_resources = toWireLogicSigResources(prepared.lsigResources);
+    }
+    if (prepared.pqScheme) {
+      if (request.lsig_resources) {
+        throw new SignerError("foreign transaction cannot specify both pqScheme and lsigResources");
+      }
+      request.pq_scheme = prepared.pqScheme;
     }
     return request;
   }
@@ -58,6 +69,14 @@ export function preparedTransactionToSignRequest(
     request.app_call_info = prepared.appCallInfo;
   }
   return request;
+}
+
+function toWireLogicSigResources(resources: LogicSigResourceUsage): NonNullable<SignRequest["lsig_resources"]> {
+  return {
+    program_bytes: resources.programBytes,
+    argument_bytes: resources.argumentBytes,
+    max_opcode_cost: resources.maxOpcodeCost,
+  };
 }
 
 /**

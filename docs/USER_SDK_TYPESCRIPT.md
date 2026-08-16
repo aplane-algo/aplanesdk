@@ -310,7 +310,7 @@ fails or an older signer omits the field, signing falls back to 6 minutes.
 ```ts
 const keys = await client.listKeys(true);
 for (const key of keys) {
-  console.log(key.address, key.keyType, key.lsigSize);
+  console.log(key.address, key.keyType, key.logicSigResources);
 }
 ```
 
@@ -319,7 +319,7 @@ for (const key of keys) {
 - `address`
 - `publicKeyHex`
 - `keyType`
-- `lsigSize`
+- `logicSigResources`
 - `isGenericLsig`
 - `signingArgs`
 - `templateProvenanceStatus`
@@ -327,9 +327,12 @@ for (const key of keys) {
 - `templateStatus`
 - `templateWarning`
 
-`lsigSize` is the spend-path LogicSig budget. For `bounded1`, it excludes the
-external contract-admin signature slot;
-`boundedAuthorization.postSigningLsigSize` is admin-inclusive.
+`logicSigResources` publishes independent program-byte, argument-byte, and
+maximum-opcode-cost demand by authorization path. Bounded keys may publish
+different `spend`, `spendingRekey`, and `adminRekey` profiles.
+
+`KeyTypeInfo.authorizationKind` distinguishes `ed25519`, `native_pq`, and
+`logic_sig`. `requiresLogicsig === false` alone does not imply Ed25519.
 
 The TypeScript SDK exposes bounded inventory and ordinary spend signing only.
 It does not expose `/sign/bounded-admin` or build and complete contract-admin
@@ -430,11 +433,16 @@ Use `/plan` when you need:
 
 For multi-party workflows, the standard high-level flow is:
 
-1. use `planGroup()` with foreign slots and `lsigSizes`
+1. use `planGroup()` with foreign slots and `lsigResources`
 2. collect the finalized foreign signatures from the other party
 3. resubmit those signed slots as `passthrough` for final signing
 
 Do not mix foreign entries and `passthrough` entries in the same request.
+
+For a foreign native Falcon-1024 slot, set `pq_scheme: "f1"` on a raw
+`SignRequest`, or `pqScheme: "f1"` on a `PreparedTransaction`. Do not combine
+it with `lsig_resources`/`lsigResources`; it declares native-PQ fee usage
+rather than LogicSig resources.
 
 `assembleGroup()` is a lower-level utility for workflows that already have
 partial list-per-slot outputs where unsigned slots are represented by empty
@@ -618,7 +626,7 @@ never trigger another signing request automatically.
   caller-provided algod simulation endpoint.
 - passthrough entries are base64-encoded signed transaction msgpack slots that
   already carry the intended group ID
-- foreign planning can include `lsigSizes` hints for LogicSig budget planning
+- foreign planning can include `lsigResources` for LogicSig resource planning
 
 The helper `sendRawTransaction()` accepts the base64 string returned by the SDK
 and handles common algod rejection cases with cleaner APlane error types.
