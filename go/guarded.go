@@ -397,7 +397,10 @@ func buildPreparedGuardedSignOptions(ctx context.Context, opts PreparedGuardedGr
 			if item.AuthAddress == "" {
 				return GuardedSignOptions{}, fmt.Errorf("prepared transaction %d: guarded auth address is required", i)
 			}
-			resources := selectedSpendResources(key, item.LsigResources)
+			resources, err := selectedPreparedResources(key, item.Transaction)
+			if err != nil {
+				return GuardedSignOptions{}, fmt.Errorf("prepared transaction %d: %w", i, err)
+			}
 			if resources == nil {
 				return GuardedSignOptions{}, fmt.Errorf("prepared transaction %d: guarded LogicSig resources are unavailable", i)
 			}
@@ -462,22 +465,37 @@ func buildPreparedGuardedSignOptions(ctx context.Context, opts PreparedGuardedGr
 	}, nil
 }
 
-func selectedSpendResources(key *KeyInfo, fallback *LogicSigResourceUsage) *LogicSigResourceUsage {
-	if key != nil && key.LogicSigResources != nil {
-		selected := key.LogicSigResources.Default
-		if key.LogicSigResources.Spend != nil {
-			selected = key.LogicSigResources.Spend
+func selectedPreparedResources(key *KeyInfo, txn *types.Transaction) (*LogicSigResourceUsage, error) {
+	if key == nil || key.LogicSigResources == nil {
+		return nil, nil
+	}
+	profile := key.LogicSigResources
+	selected := profile.Default
+	if profile.Spend != nil {
+		selected = profile.Spend
+	}
+	if key.BoundedAuthorization != nil && txn != nil && !txn.RekeyTo.IsZero() {
+		authorization := ""
+		for _, operation := range key.BoundedAuthorization.AdminOperations {
+			if operation.Kind == "rekey" {
+				authorization = operation.Authorization
+				break
+			}
 		}
-		if selected != nil {
-			copy := *selected
-			return &copy
+		switch authorization {
+		case "spending_key":
+			selected = profile.SpendingRekey
+		case "admin_key":
+			selected = profile.AdminRekey
+		default:
+			return nil, fmt.Errorf("bounded rekey authorization metadata is unavailable")
 		}
 	}
-	if fallback == nil {
-		return nil
+	if selected == nil {
+		return nil, nil
 	}
-	copy := *fallback
-	return &copy
+	copy := *selected
+	return &copy, nil
 }
 
 func guardedSentryPublicKey(key *KeyInfo) string {

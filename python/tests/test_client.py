@@ -46,6 +46,7 @@ from aplanesdk.signer import (
     BoundedAssemblyResponse,
     BoundedSentryAuthorizationInfo,
     BoundedAuthorizationInfo,
+    BoundedAdminOperationInfo,
     BoundedSignatureArgLayout,
     GuardedSignTarget,
     GuardedPrimarySignTarget,
@@ -68,6 +69,7 @@ from aplanesdk.signer import (
     _validate_bounded_component_plan,
     _validate_bounded_target_fees,
     _decode_canonical_group,
+    _selected_prepared_resources,
 )
 
 
@@ -90,6 +92,47 @@ def sdk_test_address(seed: int) -> str:
     raw = bytearray(32)
     raw[-1] = seed
     return algo_encoding.encode_address(bytes(raw))
+
+
+@pytest.mark.parametrize(
+    ("rekey_to", "authorization", "expected_program_bytes"),
+    [
+        (None, "", 1001),
+        (sdk_test_address(2), "spending_key", 2002),
+        (sdk_test_address(3), "admin_key", 3003),
+    ],
+)
+def test_selected_prepared_resources_uses_bounded_authorization_path(
+    rekey_to, authorization, expected_program_bytes
+):
+    operations = [BoundedAdminOperationInfo("rekey", authorization, "none")] if rekey_to else []
+    key = KeyInfo(
+        address=sdk_test_address(1),
+        key_type="aplane.corridor.v1",
+        logic_sig_resources=LogicSigResourceProfile(
+            spend=LogicSigResourceUsage(1001, 101, 10001),
+            spending_rekey=LogicSigResourceUsage(2002, 202, 20002),
+            admin_rekey=LogicSigResourceUsage(3003, 303, 30003),
+        ),
+        bounded_authorization=BoundedAuthorizationInfo(
+            contract="bounded1",
+            base_signature_arg_layout=BoundedSignatureArgLayout(1, [1423]),
+            spend_effects=["pay"],
+            max_fee=1000,
+            admin_operations=operations,
+            runtime_args=[],
+            derived_args=[],
+            argument_layout=[],
+            layer3_policy="fixed_allowlist",
+        ),
+    )
+    txn = MagicMock(rekey_to=rekey_to)
+
+    selected = _selected_prepared_resources(key, txn)
+
+    assert selected is not None
+    assert selected.program_bytes == expected_program_bytes
+    assert selected is not key.logic_sig_resources.spend
 
 
 def guarded_test_resources():

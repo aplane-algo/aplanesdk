@@ -4,6 +4,7 @@
 package aplane
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"os"
@@ -286,7 +287,7 @@ func assertNativeFalconEnvelope(t *testing.T, signed []byte) {
 		} `codec:"pqsig"`
 		Txn types.Transaction `codec:"txn"`
 	}
-	if err := msgpack.Decode(signed, &envelope); err != nil {
+	if err := msgpack.NewLenientDecoder(bytes.NewReader(signed)).Decode(&envelope); err != nil {
 		t.Fatalf("decode native Falcon signed envelope: %v", err)
 	}
 	if envelope.PQsig.Scheme != [2]byte{'f', '1'} {
@@ -298,6 +299,26 @@ func assertNativeFalconEnvelope(t *testing.T, signed []byte) {
 	if len(envelope.PQsig.Signature) == 0 {
 		t.Fatal("native Falcon envelope has empty signature")
 	}
+}
+
+func TestAssertNativeFalconEnvelopeAllowsAdditionalEnvelopeMembers(t *testing.T) {
+	var envelope struct {
+		PQsig struct {
+			Scheme    [2]byte `codec:"sch"`
+			Salt      uint8   `codec:"slt"`
+			PublicKey []byte  `codec:"pk"`
+			Signature []byte  `codec:"sig"`
+		} `codec:"pqsig"`
+		Txn      types.Transaction `codec:"txn"`
+		AuthAddr types.Address     `codec:"sgnr"`
+	}
+	envelope.PQsig.Scheme = [2]byte{'f', '1'}
+	envelope.PQsig.PublicKey = []byte{1}
+	envelope.PQsig.Signature = []byte{2}
+	envelope.Txn.Type = types.PaymentTx
+	envelope.AuthAddr[31] = 3
+
+	assertNativeFalconEnvelope(t, msgpack.Encode(envelope))
 }
 
 func TestIntegrationEndpointRegistryConnection(t *testing.T) {

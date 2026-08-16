@@ -1510,22 +1510,37 @@ def _parse_lsig_resource_profile(data: Any) -> Optional[LogicSigResourceProfile]
     )
 
 
-def _selected_spend_resources(
-    key: Optional[KeyInfo], fallback: Optional[LogicSigResourceUsage]
+def _selected_prepared_resources(
+    key: Optional[KeyInfo], txn: Optional[transaction.Transaction]
 ) -> Optional[LogicSigResourceUsage]:
-    if key and key.logic_sig_resources:
-        selected = key.logic_sig_resources.spend or key.logic_sig_resources.default
-        if selected:
-            return LogicSigResourceUsage(**vars(selected))
-    return LogicSigResourceUsage(**vars(fallback)) if fallback else None
+    if not key or not key.logic_sig_resources:
+        return None
+    profile = key.logic_sig_resources
+    selected = profile.spend or profile.default
+    if key.bounded_authorization and txn is not None and txn.rekey_to is not None:
+        authorization = next(
+            (
+                operation.authorization
+                for operation in key.bounded_authorization.admin_operations
+                if operation.kind == "rekey"
+            ),
+            "",
+        )
+        if authorization == "spending_key":
+            selected = profile.spending_rekey
+        elif authorization == "admin_key":
+            selected = profile.admin_rekey
+        else:
+            raise ValueError("bounded rekey authorization metadata is unavailable")
+    return LogicSigResourceUsage(**vars(selected)) if selected else None
 
 
-def _required_spend_resources(
+def _required_prepared_resources(
     key: Optional[KeyInfo],
-    fallback: Optional[LogicSigResourceUsage],
+    txn: Optional[transaction.Transaction],
     label: str,
 ) -> LogicSigResourceUsage:
-    return _require_lsig_resources(_selected_spend_resources(key, fallback), label)
+    return _require_lsig_resources(_selected_prepared_resources(key, txn), label)
 
 
 def _parse_bounded_authorization(data: Any) -> Optional[BoundedAuthorizationInfo]:
@@ -4938,9 +4953,9 @@ def _build_prepared_guarded_sign_inputs(
                 continue
             if not item.auth_address:
                 raise ValueError(f"prepared transaction {index}: guarded auth address is required")
-            resources = _required_spend_resources(
+            resources = _required_prepared_resources(
                 key,
-                item.lsig_resources,
+                item.transaction,
                 f"prepared transaction {index}: guarded",
             )
             guarded_targets.append(
@@ -5498,7 +5513,7 @@ def sign_prepared_bounded_sentry_group(
             key = user_client.get_key_info(item.auth_address)
         if key is None:
             raise ValueError(f"prepared transaction {index}: signer key metadata is required")
-        resources = _selected_spend_resources(key, item.lsig_resources)
+        resources = _selected_prepared_resources(key, item.transaction)
         if key.signing_flow == SIGNING_FLOW_BOUNDED_SENTRY1:
             if not item.auth_address:
                 raise ValueError(f"prepared transaction {index}: bounded auth address is required")

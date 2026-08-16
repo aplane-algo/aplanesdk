@@ -61,7 +61,10 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 			return nil, fmt.Errorf("prepared transaction %d: signer key metadata is required", i)
 		}
 
-		resources := selectedSpendResources(key, item.LsigResources)
+		resources, err := selectedPreparedResources(key, item.Transaction)
+		if err != nil {
+			return nil, fmt.Errorf("prepared transaction %d: %w", i, err)
+		}
 		switch key.SigningFlow {
 		case SigningFlowBoundedSentry1:
 			if item.AuthAddress == "" {

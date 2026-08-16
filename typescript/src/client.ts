@@ -431,9 +431,9 @@ async function buildPreparedGuardedSignOptions(
       if (!item.authAddress) {
         throw new SignerError(`prepared transaction ${index}: guarded auth address is required`);
       }
-      const resources = requiredSpendResources(
+      const resources = requiredPreparedResources(
         key,
-        item.lsigResources,
+        item.transaction,
         `prepared transaction ${index}: guarded`,
       );
       guardedTargets.push({
@@ -832,7 +832,7 @@ export async function signPreparedBoundedSentryGroup(
     if (!key) {
       throw new SignerError(`prepared transaction ${index}: signer key metadata is required`);
     }
-    const resources = selectedSpendResources(key, item.lsigResources);
+    const resources = selectedPreparedResources(key, item.transaction);
     if (key.signingFlow === SIGNING_FLOW_BOUNDED_SENTRY1) {
       if (!item.authAddress) {
         throw new SignerError(`prepared transaction ${index}: bounded auth address is required`);
@@ -1434,17 +1434,34 @@ function mapLogicSigResourceProfile(raw: any): LogicSigResourceProfile | undefin
   };
 }
 
-function selectedSpendResources(key?: KeyInfo, fallback?: LogicSigResourceUsage): LogicSigResourceUsage | undefined {
-  const selected = key?.logicSigResources?.spend || key?.logicSigResources?.default || fallback;
+function selectedPreparedResources(
+  key: KeyInfo | undefined,
+  txn: Transaction | undefined,
+): LogicSigResourceUsage | undefined {
+  const profile = key?.logicSigResources;
+  if (!profile) return undefined;
+  let selected = profile.spend || profile.default;
+  if (key?.boundedAuthorization && txn?.rekeyTo !== undefined) {
+    const authorization = key.boundedAuthorization.adminOperations.find(
+      (operation) => operation.kind === "rekey",
+    )?.authorization;
+    if (authorization === "spending_key") {
+      selected = profile.spendingRekey;
+    } else if (authorization === "admin_key") {
+      selected = profile.adminRekey;
+    } else {
+      throw new SignerError("bounded rekey authorization metadata is unavailable");
+    }
+  }
   return selected ? { ...selected } : undefined;
 }
 
-function requiredSpendResources(
+function requiredPreparedResources(
   key: KeyInfo | undefined,
-  fallback: LogicSigResourceUsage | undefined,
+  txn: Transaction | undefined,
   label: string,
 ): LogicSigResourceUsage {
-  return requireLogicSigResources(selectedSpendResources(key, fallback), label);
+  return requireLogicSigResources(selectedPreparedResources(key, txn), label);
 }
 
 function validateAssemblyIndex(index: number, groupLen: number, covered: Set<number>): void {

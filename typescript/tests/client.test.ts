@@ -2133,6 +2133,101 @@ describe("SignerClient", () => {
       assert.ok(result.boundedAssemblyResponse);
     });
 
+    it("selects bounded LogicSig resources from the prepared transaction path", async () => {
+      const bounded = testAddress(41);
+      const receiver = testAddress(42);
+      const rekeyTo = testAddress(43);
+      const suggestedParams = {
+        fee: 1000n,
+        minFee: 1000n,
+        firstValid: 1n,
+        lastValid: 100n,
+        genesisHash: new Uint8Array(32),
+        genesisID: "testnet-v1",
+        flatFee: true,
+      };
+      const profiles = {
+        spend: { programBytes: 1001, argumentBytes: 101, maxOpcodeCost: 10001 },
+        spendingRekey: { programBytes: 2002, argumentBytes: 202, maxOpcodeCost: 20002 },
+        adminRekey: { programBytes: 3003, argumentBytes: 303, maxOpcodeCost: 30003 },
+      };
+      const cases = [
+        { name: "spend", authorization: "spending_key", rekey: false, expected: profiles.spend },
+        { name: "spending rekey", authorization: "spending_key", rekey: true, expected: profiles.spendingRekey },
+        { name: "admin rekey", authorization: "admin_key", rekey: true, expected: profiles.adminRekey },
+      ];
+
+      for (const item of cases) {
+        const user = new SignerClient("http://localhost:11270", "test-token");
+        const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+          sender: bounded,
+          receiver: item.rekey ? bounded : receiver,
+          amount: item.rekey ? 0n : 1n,
+          suggestedParams,
+          ...(item.rekey ? { rekeyTo } : {}),
+        });
+        (user as any).requestBoundedComponent = async (request: any) => ({
+          request_id: `component-${item.name}`,
+          transactions: [request.requests[0].txn_bytes_hex],
+          components: [{
+            target_index: 0,
+            bounded_account: bounded,
+            base_signatures: ["base-sig"],
+            assembly_receipt: "receipt",
+            signature_scheme: "aplane.falcon1024.v1",
+          }],
+        });
+
+        await assert.rejects(
+          signPreparedGuardedGroup({
+            userClient: user,
+            sentryResolver: async (target) => {
+              assert.deepEqual(target.logicSigResources, item.expected);
+              throw new Error(`observed ${item.name}`);
+            },
+            preparedGroup: {
+              transactions: [{
+                transaction: txn,
+                authAddress: bounded,
+                signerKey: {
+                  address: bounded,
+                  publicKeyHex: "",
+                  keyType: "aplane.corridor.v1",
+                  signingFlow: SIGNING_FLOW_BOUNDED_SENTRY1,
+                  sentryComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
+                  logicSigResources: profiles,
+                  isGenericLsig: false,
+                  boundedAuthorization: {
+                    contract: "bounded1",
+                    baseSignatureArgLayout: { count: 1, maxSizes: [1423] },
+                    spendEffects: ["pay"],
+                    maxFee: 1000,
+                    adminOperations: [{
+                      kind: "rekey",
+                      authorization: item.authorization,
+                      policyGate: "none",
+                    }],
+                    sentry: {
+                      contract: "sentry1",
+                      componentKeyType: KEY_TYPE_WITNESS_FALCON1024,
+                      publicKeyHex: "aabb",
+                      signatureMaxSize: 1423,
+                      requiredOn: ["spend"],
+                    },
+                    runtimeArgs: [],
+                    derivedArgs: [],
+                    argumentLayout: [],
+                    layer3Policy: "fixed_allowlist",
+                  },
+                },
+              }],
+            },
+          }),
+          new RegExp(`observed ${item.name}`),
+        );
+      }
+    });
+
     it("rejects mixed sentry1 and bounded-sentry1 prepared groups", async () => {
       const user = new SignerClient("http://localhost:11270", "test-token");
       await assert.rejects(

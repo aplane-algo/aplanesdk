@@ -35,6 +35,50 @@ func guardedTestResources() *LogicSigResourceUsage {
 	return &LogicSigResourceUsage{ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000}
 }
 
+func TestSelectedPreparedResourcesUsesBoundedAuthorizationPath(t *testing.T) {
+	spend := &LogicSigResourceUsage{ProgramBytes: 1001, ArgumentBytes: 101, MaxOpcodeCost: 10001}
+	spendingRekey := &LogicSigResourceUsage{ProgramBytes: 2002, ArgumentBytes: 202, MaxOpcodeCost: 20002}
+	adminRekey := &LogicSigResourceUsage{ProgramBytes: 3003, ArgumentBytes: 303, MaxOpcodeCost: 30003}
+	var rekeyTo types.Address
+	rekeyTo[31] = 1
+
+	tests := []struct {
+		name          string
+		rekey         bool
+		authorization string
+		want          *LogicSigResourceUsage
+	}{
+		{name: "spend", want: spend},
+		{name: "spending-key rekey", rekey: true, authorization: "spending_key", want: spendingRekey},
+		{name: "admin-key rekey", rekey: true, authorization: "admin_key", want: adminRekey},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			txn := &types.Transaction{}
+			operations := []BoundedAdminOperationInfo(nil)
+			if tt.rekey {
+				txn.RekeyTo = rekeyTo
+				operations = []BoundedAdminOperationInfo{{Kind: "rekey", Authorization: tt.authorization}}
+			}
+			got, err := selectedPreparedResources(&KeyInfo{
+				LogicSigResources: &LogicSigResourceProfile{
+					Spend: spend, SpendingRekey: spendingRekey, AdminRekey: adminRekey,
+				},
+				BoundedAuthorization: &BoundedAuthorizationInfo{AdminOperations: operations},
+			}, txn)
+			if err != nil {
+				t.Fatalf("selectedPreparedResources() error = %v", err)
+			}
+			if got == nil || *got != *tt.want {
+				t.Fatalf("selectedPreparedResources() = %+v, want %+v", got, tt.want)
+			}
+			if got == tt.want {
+				t.Fatal("selectedPreparedResources() returned shared inventory metadata")
+			}
+		})
+	}
+}
+
 func createGuardedDummies(firstTxn types.Transaction, count int) ([]types.Transaction, error) {
 	dummyAcct := crypto.LogicSigAccount{Lsig: types.LogicSig{Logic: guardedDummyProgram}}
 	dummyAddr, err := dummyAcct.Address()
