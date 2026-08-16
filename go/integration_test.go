@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/algorand/go-algorand-sdk/v2/encoding/msgpack"
 	"github.com/algorand/go-algorand-sdk/v2/transaction"
 	"github.com/algorand/go-algorand-sdk/v2/types"
 	"gopkg.in/yaml.v3"
@@ -24,7 +25,7 @@ type liveSignerConfig struct {
 	} `yaml:"endpoint"`
 }
 
-func liveSignerClient(t *testing.T) (*SignerClient, string) {
+func liveSignerClient(t *testing.T) *SignerClient {
 	t.Helper()
 
 	if os.Getenv("APLANE_SDK_INTEGRATION") != "1" {
@@ -32,10 +33,6 @@ func liveSignerClient(t *testing.T) (*SignerClient, string) {
 	}
 
 	token := liveSignerToken(t)
-	keyType := os.Getenv("APLANE_SDK_KEY_TYPE")
-	if keyType == "" {
-		keyType = "ed25519"
-	}
 
 	if host := strings.TrimSpace(os.Getenv("APLANE_SDK_SSH_HOST")); host != "" {
 		client, err := ConnectSSH(host, token, liveRequiredEnv(t, "APLANE_SDK_SSH_KEY_PATH"), &SSHConnectOptions{
@@ -46,7 +43,7 @@ func liveSignerClient(t *testing.T) (*SignerClient, string) {
 		if err != nil {
 			t.Fatalf("connect to live signer over SSH: %v", err)
 		}
-		return client, keyType
+		return client
 	}
 
 	baseURL := strings.TrimRight(os.Getenv("APLANE_SDK_SIGNER_URL"), "/")
@@ -54,7 +51,7 @@ func liveSignerClient(t *testing.T) (*SignerClient, string) {
 		port := liveSignerPort(t)
 		baseURL = fmt.Sprintf("http://127.0.0.1:%d", port)
 	}
-	return NewSignerClientWithToken(baseURL, token), keyType
+	return NewSignerClientWithToken(baseURL, token)
 }
 
 func liveRequiredEnv(t *testing.T, name string) string {
@@ -133,8 +130,9 @@ func liveSignerToken(t *testing.T) string {
 	return ""
 }
 
-func TestIntegrationLiveSignerClientWorkflow(t *testing.T) {
-	client, keyType := liveSignerClient(t)
+func TestIntegrationLiveSignerEd25519Workflow(t *testing.T) {
+	const keyType = "ed25519"
+	client := liveSignerClient(t)
 	defer client.Close()
 
 	healthy, err := client.Health()
@@ -218,6 +216,87 @@ func TestIntegrationLiveSignerClientWorkflow(t *testing.T) {
 	}
 	if hasKey(keys, address) {
 		t.Fatalf("deleted key %s was still returned by list keys", address)
+	}
+}
+
+func TestIntegrationNativeFalconSigning(t *testing.T) {
+	const keyType = "falcon1024"
+	client := liveSignerClient(t)
+	defer client.Close()
+
+	keyTypes, err := client.ListKeyTypes()
+	if err != nil {
+		t.Fatalf("list key types: %v", err)
+	}
+	if !hasKeyType(keyTypes, keyType) {
+		t.Fatalf("key type %q not advertised by signer", keyType)
+	}
+
+	before, err := client.GetStatus()
+	if err != nil {
+		t.Fatalf("get identity before native Falcon generate: %v", err)
+	}
+	generated, err := client.GenerateKey(keyType, map[string]string{})
+	if err != nil {
+		t.Fatalf("generate native Falcon key: %v", err)
+	}
+	address := generated.Address
+	if address == "" {
+		t.Fatal("generated native Falcon key returned empty address")
+	}
+	cleanup := true
+	defer func() {
+		if cleanup {
+			if err := client.DeleteKey(address); err != nil {
+				t.Logf("cleanup delete native Falcon key %s failed: %v", address, err)
+			}
+		}
+	}()
+
+	afterGenerate := waitForKeysetRevision(t, client, before.KeysetRevision, "native Falcon generate")
+	txn, err := selfPaymentTxn(address)
+	if err != nil {
+		t.Fatalf("build native Falcon self-payment: %v", err)
+	}
+	signed, err := client.SignTransaction(txn, address, nil)
+	if err != nil {
+		t.Fatalf("sign native Falcon transaction: %v", err)
+	}
+	signedBytes, err := base64.StdEncoding.DecodeString(signed)
+	if err != nil {
+		t.Fatalf("native Falcon signed transaction is not base64: %v", err)
+	}
+	assertNativeFalconEnvelope(t, signedBytes)
+
+	if err := client.DeleteKey(address); err != nil {
+		t.Fatalf("delete native Falcon key: %v", err)
+	}
+	cleanup = false
+	waitForKeysetRevision(t, client, afterGenerate.KeysetRevision, "native Falcon delete")
+}
+
+func assertNativeFalconEnvelope(t *testing.T, signed []byte) {
+	t.Helper()
+	var envelope struct {
+		PQsig struct {
+			Scheme    [2]byte `codec:"sch"`
+			Salt      uint8   `codec:"slt"`
+			PublicKey []byte  `codec:"pk"`
+			Signature []byte  `codec:"sig"`
+		} `codec:"pqsig"`
+		Txn types.Transaction `codec:"txn"`
+	}
+	if err := msgpack.Decode(signed, &envelope); err != nil {
+		t.Fatalf("decode native Falcon signed envelope: %v", err)
+	}
+	if envelope.PQsig.Scheme != [2]byte{'f', '1'} {
+		t.Fatalf("native Falcon PQ scheme = %q, want f1", envelope.PQsig.Scheme[:])
+	}
+	if len(envelope.PQsig.PublicKey) == 0 {
+		t.Fatal("native Falcon envelope has empty public key")
+	}
+	if len(envelope.PQsig.Signature) == 0 {
+		t.Fatal("native Falcon envelope has empty signature")
 	}
 }
 

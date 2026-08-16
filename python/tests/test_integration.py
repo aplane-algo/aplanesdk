@@ -21,9 +21,8 @@ def _integration_enabled() -> bool:
     return os.environ.get("APLANE_SDK_INTEGRATION") == "1"
 
 
-def _live_signer_client() -> tuple[SignerClient, str]:
+def _live_signer_client() -> SignerClient:
     token = _live_signer_token()
-    key_type = os.environ.get("APLANE_SDK_KEY_TYPE") or "ed25519"
 
     if host := os.environ.get("APLANE_SDK_SSH_HOST", "").strip():
         client = SignerClient.connect_ssh(
@@ -34,13 +33,13 @@ def _live_signer_client() -> tuple[SignerClient, str]:
             signer_port=_required_ssh_port("APLANE_SDK_SIGNER_PORT"),
             known_hosts_path=_required_ssh_env("APLANE_SDK_KNOWN_HOSTS_PATH"),
         )
-        return client, key_type
+        return client
 
     base_url = os.environ.get("APLANE_SDK_SIGNER_URL", "").rstrip("/")
     if not base_url:
         port = _live_signer_port()
         base_url = f"http://127.0.0.1:{port}"
-    return SignerClient(base_url, token), key_type
+    return SignerClient(base_url, token)
 
 
 def _required_ssh_env(name: str) -> str:
@@ -101,8 +100,9 @@ def _live_signer_token() -> str:
 
 
 @pytest.mark.skipif(not _integration_enabled(), reason="set APLANE_SDK_INTEGRATION=1")
-def test_live_signer_client_workflow():
-    client, key_type = _live_signer_client()
+def test_live_signer_ed25519_workflow():
+    key_type = "ed25519"
+    client = _live_signer_client()
     address = ""
     cleanup = False
     try:
@@ -128,16 +128,15 @@ def test_live_signer_client_workflow():
         signed = client.sign_transaction(_self_payment_txn(address), auth_address=address)
         assert base64.b64decode(signed)
 
-        if key_type == "ed25519":
-            account = ApsignerAccount(
-                client,
-                address,
-                auth_address=address,
-                encode_transaction=_adapter_encode_transaction,
-            )
-            signed_blobs = account.signer([_self_payment_txn(address)], [0])
-            assert len(signed_blobs) == 1
-            assert _decode_signed_blob(signed_blobs[0])
+        account = ApsignerAccount(
+            client,
+            address,
+            auth_address=address,
+            encode_transaction=_adapter_encode_transaction,
+        )
+        signed_blobs = account.signer([_self_payment_txn(address)], [0])
+        assert len(signed_blobs) == 1
+        assert _decode_signed_blob(signed_blobs[0])
 
         client.delete_key(address)
         cleanup = False
@@ -146,6 +145,42 @@ def test_live_signer_client_workflow():
 
         keys = client.list_keys(refresh=True)
         assert all(key.address != address for key in keys)
+    finally:
+        if cleanup and address:
+            try:
+                client.delete_key(address)
+            except Exception:
+                pass
+        client.close()
+
+
+@pytest.mark.skipif(not _integration_enabled(), reason="set APLANE_SDK_INTEGRATION=1")
+def test_live_signer_native_falcon_signing():
+    key_type = "falcon1024"
+    client = _live_signer_client()
+    address = ""
+    cleanup = False
+    try:
+        key_types = client.list_key_types()
+        assert any(item.key_type == key_type for item in key_types)
+
+        before = client.get_status()
+        generated = client.generate_key(key_type, {})
+        address = generated.address
+        cleanup = True
+        assert address
+
+        after_generate = _wait_for_keyset_revision(
+            client, before.keyset_revision, "native Falcon generate"
+        )
+        signed = client.sign_transaction(_self_payment_txn(address), auth_address=address)
+        _assert_native_falcon_envelope(base64.b64decode(signed))
+
+        client.delete_key(address)
+        cleanup = False
+        _wait_for_keyset_revision(
+            client, after_generate.keyset_revision, "native Falcon delete"
+        )
     finally:
         if cleanup and address:
             try:
@@ -188,6 +223,15 @@ def _adapter_encode_transaction(txn: transaction.Transaction) -> bytes:
 
 def _decode_signed_blob(blob: bytes) -> dict:
     return encoding.msgpack.unpackb(blob, raw=False)
+
+
+def _assert_native_falcon_envelope(blob: bytes) -> None:
+    envelope = _decode_signed_blob(blob)
+    pq_signature = envelope.get("pqsig")
+    assert isinstance(pq_signature, dict)
+    assert pq_signature.get("sch") == b"f1"
+    assert pq_signature.get("pk")
+    assert pq_signature.get("sig")
 
 
 def _wait_for_keyset_revision(client: SignerClient, previous: int, action: str):

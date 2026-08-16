@@ -104,12 +104,13 @@ Optional variables:
 
 - `APLANE_SDK_TOKEN`: inline token, preferred over token files
 - `APLANE_SDK_TOKEN_FILE`: token file path
-- `APLANE_SDK_KEY_TYPE`: key type to generate and sign with, defaults to `ed25519`
 
-Each SDK test mirrors a basic `apshell` signer-facing workflow: health,
-signer status, key type discovery, key generation, key inventory refresh,
-offline signing of a 0-ALGO self-payment, key deletion, and keyset revision
-checks.
+Each SDK runs the broad signer-facing lifecycle and AlgoKit adapter checks with
+an Ed25519 key. A second focused test generates a protocol-native
+`falcon1024` key, signs a 0-ALGO self-payment, verifies that the returned
+envelope contains a non-empty `f1` PQ signature, and deletes the key. Health,
+status, endpoint routing, and key inventory checks therefore run once rather
+than being duplicated for both authorization types.
 
 ## License
 
