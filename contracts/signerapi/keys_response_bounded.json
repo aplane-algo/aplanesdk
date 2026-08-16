@@ -5,6 +5,7 @@
       "address": "BOUNDEDADDR000000000000000000000000000000000000000000000",
       "public_key_hex": "00112233445566778899aabbccddeeff",
       "key_type": "aplane.falcon1024-allowlist-alock.v1",
+      "authorization_kind": "logic_sig",
       "signing_flow": "bounded1",
       "logic_sig_resources": {
         "spend": {"program_bytes": 5169, "argument_bytes": 1423, "max_opcode_cost": 20000},
@@ -41,6 +42,7 @@
       "address": "CORRIDORADDR00000000000000000000000000000000000000000000",
       "public_key_hex": "ffeeddccbbaa99887766554433221100",
       "key_type": "aplane.corridor.v1",
+      "authorization_kind": "logic_sig",
       "signing_flow": "bounded-sentry1",
       "sentry_component_key_type": "aplane.witness-falcon1024.v1",
       "logic_sig_resources": {

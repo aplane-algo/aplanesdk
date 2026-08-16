@@ -27,6 +27,20 @@ export const KEY_TYPE_GUARDED_FALCON1024_SENTRY1024 =
   "aplane.falcon1024-sentry1024.v1";
 export const PQ_SCHEME_FALCON1024 = "f1";
 
+export const AUTHORIZATION_KIND_ED25519 = "ed25519";
+export const AUTHORIZATION_KIND_NATIVE_PQ = "native_pq";
+export const AUTHORIZATION_KIND_LOGIC_SIG = "logic_sig";
+
+/**
+ * Account authorization envelope reported by the signer. Absent when the
+ * signer does not report it, or when the key is not a spending account
+ * (witness keys). Never infer Ed25519 from an absent value.
+ */
+export type AuthorizationKind =
+  | typeof AUTHORIZATION_KIND_ED25519
+  | typeof AUTHORIZATION_KIND_NATIVE_PQ
+  | typeof AUTHORIZATION_KIND_LOGIC_SIG;
+
 export interface LogicSigResourceUsage {
   programBytes: number;
   argumentBytes: number;
@@ -155,6 +169,12 @@ export interface KeyInfo {
   publicKeyHex: string;
   /** Key type (e.g., "ed25519", "aplane.falcon1024.v1", "aplane.htlc.v1") */
   keyType: string;
+  /**
+   * Account authorization envelope for this key instance. Absent when the
+   * signer does not report it, or for witness keys, which are not spending
+   * accounts. Never infer Ed25519 from an absent value.
+   */
+  authorizationKind?: AuthorizationKind;
   /** Signing choreography label (e.g. "sentry1"); empty/absent = plain /sign path */
   signingFlow?: string;
   /** Sentry component key type for signing flow "sentry1" */
@@ -331,7 +351,7 @@ export interface KeyTypeInfo {
   /** Description of the key type */
   description?: string;
   /** Consensus authorization envelope produced by this key type. */
-  authorizationKind?: "ed25519" | "native_pq" | "logic_sig";
+  authorizationKind?: AuthorizationKind;
   /** Whether this key type requires a LogicSig */
   requiresLogicsig?: boolean;
   /** Number of words in the mnemonic */
@@ -497,6 +517,15 @@ export interface GuardedAssemblyTarget {
 export interface GuardedPassthroughItem {
   target_index: number;
   signed_txn_hex: string;
+  /** Local-only authorization declaration used when another slot is signed. */
+  authorization?: GuardedPassthroughAuthorization;
+}
+
+/** Authorization shape used to budget a guarded passthrough slot. */
+export interface GuardedPassthroughAuthorization {
+  /** Omit both fields to explicitly declare ordinary Ed25519 authorization. */
+  logicSigResources?: LogicSigResourceUsage;
+  pqScheme?: string;
 }
 
 /**

@@ -12,6 +12,9 @@ from unittest.mock import MagicMock, patch
 from aplanesdk.signer import (
     AdminSyncSentryReferencesRequest,
     AdminSyncSentryReferencesResponse,
+    AUTHORIZATION_KIND_ED25519,
+    AUTHORIZATION_KIND_LOGIC_SIG,
+    AUTHORIZATION_KIND_NATIVE_PQ,
     CancelSignResponse,
     ComponentSignRequest,
     ComponentSignResponse,
@@ -184,10 +187,12 @@ def test_list_keys_maps_generic_lsig_metadata():
     with patch.object(client.session, "get", return_value=resp):
         keys = client.list_keys(refresh=True)
 
-    assert len(keys) == 2
+    assert len(keys) == 3
+    assert keys[0].authorization_kind == AUTHORIZATION_KIND_ED25519
     generic = keys[1]
     assert generic.public_key_hex == "ffeeddccbbaa99887766554433221100"
     assert generic.key_type == "example.generic-policy.v1"
+    assert generic.authorization_kind == AUTHORIZATION_KIND_LOGIC_SIG
     assert generic.logic_sig_resources.default == LogicSigResourceUsage(512, 32, 20000)
     assert generic.is_generic_lsig is True
     assert generic.signing_args is not None
@@ -195,6 +200,31 @@ def test_list_keys_maps_generic_lsig_metadata():
     assert generic.signing_args[0].label == "Preimage"
     assert generic.signing_args[0].required is True
     assert generic.signing_args[0].byte_length == 32
+
+
+def test_list_keys_maps_authorization_kind_for_native_pq_and_witness():
+    client = make_client()
+    resp = mock_response(200, fixture("keys_response_generic.json"))
+
+    with patch.object(client.session, "get", return_value=resp):
+        keys = client.list_keys(refresh=True)
+
+    native_pq = keys[2]
+    assert native_pq.key_type == "falcon1024"
+    assert native_pq.authorization_kind == AUTHORIZATION_KIND_NATIVE_PQ
+    # A native-PQ spending key carries no LogicSig profile. Callers must use
+    # authorization_kind, not the absence of resources, to classify it.
+    assert native_pq.logic_sig_resources is None
+
+    client = make_client()
+    resp = mock_response(200, fixture("keys_response_component.json"))
+
+    with patch.object(client.session, "get", return_value=resp):
+        witness_keys = client.list_keys(refresh=True)
+
+    # Witness rows are not spending accounts, so the signer omits the field.
+    assert witness_keys[0].is_witness_key is True
+    assert witness_keys[0].authorization_kind == ""
 
 
 def test_list_key_types_maps_creation_and_runtime_metadata():

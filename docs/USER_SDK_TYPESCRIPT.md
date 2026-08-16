@@ -334,6 +334,16 @@ different `spend`, `spendingRekey`, and `adminRekey` profiles.
 `KeyTypeInfo.authorizationKind` distinguishes `ed25519`, `native_pq`, and
 `logic_sig`. `requiresLogicsig === false` alone does not imply Ed25519.
 
+`KeyInfo.authorizationKind` reports the same closed values for a key instance
+and is authoritative for choosing its transaction authorization envelope. It
+is absent for witness keys, which are not spending accounts, and absent
+against older signers that do not report it; never read an absent value as
+Ed25519. Prefer it over checking `logicSigResources`, because a native
+Falcon-1024 spending key publishes no LogicSig profile and is otherwise
+indistinguishable from an Ed25519 key. `signPreparedGuardedGroup` uses it to
+declare `pq_scheme` on native-PQ group positions that are planned as foreign
+slots.
+
 The TypeScript SDK exposes bounded inventory and ordinary spend signing only.
 It does not expose `/sign/bounded-admin` or build and complete contract-admin
 rekeys; use the APlane `aprekey` workflow for those operations.
@@ -447,6 +457,11 @@ For a foreign native Falcon-1024 slot, set `pq_scheme: "f1"` on a raw
 it with `lsig_resources`/`lsigResources`; it declares native-PQ fee usage
 rather than LogicSig resources.
 
+`planRequests()` is the per-slot planning API. Prefer it over the
+address-keyed `planGroup()` convenience form when two transactions use the
+same authorization address with different LogicSig arguments or app-call
+metadata.
+
 `assembleGroup()` is a lower-level utility for workflows that already have
 partial list-per-slot outputs where unsigned slots are represented by empty
 strings:
@@ -553,6 +568,13 @@ const result = await signGuardedGroup({
 });
 const signedGroup = result.signedGroup;
 ```
+
+If a direct guarded call combines `primaryTargets` with caller-supplied
+`passthrough`, each passthrough item must also carry a local-only
+`GuardedPassthroughAuthorization`. Use an empty object for Ed25519,
+`pqScheme: PQ_SCHEME_FALCON1024` for native Falcon, or
+`logicSigResources` for a LogicSig. This metadata is used only to plan the
+intermediate primary-signing request and is not sent to `/sign/assemble`.
 
 For manual orchestration, use `requestComponentSign()` on the user and sentry
 clients, then `requestGuardedAssemble()` on the user client. `assembleGroup()`

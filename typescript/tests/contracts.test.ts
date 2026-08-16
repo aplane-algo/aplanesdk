@@ -197,9 +197,11 @@ describe("signer API contract fixtures", () => {
     const client = new SignerClient("http://localhost:11270", "test-token");
     const keys = await client.listKeys(true);
 
-    assert.equal(keys.length, 2);
+    assert.equal(keys.length, 3);
+    assert.equal(keys[0].authorizationKind, "ed25519");
     assert.equal(keys[1].publicKeyHex, "ffeeddccbbaa99887766554433221100");
     assert.equal(keys[1].keyType, "example.generic-policy.v1");
+    assert.equal(keys[1].authorizationKind, "logic_sig");
     assert.equal(keys[1].logicSigResources?.default?.programBytes, 512);
     assert.equal(keys[1].isGenericLsig, true);
     assert.equal(keys[1].signingArgs?.[0].name, "preimage");
@@ -315,6 +317,8 @@ describe("signer API contract fixtures", () => {
     assert.equal(component.keyType, "aplane.witness-falcon1024.v1");
     assert.equal(component.isWitnessKey, true);
     assert.equal(component.isSpendingAccount, false);
+    // Witness rows are not spending accounts, so the signer omits the field.
+    assert.equal(component.authorizationKind, undefined);
 
     mockFetch.mockResolvedValueOnce({
       status: 200,
@@ -323,7 +327,24 @@ describe("signer API contract fixtures", () => {
     });
     const guarded = (await client.listKeys(true))[0];
     assert.equal(guarded.keyType, "aplane.falcon1024-sentry1024.v1");
+    assert.equal(guarded.authorizationKind, "logic_sig");
     assert.ok(guarded.parameters?.sentry_public_key);
+  });
+
+  it("maps authorizationKind for a native-PQ spending key", async () => {
+    mockFetch.mockResolvedValueOnce({
+      status: 200,
+      ok: true,
+      json: async () => fixture("keys_response_generic.json"),
+    });
+
+    const client = new SignerClient("http://localhost:11270", "test-token");
+    const nativePq = (await client.listKeys(true))[2];
+    assert.equal(nativePq.keyType, "falcon1024");
+    assert.equal(nativePq.authorizationKind, "native_pq");
+    // A native-PQ spending key carries no LogicSig profile. Callers must use
+    // authorizationKind, not the absence of resources, to classify it.
+    assert.equal(nativePq.logicSigResources, undefined);
   });
 
   it("maps /plan mutation wire fields to public MutationReport fields", async () => {

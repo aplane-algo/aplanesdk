@@ -15,9 +15,8 @@ function integrationEnabled(): boolean {
   return process.env.APLANE_SDK_INTEGRATION === "1";
 }
 
-async function liveSignerClient(): Promise<{ client: SignerClient; keyType: string }> {
+async function liveSignerClient(): Promise<SignerClient> {
   const token = liveSignerToken();
-  const keyType = process.env.APLANE_SDK_KEY_TYPE || "ed25519";
 
   const sshHost = (process.env.APLANE_SDK_SSH_HOST || "").trim();
   if (sshHost) {
@@ -31,14 +30,14 @@ async function liveSignerClient(): Promise<{ client: SignerClient; keyType: stri
         knownHostsPath: requiredSshEnv("APLANE_SDK_KNOWN_HOSTS_PATH"),
       }
     );
-    return { client, keyType };
+    return client;
   }
 
   let baseUrl = (process.env.APLANE_SDK_SIGNER_URL || "").replace(/\/+$/, "");
   if (!baseUrl) {
     baseUrl = `http://127.0.0.1:${liveSignerPort()}`;
   }
-  return { client: new SignerClient(baseUrl, token), keyType };
+  return new SignerClient(baseUrl, token);
 }
 
 function requiredSshEnv(name: string): string {
@@ -105,10 +104,11 @@ function liveSignerToken(): string {
 }
 
 test(
-  "integration: live signer client workflow",
+  "integration: live signer Ed25519 workflow",
   { skip: integrationEnabled() ? false : "set APLANE_SDK_INTEGRATION=1" },
   async () => {
-    const { client, keyType } = await liveSignerClient();
+    const keyType = "ed25519";
+    const client = await liveSignerClient();
     let address = "";
     let cleanup = false;
 
@@ -135,20 +135,18 @@ test(
       const signed = await client.signTransaction(selfPaymentTxn(address), address);
       assert.ok(Buffer.from(signed, "base64").length > 0);
 
-      if (keyType === "ed25519") {
-        const account = createApsignerAccount({
-          client,
-          address,
-          authAddress: address,
-          encodeTransaction: (txn) => {
-            const [txnBytesHex] = encodeTransaction(txn as algosdk.Transaction);
-            return hexToBytes(txnBytesHex);
-          },
-        });
-        const signedBlobs = await account.signer([selfPaymentTxn(address)], [0]);
-        assert.equal(signedBlobs.length, 1);
-        assert.ok(algosdk.decodeSignedTransaction(signedBlobs[0]));
-      }
+      const account = createApsignerAccount({
+        client,
+        address,
+        authAddress: address,
+        encodeTransaction: (txn) => {
+          const [txnBytesHex] = encodeTransaction(txn as algosdk.Transaction);
+          return hexToBytes(txnBytesHex);
+        },
+      });
+      const signedBlobs = await account.signer([selfPaymentTxn(address)], [0]);
+      assert.equal(signedBlobs.length, 1);
+      assert.ok(algosdk.decodeSignedTransaction(signedBlobs[0]));
 
       await client.deleteKey(address);
       cleanup = false;
@@ -157,6 +155,53 @@ test(
 
       const refreshed = await client.listKeys(true);
       assert.ok(refreshed.every((key) => key.address !== address));
+    } finally {
+      if (cleanup && address) {
+        try {
+          await client.deleteKey(address);
+        } catch {
+          // Best-effort cleanup; the primary failure above should remain visible.
+        }
+      }
+      await client.close();
+    }
+  }
+);
+
+test(
+  "integration: live signer native Falcon signing",
+  { skip: integrationEnabled() ? false : "set APLANE_SDK_INTEGRATION=1" },
+  async () => {
+    const keyType = "falcon1024";
+    const client = await liveSignerClient();
+    let address = "";
+    let cleanup = false;
+
+    try {
+      const keyTypes = await client.listKeyTypes();
+      assert.ok(keyTypes.some((item) => item.keyType === keyType));
+
+      const before = await client.getStatus();
+      const generated = await client.generateKey(keyType, {});
+      address = generated.address;
+      cleanup = true;
+      assert.ok(address);
+
+      const afterGenerate = await waitForKeysetRevision(
+        client,
+        before.keysetRevision,
+        "native Falcon generate"
+      );
+      const signed = await client.signTransaction(selfPaymentTxn(address), address);
+      assertNativeFalconEnvelope(Buffer.from(signed, "base64"));
+
+      await client.deleteKey(address);
+      cleanup = false;
+      await waitForKeysetRevision(
+        client,
+        afterGenerate.keysetRevision,
+        "native Falcon delete"
+      );
     } finally {
       if (cleanup && address) {
         try {
@@ -207,6 +252,16 @@ function selfPaymentTxn(address: string): algosdk.Transaction {
       flatFee: true,
     },
   });
+}
+
+function assertNativeFalconEnvelope(blob: Uint8Array): void {
+  const envelope = algosdk.decodeObj(blob) as {
+    pqsig?: { sch?: Uint8Array; pk?: Uint8Array; sig?: Uint8Array };
+  };
+  assert.ok(envelope.pqsig);
+  assert.deepEqual(Buffer.from(envelope.pqsig.sch || []), Buffer.from("f1"));
+  assert.ok(envelope.pqsig.pk?.length);
+  assert.ok(envelope.pqsig.sig?.length);
 }
 
 async function waitForKeysetRevision(

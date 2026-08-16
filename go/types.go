@@ -136,8 +136,17 @@ type GuardedAssemblyTarget struct {
 // GuardedPassthroughItem carries an already-signed group position to preserve
 // unchanged during guarded assembly.
 type GuardedPassthroughItem struct {
-	TargetIndex  int    `json:"target_index"`
-	SignedTxnHex string `json:"signed_txn_hex"`
+	TargetIndex   int                              `json:"target_index"`
+	SignedTxnHex  string                           `json:"signed_txn_hex"`
+	Authorization *GuardedPassthroughAuthorization `json:"-"`
+}
+
+// GuardedPassthroughAuthorization declares the authorization shape used to
+// budget an already-signed slot while another slot is signed. An empty value
+// explicitly declares ordinary Ed25519 authorization.
+type GuardedPassthroughAuthorization struct {
+	LogicSigResources *LogicSigResourceUsage
+	PQScheme          string
 }
 
 // GuardedAssemblyResponse is the response payload from POST /sign/assemble.
@@ -685,6 +694,7 @@ type KeyInfo struct {
 	Address                  string                    `json:"address"`
 	PublicKeyHex             string                    `json:"public_key_hex"`
 	KeyType                  string                    `json:"key_type"`
+	AuthorizationKind        string                    `json:"authorization_kind,omitempty"` // account authorization envelope; empty = not reported or not a spending account
 	SigningFlow              string                    `json:"signing_flow,omitempty"`
 	SentryComponentKeyType   string                    `json:"sentry_component_key_type,omitempty"`
 	LogicSigResources        *LogicSigResourceProfile  `json:"logic_sig_resources,omitempty"`

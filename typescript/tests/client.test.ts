@@ -1619,24 +1619,49 @@ describe("SignerClient", () => {
           argument_bytes: 1423,
           max_opcode_cost: 20000,
         });
-        return { signed: ["primary-signed", ""] };
+        assert.deepEqual(requests[2].lsig_resources, {
+          program_bytes: 5000,
+          argument_bytes: 1200,
+          max_opcode_cost: 30000,
+        });
+        return { signed: ["primary-signed", "", ""] };
       };
       (user as any).requestGuardedAssemble = async (request: any) => {
-        assert.equal(request.passthrough[0].target_index, 0);
-        assert.equal(request.passthrough[0].signed_txn_hex, "primary-signed");
-        return { request_id: "assembly-id", signed_group: ["primary-signed", "guarded-signed"] };
+        assert.deepEqual(
+          request.passthrough.map((item: any) => item.target_index).sort(),
+          [0, 2],
+        );
+        assert.equal(
+          request.passthrough.find((item: any) => item.target_index === 0).signed_txn_hex,
+          "primary-signed",
+        );
+        return {
+          request_id: "assembly-id",
+          signed_group: ["primary-signed", "guarded-signed", "counterparty-signed"],
+        };
       };
 
       const result = await signGuardedGroup({
         userClient: user,
         sentryClient: sentry,
         sentryComponentKey: "SENTRY_COMPONENT",
-        groupBytesHex: ["5458aa", "5458bb"],
+        groupBytesHex: ["5458aa", "5458bb", "5458cc"],
         primaryTargets: [{ targetIndex: 0, authAddress: "AUTH" }],
         guardedTargets: [{
           targetIndex: 1,
           guardedAccount: "GUARDED",
           logicSigResources: guardedTestResources(),
+        }],
+        passthrough: [{
+          target_index: 2,
+          signed_txn_hex: "counterparty-signed",
+          authorization: {
+            logicSigResources: {
+              programBytes: 5000,
+              argumentBytes: 1200,
+              maxOpcodeCost: 30000,
+            },
+          },
         }],
       });
 
@@ -1694,7 +1719,10 @@ describe("SignerClient", () => {
       (user as any).signRequests = async () => {
         throw new Error("all-guarded path must not call /sign");
       };
-      (user as any).planGroup = async (txns: algosdk.Transaction[]) => {
+      (user as any).planRequests = async (requests: any[]) => {
+        const txns = requests.map((request) =>
+          algosdk.decodeUnsignedTransaction(hexToBytes(request.txn_bytes_hex).slice(2)),
+        );
         const dummyAccount = new algosdk.LogicSigAccount(
           new Uint8Array([0x03, 0x31, 0x20, 0x32, 0x03, 0x12]),
         );
@@ -1779,6 +1807,74 @@ describe("SignerClient", () => {
 
       assert.equal(result.signedGroup.length, 4);
       assert.equal(result.primarySignResponse, undefined);
+    });
+
+    it("plans repeated LogicSig addresses with per-slot args and app metadata", async () => {
+      const guarded = testAddress(31);
+      const receiver = testAddress(32);
+      const user = new SignerClient("http://localhost:11270", "test-token");
+      const suggestedParams = {
+        fee: 1000n,
+        minFee: 1000n,
+        firstValid: 1n,
+        lastValid: 100n,
+        genesisHash: new Uint8Array(32),
+        genesisID: "testnet-v1",
+        flatFee: true,
+      };
+      const signerKey = {
+        address: guarded,
+        publicKeyHex: "",
+        keyType: KEY_TYPE_GUARDED_FALCON1024_SENTRY1024,
+        signingFlow: SIGNING_FLOW_SENTRY1,
+        sentryComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
+        logicSigResources: {
+          spend: { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 },
+        },
+        isGenericLsig: false,
+        parameters: { sentry_public_key: "aabbcc" },
+      };
+      (user as any).planRequests = async (requests: any[]) => {
+        assert.equal(requests.length, 2);
+        assert.deepEqual(requests.map((request) => request.lsig_args), [
+          { preimage: "616c706861" },
+          { preimage: "62657461" },
+        ]);
+        assert.deepEqual(requests.map((request) => request.app_call_info), [
+          { mode: "raw", method: "first" },
+          { mode: "abi", method: "second" },
+        ]);
+        throw new Error("stop after per-slot plan assertion");
+      };
+
+      await assert.rejects(
+        signPreparedGuardedGroup({
+          userClient: user,
+          preparedGroup: {
+            transactions: [
+              {
+                transaction: algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+                  sender: guarded, receiver, amount: 1n, suggestedParams,
+                }),
+                authAddress: guarded,
+                signerKey,
+                lsigArgs: { preimage: new TextEncoder().encode("alpha") },
+                appCallInfo: { mode: "raw", method: "first" },
+              },
+              {
+                transaction: algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+                  sender: guarded, receiver, amount: 2n, suggestedParams,
+                }),
+                authAddress: guarded,
+                signerKey,
+                lsigArgs: { preimage: new TextEncoder().encode("beta") },
+                appCallInfo: { mode: "abi", method: "second" },
+              },
+            ],
+          },
+        }),
+        /stop after per-slot plan assertion/,
+      );
     });
 
     it("routes prepared bounded-sentry groups through the user-first flow", async () => {
@@ -2037,6 +2133,101 @@ describe("SignerClient", () => {
       assert.ok(result.boundedAssemblyResponse);
     });
 
+    it("selects bounded LogicSig resources from the prepared transaction path", async () => {
+      const bounded = testAddress(41);
+      const receiver = testAddress(42);
+      const rekeyTo = testAddress(43);
+      const suggestedParams = {
+        fee: 1000n,
+        minFee: 1000n,
+        firstValid: 1n,
+        lastValid: 100n,
+        genesisHash: new Uint8Array(32),
+        genesisID: "testnet-v1",
+        flatFee: true,
+      };
+      const profiles = {
+        spend: { programBytes: 1001, argumentBytes: 101, maxOpcodeCost: 10001 },
+        spendingRekey: { programBytes: 2002, argumentBytes: 202, maxOpcodeCost: 20002 },
+        adminRekey: { programBytes: 3003, argumentBytes: 303, maxOpcodeCost: 30003 },
+      };
+      const cases = [
+        { name: "spend", authorization: "spending_key", rekey: false, expected: profiles.spend },
+        { name: "spending rekey", authorization: "spending_key", rekey: true, expected: profiles.spendingRekey },
+        { name: "admin rekey", authorization: "admin_key", rekey: true, expected: profiles.adminRekey },
+      ];
+
+      for (const item of cases) {
+        const user = new SignerClient("http://localhost:11270", "test-token");
+        const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+          sender: bounded,
+          receiver: item.rekey ? bounded : receiver,
+          amount: item.rekey ? 0n : 1n,
+          suggestedParams,
+          ...(item.rekey ? { rekeyTo } : {}),
+        });
+        (user as any).requestBoundedComponent = async (request: any) => ({
+          request_id: `component-${item.name}`,
+          transactions: [request.requests[0].txn_bytes_hex],
+          components: [{
+            target_index: 0,
+            bounded_account: bounded,
+            base_signatures: ["base-sig"],
+            assembly_receipt: "receipt",
+            signature_scheme: "aplane.falcon1024.v1",
+          }],
+        });
+
+        await assert.rejects(
+          signPreparedGuardedGroup({
+            userClient: user,
+            sentryResolver: async (target) => {
+              assert.deepEqual(target.logicSigResources, item.expected);
+              throw new Error(`observed ${item.name}`);
+            },
+            preparedGroup: {
+              transactions: [{
+                transaction: txn,
+                authAddress: bounded,
+                signerKey: {
+                  address: bounded,
+                  publicKeyHex: "",
+                  keyType: "aplane.corridor.v1",
+                  signingFlow: SIGNING_FLOW_BOUNDED_SENTRY1,
+                  sentryComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
+                  logicSigResources: profiles,
+                  isGenericLsig: false,
+                  boundedAuthorization: {
+                    contract: "bounded1",
+                    baseSignatureArgLayout: { count: 1, maxSizes: [1423] },
+                    spendEffects: ["pay"],
+                    maxFee: 1000,
+                    adminOperations: [{
+                      kind: "rekey",
+                      authorization: item.authorization,
+                      policyGate: "none",
+                    }],
+                    sentry: {
+                      contract: "sentry1",
+                      componentKeyType: KEY_TYPE_WITNESS_FALCON1024,
+                      publicKeyHex: "aabb",
+                      signatureMaxSize: 1423,
+                      requiredOn: ["spend"],
+                    },
+                    runtimeArgs: [],
+                    derivedArgs: [],
+                    argumentLayout: [],
+                    layer3Policy: "fixed_allowlist",
+                  },
+                },
+              }],
+            },
+          }),
+          new RegExp(`observed ${item.name}`),
+        );
+      }
+    });
+
     it("rejects mixed sentry1 and bounded-sentry1 prepared groups", async () => {
       const user = new SignerClient("http://localhost:11270", "test-token");
       await assert.rejects(
@@ -2218,6 +2409,144 @@ describe("SignerClient", () => {
       assert.equal(result.signedGroup.length, 2);
     });
 
+    // A native-PQ primary slot is declared foreign to /sign/bounded-component,
+    // so the signer budgets its fee purely from the declared pq_scheme.
+    // Omitting it freezes an under-funded canonical group that the later /sign
+    // identity check cannot detect, because the shortfall is already inside
+    // the canonical bytes.
+    it("declares pq_scheme for a native-PQ primary slot in bounded-sentry groups", async () => {
+      const bounded = testAddress(31);
+      const nativePq = testAddress(32);
+      const receiver = testAddress(33);
+      const user = new SignerClient("http://localhost:11270", "test-token");
+      const sentry = new SignerClient("http://sentry:11270", "sentry-token");
+      const suggestedParams = {
+        fee: 1000n,
+        minFee: 1000n,
+        firstValid: 1n,
+        lastValid: 100n,
+        genesisHash: new Uint8Array(32),
+        genesisID: "testnet-v1",
+        flatFee: true,
+      };
+      const boundedTxn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+        sender: bounded, receiver, amount: 1000n, suggestedParams,
+      });
+      const nativeTxn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+        sender: nativePq, receiver, amount: 2000n, suggestedParams,
+      });
+      const signedTxnHex = (txn: algosdk.Transaction): string => {
+        const logicSig = new algosdk.LogicSigAccount(
+          new Uint8Array([0x03, 0x31, 0x20, 0x32, 0x03, 0x12]),
+        );
+        return bytesToHex(algosdk.signLogicSigTransactionObject(txn, logicSig).blob);
+      };
+      let plannedGroup: algosdk.Transaction[] = [];
+      let primaryRequest: any;
+
+      (user as any).requestBoundedComponent = async (request: any) => {
+        assert.equal(request.requests.length, 2);
+        primaryRequest = request.requests[1];
+        const planned = request.requests.map((entry: any) =>
+          algosdk.decodeUnsignedTransaction(hexToBytes(entry.txn_bytes_hex).slice(2))
+        );
+        algosdk.assignGroupID(planned);
+        plannedGroup = planned;
+        return {
+          request_id: "base-id",
+          transactions: planned.map((item: algosdk.Transaction) => encodeTransaction(item)[0]),
+          components: [{
+            target_index: 0,
+            bounded_account: bounded,
+            base_signatures: ["base-sig"],
+            assembly_receipt: "receipt",
+            signature_scheme: "aplane.falcon1024.v1",
+          }],
+          mutations: {
+            dummiesAdded: 0,
+            groupIdChanged: true,
+            feesModified: [],
+            totalFeesDelta: 0,
+            originalCount: planned.length,
+            finalCount: planned.length,
+          },
+        };
+      };
+      (sentry as any).requestComponentSign = async () => ({
+        request_id: "sentry-id",
+        signatures: [{
+          target_index: 0,
+          signature: "sentry-sig",
+          signature_scheme: KEY_TYPE_WITNESS_FALCON1024,
+        }],
+      });
+      (user as any).signRequests = async () => ({
+        signed: ["", signedTxnHex(plannedGroup[1])],
+      });
+      (user as any).requestBoundedAssemble = async () => ({
+        request_id: "assembly-id",
+        signed_group: plannedGroup.map(signedTxnHex),
+      });
+
+      await signPreparedGuardedGroup({
+        userClient: user,
+        sentryClient: sentry,
+        sentryComponentKey: "SENTRY_COMPONENT",
+        preparedGroup: {
+          transactions: [
+            {
+              transaction: boundedTxn,
+              authAddress: bounded,
+              signerKey: {
+                address: bounded,
+                publicKeyHex: "",
+                keyType: "aplane.corridor.v1",
+                authorizationKind: "logic_sig",
+                signingFlow: SIGNING_FLOW_BOUNDED_SENTRY1,
+                sentryComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
+                isGenericLsig: false,
+                logicSigResources: {
+                  spend: { programBytes: 5308, argumentBytes: 3358, maxOpcodeCost: 20000 },
+                },
+                boundedAuthorization: {
+                  contract: "bounded1",
+                  baseSignatureArgLayout: { count: 1, maxSizes: [1280] },
+                  spendEffects: ["pay"],
+                  maxFee: 1000,
+                  adminOperations: [],
+                  sentry: {
+                    contract: "sentry1",
+                    componentKeyType: KEY_TYPE_WITNESS_FALCON1024,
+                    publicKeyHex: "aabb",
+                    signatureMaxSize: 1280,
+                    requiredOn: ["spend"],
+                  },
+                  runtimeArgs: [],
+                  derivedArgs: [],
+                  argumentLayout: [],
+                },
+              },
+            },
+            {
+              transaction: nativeTxn,
+              authAddress: nativePq,
+              signerKey: {
+                address: nativePq,
+                publicKeyHex: "",
+                keyType: "falcon1024",
+                authorizationKind: "native_pq",
+                isGenericLsig: false,
+              },
+            },
+          ],
+        },
+      } as any);
+
+      assert.equal(primaryRequest.pq_scheme, "f1");
+      assert.equal(primaryRequest.lsig_resources, undefined);
+      assert.equal(primaryRequest.auth_address, undefined);
+    });
+
     it("rejects prepared groups whose keys require an unsupported signing flow", async () => {
       const guarded = testAddress(1);
       const receiver = testAddress(2);
@@ -2311,6 +2640,60 @@ describe("SignerClient", () => {
       const mockTxn = createMockTxn() as Parameters<typeof client.planGroup>[0][0];
       await assert.rejects(client.planGroup([mockTxn]), SignerError);
     });
+
+    // Object keys are strings at runtime. A key that Number() maps onto a
+    // plausible index but that no numeric lookup matches, or one that yields
+    // NaN and so passes every relational range check, would otherwise be
+    // dropped silently and the request would go out with no declaration.
+    it("rejects non-canonical index keys instead of dropping the entry", async () => {
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const mockTxn = createMockTxn() as Parameters<typeof client.planGroup>[0][0];
+      const resources = { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 };
+
+      for (const key of ["01", "1.0", " 1", "abc", "1e0", ""]) {
+        await assert.rejects(
+          client.planGroup([mockTxn, mockTxn], [null, null], undefined, undefined, {
+            [key]: resources,
+          } as any),
+          /lsigResources index .* is not a canonical transaction index/,
+          `lsigResources key ${JSON.stringify(key)} should be rejected`,
+        );
+        await assert.rejects(
+          client.planGroup([mockTxn, mockTxn], [null, null], undefined, {
+            [key]: "AAAA",
+          } as any),
+          /passthrough index .* is not a canonical transaction index/,
+          `passthrough key ${JSON.stringify(key)} should be rejected`,
+        );
+      }
+
+      await assert.rejects(
+        client.planGroup([mockTxn], [null], undefined, undefined, { 5: resources }),
+        /lsigResources index 5 out of range for 1 transactions/,
+      );
+      await assert.rejects(
+        client.planGroup([mockTxn], [null], undefined, undefined, { "-1": resources } as any),
+        /lsigResources index -1 out of range for 1 transactions/,
+      );
+    });
+
+    it("applies a canonical index key to the matching slot", async () => {
+      mockFetch.mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: async () => ({ transactions: ["5458deadbeef", "5458cafebabe"] }),
+      });
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const mockTxn = createMockTxn() as Parameters<typeof client.planGroup>[0][0];
+
+      await client.planGroup([mockTxn, mockTxn], ["AUTH_ADDR", null], undefined, undefined, {
+        1: { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 },
+      });
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      assert.equal(body.requests[0].lsig_resources, undefined);
+      assert.equal(body.requests[1].lsig_resources.program_bytes, 1612);
+    });
   });
 
   describe("signTransactions with passthrough", () => {
@@ -2337,6 +2720,22 @@ describe("SignerClient", () => {
           max_opcode_cost: 20000,
         },
       }]);
+    });
+
+    it("rejects indexed LogicSig resources on sign-mode entries", () => {
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const mockTxn = createMockTxn() as Parameters<typeof client.signTransactions>[0][0];
+      assert.throws(
+        () => (client as any).buildSignRequestBody(
+          [mockTxn],
+          ["AUTH"],
+          undefined,
+          undefined,
+          { 0: { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 } },
+          false,
+        ),
+        /allowed only for foreign or passthrough/,
+      );
     });
 
     it("rejects foreign entries before calling /sign", async () => {
@@ -3276,6 +3675,38 @@ describe("preparedGroupToSignRequests", () => {
         max_opcode_cost: 20000,
       },
     }]);
+  });
+
+  it("rejects authorization hints in sign and passthrough modes", () => {
+    assert.throws(
+      () => preparedGroupToSignRequests({
+        transactions: [{
+          transaction: createMockTxn() as any,
+          authAddress: "AUTH_ADDR",
+          pqScheme: "f1",
+        }],
+      }),
+      /pqScheme is allowed only for foreign transactions/,
+    );
+    assert.throws(
+      () => preparedGroupToSignRequests({
+        transactions: [{
+          transaction: createMockTxn() as any,
+          authAddress: "AUTH_ADDR",
+          lsigResources: { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 },
+        }],
+      }),
+      /lsigResources is allowed only for foreign or passthrough transactions/,
+    );
+    assert.throws(
+      () => preparedGroupToSignRequests({
+        transactions: [{
+          signedTransactionBase64: Buffer.from("signed-txn").toString("base64"),
+          pqScheme: "f1",
+        }],
+      }),
+      /pqScheme is allowed only for foreign transactions/,
+    );
   });
 
   it("rejects empty groups", () => {

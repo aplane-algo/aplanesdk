@@ -61,7 +61,10 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 			return nil, fmt.Errorf("prepared transaction %d: signer key metadata is required", i)
 		}
 
-		resources := selectedSpendResources(key, item.LsigResources)
+		resources, err := selectedPreparedResources(key, item.Transaction)
+		if err != nil {
+			return nil, fmt.Errorf("prepared transaction %d: %w", i, err)
+		}
 		switch key.SigningFlow {
 		case SigningFlowBoundedSentry1:
 			if item.AuthAddress == "" {
@@ -93,9 +96,19 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 			if key.SigningFlow != "" && key.SigningFlow != SigningFlowBounded1 {
 				return nil, fmt.Errorf("prepared transaction %d: signer key requires signing flow %q, which this SDK does not support; upgrade the SDK", i, key.SigningFlow)
 			}
+			// This slot is declared foreign to /sign/bounded-component, so the
+			// signer cannot infer its authorization envelope from the key. A
+			// native-PQ key publishes no LogicSig profile, so without an
+			// explicit pq_scheme the signer budgets it as an Ed25519 slot and
+			// freezes an under-funded canonical group.
+			pqScheme, err := preparedForeignPQScheme(key, resources)
+			if err != nil {
+				return nil, fmt.Errorf("prepared transaction %d: %w", i, err)
+			}
 			requests[i] = SignRequest{
 				TxnBytesHex:   hex.EncodeToString(encodeTxn(*item.Transaction)),
 				LsigResources: resources,
+				PQScheme:      pqScheme,
 			}
 			if item.AuthAddress == "" {
 				return nil, fmt.Errorf("prepared transaction %d: primary auth address is required", i)

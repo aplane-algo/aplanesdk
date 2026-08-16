@@ -172,7 +172,14 @@ func SignGuardedGroupWithContext(ctx context.Context, opts GuardedSignOptions) (
 
 	passthrough := append([]GuardedPassthroughItem(nil), opts.Passthrough...)
 	if len(opts.PrimaryTargets) > 0 {
-		primary, err := requestPrimaryGuardedPassthrough(ctx, opts.UserClient, opts.GroupBytesHex, guardedByIndex, opts.PrimaryTargets)
+		primary, err := requestPrimaryGuardedPassthrough(
+			ctx,
+			opts.UserClient,
+			opts.GroupBytesHex,
+			guardedByIndex,
+			opts.PrimaryTargets,
+			opts.Passthrough,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -390,7 +397,10 @@ func buildPreparedGuardedSignOptions(ctx context.Context, opts PreparedGuardedGr
 			if item.AuthAddress == "" {
 				return GuardedSignOptions{}, fmt.Errorf("prepared transaction %d: guarded auth address is required", i)
 			}
-			resources := selectedSpendResources(key, item.LsigResources)
+			resources, err := selectedPreparedResources(key, item.Transaction)
+			if err != nil {
+				return GuardedSignOptions{}, fmt.Errorf("prepared transaction %d: %w", i, err)
+			}
 			if resources == nil {
 				return GuardedSignOptions{}, fmt.Errorf("prepared transaction %d: guarded LogicSig resources are unavailable", i)
 			}
@@ -455,22 +465,54 @@ func buildPreparedGuardedSignOptions(ctx context.Context, opts PreparedGuardedGr
 	}, nil
 }
 
-func selectedSpendResources(key *KeyInfo, fallback *LogicSigResourceUsage) *LogicSigResourceUsage {
-	if key != nil && key.LogicSigResources != nil {
-		selected := key.LogicSigResources.Default
-		if key.LogicSigResources.Spend != nil {
-			selected = key.LogicSigResources.Spend
+func selectedPreparedResources(key *KeyInfo, txn *types.Transaction) (*LogicSigResourceUsage, error) {
+	if key == nil || key.LogicSigResources == nil {
+		return nil, nil
+	}
+	profile := key.LogicSigResources
+	selected := profile.Default
+	if profile.Spend != nil {
+		selected = profile.Spend
+	}
+	if key.BoundedAuthorization != nil && txn != nil && !txn.RekeyTo.IsZero() {
+		authorization := ""
+		for _, operation := range key.BoundedAuthorization.AdminOperations {
+			if operation.Kind == "rekey" {
+				authorization = operation.Authorization
+				break
+			}
 		}
-		if selected != nil {
-			copy := *selected
-			return &copy
+		switch authorization {
+		case "spending_key":
+			selected = profile.SpendingRekey
+		case "admin_key":
+			selected = profile.AdminRekey
+		default:
+			return nil, fmt.Errorf("bounded rekey authorization metadata is unavailable")
 		}
 	}
-	if fallback == nil {
-		return nil
+	if selected == nil {
+		return nil, nil
 	}
-	copy := *fallback
-	return &copy
+	copy := *selected
+	return &copy, nil
+}
+
+// preparedForeignPQScheme returns the native-PQ scheme a foreign slot must
+// declare for the given signer key. Foreign slots carry no auth address, so
+// the signer budgets fees purely from what the request declares; only
+// authorization_kind distinguishes a native-PQ key from an Ed25519 one,
+// because neither publishes a LogicSig resource profile. An empty
+// authorization_kind means an older signer that does not report it, in which
+// case the slot keeps its previous declaration.
+func preparedForeignPQScheme(key *KeyInfo, resources *LogicSigResourceUsage) (string, error) {
+	if key == nil || key.AuthorizationKind != AuthorizationKindNativePQ {
+		return "", nil
+	}
+	if resources != nil {
+		return "", fmt.Errorf("native-PQ signer key must not declare LogicSig resources")
+	}
+	return PQSchemeFalcon1024, nil
 }
 
 func guardedSentryPublicKey(key *KeyInfo) string {
@@ -508,6 +550,9 @@ func signGuardedDummies(dummies []types.Transaction, startIndex int) ([]GuardedP
 		passthrough[i] = GuardedPassthroughItem{
 			TargetIndex:  startIndex + i,
 			SignedTxnHex: hex.EncodeToString(signedBytes),
+			Authorization: &GuardedPassthroughAuthorization{
+				LogicSigResources: guardedDummyLogicSigResources(),
+			},
 		}
 	}
 	return passthrough, nil
@@ -615,7 +660,14 @@ type primaryGuardedPassthrough struct {
 	passthrough []GuardedPassthroughItem
 }
 
-func requestPrimaryGuardedPassthrough(ctx context.Context, client *SignerClient, groupBytesHex []string, guardedByIndex map[int]GuardedSignTarget, targets []GuardedPrimarySignTarget) (*primaryGuardedPassthrough, error) {
+func requestPrimaryGuardedPassthrough(
+	ctx context.Context,
+	client *SignerClient,
+	groupBytesHex []string,
+	guardedByIndex map[int]GuardedSignTarget,
+	targets []GuardedPrimarySignTarget,
+	passthrough []GuardedPassthroughItem,
+) (*primaryGuardedPassthrough, error) {
 	primaryByIndex := make(map[int]GuardedPrimarySignTarget, len(targets))
 	for _, target := range targets {
 		if target.TargetIndex < 0 || target.TargetIndex >= len(groupBytesHex) {
@@ -632,6 +684,36 @@ func requestPrimaryGuardedPassthrough(ctx context.Context, client *SignerClient,
 		}
 		primaryByIndex[target.TargetIndex] = target
 	}
+	passthroughByIndex := make(map[int]GuardedPassthroughItem, len(passthrough))
+	for _, item := range passthrough {
+		if item.TargetIndex < 0 || item.TargetIndex >= len(groupBytesHex) {
+			return nil, fmt.Errorf("passthrough target %d out of range", item.TargetIndex)
+		}
+		if _, ok := passthroughByIndex[item.TargetIndex]; ok {
+			return nil, fmt.Errorf("duplicate passthrough target index %d", item.TargetIndex)
+		}
+		if _, ok := primaryByIndex[item.TargetIndex]; ok {
+			return nil, fmt.Errorf("passthrough target %d overlaps primary target", item.TargetIndex)
+		}
+		if _, ok := guardedByIndex[item.TargetIndex]; ok {
+			return nil, fmt.Errorf("passthrough target %d overlaps guarded target", item.TargetIndex)
+		}
+		if item.Authorization == nil {
+			return nil, fmt.Errorf("passthrough target %d missing planning authorization", item.TargetIndex)
+		}
+		if item.Authorization.PQScheme != "" && item.Authorization.LogicSigResources != nil {
+			return nil, fmt.Errorf("passthrough target %d cannot specify both PQ scheme and LogicSig resources", item.TargetIndex)
+		}
+		if item.Authorization.PQScheme != "" && item.Authorization.PQScheme != PQSchemeFalcon1024 {
+			return nil, fmt.Errorf("passthrough target %d has unsupported PQ scheme %q", item.TargetIndex, item.Authorization.PQScheme)
+		}
+		if item.Authorization.LogicSigResources != nil {
+			if err := item.Authorization.LogicSigResources.validate(); err != nil {
+				return nil, fmt.Errorf("passthrough target %d has invalid LogicSig resources: %w", item.TargetIndex, err)
+			}
+		}
+		passthroughByIndex[item.TargetIndex] = item
+	}
 
 	requests := make([]SignRequest, len(groupBytesHex))
 	for i, txnHex := range groupBytesHex {
@@ -645,10 +727,14 @@ func requestPrimaryGuardedPassthrough(ctx context.Context, client *SignerClient,
 			}
 		} else if guarded, ok := guardedByIndex[i]; ok {
 			requests[i] = SignRequest{TxnBytesHex: txnHex, LsigResources: guarded.LogicSigResources}
-		} else {
+		} else if item, ok := passthroughByIndex[i]; ok {
 			requests[i] = SignRequest{
-				TxnBytesHex: txnHex, LsigResources: guardedDummyLogicSigResources(),
+				TxnBytesHex:   txnHex,
+				LsigResources: item.Authorization.LogicSigResources,
+				PQScheme:      item.Authorization.PQScheme,
 			}
+		} else {
+			return nil, fmt.Errorf("group position %d has no guarded, primary, or passthrough target", i)
 		}
 	}
 
@@ -656,7 +742,7 @@ func requestPrimaryGuardedPassthrough(ctx context.Context, client *SignerClient,
 	if err != nil {
 		return nil, err
 	}
-	passthrough := make([]GuardedPassthroughItem, 0, len(primaryByIndex))
+	primaryPassthrough := make([]GuardedPassthroughItem, 0, len(primaryByIndex))
 	for index := range primaryByIndex {
 		if index >= len(response.Signed) || response.Signed[index] == "" {
 			return nil, fmt.Errorf("primary signer returned no signed transaction for target %d", index)
@@ -667,13 +753,13 @@ func requestPrimaryGuardedPassthrough(ctx context.Context, client *SignerClient,
 		if err := signedTxnMatchesCanonical("primary passthrough", index, response.Signed[index], groupBytesHex[index]); err != nil {
 			return nil, err
 		}
-		passthrough = append(passthrough, GuardedPassthroughItem{
+		primaryPassthrough = append(primaryPassthrough, GuardedPassthroughItem{
 			TargetIndex:  index,
 			SignedTxnHex: response.Signed[index],
 		})
 	}
-	sort.Slice(passthrough, func(i, j int) bool {
-		return passthrough[i].TargetIndex < passthrough[j].TargetIndex
+	sort.Slice(primaryPassthrough, func(i, j int) bool {
+		return primaryPassthrough[i].TargetIndex < primaryPassthrough[j].TargetIndex
 	})
-	return &primaryGuardedPassthrough{response: response, passthrough: passthrough}, nil
+	return &primaryGuardedPassthrough{response: response, passthrough: primaryPassthrough}, nil
 }

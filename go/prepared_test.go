@@ -114,6 +114,49 @@ func TestPreparedGroupSignRequestsRejectsConflictingForeignHints(t *testing.T) {
 	}
 }
 
+func TestPreparedGroupSignRequestsRejectsAuthorizationHintsInSignMode(t *testing.T) {
+	txn := types.Transaction{Type: types.PaymentTx}
+	tests := []struct {
+		name     string
+		prepared PreparedTransaction
+		want     string
+	}{
+		{
+			name: "native PQ",
+			prepared: PreparedTransaction{
+				Transaction: &txn, AuthAddress: "AUTH_ADDR", PQScheme: PQSchemeFalcon1024,
+			},
+			want: "pq_scheme is allowed only for foreign transactions",
+		},
+		{
+			name: "LogicSig resources",
+			prepared: PreparedTransaction{
+				Transaction: &txn, AuthAddress: "AUTH_ADDR",
+				LsigResources: &LogicSigResourceUsage{ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000},
+			},
+			want: "lsig_resources is allowed only for foreign or passthrough transactions",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewPreparedGroup(tt.prepared).SignRequests()
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("SignRequests() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestPreparedGroupSignRequestsRejectsNativePQHintInPassthroughMode(t *testing.T) {
+	_, err := NewPreparedGroup(PreparedTransaction{
+		SignedTransactionBase64: base64.StdEncoding.EncodeToString([]byte("signed-txn")),
+		PQScheme:                PQSchemeFalcon1024,
+	}).SignRequests()
+	if err == nil || !strings.Contains(err.Error(), "pq_scheme is allowed only for foreign transactions") {
+		t.Fatalf("SignRequests() error = %v", err)
+	}
+}
+
 func TestPreparedGroupSignRequestsPassthroughMode(t *testing.T) {
 	signed := []byte("signed-txn")
 	resources := &LogicSigResourceUsage{ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000}

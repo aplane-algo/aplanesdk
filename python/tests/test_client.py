@@ -12,8 +12,14 @@ import os
 import pytest
 from algosdk import account, encoding as algo_encoding, transaction
 
+import aplanesdk
+
 from aplanesdk.signer import (
     SignerClient,
+    AUTHORIZATION_KIND_LOGIC_SIG,
+    AUTHORIZATION_KIND_NATIVE_PQ,
+    PQ_SCHEME_FALCON1024,
+    _prepared_foreign_pq_scheme,
     AuthenticationError,
     SigningRejectedError,
     SignerUnavailableError,
@@ -37,12 +43,16 @@ from aplanesdk.signer import (
     GuardedAssemblyRequest,
     GuardedAssemblyTarget,
     GuardedAssemblyResponse,
+    GuardedPassthroughAuthorization,
+    GuardedPassthroughItem,
+    _normalize_guarded_passthrough_item,
     BoundedComponentRequest,
     BoundedBaseComponent,
     BoundedComponentResponse,
     BoundedAssemblyResponse,
     BoundedSentryAuthorizationInfo,
     BoundedAuthorizationInfo,
+    BoundedAdminOperationInfo,
     BoundedSignatureArgLayout,
     GuardedSignTarget,
     GuardedPrimarySignTarget,
@@ -58,7 +68,6 @@ from aplanesdk.signer import (
     request_token_to_file,
     encode_transaction,
     _validate_sign_request_id,
-    _create_guarded_dummies,
     _request_bounded_primary_passthrough,
     _sign_guarded_dummies,
     _validate_bounded_component_request,
@@ -66,6 +75,7 @@ from aplanesdk.signer import (
     _validate_bounded_component_plan,
     _validate_bounded_target_fees,
     _decode_canonical_group,
+    _selected_prepared_resources,
 )
 
 
@@ -90,12 +100,78 @@ def sdk_test_address(seed: int) -> str:
     return algo_encoding.encode_address(bytes(raw))
 
 
+@pytest.mark.parametrize(
+    ("rekey_to", "authorization", "expected_program_bytes"),
+    [
+        (None, "", 1001),
+        (sdk_test_address(2), "spending_key", 2002),
+        (sdk_test_address(3), "admin_key", 3003),
+    ],
+)
+def test_selected_prepared_resources_uses_bounded_authorization_path(
+    rekey_to, authorization, expected_program_bytes
+):
+    operations = [BoundedAdminOperationInfo("rekey", authorization, "none")] if rekey_to else []
+    key = KeyInfo(
+        address=sdk_test_address(1),
+        key_type="aplane.corridor.v1",
+        logic_sig_resources=LogicSigResourceProfile(
+            spend=LogicSigResourceUsage(1001, 101, 10001),
+            spending_rekey=LogicSigResourceUsage(2002, 202, 20002),
+            admin_rekey=LogicSigResourceUsage(3003, 303, 30003),
+        ),
+        bounded_authorization=BoundedAuthorizationInfo(
+            contract="bounded1",
+            base_signature_arg_layout=BoundedSignatureArgLayout(1, [1423]),
+            spend_effects=["pay"],
+            max_fee=1000,
+            admin_operations=operations,
+            runtime_args=[],
+            derived_args=[],
+            argument_layout=[],
+            layer3_policy="fixed_allowlist",
+        ),
+    )
+    txn = MagicMock(rekey_to=rekey_to)
+
+    selected = _selected_prepared_resources(key, txn)
+
+    assert selected is not None
+    assert selected.program_bytes == expected_program_bytes
+    assert selected is not key.logic_sig_resources.spend
+
+
 def guarded_test_resources():
     return LogicSigResourceUsage(
         program_bytes=1612,
         argument_bytes=1423,
         max_opcode_cost=20000,
     )
+
+
+def create_guarded_dummies(first_txn, count):
+    dummy_account = transaction.LogicSigAccount(bytes.fromhex("033120320312"))
+    dummy_address = dummy_account.address()
+    params = transaction.SuggestedParams(
+        int(first_txn.fee),
+        int(first_txn.first_valid_round),
+        int(first_txn.last_valid_round),
+        first_txn.genesis_hash,
+        first_txn.genesis_id,
+        flat_fee=True,
+    )
+    dummies = []
+    for index in range(count):
+        txn = transaction.PaymentTxn(
+            dummy_address,
+            params,
+            dummy_address,
+            0,
+            note=bytes([index]),
+        )
+        txn.fee = 0
+        dummies.append(txn)
+    return dummies
 
 
 class MockAlgod:
@@ -951,15 +1027,16 @@ class TestSignGuardedGroup:
             signatures=[ComponentSignature(1, "sentry-sig", KEY_TYPE_WITNESS_FALCON1024)],
         ))
         user.sign_requests = MagicMock(return_value=GroupSignResponse(
-            signed=[primary_signed, ""],
+            signed=[primary_signed, "", ""],
         ))
 
         def assemble(req):
-            assert req.passthrough[0].target_index == 0
-            assert req.passthrough[0].signed_txn_hex == primary_signed
+            by_index = {item.target_index: item for item in req.passthrough}
+            assert set(by_index) == {0, 2}
+            assert by_index[0].signed_txn_hex == primary_signed
             return GuardedAssemblyResponse(
                 request_id="assembly-id",
-                signed_group=[primary_signed, "guarded-signed"],
+                signed_group=[primary_signed, "guarded-signed", "counterparty-signed"],
             )
 
         user.request_guarded_assemble = MagicMock(side_effect=assemble)
@@ -968,7 +1045,7 @@ class TestSignGuardedGroup:
             user_client=user,
             sentry_client=sentry,
             sentry_component_key="SENTRY_COMPONENT",
-            group_bytes_hex=[primary_hex, "5458bb"],
+            group_bytes_hex=[primary_hex, "5458bb", "5458cc"],
             primary_targets=[
                 GuardedPrimarySignTarget(target_index=0, auth_address="AUTH"),
             ],
@@ -979,6 +1056,17 @@ class TestSignGuardedGroup:
                     logic_sig_resources=guarded_test_resources(),
                 )
             ],
+            passthrough=[{
+                "target_index": 2,
+                "signed_txn_hex": "counterparty-signed",
+                "authorization": {
+                    "logic_sig_resources": {
+                        "program_bytes": 5000,
+                        "argument_bytes": 1200,
+                        "max_opcode_cost": 30000,
+                    },
+                },
+            }],
         )
 
         assert result.signed_group[1] == "guarded-signed"
@@ -989,6 +1077,11 @@ class TestSignGuardedGroup:
             "program_bytes": 1612,
             "argument_bytes": 1423,
             "max_opcode_cost": 20000,
+        }
+        assert sign_requests[2]["lsig_resources"] == {
+            "program_bytes": 5000,
+            "argument_bytes": 1200,
+            "max_opcode_cost": 30000,
         }
 
     def test_rejects_missing_resources_before_component_signing(self):
@@ -1044,9 +1137,9 @@ class TestSignGuardedGroup:
             flat_fee=True,
         )
         txn = transaction.PaymentTxn(guarded, params, receiver, 1000)
-        planned = [copy.deepcopy(txn), _create_guarded_dummies(txn, 1)[0]]
+        planned = [copy.deepcopy(txn), create_guarded_dummies(txn, 1)[0]]
         transaction.assign_group_id(planned)
-        user.plan_group = MagicMock(
+        user.plan_requests = MagicMock(
             return_value={
                 "transactions": [encode_transaction(item)[0] for item in planned],
                 "mutations": {
@@ -1091,13 +1184,68 @@ class TestSignGuardedGroup:
 
         assert len(result.signed_group) == 2
         assert result.primary_sign_response is None
-        user.plan_group.assert_called_once()
+        user.plan_requests.assert_called_once()
         user_req = user.request_component_sign.call_args.args[0]
         assert user_req.component_key == guarded
         assert len(user_req.group_bytes_hex) == 2
         sentry_req = sentry.request_component_sign.call_args.args[0]
         assert sentry_req.component_key == "SENTRY_COMPONENT"
         assert len(sentry_req.group_bytes_hex) == 2
+
+    def test_prepared_plan_preserves_per_slot_args_for_repeated_auth_address(self):
+        guarded = sdk_test_address(31)
+        receiver = sdk_test_address(32)
+        user = make_client()
+        params = transaction.SuggestedParams(
+            1000,
+            1,
+            100,
+            base64.b64encode(bytes(32)).decode(),
+            "testnet-v1.0",
+            flat_fee=True,
+        )
+        signer_key = KeyInfo(
+            address=guarded,
+            key_type=KEY_TYPE_GUARDED_FALCON1024_SENTRY1024,
+            signing_flow=SIGNING_FLOW_SENTRY1,
+            sentry_component_key_type=KEY_TYPE_WITNESS_FALCON1024,
+            logic_sig_resources=LogicSigResourceProfile(
+                spend=LogicSigResourceUsage(1612, 1423, 20000)
+            ),
+            parameters={"sentry_public_key": "aabbcc"},
+        )
+
+        def assert_per_slot_requests(requests):
+            assert [request["lsig_args"] for request in requests] == [
+                {"preimage": b"alpha".hex()},
+                {"preimage": b"beta".hex()},
+            ]
+            assert [request["app_call_info"] for request in requests] == [
+                {"mode": "raw", "method": "first"},
+                {"mode": "abi", "method": "second"},
+            ]
+            raise RuntimeError("stop after per-slot plan assertion")
+
+        user.plan_requests = MagicMock(side_effect=assert_per_slot_requests)
+        prepared = PreparedGroup([
+            PreparedTransaction(
+                transaction=transaction.PaymentTxn(guarded, params, receiver, 1),
+                auth_address=guarded,
+                signer_key=signer_key,
+                lsig_args={"preimage": b"alpha"},
+                app_call_info={"mode": "raw", "method": "first"},
+            ),
+            PreparedTransaction(
+                transaction=transaction.PaymentTxn(guarded, params, receiver, 2),
+                auth_address=guarded,
+                signer_key=signer_key,
+                lsig_args={"preimage": b"beta"},
+                app_call_info={"mode": "abi", "method": "second"},
+            ),
+        ])
+
+        with pytest.raises(SignerError, match="stop after per-slot plan assertion"):
+            sign_prepared_guarded_group(user_client=user, prepared_group=prepared)
 
     def test_bounded_component_plan_rejects_unreported_changes_and_bad_dummies(self):
         sender = sdk_test_address(21)
@@ -1113,7 +1261,7 @@ class TestSignGuardedGroup:
         original = transaction.PaymentTxn(sender, params, receiver, 1000)
         planned_original = transaction.PaymentTxn(sender, params, receiver, 1000)
         planned_original.fee += 1000
-        dummy = _create_guarded_dummies(original, 1)[0]
+        dummy = create_guarded_dummies(original, 1)[0]
         planned = [planned_original, dummy]
         transaction.assign_group_id(planned)
         mutations = {
@@ -1440,6 +1588,140 @@ class TestSignGuardedGroup:
         assert sentry_req.group_bytes_hex[0].startswith("5458")
         assert sentry_req.target_indices == [0]
 
+    def test_prepared_bounded_sentry_declares_native_pq_primary(self):
+        """A native-PQ primary slot is declared foreign to
+        /sign/bounded-component, so the signer budgets its fee purely from the
+        declared pq_scheme. Omitting it freezes an under-funded canonical group
+        that the later /sign identity check cannot detect, because the
+        shortfall is already inside the canonical bytes.
+        """
+        bounded = sdk_test_address(41)
+        native_pq = sdk_test_address(42)
+        receiver = sdk_test_address(43)
+        user = make_client()
+        sentry = make_client("http://sentry:11270")
+        captured = {}
+
+        params = transaction.SuggestedParams(
+            1000,
+            1,
+            100,
+            base64.b64encode(bytes(32)).decode(),
+            "testnet-v1.0",
+            flat_fee=True,
+        )
+        bounded_txn = transaction.PaymentTxn(bounded, params, receiver, 1000)
+        native_txn = transaction.PaymentTxn(native_pq, params, receiver, 2000)
+        transaction.assign_group_id([bounded_txn, native_txn])
+        planned_hex = [
+            encode_transaction(bounded_txn)[0],
+            encode_transaction(native_txn)[0],
+        ]
+
+        def bounded_component(req):
+            assert len(req.requests) == 2
+            captured["primary"] = req.requests[1]
+            return BoundedComponentResponse(
+                request_id="base-id",
+                transactions=planned_hex,
+                components=[BoundedBaseComponent(
+                    target_index=0,
+                    bounded_account=bounded,
+                    base_signatures=["base-sig"],
+                    assembly_receipt="receipt",
+                    signature_scheme="aplane.falcon1024.v1",
+                )],
+            )
+
+        def signed_txn_hex(signed_txn):
+            logic_sig = transaction.LogicSigAccount(bytes.fromhex("033120320312"))
+            encoded = algo_encoding.msgpack_encode(
+                transaction.LogicSigTransaction(signed_txn, logic_sig)
+            )
+            return base64.b64decode(encoded).hex()
+
+        user.request_bounded_component = MagicMock(side_effect=bounded_component)
+        sentry.request_component_sign = MagicMock(return_value=ComponentSignResponse(
+            request_id="sentry-id",
+            signatures=[ComponentSignature(
+                0, "sentry-sig", KEY_TYPE_WITNESS_FALCON1024
+            )],
+        ))
+        user.sign_requests = MagicMock(return_value=GroupSignResponse(
+            signed=["", signed_txn_hex(native_txn)]
+        ))
+        user.request_bounded_assemble = MagicMock(return_value=BoundedAssemblyResponse(
+            request_id="assembly-id",
+            signed_group=[signed_txn_hex(bounded_txn), signed_txn_hex(native_txn)],
+        ))
+
+        sign_prepared_guarded_group(
+            user_client=user,
+            sentry_client=sentry,
+            sentry_component_key="SENTRY_COMPONENT",
+            prepared_group=PreparedGroup([
+                PreparedTransaction(
+                    transaction=bounded_txn,
+                    auth_address=bounded,
+                    signer_key=KeyInfo(
+                        address=bounded,
+                        key_type="aplane.corridor.v1",
+                        authorization_kind=AUTHORIZATION_KIND_LOGIC_SIG,
+                        signing_flow=SIGNING_FLOW_BOUNDED_SENTRY1,
+                        sentry_component_key_type=KEY_TYPE_WITNESS_FALCON1024,
+                        logic_sig_resources=LogicSigResourceProfile(
+                            spend=LogicSigResourceUsage(5308, 3358, 20000)
+                        ),
+                        bounded_authorization=BoundedAuthorizationInfo(
+                            contract="bounded1",
+                            base_signature_arg_layout=BoundedSignatureArgLayout(
+                                count=1, max_sizes=[1280]
+                            ),
+                            spend_effects=["pay"],
+                            max_fee=1000,
+                            admin_operations=[],
+                            runtime_args=[],
+                            derived_args=[],
+                            argument_layout=[],
+                            layer3_policy="merkle_allowlist",
+                            sentry=BoundedSentryAuthorizationInfo(
+                                contract="sentry1",
+                                component_key_type=KEY_TYPE_WITNESS_FALCON1024,
+                                public_key_hex="aabb",
+                            ),
+                        ),
+                    ),
+                ),
+                PreparedTransaction(
+                    transaction=native_txn,
+                    auth_address=native_pq,
+                    signer_key=KeyInfo(
+                        address=native_pq,
+                        key_type="falcon1024",
+                        authorization_kind=AUTHORIZATION_KIND_NATIVE_PQ,
+                    ),
+                ),
+            ]),
+        )
+
+        assert captured["primary"]["pq_scheme"] == PQ_SCHEME_FALCON1024
+        assert "lsig_resources" not in captured["primary"]
+        assert "auth_address" not in captured["primary"]
+
+    def test_prepared_foreign_pq_scheme_rejects_contradictory_metadata(self):
+        key = KeyInfo(
+            address=sdk_test_address(44),
+            key_type="falcon1024",
+            authorization_kind=AUTHORIZATION_KIND_NATIVE_PQ,
+        )
+        with pytest.raises(ValueError, match="must not declare LogicSig resources"):
+            _prepared_foreign_pq_scheme(key, LogicSigResourceUsage(512, 32, 20000), "slot 0")
+
+        # An older signer that does not report authorization_kind keeps the
+        # previous declaration rather than guessing.
+        plain = KeyInfo(address=sdk_test_address(45), key_type="ed25519")
+        assert _prepared_foreign_pq_scheme(plain, None, "slot 0") == ""
+
     def test_prepared_group_rejects_unsupported_signing_flow(self):
         guarded = sdk_test_address(1)
         receiver = sdk_test_address(2)
@@ -1477,6 +1759,111 @@ class TestSignGuardedGroup:
 # ---------------------------------------------------------------------------
 # plan_group
 # ---------------------------------------------------------------------------
+
+class TestNormalizeGuardedPassthroughItem:
+    """Typed instances are normalized, not trusted.
+
+    A caller can build GuardedPassthroughItem and GuardedPassthroughAuthorization
+    directly and still leave a nested value as a plain dict. Skipping
+    normalization for typed instances let those dicts reach attribute-based
+    validation and raise AttributeError; unknown or missing top-level keys
+    leaked TypeError from the dataclass constructor. Both must be ValueError.
+    """
+
+    def _valid_resources_dict(self):
+        return {"program_bytes": 5000, "argument_bytes": 1200, "max_opcode_cost": 30000}
+
+    def test_typed_instance_with_dict_resources_is_normalized(self):
+        item = GuardedPassthroughItem(
+            target_index=2,
+            signed_txn_hex="abcd",
+            authorization=GuardedPassthroughAuthorization(
+                logic_sig_resources=self._valid_resources_dict()
+            ),
+        )
+        normalized = _normalize_guarded_passthrough_item(item)
+        assert isinstance(
+            normalized.authorization.logic_sig_resources, LogicSigResourceUsage
+        )
+        assert normalized.authorization.logic_sig_resources.program_bytes == 5000
+        assert normalized.target_index == 2
+        assert normalized.signed_txn_hex == "abcd"
+
+    def test_typed_instance_with_invalid_dict_resources_raises_value_error(self):
+        item = GuardedPassthroughItem(
+            target_index=0,
+            signed_txn_hex="abcd",
+            authorization=GuardedPassthroughAuthorization(
+                logic_sig_resources={"program_bytes": 5000}
+            ),
+        )
+        with pytest.raises(ValueError, match="LogicSig resources are invalid"):
+            _normalize_guarded_passthrough_item(item)
+
+    def test_typed_instance_with_out_of_bounds_resources_raises_value_error(self):
+        item = GuardedPassthroughItem(
+            target_index=0,
+            signed_txn_hex="abcd",
+            authorization=GuardedPassthroughAuthorization(
+                logic_sig_resources=LogicSigResourceUsage(0, 1200, 30000)
+            ),
+        )
+        with pytest.raises(ValueError, match="LogicSig resources are invalid"):
+            _normalize_guarded_passthrough_item(item)
+
+    def test_typed_instance_preserves_pq_scheme_and_absent_resources(self):
+        item = GuardedPassthroughItem(
+            target_index=1,
+            signed_txn_hex="abcd",
+            authorization=GuardedPassthroughAuthorization(pq_scheme=PQ_SCHEME_FALCON1024),
+        )
+        normalized = _normalize_guarded_passthrough_item(item)
+        assert normalized.authorization.pq_scheme == PQ_SCHEME_FALCON1024
+        assert normalized.authorization.logic_sig_resources is None
+
+    def test_typed_instance_without_authorization_stays_none(self):
+        normalized = _normalize_guarded_passthrough_item(
+            GuardedPassthroughItem(target_index=0, signed_txn_hex="abcd")
+        )
+        assert normalized.authorization is None
+
+    def test_dict_with_unknown_top_level_field_raises_value_error(self):
+        with pytest.raises(ValueError, match="unknown fields: target_indx"):
+            _normalize_guarded_passthrough_item({
+                "target_indx": 2,
+                "signed_txn_hex": "abcd",
+            })
+
+    def test_dict_missing_required_field_raises_value_error(self):
+        with pytest.raises(ValueError, match="missing fields: signed_txn_hex"):
+            _normalize_guarded_passthrough_item({"target_index": 2})
+
+    def test_dict_with_unknown_authorization_field_raises_value_error(self):
+        with pytest.raises(ValueError, match="authorization has unknown fields"):
+            _normalize_guarded_passthrough_item({
+                "target_index": 2,
+                "signed_txn_hex": "abcd",
+                "authorization": {"pq_scheme": "f1", "extra": 1},
+            })
+
+    def test_non_object_authorization_raises_value_error(self):
+        with pytest.raises(ValueError, match="authorization must be an object"):
+            _normalize_guarded_passthrough_item(
+                GuardedPassthroughItem(
+                    target_index=0, signed_txn_hex="abcd", authorization="f1"
+                )
+            )
+
+    def test_dict_item_normalizes_nested_resources(self):
+        normalized = _normalize_guarded_passthrough_item({
+            "target_index": 3,
+            "signed_txn_hex": "abcd",
+            "authorization": {"logic_sig_resources": self._valid_resources_dict()},
+        })
+        assert normalized.authorization.logic_sig_resources == LogicSigResourceUsage(
+            5000, 1200, 30000
+        )
+
 
 class TestPlanGroup:
     def _make_mock_txn(self, sender="SENDER_ADDR"):
@@ -1950,6 +2337,19 @@ class TestBuildSignRequests:
             },
         }]
 
+    def test_rejects_indexed_lsig_resources_on_sign_mode(self):
+        client = make_client()
+        with patch("aplanesdk.signer.encode_transaction", return_value=("deadbeef", "SENDER")):
+            with pytest.raises(ValueError, match="allowed only for foreign or passthrough"):
+                client._build_sign_request_body(
+                    [self._make_mock_txn()],
+                    ["AUTH"],
+                    lsig_resources={
+                        0: LogicSigResourceUsage(1612, 1423, 20000),
+                    },
+                    allow_foreign=False,
+                )
+
 
 class TestPreparedGroup:
     def _make_mock_txn(self):
@@ -2016,9 +2416,46 @@ class TestPreparedGroup:
             },
         }]
 
+    @pytest.mark.parametrize(
+        ("prepared", "message"),
+        [
+            (
+                PreparedTransaction(
+                    transaction=MagicMock(sender="SENDER_ADDR"),
+                    auth_address="AUTH_ADDR",
+                    pq_scheme="f1",
+                ),
+                "pq_scheme is allowed only for foreign transactions",
+            ),
+            (
+                PreparedTransaction(
+                    transaction=MagicMock(sender="SENDER_ADDR"),
+                    auth_address="AUTH_ADDR",
+                    lsig_resources=LogicSigResourceUsage(1612, 1423, 20000),
+                ),
+                "lsig_resources is allowed only for foreign or passthrough transactions",
+            ),
+            (
+                PreparedTransaction(
+                    signed_transaction_base64=base64.b64encode(b"signed-txn").decode(),
+                    pq_scheme="f1",
+                ),
+                "pq_scheme is allowed only for foreign transactions",
+            ),
+        ],
+    )
+    def test_rejects_authorization_hints_outside_foreign_mode(self, prepared, message):
+        with patch("aplanesdk.signer.encode_transaction", return_value=("deadbeef", "SENDER_ADDR")):
+            with pytest.raises(ValueError, match=message):
+                PreparedGroup([prepared]).to_sign_requests()
+
     def test_rejects_empty_group(self):
         with pytest.raises(ValueError, match="prepared group is empty"):
             PreparedGroup([]).to_sign_requests()
+
+
+def test_package_root_exports_native_falcon_scheme():
+    assert aplanesdk.PQ_SCHEME_FALCON1024 == "f1"
 
 
 class TestPrepHelpers:
@@ -2937,18 +3374,3 @@ class TestApplyPrepFee:
         p = _FeeParams()
         _apply_prep_fee(p, None, False)
         assert p.fee == 7 and p.flat_fee is False
-
-
-class TestCreateGuardedDummies:
-    def test_requires_genesis_hash(self):
-        from aplanesdk.signer import _create_guarded_dummies, SignerError
-
-        class FakeTxn:
-            genesis_hash = ""
-            fee = 1000
-            first_valid_round = 1
-            last_valid_round = 100
-            genesis_id = "x"
-
-        with pytest.raises(SignerError, match="genesis hash"):
-            _create_guarded_dummies(FakeTxn(), 1)

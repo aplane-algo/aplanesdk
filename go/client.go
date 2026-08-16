@@ -1005,6 +1005,11 @@ func buildSignRequestsWithOptions(txns []types.Transaction, authAddresses []stri
 		if i < len(authAddresses) {
 			authAddr = authAddresses[i]
 		}
+		if authAddr != "" && opts != nil && opts.LsigResources != nil {
+			if _, ok := opts.LsigResources[i]; ok {
+				return nil, fmt.Errorf("lsig_resources[%d] is allowed only for foreign or passthrough transactions", i)
+			}
+		}
 
 		// Foreign mode: no auth address
 		if authAddr == "" {
