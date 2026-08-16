@@ -388,6 +388,10 @@ func TestGoSDKContractSentryKeyMetadata(t *testing.T) {
 	if component.Keys[0].IsSpendingAccount == nil || *component.Keys[0].IsSpendingAccount {
 		t.Fatalf("component IsSpendingAccount = %#v, want false", component.Keys[0].IsSpendingAccount)
 	}
+	// Witness rows are not spending accounts, so the signer omits the field.
+	if got := component.Keys[0].AuthorizationKind; got != "" {
+		t.Fatalf("witness AuthorizationKind = %q, want empty", got)
+	}
 
 	raw, err = os.ReadFile(sdkContractFixturePath(t, "keys_response_guarded.json"))
 	if err != nil {
@@ -399,6 +403,34 @@ func TestGoSDKContractSentryKeyMetadata(t *testing.T) {
 	}
 	if got := guarded.Keys[0].Parameters["sentry_public_key"]; got == "" {
 		t.Fatal("guarded key missing sentry_public_key parameter")
+	}
+	if got := guarded.Keys[0].AuthorizationKind; got != AuthorizationKindLogicSig {
+		t.Fatalf("guarded AuthorizationKind = %q, want %q", got, AuthorizationKindLogicSig)
+	}
+}
+
+func TestGoSDKContractKeyAuthorizationKind(t *testing.T) {
+	raw, err := os.ReadFile(sdkContractFixturePath(t, "keys_response_generic.json"))
+	if err != nil {
+		t.Fatalf("read generic keys fixture: %v", err)
+	}
+	var generic KeysResponse
+	if err := json.Unmarshal(raw, &generic); err != nil {
+		t.Fatalf("unmarshal generic keys fixture: %v", err)
+	}
+	want := []string{AuthorizationKindEd25519, AuthorizationKindLogicSig, AuthorizationKindNativePQ}
+	if len(generic.Keys) != len(want) {
+		t.Fatalf("generic keys = %d, want %d", len(generic.Keys), len(want))
+	}
+	for i, kind := range want {
+		if got := generic.Keys[i].AuthorizationKind; got != kind {
+			t.Fatalf("key %d AuthorizationKind = %q, want %q", i, got, kind)
+		}
+	}
+	// A native-PQ spending key carries no LogicSig profile. Callers must use
+	// AuthorizationKind, not the absence of resources, to classify it.
+	if generic.Keys[2].LogicSigResources != nil {
+		t.Fatal("native-PQ key should not report LogicSig resources")
 	}
 }
 

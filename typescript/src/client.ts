@@ -70,6 +70,7 @@ import {
   SIGNING_FLOW_BOUNDED1,
   SIGNING_FLOW_BOUNDED_SENTRY1,
   PQ_SCHEME_FALCON1024,
+  AUTHORIZATION_KIND_NATIVE_PQ,
   validateLogicSigResources,
   validateSignRequests,
   wireLogicSigResources,
@@ -869,9 +870,15 @@ export async function signPreparedBoundedSentryGroup(
     if (!item.authAddress) {
       throw new SignerError(`prepared transaction ${index}: primary auth address is required`);
     }
+    // This slot is declared foreign to /sign/bounded-component, so the signer
+    // cannot infer its authorization envelope from the key. A native-PQ key
+    // publishes no LogicSig profile, so without an explicit pq_scheme the
+    // signer budgets it as an Ed25519 slot and freezes an under-funded
+    // canonical group.
     requests.push({
       txn_bytes_hex: encodeTransaction(item.transaction)[0],
       lsig_resources: wireLogicSigResources(resources),
+      pq_scheme: preparedForeignPQScheme(key, resources, `prepared transaction ${index}`),
     });
     primaryTargets.push({
       targetIndex: index,
@@ -1462,6 +1469,60 @@ function requiredPreparedResources(
   label: string,
 ): LogicSigResourceUsage {
   return requireLogicSigResources(selectedPreparedResources(key, txn), label);
+}
+
+/**
+ * Native-PQ scheme a foreign slot must declare for the given signer key.
+ *
+ * Foreign slots carry no auth address, so the signer budgets fees purely from
+ * what the request declares; only authorizationKind distinguishes a native-PQ
+ * key from an Ed25519 one, because neither publishes a LogicSig resource
+ * profile. An absent authorizationKind means an older signer that does not
+ * report it, in which case the slot keeps its previous declaration.
+ */
+function preparedForeignPQScheme(
+  key: KeyInfo | undefined,
+  resources: LogicSigResourceUsage | undefined,
+  label: string,
+): string | undefined {
+  if (key?.authorizationKind !== AUTHORIZATION_KIND_NATIVE_PQ) return undefined;
+  if (resources) {
+    throw new SignerError(`${label}: native-PQ signer key must not declare LogicSig resources`);
+  }
+  return PQ_SCHEME_FALCON1024;
+}
+
+/**
+ * Normalize an index-keyed record into an integer-keyed Map.
+ *
+ * Object keys are strings at runtime, so a caller can supply a key that
+ * `Number()` maps onto a plausible index while a numeric lookup never matches
+ * it ("01", "1.0", " 1"), or one that yields NaN, which passes every
+ * relational range check because NaN comparisons are all false. Either way the
+ * entry would be dropped silently and the request would go out with no
+ * declaration rather than an error. Only canonical decimal integer keys
+ * within range are accepted.
+ */
+function normalizeIndexedRecord<T>(
+  record: Record<number, T> | undefined,
+  length: number,
+  label: string,
+): Map<number, T> {
+  const normalized = new Map<number, T>();
+  if (!record) return normalized;
+  for (const [key, value] of Object.entries(record)) {
+    const index = Number(key);
+    if (!Number.isInteger(index) || String(index) !== key) {
+      throw new SignerError(
+        `${label} index ${JSON.stringify(key)} is not a canonical transaction index`,
+      );
+    }
+    if (index < 0 || index >= length) {
+      throw new SignerError(`${label} index ${index} out of range for ${length} transactions`);
+    }
+    normalized.set(index, value);
+  }
+  return normalized;
 }
 
 function validateAssemblyIndex(index: number, groupLen: number, covered: Set<number>): void {
@@ -2849,6 +2910,7 @@ export class SignerClient {
         address: k.address,
         publicKeyHex: raw.public_key_hex || "",
         keyType: raw.key_type || "",
+        authorizationKind: raw.authorization_kind || undefined,
         signingFlow: raw.signing_flow || undefined,
         sentryComponentKeyType: raw.sentry_component_key_type || undefined,
         logicSigResources: mapLogicSigResourceProfile(raw.logic_sig_resources),
@@ -4443,23 +4505,16 @@ export class SignerClient {
       throw new SignerError("transactions must not be empty");
     }
 
-    // Validate passthrough indices
-    if (passthrough) {
-      for (const idx of Object.keys(passthrough).map(Number)) {
-        if (idx < 0 || idx >= txns.length) {
-          throw new SignerError(`passthrough index ${idx} out of range for ${txns.length} transactions`);
-        }
-      }
-    }
-
-    // Validate lsigResources indices
-    if (lsigResources) {
-      for (const [idx, resources] of Object.entries(lsigResources).map(([k, v]) => [Number(k), v] as const)) {
-        if (idx < 0 || idx >= txns.length) {
-          throw new SignerError(`lsigResources index ${idx} out of range for ${txns.length} transactions`);
-        }
-        validateLogicSigResources(resources, `lsigResources[${idx}]`);
-      }
+    // Normalize index-keyed inputs once, so every later lookup is an integer
+    // key that cannot silently miss its entry.
+    const passthroughByIndex = normalizeIndexedRecord(passthrough, txns.length, "passthrough");
+    const lsigResourcesByIndex = normalizeIndexedRecord(
+      lsigResources,
+      txns.length,
+      "lsigResources",
+    );
+    for (const [idx, resources] of lsigResourcesByIndex) {
+      validateLogicSigResources(resources, `lsigResources[${idx}]`);
     }
 
     const signRequests: SignRequest[] = [];
@@ -4468,17 +4523,19 @@ export class SignerClient {
       const authAddr = authAddresses[i];
 
       // Passthrough: include pre-signed transaction as-is
-      if (passthrough && i in passthrough) {
-        const signedHex = Buffer.from(passthrough[i], "base64").toString("hex");
+      const passthroughEntry = passthroughByIndex.get(i);
+      if (passthroughEntry !== undefined) {
+        const signedHex = Buffer.from(passthroughEntry, "base64").toString("hex");
         const request: SignRequest = { signed_txn_hex: signedHex };
-        if (lsigResources && i in lsigResources) {
-          request.lsig_resources = wireLogicSigResources(lsigResources[i]);
+        const resources = lsigResourcesByIndex.get(i);
+        if (resources) {
+          request.lsig_resources = wireLogicSigResources(resources);
         }
         signRequests.push(request);
         continue;
       }
 
-      if (authAddr && lsigResources && i in lsigResources) {
+      if (authAddr && lsigResourcesByIndex.has(i)) {
         throw new SignerError(
           `lsigResources[${i}] is allowed only for foreign or passthrough transactions`,
         );
@@ -4496,8 +4553,9 @@ export class SignerClient {
         }
         const [txnBytesHex] = encodeTransaction(txn);
         const req: SignRequest = { txn_bytes_hex: txnBytesHex };
-        if (lsigResources && i in lsigResources) {
-          req.lsig_resources = wireLogicSigResources(lsigResources[i]);
+        const resources = lsigResourcesByIndex.get(i);
+        if (resources) {
+          req.lsig_resources = wireLogicSigResources(resources);
         }
         signRequests.push(req);
         continue;

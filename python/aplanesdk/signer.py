@@ -90,6 +90,10 @@ APP_CALL_METHOD_ARGS_TUPLE_THRESHOLD = APP_CALL_MAX_APP_ARGS - 2
 GUARDED_DUMMY_PROGRAM = bytes.fromhex("033120320312")
 PQ_SCHEME_FALCON1024 = "f1"
 
+AUTHORIZATION_KIND_ED25519 = "ed25519"
+AUTHORIZATION_KIND_NATIVE_PQ = "native_pq"
+AUTHORIZATION_KIND_LOGIC_SIG = "logic_sig"
+
 COMPONENT_SIGN_ROLE_USER = "user"
 COMPONENT_SIGN_ROLE_SENTRY = "sentry"
 
@@ -339,6 +343,9 @@ class KeyInfo:
     address: str
     key_type: str
     public_key_hex: str = ""
+    # Account authorization envelope; empty when the signer does not report it
+    # or the key is not a spending account. Never infer ed25519 from empty.
+    authorization_kind: str = ""
     signing_flow: str = ""  # Signing choreography label (e.g. "sentry1"); empty = plain /sign
     sentry_component_key_type: str = ""  # Sentry component key type for signing flow "sentry1"
     logic_sig_resources: Optional[LogicSigResourceProfile] = None
@@ -1393,29 +1400,59 @@ def _guarded_dummy_lsig_resources() -> LogicSigResourceUsage:
     )
 
 
+def _normalize_guarded_passthrough_authorization(
+    authorization: Any,
+) -> Optional[GuardedPassthroughAuthorization]:
+    """Return a fully typed authorization built from a dict or an instance.
+
+    A caller may construct GuardedPassthroughAuthorization directly and still
+    set logic_sig_resources to a plain dict. Normalizing both shapes here keeps
+    every downstream consumer working on LogicSigResourceUsage, so invalid
+    input raises ValueError instead of AttributeError at the point of use.
+    """
+    if authorization is None:
+        return None
+    if isinstance(authorization, GuardedPassthroughAuthorization):
+        resources = authorization.logic_sig_resources
+        pq_scheme = authorization.pq_scheme
+    elif isinstance(authorization, dict):
+        expected = {"logic_sig_resources", "pq_scheme"}
+        if not set(authorization).issubset(expected):
+            raise ValueError("guarded passthrough authorization has unknown fields")
+        resources = authorization.get("logic_sig_resources")
+        pq_scheme = authorization.get("pq_scheme", "")
+    else:
+        raise ValueError("guarded passthrough authorization must be an object")
+    return GuardedPassthroughAuthorization(
+        logic_sig_resources=(
+            _require_lsig_resources(resources, "guarded passthrough authorization")
+            if resources is not None
+            else None
+        ),
+        pq_scheme=pq_scheme,
+    )
+
+
 def _normalize_guarded_passthrough_item(item: Any) -> GuardedPassthroughItem:
+    # Typed instances are normalized too, not passed through: their nested
+    # fields are only as well-formed as the caller made them.
     if isinstance(item, GuardedPassthroughItem):
-        return item
+        return GuardedPassthroughItem(
+            target_index=item.target_index,
+            signed_txn_hex=item.signed_txn_hex,
+            authorization=_normalize_guarded_passthrough_authorization(item.authorization),
+        )
     data = _compact_payload(item)
     if not isinstance(data, dict):
         raise ValueError("guarded passthrough item must be an object")
-    authorization_data = data.pop("authorization", None)
-    authorization = None
-    if authorization_data is not None:
-        if not isinstance(authorization_data, dict):
-            raise ValueError("guarded passthrough authorization must be an object")
-        expected = {"logic_sig_resources", "pq_scheme"}
-        if not set(authorization_data).issubset(expected):
-            raise ValueError("guarded passthrough authorization has unknown fields")
-        resources = authorization_data.get("logic_sig_resources")
-        authorization = GuardedPassthroughAuthorization(
-            logic_sig_resources=(
-                _require_lsig_resources(resources, "guarded passthrough authorization")
-                if resources is not None
-                else None
-            ),
-            pq_scheme=authorization_data.get("pq_scheme", ""),
-        )
+    authorization = _normalize_guarded_passthrough_authorization(data.pop("authorization", None))
+    expected = {"target_index", "signed_txn_hex"}
+    unknown = sorted(set(data) - expected)
+    if unknown:
+        raise ValueError(f"guarded passthrough item has unknown fields: {', '.join(unknown)}")
+    missing = sorted(expected - set(data))
+    if missing:
+        raise ValueError(f"guarded passthrough item is missing fields: {', '.join(missing)}")
     return GuardedPassthroughItem(authorization=authorization, **data)
 
 
@@ -1541,6 +1578,26 @@ def _required_prepared_resources(
     label: str,
 ) -> LogicSigResourceUsage:
     return _require_lsig_resources(_selected_prepared_resources(key, txn), label)
+
+
+def _prepared_foreign_pq_scheme(
+    key: Optional[KeyInfo],
+    resources: Optional[LogicSigResourceUsage],
+    label: str,
+) -> str:
+    """Native-PQ scheme a foreign slot must declare for the given signer key.
+
+    Foreign slots carry no auth address, so the signer budgets fees purely from
+    what the request declares; only authorization_kind distinguishes a
+    native-PQ key from an Ed25519 one, because neither publishes a LogicSig
+    resource profile. An empty authorization_kind means an older signer that
+    does not report it, in which case the slot keeps its previous declaration.
+    """
+    if key is None or key.authorization_kind != AUTHORIZATION_KIND_NATIVE_PQ:
+        return ""
+    if resources is not None:
+        raise ValueError(f"{label}: native-PQ signer key must not declare LogicSig resources")
+    return PQ_SCHEME_FALCON1024
 
 
 def _parse_bounded_authorization(data: Any) -> Optional[BoundedAuthorizationInfo]:
@@ -2862,6 +2919,7 @@ class SignerClient:
                 address=k["address"],
                 key_type=k["key_type"],
                 public_key_hex=k.get("public_key_hex", ""),
+                authorization_kind=k.get("authorization_kind", ""),
                 signing_flow=k.get("signing_flow", ""),
                 sentry_component_key_type=k.get("sentry_component_key_type", ""),
                 logic_sig_resources=_parse_lsig_resource_profile(k.get("logic_sig_resources")),
@@ -5551,6 +5609,16 @@ def sign_prepared_bounded_sentry_group(
         request = {"txn_bytes_hex": txn_hex}
         if resources:
             request["lsig_resources"] = _wire_lsig_resources(resources)
+        # This slot is declared foreign to /sign/bounded-component, so the
+        # signer cannot infer its authorization envelope from the key. A
+        # native-PQ key publishes no LogicSig profile, so without an explicit
+        # pq_scheme the signer budgets it as an Ed25519 slot and freezes an
+        # under-funded canonical group.
+        pq_scheme = _prepared_foreign_pq_scheme(
+            key, resources, f"prepared transaction {index}"
+        )
+        if pq_scheme:
+            request["pq_scheme"] = pq_scheme
         requests_data.append(request)
         primary_targets.append(
             {

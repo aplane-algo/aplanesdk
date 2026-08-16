@@ -135,6 +135,156 @@ func TestSignPreparedBoundedSentryGroupOneTarget(t *testing.T) {
 	}
 }
 
+// A native-PQ primary slot is declared foreign to /sign/bounded-component, so
+// the signer budgets its fee purely from the declared pq_scheme. Omitting it
+// freezes an under-funded canonical group that the later /sign identity check
+// cannot detect, because the shortfall is already inside the canonical bytes.
+func TestSignPreparedBoundedSentryGroupDeclaresNativePQPrimary(t *testing.T) {
+	bounded := sdkTestAddress(51)
+	nativePQ := sdkTestAddress(52)
+	receiver := sdkTestAddress(53)
+	var frozenGroup []string
+	var primaryRequest SignRequest
+
+	userClient, userServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/status":
+			json.NewEncoder(w).Encode(StatusResponse{
+				IdentityID: "default", State: "unlocked", ApprovalWaitSeconds: 60,
+			})
+		case "/sign/bounded-component":
+			var req BoundedComponentRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode bounded component request: %v", err)
+			}
+			if len(req.Requests) != 2 {
+				t.Fatalf("bounded component requests = %d, want 2", len(req.Requests))
+			}
+			primaryRequest = req.Requests[1]
+			frozenGroup = []string{req.Requests[0].TxnBytesHex, req.Requests[1].TxnBytesHex}
+			json.NewEncoder(w).Encode(BoundedComponentResponse{
+				RequestID:    req.RequestID,
+				Transactions: frozenGroup,
+				Components: []BoundedBaseComponent{{
+					TargetIndex:     0,
+					BoundedAccount:  bounded,
+					BaseSignatures:  []string{"base-sig"},
+					AssemblyReceipt: "receipt",
+					SignatureScheme: "aplane.falcon1024.v1",
+				}},
+			})
+		case "/sign":
+			json.NewEncoder(w).Encode(GroupSignResponse{Signed: signedGroupFor(t, frozenGroup)})
+		case "/sign/bounded-assemble":
+			var req BoundedAssemblyRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode bounded assembly request: %v", err)
+			}
+			json.NewEncoder(w).Encode(BoundedAssemblyResponse{
+				RequestID: req.RequestID, SignedGroup: signedGroupFor(t, req.GroupBytesHex),
+			})
+		default:
+			t.Fatalf("unexpected user path %s", r.URL.Path)
+		}
+	})
+	defer userServer.Close()
+
+	sentryClient, sentryServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		var req ComponentSignRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode sentry component request: %v", err)
+		}
+		json.NewEncoder(w).Encode(ComponentSignResponse{
+			RequestID: req.RequestID,
+			Signatures: []ComponentSignature{{
+				TargetIndex: 0, Signature: "sentry-sig", SignatureScheme: KeyTypeWitnessFalcon1024,
+			}},
+		})
+	})
+	defer sentryServer.Close()
+
+	var genesisHash types.Digest
+	sp := types.SuggestedParams{
+		Fee: types.MicroAlgos(1000), FirstRoundValid: 1, LastRoundValid: 100,
+		GenesisID: "testnet-v1.0", GenesisHash: genesisHash[:], FlatFee: true,
+	}
+	corridorTxn, err := transaction.MakePaymentTxn(bounded, receiver, 1000, nil, "", sp)
+	if err != nil {
+		t.Fatalf("MakePaymentTxn() error = %v", err)
+	}
+	nativeTxn, err := transaction.MakePaymentTxn(nativePQ, receiver, 2000, nil, "", sp)
+	if err != nil {
+		t.Fatalf("MakePaymentTxn() error = %v", err)
+	}
+	groupID, err := algocrypto.ComputeGroupID([]types.Transaction{corridorTxn, nativeTxn})
+	if err != nil {
+		t.Fatalf("ComputeGroupID() error = %v", err)
+	}
+	corridorTxn.Group = groupID
+	nativeTxn.Group = groupID
+
+	_, err = SignPreparedGuardedGroup(PreparedGuardedGroupOptions{
+		UserClient: userClient, SentryClient: sentryClient,
+		SentryComponentKey: "SENTRY_COMPONENT",
+		PreparedGroup: NewPreparedGroup(
+			PreparedTransaction{
+				Transaction: &corridorTxn, AuthAddress: bounded,
+				SignerKey: &KeyInfo{
+					Address: bounded, KeyType: "aplane.corridor.v1",
+					AuthorizationKind: AuthorizationKindLogicSig,
+					SigningFlow:       SigningFlowBoundedSentry1,
+					LogicSigResources: &LogicSigResourceProfile{
+						Spend: &LogicSigResourceUsage{ProgramBytes: 5308, ArgumentBytes: 3358, MaxOpcodeCost: 20000},
+					},
+					SentryComponentKeyType: KeyTypeWitnessFalcon1024,
+					BoundedAuthorization: &BoundedAuthorizationInfo{
+						MaxFee: 1000,
+						Sentry: &BoundedSentryAuthorizationInfo{
+							ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: "aabb",
+						},
+					},
+				},
+			},
+			PreparedTransaction{
+				Transaction: &nativeTxn, AuthAddress: nativePQ,
+				SignerKey: &KeyInfo{
+					Address: nativePQ, KeyType: "falcon1024",
+					AuthorizationKind: AuthorizationKindNativePQ,
+				},
+			},
+		),
+	})
+	if err != nil {
+		t.Fatalf("SignPreparedGuardedGroup() error = %v", err)
+	}
+
+	if primaryRequest.PQScheme != PQSchemeFalcon1024 {
+		t.Fatalf("primary slot PQScheme = %q, want %q", primaryRequest.PQScheme, PQSchemeFalcon1024)
+	}
+	if primaryRequest.LsigResources != nil {
+		t.Fatalf("primary slot LsigResources = %+v, want nil", primaryRequest.LsigResources)
+	}
+	if primaryRequest.AuthAddress != "" {
+		t.Fatalf("primary slot AuthAddress = %q, want empty (foreign mode)", primaryRequest.AuthAddress)
+	}
+}
+
+func TestPreparedForeignPQSchemeRejectsContradictoryMetadata(t *testing.T) {
+	key := &KeyInfo{AuthorizationKind: AuthorizationKindNativePQ}
+	resources := &LogicSigResourceUsage{ProgramBytes: 512, ArgumentBytes: 32, MaxOpcodeCost: 20000}
+	if _, err := preparedForeignPQScheme(key, resources); err == nil ||
+		!strings.Contains(err.Error(), "must not declare LogicSig resources") {
+		t.Fatalf("preparedForeignPQScheme() error = %v, want contradiction rejection", err)
+	}
+
+	// An older signer that does not report authorization_kind keeps the
+	// previous declaration rather than guessing.
+	got, err := preparedForeignPQScheme(&KeyInfo{}, nil)
+	if err != nil || got != "" {
+		t.Fatalf("preparedForeignPQScheme() = %q, %v, want empty scheme and no error", got, err)
+	}
+}
+
 func TestBoundedAssemblyRequestRejectsMissingCoverage(t *testing.T) {
 	req := BoundedAssemblyRequest{
 		GroupBytesHex: []string{"5458aa", "5458bb"},

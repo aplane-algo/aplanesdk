@@ -272,6 +272,15 @@ different `Spend`, `SpendingRekey`, and `AdminRekey` profiles.
 `logic_sig`. Do not infer Ed25519 from `RequiresLogicSig == false`: native
 Falcon-1024 also has a false compatibility boolean.
 
+`KeyInfo.AuthorizationKind` reports the same closed values for a key instance
+and is authoritative for choosing its transaction authorization envelope. It
+is empty for witness keys, which are not spending accounts, and empty against
+older signers that do not report it; never read an empty value as Ed25519.
+Prefer it over `LogicSigResources != nil`, because a native Falcon-1024
+spending key publishes no LogicSig profile and is otherwise indistinguishable
+from an Ed25519 key. `SignPreparedGuardedGroup` uses it to declare
+`PQScheme` on native-PQ group positions that are planned as foreign slots.
+
 The Go SDK exposes bounded inventory and ordinary spend signing only. It does
 not expose `/sign/bounded-admin` or build and complete contract-admin rekeys;
 use the APlane `aprekey` workflow for those operations.

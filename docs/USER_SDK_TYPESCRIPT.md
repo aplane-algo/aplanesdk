@@ -334,6 +334,16 @@ different `spend`, `spendingRekey`, and `adminRekey` profiles.
 `KeyTypeInfo.authorizationKind` distinguishes `ed25519`, `native_pq`, and
 `logic_sig`. `requiresLogicsig === false` alone does not imply Ed25519.
 
+`KeyInfo.authorizationKind` reports the same closed values for a key instance
+and is authoritative for choosing its transaction authorization envelope. It
+is absent for witness keys, which are not spending accounts, and absent
+against older signers that do not report it; never read an absent value as
+Ed25519. Prefer it over checking `logicSigResources`, because a native
+Falcon-1024 spending key publishes no LogicSig profile and is otherwise
+indistinguishable from an Ed25519 key. `signPreparedGuardedGroup` uses it to
+declare `pq_scheme` on native-PQ group positions that are planned as foreign
+slots.
+
 The TypeScript SDK exposes bounded inventory and ordinary spend signing only.
 It does not expose `/sign/bounded-admin` or build and complete contract-admin
 rekeys; use the APlane `aprekey` workflow for those operations.

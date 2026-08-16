@@ -101,6 +101,7 @@ export {
 // Types
 export type {
   KeyInfo,
+  AuthorizationKind,
   LogicSigResourceUsage,
   LogicSigResourceProfile,
   BoundedSignatureArgLayout,
@@ -175,6 +176,9 @@ export {
   KEY_TYPE_WITNESS_FALCON1024,
   KEY_TYPE_GUARDED_FALCON1024_SENTRY1024,
   PQ_SCHEME_FALCON1024,
+  AUTHORIZATION_KIND_ED25519,
+  AUTHORIZATION_KIND_NATIVE_PQ,
+  AUTHORIZATION_KIND_LOGIC_SIG,
 } from "./types.js";
 
 export type {

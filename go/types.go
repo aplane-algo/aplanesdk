@@ -694,6 +694,7 @@ type KeyInfo struct {
 	Address                  string                    `json:"address"`
 	PublicKeyHex             string                    `json:"public_key_hex"`
 	KeyType                  string                    `json:"key_type"`
+	AuthorizationKind        string                    `json:"authorization_kind,omitempty"` // account authorization envelope; empty = not reported or not a spending account
 	SigningFlow              string                    `json:"signing_flow,omitempty"`
 	SentryComponentKeyType   string                    `json:"sentry_component_key_type,omitempty"`
 	LogicSigResources        *LogicSigResourceProfile  `json:"logic_sig_resources,omitempty"`
