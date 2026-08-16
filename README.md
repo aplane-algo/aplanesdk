@@ -25,6 +25,10 @@ Signed passthrough LogicSig slots must carry their selected-path
 `lsig_resources`; the SDK forwards the same per-slot resource declaration used
 for foreign LogicSig planning.
 
+The native-Falcon SDK release line requires an APlane release after `v0.35.0`
+that contains the matching signer API. See the
+[SDK compatibility note](docs/COMPATIBILITY.md) before upgrading either side.
+
 Data-directory routing is shared with APlane through `endpoints.yaml`. See the
 [endpoint migration guide](docs/MIGRATION_ENDPOINTS.md) when upgrading from
 the former SDK-only `config.yaml endpoint:` layout.

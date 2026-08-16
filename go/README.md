@@ -4,6 +4,9 @@ Go SDK for signing Algorand transactions via apsigner.
 
 SDK package versions are tracked independently across languages. Use the compatibility notes in each release rather than assuming Go, Python, and TypeScript package versions will match exactly.
 
+The native-Falcon SDK release line requires an APlane signer release after
+`v0.35.0`; see [`docs/COMPATIBILITY.md`](../docs/COMPATIBILITY.md).
+
 ## Installation
 
 ```bash
@@ -388,7 +391,9 @@ assembled, err := userClient.RequestGuardedAssemble(aplane.GuardedAssemblyReques
 })
 ```
 
-For the common explicit two-client flow, use `SignGuardedGroup`:
+For the common explicit two-client flow, use `SignGuardedGroup`. The direct
+helper does not perform inventory discovery, so pass the reviewed spend-path
+resource profile returned by `ListKeys`:
 
 ```go
 result, err := aplane.SignGuardedGroup(aplane.GuardedSignOptions{
@@ -397,8 +402,9 @@ result, err := aplane.SignGuardedGroup(aplane.GuardedSignOptions{
 	SentryComponentKey: "SENTRY_COMPONENT_SELECTOR",
 	GroupBytesHex:      []string{"5458..."},
 	Targets: []aplane.GuardedSignTarget{{
-		TargetIndex:    0,
-		GuardedAccount: "GUARDED_ACCOUNT_ADDRESS",
+		TargetIndex:       0,
+		GuardedAccount:    "GUARDED_ACCOUNT_ADDRESS",
+		LogicSigResources: reviewedSpendResources,
 	}},
 })
 signedGroup := result.SignedGroup
@@ -439,9 +445,8 @@ frozen transaction bytes.
 approval-bearing request is canceled or times out. `RequestBoundedAssemble`
 does not open an approval request and is not a cancellation handle.
 
-`PreparedGuardedGroupOptions.MinFee` applies to the legacy `sentry1` path. The
-`bounded-sentry1` signer planner owns fee selection and reports its mutations,
-so that path ignores `MinFee`.
+The signer planner owns fee selection, authorization-resource sizing, and any
+reported group mutations for both guarded flows.
 
 Applications that own orchestration can call `RequestBoundedComponent` and
 `RequestBoundedAssemble` directly. Sentry authorization is spend-only in this

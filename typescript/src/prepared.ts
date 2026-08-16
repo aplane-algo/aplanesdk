@@ -5,8 +5,8 @@ import type {
   PreparedGroup,
   PreparedTransaction,
   SignRequest,
-  LogicSigResourceUsage,
 } from "./types.js";
+import { PQ_SCHEME_FALCON1024, wireLogicSigResources } from "./types.js";
 import { SignerError } from "./errors.js";
 import { encodeLsigArgs, encodeTransaction, bytesToHex } from "./encoding.js";
 
@@ -33,7 +33,10 @@ export function preparedTransactionToSignRequest(
       signed_txn_hex: base64ToHex(prepared.signedTransactionBase64),
     };
     if (prepared.lsigResources) {
-      request.lsig_resources = toWireLogicSigResources(prepared.lsigResources);
+      request.lsig_resources = wireLogicSigResources(
+        prepared.lsigResources,
+        "prepared passthrough lsigResources",
+      );
     }
     return request;
   }
@@ -46,11 +49,17 @@ export function preparedTransactionToSignRequest(
   if (!prepared.authAddress) {
     const request: SignRequest = { txn_bytes_hex: txnBytesHex };
     if (prepared.lsigResources) {
-      request.lsig_resources = toWireLogicSigResources(prepared.lsigResources);
+      request.lsig_resources = wireLogicSigResources(
+        prepared.lsigResources,
+        "prepared foreign lsigResources",
+      );
     }
     if (prepared.pqScheme) {
       if (request.lsig_resources) {
         throw new SignerError("foreign transaction cannot specify both pqScheme and lsigResources");
+      }
+      if (prepared.pqScheme !== PQ_SCHEME_FALCON1024) {
+        throw new SignerError(`unsupported pqScheme ${JSON.stringify(prepared.pqScheme)}`);
       }
       request.pq_scheme = prepared.pqScheme;
     }
@@ -69,14 +78,6 @@ export function preparedTransactionToSignRequest(
     request.app_call_info = prepared.appCallInfo;
   }
   return request;
-}
-
-function toWireLogicSigResources(resources: LogicSigResourceUsage): NonNullable<SignRequest["lsig_resources"]> {
-  return {
-    program_bytes: resources.programBytes,
-    argument_bytes: resources.argumentBytes,
-    max_opcode_cost: resources.maxOpcodeCost,
-  };
 }
 
 /**

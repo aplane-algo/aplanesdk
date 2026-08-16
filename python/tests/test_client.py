@@ -90,6 +90,14 @@ def sdk_test_address(seed: int) -> str:
     return algo_encoding.encode_address(bytes(raw))
 
 
+def guarded_test_resources():
+    return LogicSigResourceUsage(
+        program_bytes=1612,
+        argument_bytes=1423,
+        max_opcode_cost=20000,
+    )
+
+
 class MockAlgod:
     def __init__(self, accounts):
         self.accounts = accounts
@@ -854,7 +862,13 @@ class TestSignGuardedGroup:
             sentry_client=sentry,
             sentry_component_key="SENTRY_COMPONENT",
             group_bytes_hex=["5458aa"],
-            guarded_targets=[GuardedSignTarget(target_index=0, guarded_account="GUARDED")],
+            guarded_targets=[
+                GuardedSignTarget(
+                    target_index=0,
+                    guarded_account="GUARDED",
+                    logic_sig_resources=guarded_test_resources(),
+                )
+            ],
         )
 
         assert result.signed_group == ["signed-guarded"]
@@ -893,8 +907,16 @@ class TestSignGuardedGroup:
             sentry_component_key="SENTRY_COMPONENT",
             group_bytes_hex=["5458aa", "5458bb"],
             guarded_targets=[
-                GuardedSignTarget(target_index=0, guarded_account="GUARDED"),
-                GuardedSignTarget(target_index=1, guarded_account="GUARDED"),
+                GuardedSignTarget(
+                    target_index=0,
+                    guarded_account="GUARDED",
+                    logic_sig_resources=guarded_test_resources(),
+                ),
+                GuardedSignTarget(
+                    target_index=1,
+                    guarded_account="GUARDED",
+                    logic_sig_resources=guarded_test_resources(),
+                ),
             ],
         )
 
@@ -950,13 +972,40 @@ class TestSignGuardedGroup:
             primary_targets=[
                 GuardedPrimarySignTarget(target_index=0, auth_address="AUTH"),
             ],
-            guarded_targets=[GuardedSignTarget(target_index=1, guarded_account="GUARDED")],
+            guarded_targets=[
+                GuardedSignTarget(
+                    target_index=1,
+                    guarded_account="GUARDED",
+                    logic_sig_resources=guarded_test_resources(),
+                )
+            ],
         )
 
         assert result.signed_group[1] == "guarded-signed"
         sign_requests = user.sign_requests.call_args.args[0]
         assert sign_requests[0]["auth_address"] == "AUTH"
         assert "auth_address" not in sign_requests[1]
+        assert sign_requests[1]["lsig_resources"] == {
+            "program_bytes": 1612,
+            "argument_bytes": 1423,
+            "max_opcode_cost": 20000,
+        }
+
+    def test_rejects_missing_resources_before_component_signing(self):
+        user = make_client()
+        user.request_component_sign = MagicMock()
+
+        with pytest.raises(ValueError, match="LogicSig resources are unavailable"):
+            sign_guarded_group(
+                user_client=user,
+                group_bytes_hex=["5458aa"],
+                guarded_targets=[{
+                    "target_index": 0,
+                    "guarded_account": "GUARDED",
+                }],
+            )
+
+        user.request_component_sign.assert_not_called()
 
     def test_prepared_all_guarded_adds_dummies_without_plan_or_sign(self):
         guarded = sdk_test_address(1)
@@ -1731,6 +1780,70 @@ class TestSignRequests:
         client = make_client()
         with pytest.raises(ValueError, match="invalid character"):
             client.sign_requests([{"txn_bytes_hex": "545801"}], request_id="bad id")
+
+    def test_sign_requests_rejects_unsupported_pq_scheme_before_http(self):
+        client = make_client()
+        with patch.object(client.session, "post") as mock_post:
+            with pytest.raises(ValueError, match="unsupported pq_scheme"):
+                client.sign_requests(
+                    [
+                        {
+                            "txn_bytes_hex": "545801",
+                            "pq_scheme": "f2",
+                        }
+                    ]
+                )
+        mock_post.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("entries", "error"),
+        [
+            (
+                [
+                    {
+                        "txn_bytes_hex": "545801",
+                        "auth_address": "AUTH",
+                        "lsig_resources": {
+                            "program_bytes": 1,
+                            "argument_bytes": 0,
+                            "max_opcode_cost": 1,
+                        },
+                    }
+                ],
+                "lsig_resources is allowed only for foreign or passthrough",
+            ),
+            (
+                [
+                    {
+                        "signed_txn_hex": "aabb",
+                        "lsig_resources": {
+                            "program_bytes": 0,
+                            "argument_bytes": 0,
+                            "max_opcode_cost": 0,
+                        },
+                    }
+                ],
+                "LogicSig resources are invalid",
+            ),
+            (
+                [
+                    {"txn_bytes_hex": "545801", "pq_scheme": "f1"},
+                    {"signed_txn_hex": "aabb"},
+                ],
+                "cannot mix passthrough and foreign transactions",
+            ),
+            (
+                [{"txn_bytes_hex": "545801", "pq_scheme": "f1"}],
+                "no signable transactions",
+            ),
+        ],
+    )
+    def test_sign_requests_validates_full_raw_request_contract(self, entries, error):
+        client = make_client()
+        with patch.object(client.session, "post") as mock_post:
+            with pytest.raises(ValueError, match=error):
+                client.sign_requests(entries)
+        mock_post.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

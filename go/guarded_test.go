@@ -31,6 +31,10 @@ func canonicalTxnHex(seed byte) string {
 	return hex.EncodeToString(encodeTxn(txn))
 }
 
+func guardedTestResources() *LogicSigResourceUsage {
+	return &LogicSigResourceUsage{ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000}
+}
+
 func createGuardedDummies(firstTxn types.Transaction, count int) ([]types.Transaction, error) {
 	dummyAcct := crypto.LogicSigAccount{Lsig: types.LogicSig{Logic: guardedDummyProgram}}
 	dummyAddr, err := dummyAcct.Address()
@@ -154,8 +158,9 @@ func TestSignGuardedGroupOneTarget(t *testing.T) {
 		SentryComponentKey: "SENTRY_COMPONENT",
 		GroupBytesHex:      group,
 		Targets: []GuardedSignTarget{{
-			TargetIndex:    0,
-			GuardedAccount: "GUARDED",
+			TargetIndex:       0,
+			GuardedAccount:    "GUARDED",
+			LogicSigResources: guardedTestResources(),
 		}},
 	})
 	if err != nil {
@@ -231,8 +236,8 @@ func TestSignGuardedGroupBatchesSharedSentryKey(t *testing.T) {
 		SentryComponentKey: "SENTRY_COMPONENT",
 		GroupBytesHex:      []string{canonicalTxnHex(1), canonicalTxnHex(2)},
 		Targets: []GuardedSignTarget{
-			{TargetIndex: 0, GuardedAccount: "GUARDED"},
-			{TargetIndex: 1, GuardedAccount: "GUARDED"},
+			{TargetIndex: 0, GuardedAccount: "GUARDED", LogicSigResources: guardedTestResources()},
+			{TargetIndex: 1, GuardedAccount: "GUARDED", LogicSigResources: guardedTestResources()},
 		},
 	})
 	if err != nil {
@@ -298,7 +303,11 @@ func TestSignGuardedGroupRejectsMismatchedAssembly(t *testing.T) {
 				SentryClient:       sentryClient,
 				SentryComponentKey: "SENTRY_COMPONENT",
 				GroupBytesHex:      []string{canonicalTxnHex(1)},
-				Targets:            []GuardedSignTarget{{TargetIndex: 0, GuardedAccount: "GUARDED"}},
+				Targets: []GuardedSignTarget{{
+					TargetIndex:       0,
+					GuardedAccount:    "GUARDED",
+					LogicSigResources: guardedTestResources(),
+				}},
 			})
 			if err == nil {
 				t.Fatal("SignGuardedGroup() error = nil, want mismatched-assembly rejection")
@@ -325,6 +334,9 @@ func TestSignGuardedGroupMixedPrimaryAndGuarded(t *testing.T) {
 			}
 			if len(req.Requests) != 2 || req.Requests[0].AuthAddress != "AUTH" || req.Requests[1].AuthAddress != "" {
 				t.Fatalf("primary sign requests = %+v", req.Requests)
+			}
+			if got := req.Requests[1].LsigResources; got == nil || *got != *guardedTestResources() {
+				t.Fatalf("guarded passthrough resources = %#v", got)
 			}
 			json.NewEncoder(w).Encode(GroupSignResponse{Signed: []string{signedTxnHexFor(t, req.Requests[0].TxnBytesHex), ""}})
 		case "/sign/component":
@@ -386,7 +398,7 @@ func TestSignGuardedGroupMixedPrimaryAndGuarded(t *testing.T) {
 		Targets: []GuardedSignTarget{{
 			TargetIndex:       1,
 			GuardedAccount:    "GUARDED",
-			LogicSigResources: &LogicSigResourceUsage{ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000},
+			LogicSigResources: guardedTestResources(),
 		}},
 	})
 	if err != nil {
@@ -397,6 +409,27 @@ func TestSignGuardedGroupMixedPrimaryAndGuarded(t *testing.T) {
 	}
 	if result.PrimarySignResponse == nil {
 		t.Fatal("expected primary sign response")
+	}
+}
+
+func TestSignGuardedGroupRejectsMissingResourcesBeforeSigning(t *testing.T) {
+	componentCalls := 0
+	userClient, userServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		componentCalls++
+		t.Fatalf("unexpected request %s", r.URL.Path)
+	})
+	defer userServer.Close()
+
+	_, err := SignGuardedGroup(GuardedSignOptions{
+		UserClient:    userClient,
+		GroupBytesHex: []string{canonicalTxnHex(1)},
+		Targets:       []GuardedSignTarget{{TargetIndex: 0, GuardedAccount: "GUARDED"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "missing LogicSig resources") {
+		t.Fatalf("expected missing-resource error, got %v", err)
+	}
+	if componentCalls != 0 {
+		t.Fatalf("component requests = %d, want 0", componentCalls)
 	}
 }
 

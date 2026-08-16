@@ -69,6 +69,9 @@ import {
   SIGNING_FLOW_SENTRY1,
   SIGNING_FLOW_BOUNDED1,
   SIGNING_FLOW_BOUNDED_SENTRY1,
+  validateLogicSigResources,
+  validateSignRequests,
+  wireLogicSigResources,
 } from "./types.js";
 import {
   SignerError,
@@ -120,6 +123,16 @@ const APP_CALL_MAX_APP_ARGS = 16;
 const APP_CALL_METHOD_ARGS_TUPLE_THRESHOLD = APP_CALL_MAX_APP_ARGS - 2;
 const GUARDED_MAX_GROUP_SIZE = 16;
 const GUARDED_DUMMY_PROGRAM = new Uint8Array([0x03, 0x31, 0x20, 0x32, 0x03, 0x12]);
+
+// This must exactly mirror apsigner's canonical dummy lsigresource.Usage.
+// /plan and /sign must see the same declaration to keep fee planning idempotent.
+function guardedDummyLogicSigResources(): LogicSigResourceUsage {
+  return {
+    programBytes: GUARDED_DUMMY_PROGRAM.length,
+    argumentBytes: 0,
+    maxOpcodeCost: 1,
+  };
+}
 function newSignRequestId(): string {
   return `sdk-${randomBytes(16).toString("hex")}`;
 }
@@ -203,13 +216,15 @@ async function requestPrimaryGuardedPassthrough(
     const target = primaryByIndex.get(index);
     if (!target) {
       const guarded = guardedByIndex.get(index);
+      if (guarded) {
+        return {
+          txn_bytes_hex: txnHex,
+          lsig_resources: wireLogicSigResources(guarded.logicSigResources),
+        };
+      }
       return {
         txn_bytes_hex: txnHex,
-        lsig_resources: wireLogicSigResources(guarded?.logicSigResources || {
-          programBytes: GUARDED_DUMMY_PROGRAM.length,
-          argumentBytes: 0,
-          maxOpcodeCost: 1,
-        }),
+        lsig_resources: wireLogicSigResources(guardedDummyLogicSigResources()),
       };
     }
     const request: SignRequest = {
@@ -368,12 +383,17 @@ async function buildPreparedGuardedSignOptions(
       if (!item.authAddress) {
         throw new SignerError(`prepared transaction ${index}: guarded auth address is required`);
       }
+      const resources = requiredSpendResources(
+        key,
+        item.lsigResources,
+        `prepared transaction ${index}: guarded`,
+      );
       guardedTargets.push({
         targetIndex: index,
         guardedAccount: item.authAddress,
         sentryPublicKeyHex: key.parameters?.sentry_public_key || "",
         sentryComponentKeyType: key.sentryComponentKeyType || "",
-        logicSigResources: selectedSpendResources(key, item.lsigResources),
+        logicSigResources: resources,
       });
       continue;
     }
@@ -693,14 +713,15 @@ async function requestBoundedPrimaryPassthrough(
   const requests: SignRequest[] = groupBytesHex.map((txnHex, index) => {
     if (index >= originalCount) return {
       txn_bytes_hex: txnHex,
-      lsig_resources: wireLogicSigResources({
-        programBytes: GUARDED_DUMMY_PROGRAM.length,
-        argumentBytes: 0,
-        maxOpcodeCost: 1,
-      }),
+      lsig_resources: wireLogicSigResources(guardedDummyLogicSigResources()),
     };
     if (boundedIndices.has(index)) {
-      return { txn_bytes_hex: txnHex, lsig_resources: wireLogicSigResources(targetResources.get(index)) };
+      return {
+        txn_bytes_hex: txnHex,
+        lsig_resources: wireLogicSigResources(
+          requireLogicSigResources(targetResources.get(index), `bounded target ${index}`),
+        ),
+      };
     }
     const target = primaryByIndex.get(index);
     if (!target) {
@@ -768,8 +789,12 @@ export async function signPreparedBoundedSentryGroup(
       if (!item.authAddress) {
         throw new SignerError(`prepared transaction ${index}: bounded auth address is required`);
       }
+      const requiredResources = requireLogicSigResources(
+        resources,
+        `prepared transaction ${index}: bounded`,
+      );
       requests.push(preparedTransactionToSignRequest(item));
-      targetResources.set(index, resources);
+      targetResources.set(index, requiredResources);
       if (!key.boundedAuthorization) {
         throw new SignerError(
           `prepared transaction ${index}: bounded authorization metadata is required`,
@@ -781,7 +806,7 @@ export async function signPreparedBoundedSentryGroup(
         guardedAccount: item.authAddress,
         sentryPublicKeyHex: boundedSentryPublicKey(key),
         sentryComponentKeyType: boundedSentryComponentKeyType(key),
-        logicSigResources: resources,
+        logicSigResources: requiredResources,
       });
       continue;
     }
@@ -1074,6 +1099,7 @@ export async function signGuardedGroup(options: GuardedSignOptions): Promise<Gua
     if (!target.guardedAccount) {
       throw new SignerError(`guarded target ${target.targetIndex} missing guardedAccount`);
     }
+    requireLogicSigResources(target.logicSigResources, `guarded target ${target.targetIndex}`);
     guardedIndices.add(target.targetIndex);
     const indices = userGroups.get(target.guardedAccount) || [];
     indices.push(target.targetIndex);
@@ -1329,13 +1355,15 @@ function mapBoundedAuthorization(raw: any): BoundedAuthorizationInfo | undefined
   };
 }
 
-function wireLogicSigResources(resources?: LogicSigResourceUsage): SignRequest["lsig_resources"] {
-  if (!resources) return undefined;
-  return {
-    program_bytes: resources.programBytes,
-    argument_bytes: resources.argumentBytes,
-    max_opcode_cost: resources.maxOpcodeCost,
-  };
+function requireLogicSigResources(
+  resources: LogicSigResourceUsage | undefined,
+  label: string,
+): LogicSigResourceUsage {
+  if (!resources) {
+    throw new SignerError(`${label} LogicSig resources are unavailable`);
+  }
+  validateLogicSigResources(resources, label);
+  return { ...resources };
 }
 
 function mapLogicSigResourceUsage(raw: any): LogicSigResourceUsage | undefined {
@@ -1360,6 +1388,14 @@ function mapLogicSigResourceProfile(raw: any): LogicSigResourceProfile | undefin
 function selectedSpendResources(key?: KeyInfo, fallback?: LogicSigResourceUsage): LogicSigResourceUsage | undefined {
   const selected = key?.logicSigResources?.spend || key?.logicSigResources?.default || fallback;
   return selected ? { ...selected } : undefined;
+}
+
+function requiredSpendResources(
+  key: KeyInfo | undefined,
+  fallback: LogicSigResourceUsage | undefined,
+  label: string,
+): LogicSigResourceUsage {
+  return requireLogicSigResources(selectedSpendResources(key, fallback), label);
 }
 
 function validateAssemblyIndex(index: number, groupLen: number, covered: Set<number>): void {
@@ -1774,7 +1810,7 @@ export interface GuardedSignTarget {
   sentryComponentKeyType?: string;
   sentryComponentKey?: string;
   runtimeArgs?: string[];
-  logicSigResources?: LogicSigResourceUsage;
+  logicSigResources: LogicSigResourceUsage;
 }
 
 export interface GuardedPrimarySignTarget {
@@ -1814,7 +1850,6 @@ export interface PreparedGuardedGroupOptions {
   sentryResolver?: GuardedSentryResolver;
   sentryComponentKey?: string;
   assemblyRequestId?: string;
-  minFee?: number;
   signal?: AbortSignal;
 }
 
@@ -4217,12 +4252,9 @@ export class SignerClient {
     requests: SignRequest[],
     options?: SignOptions,
   ): Promise<GroupSignResponse> {
-    if (requests.length === 0) {
-      throw new SignerError("requests must not be empty");
-    }
-
     const requestId = options?.requestId ?? newSignRequestId();
     validateSignRequestId(requestId, true);
+    validateSignRequests(requests);
     const signBody: GroupSignRequest = { request_id: requestId, requests };
 
     await this.discoverApprovalWait();
@@ -4342,11 +4374,7 @@ export class SignerClient {
         if (idx < 0 || idx >= txns.length) {
           throw new SignerError(`lsigResources index ${idx} out of range for ${txns.length} transactions`);
         }
-        if (!resources || !Number.isInteger(resources.programBytes) || resources.programBytes <= 0 || resources.programBytes > 16000 ||
-            !Number.isInteger(resources.argumentBytes) || resources.argumentBytes < 0 ||
-            !Number.isInteger(resources.maxOpcodeCost) || resources.maxOpcodeCost <= 0 || resources.maxOpcodeCost > 320000) {
-          throw new SignerError(`lsigResources[${idx}] is invalid`);
-        }
+        validateLogicSigResources(resources, `lsigResources[${idx}]`);
       }
     }
 

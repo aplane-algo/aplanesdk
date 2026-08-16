@@ -424,6 +424,10 @@ func (c *SignerClient) ListKeys(refresh bool) ([]KeyInfo, error) {
 
 // GetKeyInfo returns info for a specific key address.
 func (c *SignerClient) GetKeyInfo(address string) (*KeyInfo, error) {
+	return c.getKeyInfoWithContext(context.Background(), address)
+}
+
+func (c *SignerClient) getKeyInfoWithContext(ctx context.Context, address string) (*KeyInfo, error) {
 	c.keyMu.RLock()
 	if c.keyCache != nil {
 		if k, ok := c.keyCache[address]; ok {
@@ -433,8 +437,12 @@ func (c *SignerClient) GetKeyInfo(address string) (*KeyInfo, error) {
 	}
 	c.keyMu.RUnlock()
 
-	if _, err := c.ListKeys(true); err != nil {
+	keys, err := c.GetKeysResponseWithContext(ctx)
+	if err != nil {
 		return nil, err
+	}
+	if keys.Locked {
+		return nil, ErrSignerLocked
 	}
 
 	c.keyMu.RLock()
@@ -960,6 +968,11 @@ func (c *SignerClient) SignTransactionsListWithOptions(txns []types.Transaction,
 
 // buildSignRequestsWithOptions converts transactions into sign requests with passthrough/foreign support.
 func buildSignRequestsWithOptions(txns []types.Transaction, authAddresses []string, lsigArgsMap LsigArgsMap, opts *SignOptions) ([]SignRequest, error) {
+	if opts != nil {
+		if err := validateIndexedLogicSigResources(opts.LsigResources, len(txns)); err != nil {
+			return nil, err
+		}
+	}
 	requests := make([]SignRequest, len(txns))
 
 	for i, txn := range txns {
@@ -1025,6 +1038,18 @@ func buildSignRequestsWithOptions(txns []types.Transaction, authAddresses []stri
 	}
 
 	return requests, nil
+}
+
+func validateIndexedLogicSigResources(resources map[int]LogicSigResourceUsage, txnCount int) error {
+	for index, usage := range resources {
+		if index < 0 || index >= txnCount {
+			return fmt.Errorf("lsig_resources index %d out of range for %d transactions", index, txnCount)
+		}
+		if err := usage.validate(); err != nil {
+			return fmt.Errorf("lsig_resources[%d] is invalid: %w", index, err)
+		}
+	}
+	return nil
 }
 
 func hasForeignRequests(requests []SignRequest) bool {

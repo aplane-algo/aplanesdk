@@ -1220,6 +1220,31 @@ func TestBuildSignRequestsWithOptions_Foreign(t *testing.T) {
 	}
 }
 
+func TestBuildSignRequestsWithOptionsRejectsInvalidIndexedResources(t *testing.T) {
+	txn := types.Transaction{Type: types.PaymentTx}
+	tests := []struct {
+		name      string
+		resources map[int]LogicSigResourceUsage
+		want      string
+	}{
+		{name: "zero value", resources: map[int]LogicSigResourceUsage{0: {}}, want: "lsig_resources[0] is invalid"},
+		{name: "out of range", resources: map[int]LogicSigResourceUsage{1: {ProgramBytes: 1, MaxOpcodeCost: 1}}, want: "index 1 out of range"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := buildSignRequestsWithOptions(
+				[]types.Transaction{txn},
+				[]string{""},
+				nil,
+				&SignOptions{LsigResources: tt.resources},
+			)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected %q error, got %v", tt.want, err)
+			}
+		})
+	}
+}
+
 func TestBuildSignRequestsWithOptions_InvalidPassthroughBase64(t *testing.T) {
 	txn := types.Transaction{Type: types.PaymentTx}
 

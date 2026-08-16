@@ -7,6 +7,9 @@ Python SDK for signing Algorand transactions via apsigner.
 SDK packages are published only when the SDK changes. SDK versions track
 compatible APlane release tags and may skip product release numbers.
 
+The native-Falcon SDK release line requires an APlane signer release after
+`v0.35.0`; see [`docs/COMPATIBILITY.md`](../docs/COMPATIBILITY.md).
+
 ## Installation
 
 ```bash
@@ -420,7 +423,9 @@ assembled = user_client.request_guarded_assemble(GuardedAssemblyRequest(
 ))
 ```
 
-For the common explicit two-client flow, use `sign_guarded_group`:
+For the common explicit two-client flow, use `sign_guarded_group`. The direct
+helper does not perform inventory discovery, so pass the reviewed spend-path
+resource profile returned by `list_keys()`:
 
 ```python
 result = sign_guarded_group(
@@ -429,7 +434,11 @@ result = sign_guarded_group(
     sentry_component_key="SENTRY_COMPONENT_SELECTOR",
     group_bytes_hex=["5458..."],
     guarded_targets=[
-        GuardedSignTarget(target_index=0, guarded_account="GUARDED_ACCOUNT_ADDRESS"),
+        GuardedSignTarget(
+            target_index=0,
+            guarded_account="GUARDED_ACCOUNT_ADDRESS",
+            logic_sig_resources=reviewed_spend_resources,
+        ),
     ],
 )
 signed_group = result.signed_group
@@ -471,9 +480,8 @@ approval-bearing HTTP request times out or disconnects.
 `request_bounded_assemble()` does not open an approval request and is not a
 cancellation handle.
 
-The `min_fee` option applies to the legacy `sentry1` path. The
-`bounded-sentry1` signer planner owns fee selection and reports its mutations,
-so that path ignores `min_fee`.
+The signer planner owns fee selection, authorization-resource sizing, and any
+reported group mutations for both guarded flows.
 
 Applications that own orchestration can call `request_bounded_component()` and
 `request_bounded_assemble()` directly. Sentry authorization is spend-only in

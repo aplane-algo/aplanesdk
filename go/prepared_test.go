@@ -91,6 +91,17 @@ func TestPreparedGroupSignRequestsNativePQForeignMode(t *testing.T) {
 	}
 }
 
+func TestPreparedGroupSignRequestsRejectsUnsupportedNativePQScheme(t *testing.T) {
+	txn := types.Transaction{Type: types.PaymentTx}
+	_, err := NewPreparedGroup(PreparedTransaction{
+		Transaction: &txn,
+		PQScheme:    "f2",
+	}).SignRequests()
+	if err == nil || !strings.Contains(err.Error(), "unsupported pq_scheme") {
+		t.Fatalf("expected unsupported scheme error, got %v", err)
+	}
+}
+
 func TestPreparedGroupSignRequestsRejectsConflictingForeignHints(t *testing.T) {
 	txn := types.Transaction{Type: types.PaymentTx}
 	_, err := NewPreparedGroup(PreparedTransaction{

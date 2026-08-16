@@ -204,6 +204,16 @@ def test_prepared_native_pq_foreign_request():
     assert "lsig_resources" not in request
 
 
+def test_prepared_native_pq_rejects_unsupported_scheme():
+    groups = build_groups(load_fixture()["addresses"])
+    transaction_slot = groups["foreign_lsig_context"].transactions[0].transaction
+    with pytest.raises(ValueError, match="unsupported pq_scheme"):
+        PreparedTransaction(
+            transaction=transaction_slot,
+            pq_scheme="f2",
+        ).to_sign_request()
+
+
 def test_prepared_native_pq_rejects_conflicting_hints():
     groups = build_groups(load_fixture()["addresses"])
     transaction_slot = groups["foreign_lsig_context"].transactions[0].transaction
@@ -212,4 +222,22 @@ def test_prepared_native_pq_rejects_conflicting_hints():
             transaction=transaction_slot,
             lsig_resources=LogicSigResourceUsage(1600, 1423, 20000),
             pq_scheme="f1",
+        ).to_sign_request()
+
+
+def test_prepared_foreign_rejects_invalid_lsig_resources():
+    groups = build_groups(load_fixture()["addresses"])
+    transaction_slot = groups["foreign_lsig_context"].transactions[0].transaction
+    with pytest.raises(ValueError, match="LogicSig resources are invalid"):
+        PreparedTransaction(
+            transaction=transaction_slot,
+            lsig_resources=LogicSigResourceUsage(0, 0, 0),
+        ).to_sign_request()
+
+
+def test_prepared_passthrough_rejects_invalid_lsig_resources():
+    with pytest.raises(ValueError, match="LogicSig resources are invalid"):
+        PreparedTransaction(
+            signed_transaction_base64=base64.b64encode(b"signed-txn").decode(),
+            lsig_resources=LogicSigResourceUsage(0, 0, 0),
         ).to_sign_request()

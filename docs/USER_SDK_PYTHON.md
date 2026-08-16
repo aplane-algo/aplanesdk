@@ -566,7 +566,12 @@ For multi-party workflows, the standard high-level flow is:
 
 1. use `plan_group()` with foreign slots and `lsig_resources`
 2. collect the finalized foreign signatures from the other party
-3. resubmit those signed slots as `passthrough` for final signing
+3. resubmit those signed slots as `passthrough` for final signing, repeating
+   the same `lsig_resources` for every passthrough LogicSig slot
+
+The signer checks the declared program and argument byte counts against each
+signed passthrough envelope. Omitting the declaration for a LogicSig
+passthrough is a client error.
 
 `assemble_group()` is a lower-level utility for workflows that already have
 partial list-per-slot outputs where unsigned slots are represented by empty
@@ -588,7 +593,8 @@ spending accounts, and must not be used as senders, receivers, auth addresses,
 or rekey targets.
 
 Use explicit clients; the SDK does not parse or mutate endpoint enrollment
-files:
+files. The direct helper does not perform inventory discovery, so pass the
+reviewed spend-path resource profile returned by `list_keys()`:
 
 ```python
 result = sign_guarded_group(
@@ -597,7 +603,11 @@ result = sign_guarded_group(
     sentry_component_key="SENTRY_COMPONENT_SELECTOR",
     group_bytes_hex=["5458..."],
     guarded_targets=[
-        GuardedSignTarget(target_index=0, guarded_account="GUARDED_ACCOUNT_ADDRESS"),
+        GuardedSignTarget(
+            target_index=0,
+            guarded_account="GUARDED_ACCOUNT_ADDRESS",
+            logic_sig_resources=reviewed_spend_resources,
+        ),
     ],
 )
 signed_group = result.signed_group
@@ -631,8 +641,8 @@ budget dummy. It verifies ordinary signed positions and every assembled
 transaction against the frozen canonical bytes. Those two bounded methods are
 also public for applications that own the orchestration.
 
-The `min_fee` option applies only to `sentry1`. `bounded-sentry1` uses
-signer-owned planning and reported fee mutations.
+The signer planner owns fee selection, authorization-resource sizing, and any
+reported group mutations for both guarded flows.
 
 The v1 sentry gate applies only to spends. Contract-admin rekeys use the
 external `aprekey` witness ceremony and are outside SDK completion.
