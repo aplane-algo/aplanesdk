@@ -3333,13 +3333,17 @@ class TestLoadClientEndpointRegistry:
 
 
 class TestRequestToken:
-    def test_rejects_unsupported_identity_locally(self):
-        with pytest.raises(SignerError, match="unsupported identity"):
+    def test_identity_option_was_removed(self):
+        with pytest.raises(TypeError, match="unexpected keyword argument 'identity'"):
             request_token(
                 host="signer.example.com",
                 ssh_key_path="~/.ssh/id_ed25519",
                 identity="other-identity",
             )
+
+    def test_to_file_identity_option_was_removed(self):
+        with pytest.raises(TypeError, match="unexpected keyword argument 'identity'"):
+            request_token_to_file(identity="other-identity")
 
 
 class _FeeParams:

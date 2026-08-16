@@ -36,17 +36,6 @@ export {
   expandPath,
 };
 
-// Current product identity for token provisioning helpers.
-export const DEFAULT_PRODUCT_IDENTITY = "default";
-
-function requireCurrentProductIdentity(identity: string): void {
-  if (identity !== DEFAULT_PRODUCT_IDENTITY) {
-    throw new SignerError(
-      `unsupported identity: ${identity} (only '${DEFAULT_PRODUCT_IDENTITY}' is currently supported)`
-    );
-  }
-}
-
 function parseHostKeyType(key: Buffer): string {
   if (key.length < 4) return "unknown";
   const typeLen = key.readUInt32BE(0);
@@ -282,8 +271,7 @@ export function assembleGroup(signedLists: string[][]): string {
  *
  * @param host - Signer host
  * @param sshKeyPath - Path to SSH private key
- * @param options - Optional: sshPort, identity, knownHostsPath, autoAddHost.
- * Non-product identities are rejected in the current single-operator mode.
+ * @param options - Optional: sshPort, knownHostsPath, autoAddHost.
  * @returns The provisioned token string
  */
 export async function requestToken(
@@ -291,14 +279,17 @@ export async function requestToken(
   sshKeyPath: string,
   options: {
     sshPort?: number;
-    identity?: string;
     knownHostsPath?: string;
     autoAddHost?: boolean;
   } = {}
 ): Promise<string> {
   const sshPort = options.sshPort ?? DEFAULT_SSH_PORT;
-  const identity = options.identity ?? DEFAULT_PRODUCT_IDENTITY;
-  requireCurrentProductIdentity(identity);
+  const rawOptions = options as Record<string, unknown>;
+  if ("identity" in rawOptions) {
+    throw new SignerError(
+      'requestToken option "identity" was removed; token provisioning targets the product identity',
+    );
+  }
   if (!options.knownHostsPath) {
     throw new SignerError("known_hosts path is required for SSH host key verification");
   }
@@ -311,7 +302,7 @@ export async function requestToken(
   }
 
   const privateKey = fs.readFileSync(expandedKeyPath, "utf-8");
-  const username = `request-token:${identity}`;
+  const username = "request-token:default";
 
   return new Promise((resolve, reject) => {
     const client = new Client();
@@ -395,20 +386,18 @@ export async function requestToken(
  * Convenience function that:
  * The selected endpoint supplies all SSH routing and the token destination.
  *
- * @param options - Optional dataDir, endpoint alias, identity, and first-use trust.
- * Non-product identities are rejected in the current single-operator mode.
+ * @param options - Optional dataDir, endpoint alias, and first-use trust.
  * @returns Path to the saved token file
  */
 export async function requestTokenToFile(
   options: {
     dataDir?: string;
     endpoint?: string;
-    identity?: string;
     autoAddHost?: boolean;
   } = {}
 ): Promise<string> {
   const rawOptions = options as Record<string, unknown>;
-  for (const removed of ["host", "sshPort"]) {
+  for (const removed of ["host", "sshPort", "identity"]) {
     if (removed in rawOptions) {
       throw new SignerError(
         `requestTokenToFile option "${removed}" was removed; configure and select an endpoints.yaml alias`,
@@ -437,7 +426,6 @@ export async function requestTokenToFile(
 
   const token = await requestToken(host, sshKeyPath, {
     sshPort,
-    identity: options.identity,
     knownHostsPath,
     autoAddHost: options.autoAddHost,
   });

@@ -121,8 +121,9 @@ client = SignerClient.connect_ssh(
 
 **Note**: SSH verifies the enrolled public key, then performs a programmatic
 mutual proof of the token bound to the accepted host key and fresh nonces. The
-SSH username is the non-secret identity ID; the bearer token is never sent as
-SSH metadata. Keys are enrolled via the `request-token` operator-approved flow.
+SSH uses the fixed product username `default`; the bearer token is never sent
+as SSH metadata. Keys are enrolled via the `request-token:default`
+operator-approved flow.
 
 The SSH tunnel is established automatically. Remember to close when done:
 

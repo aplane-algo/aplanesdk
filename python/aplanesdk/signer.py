@@ -109,9 +109,6 @@ SIGNING_FLOW_BOUNDED_SENTRY1 = "bounded-sentry1"
 KEY_TYPE_WITNESS_FALCON1024 = "aplane.witness-falcon1024.v1"
 KEY_TYPE_GUARDED_FALCON1024_SENTRY1024 = "aplane.falcon1024-sentry1024.v1"
 
-# Current product identity for token provisioning helpers.
-DEFAULT_PRODUCT_IDENTITY = "default"
-
 
 def _resolve_data_dir(data_dir: Optional[str]) -> str:
     """Resolve client data directory from param > APCLIENT_DATA.
@@ -122,15 +119,6 @@ def _resolve_data_dir(data_dir: Optional[str]) -> str:
     if not resolved:
         raise SignerError("client data directory not specified: pass data_dir or set APCLIENT_DATA")
     return os.path.expanduser(resolved)
-
-
-def _require_current_product_identity(identity: str) -> None:
-    """Reject unsupported non-product identities in single-operator helpers."""
-    if identity != DEFAULT_PRODUCT_IDENTITY:
-        raise SignerError(
-            f"unsupported identity: {identity} "
-            f"(only {DEFAULT_PRODUCT_IDENTITY!r} is currently supported)"
-        )
 
 
 # -----------------------------------------------------------------------------
@@ -6128,7 +6116,6 @@ def request_token(
     host: str,
     ssh_key_path: str,
     ssh_port: int = DEFAULT_SSH_PORT,
-    identity: str = DEFAULT_PRODUCT_IDENTITY,
     known_hosts_path: Optional[str] = None,
     auto_add_host: bool = False,
 ) -> str:
@@ -6144,8 +6131,6 @@ def request_token(
         host: Signer host (e.g., "signer.example.com" or "localhost")
         ssh_key_path: Path to SSH private key (e.g., "~/.ssh/id_ed25519")
         ssh_port: SSH port on remote (default: 1127)
-        identity: Identity ID for the token (default: current product identity).
-                  Non-product identities are rejected in the current single-operator mode.
         known_hosts_path: Path to known_hosts file (default: ~/.ssh/known_hosts)
         auto_add_host: If True, automatically trust unknown hosts (TOFU).
                        If False (default), prompt user for confirmation.
@@ -6168,8 +6153,6 @@ def request_token(
         with open("~/aplane/apclient/aplane.token", "w") as f:
             f.write(token)
     """
-    _require_current_product_identity(identity)
-
     ssh_key_path = os.path.expanduser(ssh_key_path)
     if not os.path.exists(ssh_key_path):
         raise SignerError(f"SSH key not found: {ssh_key_path}")
@@ -6202,7 +6185,7 @@ def request_token(
         client.set_missing_host_key_policy(_InteractiveHostKeyPolicy(known_hosts_path))
 
     # Connect with special username for token provisioning
-    username = f"request-token:{identity}"
+    username = "request-token:default"
 
     try:
         client.connect(
@@ -6287,7 +6270,6 @@ class _InteractiveHostKeyPolicy(paramiko.MissingHostKeyPolicy):
 def request_token_to_file(
     data_dir: Optional[str] = None,
     endpoint: Optional[str] = None,
-    identity: str = DEFAULT_PRODUCT_IDENTITY,
     auto_add_host: bool = False,
 ) -> str:
     """
@@ -6299,8 +6281,6 @@ def request_token_to_file(
     Args:
         data_dir: Client data directory. Required unless APCLIENT_DATA env var is set.
         endpoint: Endpoint alias (default: the registry's signer endpoint)
-        identity: Identity ID for the token (default: current product identity).
-                  Non-product identities are rejected in the current single-operator mode.
         auto_add_host: If True, automatically trust unknown hosts
 
     Returns:
@@ -6349,7 +6329,6 @@ def request_token_to_file(
         host=host,
         ssh_key_path=ssh_key_path,
         ssh_port=ssh_port,
-        identity=identity,
         known_hosts_path=known_hosts_path,
         auto_add_host=auto_add_host,
     )

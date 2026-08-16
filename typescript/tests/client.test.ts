@@ -3488,10 +3488,10 @@ describe("loadClientEndpointRegistry", () => {
 });
 
 describe("requestToken", () => {
-  it("rejects unsupported identity locally", async () => {
+  it("rejects the removed identity option", async () => {
     await assert.rejects(
-      requestToken("signer.example.com", "~/.ssh/id_ed25519", { identity: "other-identity" }),
-      { message: /unsupported identity/ },
+      requestToken("signer.example.com", "~/.ssh/id_ed25519", { identity: "other-identity" } as never),
+      { message: /option "identity" was removed/ },
     );
   });
 
@@ -3510,6 +3510,15 @@ describe("requestTokenToFile", () => {
         host: "signer.example.com",
       } as unknown as Parameters<typeof requestTokenToFile>[0]),
       { message: /option "host" was removed/ },
+    );
+  });
+
+  it("rejects the removed identity option at runtime", async () => {
+    await assert.rejects(
+      requestTokenToFile({
+        identity: "other-identity",
+      } as unknown as Parameters<typeof requestTokenToFile>[0]),
+      { message: /option "identity" was removed/ },
     );
   });
 

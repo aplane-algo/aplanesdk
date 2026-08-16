@@ -101,8 +101,8 @@ defer client.Close()
 
 **Note**: SSH verifies the enrolled public key, then performs a programmatic
 mutual proof of the token bound to the accepted host key and fresh nonces. The
-SSH username is the non-secret identity ID; the bearer token is never sent as
-SSH metadata.
+SSH uses the fixed product username `default`; the bearer token is never sent
+as SSH metadata.
 
 ### Environment-Based Connection
 
