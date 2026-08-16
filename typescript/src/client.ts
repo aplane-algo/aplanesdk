@@ -69,6 +69,7 @@ import {
   SIGNING_FLOW_SENTRY1,
   SIGNING_FLOW_BOUNDED1,
   SIGNING_FLOW_BOUNDED_SENTRY1,
+  PQ_SCHEME_FALCON1024,
   validateLogicSigResources,
   validateSignRequests,
   wireLogicSigResources,
@@ -193,6 +194,7 @@ async function requestPrimaryGuardedPassthrough(
   groupBytesHex: string[],
   guardedByIndex: Map<number, GuardedSignTarget>,
   primaryTargets: GuardedPrimarySignTarget[],
+  passthrough: GuardedPassthroughItem[],
   signal?: AbortSignal,
 ): Promise<{ response: GroupSignResponse; passthrough: GuardedPassthroughItem[] }> {
   const primaryByIndex = new Map<number, GuardedPrimarySignTarget>();
@@ -212,6 +214,42 @@ async function requestPrimaryGuardedPassthrough(
     primaryByIndex.set(target.targetIndex, target);
   }
 
+  const passthroughByIndex = new Map<number, GuardedPassthroughItem>();
+  for (const item of passthrough) {
+    if (!Number.isInteger(item.target_index) || item.target_index < 0 || item.target_index >= groupBytesHex.length) {
+      throw new SignerError(`passthrough target ${item.target_index} out of range`);
+    }
+    if (passthroughByIndex.has(item.target_index)) {
+      throw new SignerError(`duplicate passthrough target index ${item.target_index}`);
+    }
+    if (primaryByIndex.has(item.target_index)) {
+      throw new SignerError(`passthrough target ${item.target_index} overlaps primary target`);
+    }
+    if (guardedByIndex.has(item.target_index)) {
+      throw new SignerError(`passthrough target ${item.target_index} overlaps guarded target`);
+    }
+    if (!item.authorization) {
+      throw new SignerError(`passthrough target ${item.target_index} missing planning authorization`);
+    }
+    if (item.authorization.pqScheme && item.authorization.logicSigResources) {
+      throw new SignerError(
+        `passthrough target ${item.target_index} cannot specify both pqScheme and logicSigResources`,
+      );
+    }
+    if (item.authorization.pqScheme && item.authorization.pqScheme !== PQ_SCHEME_FALCON1024) {
+      throw new SignerError(
+        `passthrough target ${item.target_index} has unsupported pqScheme ${JSON.stringify(item.authorization.pqScheme)}`,
+      );
+    }
+    if (item.authorization.logicSigResources) {
+      validateLogicSigResources(
+        item.authorization.logicSigResources,
+        `passthrough target ${item.target_index}`,
+      );
+    }
+    passthroughByIndex.set(item.target_index, item);
+  }
+
   const requests: SignRequest[] = groupBytesHex.map((txnHex, index) => {
     const target = primaryByIndex.get(index);
     if (!target) {
@@ -222,9 +260,18 @@ async function requestPrimaryGuardedPassthrough(
           lsig_resources: wireLogicSigResources(guarded.logicSigResources),
         };
       }
+      const passthroughItem = passthroughByIndex.get(index);
+      if (!passthroughItem) {
+        throw new SignerError(
+          `group position ${index} has no guarded, primary, or passthrough target`,
+        );
+      }
       return {
         txn_bytes_hex: txnHex,
-        lsig_resources: wireLogicSigResources(guardedDummyLogicSigResources()),
+        lsig_resources: wireLogicSigResources(
+          passthroughItem.authorization?.logicSigResources,
+        ),
+        pq_scheme: passthroughItem.authorization?.pqScheme,
       };
     }
     const request: SignRequest = {
@@ -244,17 +291,17 @@ async function requestPrimaryGuardedPassthrough(
   });
 
   const response = await userClient.signRequests(requests, { signal });
-  const passthrough: GuardedPassthroughItem[] = [];
+  const primaryPassthrough: GuardedPassthroughItem[] = [];
   for (const index of Array.from(primaryByIndex.keys()).sort((a, b) => a - b)) {
     if (!response.signed || !response.signed[index]) {
       throw new SignerError(`primary signer returned no signed transaction for target ${index}`);
     }
-    passthrough.push({
+    primaryPassthrough.push({
       target_index: index,
       signed_txn_hex: response.signed[index],
     });
   }
-  return { response, passthrough };
+  return { response, passthrough: primaryPassthrough };
 }
 
 function cloneTransaction(txn: Transaction): Transaction {
@@ -292,6 +339,9 @@ function signGuardedDummies(dummies: Transaction[], startIndex: number): Guarded
     return {
       target_index: startIndex + offset,
       signed_txn_hex: bytesToHex(signed.blob),
+      authorization: {
+        logicSigResources: guardedDummyLogicSigResources(),
+      },
     };
   });
 }
@@ -332,8 +382,7 @@ async function buildPreparedGuardedSignOptions(
   const txns: Transaction[] = [];
   const guardedTargets: GuardedSignTarget[] = [];
   const primaryTargets: GuardedPrimarySignTarget[] = [];
-  const authAddresses: string[] = [];
-  const planArgs: LsigArgsMap = {};
+  const planRequests: SignRequest[] = [];
 
   for (let index = 0; index < prepared.length; index++) {
     const item = prepared[index];
@@ -358,8 +407,7 @@ async function buildPreparedGuardedSignOptions(
     if (!item.authAddress) {
       throw new SignerError(`prepared transaction ${index}: auth address is required`);
     }
-    authAddresses.push(item.authAddress);
-    if (item.lsigArgs) planArgs[item.authAddress] = item.lsigArgs;
+    planRequests.push(preparedTransactionToSignRequest(item));
 
     if (key.signingFlow) {
       if (key.signingFlow === SIGNING_FLOW_BOUNDED1) {
@@ -414,7 +462,7 @@ async function buildPreparedGuardedSignOptions(
     throw new SignerError("prepared group has no guarded targets");
   }
 
-  const plan = await options.userClient.planGroup(txns, authAddresses, planArgs);
+  const plan = await options.userClient.planRequests(planRequests);
   const allTxns = decodeCanonicalGroup(plan.transactions || []);
   validateBoundedComponentPlan(txns, allTxns, plan.mutations);
 
@@ -1161,6 +1209,7 @@ export async function signGuardedGroup(options: GuardedSignOptions): Promise<Gua
       options.groupBytesHex,
       new Map(targets.map((target) => [target.targetIndex, target])),
       options.primaryTargets,
+      options.passthrough || [],
       options.signal,
     );
     primarySignResponse = primary.response;
@@ -3797,6 +3846,10 @@ export class SignerClient {
     const requestBody: GuardedAssemblyRequest = {
       ...request,
       request_id: request.request_id || newSignRequestId(),
+      passthrough: request.passthrough?.map(({ target_index, signed_txn_hex }) => ({
+        target_index,
+        signed_txn_hex,
+      })),
     };
     try {
       validateGuardedAssemblyRequest(requestBody);
@@ -3931,6 +3984,10 @@ export class SignerClient {
     const requestBody: BoundedAssemblyRequest = {
       ...request,
       request_id: request.request_id || newSignRequestId(),
+      passthrough: request.passthrough?.map(({ target_index, signed_txn_hex }) => ({
+        target_index,
+        signed_txn_hex,
+      })),
     };
     try {
       validateBoundedAssemblyRequest(requestBody);
@@ -4054,9 +4111,19 @@ export class SignerClient {
       txns, authAddrs, lsigArgsMap, passthrough, lsigResources,
     );
 
+    return this.planRequests(requestBody.requests);
+  }
+
+  /**
+   * Preview raw per-slot signer requests without rebuilding them through the
+   * address-keyed convenience API.
+   */
+  async planRequests(requests: SignRequest[]): Promise<PlanGroupResponse> {
+    validateSignRequests(requests);
+
     const response = await this.fetch("/plan", {
       method: "POST",
-      body: JSON.stringify(requestBody),
+      body: JSON.stringify({ requests }),
       timeout: this.timeoutFor(GROUP_PLAN_TIMEOUT),
     });
 
@@ -4392,6 +4459,12 @@ export class SignerClient {
         }
         signRequests.push(request);
         continue;
+      }
+
+      if (authAddr && lsigResources && i in lsigResources) {
+        throw new SignerError(
+          `lsigResources[${i}] is allowed only for foreign or passthrough transactions`,
+        );
       }
 
       // Foreign mode: txn_bytes_hex without auth_address

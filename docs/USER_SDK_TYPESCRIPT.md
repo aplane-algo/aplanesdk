@@ -447,6 +447,11 @@ For a foreign native Falcon-1024 slot, set `pq_scheme: "f1"` on a raw
 it with `lsig_resources`/`lsigResources`; it declares native-PQ fee usage
 rather than LogicSig resources.
 
+`planRequests()` is the per-slot planning API. Prefer it over the
+address-keyed `planGroup()` convenience form when two transactions use the
+same authorization address with different LogicSig arguments or app-call
+metadata.
+
 `assembleGroup()` is a lower-level utility for workflows that already have
 partial list-per-slot outputs where unsigned slots are represented by empty
 strings:
@@ -553,6 +558,13 @@ const result = await signGuardedGroup({
 });
 const signedGroup = result.signedGroup;
 ```
+
+If a direct guarded call combines `primaryTargets` with caller-supplied
+`passthrough`, each passthrough item must also carry a local-only
+`GuardedPassthroughAuthorization`. Use an empty object for Ed25519,
+`pqScheme: PQ_SCHEME_FALCON1024` for native Falcon, or
+`logicSigResources` for a LogicSig. This metadata is used only to plan the
+intermediate primary-signing request and is not sent to `/sign/assemble`.
 
 For manual orchestration, use `requestComponentSign()` on the user and sentry
 clients, then `requestGuardedAssemble()` on the user client. `assembleGroup()`

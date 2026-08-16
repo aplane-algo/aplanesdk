@@ -29,6 +29,9 @@ export function preparedTransactionToSignRequest(
   prepared: PreparedTransaction,
 ): SignRequest {
   if (prepared.signedTransactionBase64) {
+    if (prepared.pqScheme) {
+      throw new SignerError("pqScheme is allowed only for foreign transactions");
+    }
     const request: SignRequest = {
       signed_txn_hex: base64ToHex(prepared.signedTransactionBase64),
     };
@@ -64,6 +67,15 @@ export function preparedTransactionToSignRequest(
       request.pq_scheme = prepared.pqScheme;
     }
     return request;
+  }
+
+  if (prepared.pqScheme) {
+    throw new SignerError("pqScheme is allowed only for foreign transactions");
+  }
+  if (prepared.lsigResources) {
+    throw new SignerError(
+      "lsigResources is allowed only for foreign or passthrough transactions",
+    );
   }
 
   const request: SignRequest = {

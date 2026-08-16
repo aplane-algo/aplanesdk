@@ -547,10 +547,16 @@ In practice, that means:
 - do not mix foreign entries and `passthrough` entries in the same request
 - then resubmit the finalized foreign slots as `passthrough`
 
-For a foreign native Falcon-1024 slot, set `pq_scheme="f1"` on
-`PreparedTransaction` (or `"pq_scheme": "f1"` in a raw request). It is
+For a foreign native Falcon-1024 slot, set
+`pq_scheme=PQ_SCHEME_FALCON1024` on `PreparedTransaction` (or use the same
+exported constant in a raw request). It is
 mutually exclusive with `lsig_resources` and declares native-PQ fee usage
 rather than LogicSig resources.
+
+`plan_requests()` is the per-slot planning API. Prefer it over the
+address-keyed `plan_group()` convenience form when two transactions use the
+same authorization address with different LogicSig arguments or app-call
+metadata.
 
 ### Passthrough And Multi-Party Assembly
 
@@ -612,6 +618,13 @@ result = sign_guarded_group(
 )
 signed_group = result.signed_group
 ```
+
+If a direct guarded call combines `primary_targets` with caller-supplied
+`passthrough`, each passthrough item must also carry a local-only
+`GuardedPassthroughAuthorization`. Use an empty value for Ed25519,
+`pq_scheme=PQ_SCHEME_FALCON1024` for native Falcon, or
+`logic_sig_resources` for a LogicSig. This metadata is used only to plan the
+intermediate primary-signing request and is not sent to `/sign/assemble`.
 
 For manual orchestration, use `request_component_sign()` on the user and
 sentry clients, then `request_guarded_assemble()` on the user client.

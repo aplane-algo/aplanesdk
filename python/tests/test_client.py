@@ -12,6 +12,8 @@ import os
 import pytest
 from algosdk import account, encoding as algo_encoding, transaction
 
+import aplanesdk
+
 from aplanesdk.signer import (
     SignerClient,
     AuthenticationError,
@@ -37,6 +39,7 @@ from aplanesdk.signer import (
     GuardedAssemblyRequest,
     GuardedAssemblyTarget,
     GuardedAssemblyResponse,
+    GuardedPassthroughAuthorization,
     BoundedComponentRequest,
     BoundedBaseComponent,
     BoundedComponentResponse,
@@ -58,7 +61,6 @@ from aplanesdk.signer import (
     request_token_to_file,
     encode_transaction,
     _validate_sign_request_id,
-    _create_guarded_dummies,
     _request_bounded_primary_passthrough,
     _sign_guarded_dummies,
     _validate_bounded_component_request,
@@ -96,6 +98,31 @@ def guarded_test_resources():
         argument_bytes=1423,
         max_opcode_cost=20000,
     )
+
+
+def create_guarded_dummies(first_txn, count):
+    dummy_account = transaction.LogicSigAccount(bytes.fromhex("033120320312"))
+    dummy_address = dummy_account.address()
+    params = transaction.SuggestedParams(
+        int(first_txn.fee),
+        int(first_txn.first_valid_round),
+        int(first_txn.last_valid_round),
+        first_txn.genesis_hash,
+        first_txn.genesis_id,
+        flat_fee=True,
+    )
+    dummies = []
+    for index in range(count):
+        txn = transaction.PaymentTxn(
+            dummy_address,
+            params,
+            dummy_address,
+            0,
+            note=bytes([index]),
+        )
+        txn.fee = 0
+        dummies.append(txn)
+    return dummies
 
 
 class MockAlgod:
@@ -951,15 +978,16 @@ class TestSignGuardedGroup:
             signatures=[ComponentSignature(1, "sentry-sig", KEY_TYPE_WITNESS_FALCON1024)],
         ))
         user.sign_requests = MagicMock(return_value=GroupSignResponse(
-            signed=[primary_signed, ""],
+            signed=[primary_signed, "", ""],
         ))
 
         def assemble(req):
-            assert req.passthrough[0].target_index == 0
-            assert req.passthrough[0].signed_txn_hex == primary_signed
+            by_index = {item.target_index: item for item in req.passthrough}
+            assert set(by_index) == {0, 2}
+            assert by_index[0].signed_txn_hex == primary_signed
             return GuardedAssemblyResponse(
                 request_id="assembly-id",
-                signed_group=[primary_signed, "guarded-signed"],
+                signed_group=[primary_signed, "guarded-signed", "counterparty-signed"],
             )
 
         user.request_guarded_assemble = MagicMock(side_effect=assemble)
@@ -968,7 +996,7 @@ class TestSignGuardedGroup:
             user_client=user,
             sentry_client=sentry,
             sentry_component_key="SENTRY_COMPONENT",
-            group_bytes_hex=[primary_hex, "5458bb"],
+            group_bytes_hex=[primary_hex, "5458bb", "5458cc"],
             primary_targets=[
                 GuardedPrimarySignTarget(target_index=0, auth_address="AUTH"),
             ],
@@ -979,6 +1007,17 @@ class TestSignGuardedGroup:
                     logic_sig_resources=guarded_test_resources(),
                 )
             ],
+            passthrough=[{
+                "target_index": 2,
+                "signed_txn_hex": "counterparty-signed",
+                "authorization": {
+                    "logic_sig_resources": {
+                        "program_bytes": 5000,
+                        "argument_bytes": 1200,
+                        "max_opcode_cost": 30000,
+                    },
+                },
+            }],
         )
 
         assert result.signed_group[1] == "guarded-signed"
@@ -989,6 +1028,11 @@ class TestSignGuardedGroup:
             "program_bytes": 1612,
             "argument_bytes": 1423,
             "max_opcode_cost": 20000,
+        }
+        assert sign_requests[2]["lsig_resources"] == {
+            "program_bytes": 5000,
+            "argument_bytes": 1200,
+            "max_opcode_cost": 30000,
         }
 
     def test_rejects_missing_resources_before_component_signing(self):
@@ -1044,9 +1088,9 @@ class TestSignGuardedGroup:
             flat_fee=True,
         )
         txn = transaction.PaymentTxn(guarded, params, receiver, 1000)
-        planned = [copy.deepcopy(txn), _create_guarded_dummies(txn, 1)[0]]
+        planned = [copy.deepcopy(txn), create_guarded_dummies(txn, 1)[0]]
         transaction.assign_group_id(planned)
-        user.plan_group = MagicMock(
+        user.plan_requests = MagicMock(
             return_value={
                 "transactions": [encode_transaction(item)[0] for item in planned],
                 "mutations": {
@@ -1091,13 +1135,68 @@ class TestSignGuardedGroup:
 
         assert len(result.signed_group) == 2
         assert result.primary_sign_response is None
-        user.plan_group.assert_called_once()
+        user.plan_requests.assert_called_once()
         user_req = user.request_component_sign.call_args.args[0]
         assert user_req.component_key == guarded
         assert len(user_req.group_bytes_hex) == 2
         sentry_req = sentry.request_component_sign.call_args.args[0]
         assert sentry_req.component_key == "SENTRY_COMPONENT"
         assert len(sentry_req.group_bytes_hex) == 2
+
+    def test_prepared_plan_preserves_per_slot_args_for_repeated_auth_address(self):
+        guarded = sdk_test_address(31)
+        receiver = sdk_test_address(32)
+        user = make_client()
+        params = transaction.SuggestedParams(
+            1000,
+            1,
+            100,
+            base64.b64encode(bytes(32)).decode(),
+            "testnet-v1.0",
+            flat_fee=True,
+        )
+        signer_key = KeyInfo(
+            address=guarded,
+            key_type=KEY_TYPE_GUARDED_FALCON1024_SENTRY1024,
+            signing_flow=SIGNING_FLOW_SENTRY1,
+            sentry_component_key_type=KEY_TYPE_WITNESS_FALCON1024,
+            logic_sig_resources=LogicSigResourceProfile(
+                spend=LogicSigResourceUsage(1612, 1423, 20000)
+            ),
+            parameters={"sentry_public_key": "aabbcc"},
+        )
+
+        def assert_per_slot_requests(requests):
+            assert [request["lsig_args"] for request in requests] == [
+                {"preimage": b"alpha".hex()},
+                {"preimage": b"beta".hex()},
+            ]
+            assert [request["app_call_info"] for request in requests] == [
+                {"mode": "raw", "method": "first"},
+                {"mode": "abi", "method": "second"},
+            ]
+            raise RuntimeError("stop after per-slot plan assertion")
+
+        user.plan_requests = MagicMock(side_effect=assert_per_slot_requests)
+        prepared = PreparedGroup([
+            PreparedTransaction(
+                transaction=transaction.PaymentTxn(guarded, params, receiver, 1),
+                auth_address=guarded,
+                signer_key=signer_key,
+                lsig_args={"preimage": b"alpha"},
+                app_call_info={"mode": "raw", "method": "first"},
+            ),
+            PreparedTransaction(
+                transaction=transaction.PaymentTxn(guarded, params, receiver, 2),
+                auth_address=guarded,
+                signer_key=signer_key,
+                lsig_args={"preimage": b"beta"},
+                app_call_info={"mode": "abi", "method": "second"},
+            ),
+        ])
+
+        with pytest.raises(SignerError, match="stop after per-slot plan assertion"):
+            sign_prepared_guarded_group(user_client=user, prepared_group=prepared)
 
     def test_bounded_component_plan_rejects_unreported_changes_and_bad_dummies(self):
         sender = sdk_test_address(21)
@@ -1113,7 +1212,7 @@ class TestSignGuardedGroup:
         original = transaction.PaymentTxn(sender, params, receiver, 1000)
         planned_original = transaction.PaymentTxn(sender, params, receiver, 1000)
         planned_original.fee += 1000
-        dummy = _create_guarded_dummies(original, 1)[0]
+        dummy = create_guarded_dummies(original, 1)[0]
         planned = [planned_original, dummy]
         transaction.assign_group_id(planned)
         mutations = {
@@ -1950,6 +2049,19 @@ class TestBuildSignRequests:
             },
         }]
 
+    def test_rejects_indexed_lsig_resources_on_sign_mode(self):
+        client = make_client()
+        with patch("aplanesdk.signer.encode_transaction", return_value=("deadbeef", "SENDER")):
+            with pytest.raises(ValueError, match="allowed only for foreign or passthrough"):
+                client._build_sign_request_body(
+                    [self._make_mock_txn()],
+                    ["AUTH"],
+                    lsig_resources={
+                        0: LogicSigResourceUsage(1612, 1423, 20000),
+                    },
+                    allow_foreign=False,
+                )
+
 
 class TestPreparedGroup:
     def _make_mock_txn(self):
@@ -2016,9 +2128,46 @@ class TestPreparedGroup:
             },
         }]
 
+    @pytest.mark.parametrize(
+        ("prepared", "message"),
+        [
+            (
+                PreparedTransaction(
+                    transaction=MagicMock(sender="SENDER_ADDR"),
+                    auth_address="AUTH_ADDR",
+                    pq_scheme="f1",
+                ),
+                "pq_scheme is allowed only for foreign transactions",
+            ),
+            (
+                PreparedTransaction(
+                    transaction=MagicMock(sender="SENDER_ADDR"),
+                    auth_address="AUTH_ADDR",
+                    lsig_resources=LogicSigResourceUsage(1612, 1423, 20000),
+                ),
+                "lsig_resources is allowed only for foreign or passthrough transactions",
+            ),
+            (
+                PreparedTransaction(
+                    signed_transaction_base64=base64.b64encode(b"signed-txn").decode(),
+                    pq_scheme="f1",
+                ),
+                "pq_scheme is allowed only for foreign transactions",
+            ),
+        ],
+    )
+    def test_rejects_authorization_hints_outside_foreign_mode(self, prepared, message):
+        with patch("aplanesdk.signer.encode_transaction", return_value=("deadbeef", "SENDER_ADDR")):
+            with pytest.raises(ValueError, match=message):
+                PreparedGroup([prepared]).to_sign_requests()
+
     def test_rejects_empty_group(self):
         with pytest.raises(ValueError, match="prepared group is empty"):
             PreparedGroup([]).to_sign_requests()
+
+
+def test_package_root_exports_native_falcon_scheme():
+    assert aplanesdk.PQ_SCHEME_FALCON1024 == "f1"
 
 
 class TestPrepHelpers:
@@ -2937,18 +3086,3 @@ class TestApplyPrepFee:
         p = _FeeParams()
         _apply_prep_fee(p, None, False)
         assert p.fee == 7 and p.flat_fee is False
-
-
-class TestCreateGuardedDummies:
-    def test_requires_genesis_hash(self):
-        from aplanesdk.signer import _create_guarded_dummies, SignerError
-
-        class FakeTxn:
-            genesis_hash = ""
-            fee = 1000
-            first_valid_round = 1
-            last_valid_round = 100
-            genesis_id = "x"
-
-        with pytest.raises(SignerError, match="genesis hash"):
-            _create_guarded_dummies(FakeTxn(), 1)

@@ -439,6 +439,11 @@ For a foreign native Falcon-1024 slot, use raw `SignRequest.PQScheme` or
 with `LsigResources` and declares native-PQ fee usage rather than LogicSig
 resources.
 
+`PlanRequestsWithContext(...)` is the per-slot planning API. Prefer it over
+the address-keyed `PlanGroup(...)` convenience form when two transactions use
+the same authorization address with different LogicSig arguments or app-call
+metadata.
+
 For actual signing with passthrough slots, use:
 
 - `SignTransactionsWithOptions(...)`
@@ -494,6 +499,13 @@ result, err := aplane.SignGuardedGroup(aplane.GuardedSignOptions{
 })
 signedGroup := result.SignedGroup
 ```
+
+If a direct guarded call combines `PrimaryTargets` with caller-supplied
+`Passthrough`, each passthrough item must also carry a local-only
+`GuardedPassthroughAuthorization`. Use an empty value for Ed25519,
+`PQScheme: aplane.PQSchemeFalcon1024` for native Falcon, or
+`LogicSigResources` for a LogicSig. This metadata is used only to plan the
+intermediate primary-signing request and is not sent to `/sign/assemble`.
 
 For manual orchestration, use `RequestComponentSign` on the user and sentry
 clients, then `RequestGuardedAssemble` on the user client. `AssembleGroup`

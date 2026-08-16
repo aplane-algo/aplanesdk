@@ -497,6 +497,15 @@ export interface GuardedAssemblyTarget {
 export interface GuardedPassthroughItem {
   target_index: number;
   signed_txn_hex: string;
+  /** Local-only authorization declaration used when another slot is signed. */
+  authorization?: GuardedPassthroughAuthorization;
+}
+
+/** Authorization shape used to budget a guarded passthrough slot. */
+export interface GuardedPassthroughAuthorization {
+  /** Omit both fields to explicitly declare ordinary Ed25519 authorization. */
+  logicSigResources?: LogicSigResourceUsage;
+  pqScheme?: string;
 }
 
 /**

@@ -136,8 +136,17 @@ type GuardedAssemblyTarget struct {
 // GuardedPassthroughItem carries an already-signed group position to preserve
 // unchanged during guarded assembly.
 type GuardedPassthroughItem struct {
-	TargetIndex  int    `json:"target_index"`
-	SignedTxnHex string `json:"signed_txn_hex"`
+	TargetIndex   int                              `json:"target_index"`
+	SignedTxnHex  string                           `json:"signed_txn_hex"`
+	Authorization *GuardedPassthroughAuthorization `json:"-"`
+}
+
+// GuardedPassthroughAuthorization declares the authorization shape used to
+// budget an already-signed slot while another slot is signed. An empty value
+// explicitly declares ordinary Ed25519 authorization.
+type GuardedPassthroughAuthorization struct {
+	LogicSigResources *LogicSigResourceUsage
+	PQScheme          string
 }
 
 // GuardedAssemblyResponse is the response payload from POST /sign/assemble.

@@ -152,6 +152,7 @@ export type {
   GuardedAssemblyRequest,
   GuardedAssemblyTarget,
   GuardedPassthroughItem,
+  GuardedPassthroughAuthorization,
   GuardedAssemblyResponse,
   BoundedComponentRequest,
   BoundedBaseComponent,

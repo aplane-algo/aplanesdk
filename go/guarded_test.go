@@ -332,13 +332,17 @@ func TestSignGuardedGroupMixedPrimaryAndGuarded(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("decode primary sign request: %v", err)
 			}
-			if len(req.Requests) != 2 || req.Requests[0].AuthAddress != "AUTH" || req.Requests[1].AuthAddress != "" {
+			if len(req.Requests) != 3 || req.Requests[0].AuthAddress != "AUTH" || req.Requests[1].AuthAddress != "" {
 				t.Fatalf("primary sign requests = %+v", req.Requests)
 			}
 			if got := req.Requests[1].LsigResources; got == nil || *got != *guardedTestResources() {
 				t.Fatalf("guarded passthrough resources = %#v", got)
 			}
-			json.NewEncoder(w).Encode(GroupSignResponse{Signed: []string{signedTxnHexFor(t, req.Requests[0].TxnBytesHex), ""}})
+			foreignResources := LogicSigResourceUsage{ProgramBytes: 5000, ArgumentBytes: 1200, MaxOpcodeCost: 30000}
+			if got := req.Requests[2].LsigResources; got == nil || *got != foreignResources {
+				t.Fatalf("foreign passthrough resources = %#v", got)
+			}
+			json.NewEncoder(w).Encode(GroupSignResponse{Signed: []string{signedTxnHexFor(t, req.Requests[0].TxnBytesHex), "", ""}})
 		case "/sign/component":
 			var req ComponentSignRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -357,7 +361,14 @@ func TestSignGuardedGroupMixedPrimaryAndGuarded(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("decode assembly request: %v", err)
 			}
-			if len(req.Passthrough) != 1 || req.Passthrough[0].TargetIndex != 0 || req.Passthrough[0].SignedTxnHex == "" {
+			if len(req.Passthrough) != 2 {
+				t.Fatalf("assembly passthrough = %+v", req.Passthrough)
+			}
+			seen := map[int]bool{}
+			for _, item := range req.Passthrough {
+				seen[item.TargetIndex] = item.SignedTxnHex != ""
+			}
+			if !seen[0] || !seen[2] {
 				t.Fatalf("assembly passthrough = %+v", req.Passthrough)
 			}
 			json.NewEncoder(w).Encode(GuardedAssemblyResponse{
@@ -390,7 +401,7 @@ func TestSignGuardedGroupMixedPrimaryAndGuarded(t *testing.T) {
 		UserClient:         userClient,
 		SentryClient:       sentryClient,
 		SentryComponentKey: "SENTRY_COMPONENT",
-		GroupBytesHex:      []string{canonicalTxnHex(1), canonicalTxnHex(2)},
+		GroupBytesHex:      []string{canonicalTxnHex(1), canonicalTxnHex(2), canonicalTxnHex(3)},
 		PrimaryTargets: []GuardedPrimarySignTarget{{
 			TargetIndex: 0,
 			AuthAddress: "AUTH",
@@ -400,11 +411,20 @@ func TestSignGuardedGroupMixedPrimaryAndGuarded(t *testing.T) {
 			GuardedAccount:    "GUARDED",
 			LogicSigResources: guardedTestResources(),
 		}},
+		Passthrough: []GuardedPassthroughItem{{
+			TargetIndex:  2,
+			SignedTxnHex: signedTxnHexFor(t, canonicalTxnHex(3)),
+			Authorization: &GuardedPassthroughAuthorization{
+				LogicSigResources: &LogicSigResourceUsage{
+					ProgramBytes: 5000, ArgumentBytes: 1200, MaxOpcodeCost: 30000,
+				},
+			},
+		}},
 	})
 	if err != nil {
 		t.Fatalf("SignGuardedGroup() error = %v", err)
 	}
-	if len(result.SignedGroup) != 2 || result.SignedGroup[1] != signedTxnHexFor(t, canonicalTxnHex(2)) {
+	if len(result.SignedGroup) != 3 || result.SignedGroup[1] != signedTxnHexFor(t, canonicalTxnHex(2)) {
 		t.Fatalf("signed group = %+v", result.SignedGroup)
 	}
 	if result.PrimarySignResponse == nil {

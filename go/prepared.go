@@ -38,6 +38,9 @@ type PreparedTransaction struct {
 // SignRequest converts the prepared slot to the signer wire request shape.
 func (p PreparedTransaction) SignRequest() (SignRequest, error) {
 	if p.SignedTransactionBase64 != "" {
+		if p.PQScheme != "" {
+			return SignRequest{}, fmt.Errorf("pq_scheme is allowed only for foreign transactions")
+		}
 		decoded, err := base64.StdEncoding.DecodeString(p.SignedTransactionBase64)
 		if err != nil {
 			return SignRequest{}, fmt.Errorf("invalid passthrough transaction: invalid base64: %w", err)
@@ -71,6 +74,12 @@ func (p PreparedTransaction) SignRequest() (SignRequest, error) {
 			return SignRequest{}, err
 		}
 		return req, nil
+	}
+	if p.PQScheme != "" {
+		return SignRequest{}, fmt.Errorf("pq_scheme is allowed only for foreign transactions")
+	}
+	if p.LsigResources != nil {
+		return SignRequest{}, fmt.Errorf("lsig_resources is allowed only for foreign or passthrough transactions")
 	}
 
 	txnSender := p.TxnSender

@@ -87,7 +87,6 @@ MAX_SIGN_REQUEST_ID_LENGTH = 128
 MAX_COMPONENT_GROUP_SIZE = 16
 APP_CALL_MAX_APP_ARGS = 16
 APP_CALL_METHOD_ARGS_TUPLE_THRESHOLD = APP_CALL_MAX_APP_ARGS - 2
-GUARDED_DEFAULT_MIN_FEE = 1000
 GUARDED_DUMMY_PROGRAM = bytes.fromhex("033120320312")
 PQ_SCHEME_FALCON1024 = "f1"
 
@@ -549,11 +548,20 @@ class GuardedAssemblyTarget:
 
 
 @dataclass
+class GuardedPassthroughAuthorization:
+    """Authorization shape used to budget a guarded passthrough slot."""
+
+    logic_sig_resources: Optional[LogicSigResourceUsage] = None
+    pq_scheme: str = ""
+
+
+@dataclass
 class GuardedPassthroughItem:
-    """Already-signed group position for /sign/assemble"""
+    """Already-signed group position for /sign/assemble."""
 
     target_index: int
     signed_txn_hex: str
+    authorization: Optional[GuardedPassthroughAuthorization] = None
 
 
 @dataclass
@@ -753,6 +761,8 @@ class PreparedTransaction:
     def to_sign_request(self) -> Dict[str, Any]:
         """Convert this prepared slot to a signer SignRequest entry."""
         if self.signed_transaction_base64:
+            if self.pq_scheme:
+                raise ValueError("pq_scheme is allowed only for foreign transactions")
             try:
                 signed_hex = base64.b64decode(
                     self.signed_transaction_base64,
@@ -782,6 +792,13 @@ class PreparedTransaction:
                     raise ValueError(f"unsupported pq_scheme {self.pq_scheme!r}")
                 request["pq_scheme"] = self.pq_scheme
             return request
+
+        if self.pq_scheme:
+            raise ValueError("pq_scheme is allowed only for foreign transactions")
+        if self.lsig_resources is not None:
+            raise ValueError(
+                "lsig_resources is allowed only for foreign or passthrough transactions"
+            )
 
         request = {
             "txn_bytes_hex": txn_bytes_hex,
@@ -1374,6 +1391,32 @@ def _guarded_dummy_lsig_resources() -> LogicSigResourceUsage:
         argument_bytes=0,
         max_opcode_cost=1,
     )
+
+
+def _normalize_guarded_passthrough_item(item: Any) -> GuardedPassthroughItem:
+    if isinstance(item, GuardedPassthroughItem):
+        return item
+    data = _compact_payload(item)
+    if not isinstance(data, dict):
+        raise ValueError("guarded passthrough item must be an object")
+    authorization_data = data.pop("authorization", None)
+    authorization = None
+    if authorization_data is not None:
+        if not isinstance(authorization_data, dict):
+            raise ValueError("guarded passthrough authorization must be an object")
+        expected = {"logic_sig_resources", "pq_scheme"}
+        if not set(authorization_data).issubset(expected):
+            raise ValueError("guarded passthrough authorization has unknown fields")
+        resources = authorization_data.get("logic_sig_resources")
+        authorization = GuardedPassthroughAuthorization(
+            logic_sig_resources=(
+                _require_lsig_resources(resources, "guarded passthrough authorization")
+                if resources is not None
+                else None
+            ),
+            pq_scheme=authorization_data.get("pq_scheme", ""),
+        )
+    return GuardedPassthroughItem(authorization=authorization, **data)
 
 
 def _sign_request_mode(entry: Dict[str, Any]) -> str:
@@ -4005,6 +4048,14 @@ class SignerClient:
         request_body = _compact_payload(request)
         if not isinstance(request_body, dict):
             raise ValueError("guarded assembly request must be a mapping or dataclass")
+        if request_body.get("passthrough"):
+            request_body["passthrough"] = [
+                {
+                    "target_index": item["target_index"],
+                    "signed_txn_hex": item["signed_txn_hex"],
+                }
+                for item in request_body["passthrough"]
+            ]
         if not request_body.get("request_id"):
             request_body["request_id"] = _new_sign_request_id()
         try:
@@ -4123,6 +4174,14 @@ class SignerClient:
         request_body = _compact_payload(request)
         if not isinstance(request_body, dict):
             raise ValueError("bounded assembly request must be a mapping or dataclass")
+        if request_body.get("passthrough"):
+            request_body["passthrough"] = [
+                {
+                    "target_index": item["target_index"],
+                    "signed_txn_hex": item["signed_txn_hex"],
+                }
+                for item in request_body["passthrough"]
+            ]
         if not request_body.get("request_id"):
             request_body["request_id"] = _new_sign_request_id()
         try:
@@ -4299,6 +4358,11 @@ class SignerClient:
                     )
                 sign_requests.append(request)
                 continue
+
+            if auth_addr and lsig_resources and i in lsig_resources:
+                raise ValueError(
+                    f"lsig_resources[{i}] is allowed only for foreign or passthrough transactions"
+                )
 
             # Foreign mode: txn_bytes_hex without auth_address
             if not auth_addr:
@@ -4525,6 +4589,13 @@ class SignerClient:
         request_body = self._build_sign_request_body(
             txns, auth_addresses, lsig_args_map, passthrough, lsig_resources
         )
+
+        return self.plan_requests(request_body["requests"])
+
+    def plan_requests(self, sign_entries: List[Dict[str, Any]]) -> dict:
+        """Preview raw per-slot signer requests without address-keyed rebuilding."""
+        _validate_sign_entries(sign_entries)
+        request_body = {"requests": sign_entries}
 
         try:
             resp = self.session.post(
@@ -4758,43 +4829,6 @@ def _component_signatures_by_index(
     }
 
 
-def _create_guarded_dummies(
-    first_txn: transaction.Transaction, count: int
-) -> List[transaction.Transaction]:
-    if count == 0:
-        return []
-    # The dummies must share the real transactions' network. A missing genesis
-    # hash would silently build dummies for the wrong (empty) network, so fail
-    # loudly instead of defaulting to "".
-    genesis_hash = getattr(first_txn, "genesis_hash", None)
-    if not genesis_hash:
-        raise SignerError(
-            "cannot build guarded dummy transactions: first transaction has no genesis hash"
-        )
-    dummy_account = transaction.LogicSigAccount(GUARDED_DUMMY_PROGRAM)
-    dummy_address = dummy_account.address()
-    params = transaction.SuggestedParams(
-        int(getattr(first_txn, "fee", GUARDED_DEFAULT_MIN_FEE)),
-        int(getattr(first_txn, "first_valid_round", 0)),
-        int(getattr(first_txn, "last_valid_round", 0)),
-        genesis_hash,
-        getattr(first_txn, "genesis_id", None),
-        flat_fee=True,
-    )
-    dummies = []
-    for index in range(count):
-        txn = transaction.PaymentTxn(
-            dummy_address,
-            params,
-            dummy_address,
-            0,
-            note=bytes([index]),
-        )
-        txn.fee = 0
-        dummies.append(txn)
-    return dummies
-
-
 def _sign_guarded_dummies(
     dummies: List[transaction.Transaction],
     start_index: int,
@@ -4809,6 +4843,9 @@ def _sign_guarded_dummies(
             GuardedPassthroughItem(
                 target_index=start_index + offset,
                 signed_txn_hex=signed_hex,
+                authorization=GuardedPassthroughAuthorization(
+                    logic_sig_resources=_guarded_dummy_lsig_resources()
+                ),
             )
         )
     return passthrough
@@ -4855,8 +4892,7 @@ def _build_prepared_guarded_sign_inputs(
     txns = []
     guarded_targets = []
     primary_targets = []
-    auth_addresses = []
-    plan_args: Dict[str, Dict[str, bytes]] = {}
+    plan_requests = []
 
     for index, item in enumerate(prepared):
         if item.signed_transaction_base64:
@@ -4875,9 +4911,7 @@ def _build_prepared_guarded_sign_inputs(
 
         if not item.auth_address:
             raise ValueError(f"prepared transaction {index}: auth address is required")
-        auth_addresses.append(item.auth_address)
-        if item.lsig_args:
-            plan_args[item.auth_address] = item.lsig_args
+        plan_requests.append(item.to_sign_request())
 
         if key.signing_flow:
             if key.signing_flow == SIGNING_FLOW_BOUNDED1:
@@ -4936,11 +4970,7 @@ def _build_prepared_guarded_sign_inputs(
         raise ValueError("prepared group has no guarded targets")
 
     try:
-        plan = user_client.plan_group(
-            txns,
-            auth_addresses,
-            plan_args or None,
-        )
+        plan = user_client.plan_requests(plan_requests)
     except Exception as e:
         if isinstance(e, SignerError):
             raise
@@ -4994,6 +5024,7 @@ def _request_primary_guarded_passthrough(
     group_bytes_hex: List[str],
     guarded_by_index: Dict[int, Dict[str, Any]],
     primary_targets: List[Dict[str, Any]],
+    passthrough: List[GuardedPassthroughItem],
 ) -> tuple:
     primary_by_index: Dict[int, Dict[str, Any]] = {}
     for target in primary_targets:
@@ -5007,6 +5038,35 @@ def _request_primary_guarded_passthrough(
         if not target.get("auth_address"):
             raise ValueError(f"primary target {index} missing auth_address")
         primary_by_index[index] = target
+
+    passthrough_by_index: Dict[int, GuardedPassthroughItem] = {}
+    for item in passthrough:
+        index = item.target_index
+        if not isinstance(index, int) or index < 0 or index >= len(group_bytes_hex):
+            raise ValueError(f"passthrough target {index} out of range")
+        if index in passthrough_by_index:
+            raise ValueError(f"duplicate passthrough target index {index}")
+        if index in primary_by_index:
+            raise ValueError(f"passthrough target {index} overlaps primary target")
+        if index in guarded_by_index:
+            raise ValueError(f"passthrough target {index} overlaps guarded target")
+        authorization = item.authorization
+        if authorization is None:
+            raise ValueError(f"passthrough target {index} missing planning authorization")
+        if authorization.pq_scheme and authorization.logic_sig_resources is not None:
+            raise ValueError(
+                f"passthrough target {index} cannot specify both pq_scheme and logic_sig_resources"
+            )
+        if authorization.pq_scheme and authorization.pq_scheme != PQ_SCHEME_FALCON1024:
+            raise ValueError(
+                f"passthrough target {index} has unsupported pq_scheme {authorization.pq_scheme!r}"
+            )
+        if authorization.logic_sig_resources is not None:
+            _validate_lsig_resources(
+                authorization.logic_sig_resources,
+                f"passthrough target {index}",
+            )
+        passthrough_by_index[index] = item
 
     requests = []
     for index, txn_hex in enumerate(group_bytes_hex):
@@ -5030,17 +5090,30 @@ def _request_primary_guarded_passthrough(
                     guarded.get("logic_sig_resources"),
                     f"guarded target {index}",
                 )
-            else:
-                resources = _guarded_dummy_lsig_resources()
-            requests.append(
-                {
-                    "txn_bytes_hex": txn_hex,
-                    "lsig_resources": _wire_lsig_resources(resources),
-                }
-            )
+                requests.append(
+                    {
+                        "txn_bytes_hex": txn_hex,
+                        "lsig_resources": _wire_lsig_resources(resources),
+                    }
+                )
+                continue
+            passthrough_item = passthrough_by_index.get(index)
+            if passthrough_item is None:
+                raise ValueError(
+                    f"group position {index} has no guarded, primary, or passthrough target"
+                )
+            authorization = passthrough_item.authorization
+            request = {"txn_bytes_hex": txn_hex}
+            if authorization.logic_sig_resources is not None:
+                request["lsig_resources"] = _wire_lsig_resources(
+                    authorization.logic_sig_resources
+                )
+            if authorization.pq_scheme:
+                request["pq_scheme"] = authorization.pq_scheme
+            requests.append(request)
 
     response = user_client.sign_requests(requests)
-    passthrough = []
+    primary_passthrough = []
     for index in sorted(primary_by_index):
         if index >= len(response.signed) or not response.signed[index]:
             raise SignerError(f"primary signer returned no signed transaction for target {index}")
@@ -5050,13 +5123,13 @@ def _request_primary_guarded_passthrough(
             response.signed[index],
             group_bytes_hex[index],
         )
-        passthrough.append(
+        primary_passthrough.append(
             GuardedPassthroughItem(
                 target_index=index,
                 signed_txn_hex=response.signed[index],
             )
         )
-    return response, passthrough
+    return response, primary_passthrough
 
 
 def _prepared_sentry_flow_kinds(
@@ -5717,12 +5790,7 @@ def sign_guarded_group(
 
     primary_sign_response = None
     assembly_passthrough = [
-        (
-            item
-            if isinstance(item, GuardedPassthroughItem)
-            else GuardedPassthroughItem(**_compact_payload(item))
-        )
-        for item in (passthrough or [])
+        _normalize_guarded_passthrough_item(item) for item in (passthrough or [])
     ]
     if primary_targets:
         primary_sign_response, primary_passthrough = _request_primary_guarded_passthrough(
@@ -5730,6 +5798,7 @@ def sign_guarded_group(
             group_bytes_hex,
             guarded_by_index,
             [_compact_payload(target) for target in primary_targets],
+            assembly_passthrough,
         )
         assembly_passthrough.extend(primary_passthrough)
 

@@ -1245,6 +1245,21 @@ func TestBuildSignRequestsWithOptionsRejectsInvalidIndexedResources(t *testing.T
 	}
 }
 
+func TestBuildSignRequestsWithOptionsRejectsIndexedResourcesForSignMode(t *testing.T) {
+	txn := types.Transaction{Type: types.PaymentTx}
+	_, err := buildSignRequestsWithOptions(
+		[]types.Transaction{txn},
+		[]string{"AUTH_ADDR"},
+		nil,
+		&SignOptions{LsigResources: map[int]LogicSigResourceUsage{
+			0: {ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000},
+		}},
+	)
+	if err == nil || !strings.Contains(err.Error(), "allowed only for foreign or passthrough") {
+		t.Fatalf("buildSignRequestsWithOptions() error = %v", err)
+	}
+}
+
 func TestBuildSignRequestsWithOptions_InvalidPassthroughBase64(t *testing.T) {
 	txn := types.Transaction{Type: types.PaymentTx}
 
