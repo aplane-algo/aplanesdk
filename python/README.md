@@ -407,6 +407,14 @@ rekey targets. Guarded account keys must be signed through the guarded flow.
 Low-level endpoint wrappers are available:
 
 ```python
+from aplanesdk import (
+    AssemblyRequest,
+    AssemblyTarget,
+    ComponentRequest,
+    COMPONENT_TARGET_KIND_SENTRY,
+    COMPONENT_TARGET_KIND_USER,
+)
+
 user_part = user_client.request_components(ComponentRequest(
     group_bytes_hex=["5458..."],
     targets=[{

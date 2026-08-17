@@ -110,3 +110,24 @@ func (r ComponentResponse) Validate() error {
 	}
 	return nil
 }
+
+// ValidateForRequest validates response indices and kinds against the frozen
+// group and exact target set that produced the response.
+func (r ComponentResponse) ValidateForRequest(request ComponentRequest) error {
+	if err := r.Validate(); err != nil {
+		return err
+	}
+	expected := make(map[int]ComponentTargetKind, len(request.Targets))
+	for _, target := range request.Targets {
+		expected[target.TargetIndex] = target.Kind
+	}
+	if len(r.Components) != len(expected) {
+		return fmt.Errorf("component response target indices or kinds do not match request")
+	}
+	for _, component := range r.Components {
+		if component.TargetIndex >= len(request.GroupBytesHex) || expected[component.TargetIndex] != component.Kind {
+			return fmt.Errorf("component response target indices or kinds do not match request")
+		}
+	}
+	return nil
+}

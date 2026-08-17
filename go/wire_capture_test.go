@@ -22,6 +22,8 @@ type capturedComponentRequest struct {
 	ComponentKey  string
 	GroupBytesHex []string
 	TargetIndices []int
+	Contextual    []ComponentContextPosition
+	Dummies       []ComponentDummyPosition
 }
 
 func (r *capturedComponentRequest) UnmarshalJSON(data []byte) error {
@@ -30,6 +32,7 @@ func (r *capturedComponentRequest) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	r.RequestID, r.GroupBytesHex = unified.RequestID, unified.GroupBytesHex
+	r.Contextual, r.Dummies = unified.ContextualPositions, unified.DummyPositions
 	for _, target := range unified.Targets {
 		r.TargetIndices = append(r.TargetIndices, target.TargetIndex)
 		if target.Kind == ComponentTargetKindUser {

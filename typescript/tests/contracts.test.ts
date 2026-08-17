@@ -418,6 +418,24 @@ describe("signer API contract fixtures", () => {
 
   });
 
+  it("accepts the canonical component request through runtime validation", async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: async () => fixture("status_response_ready.json"),
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: async () => fixture("component_response.json"),
+      });
+
+    const client = new SignerClient("http://localhost:11270", "test-token");
+    const response = await client.requestComponents(fixture("component_request.json") as ComponentRequest);
+    assert.equal(response.components[0].kind, "bounded-base");
+  });
+
   it("projects bounded inventory layer3 policy", async () => {
     mockFetch.mockResolvedValueOnce({
       status: 200,

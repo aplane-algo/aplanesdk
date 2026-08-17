@@ -10,7 +10,7 @@
     }
   ],
   "contextual_positions": [
-    {"target_index": 1, "pq_scheme": "aplane.falcon1024.v1"}
+    {"target_index": 1, "pq_scheme": "f1"}
   ],
   "dummy_positions": [{"target_index": 2}]
 }

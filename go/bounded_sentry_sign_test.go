@@ -29,6 +29,7 @@ func TestSignPreparedBoundedSentryGroupOneTarget(t *testing.T) {
 	bounded := sdkTestAddress(21)
 	receiver := sdkTestAddress(22)
 	var frozenGroup []string
+	componentCalls := 0
 
 	userClient, userServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -44,6 +45,7 @@ func TestSignPreparedBoundedSentryGroupOneTarget(t *testing.T) {
 			frozenGroup = []string{req.Requests[0].TxnBytesHex}
 			json.NewEncoder(w).Encode(PlanGroupResponse{Transactions: frozenGroup})
 		case "/sign/component":
+			componentCalls++
 			var req ComponentRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("decode bounded component request: %v", err)
@@ -111,7 +113,7 @@ func TestSignPreparedBoundedSentryGroupOneTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MakePaymentTxn() error = %v", err)
 	}
-	result, err := SignPreparedGuardedGroup(PreparedGuardedGroupOptions{
+	options := PreparedGuardedGroupOptions{
 		UserClient: userClient, SentryClient: sentryClient,
 		SentryComponentKey: "SENTRY_COMPONENT",
 		PreparedGroup: NewPreparedGroup(PreparedTransaction{
@@ -131,13 +133,23 @@ func TestSignPreparedBoundedSentryGroupOneTarget(t *testing.T) {
 				},
 			},
 		}),
-	})
+	}
+	result, err := SignPreparedGuardedGroup(options)
 	if err != nil {
 		t.Fatalf("SignPreparedGuardedGroup() error = %v", err)
 	}
 	if len(result.SignedGroup) != 1 || result.BoundedComponentResponse == nil ||
 		result.BoundedAssemblyResponse == nil || result.AssemblyResponse != nil {
 		t.Fatalf("result = %+v", result)
+	}
+	componentCalls = 0
+	options.PreparedGroup.Transactions[0].SignerKey.BoundedAuthorization.MaxFee = 999
+	if _, err := SignPreparedGuardedGroup(options); err == nil ||
+		!strings.Contains(err.Error(), "exceeds advertised max_fee") {
+		t.Fatalf("SignPreparedGuardedGroup() error = %v, want max_fee rejection", err)
+	}
+	if componentCalls != 0 {
+		t.Fatalf("component calls = %d, want none before max_fee rejection", componentCalls)
 	}
 }
 
@@ -307,6 +319,48 @@ func TestUnifiedBoundedAssemblyRejectsMissingCoverage(t *testing.T) {
 	}
 	if err := req.Validate(); err == nil {
 		t.Fatal("Validate() succeeded, want missing coverage error")
+	}
+}
+
+func TestUnifiedAssemblyRejectsMalformedSourceRequestIDs(t *testing.T) {
+	tests := []struct {
+		name   string
+		target AssemblyTarget
+		want   string
+	}{
+		{name: "guarded user", target: AssemblyTarget{
+			TargetIndex: 0, Kind: AssemblyTargetKindGuarded, AuthAddress: "GUARDED",
+			UserSignature: "user", UserSourceRequestID: "bad id", SentrySignature: "sentry",
+		}, want: "user_source_request_id"},
+		{name: "guarded sentry", target: AssemblyTarget{
+			TargetIndex: 0, Kind: AssemblyTargetKindGuarded, AuthAddress: "GUARDED",
+			UserSignature: "user", SentrySignature: "sentry", SentrySourceRequestID: "bad id",
+		}, want: "sentry_source_request_id"},
+		{name: "bounded base", target: AssemblyTarget{
+			TargetIndex: 0, Kind: AssemblyTargetKindBoundedSentry, AuthAddress: "BOUNDED",
+			BaseSignatures: []string{"base"}, AssemblyReceipt: "receipt", BaseSourceRequestID: "bad id", SentrySignature: "sentry",
+		}, want: "base_source_request_id"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := (AssemblyRequest{GroupBytesHex: []string{"5458aa"}, Targets: []AssemblyTarget{tt.target}}).Validate()
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Validate() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestComponentResponseValidateForRequestRejectsOutOfGroupIndex(t *testing.T) {
+	request := ComponentRequest{
+		GroupBytesHex: []string{"5458aa"},
+		Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindSentry, ComponentKey: "SENTRY"}},
+	}
+	response := ComponentResponse{RequestID: "response", Components: []Component{{
+		TargetIndex: 1, Kind: ComponentTargetKindSentry, Signature: "sig", SignatureScheme: KeyTypeWitnessFalcon1024,
+	}}}
+	if err := response.ValidateForRequest(request); err == nil || !strings.Contains(err.Error(), "indices or kinds") {
+		t.Fatalf("ValidateForRequest() error = %v, want out-of-group rejection", err)
 	}
 }
 

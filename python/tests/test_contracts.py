@@ -6,6 +6,8 @@
 import json
 import base64
 import hashlib
+import aplanesdk
+from dataclasses import asdict
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -34,6 +36,7 @@ from aplanesdk.signer import (
     LogicSigResourceUsage,
     SignerClient,
     StatusResponse,
+    _validate_component_request,
 )
 
 FIXTURE_DIR = Path(__file__).resolve().parents[2] / "contracts" / "signerapi"
@@ -389,6 +392,7 @@ def test_generate_key_maps_component_response():
 
 def test_sentry_dtos_round_trip_fixtures():
     unified_component_req = ComponentRequest(**fixture("component_request.json"))
+    _validate_component_request(asdict(unified_component_req))
     assert unified_component_req.targets[0]["kind"] == "bounded-base"
     unified_component_resp = ComponentResponse(**fixture("component_response.json"))
     assert unified_component_resp.components[0]["assembly_receipt"]
@@ -397,6 +401,10 @@ def test_sentry_dtos_round_trip_fixtures():
     assert unified_req.targets[0]["kind"] == "guarded"
     unified_resp = AssemblyResponse(**fixture("assembly_response.json"))
     assert len(unified_resp.signed_group) == 3
+
+    assert aplanesdk.ComponentRequest is ComponentRequest
+    assert aplanesdk.ComponentResponse is ComponentResponse
+    assert aplanesdk.COMPONENT_TARGET_KIND_BOUNDED_BASE == "bounded-base"
 
     sync_req = AdminSyncSentryReferencesRequest(**fixture("admin_sync_sentries_request.json"))
     assert sync_req.candidates[0]["component_key"]

@@ -169,6 +169,7 @@ function componentRequestForIndices(
   indices: number[],
   kind: "user" | "sentry",
   key: string,
+  dummyPositions: number[] = [],
 ): ComponentRequest {
   const targetSet = new Set(indices);
   return {
@@ -182,8 +183,11 @@ function componentRequestForIndices(
       kind,
       component_key: key,
     }),
-    contextual_positions: groupBytesHex.flatMap((_, index) =>
+    contextual_positions: groupBytesHex.slice(0, groupBytesHex.length - dummyPositions.length).flatMap((_, index) =>
       targetSet.has(index) ? [] : [{ target_index: index }]),
+    dummy_positions: dummyPositions.length > 0
+      ? dummyPositions.map((target_index) => ({ target_index }))
+      : undefined,
   };
 }
 
@@ -493,6 +497,7 @@ async function buildPreparedGuardedSignOptions(
     guardedTargets,
     primaryTargets,
     passthrough: signGuardedDummies(allTxns.slice(txns.length), txns.length),
+    dummyPositions: Array.from({ length: allTxns.length - txns.length }, (_, offset) => txns.length + offset),
     assemblyRequestId: options.assemblyRequestId,
     signal: options.signal,
   };
@@ -911,12 +916,18 @@ export async function signPreparedBoundedSentryGroup(
 
   const planResponse = await options.userClient.planRequests(requests);
   const frozenGroup = [...(planResponse.transactions || [])];
+  if (frozenGroup.length < prepared.length) {
+    throw new SignerError(
+      `signer returned ${frozenGroup.length} bounded group positions, want at least ${prepared.length}`,
+    );
+  }
   const planned = decodeCanonicalGroup(frozenGroup);
   validateBoundedComponentPlan(
     prepared.map((item) => item.transaction as Transaction),
     planned,
     planResponse.mutations,
   );
+  validateBoundedTargetFees(planned, targetMaxFees);
   const targetIndices = new Set(targets.map((target) => target.targetIndex));
   const componentResponse = await options.userClient.requestComponents(
     {
@@ -938,12 +949,6 @@ export async function signPreparedBoundedSentryGroup(
     },
     { signal: options.signal },
   );
-  if (frozenGroup.length < prepared.length) {
-    throw new SignerError(
-      `signer returned ${frozenGroup.length} bounded group positions, want at least ${prepared.length}`,
-    );
-  }
-  validateBoundedTargetFees(planned, targetMaxFees);
   const targetsByIndex = new Map(targets.map((target) => [target.targetIndex, target]));
   const components = new Map<number, (typeof componentResponse.components)[number]>();
   for (const component of componentResponse.components) {
@@ -989,7 +994,13 @@ export async function signPreparedBoundedSentryGroup(
   const sentrySignatures: ComponentSignatureByIndex = new Map();
   for (const group of sentryGroups) {
     const response = await group.client.requestComponents(
-      componentRequestForIndices(frozenGroup, group.indices.sort((a, b) => a - b), "sentry", group.componentKey),
+      componentRequestForIndices(
+        frozenGroup,
+        group.indices.sort((a, b) => a - b),
+        "sentry",
+        group.componentKey,
+        frozenGroup.slice(prepared.length).map((_, offset) => prepared.length + offset),
+      ),
       { signal: options.signal },
     );
     sentryComponentResponses.push(response);
@@ -1206,6 +1217,7 @@ export async function signGuardedGroup(options: GuardedSignOptions): Promise<Gua
         (userGroups.get(guardedAccount) || []).sort((a, b) => a - b),
         "user",
         guardedAccount,
+        options.dummyPositions,
       ),
       { signal: options.signal },
     );
@@ -1241,6 +1253,7 @@ export async function signGuardedGroup(options: GuardedSignOptions): Promise<Gua
         group.indices.sort((a, b) => a - b),
         "sentry",
         group.componentKey,
+        options.dummyPositions,
       ),
       { signal: options.signal },
     );
@@ -1387,13 +1400,16 @@ function validateComponentRequest(request: ComponentRequest): void {
   });
 }
 
-function validateComponentResponse(response: ComponentResponse): void {
+function validateComponentResponse(response: ComponentResponse, request?: ComponentRequest): void {
   validateSignRequestId(response.request_id, true);
   if (!response.components?.length) throw new SignerError("components array is empty");
   const seen = new Set<number>();
   response.components.forEach((component, index) => {
     if (!Number.isInteger(component.target_index) || component.target_index < 0 || seen.has(component.target_index)) {
       throw new SignerError(`component ${index + 1} has invalid or duplicate target_index`);
+    }
+    if (request && component.target_index >= request.group_bytes_hex.length) {
+      throw new SignerError(`component ${index + 1} target_index is outside the frozen group`);
     }
     seen.add(component.target_index);
     if (component.kind === "user" || component.kind === "sentry") {
@@ -1947,6 +1963,7 @@ export interface GuardedSignOptions {
   guardedTargets: GuardedSignTarget[];
   primaryTargets?: GuardedPrimarySignTarget[];
   passthrough?: GuardedPassthroughItem[];
+  dummyPositions?: number[];
   assemblyRequestId?: string;
   signal?: AbortSignal;
 }
@@ -3866,7 +3883,13 @@ export class SignerClient {
       throw new SignerError("Server returned invalid JSON");
     }
     if (data.error) throw new SignerError(data.error);
-    validateComponentResponse(data);
+    try {
+      validateComponentResponse(data, requestBody);
+    } catch (error) {
+      throw new SignerError(
+        `invalid component response: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
     if (data.request_id !== requestBody.request_id) throw new SignerError("component response request_id does not match request");
     const expected = new Map(requestBody.targets.map((target) => [target.target_index, target.kind]));
     const actual = new Map(data.components.map((component) => [component.target_index, component.kind]));

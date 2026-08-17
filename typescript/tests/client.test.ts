@@ -1234,7 +1234,7 @@ describe("SignerClient", () => {
           group_bytes_hex: ["5458aa"],
           targets: [{ target_index: 0, kind: "sentry" }],
         }),
-        { message: /components array is empty/ },
+        { message: /invalid component response: components array is empty/ },
       );
     });
 
@@ -1262,6 +1262,32 @@ describe("SignerClient", () => {
           contextual_positions: [{ target_index: 1 }],
         }),
         { message: /indices or kinds do not match request/ },
+      );
+    });
+
+    it("rejects component signatures outside the frozen group", async () => {
+      mockFetch.mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: async () => ({
+          request_id: "sdk-component",
+          components: [{
+            target_index: 2,
+            kind: "sentry",
+            signature: "aabb",
+            signature_scheme: KEY_TYPE_WITNESS_FALCON1024,
+          }],
+        }),
+      });
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      await assert.rejects(
+        client.requestComponents({
+          request_id: "sdk-component",
+          group_bytes_hex: ["5458aa"],
+          targets: [{ target_index: 0, kind: "sentry", component_key: "COMPONENT" }],
+        }),
+        { message: /invalid component response: component 1 target_index is outside the frozen group/ },
       );
     });
 
@@ -1706,6 +1732,10 @@ describe("SignerClient", () => {
         assert.equal(request.targets[0].auth_address, guarded);
         assert.equal(request.group_bytes_hex.length, 4);
         assert.deepEqual(request.targets.map((target: any) => target.target_index), [0]);
+        assert.deepEqual(request.contextual_positions, []);
+        assert.deepEqual(request.dummy_positions, [
+          { target_index: 1 }, { target_index: 2 }, { target_index: 3 },
+        ]);
         return {
           request_id: "user-id",
           components: [
@@ -1717,6 +1747,10 @@ describe("SignerClient", () => {
         assert.equal(request.targets[0].component_key, "SENTRY_COMPONENT");
         assert.equal(request.group_bytes_hex.length, 4);
         assert.deepEqual(request.targets.map((target: any) => target.target_index), [0]);
+        assert.deepEqual(request.contextual_positions, []);
+        assert.deepEqual(request.dummy_positions, [
+          { target_index: 1 }, { target_index: 2 }, { target_index: 3 },
+        ]);
         return {
           request_id: "sentry-id",
           components: [
@@ -1892,12 +1926,14 @@ describe("SignerClient", () => {
       const sentry = new SignerClient("http://sentry:11270", "sentry-token");
       let plannedTransactions: string[] | undefined;
       let plannedMutations: any;
+      let baseComponentCalls = 0;
 
       (user as any).planRequests = async (requests: any[]) => ({
         transactions: plannedTransactions ?? [requests[0].txn_bytes_hex],
         mutations: plannedMutations,
       });
       (user as any).requestComponents = async (request: any) => {
+        baseComponentCalls += 1;
         assert.equal(request.targets[0].auth_address, bounded);
         return {
           request_id: "base-id",
@@ -2077,10 +2113,12 @@ describe("SignerClient", () => {
         originalCount: 1,
         finalCount: 1,
       };
+      const callsBeforeInflatedFee = baseComponentCalls;
       await assert.rejects(
         signPreparedGuardedGroup(options),
         /exceeds advertised max_fee/,
       );
+      assert.equal(baseComponentCalls, callsBeforeInflatedFee);
 
       const badDummy = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
         sender: bounded,

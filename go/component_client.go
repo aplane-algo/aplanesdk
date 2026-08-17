@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
 )
 
 func (c *SignerClient) RequestComponents(req ComponentRequest) (*ComponentResponse, error) {
@@ -31,12 +32,8 @@ func (c *SignerClient) RequestComponentsWithContext(ctx context.Context, reqBody
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal component request: %w", err)
 	}
-	timeout := componentSignTimeout
 	approvalBearing := reqBody.TargetKind() != ComponentTargetKindSentry
-	if approvalBearing {
-		c.discoverApprovalWait(ctx)
-		timeout = c.signRequestTimeout()
-	}
+	timeout := c.componentRequestTimeout(ctx, approvalBearing)
 	reqCtx, cancel := c.requestContext(ctx, timeout)
 	defer cancel()
 
@@ -98,23 +95,23 @@ func (c *SignerClient) RequestComponentsWithContext(ctx context.Context, reqBody
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("failed to decode component response: %w", err)
 	}
-	if err := result.Validate(); err != nil {
+	if err := result.ValidateForRequest(reqBody); err != nil {
 		return nil, fmt.Errorf("invalid component response: %w", err)
 	}
 	if result.RequestID != reqBody.RequestID {
 		return nil, fmt.Errorf("component response request_id does not match request")
 	}
-	expected := make(map[int]ComponentTargetKind, len(reqBody.Targets))
-	for _, target := range reqBody.Targets {
-		expected[target.TargetIndex] = target.Kind
-	}
-	if len(result.Components) != len(expected) {
-		return nil, fmt.Errorf("component response target indices or kinds do not match request")
-	}
-	for _, component := range result.Components {
-		if expected[component.TargetIndex] != component.Kind {
-			return nil, fmt.Errorf("component response target indices or kinds do not match request")
-		}
-	}
 	return &result, nil
+}
+
+func (c *SignerClient) componentRequestTimeout(ctx context.Context, approvalBearing bool) time.Duration {
+	timeout := componentSignTimeout
+	if !approvalBearing {
+		return timeout
+	}
+	c.discoverApprovalWait(ctx)
+	if approvalTimeout := c.signRequestTimeout(); approvalTimeout > timeout {
+		return approvalTimeout
+	}
+	return timeout
 }

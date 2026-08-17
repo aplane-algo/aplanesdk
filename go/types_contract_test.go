@@ -179,6 +179,14 @@ func TestGoSDKContractFixturesRoundTrip(t *testing.T) {
 	}
 }
 
+func TestGoSDKComponentRequestFixtureValidates(t *testing.T) {
+	var request ComponentRequest
+	readContractMetadata(t, "component_request.json", &request)
+	if err := request.Validate(); err != nil {
+		t.Fatalf("component_request.json does not satisfy its wire validator: %v", err)
+	}
+}
+
 func TestBoundedInventoryUsesStructuredResources(t *testing.T) {
 	raw, err := os.ReadFile(sdkContractFixturePath(t, "keys_response_bounded.json"))
 	if err != nil {

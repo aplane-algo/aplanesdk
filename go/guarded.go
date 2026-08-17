@@ -78,6 +78,7 @@ type GuardedSignOptions struct {
 	Targets            []GuardedSignTarget
 	PrimaryTargets     []GuardedPrimarySignTarget
 	Passthrough        []AssemblyPassthroughItem
+	DummyPositions     []int
 	AssemblyRequestID  string
 }
 
@@ -161,7 +162,7 @@ func SignGuardedGroupWithContext(ctx context.Context, opts GuardedSignOptions) (
 	}
 
 	result := &GuardedSignResult{}
-	userSignatures, err := requestUserComponentSignatures(ctx, opts.UserClient, opts.GroupBytesHex, userGroups, result)
+	userSignatures, err := requestUserComponentSignatures(ctx, opts.UserClient, opts.GroupBytesHex, opts.DummyPositions, userGroups, result)
 	if err != nil {
 		return nil, err
 	}
@@ -465,6 +466,7 @@ func buildPreparedGuardedSignOptions(ctx context.Context, opts PreparedGuardedGr
 		Targets:            targets,
 		PrimaryTargets:     primaryTargets,
 		Passthrough:        dummyPassthrough,
+		DummyPositions:     contiguousIndices(len(txns), len(allTxns)),
 		AssemblyRequestID:  opts.AssemblyRequestID,
 	}, nil
 }
@@ -578,7 +580,7 @@ func validateGuardedDummies(dummies []types.Transaction) error {
 	return nil
 }
 
-func requestUserComponentSignatures(ctx context.Context, client *SignerClient, groupBytesHex []string, userGroups map[string][]int, result *GuardedSignResult) (map[int]guardedComponentSignature, error) {
+func requestUserComponentSignatures(ctx context.Context, client *SignerClient, groupBytesHex []string, dummyPositions []int, userGroups map[string][]int, result *GuardedSignResult) (map[int]guardedComponentSignature, error) {
 	accounts := make([]string, 0, len(userGroups))
 	for account := range userGroups {
 		accounts = append(accounts, account)
@@ -589,7 +591,7 @@ func requestUserComponentSignatures(ctx context.Context, client *SignerClient, g
 	for _, account := range accounts {
 		indices := append([]int(nil), userGroups[account]...)
 		sort.Ints(indices)
-		resp, err := client.RequestComponentsWithContext(ctx, componentRequestForIndices(groupBytesHex, indices, ComponentTargetKindUser, account))
+		resp, err := client.RequestComponentsWithContext(ctx, componentRequestForIndices(groupBytesHex, indices, dummyPositions, ComponentTargetKindUser, account))
 		if err != nil {
 			return nil, err
 		}
@@ -620,7 +622,7 @@ func requestSentryComponentSignatures(ctx context.Context, opts GuardedSignOptio
 	signatures := make(map[int]guardedComponentSignature)
 	for group, indices := range groups {
 		sort.Ints(indices)
-		resp, err := group.client.RequestComponentsWithContext(ctx, componentRequestForIndices(opts.GroupBytesHex, indices, ComponentTargetKindSentry, group.componentKey))
+		resp, err := group.client.RequestComponentsWithContext(ctx, componentRequestForIndices(opts.GroupBytesHex, indices, opts.DummyPositions, ComponentTargetKindSentry, group.componentKey))
 		if err != nil {
 			return nil, err
 		}
@@ -635,7 +637,7 @@ func requestSentryComponentSignatures(ctx context.Context, opts GuardedSignOptio
 	return signatures, nil
 }
 
-func componentRequestForIndices(groupBytesHex []string, indices []int, kind ComponentTargetKind, key string) ComponentRequest {
+func componentRequestForIndices(groupBytesHex []string, indices, dummyPositions []int, kind ComponentTargetKind, key string) ComponentRequest {
 	targetSet := make(map[int]bool, len(indices))
 	request := ComponentRequest{GroupBytesHex: groupBytesHex}
 	for _, index := range indices {
@@ -648,12 +650,23 @@ func componentRequestForIndices(groupBytesHex []string, indices []int, kind Comp
 		}
 		request.Targets = append(request.Targets, target)
 	}
-	for index := range groupBytesHex {
+	for index := 0; index < len(groupBytesHex)-len(dummyPositions); index++ {
 		if !targetSet[index] {
 			request.ContextualPositions = append(request.ContextualPositions, ComponentContextPosition{TargetIndex: index})
 		}
 	}
+	for _, index := range dummyPositions {
+		request.DummyPositions = append(request.DummyPositions, ComponentDummyPosition{TargetIndex: index})
+	}
 	return request
+}
+
+func contiguousIndices(start, end int) []int {
+	indices := make([]int, 0, end-start)
+	for index := start; index < end; index++ {
+		indices = append(indices, index)
+	}
+	return indices
 }
 
 func resolveGuardedSentry(ctx context.Context, opts GuardedSignOptions, target GuardedSignTarget) (*SignerClient, string, error) {

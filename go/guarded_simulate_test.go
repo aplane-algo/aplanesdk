@@ -4,10 +4,24 @@
 package aplane
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 )
+
+func TestComponentRequestTimeoutKeepsTwoMinuteFloor(t *testing.T) {
+	client := &SignerClient{}
+	client.cacheApprovalWait(60)
+	if got := client.componentRequestTimeout(context.Background(), true); got != componentSignTimeout {
+		t.Fatalf("componentRequestTimeout() = %s, want %s", got, componentSignTimeout)
+	}
+	client.cacheApprovalWait(180)
+	if got := client.componentRequestTimeout(context.Background(), true); got != 210*time.Second {
+		t.Fatalf("componentRequestTimeout() = %s, want 210s", got)
+	}
+}
 
 func TestRequestComponentsUserKindDiscoversApprovalWait(t *testing.T) {
 	var paths []string

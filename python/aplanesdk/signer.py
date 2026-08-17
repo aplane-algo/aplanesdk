@@ -1768,7 +1768,9 @@ def _validate_component_request(data: Dict[str, Any]) -> None:
     _validate_bounded_component_request(probe)
 
 
-def _validate_component_response(data: Dict[str, Any]) -> None:
+def _validate_component_response(
+    data: Dict[str, Any], request: Optional[Dict[str, Any]] = None
+) -> None:
     _validate_sign_request_id(str(data.get("request_id", "")))
     if not data.get("request_id") or not data.get("components"):
         raise ValueError("request_id and components are required")
@@ -1777,6 +1779,8 @@ def _validate_component_response(data: Dict[str, Any]) -> None:
         target_index = component.get("target_index")
         if not isinstance(target_index, int) or target_index < 0 or target_index in seen:
             raise ValueError(f"component {index} has invalid or duplicate target_index")
+        if request is not None and target_index >= len(request.get("group_bytes_hex") or []):
+            raise ValueError(f"component {index} target_index is outside the frozen group")
         seen.add(target_index)
         kind = component.get("kind")
         if kind in (COMPONENT_TARGET_KIND_USER, COMPONENT_TARGET_KIND_SENTRY):
@@ -4061,7 +4065,7 @@ class SignerClient:
         if data.get("error"):
             raise SignerError(data["error"])
         try:
-            _validate_component_response(data)
+            _validate_component_response(data, request_body)
         except ValueError as e:
             raise SignerError(f"invalid component response: {e}") from e
         if data["request_id"] != request_body["request_id"]:
@@ -4753,7 +4757,9 @@ def _component_request_for_indices(
     indices: List[int],
     kind: str,
     key: str,
+    dummy_positions: Optional[List[int]] = None,
 ) -> ComponentRequest:
+    dummy_positions = list(dummy_positions or [])
     target_set = set(indices)
     targets = []
     for index in indices:
@@ -4768,9 +4774,10 @@ def _component_request_for_indices(
         targets=targets,
         contextual_positions=[
             {"target_index": index}
-            for index in range(len(group_bytes_hex))
+            for index in range(len(group_bytes_hex) - len(dummy_positions))
             if index not in target_set
-        ],
+        ] or None,
+        dummy_positions=[{"target_index": index} for index in dummy_positions] or None,
     )
 
 
@@ -4939,6 +4946,7 @@ def _build_prepared_guarded_sign_inputs(
         "sentry_component_key": sentry_component_key,
         "primary_targets": primary_targets,
         "passthrough": dummy_passthrough,
+        "dummy_positions": list(range(len(txns), len(all_txns))),
         "assembly_request_id": assembly_request_id,
     }
 
@@ -5517,6 +5525,7 @@ def sign_prepared_bounded_sentry_group(
         planned,
         plan_response.get("mutations"),
     )
+    _validate_bounded_target_fees(planned, target_max_fees)
     target_indices = {target["target_index"] for target in targets}
     component_targets = []
     contextual_positions = []
@@ -5531,13 +5540,13 @@ def sign_prepared_bounded_sentry_group(
                 }
             )
         else:
-            contextual_positions.append(
-                {
-                    "target_index": index,
-                    "lsig_resources": request.get("lsig_resources"),
-                    "pq_scheme": request.get("pq_scheme", ""),
-                }
-            )
+            position = {
+                "target_index": index,
+                "lsig_resources": request.get("lsig_resources"),
+            }
+            if request.get("pq_scheme"):
+                position["pq_scheme"] = request["pq_scheme"]
+            contextual_positions.append(position)
     component_response = user_client.request_components(
         ComponentRequest(
             group_bytes_hex=frozen_group,
@@ -5549,7 +5558,6 @@ def sign_prepared_bounded_sentry_group(
             ] or None,
         )
     )
-    _validate_bounded_target_fees(planned, target_max_fees)
     target_by_index = {target["target_index"]: target for target in targets}
     components: Dict[int, Dict[str, Any]] = {}
     for component in component_response.components:
@@ -5594,6 +5602,7 @@ def sign_prepared_bounded_sentry_group(
                 sorted(group["indices"]),
                 COMPONENT_TARGET_KIND_SENTRY,
                 group["component_key"],
+                list(range(len(prepared), len(frozen_group))),
             )
         )
         sentry_component_responses.append(response)
@@ -5699,6 +5708,7 @@ def sign_guarded_group(
     sentry_component_key: str = "",
     primary_targets: Optional[List[Any]] = None,
     passthrough: Optional[List[Any]] = None,
+    dummy_positions: Optional[List[int]] = None,
     assembly_request_id: str = "",
 ) -> GuardedSignResult:
     """
@@ -5743,6 +5753,7 @@ def sign_guarded_group(
                 sorted(user_groups[guarded_account]),
                 COMPONENT_TARGET_KIND_USER,
                 guarded_account,
+                dummy_positions,
             )
         )
         user_component_responses.append(response)
@@ -5771,6 +5782,7 @@ def sign_guarded_group(
                 sorted(group["indices"]),
                 COMPONENT_TARGET_KIND_SENTRY,
                 group["component_key"],
+                dummy_positions,
             )
         )
         sentry_component_responses.append(response)

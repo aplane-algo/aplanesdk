@@ -141,6 +141,9 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 	if err := validateBoundedComponentPlan(original, planned, planResp.Mutations); err != nil {
 		return nil, err
 	}
+	if err := validateBoundedTargetFees(planned, targetMaxFees); err != nil {
+		return nil, err
+	}
 	componentReq := ComponentRequest{GroupBytesHex: append([]string(nil), planResp.Transactions...)}
 	targetSet := make(map[int]bool, len(targets))
 	for _, target := range targets {
@@ -160,10 +163,6 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 	if err != nil {
 		return nil, fmt.Errorf("bounded base component signing failed: %w", err)
 	}
-	if err := validateBoundedTargetFees(planned, targetMaxFees); err != nil {
-		return nil, err
-	}
-
 	components := make(map[int]Component, len(componentResp.Components))
 	targetsByIndex := make(map[int]GuardedSignTarget, len(targets))
 	for _, target := range targets {
@@ -192,6 +191,7 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 		SentryResolver:     opts.SentryResolver,
 		SentryComponentKey: opts.SentryComponentKey,
 		GroupBytesHex:      planResp.Transactions,
+		DummyPositions:     contiguousIndices(len(prepared), len(planResp.Transactions)),
 	}
 	sentrySignatures, err := requestSentryComponentSignatures(ctx, sentryOpts, targets, result)
 	if err != nil {

@@ -330,6 +330,9 @@ func (r AssemblyRequest) Validate() error {
 		if target.AuthAddress == "" || target.SentrySignature == "" {
 			return fmt.Errorf("target %d: auth_address and sentry_signature are required", i+1)
 		}
+		if err := validateSignRequestID(target.SentrySourceRequestID); err != nil {
+			return fmt.Errorf("target %d: sentry_source_request_id: %w", i+1, err)
+		}
 		switch target.Kind {
 		case AssemblyTargetKindGuarded:
 			if target.UserSignature == "" {
@@ -338,12 +341,18 @@ func (r AssemblyRequest) Validate() error {
 			if len(target.BaseSignatures) != 0 || len(target.BoundedRuntimeArgs) != 0 || target.AssemblyReceipt != "" || target.BaseSourceRequestID != "" {
 				return fmt.Errorf("target %d: bounded authorization material is forbidden for guarded target", i+1)
 			}
+			if err := validateSignRequestID(target.UserSourceRequestID); err != nil {
+				return fmt.Errorf("target %d: user_source_request_id: %w", i+1, err)
+			}
 		case AssemblyTargetKindBoundedSentry:
 			if len(target.BaseSignatures) == 0 || target.AssemblyReceipt == "" {
 				return fmt.Errorf("target %d: base_signatures and assembly_receipt are required for bounded-sentry target", i+1)
 			}
 			if target.UserSignature != "" || target.UserSourceRequestID != "" || len(target.GuardedRuntimeArgs) != 0 {
 				return fmt.Errorf("target %d: guarded authorization material is forbidden for bounded-sentry target", i+1)
+			}
+			if err := validateSignRequestID(target.BaseSourceRequestID); err != nil {
+				return fmt.Errorf("target %d: base_source_request_id: %w", i+1, err)
 			}
 		default:
 			return fmt.Errorf("target %d: invalid kind %q", i+1, target.Kind)

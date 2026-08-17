@@ -779,6 +779,27 @@ class TestSpecializedLowLevelEndpoints:
                     target_indices=[0],
                 ))
 
+    def test_request_components_rejects_out_of_group_target_index(self):
+        client = make_client()
+        resp = mock_response(200, {
+            "request_id": "sdk-component",
+            "components": [{
+                "target_index": 1,
+                "kind": "sentry",
+                "signature": "aabb",
+                "signature_scheme": KEY_TYPE_WITNESS_FALCON1024,
+            }],
+        })
+
+        with patch.object(client.session, "post", return_value=resp):
+            with pytest.raises(SignerError, match="outside the frozen group"):
+                client.request_components(component_request(
+                    request_id="sdk-component",
+                    role=TEST_COMPONENT_KIND_SENTRY,
+                    group_bytes_hex=["5458aa"],
+                    target_indices=[0],
+                ))
+
     def test_request_assemble_posts_to_assemble_endpoint(self):
         client = make_client()
         resp = mock_response(200, {
@@ -1243,6 +1264,10 @@ class TestSignGuardedGroup:
 
         assert len(result.signed_group) == 2
         assert result.primary_sign_response is None
+        for client in (user, sentry):
+            request = client.request_components.call_args.args[0]
+            assert request.contextual_positions is None
+            assert request.dummy_positions == [{"target_index": 1}]
         user.plan_requests.assert_called_once()
         user_req = user.request_components.call_args.args[0]
         assert user_req.targets[0]["auth_address"] == guarded
@@ -1646,6 +1671,17 @@ class TestSignGuardedGroup:
         assert len(sentry_req.group_bytes_hex) == 1
         assert sentry_req.group_bytes_hex[0].startswith("5458")
         assert [target["target_index"] for target in sentry_req.targets] == [0]
+
+        user.request_components.reset_mock()
+        prepared_group.transactions[0].signer_key.bounded_authorization.max_fee = 999
+        with pytest.raises(SignerError, match="exceeds advertised max_fee"):
+            sign_prepared_guarded_group(
+                user_client=user,
+                sentry_client=sentry,
+                sentry_component_key="SENTRY_COMPONENT",
+                prepared_group=prepared_group,
+            )
+        user.request_components.assert_not_called()
 
     def test_prepared_bounded_sentry_declares_native_pq_primary(self):
         """A native-PQ primary slot is declared foreign to

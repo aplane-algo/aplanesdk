@@ -514,6 +514,9 @@ func TestSignPreparedGuardedGroupUsesSignerPlan(t *testing.T) {
 			if len(req.GroupBytesHex) != 4 || len(req.TargetIndices) != 1 || req.TargetIndices[0] != 0 {
 				t.Fatalf("user component group/targets = len %d targets %+v", len(req.GroupBytesHex), req.TargetIndices)
 			}
+			if len(req.Contextual) != 0 || len(req.Dummies) != 3 || req.Dummies[0].TargetIndex != 1 || req.Dummies[2].TargetIndex != 3 {
+				t.Fatalf("user component partition = context %+v dummies %+v", req.Contextual, req.Dummies)
+			}
 			json.NewEncoder(w).Encode(ComponentResponse{
 				RequestID: req.RequestID,
 				Components: []Component{{Kind: ComponentTargetKindUser,
@@ -595,6 +598,9 @@ func TestSignPreparedGuardedGroupUsesSignerPlan(t *testing.T) {
 		}
 		if req.Role != capturedComponentRoleSentry || len(req.GroupBytesHex) != 4 || len(req.TargetIndices) != 1 || req.TargetIndices[0] != 0 {
 			t.Fatalf("sentry component request = %+v", req)
+		}
+		if len(req.Contextual) != 0 || len(req.Dummies) != 3 || req.Dummies[0].TargetIndex != 1 || req.Dummies[2].TargetIndex != 3 {
+			t.Fatalf("sentry component partition = context %+v dummies %+v", req.Contextual, req.Dummies)
 		}
 		json.NewEncoder(w).Encode(ComponentResponse{
 			RequestID: req.RequestID,
