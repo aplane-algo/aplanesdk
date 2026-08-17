@@ -290,6 +290,49 @@ func TestSDKProductionSurfaceExcludesBoundedAdminWorkflow(t *testing.T) {
 	}
 }
 
+func TestSDKProductionSurfaceExcludesSentryReferenceSync(t *testing.T) {
+	roots := []struct {
+		path string
+		ext  string
+	}{
+		{path: ".", ext: ".go"},
+		{path: "../python/aplanesdk", ext: ".py"},
+		{path: "../typescript/src", ext: ".ts"},
+	}
+	forbidden := []string{
+		"AdminSyncSentry",
+		"SyncSentryReferences",
+		"sync_sentry_references",
+		"syncSentryReferences",
+		"/admin/sentries/sync",
+		"sentries.sync",
+	}
+
+	for _, root := range roots {
+		err := filepath.WalkDir(root.path, func(path string, entry os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() || filepath.Ext(path) != root.ext || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			content, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			for _, token := range forbidden {
+				if strings.Contains(string(content), token) {
+					t.Errorf("%s exposes retired sentry-reference sync token %q", path, token)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("scan SDK production surface %s: %v", root.path, err)
+		}
+	}
+}
+
 func TestGoSDKContractStatusMetadata(t *testing.T) {
 	raw, err := os.ReadFile(sdkContractFixturePath(t, "status_response_ready.json"))
 	if err != nil {

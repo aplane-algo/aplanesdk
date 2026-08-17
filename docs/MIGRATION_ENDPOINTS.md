@@ -40,6 +40,14 @@ bounded migration input, discard its retired `published_sentries` inventory,
 and return the v2 runtime shape. Schema v2 rejects that field. Configure no
 more than 12 `sentry` profiles; all SDK loaders reject larger registries.
 
+The former sentry-reference synchronization client methods and wire types are
+removed. APlane now keeps generation trust inputs and transaction routing
+separate: operators explicitly export/import public sentry references for
+guarded-account generation, while the APlane engine discovers routes from live
+authenticated `/keys` responses for each signing operation. SDK applications
+continue to choose or resolve their sentry client explicitly; loading
+`endpoints.yaml` never creates a durable sentry-key inventory.
+
 Go `FromEnv`, Python `SignerClient.from_env`, and TypeScript
 `SignerClient.fromEnv` select the default signer unless given an endpoint
 alias. SSH URLs create a managed tunnel. HTTPS and loopback HTTP URLs connect
