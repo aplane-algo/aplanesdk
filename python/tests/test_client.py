@@ -725,6 +725,7 @@ class TestSpecializedLowLevelEndpoints:
 
         with patch.object(client.session, "post", return_value=resp) as mock_post:
             result = client.request_guarded_assemble(GuardedAssemblyRequest(
+                request_id="sdk-assembly",
                 group_bytes_hex=["5458aa"],
                 targets=[
                     GuardedAssemblyTarget(
@@ -740,7 +741,8 @@ class TestSpecializedLowLevelEndpoints:
         assert mock_post.call_args.args[0] == "http://localhost:11270/sign/assemble"
         body = mock_post.call_args.kwargs["json"]
         assert body["request_id"].startswith("sdk-")
-        assert body["targets"][0]["guarded_account"] == "GUARDED"
+        assert body["targets"][0]["kind"] == "guarded"
+        assert body["targets"][0]["auth_address"] == "GUARDED"
 
     def test_request_guarded_assemble_rejects_missing_coverage(self):
         client = make_client()
@@ -810,7 +812,7 @@ class TestSpecializedLowLevelEndpoints:
             "/sign/bounded-component"
         )
         assert mock_post.call_args_list[1].args[0].endswith(
-            "/sign/bounded-assemble"
+            "/sign/assemble"
         )
 
     def test_bounded_component_timeout_sends_best_effort_cancel(self):

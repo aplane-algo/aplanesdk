@@ -114,57 +114,9 @@ func (c *SignerClient) RequestBoundedAssemble(req BoundedAssemblyRequest) (*Boun
 // RequestBoundedAssembleWithContext sends a source-bound bounded assembly
 // request to the user signer.
 func (c *SignerClient) RequestBoundedAssembleWithContext(ctx context.Context, reqBody BoundedAssemblyRequest) (*BoundedAssemblyResponse, error) {
-	if reqBody.RequestID == "" {
-		requestID, err := newSignRequestID()
-		if err != nil {
-			return nil, fmt.Errorf("failed to create bounded assembly request ID: %w", err)
-		}
-		reqBody.RequestID = requestID
-	}
-	if err := reqBody.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid bounded assembly request: %w", err)
-	}
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal bounded assembly request: %w", err)
-	}
-
-	reqCtx, cancel := c.requestContext(ctx, guardedAssemblyTimeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, c.baseURL+"/sign/bounded-assemble", bytes.NewReader(body))
+	result, err := c.RequestAssembleWithContext(ctx, reqBody.AssemblyRequest())
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "aplane "+c.token)
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to make request to Signer: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusUnauthorized {
-		return nil, ErrAuthentication
-	}
-	if resp.StatusCode == http.StatusForbidden {
-		return nil, rejectedForbiddenError(resp)
-	}
-	if resp.StatusCode == http.StatusServiceUnavailable {
-		return nil, ErrSignerUnavailable
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, signerHTTPError(resp)
-	}
-
-	var result BoundedAssemblyResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("failed to decode bounded assembly response: %w", err)
-	}
-	if err := result.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid bounded assembly response: %w", err)
-	}
-	if result.RequestID != reqBody.RequestID {
-		return nil, fmt.Errorf("bounded assembly response request_id does not match request")
-	}
-	return &result, nil
+	return &BoundedAssemblyResponse{RequestID: result.RequestID, SignedGroup: result.SignedGroup}, nil
 }

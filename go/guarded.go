@@ -187,7 +187,7 @@ func SignGuardedGroupWithContext(ctx context.Context, opts GuardedSignOptions) (
 		passthrough = append(passthrough, primary.passthrough...)
 	}
 
-	assemblyTargets := make([]GuardedAssemblyTarget, 0, len(targets))
+	assemblyTargets := make([]AssemblyTarget, 0, len(targets))
 	for _, target := range targets {
 		userSig, ok := userSignatures[target.TargetIndex]
 		if !ok {
@@ -197,22 +197,26 @@ func SignGuardedGroupWithContext(ctx context.Context, opts GuardedSignOptions) (
 		if !ok {
 			return nil, fmt.Errorf("missing sentry component signature for target %d", target.TargetIndex)
 		}
-		assemblyTargets = append(assemblyTargets, GuardedAssemblyTarget{
+		assemblyTargets = append(assemblyTargets, AssemblyTarget{
 			TargetIndex:           target.TargetIndex,
-			GuardedAccount:        target.GuardedAccount,
+			Kind:                  AssemblyTargetKindGuarded,
+			AuthAddress:           target.GuardedAccount,
 			UserSignature:         userSig.signature,
 			UserSourceRequestID:   userSig.requestID,
 			SentrySignature:       sentrySig.signature,
 			SentrySourceRequestID: sentrySig.requestID,
-			RuntimeArgs:           append([]string(nil), target.RuntimeArgs...),
+			GuardedRuntimeArgs:    append([]string(nil), target.RuntimeArgs...),
 		})
 	}
-
-	assemblyResp, err := opts.UserClient.RequestGuardedAssembleWithContext(ctx, GuardedAssemblyRequest{
+	assemblyPassthrough := make([]AssemblyPassthroughItem, 0, len(passthrough))
+	for _, item := range passthrough {
+		assemblyPassthrough = append(assemblyPassthrough, AssemblyPassthroughItem(item))
+	}
+	assemblyResp, err := opts.UserClient.RequestAssembleWithContext(ctx, AssemblyRequest{
 		RequestID:     opts.AssemblyRequestID,
 		GroupBytesHex: opts.GroupBytesHex,
 		Targets:       assemblyTargets,
-		Passthrough:   passthrough,
+		Passthrough:   assemblyPassthrough,
 	})
 	if err != nil {
 		return nil, err
@@ -220,7 +224,7 @@ func SignGuardedGroupWithContext(ctx context.Context, opts GuardedSignOptions) (
 	if err := verifyAssembledGroup(opts.GroupBytesHex, assemblyResp.SignedGroup); err != nil {
 		return nil, err
 	}
-	result.AssemblyResponse = assemblyResp
+	result.AssemblyResponse = &GuardedAssemblyResponse{RequestID: assemblyResp.RequestID, SignedGroup: assemblyResp.SignedGroup}
 	result.SignedGroup = append([]string(nil), assemblyResp.SignedGroup...)
 	return result, nil
 }

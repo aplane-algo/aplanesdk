@@ -921,17 +921,17 @@ func TestRequestGuardedAssemblePostsToAssembleEndpoint(t *testing.T) {
 		if r.Method != http.MethodPost || r.URL.Path != "/sign/assemble" {
 			t.Fatalf("request = %s %s, want POST /sign/assemble", r.Method, r.URL.Path)
 		}
-		var req GuardedAssemblyRequest
+		var req AssemblyRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("decode assembly request: %v", err)
 		}
 		if req.RequestID == "" {
 			t.Fatal("request_id was not populated")
 		}
-		if len(req.Targets) != 1 || req.Targets[0].GuardedAccount != "GUARDED" {
+		if len(req.Targets) != 1 || req.Targets[0].Kind != AssemblyTargetKindGuarded || req.Targets[0].AuthAddress != "GUARDED" {
 			t.Fatalf("assembly targets = %+v", req.Targets)
 		}
-		json.NewEncoder(w).Encode(GuardedAssemblyResponse{
+		json.NewEncoder(w).Encode(AssemblyResponse{
 			RequestID:   req.RequestID,
 			SignedGroup: []string{"ccdd"},
 		})

@@ -498,6 +498,35 @@ export interface ComponentSignResponse {
   signatures: ComponentSignature[];
 }
 
+export type AssemblyTargetKind = "guarded" | "bounded-sentry";
+
+export interface AssemblyTarget {
+  target_index: number;
+  kind: AssemblyTargetKind;
+  auth_address: string;
+  user_signature?: string;
+  user_source_request_id?: string;
+  guarded_runtime_args?: string[];
+  base_signatures?: string[];
+  bounded_runtime_args?: Record<string, string>;
+  assembly_receipt?: string;
+  base_source_request_id?: string;
+  sentry_signature: string;
+  sentry_source_request_id?: string;
+}
+
+export interface AssemblyRequest {
+  request_id?: string;
+  group_bytes_hex: string[];
+  targets?: AssemblyTarget[];
+  passthrough?: GuardedPassthroughItem[];
+}
+
+export interface AssemblyResponse {
+  request_id: string;
+  signed_group: string[];
+}
+
 /**
  * One guarded-account group position plus user and sentry component signatures.
  */

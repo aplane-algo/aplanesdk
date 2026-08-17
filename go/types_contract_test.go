@@ -157,6 +157,8 @@ func TestGoSDKContractFixturesRoundTrip(t *testing.T) {
 		{"bounded_component_response.json", assertSDKContractRoundTrip[BoundedComponentResponse]},
 		{"bounded_assembly_request.json", assertSDKContractRoundTrip[BoundedAssemblyRequest]},
 		{"bounded_assembly_response.json", assertSDKContractRoundTrip[BoundedAssemblyResponse]},
+		{"assembly_request_mixed.json", assertSDKContractRoundTrip[AssemblyRequest]},
+		{"assembly_response.json", assertSDKContractRoundTrip[AssemblyResponse]},
 		{"keys_response_generic.json", assertSDKContractRoundTrip[KeysResponse]},
 		{"keys_response_component.json", assertSDKContractRoundTrip[KeysResponse]},
 		{"keys_response_guarded.json", assertSDKContractRoundTrip[KeysResponse]},

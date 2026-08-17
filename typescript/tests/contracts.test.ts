@@ -15,6 +15,8 @@ import type {
   CancelSignResponse,
   ComponentSignRequest,
   ComponentSignResponse,
+  AssemblyRequest,
+  AssemblyResponse,
   GuardedAssemblyRequest,
   GuardedAssemblyResponse,
   BoundedComponentRequest,
@@ -422,6 +424,11 @@ describe("signer API contract fixtures", () => {
 
     const assemblyResp = fixture("guarded_assembly_response.json") as GuardedAssemblyResponse;
     assert.equal(assemblyResp.signed_group.length, 2);
+
+    const unifiedReq = fixture("assembly_request_mixed.json") as AssemblyRequest;
+    assert.equal(unifiedReq.targets?.[0].kind, "guarded");
+    const unifiedResp = fixture("assembly_response.json") as AssemblyResponse;
+    assert.equal(unifiedResp.signed_group.length, 3);
 
     const boundedComponentReq = fixture("bounded_component_request.json") as BoundedComponentRequest;
     assert.ok(boundedComponentReq.requests[0].auth_address);

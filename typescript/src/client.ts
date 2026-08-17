@@ -48,6 +48,8 @@ import type {
   CancelSignResponse,
   ComponentSignRequest,
   ComponentSignResponse,
+  AssemblyRequest,
+  AssemblyResponse,
   GuardedAssemblyRequest,
   GuardedAssemblyResponse,
   GuardedPassthroughItem,
@@ -1535,7 +1537,44 @@ function validateAssemblyIndex(index: number, groupLen: number, covered: Set<num
   covered.add(index);
 }
 
-function validateGuardedAssemblyRequest(request: GuardedAssemblyRequest): void {
+function guardedAssemblyToUnified(request: GuardedAssemblyRequest): AssemblyRequest {
+  return {
+    request_id: request.request_id,
+    group_bytes_hex: request.group_bytes_hex,
+    targets: (request.targets || []).map((target) => ({
+      target_index: target.target_index,
+      kind: "guarded",
+      auth_address: target.guarded_account,
+      user_signature: target.user_signature,
+      user_source_request_id: target.user_source_request_id,
+      guarded_runtime_args: target.runtime_args,
+      sentry_signature: target.sentry_signature,
+      sentry_source_request_id: target.sentry_source_request_id,
+    })),
+    passthrough: request.passthrough,
+  };
+}
+
+function boundedAssemblyToUnified(request: BoundedAssemblyRequest): AssemblyRequest {
+  return {
+    request_id: request.request_id,
+    group_bytes_hex: request.group_bytes_hex,
+    targets: request.targets.map((target) => ({
+      target_index: target.target_index,
+      kind: "bounded-sentry",
+      auth_address: target.bounded_account,
+      base_signatures: target.base_signatures,
+      bounded_runtime_args: target.runtime_args,
+      assembly_receipt: target.assembly_receipt,
+      base_source_request_id: target.base_source_request_id,
+      sentry_signature: target.sentry_signature,
+      sentry_source_request_id: target.sentry_source_request_id,
+    })),
+    passthrough: request.passthrough,
+  };
+}
+
+function validateAssemblyRequest(request: AssemblyRequest): void {
   validateSignRequestId(request.request_id || "");
   validateComponentGroupBytes(request.group_bytes_hex);
   const targets = request.targets || [];
@@ -1548,16 +1587,28 @@ function validateGuardedAssemblyRequest(request: GuardedAssemblyRequest): void {
   targets.forEach((target, index) => {
     const item = index + 1;
     validateAssemblyIndex(target.target_index, request.group_bytes_hex.length, covered);
-    if (!target.guarded_account) {
-      throw new SignerError(`target ${item}: guarded_account is required`);
+    if (!target.auth_address || !target.sentry_signature) {
+      throw new SignerError(`target ${item}: auth_address and sentry_signature are required`);
     }
-    if (!target.user_signature) {
-      throw new SignerError(`target ${item}: user_signature is required`);
+    if (target.kind === "guarded") {
+      if (!target.user_signature) {
+        throw new SignerError(`target ${item}: user_signature is required for guarded target`);
+      }
+      if (target.base_signatures?.length || target.bounded_runtime_args || target.assembly_receipt || target.base_source_request_id) {
+        throw new SignerError(`target ${item}: bounded authorization material is forbidden for guarded target`);
+      }
+      validateSignRequestId(target.user_source_request_id || "");
+    } else if (target.kind === "bounded-sentry") {
+      if (!target.base_signatures?.length || !target.assembly_receipt) {
+        throw new SignerError(`target ${item}: base_signatures and assembly_receipt are required for bounded-sentry target`);
+      }
+      if (target.user_signature || target.user_source_request_id || target.guarded_runtime_args?.length) {
+        throw new SignerError(`target ${item}: guarded authorization material is forbidden for bounded-sentry target`);
+      }
+      validateSignRequestId(target.base_source_request_id || "");
+    } else {
+      throw new SignerError(`target ${item}: invalid kind`);
     }
-    if (!target.sentry_signature) {
-      throw new SignerError(`target ${item}: sentry_signature is required`);
-    }
-    validateSignRequestId(target.user_source_request_id || "");
     validateSignRequestId(target.sentry_source_request_id || "");
   });
 
@@ -1641,44 +1692,6 @@ function validateBoundedComponentResponse(response: BoundedComponentResponse): v
       throw new SignerError(`component ${index + 1} is incomplete`);
     }
   });
-}
-
-function validateBoundedAssemblyRequest(request: BoundedAssemblyRequest): void {
-  validateSignRequestId(request.request_id || "");
-  validateComponentGroupBytes(request.group_bytes_hex);
-  if (!request.targets?.length) {
-    throw new SignerError("targets array is empty");
-  }
-  const covered = new Set<number>();
-  request.targets.forEach((target, index) => {
-    validateAssemblyIndex(target.target_index, request.group_bytes_hex.length, covered);
-    if (
-      !target.bounded_account ||
-      !target.base_signatures?.length ||
-      !target.assembly_receipt ||
-      !target.sentry_signature
-    ) {
-      throw new SignerError(
-        `target ${index + 1}: bounded_account, base_signatures, ` +
-        "assembly_receipt, and sentry_signature are required",
-      );
-    }
-  });
-  for (const [index, item] of (request.passthrough || []).entries()) {
-    validateAssemblyIndex(item.target_index, request.group_bytes_hex.length, covered);
-    if (!item.signed_txn_hex) {
-      throw new SignerError(`passthrough ${index + 1}: signed_txn_hex is required`);
-    }
-  }
-  for (let index = 0; index < request.group_bytes_hex.length; index++) {
-    if (!covered.has(index)) {
-      throw new SignerError(`group position ${index} is not covered by targets or passthrough`);
-    }
-  }
-}
-
-function validateBoundedAssemblyResponse(response: BoundedAssemblyResponse): void {
-  validateGuardedAssemblyResponse(response);
 }
 
 /**
@@ -3926,7 +3939,15 @@ export class SignerClient {
     request: GuardedAssemblyRequest,
     options?: { signal?: AbortSignal },
   ): Promise<GuardedAssemblyResponse> {
-    const requestBody: GuardedAssemblyRequest = {
+    const response = await this.requestAssemble(guardedAssemblyToUnified(request), options);
+    return response;
+  }
+
+  async requestAssemble(
+    request: AssemblyRequest,
+    options?: { signal?: AbortSignal },
+  ): Promise<AssemblyResponse> {
+    const requestBody: AssemblyRequest = {
       ...request,
       request_id: request.request_id || newSignRequestId(),
       passthrough: request.passthrough?.map(({ target_index, signed_txn_hex }) => ({
@@ -3935,10 +3956,10 @@ export class SignerClient {
       })),
     };
     try {
-      validateGuardedAssemblyRequest(requestBody);
+      validateAssemblyRequest(requestBody);
     } catch (error) {
       throw new SignerError(
-        `invalid guarded assembly request: ${error instanceof Error ? error.message : String(error)}`
+        `invalid assembly request: ${error instanceof Error ? error.message : String(error)}`
       );
     }
 
@@ -3954,7 +3975,7 @@ export class SignerClient {
     }
 
     if (response.status === 403) {
-      throw await this.forbiddenRejectedError(response, "Guarded assembly request rejected");
+      throw await this.forbiddenRejectedError(response, "Assembly request rejected");
     }
 
     if (response.status === 503) {
@@ -3962,12 +3983,12 @@ export class SignerClient {
     }
 
     if (response.status !== 200) {
-      throw await this.signerHTTPError(response, `Guarded assembly failed: HTTP ${response.status}`);
+      throw await this.signerHTTPError(response, `Assembly failed: HTTP ${response.status}`);
     }
 
-    let data: GuardedAssemblyResponse & { error?: string };
+    let data: AssemblyResponse & { error?: string };
     try {
-      data = (await response.json()) as GuardedAssemblyResponse & { error?: string };
+      data = (await response.json()) as AssemblyResponse & { error?: string };
     } catch {
       throw new SignerError("Server returned invalid JSON");
     }
@@ -3980,7 +4001,7 @@ export class SignerClient {
       validateGuardedAssemblyResponse(data);
     } catch (error) {
       throw new SignerError(
-        `invalid guarded assembly response: ${error instanceof Error ? error.message : String(error)}`
+        `invalid assembly response: ${error instanceof Error ? error.message : String(error)}`
       );
     }
 
@@ -4064,57 +4085,7 @@ export class SignerClient {
     request: BoundedAssemblyRequest,
     options?: { signal?: AbortSignal },
   ): Promise<BoundedAssemblyResponse> {
-    const requestBody: BoundedAssemblyRequest = {
-      ...request,
-      request_id: request.request_id || newSignRequestId(),
-      passthrough: request.passthrough?.map(({ target_index, signed_txn_hex }) => ({
-        target_index,
-        signed_txn_hex,
-      })),
-    };
-    try {
-      validateBoundedAssemblyRequest(requestBody);
-    } catch (error) {
-      throw new SignerError(
-        `invalid bounded assembly request: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-
-    const response = await this.fetch("/sign/bounded-assemble", {
-      method: "POST",
-      body: JSON.stringify(requestBody),
-      timeout: this.timeoutFor(GUARDED_ASSEMBLY_TIMEOUT),
-      signal: options?.signal,
-    });
-    if (response.status === 401) throw new AuthenticationError();
-    if (response.status === 400) {
-      throw await this.badRequestError(response);
-    }
-    if (response.status === 403) {
-      throw await this.forbiddenRejectedError(response, "Bounded assembly request rejected");
-    }
-    if (response.status === 503) {
-      throw new SignerUnavailableError(await this.errorMessage(response, "Signer unavailable"));
-    }
-    if (response.status !== 200) {
-      throw await this.signerHTTPError(
-        response,
-        `Bounded assembly failed: HTTP ${response.status}`,
-      );
-    }
-
-    let data: BoundedAssemblyResponse & { error?: string };
-    try {
-      data = (await response.json()) as BoundedAssemblyResponse & { error?: string };
-    } catch {
-      throw new SignerError("Server returned invalid JSON");
-    }
-    if (data.error) throw new SignerError(data.error);
-    validateBoundedAssemblyResponse(data);
-    if (data.request_id !== requestBody.request_id) {
-      throw new SignerError("bounded assembly response request_id does not match request");
-    }
-    return data;
+	return this.requestAssemble(boundedAssemblyToUnified(request), options);
   }
 
   /**

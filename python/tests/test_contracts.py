@@ -18,6 +18,8 @@ from aplanesdk.signer import (
     CancelSignResponse,
     ComponentSignRequest,
     ComponentSignResponse,
+    AssemblyRequest,
+    AssemblyResponse,
     BoundedComponentRequest,
     BoundedComponentResponse,
     BoundedAssemblyRequest,
@@ -411,6 +413,11 @@ def test_sentry_dtos_round_trip_fixtures():
     assert assembly_target.runtime_args == ["aa01", "bb02"]
     assembly_resp = GuardedAssemblyResponse(**fixture("guarded_assembly_response.json"))
     assert len(assembly_resp.signed_group) == 2
+
+    unified_req = AssemblyRequest(**fixture("assembly_request_mixed.json"))
+    assert unified_req.targets[0]["kind"] == "guarded"
+    unified_resp = AssemblyResponse(**fixture("assembly_response.json"))
+    assert len(unified_resp.signed_group) == 3
 
     bounded_component_req = BoundedComponentRequest(**fixture("bounded_component_request.json"))
     assert bounded_component_req.requests[0]["auth_address"]

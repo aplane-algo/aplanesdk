@@ -103,6 +103,24 @@ type BoundedAssemblyResponse struct {
 	SignedGroup []string `json:"signed_group"`
 }
 
+func (r BoundedAssemblyRequest) AssemblyRequest() AssemblyRequest {
+	targets := make([]AssemblyTarget, 0, len(r.Targets))
+	for _, target := range r.Targets {
+		targets = append(targets, AssemblyTarget{
+			TargetIndex: target.TargetIndex, Kind: AssemblyTargetKindBoundedSentry,
+			AuthAddress: target.BoundedAccount, BaseSignatures: target.BaseSignatures,
+			BoundedRuntimeArgs: target.RuntimeArgs, AssemblyReceipt: target.AssemblyReceipt,
+			BaseSourceRequestID: target.BaseSourceRequestID, SentrySignature: target.SentrySignature,
+			SentrySourceRequestID: target.SentrySourceRequestID,
+		})
+	}
+	passthrough := make([]AssemblyPassthroughItem, 0, len(r.Passthrough))
+	for _, item := range r.Passthrough {
+		passthrough = append(passthrough, AssemblyPassthroughItem(item))
+	}
+	return AssemblyRequest{RequestID: r.RequestID, GroupBytesHex: r.GroupBytesHex, Targets: targets, Passthrough: passthrough}
+}
+
 // Validate checks the bounded assembly response shape.
 func (r BoundedAssemblyResponse) Validate() error {
 	if r.RequestID == "" {

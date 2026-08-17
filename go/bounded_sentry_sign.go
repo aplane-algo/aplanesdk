@@ -202,30 +202,34 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 	}
 	passthrough = append(passthrough, dummies...)
 
-	assemblyTargets := make([]BoundedAssemblyTarget, 0, len(targets))
+	assemblyTargets := make([]AssemblyTarget, 0, len(targets))
 	for _, target := range targets {
 		component := components[target.TargetIndex]
 		sentry, ok := sentrySignatures[target.TargetIndex]
 		if !ok {
 			return nil, fmt.Errorf("missing sentry component signature for target %d", target.TargetIndex)
 		}
-		assemblyTargets = append(assemblyTargets, BoundedAssemblyTarget{
+		assemblyTargets = append(assemblyTargets, AssemblyTarget{
 			TargetIndex:           target.TargetIndex,
-			BoundedAccount:        target.GuardedAccount,
+			Kind:                  AssemblyTargetKindBoundedSentry,
+			AuthAddress:           target.GuardedAccount,
 			BaseSignatures:        append([]string(nil), component.BaseSignatures...),
-			RuntimeArgs:           cloneStringMap(component.RuntimeArgs),
+			BoundedRuntimeArgs:    cloneStringMap(component.RuntimeArgs),
 			AssemblyReceipt:       component.AssemblyReceipt,
 			BaseSourceRequestID:   componentResp.RequestID,
 			SentrySignature:       sentry.signature,
 			SentrySourceRequestID: sentry.requestID,
 		})
 	}
-
-	assemblyResp, err := opts.UserClient.RequestBoundedAssembleWithContext(ctx, BoundedAssemblyRequest{
+	assemblyPassthrough := make([]AssemblyPassthroughItem, 0, len(passthrough))
+	for _, item := range passthrough {
+		assemblyPassthrough = append(assemblyPassthrough, AssemblyPassthroughItem(item))
+	}
+	assemblyResp, err := opts.UserClient.RequestAssembleWithContext(ctx, AssemblyRequest{
 		RequestID:     opts.AssemblyRequestID,
 		GroupBytesHex: append([]string(nil), componentResp.Transactions...),
 		Targets:       assemblyTargets,
-		Passthrough:   passthrough,
+		Passthrough:   assemblyPassthrough,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("bounded-sentry assembly failed: %w", err)
@@ -233,7 +237,7 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 	if err := verifyAssembledGroup(componentResp.Transactions, assemblyResp.SignedGroup); err != nil {
 		return nil, err
 	}
-	result.BoundedAssemblyResponse = assemblyResp
+	result.BoundedAssemblyResponse = &BoundedAssemblyResponse{RequestID: assemblyResp.RequestID, SignedGroup: assemblyResp.SignedGroup}
 	result.SignedGroup = append([]string(nil), assemblyResp.SignedGroup...)
 	return result, nil
 }

@@ -758,15 +758,27 @@ func (c *SignerClient) RequestGuardedAssemble(req GuardedAssemblyRequest) (*Guar
 // RequestGuardedAssembleWithContext sends a guarded transaction assembly
 // request to /sign/assemble.
 func (c *SignerClient) RequestGuardedAssembleWithContext(ctx context.Context, reqBody GuardedAssemblyRequest) (*GuardedAssemblyResponse, error) {
+	result, err := c.RequestAssembleWithContext(ctx, reqBody.AssemblyRequest())
+	if err != nil {
+		return nil, err
+	}
+	return &GuardedAssemblyResponse{RequestID: result.RequestID, SignedGroup: result.SignedGroup}, nil
+}
+
+func (c *SignerClient) RequestAssemble(req AssemblyRequest) (*AssemblyResponse, error) {
+	return c.RequestAssembleWithContext(context.Background(), req)
+}
+
+func (c *SignerClient) RequestAssembleWithContext(ctx context.Context, reqBody AssemblyRequest) (*AssemblyResponse, error) {
 	if reqBody.RequestID == "" {
 		requestID, err := newSignRequestID()
 		if err != nil {
-			return nil, fmt.Errorf("failed to create guarded assembly request ID: %w", err)
+			return nil, fmt.Errorf("failed to create assembly request ID: %w", err)
 		}
 		reqBody.RequestID = requestID
 	}
 	if err := reqBody.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid guarded assembly request: %w", err)
+		return nil, fmt.Errorf("invalid assembly request: %w", err)
 	}
 
 	jsonBody, err := json.Marshal(reqBody)
@@ -803,12 +815,12 @@ func (c *SignerClient) RequestGuardedAssembleWithContext(ctx context.Context, re
 		return nil, signerHTTPError(resp)
 	}
 
-	var assemblyResp GuardedAssemblyResponse
+	var assemblyResp AssemblyResponse
 	if err := json.NewDecoder(resp.Body).Decode(&assemblyResp); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 	if err := assemblyResp.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid guarded assembly response: %w", err)
+		return nil, fmt.Errorf("invalid assembly response: %w", err)
 	}
 	return &assemblyResp, nil
 }

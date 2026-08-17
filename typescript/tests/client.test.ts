@@ -1294,7 +1294,8 @@ describe("SignerClient", () => {
       assert.equal(mockFetch.mock.calls[0][0], "http://localhost:11270/sign/assemble");
       const body = JSON.parse(mockFetch.mock.calls[0][1].body);
       assert.match(body.request_id, /^sdk-/);
-      assert.equal(body.targets[0].guarded_account, "GUARDED");
+      assert.equal(body.targets[0].kind, "guarded");
+      assert.equal(body.targets[0].auth_address, "GUARDED");
     });
 
     it("rejects guarded assembly requests with missing coverage before fetch", async () => {
@@ -1369,7 +1370,7 @@ describe("SignerClient", () => {
       assert.equal(component.mutations?.originalCount, 1);
       assert.deepEqual(assembly.signed_group, ["signed"]);
       assert.equal(mockFetch.mock.calls[1][0], "http://localhost:11270/sign/bounded-component");
-      assert.equal(mockFetch.mock.calls[2][0], "http://localhost:11270/sign/bounded-assemble");
+      assert.equal(mockFetch.mock.calls[2][0], "http://localhost:11270/sign/assemble");
     });
 
     it("cancels bounded component approval after timeout", async () => {

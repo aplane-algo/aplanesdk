@@ -529,6 +529,46 @@ class ComponentSignResponse:
     component_key: str = ""
 
 
+ASSEMBLY_TARGET_KIND_GUARDED = "guarded"
+ASSEMBLY_TARGET_KIND_BOUNDED_SENTRY = "bounded-sentry"
+
+
+@dataclass
+class AssemblyTarget:
+    """One discriminated target for /sign/assemble."""
+
+    target_index: int
+    kind: str
+    auth_address: str
+    sentry_signature: str
+    user_signature: str = ""
+    user_source_request_id: str = ""
+    guarded_runtime_args: Optional[List[str]] = None
+    base_signatures: Optional[List[str]] = None
+    bounded_runtime_args: Optional[Dict[str, str]] = None
+    assembly_receipt: str = ""
+    base_source_request_id: str = ""
+    sentry_source_request_id: str = ""
+
+
+@dataclass
+class AssemblyRequest:
+    """Shared request payload for /sign/assemble."""
+
+    group_bytes_hex: List[str]
+    request_id: str = ""
+    targets: Optional[List[AssemblyTarget]] = None
+    passthrough: Optional[List["GuardedPassthroughItem"]] = None
+
+
+@dataclass
+class AssemblyResponse:
+    """Shared response payload from /sign/assemble."""
+
+    request_id: str
+    signed_group: List[str]
+
+
 @dataclass
 class GuardedAssemblyTarget:
     """One guarded-account position for /sign/assemble"""
@@ -1696,7 +1736,44 @@ def _validate_component_sign_response(data: Dict[str, Any]) -> None:
             raise ValueError(f"signature {i}: signature_scheme is required")
 
 
-def _validate_guarded_assembly_request(data: Dict[str, Any]) -> None:
+def _guarded_assembly_to_unified(data: Dict[str, Any]) -> Dict[str, Any]:
+    converted = dict(data)
+    converted["targets"] = [
+        {
+            "target_index": target.get("target_index"),
+            "kind": ASSEMBLY_TARGET_KIND_GUARDED,
+            "auth_address": target.get("guarded_account", ""),
+            "user_signature": target.get("user_signature", ""),
+            "user_source_request_id": target.get("user_source_request_id", ""),
+            "guarded_runtime_args": target.get("runtime_args"),
+            "sentry_signature": target.get("sentry_signature", ""),
+            "sentry_source_request_id": target.get("sentry_source_request_id", ""),
+        }
+        for target in data.get("targets") or []
+    ]
+    return converted
+
+
+def _bounded_assembly_to_unified(data: Dict[str, Any]) -> Dict[str, Any]:
+    converted = dict(data)
+    converted["targets"] = [
+        {
+            "target_index": target.get("target_index"),
+            "kind": ASSEMBLY_TARGET_KIND_BOUNDED_SENTRY,
+            "auth_address": target.get("bounded_account", ""),
+            "base_signatures": target.get("base_signatures"),
+            "bounded_runtime_args": target.get("runtime_args"),
+            "assembly_receipt": target.get("assembly_receipt", ""),
+            "base_source_request_id": target.get("base_source_request_id", ""),
+            "sentry_signature": target.get("sentry_signature", ""),
+            "sentry_source_request_id": target.get("sentry_source_request_id", ""),
+        }
+        for target in data.get("targets") or []
+    ]
+    return converted
+
+
+def _validate_assembly_request(data: Dict[str, Any]) -> None:
     _validate_sign_request_id(str(data.get("request_id", "")))
     group_bytes_hex = data.get("group_bytes_hex") or []
     targets = data.get("targets") or []
@@ -1708,13 +1785,25 @@ def _validate_guarded_assembly_request(data: Dict[str, Any]) -> None:
     covered = set()
     for i, target in enumerate(targets, start=1):
         _validate_assembly_index(target.get("target_index"), len(group_bytes_hex), covered)
-        if not target.get("guarded_account"):
-            raise ValueError(f"target {i}: guarded_account is required")
-        if not target.get("user_signature"):
-            raise ValueError(f"target {i}: user_signature is required")
-        if not target.get("sentry_signature"):
-            raise ValueError(f"target {i}: sentry_signature is required")
-        _validate_sign_request_id(str(target.get("user_source_request_id", "")))
+        if not target.get("auth_address") or not target.get("sentry_signature"):
+            raise ValueError(f"target {i}: auth_address and sentry_signature are required")
+        kind = target.get("kind")
+        if kind == ASSEMBLY_TARGET_KIND_GUARDED:
+            if not target.get("user_signature"):
+                raise ValueError(f"target {i}: user_signature is required for guarded target")
+            if (target.get("base_signatures") or target.get("bounded_runtime_args")
+                    or target.get("assembly_receipt") or target.get("base_source_request_id")):
+                raise ValueError(f"target {i}: bounded authorization material is forbidden for guarded target")
+            _validate_sign_request_id(str(target.get("user_source_request_id", "")))
+        elif kind == ASSEMBLY_TARGET_KIND_BOUNDED_SENTRY:
+            if not target.get("base_signatures") or not target.get("assembly_receipt"):
+                raise ValueError(f"target {i}: base_signatures and assembly_receipt are required for bounded-sentry target")
+            if (target.get("user_signature") or target.get("user_source_request_id")
+                    or target.get("guarded_runtime_args")):
+                raise ValueError(f"target {i}: guarded authorization material is forbidden for bounded-sentry target")
+            _validate_sign_request_id(str(target.get("base_source_request_id", "")))
+        else:
+            raise ValueError(f"target {i}: invalid kind")
         _validate_sign_request_id(str(target.get("sentry_source_request_id", "")))
 
     for i, item in enumerate(passthrough, start=1):
@@ -1725,6 +1814,10 @@ def _validate_guarded_assembly_request(data: Dict[str, Any]) -> None:
     for index in range(len(group_bytes_hex)):
         if index not in covered:
             raise ValueError(f"group position {index} is not covered by targets or passthrough")
+
+
+def _validate_guarded_assembly_request(data: Dict[str, Any]) -> None:
+    _validate_assembly_request(_guarded_assembly_to_unified(data))
 
 
 def _validate_guarded_assembly_response(data: Dict[str, Any]) -> None:
@@ -1805,33 +1898,7 @@ def _validate_bounded_component_response(data: Dict[str, Any]) -> None:
 
 
 def _validate_bounded_assembly_request(data: Dict[str, Any]) -> None:
-    _validate_sign_request_id(str(data.get("request_id", "")))
-    group_bytes_hex = data.get("group_bytes_hex") or []
-    targets = data.get("targets") or []
-    passthrough = data.get("passthrough") or []
-    _validate_component_group_bytes(group_bytes_hex)
-    if not targets:
-        raise ValueError("targets array is empty")
-    covered: set[int] = set()
-    for index, target in enumerate(targets, start=1):
-        _validate_assembly_index(target.get("target_index"), len(group_bytes_hex), covered)
-        if (
-            not target.get("bounded_account")
-            or not target.get("base_signatures")
-            or not target.get("assembly_receipt")
-            or not target.get("sentry_signature")
-        ):
-            raise ValueError(
-                f"target {index}: bounded_account, base_signatures, "
-                "assembly_receipt, and sentry_signature are required"
-            )
-    for index, item in enumerate(passthrough, start=1):
-        _validate_assembly_index(item.get("target_index"), len(group_bytes_hex), covered)
-        if not item.get("signed_txn_hex"):
-            raise ValueError(f"passthrough {index}: signed_txn_hex is required")
-    for index in range(len(group_bytes_hex)):
-        if index not in covered:
-            raise ValueError(f"group position {index} is not covered by targets or passthrough")
+    _validate_assembly_request(_bounded_assembly_to_unified(data))
 
 
 def _validate_bounded_assembly_response(data: Dict[str, Any]) -> None:
@@ -4105,12 +4172,25 @@ class SignerClient:
         self,
         request: Any,
     ) -> GuardedAssemblyResponse:
-        """
-        Send a raw guarded transaction assembly request to /sign/assemble.
-        """
         request_body = _compact_payload(request)
         if not isinstance(request_body, dict):
             raise ValueError("guarded assembly request must be a mapping or dataclass")
+        response = self.request_assemble(_guarded_assembly_to_unified(request_body))
+        return GuardedAssemblyResponse(
+            request_id=response.request_id,
+            signed_group=response.signed_group,
+        )
+
+    def request_assemble(
+        self,
+        request: Any,
+    ) -> AssemblyResponse:
+        """
+        Send a discriminated transaction assembly request to /sign/assemble.
+        """
+        request_body = _compact_payload(request)
+        if not isinstance(request_body, dict):
+            raise ValueError("assembly request must be a mapping or dataclass")
         if request_body.get("passthrough"):
             request_body["passthrough"] = [
                 {
@@ -4122,9 +4202,9 @@ class SignerClient:
         if not request_body.get("request_id"):
             request_body["request_id"] = _new_sign_request_id()
         try:
-            _validate_guarded_assembly_request(request_body)
+            _validate_assembly_request(request_body)
         except ValueError as e:
-            raise ValueError(f"invalid guarded assembly request: {e}") from e
+            raise ValueError(f"invalid assembly request: {e}") from e
 
         try:
             resp = self.session.post(
@@ -4139,7 +4219,7 @@ class SignerClient:
             raise AuthenticationError("Invalid or missing token")
 
         if resp.status_code == 403:
-            raise self._forbidden_rejected_error(resp, "Guarded assembly request rejected")
+            raise self._forbidden_rejected_error(resp, "Assembly request rejected")
 
         if resp.status_code == 503:
             raise SignerUnavailableError(self._error_message(resp, "Signer unavailable"))
@@ -4147,7 +4227,7 @@ class SignerClient:
         if resp.status_code != 200:
             raise self._signer_http_error(
                 resp,
-                f"Guarded assembly failed: HTTP {resp.status_code}",
+                f"Assembly failed: HTTP {resp.status_code}",
             )
 
         data = self._safe_json(resp)
@@ -4156,9 +4236,11 @@ class SignerClient:
         try:
             _validate_guarded_assembly_response(data)
         except ValueError as e:
-            raise SignerError(f"invalid guarded assembly response: {e}") from e
+            raise SignerError(f"invalid assembly response: {e}") from e
+        if data["request_id"] != request_body["request_id"]:
+            raise SignerError("assembly response request_id does not match request")
 
-        return GuardedAssemblyResponse(
+        return AssemblyResponse(
             request_id=data["request_id"],
             signed_group=data.get("signed_group", []),
         )
@@ -4237,53 +4319,10 @@ class SignerClient:
         request_body = _compact_payload(request)
         if not isinstance(request_body, dict):
             raise ValueError("bounded assembly request must be a mapping or dataclass")
-        if request_body.get("passthrough"):
-            request_body["passthrough"] = [
-                {
-                    "target_index": item["target_index"],
-                    "signed_txn_hex": item["signed_txn_hex"],
-                }
-                for item in request_body["passthrough"]
-            ]
-        if not request_body.get("request_id"):
-            request_body["request_id"] = _new_sign_request_id()
-        try:
-            _validate_bounded_assembly_request(request_body)
-        except ValueError as e:
-            raise ValueError(f"invalid bounded assembly request: {e}") from e
-
-        try:
-            resp = self.session.post(
-                f"{self.base_url}/sign/bounded-assemble",
-                json=request_body,
-                timeout=self._timeout_for(GUARDED_ASSEMBLY_TIMEOUT),
-            )
-        except requests.RequestException as e:
-            raise SignerUnavailableError(f"Failed to connect: {e}")
-
-        if resp.status_code == 401:
-            raise AuthenticationError("Invalid or missing token")
-        if resp.status_code == 403:
-            raise self._forbidden_rejected_error(resp, "Bounded assembly request rejected")
-        if resp.status_code == 503:
-            raise SignerUnavailableError(self._error_message(resp, "Signer unavailable"))
-        if resp.status_code == 400:
-            raise self._bad_request_error(resp)
-        if resp.status_code != 200:
-            raise self._signer_http_error(resp, f"Bounded assembly failed: HTTP {resp.status_code}")
-
-        data = self._safe_json(resp)
-        if data.get("error"):
-            raise SignerError(data["error"])
-        try:
-            _validate_bounded_assembly_response(data)
-        except ValueError as e:
-            raise SignerError(f"invalid bounded assembly response: {e}") from e
-        if data["request_id"] != request_body["request_id"]:
-            raise SignerError("bounded assembly response request_id does not match request")
+        response = self.request_assemble(_bounded_assembly_to_unified(request_body))
         return BoundedAssemblyResponse(
-            request_id=data["request_id"],
-            signed_group=list(data.get("signed_group") or []),
+            request_id=response.request_id,
+            signed_group=response.signed_group,
         )
 
     def admin_sync_sentry_references(

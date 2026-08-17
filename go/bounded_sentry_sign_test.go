@@ -57,8 +57,8 @@ func TestSignPreparedBoundedSentryGroupOneTarget(t *testing.T) {
 					SignatureScheme: "aplane.falcon1024.v1",
 				}},
 			})
-		case "/sign/bounded-assemble":
-			var req BoundedAssemblyRequest
+		case "/sign/assemble":
+			var req AssemblyRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("decode bounded assembly request: %v", err)
 			}
@@ -66,7 +66,7 @@ func TestSignPreparedBoundedSentryGroupOneTarget(t *testing.T) {
 				req.Targets[0].SentrySignature != "sentry-sig" {
 				t.Fatalf("bounded assembly targets = %+v", req.Targets)
 			}
-			json.NewEncoder(w).Encode(BoundedAssemblyResponse{
+			json.NewEncoder(w).Encode(AssemblyResponse{
 				RequestID: req.RequestID, SignedGroup: signedGroupFor(t, req.GroupBytesHex),
 			})
 		default:
@@ -175,12 +175,12 @@ func TestSignPreparedBoundedSentryGroupDeclaresNativePQPrimary(t *testing.T) {
 			})
 		case "/sign":
 			json.NewEncoder(w).Encode(GroupSignResponse{Signed: signedGroupFor(t, frozenGroup)})
-		case "/sign/bounded-assemble":
-			var req BoundedAssemblyRequest
+		case "/sign/assemble":
+			var req AssemblyRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("decode bounded assembly request: %v", err)
 			}
-			json.NewEncoder(w).Encode(BoundedAssemblyResponse{
+			json.NewEncoder(w).Encode(AssemblyResponse{
 				RequestID: req.RequestID, SignedGroup: signedGroupFor(t, req.GroupBytesHex),
 			})
 		default:

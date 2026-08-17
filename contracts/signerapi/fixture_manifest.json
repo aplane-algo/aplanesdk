@@ -7,6 +7,8 @@
     "admin_generate_response_generic.json",
     "admin_sync_sentries_request.json",
     "admin_sync_sentries_response.json",
+    "assembly_request_mixed.json",
+    "assembly_response.json",
     "cancel_sign_request.json",
     "cancel_sign_response_not_found.json",
     "cancel_sign_response_success.json",
