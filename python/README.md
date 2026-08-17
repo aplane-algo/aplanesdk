@@ -407,27 +407,32 @@ rekey targets. Guarded account keys must be signed through the guarded flow.
 Low-level endpoint wrappers are available:
 
 ```python
-user_part = user_client.request_component_sign(ComponentSignRequest(
-    role=COMPONENT_SIGN_ROLE_USER,
-    component_key="GUARDED_ACCOUNT_ADDRESS",
+user_part = user_client.request_components(ComponentRequest(
     group_bytes_hex=["5458..."],
-    target_indices=[0],
+    targets=[{
+        "target_index": 0,
+        "kind": COMPONENT_TARGET_KIND_USER,
+        "auth_address": "GUARDED_ACCOUNT_ADDRESS",
+    }],
 ))
 
-sentry_part = sentry_client.request_component_sign(ComponentSignRequest(
-    role=COMPONENT_SIGN_ROLE_SENTRY,
-    component_key="SENTRY_COMPONENT_SELECTOR",
+sentry_part = sentry_client.request_components(ComponentRequest(
     group_bytes_hex=["5458..."],
-    target_indices=[0],
+    targets=[{
+        "target_index": 0,
+        "kind": COMPONENT_TARGET_KIND_SENTRY,
+        "component_key": "SENTRY_COMPONENT_SELECTOR",
+    }],
 ))
 
-assembled = user_client.request_guarded_assemble(GuardedAssemblyRequest(
+assembled = user_client.request_assemble(AssemblyRequest(
     group_bytes_hex=["5458..."],
-    targets=[GuardedAssemblyTarget(
+    targets=[AssemblyTarget(
         target_index=0,
-        guarded_account="GUARDED_ACCOUNT_ADDRESS",
-        user_signature=user_part.signatures[0].signature,
-        sentry_signature=sentry_part.signatures[0].signature,
+        kind=ASSEMBLY_TARGET_KIND_GUARDED,
+        auth_address="GUARDED_ACCOUNT_ADDRESS",
+        user_signature=user_part.components[0]["signature"],
+        sentry_signature=sentry_part.components[0]["signature"],
     )],
 ))
 ```
@@ -473,10 +478,11 @@ result = sign_prepared_guarded_group(
 signed_group = result.signed_group
 ```
 
-The user signer first approves and freezes the complete canonical group through
-`request_bounded_component()`. Only then does the SDK request sentry signatures
-over those exact bytes, sign any ordinary positions, and call
-`request_bounded_assemble()`. Before signing anything, the SDK compares the
+The SDK first freezes the complete canonical group through `/plan`; the user
+signer then approves those bytes through `request_components()` with
+`kind="bounded-base"`. Only then does the SDK request sentry signatures over
+the same bytes, sign ordinary positions, and call `request_assemble()`. Before
+signing anything, the SDK compares the
 signer-produced plan with the caller's prepared group: only reported fee
 pooling and group-ID assignment are accepted, and appended positions must be
 canonical budget dummies. The returned group must use canonical transaction
@@ -484,16 +490,16 @@ encoding and a group ID recomputed from the presented membership. The SDK also
 verifies ordinary signed positions and every assembled transaction against the
 frozen transaction bytes.
 
-`request_bounded_component()` sends best-effort `/sign/cancel` when its
+`request_components()` sends best-effort `/sign/cancel` when its
 approval-bearing HTTP request times out or disconnects.
-`request_bounded_assemble()` does not open an approval request and is not a
+`request_assemble()` does not open an approval request and is not a
 cancellation handle.
 
 The signer planner owns fee selection, authorization-resource sizing, and any
 reported group mutations for both guarded flows.
 
-Applications that own orchestration can call `request_bounded_component()` and
-`request_bounded_assemble()` directly. Sentry authorization is spend-only in
+Applications that own orchestration can call `request_components()` and
+`request_assemble()` directly. Sentry authorization is spend-only in
 this contract; bounded contract-admin rekeys remain an external `aprekey`
 ceremony and are not completed by the SDK.
 

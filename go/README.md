@@ -367,27 +367,32 @@ is not sufficient for guarded slots.
 Use the low-level methods when your application owns the orchestration:
 
 ```go
-userPart, err := userClient.RequestComponentSign(aplane.ComponentSignRequest{
-	Role:          aplane.ComponentSignRoleUser,
-	ComponentKey:  "GUARDED_ACCOUNT_ADDRESS",
+userPart, err := userClient.RequestComponents(aplane.ComponentRequest{
 	GroupBytesHex: []string{"5458..."},
-	TargetIndices: []int{0},
+	Targets: []aplane.ComponentTarget{{
+		TargetIndex: 0,
+		Kind: aplane.ComponentTargetKindUser,
+		AuthAddress: "GUARDED_ACCOUNT_ADDRESS",
+	}},
 })
 
-sentryPart, err := sentryClient.RequestComponentSign(aplane.ComponentSignRequest{
-	Role:          aplane.ComponentSignRoleSentry,
-	ComponentKey:  "SENTRY_COMPONENT_SELECTOR",
+sentryPart, err := sentryClient.RequestComponents(aplane.ComponentRequest{
 	GroupBytesHex: []string{"5458..."},
-	TargetIndices: []int{0},
+	Targets: []aplane.ComponentTarget{{
+		TargetIndex: 0,
+		Kind: aplane.ComponentTargetKindSentry,
+		ComponentKey: "SENTRY_COMPONENT_SELECTOR",
+	}},
 })
 
-assembled, err := userClient.RequestGuardedAssemble(aplane.GuardedAssemblyRequest{
+assembled, err := userClient.RequestAssemble(aplane.AssemblyRequest{
 	GroupBytesHex: []string{"5458..."},
-	Targets: []aplane.GuardedAssemblyTarget{{
+	Targets: []aplane.AssemblyTarget{{
 		TargetIndex:     0,
-		GuardedAccount:  "GUARDED_ACCOUNT_ADDRESS",
-		UserSignature:   userPart.Signatures[0].Signature,
-		SentrySignature: sentryPart.Signatures[0].Signature,
+		Kind:            aplane.AssemblyTargetKindGuarded,
+		AuthAddress:     "GUARDED_ACCOUNT_ADDRESS",
+		UserSignature:   userPart.Components[0].Signature,
+		SentrySignature: sentryPart.Components[0].Signature,
 	}},
 })
 ```
@@ -412,7 +417,7 @@ signedGroup := result.SignedGroup
 ```
 
 `AssembleGroup` is still the local multi-party concatenation helper. It is not
-the same operation as server-side guarded `RequestGuardedAssemble`.
+the same operation as server-side `RequestAssemble`.
 
 ### Bounded Sentry Accounts
 
@@ -431,10 +436,11 @@ result, err := aplane.SignPreparedGuardedGroup(aplane.PreparedGuardedGroupOption
 signedGroup := result.SignedGroup
 ```
 
-The user signer first approves and freezes the complete canonical group through
-`RequestBoundedComponent`. Only then does the SDK request sentry signatures
-over those exact bytes, sign any ordinary positions, and call
-`RequestBoundedAssemble`. Before signing anything, the SDK compares the
+The SDK first freezes the complete canonical group through `/plan`; the user
+signer then approves those bytes through `RequestComponents` with
+`kind: "bounded-base"`. Only then does the SDK request sentry signatures over
+the same bytes, sign ordinary positions, and call `RequestAssemble`. Before
+signing anything, the SDK compares the
 signer-produced plan with the caller's prepared group: only reported fee
 pooling and group-ID assignment are accepted, and appended positions must be
 canonical budget dummies. The returned group must use canonical transaction
@@ -442,15 +448,15 @@ encoding and a group ID recomputed from the presented membership. The SDK also
 verifies ordinary signed positions and every assembled transaction against the
 frozen transaction bytes.
 
-`RequestBoundedComponentWithContext` sends best-effort `/sign/cancel` when its
-approval-bearing request is canceled or times out. `RequestBoundedAssemble`
+`RequestComponentsWithContext` sends best-effort `/sign/cancel` when its
+approval-bearing request is canceled or times out. `RequestAssemble`
 does not open an approval request and is not a cancellation handle.
 
 The signer planner owns fee selection, authorization-resource sizing, and any
 reported group mutations for both guarded flows.
 
-Applications that own orchestration can call `RequestBoundedComponent` and
-`RequestBoundedAssemble` directly. Sentry authorization is spend-only in this
+Applications that own orchestration can call `RequestComponents` and
+`RequestAssemble` directly. Sentry authorization is spend-only in this
 contract; bounded contract-admin rekeys remain an external `aprekey` ceremony
 and are not completed by the SDK.
 
