@@ -3413,6 +3413,8 @@ class TestLoadClientEndpointRegistry:
             "invalid_token_file_type.yaml",
             "invalid_unknown_field.yaml",
             "invalid_unknown_tag.yaml",
+            "invalid_v2_published_sentries.yaml",
+            "invalid_13_sentry_endpoints.yaml",
         ],
     )
     def test_rejects_shared_invalid_fixtures(self, tmp_path, name):
@@ -3423,15 +3425,24 @@ class TestLoadClientEndpointRegistry:
     @pytest.mark.parametrize(
         "name",
         [
-            "valid_empty_signer_published_sentries.yaml",
             "valid_schema_version_null.yaml",
             "valid_schema_version_zero.yaml",
+            "valid_12_sentry_endpoints.yaml",
         ],
     )
     def test_accepts_shared_edge_fixtures(self, tmp_path, name):
         self._fixture(tmp_path, name)
         registry = load_client_endpoint_registry(str(tmp_path))
-        assert registry.schema_version == 1
+        assert registry.schema_version == 2
+
+    def test_discards_v1_published_sentry_inventory(self, tmp_path):
+        self._fixture(tmp_path, "valid_v1_published_sentries.yaml")
+        registry = load_client_endpoint_registry(str(tmp_path))
+        assert registry.schema_version == 2
+        endpoint = registry.endpoints["sentry-old"]
+        assert endpoint.role == "sentry"
+        assert endpoint.url == "https://sentry.example.com"
+        assert not hasattr(endpoint, "published_sentries")
 
     def test_derives_default_and_alias_token_paths(self, tmp_path):
         (tmp_path / "endpoints.yaml").write_text(

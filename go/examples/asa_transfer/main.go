@@ -11,13 +11,13 @@ Setup:
 
  1. Create data directory: mkdir -p ~/aplane/apclient/.ssh
  2. Copy token: cp /path/to/aplane.token ~/aplane/apclient/
- 3. Generate APlane SSH key: ssh-keygen -t ed25519 -f ~/aplane/apclient/.ssh/id_ed25519 -N ''
+ 3. Generate APlane SSH key: ssh-keygen -t ed25519 -f ~/aplane/apclient/.ssh/id_ed25519 -N ”
  4. Create endpoints.yaml (see below)
  5. Set env: export APCLIENT_DATA=~/aplane/apclient
 
 Example endpoints.yaml (SSH tunnel):
 
-	schema_version: 1
+	schema_version: 2
 	endpoints:
 	  primary:
 	    role: signer

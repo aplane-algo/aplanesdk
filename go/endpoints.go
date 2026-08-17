@@ -23,6 +23,9 @@ const (
 
 	ClientEndpointRoleSigner = "signer"
 	ClientEndpointRoleSentry = "sentry"
+
+	ClientEndpointSchemaVersion = 2
+	MaxClientSentryEndpoints    = 12
 )
 
 // ClientEndpointRegistry stores client-local endpoint profiles.
@@ -34,18 +37,33 @@ type ClientEndpointRegistry struct {
 
 // ClientEndpointConfig describes one signer or sentry connection profile.
 type ClientEndpointConfig struct {
-	Role              string                                   `yaml:"role"`
-	URL               string                                   `yaml:"url"`
-	SignerPort        int                                      `yaml:"signer_port,omitempty"`
-	LocalPort         int                                      `yaml:"local_port,omitempty"`
-	IdentityFile      string                                   `yaml:"identity_file,omitempty"`
-	KnownHostsPath    string                                   `yaml:"known_hosts_path,omitempty"`
-	TokenFile         string                                   `yaml:"token_file,omitempty"`
-	PublishedSentries map[string]ClientEndpointPublishedSentry `yaml:"published_sentries,omitempty"`
+	Role           string `yaml:"role"`
+	URL            string `yaml:"url"`
+	SignerPort     int    `yaml:"signer_port,omitempty"`
+	LocalPort      int    `yaml:"local_port,omitempty"`
+	IdentityFile   string `yaml:"identity_file,omitempty"`
+	KnownHostsPath string `yaml:"known_hosts_path,omitempty"`
+	TokenFile      string `yaml:"token_file,omitempty"`
 }
 
-// ClientEndpointPublishedSentry is endpoint-local sentry discovery metadata.
-type ClientEndpointPublishedSentry struct {
+type clientEndpointRegistryV1 struct {
+	SchemaVersion int                               `yaml:"schema_version"`
+	Default       string                            `yaml:"default,omitempty"`
+	Endpoints     map[string]clientEndpointConfigV1 `yaml:"endpoints,omitempty"`
+}
+
+type clientEndpointConfigV1 struct {
+	Role              string                                     `yaml:"role"`
+	URL               string                                     `yaml:"url"`
+	SignerPort        int                                        `yaml:"signer_port,omitempty"`
+	LocalPort         int                                        `yaml:"local_port,omitempty"`
+	IdentityFile      string                                     `yaml:"identity_file,omitempty"`
+	KnownHostsPath    string                                     `yaml:"known_hosts_path,omitempty"`
+	TokenFile         string                                     `yaml:"token_file,omitempty"`
+	PublishedSentries map[string]clientEndpointPublishedSentryV1 `yaml:"published_sentries,omitempty"`
+}
+
+type clientEndpointPublishedSentryV1 struct {
 	ComponentKey string `yaml:"component_key"`
 	KeyType      string `yaml:"key_type"`
 	LastSeenAt   string `yaml:"last_seen_at,omitempty"`
@@ -54,7 +72,7 @@ type ClientEndpointPublishedSentry struct {
 // LoadClientEndpointRegistry loads and normalizes dataDir/endpoints.yaml.
 func LoadClientEndpointRegistry(dataDir string) (*ClientEndpointRegistry, error) {
 	registry := &ClientEndpointRegistry{
-		SchemaVersion: 1,
+		SchemaVersion: ClientEndpointSchemaVersion,
 		Endpoints:     map[string]ClientEndpointConfig{},
 	}
 	endpointsPath := filepath.Join(dataDir, ClientEndpointsFile)
@@ -69,16 +87,35 @@ func LoadClientEndpointRegistry(dataDir string) (*ClientEndpointRegistry, error)
 		return nil, fmt.Errorf("failed to parse %s: %w", endpointsPath, err)
 	}
 
-	decoder := yaml.NewDecoder(bytes.NewReader(data))
-	decoder.KnownFields(true)
-	if err := decoder.Decode(registry); err != nil {
+	var header struct {
+		SchemaVersion int `yaml:"schema_version"`
+	}
+	if err := yaml.Unmarshal(data, &header); err != nil {
 		return nil, fmt.Errorf("failed to parse %s: %w", endpointsPath, err)
 	}
-	if registry.SchemaVersion == 0 {
-		registry.SchemaVersion = 1
+	if header.SchemaVersion == 0 {
+		header.SchemaVersion = 1
 	}
-	if registry.SchemaVersion != 1 {
-		return nil, fmt.Errorf("%s schema_version = %d, want 1", ClientEndpointsFile, registry.SchemaVersion)
+	switch header.SchemaVersion {
+	case 1:
+		var legacy clientEndpointRegistryV1
+		decoder := yaml.NewDecoder(bytes.NewReader(data))
+		decoder.KnownFields(true)
+		if err := decoder.Decode(&legacy); err != nil {
+			return nil, fmt.Errorf("failed to parse %s: %w", endpointsPath, err)
+		}
+		registry.Default = legacy.Default
+		for alias, endpoint := range legacy.Endpoints {
+			registry.Endpoints[alias] = ClientEndpointConfig{Role: endpoint.Role, URL: endpoint.URL, SignerPort: endpoint.SignerPort, LocalPort: endpoint.LocalPort, IdentityFile: endpoint.IdentityFile, KnownHostsPath: endpoint.KnownHostsPath, TokenFile: endpoint.TokenFile}
+		}
+	case ClientEndpointSchemaVersion:
+		decoder := yaml.NewDecoder(bytes.NewReader(data))
+		decoder.KnownFields(true)
+		if err := decoder.Decode(registry); err != nil {
+			return nil, fmt.Errorf("failed to parse %s: %w", endpointsPath, err)
+		}
+	default:
+		return nil, fmt.Errorf("%s schema_version = %d, want 1 or %d", ClientEndpointsFile, header.SchemaVersion, ClientEndpointSchemaVersion)
 	}
 	if registry.Endpoints == nil {
 		registry.Endpoints = map[string]ClientEndpointConfig{}
@@ -249,9 +286,6 @@ func normalizeClientEndpoint(dataDir, alias string, endpoint ClientEndpointConfi
 		endpoint.IdentityFile = ResolvePath(endpoint.IdentityFile, dataDir)
 		endpoint.KnownHostsPath = ResolvePath(endpoint.KnownHostsPath, dataDir)
 	}
-	if endpoint.Role != ClientEndpointRoleSentry && len(endpoint.PublishedSentries) > 0 {
-		return endpoint, fmt.Errorf("published_sentries are only valid on %q endpoints", ClientEndpointRoleSentry)
-	}
 	return endpoint, nil
 }
 
@@ -306,7 +340,11 @@ func normalizeClientEndpointRoles(registry *ClientEndpointRegistry) error {
 		}
 	}
 	signerAlias := ""
+	sentryCount := 0
 	for alias, endpoint := range registry.Endpoints {
+		if endpoint.Role == ClientEndpointRoleSentry {
+			sentryCount++
+		}
 		if endpoint.Role != ClientEndpointRoleSigner {
 			continue
 		}
@@ -314,6 +352,9 @@ func normalizeClientEndpointRoles(registry *ClientEndpointRegistry) error {
 			return fmt.Errorf("%s may contain at most one %q endpoint (found %q and %q)", ClientEndpointsFile, ClientEndpointRoleSigner, signerAlias, alias)
 		}
 		signerAlias = alias
+	}
+	if sentryCount > MaxClientSentryEndpoints {
+		return fmt.Errorf("%s configures %d sentry endpoints; maximum is %d; remove or consolidate endpoint profiles", ClientEndpointsFile, sentryCount, MaxClientSentryEndpoints)
 	}
 	if signerAlias == "" {
 		if registry.Default != "" {

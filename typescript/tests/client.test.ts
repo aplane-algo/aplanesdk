@@ -3523,6 +3523,8 @@ describe("loadClientEndpointRegistry", () => {
     "invalid_token_file_type.yaml",
     "invalid_unknown_field.yaml",
     "invalid_unknown_tag.yaml",
+    "invalid_v2_published_sentries.yaml",
+    "invalid_13_sentry_endpoints.yaml",
   ]) {
     it(`rejects ${fixture}`, () => {
       const tmpDir = fixtureDir(fixture);
@@ -3535,20 +3537,39 @@ describe("loadClientEndpointRegistry", () => {
   }
 
   for (const fixture of [
-    "valid_empty_signer_published_sentries.yaml",
     "valid_schema_version_null.yaml",
     "valid_schema_version_zero.yaml",
+    "valid_12_sentry_endpoints.yaml",
   ]) {
     it(`accepts ${fixture}`, () => {
       const tmpDir = fixtureDir(fixture);
       try {
         const registry = loadClientEndpointRegistry(tmpDir);
-        assert.equal(registry.schemaVersion, 1);
+        assert.equal(registry.schemaVersion, 2);
       } finally {
         fs.rmSync(tmpDir, { recursive: true });
       }
     });
   }
+
+  it("discards v1 published sentry inventory", () => {
+    const tmpDir = fixtureDir("valid_v1_published_sentries.yaml");
+    try {
+      const registry = loadClientEndpointRegistry(tmpDir);
+      assert.equal(registry.schemaVersion, 2);
+      assert.deepEqual(registry.endpoints["sentry-old"], {
+        role: "sentry",
+        url: "https://sentry.example.com",
+        signerPort: 0,
+        localPort: 0,
+        identityFile: "",
+        knownHostsPath: "",
+        tokenFile: path.join(tmpDir, "tokens", "sentry-old.token"),
+      });
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
 
   it("derives the signer default and alias-based token paths", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-endpoints-"));

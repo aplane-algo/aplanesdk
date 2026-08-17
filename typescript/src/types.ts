@@ -209,13 +209,6 @@ export interface ClientConfig {
   theme: string;
 }
 
-/** Endpoint-local sentry discovery metadata. */
-export interface ClientEndpointPublishedSentry {
-  componentKey: string;
-  keyType: string;
-  lastSeenAt?: string;
-}
-
 /** One signer or sentry connection profile from endpoints.yaml. */
 export interface ClientEndpointConfig {
   role: "signer" | "sentry";
@@ -225,12 +218,11 @@ export interface ClientEndpointConfig {
   identityFile: string;
   knownHostsPath: string;
   tokenFile: string;
-  publishedSentries?: Record<string, ClientEndpointPublishedSentry>;
 }
 
 /** Normalized client-local endpoint registry. */
 export interface ClientEndpointRegistry {
-  schemaVersion: 1;
+  schemaVersion: 2;
   default: string;
   endpoints: Record<string, ClientEndpointConfig>;
 }

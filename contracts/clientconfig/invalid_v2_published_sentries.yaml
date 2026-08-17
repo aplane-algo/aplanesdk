@@ -1,0 +1,6 @@
+schema_version: 2
+endpoints:
+  sentry:
+    role: sentry
+    url: self
+    published_sentries: {}

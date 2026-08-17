@@ -1,0 +1,9 @@
+schema_version: 1
+endpoints:
+  sentry-old:
+    role: sentry
+    url: https://sentry.example.com
+    published_sentries:
+      deadbeef:
+        component_key: LEGACY
+        key_type: legacy

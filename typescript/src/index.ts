@@ -10,7 +10,7 @@
  *     └── endpoints.yaml       # Signer and sentry routing
  *
  * Example endpoints.yaml:
- *     schema_version: 1
+ *     schema_version: 2
  *     endpoints:
  *       primary:
  *         role: signer
@@ -121,7 +121,6 @@ export type {
   GenerateResult,
   ClientConfig,
   ClientEndpointConfig,
-  ClientEndpointPublishedSentry,
   ClientEndpointRegistry,
   FromEnvOptions,
   ConnectSshOptions,

@@ -12,7 +12,7 @@ Data directory (required via APCLIENT_DATA env var or data_dir parameter):
         └── id_ed25519       # SSH key for authentication
 
 Example endpoints.yaml:
-    schema_version: 1
+    schema_version: 2
     endpoints:
       primary:
         role: signer
@@ -356,15 +356,6 @@ class ClientConfig:
 
 
 @dataclass
-class ClientEndpointPublishedSentry:
-    """Endpoint-local sentry discovery metadata."""
-
-    component_key: str
-    key_type: str
-    last_seen_at: str = ""
-
-
-@dataclass
 class ClientEndpointConfig:
     """One signer or sentry connection profile from endpoints.yaml."""
 
@@ -375,14 +366,13 @@ class ClientEndpointConfig:
     identity_file: str = ""
     known_hosts_path: str = ""
     token_file: str = ""
-    published_sentries: Optional[Dict[str, ClientEndpointPublishedSentry]] = None
 
 
 @dataclass
 class ClientEndpointRegistry:
     """Normalized client-local endpoint registry."""
 
-    schema_version: int = 1
+    schema_version: int = 2
     default: str = ""
     endpoints: Dict[str, ClientEndpointConfig] = field(default_factory=dict)
 
@@ -899,7 +889,9 @@ def _is_loopback_endpoint_host(host: str) -> bool:
         return False
 
 
-def _normalize_client_endpoint(data_dir: str, alias: str, raw_value: Any) -> ClientEndpointConfig:
+def _normalize_client_endpoint(
+    data_dir: str, alias: str, raw_value: Any, *, legacy_v1: bool
+) -> ClientEndpointConfig:
     raw = _require_mapping(raw_value, f'endpoint "{alias}"')
     _require_known_fields(
         raw,
@@ -911,7 +903,7 @@ def _normalize_client_endpoint(data_dir: str, alias: str, raw_value: Any) -> Cli
             "identity_file",
             "known_hosts_path",
             "token_file",
-            "published_sentries",
+            *({"published_sentries"} if legacy_v1 else set()),
         },
         f'endpoint "{alias}"',
     )
@@ -964,35 +956,6 @@ def _normalize_client_endpoint(data_dir: str, alias: str, raw_value: Any) -> Cli
         identity_file = _resolve_path(identity_file, data_dir)
         known_hosts_path = _resolve_path(known_hosts_path, data_dir)
 
-    published_sentries = None
-    published_raw = raw.get("published_sentries")
-    if published_raw is not None:
-        published_map = _require_mapping(published_raw, f'endpoint "{alias}" published_sentries')
-        if role != "sentry" and published_map:
-            raise SignerError(
-                f'endpoint "{alias}": published_sentries are only valid on "sentry" endpoints'
-            )
-        published_sentries = {}
-        for public_key, value in published_map.items():
-            published = _require_mapping(value, f'published sentry "{public_key}"')
-            _require_known_fields(
-                published,
-                {"component_key", "key_type", "last_seen_at"},
-                f'published sentry "{public_key}"',
-            )
-            component_key = published.get("component_key")
-            key_type = published.get("key_type")
-            if not isinstance(component_key, str) or not isinstance(key_type, str):
-                raise SignerError(
-                    f'published sentry "{public_key}" requires component_key and key_type'
-                )
-            last_seen_at = _optional_string(published.get("last_seen_at"), "last_seen_at")
-            published_sentries[str(public_key)] = ClientEndpointPublishedSentry(
-                component_key=component_key,
-                key_type=key_type,
-                last_seen_at=last_seen_at.strip(),
-            )
-
     return ClientEndpointConfig(
         role=role,
         url=endpoint_url,
@@ -1001,7 +964,6 @@ def _normalize_client_endpoint(data_dir: str, alias: str, raw_value: Any) -> Cli
         identity_file=identity_file,
         known_hosts_path=known_hosts_path,
         token_file=_resolve_path(token_file, data_dir),
-        published_sentries=published_sentries,
     )
 
 
@@ -1028,9 +990,9 @@ def load_client_endpoint_registry(data_dir: str) -> ClientEndpointRegistry:
         raise SignerError(f"{CLIENT_ENDPOINTS_FILE} schema_version = {schema_version}, want 1")
     if schema_version == 0:
         schema_version = 1
-    if schema_version != 1:
-        raise SignerError(f"{CLIENT_ENDPOINTS_FILE} schema_version = {schema_version}, want 1")
-    registry.schema_version = schema_version
+    if schema_version not in (1, 2):
+        raise SignerError(f"{CLIENT_ENDPOINTS_FILE} schema_version = {schema_version}, want 1 or 2")
+    registry.schema_version = 2
     endpoints_value = raw.get("endpoints")
     if endpoints_value is None:
         endpoints_value = {}
@@ -1040,7 +1002,16 @@ def load_client_endpoint_registry(data_dir: str) -> ClientEndpointRegistry:
             raise SignerError("endpoint aliases must be strings")
         _validate_endpoint_alias(raw_alias)
         registry.endpoints[raw_alias] = _normalize_client_endpoint(
-            data_dir, raw_alias, endpoint_raw
+            data_dir, raw_alias, endpoint_raw, legacy_v1=schema_version == 1
+        )
+
+    sentry_count = sum(
+        endpoint.role == "sentry" for endpoint in registry.endpoints.values()
+    )
+    if sentry_count > 12:
+        raise SignerError(
+            f"{CLIENT_ENDPOINTS_FILE} configures {sentry_count} sentry endpoints; "
+            "maximum is 12; remove or consolidate endpoint profiles"
         )
 
     default = _optional_string(raw.get("default"), "default")
