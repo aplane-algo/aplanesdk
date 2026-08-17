@@ -578,7 +578,29 @@ export interface GuardedAssemblyResponse {
 /** Request payload for /sign/bounded-component. */
 export interface BoundedComponentRequest {
   request_id?: string;
-  requests: SignRequest[];
+  group_bytes_hex: string[];
+  targets: BoundedComponentTarget[];
+  contextual_positions?: ComponentContextPosition[];
+  dummy_positions?: ComponentDummyPosition[];
+}
+
+/** One bounded target in a frozen component-signing group. */
+export interface BoundedComponentTarget {
+  target_index: number;
+  auth_address: string;
+  lsig_args?: Record<string, string>;
+}
+
+/** Authorization-budget context for a non-target original position. */
+export interface ComponentContextPosition {
+  target_index: number;
+  lsig_resources?: SignRequest["lsig_resources"];
+  pq_scheme?: string;
+}
+
+/** One signer-added canonical dummy position in the frozen suffix. */
+export interface ComponentDummyPosition {
+  target_index: number;
 }
 
 /** One user-signer contribution to bounded assembly. */

@@ -1,13 +1,21 @@
 {
   "request_id": "bcmp-contract-1",
-  "requests": [
+  "group_bytes_hex": [
+    "5458a1",
+    "5458a2"
+  ],
+  "targets": [
     {
+      "target_index": 0,
       "auth_address": "BOUNDEDADDR000000000000000000000000000000000000000000000",
-      "txn_bytes_hex": "5458a1",
-      "lsig_args": {"preimage": "aabb"}
-    },
+      "lsig_args": {
+        "preimage": "aabb"
+      }
+    }
+  ],
+  "contextual_positions": [
     {
-      "txn_bytes_hex": "5458a2",
+      "target_index": 1,
       "lsig_resources": {
         "program_bytes": 1800,
         "argument_bytes": 1423,

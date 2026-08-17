@@ -621,8 +621,11 @@ class GuardedAssemblyResponse:
 class BoundedComponentRequest:
     """Request payload for /sign/bounded-component."""
 
-    requests: List[Dict[str, Any]]
+    group_bytes_hex: List[str]
+    targets: List[Dict[str, Any]]
     request_id: str = ""
+    contextual_positions: Optional[List[Dict[str, Any]]] = None
+    dummy_positions: Optional[List[Dict[str, int]]] = None
 
 
 @dataclass
@@ -1835,27 +1838,47 @@ def _validate_guarded_assembly_response(data: Dict[str, Any]) -> None:
 
 def _validate_bounded_component_request(data: Dict[str, Any]) -> None:
     _validate_sign_request_id(str(data.get("request_id", "")))
-    requests_data = data.get("requests") or []
-    if not requests_data:
-        raise ValueError("requests array is empty")
-    sign_count = 0
-    foreign_count = 0
-    for index, item in enumerate(requests_data, start=1):
-        has_auth = bool(item.get("auth_address"))
-        has_txn = bool(item.get("txn_bytes_hex"))
-        has_passthrough = bool(item.get("signed_txn_hex"))
-        if has_passthrough and (has_auth or has_txn):
-            raise ValueError(f"transaction {index}: sign and passthrough fields cannot be mixed")
-        if has_passthrough:
-            raise ValueError("bounded-component does not accept signed passthrough entries")
-        elif has_auth and has_txn:
-            sign_count += 1
-        elif has_txn:
-            foreign_count += 1
-        else:
-            raise ValueError(f"transaction {index}: unsupported request mode")
-    if sign_count == 0 and foreign_count:
-        raise ValueError("no signable transactions")
+    group = data.get("group_bytes_hex") or []
+    targets = data.get("targets") or []
+    context = data.get("contextual_positions") or []
+    dummies = data.get("dummy_positions") or []
+    _validate_component_group_bytes(group)
+    if not targets or len(dummies) > len(group):
+        raise ValueError("targets are required and dummy_positions cannot exceed group length")
+    original_count = len(group) - len(dummies)
+    covered = set()
+    for index, target in enumerate(targets, start=1):
+        target_index = target.get("target_index")
+        if (not isinstance(target_index, int) or target_index < 0
+                or target_index >= original_count or target_index in covered):
+            raise ValueError(f"target {index} has invalid, duplicate, or overlapping target_index")
+        covered.add(target_index)
+        if not target.get("auth_address"):
+            raise ValueError(f"target {index}: auth_address is required")
+    for index, position in enumerate(context, start=1):
+        target_index = position.get("target_index")
+        if (not isinstance(target_index, int) or target_index < 0
+                or target_index >= original_count or target_index in covered):
+            raise ValueError(f"contextual position {index} has invalid, duplicate, or overlapping target_index")
+        covered.add(target_index)
+        resources = position.get("lsig_resources")
+        pq_scheme = position.get("pq_scheme", "")
+        if resources is not None and pq_scheme:
+            raise ValueError(
+                f"contextual position {index} cannot specify both lsig_resources and pq_scheme"
+            )
+        if resources is not None:
+            _require_lsig_resources(resources, f"contextual position {index}")
+        if pq_scheme and pq_scheme != PQ_SCHEME_FALCON1024:
+            raise ValueError(
+                f"contextual position {index} has unsupported pq_scheme {pq_scheme!r}"
+            )
+    for index in range(original_count):
+        if index not in covered:
+            raise ValueError(f"original group position {index} is not covered")
+    for offset, dummy in enumerate(dummies):
+        if dummy.get("target_index") != original_count + offset:
+            raise ValueError(f"dummy position {offset + 1} is not in the contiguous suffix")
 
 
 def _validate_bounded_component_response(data: Dict[str, Any]) -> None:
@@ -5661,10 +5684,9 @@ def sign_prepared_bounded_sentry_group(
     if not targets:
         raise ValueError("prepared group has no bounded-sentry targets")
 
-    component_response = user_client.request_bounded_component(
-        BoundedComponentRequest(requests=requests_data)
-    )
-    planned = _decode_canonical_group(component_response.transactions)
+    plan_response = user_client.plan_requests(requests_data)
+    frozen_group = list(plan_response.get("transactions") or [])
+    planned = _decode_canonical_group(frozen_group)
     if len(planned) < len(prepared):
         raise SignerError(
             f"signer returned {len(planned)} bounded group positions, "
@@ -5673,8 +5695,41 @@ def sign_prepared_bounded_sentry_group(
     _validate_bounded_component_plan(
         [cast(transaction.Transaction, item.transaction) for item in prepared],
         planned,
-        component_response.mutations,
+        plan_response.get("mutations"),
     )
+    target_indices = {target["target_index"] for target in targets}
+    component_targets = []
+    contextual_positions = []
+    for index, request in enumerate(requests_data):
+        if index in target_indices:
+            component_targets.append(
+                {
+                    "target_index": index,
+                    "auth_address": request["auth_address"],
+                    "lsig_args": request.get("lsig_args"),
+                }
+            )
+        else:
+            contextual_positions.append(
+                {
+                    "target_index": index,
+                    "lsig_resources": request.get("lsig_resources"),
+                    "pq_scheme": request.get("pq_scheme", ""),
+                }
+            )
+    component_response = user_client.request_bounded_component(
+        BoundedComponentRequest(
+            group_bytes_hex=frozen_group,
+            targets=component_targets,
+            contextual_positions=contextual_positions or None,
+            dummy_positions=[
+                {"target_index": index}
+                for index in range(len(prepared), len(frozen_group))
+            ] or None,
+        )
+    )
+    if component_response.transactions != frozen_group:
+        raise SignerError("bounded component response changed the frozen group")
     _validate_bounded_target_fees(planned, target_max_fees)
     target_by_index = {target["target_index"]: target for target in targets}
     components: Dict[int, BoundedBaseComponent] = {}
@@ -5717,7 +5772,7 @@ def sign_prepared_bounded_sentry_group(
             ComponentSignRequest(
                 role=COMPONENT_SIGN_ROLE_SENTRY,
                 component_key=group["component_key"],
-                group_bytes_hex=component_response.transactions,
+                group_bytes_hex=frozen_group,
                 target_indices=sorted(group["indices"]),
             )
         )
@@ -5726,7 +5781,7 @@ def sign_prepared_bounded_sentry_group(
 
     primary_response, passthrough = _request_bounded_primary_passthrough(
         user_client,
-        component_response.transactions,
+        frozen_group,
         len(prepared),
         set(target_by_index),
         target_resources,
@@ -5755,12 +5810,12 @@ def sign_prepared_bounded_sentry_group(
     assembly_response = user_client.request_bounded_assemble(
         BoundedAssemblyRequest(
             request_id=assembly_request_id,
-            group_bytes_hex=list(component_response.transactions),
+            group_bytes_hex=list(frozen_group),
             targets=assembly_targets,
             passthrough=passthrough,
         )
     )
-    _verify_bounded_assembled_group(component_response.transactions, assembly_response.signed_group)
+    _verify_bounded_assembled_group(frozen_group, assembly_response.signed_group)
     return GuardedSignResult(
         signed_group=list(assembly_response.signed_group),
         user_component_responses=[],

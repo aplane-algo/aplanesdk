@@ -789,10 +789,8 @@ class TestSpecializedLowLevelEndpoints:
         ) as mock_post, patch.object(client, "_discover_approval_wait"):
             component = client.request_bounded_component(BoundedComponentRequest(
                 request_id="bounded-base-id",
-                requests=[{
-                    "auth_address": "BOUNDED",
-                    "txn_bytes_hex": "5458aa",
-                }],
+                group_bytes_hex=["5458aa"],
+                targets=[{"target_index": 0, "auth_address": "BOUNDED"}],
             ))
             assembly = client.request_bounded_assemble({
                 "request_id": "bounded-assembly-id",
@@ -830,10 +828,8 @@ class TestSpecializedLowLevelEndpoints:
             with pytest.raises(SignerUnavailableError):
                 client.request_bounded_component(BoundedComponentRequest(
                     request_id="bounded-cancel-id",
-                    requests=[{
-                        "auth_address": "BOUNDED",
-                        "txn_bytes_hex": "5458aa",
-                    }],
+                    group_bytes_hex=["5458aa"],
+                    targets=[{"target_index": 0, "auth_address": "BOUNDED"}],
                 ))
 
         assert mock_post.call_args_list[0].args[0].endswith(
@@ -855,10 +851,8 @@ class TestSpecializedLowLevelEndpoints:
             with pytest.raises(KeyNotFoundError):
                 client.request_bounded_component(BoundedComponentRequest(
                     request_id="bounded-not-found",
-                    requests=[{
-                        "auth_address": "BOUNDED",
-                        "txn_bytes_hex": "5458aa",
-                    }],
+                    group_bytes_hex=["5458aa"],
+                    targets=[{"target_index": 0, "auth_address": "BOUNDED"}],
                 ))
 
     def test_bounded_endpoints_surface_200_error_bodies(self):
@@ -870,10 +864,8 @@ class TestSpecializedLowLevelEndpoints:
             with pytest.raises(SignerError, match="bounded failed"):
                 client.request_bounded_component(BoundedComponentRequest(
                     request_id="bounded-base-id",
-                    requests=[{
-                        "auth_address": "BOUNDED",
-                        "txn_bytes_hex": "5458aa",
-                    }],
+                    group_bytes_hex=["5458aa"],
+                    targets=[{"target_index": 0, "auth_address": "BOUNDED"}],
                 ))
 
         with patch.object(client.session, "post", return_value=error_response):
@@ -1354,11 +1346,11 @@ class TestSignGuardedGroup:
         with pytest.raises(SignerError, match="bytes are not canonical"):
             _decode_canonical_group([(b"TX" + noncanonical).hex()])
 
-    def test_bounded_component_rejects_passthrough_and_mixed_flows(self):
-        with pytest.raises(ValueError, match="does not accept signed passthrough"):
+    def test_bounded_component_rejects_incomplete_partition(self):
+        with pytest.raises(ValueError, match="group_bytes_hex is empty"):
             _validate_bounded_component_request({
                 "request_id": "bounded-request",
-                "requests": [{"signed_txn_hex": "abcd"}],
+                "targets": [{"target_index": 0, "auth_address": "BOUNDED"}],
             })
 
         with pytest.raises(ValueError, match="invalid or duplicate target_index"):
@@ -1471,10 +1463,10 @@ class TestSignGuardedGroup:
 
         def bounded_component(req):
             assert isinstance(req, BoundedComponentRequest)
-            assert req.requests[0]["auth_address"] == bounded
+            assert req.targets[0]["auth_address"] == bounded
             return BoundedComponentResponse(
                 request_id="base-id",
-                transactions=[req.requests[0]["txn_bytes_hex"]],
+                transactions=list(req.group_bytes_hex),
                 components=[BoundedBaseComponent(
                     target_index=0,
                     bounded_account=bounded,
@@ -1486,6 +1478,9 @@ class TestSignGuardedGroup:
             )
 
         user.request_bounded_component = MagicMock(side_effect=bounded_component)
+        user.plan_requests = MagicMock(side_effect=lambda requests: {
+            "transactions": [requests[0]["txn_bytes_hex"]],
+        })
         sentry.request_component_sign = MagicMock(return_value=ComponentSignResponse(
             request_id="sentry-id",
             signatures=[ComponentSignature(
@@ -1621,8 +1616,8 @@ class TestSignGuardedGroup:
         ]
 
         def bounded_component(req):
-            assert len(req.requests) == 2
-            captured["primary"] = req.requests[1]
+            assert len(req.targets) == 1
+            assert len(req.contextual_positions) == 1
             return BoundedComponentResponse(
                 request_id="base-id",
                 transactions=planned_hex,
@@ -1643,6 +1638,11 @@ class TestSignGuardedGroup:
             return base64.b64decode(encoded).hex()
 
         user.request_bounded_component = MagicMock(side_effect=bounded_component)
+        user.plan_requests = MagicMock(side_effect=lambda requests: (
+            captured.update(primary=requests[1]) or {
+                "transactions": planned_hex,
+            }
+        ))
         sentry.request_component_sign = MagicMock(return_value=ComponentSignResponse(
             request_id="sentry-id",
             signatures=[ComponentSignature(

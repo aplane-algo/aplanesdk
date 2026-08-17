@@ -420,7 +420,7 @@ def test_sentry_dtos_round_trip_fixtures():
     assert len(unified_resp.signed_group) == 3
 
     bounded_component_req = BoundedComponentRequest(**fixture("bounded_component_request.json"))
-    assert bounded_component_req.requests[0]["auth_address"]
+    assert bounded_component_req.targets[0]["auth_address"]
     bounded_component_data = fixture("bounded_component_response.json")
     bounded_component_resp = BoundedComponentResponse(
         request_id=bounded_component_data["request_id"],

@@ -9,22 +9,69 @@ import "fmt"
 // group and release only the bounded base-signature arguments for its
 // sentry-enabled spend positions.
 type BoundedComponentRequest struct {
-	RequestID string        `json:"request_id,omitempty"`
-	Requests  []SignRequest `json:"requests"`
+	RequestID           string                     `json:"request_id,omitempty"`
+	GroupBytesHex       []string                   `json:"group_bytes_hex"`
+	Targets             []BoundedComponentTarget   `json:"targets"`
+	ContextualPositions []ComponentContextPosition `json:"contextual_positions,omitempty"`
+	DummyPositions      []ComponentDummyPosition   `json:"dummy_positions,omitempty"`
+}
+
+type BoundedComponentTarget struct {
+	TargetIndex int               `json:"target_index"`
+	AuthAddress string            `json:"auth_address"`
+	LsigArgs    map[string]string `json:"lsig_args,omitempty"`
+}
+
+type ComponentContextPosition struct {
+	TargetIndex   int                    `json:"target_index"`
+	LsigResources *LogicSigResourceUsage `json:"lsig_resources,omitempty"`
+	PQScheme      string                 `json:"pq_scheme,omitempty"`
+}
+
+type ComponentDummyPosition struct {
+	TargetIndex int `json:"target_index"`
 }
 
 // Validate checks the bounded component request shape.
 func (r BoundedComponentRequest) Validate() error {
-	if err := GroupSignRequest(r).Validate(); err != nil {
+	if err := validateSignRequestID(r.RequestID); err != nil {
 		return err
 	}
-	for i, request := range r.Requests {
-		mode, err := request.Mode()
-		if err != nil {
-			return fmt.Errorf("transaction %d: %w", i+1, err)
+	if err := validateComponentGroupBytes(r.GroupBytesHex); err != nil {
+		return err
+	}
+	if len(r.Targets) == 0 || len(r.DummyPositions) > len(r.GroupBytesHex) {
+		return fmt.Errorf("targets are required and dummy_positions cannot exceed group length")
+	}
+	originalCount := len(r.GroupBytesHex) - len(r.DummyPositions)
+	covered := make([]bool, originalCount)
+	for i, target := range r.Targets {
+		if target.TargetIndex < 0 || target.TargetIndex >= originalCount || covered[target.TargetIndex] {
+			return fmt.Errorf("target %d has invalid, duplicate, or overlapping target_index", i+1)
 		}
-		if mode == RequestModePassthrough {
-			return fmt.Errorf("bounded-component does not accept signed passthrough entries")
+		covered[target.TargetIndex] = true
+		if target.AuthAddress == "" {
+			return fmt.Errorf("target %d: auth_address is required", i+1)
+		}
+	}
+	for i, position := range r.ContextualPositions {
+		if position.TargetIndex < 0 || position.TargetIndex >= originalCount || covered[position.TargetIndex] {
+			return fmt.Errorf("contextual position %d has invalid, duplicate, or overlapping target_index", i+1)
+		}
+		covered[position.TargetIndex] = true
+		probe := SignRequest{TxnBytesHex: "frozen", LsigResources: position.LsigResources, PQScheme: position.PQScheme}
+		if err := probe.Validate(); err != nil {
+			return fmt.Errorf("contextual position %d: %w", i+1, err)
+		}
+	}
+	for index, ok := range covered {
+		if !ok {
+			return fmt.Errorf("original group position %d is not covered", index)
+		}
+	}
+	for i, dummy := range r.DummyPositions {
+		if dummy.TargetIndex != originalCount+i {
+			return fmt.Errorf("dummy position %d is not in the contiguous suffix", i+1)
 		}
 	}
 	return nil

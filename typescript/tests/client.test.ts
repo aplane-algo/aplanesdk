@@ -1351,7 +1351,8 @@ describe("SignerClient", () => {
       const client = new SignerClient("http://localhost:11270", "test-token");
       const component = await client.requestBoundedComponent({
         request_id: "bounded-base-id",
-        requests: [{ auth_address: "BOUNDED", txn_bytes_hex: "5458aa" }],
+        group_bytes_hex: ["5458aa"],
+        targets: [{ target_index: 0, auth_address: "BOUNDED" }],
       });
       const assembly = await client.requestBoundedAssemble({
         request_id: "bounded-assembly-id",
@@ -1388,7 +1389,8 @@ describe("SignerClient", () => {
       await assert.rejects(
         client.requestBoundedComponent({
           request_id: "bounded-cancel-id",
-          requests: [{ auth_address: "BOUNDED", txn_bytes_hex: "5458aa" }],
+          group_bytes_hex: ["5458aa"],
+          targets: [{ target_index: 0, auth_address: "BOUNDED" }],
         }),
         SignerUnavailableError,
       );
@@ -1414,20 +1416,22 @@ describe("SignerClient", () => {
       await assert.rejects(
         client.requestBoundedComponent({
           request_id: "bounded-not-found",
-          requests: [{ auth_address: "BOUNDED", txn_bytes_hex: "5458aa" }],
+          group_bytes_hex: ["5458aa"],
+          targets: [{ target_index: 0, auth_address: "BOUNDED" }],
         }),
         KeyNotFoundError,
       );
     });
 
-    it("rejects bounded component passthrough before fetch", async () => {
+    it("rejects an incomplete bounded component partition before fetch", async () => {
       const client = new SignerClient("http://localhost:11270", "test-token");
       await assert.rejects(
         client.requestBoundedComponent({
           request_id: "bounded-base-id",
-          requests: [{ signed_txn_hex: "abcd" }],
+          group_bytes_hex: [],
+          targets: [{ target_index: 0, auth_address: "BOUNDED" }],
         }),
-        /does not accept signed passthrough/,
+        /group_bytes_hex is empty/,
       );
       assert.equal(mockFetch.mock.calls.length, 0);
     });
@@ -1445,7 +1449,8 @@ describe("SignerClient", () => {
       await assert.rejects(
         client.requestBoundedComponent({
           request_id: "bounded-base-id",
-          requests: [{ auth_address: "BOUNDED", txn_bytes_hex: "5458aa" }],
+          group_bytes_hex: ["5458aa"],
+          targets: [{ target_index: 0, auth_address: "BOUNDED" }],
         }),
         (error: unknown) => error instanceof SignerError &&
           error.message === "Server returned invalid JSON",
@@ -1474,7 +1479,8 @@ describe("SignerClient", () => {
       await assert.rejects(
         client.requestBoundedComponent({
           request_id: "bounded-base-id",
-          requests: [{ auth_address: "BOUNDED", txn_bytes_hex: "5458aa" }],
+          group_bytes_hex: ["5458aa"],
+          targets: [{ target_index: 0, auth_address: "BOUNDED" }],
         }),
         /invalid or duplicate target_index/,
       );
@@ -1886,11 +1892,15 @@ describe("SignerClient", () => {
       let plannedTransactions: string[] | undefined;
       let plannedMutations: any;
 
+      (user as any).planRequests = async (requests: any[]) => ({
+        transactions: plannedTransactions ?? [requests[0].txn_bytes_hex],
+        mutations: plannedMutations,
+      });
       (user as any).requestBoundedComponent = async (request: any) => {
-        assert.equal(request.requests[0].auth_address, bounded);
+        assert.equal(request.targets[0].auth_address, bounded);
         return {
           request_id: "base-id",
-          transactions: plannedTransactions ?? [request.requests[0].txn_bytes_hex],
+          transactions: request.group_bytes_hex,
           components: [{
             target_index: 0,
             bounded_account: bounded,
@@ -2167,9 +2177,12 @@ describe("SignerClient", () => {
           suggestedParams,
           ...(item.rekey ? { rekeyTo } : {}),
         });
+        (user as any).planRequests = async (requests: any[]) => ({
+          transactions: [requests[0].txn_bytes_hex],
+        });
         (user as any).requestBoundedComponent = async (request: any) => ({
           request_id: `component-${item.name}`,
-          transactions: [request.requests[0].txn_bytes_hex],
+          transactions: request.group_bytes_hex,
           components: [{
             target_index: 0,
             bounded_account: bounded,
@@ -2302,22 +2315,14 @@ describe("SignerClient", () => {
       };
       let plannedGroup: algosdk.Transaction[] = [];
 
-      (user as any).requestBoundedComponent = async (request: any) => {
-        const planned = request.requests.map((entry: any) =>
+      (user as any).planRequests = async (requests: any[]) => {
+        const planned = requests.map((entry: any) =>
           algosdk.decodeUnsignedTransaction(hexToBytes(entry.txn_bytes_hex).slice(2))
         );
         algosdk.assignGroupID(planned);
         plannedGroup = planned;
         return {
-          request_id: "base-id",
           transactions: planned.map((item: algosdk.Transaction) => encodeTransaction(item)[0]),
-          components: [{
-            target_index: 0,
-            bounded_account: bounded,
-            base_signatures: ["base-sig"],
-            assembly_receipt: "receipt",
-            signature_scheme: "aplane.falcon1024.v1",
-          }],
           mutations: {
             dummiesAdded: 0,
             groupIdChanged: true,
@@ -2328,6 +2333,17 @@ describe("SignerClient", () => {
           },
         };
       };
+      (user as any).requestBoundedComponent = async (request: any) => ({
+          request_id: "base-id",
+          transactions: request.group_bytes_hex,
+          components: [{
+            target_index: 0,
+            bounded_account: bounded,
+            base_signatures: ["base-sig"],
+            assembly_receipt: "receipt",
+            signature_scheme: "aplane.falcon1024.v1",
+          }],
+        });
       (sentry as any).requestComponentSign = async () => ({
         request_id: "sentry-id",
         signatures: [{
@@ -2445,24 +2461,15 @@ describe("SignerClient", () => {
       let plannedGroup: algosdk.Transaction[] = [];
       let primaryRequest: any;
 
-      (user as any).requestBoundedComponent = async (request: any) => {
-        assert.equal(request.requests.length, 2);
-        primaryRequest = request.requests[1];
-        const planned = request.requests.map((entry: any) =>
+      (user as any).planRequests = async (requests: any[]) => {
+        primaryRequest = requests[1];
+        const planned = requests.map((entry: any) =>
           algosdk.decodeUnsignedTransaction(hexToBytes(entry.txn_bytes_hex).slice(2))
         );
         algosdk.assignGroupID(planned);
         plannedGroup = planned;
         return {
-          request_id: "base-id",
           transactions: planned.map((item: algosdk.Transaction) => encodeTransaction(item)[0]),
-          components: [{
-            target_index: 0,
-            bounded_account: bounded,
-            base_signatures: ["base-sig"],
-            assembly_receipt: "receipt",
-            signature_scheme: "aplane.falcon1024.v1",
-          }],
           mutations: {
             dummiesAdded: 0,
             groupIdChanged: true,
@@ -2471,6 +2478,21 @@ describe("SignerClient", () => {
             originalCount: planned.length,
             finalCount: planned.length,
           },
+        };
+      };
+      (user as any).requestBoundedComponent = async (request: any) => {
+        assert.equal(request.targets.length, 1);
+        assert.equal(request.contextual_positions.length, 1);
+        return {
+          request_id: "base-id",
+          transactions: request.group_bytes_hex,
+          components: [{
+            target_index: 0,
+            bounded_account: bounded,
+            base_signatures: ["base-sig"],
+            assembly_receipt: "receipt",
+            signature_scheme: "aplane.falcon1024.v1",
+          }],
         };
       };
       (sentry as any).requestComponentSign = async () => ({

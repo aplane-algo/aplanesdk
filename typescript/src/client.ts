@@ -894,21 +894,43 @@ export async function signPreparedBoundedSentryGroup(
     throw new SignerError("prepared group has no bounded-sentry targets");
   }
 
-  const componentResponse = await options.userClient.requestBoundedComponent(
-    { requests },
-    { signal: options.signal },
-  );
-  const planned = decodeCanonicalGroup(componentResponse.transactions);
-  if (planned.length < prepared.length) {
-    throw new SignerError(
-      `signer returned ${planned.length} bounded group positions, want at least ${prepared.length}`,
-    );
-  }
+  const planResponse = await options.userClient.planRequests(requests);
+  const frozenGroup = [...(planResponse.transactions || [])];
+  const planned = decodeCanonicalGroup(frozenGroup);
   validateBoundedComponentPlan(
     prepared.map((item) => item.transaction as Transaction),
     planned,
-    componentResponse.mutations,
+    planResponse.mutations,
   );
+  const targetIndices = new Set(targets.map((target) => target.targetIndex));
+  const componentResponse = await options.userClient.requestBoundedComponent(
+    {
+      group_bytes_hex: frozenGroup,
+      targets: requests.flatMap((request, index) => targetIndices.has(index) ? [{
+        target_index: index,
+        auth_address: request.auth_address || "",
+        lsig_args: request.lsig_args,
+      }] : []),
+      contextual_positions: requests.flatMap((request, index) => targetIndices.has(index) ? [] : [{
+        target_index: index,
+        lsig_resources: request.lsig_resources,
+        pq_scheme: request.pq_scheme,
+      }]),
+      dummy_positions: frozenGroup.slice(prepared.length).map((_, offset) => ({
+        target_index: prepared.length + offset,
+      })),
+    },
+    { signal: options.signal },
+  );
+  if (frozenGroup.length < prepared.length) {
+    throw new SignerError(
+      `signer returned ${frozenGroup.length} bounded group positions, want at least ${prepared.length}`,
+    );
+  }
+  if (componentResponse.transactions.length !== frozenGroup.length ||
+      componentResponse.transactions.some((txn, index) => txn !== frozenGroup[index])) {
+    throw new SignerError("bounded component response changed the frozen group");
+  }
   validateBoundedTargetFees(planned, targetMaxFees);
   const targetsByIndex = new Map(targets.map((target) => [target.targetIndex, target]));
   const components = new Map<number, (typeof componentResponse.components)[number]>();
@@ -933,7 +955,7 @@ export async function signPreparedBoundedSentryGroup(
     sentryClient: options.sentryClient,
     sentryResolver: options.sentryResolver,
     sentryComponentKey: options.sentryComponentKey,
-    groupBytesHex: componentResponse.transactions,
+    groupBytesHex: frozenGroup,
     guardedTargets: targets,
     signal: options.signal,
   };
@@ -956,7 +978,7 @@ export async function signPreparedBoundedSentryGroup(
     const response = await group.client.requestComponentSign({
       role: COMPONENT_SIGN_ROLE_SENTRY,
       component_key: group.componentKey,
-      group_bytes_hex: componentResponse.transactions,
+      group_bytes_hex: frozenGroup,
       target_indices: group.indices.sort((a, b) => a - b),
     }, { signal: options.signal });
     sentryComponentResponses.push(response);
@@ -967,7 +989,7 @@ export async function signPreparedBoundedSentryGroup(
 
   const primary = await requestBoundedPrimaryPassthrough(
     options.userClient,
-    componentResponse.transactions,
+    frozenGroup,
     prepared.length,
     new Set(targetsByIndex.keys()),
     targetResources,
@@ -1000,12 +1022,12 @@ export async function signPreparedBoundedSentryGroup(
   });
   const assemblyResponse = await options.userClient.requestBoundedAssemble({
     request_id: options.assemblyRequestId,
-    group_bytes_hex: [...componentResponse.transactions],
+    group_bytes_hex: [...frozenGroup],
     targets: assemblyTargets,
     passthrough,
   }, { signal: options.signal });
   verifyBoundedAssembledGroup(
-    componentResponse.transactions,
+    frozenGroup,
     assemblyResponse.signed_group,
   );
   return {
@@ -1643,28 +1665,55 @@ function validateGuardedAssemblyResponse(response: GuardedAssemblyResponse): voi
 
 function validateBoundedComponentRequest(request: BoundedComponentRequest): void {
   validateSignRequestId(request.request_id || "");
-  if (!request.requests || request.requests.length === 0) {
-    throw new SignerError("requests array is empty");
+  validateComponentGroupBytes(request.group_bytes_hex || []);
+  const targets = request.targets || [];
+  const contextual = request.contextual_positions || [];
+  const dummies = request.dummy_positions || [];
+  if (targets.length === 0 || dummies.length > request.group_bytes_hex.length) {
+    throw new SignerError("targets are required and dummy_positions cannot exceed group length");
   }
-  let signCount = 0;
-  let foreignCount = 0;
-  request.requests.forEach((entry, index) => {
-    const hasAuth = Boolean(entry.auth_address);
-    const hasTxn = Boolean(entry.txn_bytes_hex);
-    const hasPassthrough = Boolean(entry.signed_txn_hex);
-    if (hasPassthrough && (hasAuth || hasTxn)) {
-      throw new SignerError(`transaction ${index + 1}: sign and passthrough fields cannot be mixed`);
+  const originalCount = request.group_bytes_hex.length - dummies.length;
+  const covered = new Set<number>();
+  targets.forEach((target, index) => {
+    if (!Number.isInteger(target.target_index) || target.target_index < 0 ||
+        target.target_index >= originalCount || covered.has(target.target_index)) {
+      throw new SignerError(`target ${index + 1} has invalid, duplicate, or overlapping target_index`);
     }
-    if (hasPassthrough) {
-      throw new SignerError("bounded-component does not accept signed passthrough entries");
+    covered.add(target.target_index);
+    if (!target.auth_address) {
+      throw new SignerError(`target ${index + 1}: auth_address is required`);
     }
-    else if (hasAuth && hasTxn) signCount++;
-    else if (hasTxn) foreignCount++;
-    else throw new SignerError(`transaction ${index + 1}: unsupported request mode`);
   });
-  if (signCount === 0 && foreignCount > 0) {
-    throw new SignerError("no signable transactions");
+  contextual.forEach((position, index) => {
+    if (!Number.isInteger(position.target_index) || position.target_index < 0 ||
+        position.target_index >= originalCount || covered.has(position.target_index)) {
+      throw new SignerError(`contextual position ${index + 1} has invalid, duplicate, or overlapping target_index`);
+    }
+    covered.add(position.target_index);
+    if (position.lsig_resources && position.pq_scheme) {
+      throw new SignerError(`contextual position ${index + 1} cannot specify both lsig_resources and pq_scheme`);
+    }
+    if (position.lsig_resources) {
+      validateLogicSigResources({
+        programBytes: position.lsig_resources.program_bytes,
+        argumentBytes: position.lsig_resources.argument_bytes,
+        maxOpcodeCost: position.lsig_resources.max_opcode_cost,
+      }, `contextual position ${index + 1}`);
+    }
+    if (position.pq_scheme && position.pq_scheme !== PQ_SCHEME_FALCON1024) {
+      throw new SignerError(`contextual position ${index + 1} has unsupported pq_scheme`);
+    }
+  });
+  for (let index = 0; index < originalCount; index++) {
+    if (!covered.has(index)) {
+      throw new SignerError(`original group position ${index} is not covered`);
+    }
   }
+  dummies.forEach((dummy, offset) => {
+    if (dummy.target_index !== originalCount + offset) {
+      throw new SignerError(`dummy position ${offset + 1} is not in the contiguous suffix`);
+    }
+  });
 }
 
 function validateBoundedComponentResponse(response: BoundedComponentResponse): void {

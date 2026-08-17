@@ -431,7 +431,7 @@ describe("signer API contract fixtures", () => {
     assert.equal(unifiedResp.signed_group.length, 3);
 
     const boundedComponentReq = fixture("bounded_component_request.json") as BoundedComponentRequest;
-    assert.ok(boundedComponentReq.requests[0].auth_address);
+    assert.ok(boundedComponentReq.targets[0].auth_address);
     const boundedComponentResp = fixture("bounded_component_response.json") as BoundedComponentResponse;
     assert.ok(boundedComponentResp.components[0].assembly_receipt);
     const boundedAssemblyReq = fixture("bounded_assembly_request.json") as BoundedAssemblyRequest;

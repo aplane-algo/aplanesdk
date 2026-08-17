@@ -36,15 +36,21 @@ func TestSignPreparedBoundedSentryGroupOneTarget(t *testing.T) {
 			json.NewEncoder(w).Encode(StatusResponse{
 				IdentityID: "default", State: "unlocked", ApprovalWaitSeconds: 60,
 			})
+		case "/plan":
+			var req GroupSignRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode plan request: %v", err)
+			}
+			frozenGroup = []string{req.Requests[0].TxnBytesHex}
+			json.NewEncoder(w).Encode(PlanGroupResponse{Transactions: frozenGroup})
 		case "/sign/bounded-component":
 			var req BoundedComponentRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("decode bounded component request: %v", err)
 			}
-			if len(req.Requests) != 1 || req.Requests[0].AuthAddress != bounded {
+			if len(req.Targets) != 1 || req.Targets[0].AuthAddress != bounded {
 				t.Fatalf("bounded component request = %+v", req)
 			}
-			frozenGroup = []string{req.Requests[0].TxnBytesHex}
 			json.NewEncoder(w).Encode(BoundedComponentResponse{
 				RequestID:    req.RequestID,
 				Transactions: frozenGroup,
@@ -152,16 +158,22 @@ func TestSignPreparedBoundedSentryGroupDeclaresNativePQPrimary(t *testing.T) {
 			json.NewEncoder(w).Encode(StatusResponse{
 				IdentityID: "default", State: "unlocked", ApprovalWaitSeconds: 60,
 			})
+		case "/plan":
+			var req GroupSignRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode plan request: %v", err)
+			}
+			primaryRequest = req.Requests[1]
+			frozenGroup = []string{req.Requests[0].TxnBytesHex, req.Requests[1].TxnBytesHex}
+			json.NewEncoder(w).Encode(PlanGroupResponse{Transactions: frozenGroup})
 		case "/sign/bounded-component":
 			var req BoundedComponentRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("decode bounded component request: %v", err)
 			}
-			if len(req.Requests) != 2 {
-				t.Fatalf("bounded component requests = %d, want 2", len(req.Requests))
+			if len(req.Targets) != 1 || len(req.ContextualPositions) != 1 {
+				t.Fatalf("bounded component partition = %+v", req)
 			}
-			primaryRequest = req.Requests[1]
-			frozenGroup = []string{req.Requests[0].TxnBytesHex, req.Requests[1].TxnBytesHex}
 			json.NewEncoder(w).Encode(BoundedComponentResponse{
 				RequestID:    req.RequestID,
 				Transactions: frozenGroup,
@@ -298,13 +310,13 @@ func TestBoundedAssemblyRequestRejectsMissingCoverage(t *testing.T) {
 	}
 }
 
-func TestBoundedComponentRequestRejectsPassthrough(t *testing.T) {
+func TestBoundedComponentRequestRejectsMissingFrozenGroup(t *testing.T) {
 	err := (BoundedComponentRequest{
 		RequestID: "bounded-request",
-		Requests:  []SignRequest{{SignedTxnHex: "abcd"}},
+		Targets:   []BoundedComponentTarget{{TargetIndex: 0, AuthAddress: "AUTH"}},
 	}).Validate()
-	if err == nil || !strings.Contains(err.Error(), "does not accept signed passthrough") {
-		t.Fatalf("Validate() error = %v, want passthrough rejection", err)
+	if err == nil || !strings.Contains(err.Error(), "group_bytes_hex") {
+		t.Fatalf("Validate() error = %v, want frozen group rejection", err)
 	}
 }
 
@@ -389,10 +401,9 @@ func TestRequestBoundedComponentCancelsApprovalWhenContextCanceled(t *testing.T)
 	result := make(chan error, 1)
 	go func() {
 		_, err := client.RequestBoundedComponentWithContext(ctx, BoundedComponentRequest{
-			RequestID: "bounded-cancel-id",
-			Requests: []SignRequest{{
-				AuthAddress: "AUTH", TxnBytesHex: "545801",
-			}},
+			RequestID:     "bounded-cancel-id",
+			GroupBytesHex: []string{"545801"},
+			Targets:       []BoundedComponentTarget{{TargetIndex: 0, AuthAddress: "AUTH"}},
 		})
 		result <- err
 	}()
@@ -437,10 +448,9 @@ func TestBoundedEndpointClassifiesNotFound(t *testing.T) {
 
 	client.cacheApprovalWait(60)
 	_, err := client.RequestBoundedComponent(BoundedComponentRequest{
-		RequestID: "bounded-not-found",
-		Requests: []SignRequest{{
-			AuthAddress: "AUTH", TxnBytesHex: "545801",
-		}},
+		RequestID:     "bounded-not-found",
+		GroupBytesHex: []string{"545801"},
+		Targets:       []BoundedComponentTarget{{TargetIndex: 0, AuthAddress: "AUTH"}},
 	})
 	if !errors.Is(err, ErrKeyNotFound) {
 		t.Fatalf("RequestBoundedComponent() error = %v, want ErrKeyNotFound", err)

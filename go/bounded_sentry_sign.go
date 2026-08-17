@@ -126,23 +126,47 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 		return nil, fmt.Errorf("prepared group has no bounded-sentry targets")
 	}
 
-	componentResp, err := opts.UserClient.RequestBoundedComponentWithContext(ctx, BoundedComponentRequest{Requests: requests})
+	planResp, err := opts.UserClient.PlanRequestsWithContext(ctx, requests)
 	if err != nil {
-		return nil, fmt.Errorf("bounded base component signing failed: %w", err)
+		return nil, fmt.Errorf("bounded group planning failed: %w", err)
 	}
-	planned, err := decodeCanonicalGroup(componentResp.Transactions)
+	planned, err := decodeCanonicalGroup(planResp.Transactions)
 	if err != nil {
 		return nil, fmt.Errorf("signer returned invalid bounded canonical group: %w", err)
-	}
-	if len(planned) < len(prepared) {
-		return nil, fmt.Errorf("signer returned %d bounded group positions, want at least %d", len(planned), len(prepared))
 	}
 	original := make([]types.Transaction, len(prepared))
 	for i, item := range prepared {
 		original[i] = *item.Transaction
 	}
-	if err := validateBoundedComponentPlan(original, planned, componentResp.Mutations); err != nil {
+	if err := validateBoundedComponentPlan(original, planned, planResp.Mutations); err != nil {
 		return nil, err
+	}
+	componentReq := BoundedComponentRequest{GroupBytesHex: append([]string(nil), planResp.Transactions...)}
+	targetSet := make(map[int]bool, len(targets))
+	for _, target := range targets {
+		targetSet[target.TargetIndex] = true
+	}
+	for i, request := range requests {
+		if targetSet[i] {
+			componentReq.Targets = append(componentReq.Targets, BoundedComponentTarget{TargetIndex: i, AuthAddress: request.AuthAddress, LsigArgs: request.LsigArgs})
+		} else {
+			componentReq.ContextualPositions = append(componentReq.ContextualPositions, ComponentContextPosition{TargetIndex: i, LsigResources: request.LsigResources, PQScheme: request.PQScheme})
+		}
+	}
+	for i := len(prepared); i < len(planResp.Transactions); i++ {
+		componentReq.DummyPositions = append(componentReq.DummyPositions, ComponentDummyPosition{TargetIndex: i})
+	}
+	componentResp, err := opts.UserClient.RequestBoundedComponentWithContext(ctx, componentReq)
+	if err != nil {
+		return nil, fmt.Errorf("bounded base component signing failed: %w", err)
+	}
+	if len(componentResp.Transactions) != len(planResp.Transactions) {
+		return nil, fmt.Errorf("bounded component response group length changed")
+	}
+	for i := range planResp.Transactions {
+		if componentResp.Transactions[i] != planResp.Transactions[i] {
+			return nil, fmt.Errorf("bounded component response changed frozen transaction %d", i)
+		}
 	}
 	if err := validateBoundedTargetFees(planned, targetMaxFees); err != nil {
 		return nil, err
@@ -175,7 +199,7 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 		SentryClient:       opts.SentryClient,
 		SentryResolver:     opts.SentryResolver,
 		SentryComponentKey: opts.SentryComponentKey,
-		GroupBytesHex:      componentResp.Transactions,
+		GroupBytesHex:      planResp.Transactions,
 	}
 	sentrySignatures, err := requestSentryComponentSignatures(ctx, sentryOpts, targets, result)
 	if err != nil {
@@ -183,7 +207,7 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 	}
 
 	primary, err := requestBoundedPrimaryPassthrough(
-		ctx, opts.UserClient, componentResp.Transactions, len(prepared),
+		ctx, opts.UserClient, planResp.Transactions, len(prepared),
 		targetsByIndex, targetResources, primaryTargets,
 	)
 	if err != nil {
@@ -227,14 +251,14 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 	}
 	assemblyResp, err := opts.UserClient.RequestAssembleWithContext(ctx, AssemblyRequest{
 		RequestID:     opts.AssemblyRequestID,
-		GroupBytesHex: append([]string(nil), componentResp.Transactions...),
+		GroupBytesHex: append([]string(nil), planResp.Transactions...),
 		Targets:       assemblyTargets,
 		Passthrough:   assemblyPassthrough,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("bounded-sentry assembly failed: %w", err)
 	}
-	if err := verifyAssembledGroup(componentResp.Transactions, assemblyResp.SignedGroup); err != nil {
+	if err := verifyAssembledGroup(planResp.Transactions, assemblyResp.SignedGroup); err != nil {
 		return nil, err
 	}
 	result.BoundedAssemblyResponse = &BoundedAssemblyResponse{RequestID: assemblyResp.RequestID, SignedGroup: assemblyResp.SignedGroup}
