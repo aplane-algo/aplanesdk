@@ -51,7 +51,6 @@ from aplanesdk.signer import (
     BoundedSignatureArgLayout,
     GuardedSignTarget,
     GuardedPrimarySignTarget,
-    SentryReferenceCandidate,
     PreparedTransaction,
     PreparedGroup,
     COMPONENT_TARGET_KIND_BOUNDED_BASE,
@@ -967,27 +966,6 @@ class TestSpecializedLowLevelEndpoints:
                         "sentry_signature": "sentry-sig",
                     }],
                 })
-
-    def test_admin_sync_sentry_references_posts_to_admin_endpoint(self):
-        client = make_client()
-        resp = mock_response(200, {"added": 1, "updated": 0, "removed": 0, "count": 1})
-
-        with patch.object(client.session, "post", return_value=resp) as mock_post:
-            result = client.admin_sync_sentry_references([
-                SentryReferenceCandidate(
-                    endpoint_alias="sentry-local",
-                    component_key="COMPONENT",
-                    key_type=KEY_TYPE_WITNESS_FALCON1024,
-                    public_key_hex="aabb",
-                ),
-            ])
-
-        assert result.added == 1
-        assert result.count == 1
-        assert mock_post.call_args.args[0] == "http://localhost:11270/admin/sentries/sync"
-        body = mock_post.call_args.kwargs["json"]
-        assert body["candidates"][0]["component_key"] == "COMPONENT"
-
 
 class TestSignGuardedGroup:
     def test_signs_one_guarded_target(self):

@@ -10,8 +10,6 @@ import { fileURLToPath } from "url";
 import { SignerClient } from "../src/client.js";
 import { ErrorCodes } from "../src/types.js";
 import type {
-  AdminSyncSentryReferencesRequest,
-  AdminSyncSentryReferencesResponse,
   CancelSignResponse,
   ComponentRequest,
   ComponentResponse,
@@ -479,12 +477,4 @@ describe("signer API contract fixtures", () => {
     assert.deepEqual(corridorType.boundedAuthorization?.sentry?.requiredOn, ["spend"]);
   });
 
-  it("round-trips admin sentry sync fixture DTOs", () => {
-    const syncReq = fixture("admin_sync_sentries_request.json") as AdminSyncSentryReferencesRequest;
-    assert.equal(syncReq.candidates[0].key_type, "aplane.witness-falcon1024.v1");
-
-    const syncResp = fixture("admin_sync_sentries_response.json") as AdminSyncSentryReferencesResponse;
-    assert.equal(syncResp.added, 1);
-    assert.equal(syncResp.records?.[0].source, "client_discovery");
-  });
 });

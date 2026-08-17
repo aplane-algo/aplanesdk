@@ -158,10 +158,6 @@ export type {
   GuardedPassthroughAuthorization,
   ComponentContextPosition,
   ComponentDummyPosition,
-  SentryReferenceCandidate,
-  AdminSyncSentryReferencesRequest,
-  SyncedSentryReferenceInfo,
-  AdminSyncSentryReferencesResponse,
 } from "./types.js";
 
 export {

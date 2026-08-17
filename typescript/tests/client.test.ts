@@ -1513,29 +1513,6 @@ describe("SignerClient", () => {
       );
     });
 
-    it("posts sentry reference sync requests to the admin endpoint", async () => {
-      mockFetch.mockResolvedValueOnce({
-        status: 200,
-        ok: true,
-        json: async () => ({ added: 1, updated: 0, removed: 0, count: 1 }),
-      });
-
-      const client = new SignerClient("http://localhost:11270", "test-token");
-      const result = await client.adminSyncSentryReferences([
-        {
-          endpoint_alias: "sentry-local",
-          component_key: "COMPONENT",
-          key_type: KEY_TYPE_WITNESS_FALCON1024,
-          public_key_hex: "aabb",
-        },
-      ]);
-
-      assert.equal(result.added, 1);
-      assert.equal(result.count, 1);
-      assert.equal(mockFetch.mock.calls[0][0], "http://localhost:11270/admin/sentries/sync");
-      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-      assert.equal(body.candidates[0].component_key, "COMPONENT");
-    });
   });
 
   describe("signGuardedGroup", () => {

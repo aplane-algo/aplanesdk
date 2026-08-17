@@ -551,41 +551,6 @@ export interface ComponentDummyPosition {
 }
 
 /**
- * Public sentry metadata synced into a signer identity's reference catalog.
- */
-export interface SentryReferenceCandidate {
-  endpoint_alias: string;
-  component_key: string;
-  key_type: string;
-  public_key_hex: string;
-  last_seen_at?: string;
-}
-
-export interface AdminSyncSentryReferencesRequest {
-  candidates: SentryReferenceCandidate[];
-}
-
-export interface SyncedSentryReferenceInfo {
-  name: string;
-  source: string;
-  endpoint_alias?: string;
-  component_key: string;
-  key_type: string;
-  public_key_hex: string;
-  last_seen_at?: string;
-  synced_at?: string;
-}
-
-export interface AdminSyncSentryReferencesResponse {
-  added: number;
-  updated: number;
-  removed: number;
-  count: number;
-  records?: SyncedSentryReferenceInfo[];
-  error?: string;
-}
-
-/**
  * LogicSig runtime arguments for a single address.
  * Maps argument name to its value as Uint8Array.
  */

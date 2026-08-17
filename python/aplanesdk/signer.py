@@ -569,50 +569,6 @@ class GuardedPassthroughItem:
 
 
 @dataclass
-class SentryReferenceCandidate:
-    """Public sentry metadata synced into the signer reference catalog"""
-
-    endpoint_alias: str
-    component_key: str
-    key_type: str
-    public_key_hex: str
-    last_seen_at: str = ""
-
-
-@dataclass
-class AdminSyncSentryReferencesRequest:
-    """Request payload for /admin/sentries/sync"""
-
-    candidates: List[SentryReferenceCandidate]
-
-
-@dataclass
-class SyncedSentryReferenceInfo:
-    """Signer-local sentry reference after sync"""
-
-    name: str
-    source: str
-    component_key: str
-    key_type: str
-    public_key_hex: str
-    endpoint_alias: str = ""
-    last_seen_at: str = ""
-    synced_at: str = ""
-
-
-@dataclass
-class AdminSyncSentryReferencesResponse:
-    """Response payload from /admin/sentries/sync"""
-
-    added: int
-    updated: int
-    removed: int
-    count: int
-    records: Optional[List[SyncedSentryReferenceInfo]] = None
-    error: str = ""
-
-
-@dataclass
 class GuardedSignTarget:
     """One guarded-account slot for the high-level guarded signing helper"""
 
@@ -4116,66 +4072,6 @@ class SignerClient:
         return AssemblyResponse(
             request_id=data["request_id"],
             signed_group=data.get("signed_group", []),
-        )
-
-    def admin_sync_sentry_references(
-        self,
-        candidates: List[Any],
-    ) -> AdminSyncSentryReferencesResponse:
-        """
-        Sync public sentry reference candidates into the connected signer.
-        """
-        request_body = {"candidates": _compact_payload(candidates)}
-
-        try:
-            resp = self.session.post(
-                f"{self.base_url}/admin/sentries/sync",
-                json=request_body,
-                timeout=self._timeout_for(MUTATION_TIMEOUT),
-            )
-        except requests.RequestException as e:
-            raise SignerUnavailableError(f"Failed to connect: {e}")
-
-        if resp.status_code == 401:
-            raise AuthenticationError("Invalid or missing token")
-
-        if resp.status_code == 403:
-            raise self._forbidden_locked_error(resp)
-
-        if resp.status_code != 200:
-            raise self._signer_http_error(
-                resp,
-                f"Sentry reference sync failed: HTTP {resp.status_code}",
-            )
-
-        data = self._safe_json(resp)
-        if data.get("error"):
-            raise SignerError(data["error"])
-
-        raw_records = data.get("records")
-        records = None
-        if isinstance(raw_records, list):
-            records = [
-                SyncedSentryReferenceInfo(
-                    name=item.get("name", ""),
-                    source=item.get("source", ""),
-                    endpoint_alias=item.get("endpoint_alias", ""),
-                    component_key=item.get("component_key", ""),
-                    key_type=item.get("key_type", ""),
-                    public_key_hex=item.get("public_key_hex", ""),
-                    last_seen_at=item.get("last_seen_at", ""),
-                    synced_at=item.get("synced_at", ""),
-                )
-                for item in raw_records
-            ]
-
-        return AdminSyncSentryReferencesResponse(
-            added=data.get("added", 0),
-            updated=data.get("updated", 0),
-            removed=data.get("removed", 0),
-            count=data.get("count", 0),
-            records=records,
-            error=data.get("error", ""),
         )
 
     def _best_effort_cancel_sign_request(self, request_id: str) -> None:
