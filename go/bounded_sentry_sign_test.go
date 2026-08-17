@@ -95,6 +95,9 @@ func TestSignPreparedBoundedSentryGroupOneTarget(t *testing.T) {
 			len(req.GroupBytesHex) != 1 || req.GroupBytesHex[0] != frozenGroup[0] {
 			t.Fatalf("sentry component request = %+v", req)
 		}
+		if req.TargetAppInfo[0] == nil || req.TargetAppInfo[0].Mode != "raw" {
+			t.Fatalf("sentry target app-call metadata = %#v", req.TargetAppInfo[0])
+		}
 		json.NewEncoder(w).Encode(ComponentResponse{
 			RequestID: req.RequestID,
 			Components: []Component{{Kind: ComponentTargetKindSentry,
@@ -118,6 +121,7 @@ func TestSignPreparedBoundedSentryGroupOneTarget(t *testing.T) {
 		SentryComponentKey: "SENTRY_COMPONENT",
 		PreparedGroup: NewPreparedGroup(PreparedTransaction{
 			Transaction: &txn, AuthAddress: bounded,
+			AppCallInfo: &AppCallInfo{Mode: "raw"},
 			SignerKey: &KeyInfo{
 				Address: bounded, KeyType: "aplane.corridor.v1",
 				SigningFlow: SigningFlowBoundedSentry1,

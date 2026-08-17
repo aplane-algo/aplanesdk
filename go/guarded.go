@@ -140,7 +140,10 @@ func SignGuardedGroupWithContext(ctx context.Context, opts GuardedSignOptions) (
 	})
 
 	guardedByIndex := make(map[int]GuardedSignTarget, len(targets))
-	appCallInfoByIndex := make(map[int]*AppCallInfo, len(targets))
+	appCallInfoByIndex := make(map[int]*AppCallInfo, len(targets)+len(opts.PrimaryTargets))
+	for _, target := range opts.PrimaryTargets {
+		appCallInfoByIndex[target.TargetIndex] = target.AppCallInfo
+	}
 	userGroups := make(map[string][]int)
 	for i := range targets {
 		target := &targets[i]
@@ -612,7 +615,10 @@ func requestUserComponentSignatures(ctx context.Context, client *SignerClient, g
 
 func requestSentryComponentSignatures(ctx context.Context, opts GuardedSignOptions, targets []GuardedSignTarget, result *GuardedSignResult) (map[int]guardedComponentSignature, error) {
 	groups := make(map[sentrySignGroupKey][]int)
-	appCallInfo := make(map[int]*AppCallInfo, len(targets))
+	appCallInfo := make(map[int]*AppCallInfo, len(targets)+len(opts.PrimaryTargets))
+	for _, target := range opts.PrimaryTargets {
+		appCallInfo[target.TargetIndex] = target.AppCallInfo
+	}
 	for _, target := range targets {
 		appCallInfo[target.TargetIndex] = target.AppCallInfo
 		client, componentKey, err := resolveGuardedSentry(ctx, opts, target)

@@ -392,6 +392,10 @@ func TestSignGuardedGroupMixedPrimaryAndGuarded(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("decode user component request: %v", err)
 			}
+			if len(req.Contextual) != 2 || req.Contextual[0].TargetIndex != 0 ||
+				req.Contextual[0].AppCallInfo == nil || req.Contextual[0].AppCallInfo.Method != "primary()void" {
+				t.Fatalf("user component contextual metadata = %+v", req.Contextual)
+			}
 			json.NewEncoder(w).Encode(ComponentResponse{
 				RequestID: req.RequestID,
 				Components: []Component{{Kind: ComponentTargetKindUser,
@@ -430,6 +434,10 @@ func TestSignGuardedGroupMixedPrimaryAndGuarded(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("decode sentry component request: %v", err)
 		}
+		if len(req.Contextual) != 2 || req.Contextual[0].TargetIndex != 0 ||
+			req.Contextual[0].AppCallInfo == nil || req.Contextual[0].AppCallInfo.Method != "primary()void" {
+			t.Fatalf("sentry component contextual metadata = %+v", req.Contextual)
+		}
 		json.NewEncoder(w).Encode(ComponentResponse{
 			RequestID: req.RequestID,
 			Components: []Component{{Kind: ComponentTargetKindSentry,
@@ -449,6 +457,7 @@ func TestSignGuardedGroupMixedPrimaryAndGuarded(t *testing.T) {
 		PrimaryTargets: []GuardedPrimarySignTarget{{
 			TargetIndex: 0,
 			AuthAddress: "AUTH",
+			AppCallInfo: &AppCallInfo{Mode: "abi", Method: "primary()void"},
 		}},
 		Targets: []GuardedSignTarget{{
 			TargetIndex:       1,

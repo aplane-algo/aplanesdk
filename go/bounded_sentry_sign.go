@@ -192,6 +192,7 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 		SentryResolver:     opts.SentryResolver,
 		SentryComponentKey: opts.SentryComponentKey,
 		GroupBytesHex:      planResp.Transactions,
+		PrimaryTargets:     primaryTargets,
 		DummyPositions:     contiguousIndices(len(prepared), len(planResp.Transactions)),
 	}
 	sentrySignatures, err := requestSentryComponentSignatures(ctx, sentryOpts, targets, result)

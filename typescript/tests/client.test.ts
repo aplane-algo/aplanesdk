@@ -1633,18 +1633,30 @@ describe("SignerClient", () => {
       const user = new SignerClient("http://localhost:11270", "test-token");
       const sentry = new SignerClient("http://sentry:11270", "sentry-token");
 
-      (user as any).requestComponents = async () => ({
-        request_id: "user-id",
-        components: [
-          { target_index: 1, kind: "sentry", signature: "user-sig", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
-        ],
-      });
-      (sentry as any).requestComponents = async () => ({
-        request_id: "sentry-id",
-        components: [
-          { target_index: 1, kind: "sentry", signature: "sentry-sig", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
-        ],
-      });
+      (user as any).requestComponents = async (request: any) => {
+        assert.deepEqual(
+          request.contextual_positions.find((item: any) => item.target_index === 0).app_call_info,
+          { mode: "abi", method: "primary()void" },
+        );
+        return {
+          request_id: "user-id",
+          components: [
+            { target_index: 1, kind: "sentry", signature: "user-sig", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
+          ],
+        };
+      };
+      (sentry as any).requestComponents = async (request: any) => {
+        assert.deepEqual(
+          request.contextual_positions.find((item: any) => item.target_index === 0).app_call_info,
+          { mode: "abi", method: "primary()void" },
+        );
+        return {
+          request_id: "sentry-id",
+          components: [
+            { target_index: 1, kind: "sentry", signature: "sentry-sig", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
+          ],
+        };
+      };
       (user as any).signRequests = async (requests: any[]) => {
         assert.equal(requests[0].auth_address, "AUTH");
         assert.equal(requests[1].auth_address, undefined);
@@ -1680,7 +1692,11 @@ describe("SignerClient", () => {
         sentryClient: sentry,
         sentryComponentKey: "SENTRY_COMPONENT",
         groupBytesHex: ["5458aa", "5458bb", "5458cc"],
-        primaryTargets: [{ targetIndex: 0, authAddress: "AUTH" }],
+        primaryTargets: [{
+          targetIndex: 0,
+          authAddress: "AUTH",
+          appCallInfo: { mode: "abi", method: "primary()void" },
+        }],
         guardedTargets: [{
           targetIndex: 1,
           guardedAccount: "GUARDED",
@@ -1954,6 +1970,7 @@ describe("SignerClient", () => {
       };
       (sentry as any).requestComponents = async (request: any) => {
         assert.equal(request.targets[0].component_key, "SENTRY_COMPONENT");
+        assert.deepEqual(request.targets[0].app_call_info, { mode: "raw" });
         assert.deepEqual(request.targets.map((target: any) => target.target_index), [0]);
         assert.equal(request.group_bytes_hex.length, 1);
         return {
@@ -2006,6 +2023,7 @@ describe("SignerClient", () => {
           transactions: [{
             transaction: txn,
             authAddress: bounded,
+            appCallInfo: { mode: "raw" },
             signerKey: {
               address: bounded,
               publicKeyHex: "",

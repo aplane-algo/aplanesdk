@@ -1000,6 +1000,9 @@ export async function signPreparedBoundedSentryGroup(
   }
   const sentryComponentResponses: ComponentResponse[] = [];
   const sentrySignatures: ComponentSignatureByIndex = new Map();
+  const appCallInfo = new Map<number, AppCallInfo | undefined>(
+    requests.map((request, index) => [index, request.app_call_info]),
+  );
   for (const group of sentryGroups) {
     const response = await group.client.requestComponents(
       componentRequestForIndices(
@@ -1008,6 +1011,7 @@ export async function signPreparedBoundedSentryGroup(
         "sentry",
         group.componentKey,
         frozenGroup.slice(prepared.length).map((_, offset) => prepared.length + offset),
+        appCallInfo,
       ),
       { signal: options.signal },
     );
@@ -1197,7 +1201,13 @@ export async function signGuardedGroup(options: GuardedSignOptions): Promise<Gua
   validateComponentGroupBytes(options.groupBytesHex);
 
   const targets = [...options.guardedTargets].sort((a, b) => a.targetIndex - b.targetIndex);
-  const appCallInfo = new Map(targets.map((target) => [target.targetIndex, target.appCallInfo]));
+  const appCallInfo = new Map<number, AppCallInfo | undefined>();
+  for (const target of options.primaryTargets || []) {
+    appCallInfo.set(target.targetIndex, target.appCallInfo);
+  }
+  for (const target of targets) {
+    appCallInfo.set(target.targetIndex, target.appCallInfo);
+  }
   const guardedIndices = new Set<number>();
   const userGroups = new Map<string, number[]>();
   for (const target of targets) {

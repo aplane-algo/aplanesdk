@@ -5740,8 +5740,14 @@ def sign_guarded_group(
         raise ValueError("at least one guarded target is required")
     targets.sort(key=lambda item: item["target_index"])
     app_call_info = {
-        target["target_index"]: target.get("app_call_info") for target in targets
+        target.get("target_index"): target.get("app_call_info")
+        for target in (_compact_payload(item) for item in (primary_targets or []))
     }
+    # Guarded metadata wins if a malformed low-level request names the same
+    # position as both guarded and primary; the overlap is rejected later.
+    app_call_info.update({
+        target["target_index"]: target.get("app_call_info") for target in targets
+    })
 
     guarded_by_index: Dict[int, Dict[str, Any]] = {}
     user_groups: Dict[str, List[int]] = {}

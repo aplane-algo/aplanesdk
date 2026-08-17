@@ -1127,7 +1127,11 @@ class TestSignGuardedGroup:
             sentry_component_key="SENTRY_COMPONENT",
             group_bytes_hex=[primary_hex, "5458bb", "5458cc"],
             primary_targets=[
-                GuardedPrimarySignTarget(target_index=0, auth_address="AUTH"),
+                GuardedPrimarySignTarget(
+                    target_index=0,
+                    auth_address="AUTH",
+                    app_call_info={"mode": "abi", "method": "primary()void"},
+                ),
             ],
             guarded_targets=[
                 GuardedSignTarget(
@@ -1158,6 +1162,17 @@ class TestSignGuardedGroup:
             "argument_bytes": 1423,
             "max_opcode_cost": 20000,
         }
+        for client in (user, sentry):
+            request = client.request_components.call_args.args[0]
+            primary_context = next(
+                item
+                for item in request.contextual_positions
+                if item["target_index"] == 0
+            )
+            assert primary_context["app_call_info"] == {
+                "mode": "abi",
+                "method": "primary()void",
+            }
         assert sign_requests[2]["lsig_resources"] == {
             "program_bytes": 5000,
             "argument_bytes": 1200,
@@ -1614,6 +1629,7 @@ class TestSignGuardedGroup:
                 PreparedTransaction(
                     transaction=txn,
                     auth_address=bounded,
+                    app_call_info={"mode": "raw"},
                     signer_key=KeyInfo(
                         address=bounded,
                         key_type="aplane.corridor.v1",
@@ -1673,6 +1689,7 @@ class TestSignGuardedGroup:
         assert len(sentry_req.group_bytes_hex) == 1
         assert sentry_req.group_bytes_hex[0].startswith("5458")
         assert [target["target_index"] for target in sentry_req.targets] == [0]
+        assert sentry_req.targets[0]["app_call_info"] == {"mode": "raw"}
 
         user.request_components.reset_mock()
         prepared_group.transactions[0].signer_key.bounded_authorization.max_fee = 999
