@@ -16,8 +16,6 @@ from aplanesdk.signer import (
     AUTHORIZATION_KIND_LOGIC_SIG,
     AUTHORIZATION_KIND_NATIVE_PQ,
     CancelSignResponse,
-    ComponentSignRequest,
-    ComponentSignResponse,
     ComponentRequest,
     ComponentResponse,
     AssemblyRequest,
@@ -33,9 +31,6 @@ from aplanesdk.signer import (
     ERR_CODE_NOT_FOUND,
     ERR_CODE_UNAUTHORIZED,
     ERR_CODE_UNAVAILABLE,
-    GuardedAssemblyRequest,
-    GuardedAssemblyTarget,
-    GuardedAssemblyResponse,
     LogicSigResourceUsage,
     SignerClient,
     StatusResponse,
@@ -393,29 +388,10 @@ def test_generate_key_maps_component_response():
 
 
 def test_sentry_dtos_round_trip_fixtures():
-    component_req = ComponentSignRequest(**fixture("component_sign_request_sentry.json"))
-    assert component_req.role == "sentry"
-    component_resp_data = fixture("component_sign_response_sentry.json")
-    component_resp = ComponentSignResponse(
-        request_id=component_resp_data["request_id"],
-        component_key=component_resp_data["component_key"],
-        signatures=component_resp_data["signatures"],
-    )
-    assert component_resp.signatures[0]["signature_scheme"] == "aplane.witness-falcon1024.v1"
-
     unified_component_req = ComponentRequest(**fixture("component_request.json"))
     assert unified_component_req.targets[0]["kind"] == "bounded-base"
     unified_component_resp = ComponentResponse(**fixture("component_response.json"))
     assert unified_component_resp.components[0]["assembly_receipt"]
-
-    assembly_req = GuardedAssemblyRequest(**fixture("guarded_assembly_request_mixed.json"))
-    assert assembly_req.group_bytes_hex[0].startswith("5458")
-    assembly_target = GuardedAssemblyTarget(**assembly_req.targets[0])
-    assert assembly_target.user_signature
-    assert assembly_target.sentry_signature
-    assert assembly_target.runtime_args == ["aa01", "bb02"]
-    assembly_resp = GuardedAssemblyResponse(**fixture("guarded_assembly_response.json"))
-    assert len(assembly_resp.signed_group) == 2
 
     unified_req = AssemblyRequest(**fixture("assembly_request_mixed.json"))
     assert unified_req.targets[0]["kind"] == "guarded"

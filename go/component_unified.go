@@ -3,86 +3,7 @@
 
 package aplane
 
-import (
-	"encoding/json"
-	"fmt"
-)
-
-// UnmarshalJSON accepts the unified wire while keeping the legacy DTO useful
-// to callers that decode requests in test transports during this migration.
-func (r *ComponentSignRequest) UnmarshalJSON(data []byte) error {
-	var raw struct {
-		RequestID     string            `json:"request_id"`
-		Role          ComponentSignRole `json:"role"`
-		ComponentKey  string            `json:"component_key"`
-		GroupBytesHex []string          `json:"group_bytes_hex"`
-		TargetIndices []int             `json:"target_indices"`
-		Targets       []ComponentTarget `json:"targets"`
-	}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-	*r = ComponentSignRequest{RequestID: raw.RequestID, Role: raw.Role, ComponentKey: raw.ComponentKey, GroupBytesHex: raw.GroupBytesHex, TargetIndices: raw.TargetIndices}
-	if len(raw.Targets) == 0 || r.Role != "" {
-		return nil
-	}
-	for _, target := range raw.Targets {
-		r.TargetIndices = append(r.TargetIndices, target.TargetIndex)
-		if target.Kind == ComponentTargetKindUser {
-			r.Role, r.ComponentKey = ComponentSignRoleUser, target.AuthAddress
-		} else {
-			r.Role, r.ComponentKey = ComponentSignRoleSentry, target.ComponentKey
-		}
-	}
-	return nil
-}
-
-// UnmarshalJSON accepts both the unified response and the two pre-collapse
-// response shapes so one SDK commit can interoperate across the paired rollout.
-func (r *ComponentResponse) UnmarshalJSON(data []byte) error {
-	var raw struct {
-		RequestID  string               `json:"request_id"`
-		Signatures []ComponentSignature `json:"signatures"`
-		Components []struct {
-			TargetIndex     int                 `json:"target_index"`
-			Kind            ComponentTargetKind `json:"kind"`
-			Signature       string              `json:"signature"`
-			SignatureScheme string              `json:"signature_scheme"`
-			AuthAddress     string              `json:"auth_address"`
-			BoundedAccount  string              `json:"bounded_account"`
-			BaseSignatures  []string            `json:"base_signatures"`
-			RuntimeArgs     map[string]string   `json:"runtime_args"`
-			AssemblyReceipt string              `json:"assembly_receipt"`
-		} `json:"components"`
-	}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-	r.RequestID = raw.RequestID
-	for _, component := range raw.Components {
-		kind := component.Kind
-		authAddress := component.AuthAddress
-		if component.BoundedAccount != "" {
-			kind, authAddress = ComponentTargetKindBoundedBase, component.BoundedAccount
-		}
-		if kind == "" {
-			kind = ComponentTargetKindSentry
-		}
-		r.Components = append(r.Components, Component{
-			TargetIndex: component.TargetIndex, Kind: kind, Signature: component.Signature,
-			SignatureScheme: component.SignatureScheme, AuthAddress: authAddress,
-			BaseSignatures: component.BaseSignatures, RuntimeArgs: component.RuntimeArgs,
-			AssemblyReceipt: component.AssemblyReceipt,
-		})
-	}
-	for _, signature := range raw.Signatures {
-		r.Components = append(r.Components, Component{
-			TargetIndex: signature.TargetIndex, Kind: ComponentTargetKindSentry,
-			Signature: signature.Signature, SignatureScheme: signature.SignatureScheme,
-		})
-	}
-	return nil
-}
+import "fmt"
 
 func (r ComponentRequest) Validate() error {
 	if err := validateSignRequestID(r.RequestID); err != nil {
@@ -188,26 +109,4 @@ func (r ComponentResponse) Validate() error {
 		}
 	}
 	return nil
-}
-
-func (r ComponentSignRequest) ComponentRequest() ComponentRequest {
-	targetSet := make(map[int]bool, len(r.TargetIndices))
-	targets := make([]ComponentTarget, 0, len(r.TargetIndices))
-	for _, index := range r.TargetIndices {
-		targetSet[index] = true
-		target := ComponentTarget{TargetIndex: index}
-		if r.Role == ComponentSignRoleUser {
-			target.Kind, target.AuthAddress = ComponentTargetKindUser, r.ComponentKey
-		} else {
-			target.Kind, target.ComponentKey = ComponentTargetKindSentry, r.ComponentKey
-		}
-		targets = append(targets, target)
-	}
-	context := make([]ComponentContextPosition, 0, len(r.GroupBytesHex)-len(targets))
-	for index := range r.GroupBytesHex {
-		if !targetSet[index] {
-			context = append(context, ComponentContextPosition{TargetIndex: index})
-		}
-	}
-	return ComponentRequest{RequestID: r.RequestID, GroupBytesHex: r.GroupBytesHex, Targets: targets, ContextualPositions: context}
 }

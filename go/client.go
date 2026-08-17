@@ -673,45 +673,6 @@ func (c *SignerClient) DeleteKey(address string) error {
 	return nil
 }
 
-// RequestComponentSign sends a role-specific component signing request to
-// /sign/component.
-func (c *SignerClient) RequestComponentSign(req ComponentSignRequest) (*ComponentSignResponse, error) {
-	return c.RequestComponentSignWithContext(context.Background(), req)
-}
-
-// RequestComponentSignWithContext sends a role-specific component signing
-// request to /sign/component.
-func (c *SignerClient) RequestComponentSignWithContext(ctx context.Context, reqBody ComponentSignRequest) (*ComponentSignResponse, error) {
-	if err := reqBody.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid component sign request: %w", err)
-	}
-	response, err := c.RequestComponentsWithContext(ctx, reqBody.ComponentRequest())
-	if err != nil {
-		return nil, err
-	}
-	result := &ComponentSignResponse{RequestID: response.RequestID, ComponentKey: reqBody.ComponentKey}
-	for _, component := range response.Components {
-		result.Signatures = append(result.Signatures, ComponentSignature{TargetIndex: component.TargetIndex, Signature: component.Signature, SignatureScheme: component.SignatureScheme})
-	}
-	return result, nil
-}
-
-// RequestGuardedAssemble sends a guarded transaction assembly request to
-// /sign/assemble.
-func (c *SignerClient) RequestGuardedAssemble(req GuardedAssemblyRequest) (*GuardedAssemblyResponse, error) {
-	return c.RequestGuardedAssembleWithContext(context.Background(), req)
-}
-
-// RequestGuardedAssembleWithContext sends a guarded transaction assembly
-// request to /sign/assemble.
-func (c *SignerClient) RequestGuardedAssembleWithContext(ctx context.Context, reqBody GuardedAssemblyRequest) (*GuardedAssemblyResponse, error) {
-	result, err := c.RequestAssembleWithContext(ctx, reqBody.AssemblyRequest())
-	if err != nil {
-		return nil, err
-	}
-	return &GuardedAssemblyResponse{RequestID: result.RequestID, SignedGroup: result.SignedGroup}, nil
-}
-
 func (c *SignerClient) RequestAssemble(req AssemblyRequest) (*AssemblyResponse, error) {
 	return c.RequestAssembleWithContext(context.Background(), req)
 }

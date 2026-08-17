@@ -13,14 +13,10 @@ import type {
   AdminSyncSentryReferencesRequest,
   AdminSyncSentryReferencesResponse,
   CancelSignResponse,
-  ComponentSignRequest,
-  ComponentSignResponse,
   ComponentRequest,
   ComponentResponse,
   AssemblyRequest,
   AssemblyResponse,
-  GuardedAssemblyRequest,
-  GuardedAssemblyResponse,
 } from "../src/types.js";
 
 interface MockFetch {
@@ -410,23 +406,10 @@ describe("signer API contract fixtures", () => {
   });
 
   it("round-trips sentry component and assembly fixture DTOs", () => {
-    const componentReq = fixture("component_sign_request_sentry.json") as ComponentSignRequest;
-    assert.equal(componentReq.role, "sentry");
-    assert.equal(componentReq.target_indices[0], 0);
-
-    const componentResp = fixture("component_sign_response_sentry.json") as ComponentSignResponse;
-    assert.equal(componentResp.signatures[0].signature_scheme, "aplane.witness-falcon1024.v1");
-
     const unifiedComponentReq = fixture("component_request.json") as ComponentRequest;
     assert.equal(unifiedComponentReq.targets[0].kind, "bounded-base");
     const unifiedComponentResp = fixture("component_response.json") as ComponentResponse;
     assert.ok(unifiedComponentResp.components[0].assembly_receipt);
-
-    const assemblyReq = fixture("guarded_assembly_request_mixed.json") as GuardedAssemblyRequest;
-    assert.equal(assemblyReq.targets?.[0].guarded_account, "LOGICSIGACCOUNTADDRESSAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
-
-    const assemblyResp = fixture("guarded_assembly_response.json") as GuardedAssemblyResponse;
-    assert.equal(assemblyResp.signed_group.length, 2);
 
     const unifiedReq = fixture("assembly_request_mixed.json") as AssemblyRequest;
     assert.equal(unifiedReq.targets?.[0].kind, "guarded");

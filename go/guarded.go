@@ -77,7 +77,7 @@ type GuardedSignOptions struct {
 	GroupBytesHex      []string
 	Targets            []GuardedSignTarget
 	PrimaryTargets     []GuardedPrimarySignTarget
-	Passthrough        []GuardedPassthroughItem
+	Passthrough        []AssemblyPassthroughItem
 	AssemblyRequestID  string
 }
 
@@ -85,10 +85,10 @@ type GuardedSignOptions struct {
 // component-sign responses for audit and UI correlation.
 type GuardedSignResult struct {
 	SignedGroup              []string
-	UserComponentResponses   []*ComponentSignResponse
-	SentryComponentResponses []*ComponentSignResponse
+	UserComponentResponses   []*ComponentResponse
+	SentryComponentResponses []*ComponentResponse
 	PrimarySignResponse      *GroupSignResponse
-	AssemblyResponse         *GuardedAssemblyResponse
+	AssemblyResponse         *AssemblyResponse
 	BoundedComponentResponse *ComponentResponse
 	BoundedAssemblyResponse  *AssemblyResponse
 }
@@ -170,7 +170,7 @@ func SignGuardedGroupWithContext(ctx context.Context, opts GuardedSignOptions) (
 		return nil, err
 	}
 
-	passthrough := append([]GuardedPassthroughItem(nil), opts.Passthrough...)
+	passthrough := append([]AssemblyPassthroughItem(nil), opts.Passthrough...)
 	if len(opts.PrimaryTargets) > 0 {
 		primary, err := requestPrimaryGuardedPassthrough(
 			ctx,
@@ -224,13 +224,13 @@ func SignGuardedGroupWithContext(ctx context.Context, opts GuardedSignOptions) (
 	if err := verifyAssembledGroup(opts.GroupBytesHex, assemblyResp.SignedGroup); err != nil {
 		return nil, err
 	}
-	result.AssemblyResponse = &GuardedAssemblyResponse{RequestID: assemblyResp.RequestID, SignedGroup: assemblyResp.SignedGroup}
+	result.AssemblyResponse = assemblyResp
 	result.SignedGroup = append([]string(nil), assemblyResp.SignedGroup...)
 	return result, nil
 }
 
 // verifyAssembledGroup cross-checks the assembler's signed group against the
-// frozen canonical bytes the caller submitted. GuardedAssemblyResponse.Validate
+// frozen canonical bytes the caller submitted. AssemblyResponse.Validate
 // only confirms each slot is non-empty; this additionally pins the length and
 // the per-position transaction identity, so a wrong-length or substituted
 // assembled group cannot reach submission. Each signed transaction's inner Txn
@@ -537,7 +537,7 @@ func encodeGuardedLsigArgs(args LsigArgs) map[string]string {
 	return out
 }
 
-func signGuardedDummies(dummies []types.Transaction, startIndex int) ([]GuardedPassthroughItem, error) {
+func signGuardedDummies(dummies []types.Transaction, startIndex int) ([]AssemblyPassthroughItem, error) {
 	if len(dummies) == 0 {
 		return nil, nil
 	}
@@ -545,13 +545,13 @@ func signGuardedDummies(dummies []types.Transaction, startIndex int) ([]GuardedP
 		return nil, err
 	}
 	logicSig := types.LogicSig{Logic: guardedDummyProgram}
-	passthrough := make([]GuardedPassthroughItem, len(dummies))
+	passthrough := make([]AssemblyPassthroughItem, len(dummies))
 	for i, txn := range dummies {
 		_, signedBytes, err := crypto.SignLogicSigTransaction(logicSig, txn)
 		if err != nil {
 			return nil, fmt.Errorf("failed to sign dummy transaction %d: %w", i+1, err)
 		}
-		passthrough[i] = GuardedPassthroughItem{
+		passthrough[i] = AssemblyPassthroughItem{
 			TargetIndex:  startIndex + i,
 			SignedTxnHex: hex.EncodeToString(signedBytes),
 			Authorization: &GuardedPassthroughAuthorization{
@@ -589,19 +589,14 @@ func requestUserComponentSignatures(ctx context.Context, client *SignerClient, g
 	for _, account := range accounts {
 		indices := append([]int(nil), userGroups[account]...)
 		sort.Ints(indices)
-		resp, err := client.RequestComponentSignWithContext(ctx, ComponentSignRequest{
-			Role:          ComponentSignRoleUser,
-			ComponentKey:  account,
-			GroupBytesHex: groupBytesHex,
-			TargetIndices: indices,
-		})
+		resp, err := client.RequestComponentsWithContext(ctx, componentRequestForIndices(groupBytesHex, indices, ComponentTargetKindUser, account))
 		if err != nil {
 			return nil, err
 		}
 		result.UserComponentResponses = append(result.UserComponentResponses, resp)
-		for _, sig := range resp.Signatures {
-			signatures[sig.TargetIndex] = guardedComponentSignature{
-				signature: sig.Signature,
+		for _, component := range resp.Components {
+			signatures[component.TargetIndex] = guardedComponentSignature{
+				signature: component.Signature,
 				requestID: resp.RequestID,
 			}
 		}
@@ -625,24 +620,40 @@ func requestSentryComponentSignatures(ctx context.Context, opts GuardedSignOptio
 	signatures := make(map[int]guardedComponentSignature)
 	for group, indices := range groups {
 		sort.Ints(indices)
-		resp, err := group.client.RequestComponentSignWithContext(ctx, ComponentSignRequest{
-			Role:          ComponentSignRoleSentry,
-			ComponentKey:  group.componentKey,
-			GroupBytesHex: opts.GroupBytesHex,
-			TargetIndices: indices,
-		})
+		resp, err := group.client.RequestComponentsWithContext(ctx, componentRequestForIndices(opts.GroupBytesHex, indices, ComponentTargetKindSentry, group.componentKey))
 		if err != nil {
 			return nil, err
 		}
 		result.SentryComponentResponses = append(result.SentryComponentResponses, resp)
-		for _, sig := range resp.Signatures {
-			signatures[sig.TargetIndex] = guardedComponentSignature{
-				signature: sig.Signature,
+		for _, component := range resp.Components {
+			signatures[component.TargetIndex] = guardedComponentSignature{
+				signature: component.Signature,
 				requestID: resp.RequestID,
 			}
 		}
 	}
 	return signatures, nil
+}
+
+func componentRequestForIndices(groupBytesHex []string, indices []int, kind ComponentTargetKind, key string) ComponentRequest {
+	targetSet := make(map[int]bool, len(indices))
+	request := ComponentRequest{GroupBytesHex: groupBytesHex}
+	for _, index := range indices {
+		targetSet[index] = true
+		target := ComponentTarget{TargetIndex: index, Kind: kind}
+		if kind == ComponentTargetKindUser {
+			target.AuthAddress = key
+		} else {
+			target.ComponentKey = key
+		}
+		request.Targets = append(request.Targets, target)
+	}
+	for index := range groupBytesHex {
+		if !targetSet[index] {
+			request.ContextualPositions = append(request.ContextualPositions, ComponentContextPosition{TargetIndex: index})
+		}
+	}
+	return request
 }
 
 func resolveGuardedSentry(ctx context.Context, opts GuardedSignOptions, target GuardedSignTarget) (*SignerClient, string, error) {
@@ -661,7 +672,7 @@ func resolveGuardedSentry(ctx context.Context, opts GuardedSignOptions, target G
 
 type primaryGuardedPassthrough struct {
 	response    *GroupSignResponse
-	passthrough []GuardedPassthroughItem
+	passthrough []AssemblyPassthroughItem
 }
 
 func requestPrimaryGuardedPassthrough(
@@ -670,7 +681,7 @@ func requestPrimaryGuardedPassthrough(
 	groupBytesHex []string,
 	guardedByIndex map[int]GuardedSignTarget,
 	targets []GuardedPrimarySignTarget,
-	passthrough []GuardedPassthroughItem,
+	passthrough []AssemblyPassthroughItem,
 ) (*primaryGuardedPassthrough, error) {
 	primaryByIndex := make(map[int]GuardedPrimarySignTarget, len(targets))
 	for _, target := range targets {
@@ -688,7 +699,7 @@ func requestPrimaryGuardedPassthrough(
 		}
 		primaryByIndex[target.TargetIndex] = target
 	}
-	passthroughByIndex := make(map[int]GuardedPassthroughItem, len(passthrough))
+	passthroughByIndex := make(map[int]AssemblyPassthroughItem, len(passthrough))
 	for _, item := range passthrough {
 		if item.TargetIndex < 0 || item.TargetIndex >= len(groupBytesHex) {
 			return nil, fmt.Errorf("passthrough target %d out of range", item.TargetIndex)
@@ -746,7 +757,7 @@ func requestPrimaryGuardedPassthrough(
 	if err != nil {
 		return nil, err
 	}
-	primaryPassthrough := make([]GuardedPassthroughItem, 0, len(primaryByIndex))
+	primaryPassthrough := make([]AssemblyPassthroughItem, 0, len(primaryByIndex))
 	for index := range primaryByIndex {
 		if index >= len(response.Signed) || response.Signed[index] == "" {
 			return nil, fmt.Errorf("primary signer returned no signed transaction for target %d", index)
@@ -757,7 +768,7 @@ func requestPrimaryGuardedPassthrough(
 		if err := signedTxnMatchesCanonical("primary passthrough", index, response.Signed[index], groupBytesHex[index]); err != nil {
 			return nil, err
 		}
-		primaryPassthrough = append(primaryPassthrough, GuardedPassthroughItem{
+		primaryPassthrough = append(primaryPassthrough, AssemblyPassthroughItem{
 			TargetIndex:  index,
 			SignedTxnHex: response.Signed[index],
 		})

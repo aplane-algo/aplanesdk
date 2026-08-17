@@ -94,9 +94,6 @@ AUTHORIZATION_KIND_ED25519 = "ed25519"
 AUTHORIZATION_KIND_NATIVE_PQ = "native_pq"
 AUTHORIZATION_KIND_LOGIC_SIG = "logic_sig"
 
-COMPONENT_SIGN_ROLE_USER = "user"
-COMPONENT_SIGN_ROLE_SENTRY = "sentry"
-
 # Signing choreography label for the sentry co-signed component flow (one
 # user plus one sentry component signature per target, assembled via
 # /sign/assemble). Signer inventory labels guarded keys with this flow;
@@ -500,35 +497,6 @@ class SimulationResult:
     failed: bool = False
 
 
-@dataclass
-class ComponentSignRequest:
-    """Request payload for /sign/component"""
-
-    role: str
-    group_bytes_hex: List[str]
-    target_indices: List[int]
-    request_id: str = ""
-    component_key: str = ""
-
-
-@dataclass
-class ComponentSignature:
-    """One component signature returned from /sign/component"""
-
-    target_index: int
-    signature: str
-    signature_scheme: str
-
-
-@dataclass
-class ComponentSignResponse:
-    """Response payload from /sign/component"""
-
-    request_id: str
-    signatures: List[ComponentSignature]
-    component_key: str = ""
-
-
 COMPONENT_TARGET_KIND_USER = "user"
 COMPONENT_TARGET_KIND_SENTRY = "sentry"
 COMPONENT_TARGET_KIND_BOUNDED_BASE = "bounded-base"
@@ -594,19 +562,6 @@ class AssemblyResponse:
 
 
 @dataclass
-class GuardedAssemblyTarget:
-    """One guarded-account position for /sign/assemble"""
-
-    target_index: int
-    guarded_account: str
-    user_signature: str
-    sentry_signature: str
-    user_source_request_id: str = ""
-    sentry_source_request_id: str = ""
-    runtime_args: Optional[List[str]] = None
-
-
-@dataclass
 class GuardedPassthroughAuthorization:
     """Authorization shape used to budget a guarded passthrough slot."""
 
@@ -621,24 +576,6 @@ class GuardedPassthroughItem:
     target_index: int
     signed_txn_hex: str
     authorization: Optional[GuardedPassthroughAuthorization] = None
-
-
-@dataclass
-class GuardedAssemblyRequest:
-    """Request payload for /sign/assemble"""
-
-    group_bytes_hex: List[str]
-    request_id: str = ""
-    targets: Optional[List[GuardedAssemblyTarget]] = None
-    passthrough: Optional[List[GuardedPassthroughItem]] = None
-
-
-@dataclass
-class GuardedAssemblyResponse:
-    """Response payload from /sign/assemble"""
-
-    request_id: str
-    signed_group: List[str]
 
 
 @dataclass
@@ -714,9 +651,9 @@ class GuardedSignResult:
     """Result from sign_guarded_group"""
 
     signed_group: List[str]
-    user_component_responses: List[ComponentSignResponse]
-    sentry_component_responses: List[ComponentSignResponse]
-    assembly_response: Optional[GuardedAssemblyResponse]
+    user_component_responses: List[ComponentResponse]
+    sentry_component_responses: List[ComponentResponse]
+    assembly_response: Optional[AssemblyResponse]
     primary_sign_response: Optional[GroupSignResponse] = None
     bounded_component_response: Optional[ComponentResponse] = None
     bounded_assembly_response: Optional[AssemblyResponse] = None
@@ -1300,40 +1237,12 @@ def _validate_component_group_bytes(items: List[str]) -> None:
             raise ValueError(f"group_bytes_hex {index} is empty")
 
 
-def _validate_component_target_indices(indices: List[int], group_len: int) -> None:
-    if not indices:
-        raise ValueError("target_indices is empty")
-    seen = set()
-    for index in indices:
-        if not isinstance(index, int) or index < 0 or index >= group_len:
-            raise ValueError(f"target_indices {index} out of range")
-        if index in seen:
-            raise ValueError(f"target_indices contains duplicate {index}")
-        seen.add(index)
-
-
 def _validate_assembly_index(index: int, group_len: int, covered: set) -> None:
     if not isinstance(index, int) or index < 0 or index >= group_len:
         raise ValueError(f"target_index {index} out of range")
     if index in covered:
         raise ValueError(f"duplicate target_index {index}")
     covered.add(index)
-
-
-def _validate_component_sign_request(data: Dict[str, Any]) -> None:
-    _validate_sign_request_id(str(data.get("request_id", "")))
-    role = data.get("role", "")
-    if role == COMPONENT_SIGN_ROLE_USER:
-        if not data.get("component_key"):
-            raise ValueError("component_key is required for user role")
-    elif role != COMPONENT_SIGN_ROLE_SENTRY:
-        raise ValueError(
-            f"role must be {COMPONENT_SIGN_ROLE_USER!r} or {COMPONENT_SIGN_ROLE_SENTRY!r}"
-        )
-    group_bytes_hex = data.get("group_bytes_hex") or []
-    target_indices = data.get("target_indices") or []
-    _validate_component_group_bytes(group_bytes_hex)
-    _validate_component_target_indices(target_indices, len(group_bytes_hex))
 
 
 def _wire_lsig_resources(resources: LogicSigResourceUsage) -> Dict[str, int]:
@@ -1672,50 +1581,6 @@ def _parse_bounded_authorization(data: Any) -> Optional[BoundedAuthorizationInfo
     )
 
 
-def _validate_component_sign_response(data: Dict[str, Any]) -> None:
-    if not isinstance(data, dict):
-        raise ValueError("response must be a mapping")
-    request_id = data.get("request_id", "")
-    if not request_id:
-        raise ValueError("request_id is required")
-    _validate_sign_request_id(str(request_id))
-    signatures = data.get("signatures") or []
-    if not signatures:
-        raise ValueError("signatures array is empty")
-    seen = set()
-    for i, signature in enumerate(signatures, start=1):
-        if not isinstance(signature, dict):
-            raise ValueError(f"signature {i}: must be a mapping")
-        target_index = signature.get("target_index")
-        if not isinstance(target_index, int) or target_index < 0:
-            raise ValueError(f"signature {i}: target_index must be non-negative")
-        if target_index in seen:
-            raise ValueError(f"signature {i}: duplicate target_index {target_index}")
-        seen.add(target_index)
-        if not signature.get("signature"):
-            raise ValueError(f"signature {i}: signature is required")
-        if not signature.get("signature_scheme"):
-            raise ValueError(f"signature {i}: signature_scheme is required")
-
-
-def _guarded_assembly_to_unified(data: Dict[str, Any]) -> Dict[str, Any]:
-    converted = dict(data)
-    converted["targets"] = [
-        {
-            "target_index": target.get("target_index"),
-            "kind": ASSEMBLY_TARGET_KIND_GUARDED,
-            "auth_address": target.get("guarded_account", ""),
-            "user_signature": target.get("user_signature", ""),
-            "user_source_request_id": target.get("user_source_request_id", ""),
-            "guarded_runtime_args": target.get("runtime_args"),
-            "sentry_signature": target.get("sentry_signature", ""),
-            "sentry_source_request_id": target.get("sentry_source_request_id", ""),
-        }
-        for target in data.get("targets") or []
-    ]
-    return converted
-
-
 def _bounded_assembly_to_unified(data: Dict[str, Any]) -> Dict[str, Any]:
     converted = dict(data)
     converted["targets"] = [
@@ -1778,11 +1643,7 @@ def _validate_assembly_request(data: Dict[str, Any]) -> None:
             raise ValueError(f"group position {index} is not covered by targets or passthrough")
 
 
-def _validate_guarded_assembly_request(data: Dict[str, Any]) -> None:
-    _validate_assembly_request(_guarded_assembly_to_unified(data))
-
-
-def _validate_guarded_assembly_response(data: Dict[str, Any]) -> None:
+def _validate_assembly_response(data: Dict[str, Any]) -> None:
     request_id = data.get("request_id", "")
     if not request_id:
         raise ValueError("request_id is required")
@@ -1838,35 +1699,6 @@ def _validate_bounded_component_request(data: Dict[str, Any]) -> None:
     for offset, dummy in enumerate(dummies):
         if dummy.get("target_index") != original_count + offset:
             raise ValueError(f"dummy position {offset + 1} is not in the contiguous suffix")
-
-
-def _component_sign_to_unified(data: Dict[str, Any]) -> Dict[str, Any]:
-    target_indices = list(data.get("target_indices") or [])
-    target_set = set(target_indices)
-    role = data.get("role")
-    kind = (
-        COMPONENT_TARGET_KIND_USER
-        if role == COMPONENT_SIGN_ROLE_USER
-        else COMPONENT_TARGET_KIND_SENTRY
-    )
-    targets = []
-    for index in target_indices:
-        target = {"target_index": index, "kind": kind}
-        if kind == COMPONENT_TARGET_KIND_USER:
-            target["auth_address"] = data.get("component_key", "")
-        else:
-            target["component_key"] = data.get("component_key", "")
-        targets.append(target)
-    return {
-        "request_id": data.get("request_id", ""),
-        "group_bytes_hex": list(data.get("group_bytes_hex") or []),
-        "targets": targets,
-        "contextual_positions": [
-            {"target_index": index}
-            for index in range(len(data.get("group_bytes_hex") or []))
-            if index not in target_set
-        ],
-    }
 
 
 def _bounded_component_to_unified(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -2004,7 +1836,7 @@ def _validate_bounded_assembly_request(data: Dict[str, Any]) -> None:
 
 
 def _validate_bounded_assembly_response(data: Dict[str, Any]) -> None:
-    _validate_guarded_assembly_response(data)
+    _validate_assembly_response(data)
 
 
 def _extract_auth_address(account_info: Any) -> str:
@@ -4190,44 +4022,6 @@ class SignerClient:
             raise SignerError(result.error)
         return result
 
-    def request_component_sign(
-        self,
-        request: Any,
-    ) -> ComponentSignResponse:
-        """
-        Send a raw role-specific component signing request to /sign/component.
-
-        This is a low-level building block for guarded-account flows. The SDK
-        validates request and response shape but does not assemble transactions.
-        """
-        request_body = _compact_payload(request)
-        if not isinstance(request_body, dict):
-            raise ValueError("component sign request must be a mapping or dataclass")
-        if not request_body.get("request_id"):
-            request_body["request_id"] = _new_sign_request_id()
-        try:
-            _validate_component_sign_request(request_body)
-        except ValueError as e:
-            raise ValueError(f"invalid component sign request: {e}") from e
-        response = self.request_components(_component_sign_to_unified(request_body))
-        expected_indices = set(request_body["target_indices"])
-        actual_indices = {item["target_index"] for item in response.components}
-        if actual_indices != expected_indices:
-            raise SignerError("component sign response target indices do not match request")
-
-        return ComponentSignResponse(
-            request_id=response.request_id,
-            component_key=request_body.get("component_key", ""),
-            signatures=[
-                ComponentSignature(
-                    target_index=item["target_index"],
-                    signature=item["signature"],
-                    signature_scheme=item["signature_scheme"],
-                )
-                for item in response.components
-            ],
-        )
-
     def request_components(self, request: Any) -> ComponentResponse:
         request_body = _compact_payload(request)
         if not isinstance(request_body, dict):
@@ -4272,20 +4066,17 @@ class SignerClient:
             raise SignerError(f"invalid component response: {e}") from e
         if data["request_id"] != request_body["request_id"]:
             raise SignerError("component response request_id does not match request")
+        expected = {
+            target["target_index"]: target["kind"]
+            for target in request_body["targets"]
+        }
+        actual = {
+            component["target_index"]: component["kind"]
+            for component in data["components"]
+        }
+        if actual != expected:
+            raise SignerError("component response target indices or kinds do not match request")
         return ComponentResponse(request_id=data["request_id"], components=list(data["components"]))
-
-    def request_guarded_assemble(
-        self,
-        request: Any,
-    ) -> GuardedAssemblyResponse:
-        request_body = _compact_payload(request)
-        if not isinstance(request_body, dict):
-            raise ValueError("guarded assembly request must be a mapping or dataclass")
-        response = self.request_assemble(_guarded_assembly_to_unified(request_body))
-        return GuardedAssemblyResponse(
-            request_id=response.request_id,
-            signed_group=response.signed_group,
-        )
 
     def request_assemble(
         self,
@@ -4340,7 +4131,7 @@ class SignerClient:
         if data.get("error"):
             raise SignerError(data["error"])
         try:
-            _validate_guarded_assembly_response(data)
+            _validate_assembly_response(data)
         except ValueError as e:
             raise SignerError(f"invalid assembly response: {e}") from e
         if data["request_id"] != request_body["request_id"]:
@@ -4946,15 +4737,41 @@ class SignerClient:
 
 
 def _component_signatures_by_index(
-    response: ComponentSignResponse,
+    response: ComponentResponse,
 ) -> Dict[int, Dict[str, str]]:
     return {
-        item.target_index: {
-            "signature": item.signature,
+        item["target_index"]: {
+            "signature": item["signature"],
             "request_id": response.request_id,
         }
-        for item in response.signatures
+        for item in response.components
     }
+
+
+def _component_request_for_indices(
+    group_bytes_hex: List[str],
+    indices: List[int],
+    kind: str,
+    key: str,
+) -> ComponentRequest:
+    target_set = set(indices)
+    targets = []
+    for index in indices:
+        target: Dict[str, Any] = {"target_index": index, "kind": kind}
+        if kind == COMPONENT_TARGET_KIND_USER:
+            target["auth_address"] = key
+        else:
+            target["component_key"] = key
+        targets.append(target)
+    return ComponentRequest(
+        group_bytes_hex=list(group_bytes_hex),
+        targets=targets,
+        contextual_positions=[
+            {"target_index": index}
+            for index in range(len(group_bytes_hex))
+            if index not in target_set
+        ],
+    )
 
 
 def _sign_guarded_dummies(
@@ -5771,12 +5588,12 @@ def sign_prepared_bounded_sentry_group(
     sentry_component_responses = []
     sentry_signatures: Dict[int, Dict[str, str]] = {}
     for group in sentry_groups.values():
-        response = group["client"].request_component_sign(
-            ComponentSignRequest(
-                role=COMPONENT_SIGN_ROLE_SENTRY,
-                component_key=group["component_key"],
-                group_bytes_hex=frozen_group,
-                target_indices=sorted(group["indices"]),
+        response = group["client"].request_components(
+            _component_request_for_indices(
+                frozen_group,
+                sorted(group["indices"]),
+                COMPONENT_TARGET_KIND_SENTRY,
+                group["component_key"],
             )
         )
         sentry_component_responses.append(response)
@@ -5920,12 +5737,12 @@ def sign_guarded_group(
     user_component_responses = []
     user_signatures: Dict[int, Dict[str, str]] = {}
     for guarded_account in sorted(user_groups):
-        response = user_client.request_component_sign(
-            ComponentSignRequest(
-                role=COMPONENT_SIGN_ROLE_USER,
-                component_key=guarded_account,
-                group_bytes_hex=group_bytes_hex,
-                target_indices=sorted(user_groups[guarded_account]),
+        response = user_client.request_components(
+            _component_request_for_indices(
+                group_bytes_hex,
+                sorted(user_groups[guarded_account]),
+                COMPONENT_TARGET_KIND_USER,
+                guarded_account,
             )
         )
         user_component_responses.append(response)
@@ -5948,12 +5765,12 @@ def sign_guarded_group(
     sentry_component_responses = []
     sentry_signatures: Dict[int, Dict[str, str]] = {}
     for group in sentry_groups.values():
-        response = group["client"].request_component_sign(
-            ComponentSignRequest(
-                role=COMPONENT_SIGN_ROLE_SENTRY,
-                component_key=group["component_key"],
-                group_bytes_hex=group_bytes_hex,
-                target_indices=sorted(group["indices"]),
+        response = group["client"].request_components(
+            _component_request_for_indices(
+                group_bytes_hex,
+                sorted(group["indices"]),
+                COMPONENT_TARGET_KIND_SENTRY,
+                group["component_key"],
             )
         )
         sentry_component_responses.append(response)
@@ -5981,19 +5798,20 @@ def sign_guarded_group(
         if index not in sentry_signatures:
             raise SignerError(f"missing sentry component signature for target {index}")
         assembly_targets.append(
-            GuardedAssemblyTarget(
+            AssemblyTarget(
                 target_index=index,
-                guarded_account=target["guarded_account"],
+                kind=ASSEMBLY_TARGET_KIND_GUARDED,
+                auth_address=target["guarded_account"],
                 user_signature=user_signatures[index]["signature"],
                 user_source_request_id=user_signatures[index]["request_id"],
                 sentry_signature=sentry_signatures[index]["signature"],
                 sentry_source_request_id=sentry_signatures[index]["request_id"],
-                runtime_args=target.get("runtime_args"),
+                guarded_runtime_args=target.get("runtime_args"),
             )
         )
 
-    assembly_response = user_client.request_guarded_assemble(
-        GuardedAssemblyRequest(
+    assembly_response = user_client.request_assemble(
+        AssemblyRequest(
             request_id=assembly_request_id,
             group_bytes_hex=group_bytes_hex,
             targets=assembly_targets,

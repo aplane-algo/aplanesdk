@@ -134,30 +134,30 @@ func TestSignGuardedGroupOneTarget(t *testing.T) {
 	userClient, userServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/sign/component":
-			var req ComponentSignRequest
+			var req capturedComponentRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("decode user component request: %v", err)
 			}
-			if req.Role != ComponentSignRoleUser || req.ComponentKey != "GUARDED" {
+			if req.Role != capturedComponentRoleUser || req.ComponentKey != "GUARDED" {
 				t.Fatalf("user component request = %+v", req)
 			}
-			json.NewEncoder(w).Encode(ComponentSignResponse{
+			json.NewEncoder(w).Encode(ComponentResponse{
 				RequestID: req.RequestID,
-				Signatures: []ComponentSignature{{
+				Components: []Component{{Kind: ComponentTargetKindUser,
 					TargetIndex:     0,
 					Signature:       "user-sig",
 					SignatureScheme: KeyTypeWitnessFalcon1024,
 				}},
 			})
 		case "/sign/assemble":
-			var req GuardedAssemblyRequest
+			var req capturedAssemblyRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("decode assembly request: %v", err)
 			}
 			if len(req.Targets) != 1 || req.Targets[0].UserSignature != "user-sig" || req.Targets[0].SentrySignature != "sentry-sig" {
 				t.Fatalf("assembly targets = %+v", req.Targets)
 			}
-			json.NewEncoder(w).Encode(GuardedAssemblyResponse{
+			json.NewEncoder(w).Encode(AssemblyResponse{
 				RequestID:   req.RequestID,
 				SignedGroup: signedGroupFor(t, req.GroupBytesHex),
 			})
@@ -177,16 +177,16 @@ func TestSignGuardedGroupOneTarget(t *testing.T) {
 		if r.URL.Path != "/sign/component" {
 			t.Fatalf("unexpected sentry path %s", r.URL.Path)
 		}
-		var req ComponentSignRequest
+		var req capturedComponentRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("decode sentry component request: %v", err)
 		}
-		if req.Role != ComponentSignRoleSentry || req.ComponentKey != "SENTRY_COMPONENT" {
+		if req.Role != capturedComponentRoleSentry || req.ComponentKey != "SENTRY_COMPONENT" {
 			t.Fatalf("sentry component request = %+v", req)
 		}
-		json.NewEncoder(w).Encode(ComponentSignResponse{
+		json.NewEncoder(w).Encode(ComponentResponse{
 			RequestID: req.RequestID,
-			Signatures: []ComponentSignature{{
+			Components: []Component{{Kind: ComponentTargetKindSentry,
 				TargetIndex:     0,
 				Signature:       "sentry-sig",
 				SignatureScheme: KeyTypeWitnessFalcon1024,
@@ -219,26 +219,26 @@ func TestSignGuardedGroupBatchesSharedSentryKey(t *testing.T) {
 	userClient, userServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/sign/component":
-			var req ComponentSignRequest
+			var req capturedComponentRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("decode user component request: %v", err)
 			}
 			if len(req.TargetIndices) != 2 {
 				t.Fatalf("user target indices = %+v", req.TargetIndices)
 			}
-			json.NewEncoder(w).Encode(ComponentSignResponse{
+			json.NewEncoder(w).Encode(ComponentResponse{
 				RequestID: req.RequestID,
-				Signatures: []ComponentSignature{
-					{TargetIndex: 0, Signature: "user-0", SignatureScheme: KeyTypeWitnessFalcon1024},
-					{TargetIndex: 1, Signature: "user-1", SignatureScheme: KeyTypeWitnessFalcon1024},
+				Components: []Component{
+					{TargetIndex: 0, Kind: ComponentTargetKindUser, Signature: "user-0", SignatureScheme: KeyTypeWitnessFalcon1024},
+					{TargetIndex: 1, Kind: ComponentTargetKindUser, Signature: "user-1", SignatureScheme: KeyTypeWitnessFalcon1024},
 				},
 			})
 		case "/sign/assemble":
-			var req GuardedAssemblyRequest
+			var req capturedAssemblyRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("decode assembly request: %v", err)
 			}
-			json.NewEncoder(w).Encode(GuardedAssemblyResponse{
+			json.NewEncoder(w).Encode(AssemblyResponse{
 				RequestID:   req.RequestID,
 				SignedGroup: signedGroupFor(t, req.GroupBytesHex),
 			})
@@ -257,18 +257,18 @@ func TestSignGuardedGroupBatchesSharedSentryKey(t *testing.T) {
 	sentryCalls := 0
 	sentryClient, sentryServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		sentryCalls++
-		var req ComponentSignRequest
+		var req capturedComponentRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("decode sentry component request: %v", err)
 		}
 		if len(req.TargetIndices) != 2 {
 			t.Fatalf("sentry target indices = %+v", req.TargetIndices)
 		}
-		json.NewEncoder(w).Encode(ComponentSignResponse{
+		json.NewEncoder(w).Encode(ComponentResponse{
 			RequestID: req.RequestID,
-			Signatures: []ComponentSignature{
-				{TargetIndex: 0, Signature: "sentry-0", SignatureScheme: KeyTypeWitnessFalcon1024},
-				{TargetIndex: 1, Signature: "sentry-1", SignatureScheme: KeyTypeWitnessFalcon1024},
+			Components: []Component{
+				{TargetIndex: 0, Kind: ComponentTargetKindSentry, Signature: "sentry-0", SignatureScheme: KeyTypeWitnessFalcon1024},
+				{TargetIndex: 1, Kind: ComponentTargetKindSentry, Signature: "sentry-1", SignatureScheme: KeyTypeWitnessFalcon1024},
 			},
 		})
 	})
@@ -310,16 +310,16 @@ func TestSignGuardedGroupRejectsMismatchedAssembly(t *testing.T) {
 			userClient, userServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case "/sign/component":
-					var req ComponentSignRequest
+					var req capturedComponentRequest
 					_ = json.NewDecoder(r.Body).Decode(&req)
-					json.NewEncoder(w).Encode(ComponentSignResponse{
+					json.NewEncoder(w).Encode(ComponentResponse{
 						RequestID:  req.RequestID,
-						Signatures: []ComponentSignature{{TargetIndex: 0, Signature: "user-sig", SignatureScheme: KeyTypeWitnessFalcon1024}},
+						Components: []Component{{Kind: ComponentTargetKindUser, TargetIndex: 0, Signature: "user-sig", SignatureScheme: KeyTypeWitnessFalcon1024}},
 					})
 				case "/sign/assemble":
-					var req GuardedAssemblyRequest
+					var req capturedAssemblyRequest
 					_ = json.NewDecoder(r.Body).Decode(&req)
-					json.NewEncoder(w).Encode(GuardedAssemblyResponse{RequestID: req.RequestID, SignedGroup: badSignedGroup})
+					json.NewEncoder(w).Encode(AssemblyResponse{RequestID: req.RequestID, SignedGroup: badSignedGroup})
 				case "/status":
 					json.NewEncoder(w).Encode(StatusResponse{
 						IdentityID:          "default",
@@ -333,11 +333,11 @@ func TestSignGuardedGroupRejectsMismatchedAssembly(t *testing.T) {
 			defer userServer.Close()
 
 			sentryClient, sentryServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
-				var req ComponentSignRequest
+				var req capturedComponentRequest
 				_ = json.NewDecoder(r.Body).Decode(&req)
-				json.NewEncoder(w).Encode(ComponentSignResponse{
+				json.NewEncoder(w).Encode(ComponentResponse{
 					RequestID:  req.RequestID,
-					Signatures: []ComponentSignature{{TargetIndex: 0, Signature: "sentry-sig", SignatureScheme: KeyTypeWitnessFalcon1024}},
+					Components: []Component{{Kind: ComponentTargetKindSentry, TargetIndex: 0, Signature: "sentry-sig", SignatureScheme: KeyTypeWitnessFalcon1024}},
 				})
 			})
 			defer sentryServer.Close()
@@ -388,20 +388,20 @@ func TestSignGuardedGroupMixedPrimaryAndGuarded(t *testing.T) {
 			}
 			json.NewEncoder(w).Encode(GroupSignResponse{Signed: []string{signedTxnHexFor(t, req.Requests[0].TxnBytesHex), "", ""}})
 		case "/sign/component":
-			var req ComponentSignRequest
+			var req capturedComponentRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("decode user component request: %v", err)
 			}
-			json.NewEncoder(w).Encode(ComponentSignResponse{
+			json.NewEncoder(w).Encode(ComponentResponse{
 				RequestID: req.RequestID,
-				Signatures: []ComponentSignature{{
+				Components: []Component{{Kind: ComponentTargetKindUser,
 					TargetIndex:     1,
 					Signature:       "user-sig",
 					SignatureScheme: KeyTypeWitnessFalcon1024,
 				}},
 			})
 		case "/sign/assemble":
-			var req GuardedAssemblyRequest
+			var req capturedAssemblyRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("decode assembly request: %v", err)
 			}
@@ -415,7 +415,7 @@ func TestSignGuardedGroupMixedPrimaryAndGuarded(t *testing.T) {
 			if !seen[0] || !seen[2] {
 				t.Fatalf("assembly passthrough = %+v", req.Passthrough)
 			}
-			json.NewEncoder(w).Encode(GuardedAssemblyResponse{
+			json.NewEncoder(w).Encode(AssemblyResponse{
 				RequestID:   req.RequestID,
 				SignedGroup: signedGroupFor(t, req.GroupBytesHex),
 			})
@@ -426,13 +426,13 @@ func TestSignGuardedGroupMixedPrimaryAndGuarded(t *testing.T) {
 	defer userServer.Close()
 
 	sentryClient, sentryServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
-		var req ComponentSignRequest
+		var req capturedComponentRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("decode sentry component request: %v", err)
 		}
-		json.NewEncoder(w).Encode(ComponentSignResponse{
+		json.NewEncoder(w).Encode(ComponentResponse{
 			RequestID: req.RequestID,
-			Signatures: []ComponentSignature{{
+			Components: []Component{{Kind: ComponentTargetKindSentry,
 				TargetIndex:     1,
 				Signature:       "sentry-sig",
 				SignatureScheme: KeyTypeWitnessFalcon1024,
@@ -455,7 +455,7 @@ func TestSignGuardedGroupMixedPrimaryAndGuarded(t *testing.T) {
 			GuardedAccount:    "GUARDED",
 			LogicSigResources: guardedTestResources(),
 		}},
-		Passthrough: []GuardedPassthroughItem{{
+		Passthrough: []AssemblyPassthroughItem{{
 			TargetIndex:  2,
 			SignedTxnHex: signedTxnHexFor(t, canonicalTxnHex(3)),
 			Authorization: &GuardedPassthroughAuthorization{
@@ -504,26 +504,26 @@ func TestSignPreparedGuardedGroupUsesSignerPlan(t *testing.T) {
 	userClient, userServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/sign/component":
-			var req ComponentSignRequest
+			var req capturedComponentRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("decode user component request: %v", err)
 			}
-			if req.Role != ComponentSignRoleUser || req.ComponentKey != guarded {
+			if req.Role != capturedComponentRoleUser || req.ComponentKey != guarded {
 				t.Fatalf("user component request = %+v", req)
 			}
 			if len(req.GroupBytesHex) != 4 || len(req.TargetIndices) != 1 || req.TargetIndices[0] != 0 {
 				t.Fatalf("user component group/targets = len %d targets %+v", len(req.GroupBytesHex), req.TargetIndices)
 			}
-			json.NewEncoder(w).Encode(ComponentSignResponse{
+			json.NewEncoder(w).Encode(ComponentResponse{
 				RequestID: req.RequestID,
-				Signatures: []ComponentSignature{{
+				Components: []Component{{Kind: ComponentTargetKindUser,
 					TargetIndex:     0,
 					Signature:       "user-sig",
 					SignatureScheme: KeyTypeWitnessFalcon1024,
 				}},
 			})
 		case "/sign/assemble":
-			var req GuardedAssemblyRequest
+			var req capturedAssemblyRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("decode assembly request: %v", err)
 			}
@@ -538,7 +538,7 @@ func TestSignPreparedGuardedGroupUsesSignerPlan(t *testing.T) {
 					t.Fatalf("dummy passthrough %d = %+v", i, item)
 				}
 			}
-			json.NewEncoder(w).Encode(GuardedAssemblyResponse{
+			json.NewEncoder(w).Encode(AssemblyResponse{
 				RequestID:   req.RequestID,
 				SignedGroup: signedGroupFor(t, req.GroupBytesHex),
 			})
@@ -589,16 +589,16 @@ func TestSignPreparedGuardedGroupUsesSignerPlan(t *testing.T) {
 		if r.URL.Path != "/sign/component" {
 			t.Fatalf("unexpected sentry path %s", r.URL.Path)
 		}
-		var req ComponentSignRequest
+		var req capturedComponentRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("decode sentry component request: %v", err)
 		}
-		if req.Role != ComponentSignRoleSentry || len(req.GroupBytesHex) != 4 || len(req.TargetIndices) != 1 || req.TargetIndices[0] != 0 {
+		if req.Role != capturedComponentRoleSentry || len(req.GroupBytesHex) != 4 || len(req.TargetIndices) != 1 || req.TargetIndices[0] != 0 {
 			t.Fatalf("sentry component request = %+v", req)
 		}
-		json.NewEncoder(w).Encode(ComponentSignResponse{
+		json.NewEncoder(w).Encode(ComponentResponse{
 			RequestID: req.RequestID,
-			Signatures: []ComponentSignature{{
+			Components: []Component{{Kind: ComponentTargetKindSentry,
 				TargetIndex:     0,
 				Signature:       "sentry-sig",
 				SignatureScheme: KeyTypeWitnessFalcon1024,

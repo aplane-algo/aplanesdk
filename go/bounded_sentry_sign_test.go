@@ -85,17 +85,17 @@ func TestSignPreparedBoundedSentryGroupOneTarget(t *testing.T) {
 		if r.URL.Path != "/sign/component" {
 			t.Fatalf("unexpected sentry path %s", r.URL.Path)
 		}
-		var req ComponentSignRequest
+		var req capturedComponentRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("decode sentry component request: %v", err)
 		}
-		if req.Role != ComponentSignRoleSentry || req.ComponentKey != "SENTRY_COMPONENT" ||
+		if req.Role != capturedComponentRoleSentry || req.ComponentKey != "SENTRY_COMPONENT" ||
 			len(req.GroupBytesHex) != 1 || req.GroupBytesHex[0] != frozenGroup[0] {
 			t.Fatalf("sentry component request = %+v", req)
 		}
-		json.NewEncoder(w).Encode(ComponentSignResponse{
+		json.NewEncoder(w).Encode(ComponentResponse{
 			RequestID: req.RequestID,
-			Signatures: []ComponentSignature{{
+			Components: []Component{{Kind: ComponentTargetKindSentry,
 				TargetIndex: 0, Signature: "sentry-sig", SignatureScheme: KeyTypeWitnessFalcon1024,
 			}},
 		})
@@ -202,13 +202,13 @@ func TestSignPreparedBoundedSentryGroupDeclaresNativePQPrimary(t *testing.T) {
 	defer userServer.Close()
 
 	sentryClient, sentryServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
-		var req ComponentSignRequest
+		var req capturedComponentRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("decode sentry component request: %v", err)
 		}
-		json.NewEncoder(w).Encode(ComponentSignResponse{
+		json.NewEncoder(w).Encode(ComponentResponse{
 			RequestID: req.RequestID,
-			Signatures: []ComponentSignature{{
+			Components: []Component{{Kind: ComponentTargetKindSentry,
 				TargetIndex: 0, Signature: "sentry-sig", SignatureScheme: KeyTypeWitnessFalcon1024,
 			}},
 		})

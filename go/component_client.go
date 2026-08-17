@@ -104,5 +104,17 @@ func (c *SignerClient) RequestComponentsWithContext(ctx context.Context, reqBody
 	if result.RequestID != reqBody.RequestID {
 		return nil, fmt.Errorf("component response request_id does not match request")
 	}
+	expected := make(map[int]ComponentTargetKind, len(reqBody.Targets))
+	for _, target := range reqBody.Targets {
+		expected[target.TargetIndex] = target.Kind
+	}
+	if len(result.Components) != len(expected) {
+		return nil, fmt.Errorf("component response target indices or kinds do not match request")
+	}
+	for _, component := range result.Components {
+		if expected[component.TargetIndex] != component.Kind {
+			return nil, fmt.Errorf("component response target indices or kinds do not match request")
+		}
+	}
 	return &result, nil
 }

@@ -146,10 +146,6 @@ export type {
   CancelSignRequest,
   CancelSignResponse,
   SignCancelState,
-  ComponentSignRole,
-  ComponentSignRequest,
-  ComponentSignature,
-  ComponentSignResponse,
   ComponentTargetKind,
   ComponentRequest,
   ComponentTarget,
@@ -159,11 +155,8 @@ export type {
   AssemblyRequest,
   AssemblyTarget,
   AssemblyResponse,
-  GuardedAssemblyRequest,
-  GuardedAssemblyTarget,
   GuardedPassthroughItem,
   GuardedPassthroughAuthorization,
-  GuardedAssemblyResponse,
   ComponentContextPosition,
   ComponentDummyPosition,
   SentryReferenceCandidate,
@@ -173,8 +166,6 @@ export type {
 } from "./types.js";
 
 export {
-  COMPONENT_SIGN_ROLE_USER,
-  COMPONENT_SIGN_ROLE_SENTRY,
   SIGNING_FLOW_SENTRY1,
   SIGNING_FLOW_BOUNDED1,
   SIGNING_FLOW_BOUNDED_SENTRY1,

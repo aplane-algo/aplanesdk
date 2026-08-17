@@ -208,7 +208,7 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 	if primary != nil {
 		result.PrimarySignResponse = primary.response
 	}
-	passthrough := make([]GuardedPassthroughItem, 0, len(planned)-len(targets))
+	passthrough := make([]AssemblyPassthroughItem, 0, len(planned)-len(targets))
 	if primary != nil {
 		passthrough = append(passthrough, primary.passthrough...)
 	}
@@ -307,7 +307,7 @@ func requestBoundedPrimaryPassthrough(
 	if err != nil {
 		return nil, fmt.Errorf("signing non-bounded group positions failed: %w", err)
 	}
-	passthrough := make([]GuardedPassthroughItem, 0, len(primaryByIndex))
+	passthrough := make([]AssemblyPassthroughItem, 0, len(primaryByIndex))
 	for index := range primaryByIndex {
 		if index >= len(response.Signed) || response.Signed[index] == "" {
 			return nil, fmt.Errorf("primary signer returned no signed transaction for target %d", index)
@@ -315,7 +315,7 @@ func requestBoundedPrimaryPassthrough(
 		if err := signedTxnMatchesCanonical("primary passthrough", index, response.Signed[index], groupBytesHex[index]); err != nil {
 			return nil, err
 		}
-		passthrough = append(passthrough, GuardedPassthroughItem{
+		passthrough = append(passthrough, AssemblyPassthroughItem{
 			TargetIndex: index, SignedTxnHex: response.Signed[index],
 		})
 	}

@@ -8,9 +8,6 @@ import { SignerError } from "./errors.js";
  * Runtime argument specification for a generic LogicSig.
  * Position in the array corresponds to the TEAL arg index.
  */
-export const COMPONENT_SIGN_ROLE_USER = "user";
-export const COMPONENT_SIGN_ROLE_SENTRY = "sentry";
-
 /**
  * Signing choreography label for the sentry co-signed component flow (one
  * user plus one sentry component signature per target, assembled via
@@ -467,7 +464,6 @@ export interface CancelSignResponse {
   error?: string;
 }
 
-export type ComponentSignRole = typeof COMPONENT_SIGN_ROLE_USER | typeof COMPONENT_SIGN_ROLE_SENTRY;
 export type ComponentTargetKind = "user" | "sentry" | "bounded-base";
 
 export interface ComponentRequest {
@@ -502,35 +498,6 @@ export interface ComponentResponse {
   components: Component[];
 }
 
-/**
- * Request payload for /sign/component.
- */
-export interface ComponentSignRequest {
-  request_id?: string;
-  role: ComponentSignRole;
-  component_key?: string;
-  group_bytes_hex: string[];
-  target_indices: number[];
-}
-
-/**
- * One raw role-separated component signature.
- */
-export interface ComponentSignature {
-  target_index: number;
-  signature: string;
-  signature_scheme: string;
-}
-
-/**
- * Response payload from /sign/component.
- */
-export interface ComponentSignResponse {
-  request_id: string;
-  component_key?: string;
-  signatures: ComponentSignature[];
-}
-
 export type AssemblyTargetKind = "guarded" | "bounded-sentry";
 
 export interface AssemblyTarget {
@@ -561,19 +528,6 @@ export interface AssemblyResponse {
 }
 
 /**
- * One guarded-account group position plus user and sentry component signatures.
- */
-export interface GuardedAssemblyTarget {
-  target_index: number;
-  guarded_account: string;
-  user_signature: string;
-  user_source_request_id?: string;
-  sentry_signature: string;
-  sentry_source_request_id?: string;
-  runtime_args?: string[];
-}
-
-/**
  * Already-signed group position preserved during guarded assembly.
  */
 export interface GuardedPassthroughItem {
@@ -588,24 +542,6 @@ export interface GuardedPassthroughAuthorization {
   /** Omit both fields to explicitly declare ordinary Ed25519 authorization. */
   logicSigResources?: LogicSigResourceUsage;
   pqScheme?: string;
-}
-
-/**
- * Request payload for /sign/assemble.
- */
-export interface GuardedAssemblyRequest {
-  request_id?: string;
-  group_bytes_hex: string[];
-  targets?: GuardedAssemblyTarget[];
-  passthrough?: GuardedPassthroughItem[];
-}
-
-/**
- * Response payload from /sign/assemble.
- */
-export interface GuardedAssemblyResponse {
-  request_id: string;
-  signed_group: string[];
 }
 
 /** Authorization-budget context for a non-target original position. */

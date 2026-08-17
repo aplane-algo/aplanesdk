@@ -46,15 +46,11 @@ import type {
   SigningArg,
   MutationReport,
   CancelSignResponse,
-  ComponentSignRequest,
-  ComponentSignResponse,
   ComponentRequest,
   ComponentResponse,
   AssemblyRequest,
   AssemblyTarget,
   AssemblyResponse,
-  GuardedAssemblyRequest,
-  GuardedAssemblyResponse,
   GuardedPassthroughItem,
   SentryReferenceCandidate,
   AdminSyncSentryReferencesRequest,
@@ -119,8 +115,6 @@ const MAX_DISCOVERED_APPROVAL_WAIT = 1800000;
 const APPROVAL_WAIT_REFRESH = 300000;
 const MAX_SIGN_REQUEST_ID_LENGTH = 128;
 const MAX_COMPONENT_GROUP_SIZE = 16;
-const COMPONENT_SIGN_ROLE_USER = "user";
-const COMPONENT_SIGN_ROLE_SENTRY = "sentry";
 const APP_CALL_MAX_APP_ARGS = 16;
 const APP_CALL_METHOD_ARGS_TUPLE_THRESHOLD = APP_CALL_MAX_APP_ARGS - 2;
 const GUARDED_MAX_GROUP_SIZE = 16;
@@ -159,15 +153,38 @@ function validateSignRequestId(requestId: string, required = false): void {
 
 type ComponentSignatureByIndex = Map<number, { signature: string; requestId: string }>;
 
-function componentSignaturesByIndex(response: ComponentSignResponse): ComponentSignatureByIndex {
-  const signatures: ComponentSignatureByIndex = new Map();
-  for (const signature of response.signatures) {
-    signatures.set(signature.target_index, {
-      signature: signature.signature,
-      requestId: response.request_id,
+function componentSignaturesByIndex(response: ComponentResponse): ComponentSignatureByIndex {
+	const signatures: ComponentSignatureByIndex = new Map();
+	for (const component of response.components) {
+		signatures.set(component.target_index, {
+			signature: component.signature || "",
+			requestId: response.request_id,
     });
   }
   return signatures;
+}
+
+function componentRequestForIndices(
+  groupBytesHex: string[],
+  indices: number[],
+  kind: "user" | "sentry",
+  key: string,
+): ComponentRequest {
+  const targetSet = new Set(indices);
+  return {
+    group_bytes_hex: [...groupBytesHex],
+    targets: indices.map((targetIndex) => kind === "user" ? {
+      target_index: targetIndex,
+      kind,
+      auth_address: key,
+    } : {
+      target_index: targetIndex,
+      kind,
+      component_key: key,
+    }),
+    contextual_positions: groupBytesHex.flatMap((_, index) =>
+      targetSet.has(index) ? [] : [{ target_index: index }]),
+  };
 }
 
 async function resolveSentryForTarget(
@@ -968,15 +985,13 @@ export async function signPreparedBoundedSentryGroup(
     }
     group.indices.push(target.targetIndex);
   }
-  const sentryComponentResponses: ComponentSignResponse[] = [];
+  const sentryComponentResponses: ComponentResponse[] = [];
   const sentrySignatures: ComponentSignatureByIndex = new Map();
   for (const group of sentryGroups) {
-    const response = await group.client.requestComponentSign({
-      role: COMPONENT_SIGN_ROLE_SENTRY,
-      component_key: group.componentKey,
-      group_bytes_hex: frozenGroup,
-      target_indices: group.indices.sort((a, b) => a - b),
-    }, { signal: options.signal });
+    const response = await group.client.requestComponents(
+      componentRequestForIndices(frozenGroup, group.indices.sort((a, b) => a - b), "sentry", group.componentKey),
+      { signal: options.signal },
+    );
     sentryComponentResponses.push(response);
     for (const [index, signature] of componentSignaturesByIndex(response)) {
       sentrySignatures.set(index, signature);
@@ -1182,15 +1197,18 @@ export async function signGuardedGroup(options: GuardedSignOptions): Promise<Gua
     userGroups.set(target.guardedAccount, indices);
   }
 
-  const userComponentResponses: ComponentSignResponse[] = [];
+  const userComponentResponses: ComponentResponse[] = [];
   const userSignatures: ComponentSignatureByIndex = new Map();
   for (const guardedAccount of Array.from(userGroups.keys()).sort()) {
-    const response = await options.userClient.requestComponentSign({
-      role: COMPONENT_SIGN_ROLE_USER,
-      component_key: guardedAccount,
-      group_bytes_hex: options.groupBytesHex,
-      target_indices: (userGroups.get(guardedAccount) || []).sort((a, b) => a - b),
-    }, { signal: options.signal });
+    const response = await options.userClient.requestComponents(
+      componentRequestForIndices(
+        options.groupBytesHex,
+        (userGroups.get(guardedAccount) || []).sort((a, b) => a - b),
+        "user",
+        guardedAccount,
+      ),
+      { signal: options.signal },
+    );
     userComponentResponses.push(response);
     for (const [index, signature] of componentSignaturesByIndex(response)) {
       userSignatures.set(index, signature);
@@ -1214,15 +1232,18 @@ export async function signGuardedGroup(options: GuardedSignOptions): Promise<Gua
     group.indices.push(target.targetIndex);
   }
 
-  const sentryComponentResponses: ComponentSignResponse[] = [];
+  const sentryComponentResponses: ComponentResponse[] = [];
   const sentrySignatures: ComponentSignatureByIndex = new Map();
   for (const group of sentryGroups) {
-    const response = await group.client.requestComponentSign({
-      role: COMPONENT_SIGN_ROLE_SENTRY,
-      component_key: group.componentKey,
-      group_bytes_hex: options.groupBytesHex,
-      target_indices: group.indices.sort((a, b) => a - b),
-    }, { signal: options.signal });
+    const response = await group.client.requestComponents(
+      componentRequestForIndices(
+        options.groupBytesHex,
+        group.indices.sort((a, b) => a - b),
+        "sentry",
+        group.componentKey,
+      ),
+      { signal: options.signal },
+    );
     sentryComponentResponses.push(response);
     for (const [index, signature] of componentSignaturesByIndex(response)) {
       sentrySignatures.set(index, signature);
@@ -1255,16 +1276,17 @@ export async function signGuardedGroup(options: GuardedSignOptions): Promise<Gua
     }
     return {
       target_index: target.targetIndex,
-      guarded_account: target.guardedAccount,
+      kind: "guarded" as const,
+      auth_address: target.guardedAccount,
       user_signature: userSignature.signature,
       user_source_request_id: userSignature.requestId,
       sentry_signature: sentrySignature.signature,
       sentry_source_request_id: sentrySignature.requestId,
-      runtime_args: target.runtimeArgs,
+      guarded_runtime_args: target.runtimeArgs,
     };
   });
 
-  const assemblyResponse = await options.userClient.requestGuardedAssemble({
+  const assemblyResponse = await options.userClient.requestAssemble({
     request_id: options.assemblyRequestId,
     group_bytes_hex: options.groupBytesHex,
     targets: assemblyTargets,
@@ -1294,97 +1316,6 @@ function validateComponentGroupBytes(items: string[]): void {
       throw new SignerError(`group_bytes_hex ${index} is empty`);
     }
   });
-}
-
-function validateComponentTargetIndices(indices: number[], groupLen: number): void {
-  if (!indices || indices.length === 0) {
-    throw new SignerError("target_indices is empty");
-  }
-  const seen = new Set<number>();
-  for (const index of indices) {
-    if (!Number.isInteger(index) || index < 0 || index >= groupLen) {
-      throw new SignerError(`target_indices ${index} out of range`);
-    }
-    if (seen.has(index)) {
-      throw new SignerError(`target_indices contains duplicate ${index}`);
-    }
-    seen.add(index);
-  }
-}
-
-function validateComponentSignRequest(request: ComponentSignRequest): void {
-  validateSignRequestId(request.request_id || "");
-  if (request.role === COMPONENT_SIGN_ROLE_USER) {
-    if (!request.component_key) {
-      throw new SignerError("component_key is required for user role");
-    }
-  } else if (request.role !== COMPONENT_SIGN_ROLE_SENTRY) {
-    throw new SignerError(
-      `role must be ${JSON.stringify(COMPONENT_SIGN_ROLE_USER)} or ${JSON.stringify(COMPONENT_SIGN_ROLE_SENTRY)}`
-    );
-  }
-  validateComponentGroupBytes(request.group_bytes_hex);
-  validateComponentTargetIndices(request.target_indices, request.group_bytes_hex.length);
-}
-
-function validateComponentSignResponse(
-  response: ComponentSignResponse,
-  request?: ComponentSignRequest,
-): void {
-  if (!response.request_id) {
-    throw new SignerError("request_id is required");
-  }
-  validateSignRequestId(response.request_id);
-  if (!response.signatures || response.signatures.length === 0) {
-    throw new SignerError("signatures array is empty");
-  }
-  const seen = new Set<number>();
-  response.signatures.forEach((signature, index) => {
-    const item = index + 1;
-    if (!Number.isInteger(signature.target_index) || signature.target_index < 0) {
-      throw new SignerError(`signature ${item}: target_index must be non-negative`);
-    }
-    if (seen.has(signature.target_index)) {
-      throw new SignerError(`signature ${item}: duplicate target_index ${signature.target_index}`);
-    }
-    seen.add(signature.target_index);
-    if (!signature.signature) {
-      throw new SignerError(`signature ${item}: signature is required`);
-    }
-    if (!signature.signature_scheme) {
-      throw new SignerError(`signature ${item}: signature_scheme is required`);
-    }
-  });
-  if (request && response.request_id !== request.request_id) {
-    throw new SignerError("component sign response request_id does not match request");
-  }
-  if (request) {
-    const expected = new Set(request.target_indices);
-    if (
-      seen.size !== expected.size ||
-      [...seen].some((index) => !expected.has(index))
-    ) {
-      throw new SignerError(
-        "component sign response target indices do not match request",
-      );
-    }
-  }
-}
-
-function componentSignToUnified(request: ComponentSignRequest): ComponentRequest {
-  const targets = request.target_indices.map((targetIndex) => request.role === COMPONENT_SIGN_ROLE_USER ? {
-    target_index: targetIndex, kind: "user" as const, auth_address: request.component_key || "",
-  } : {
-    target_index: targetIndex, kind: "sentry" as const, component_key: request.component_key,
-  });
-  const targetSet = new Set(request.target_indices);
-  return {
-    request_id: request.request_id,
-    group_bytes_hex: request.group_bytes_hex,
-    targets,
-    contextual_positions: request.group_bytes_hex.flatMap((_, index) =>
-      targetSet.has(index) ? [] : [{ target_index: index }]),
-  };
 }
 
 function validateComponentRequest(request: ComponentRequest): void {
@@ -1664,24 +1595,6 @@ function validateAssemblyIndex(index: number, groupLen: number, covered: Set<num
   covered.add(index);
 }
 
-function guardedAssemblyToUnified(request: GuardedAssemblyRequest): AssemblyRequest {
-  return {
-    request_id: request.request_id,
-    group_bytes_hex: request.group_bytes_hex,
-    targets: (request.targets || []).map((target) => ({
-      target_index: target.target_index,
-      kind: "guarded",
-      auth_address: target.guarded_account,
-      user_signature: target.user_signature,
-      user_source_request_id: target.user_source_request_id,
-      guarded_runtime_args: target.runtime_args,
-      sentry_signature: target.sentry_signature,
-      sentry_source_request_id: target.sentry_source_request_id,
-    })),
-    passthrough: request.passthrough,
-  };
-}
-
 function validateAssemblyRequest(request: AssemblyRequest): void {
   validateSignRequestId(request.request_id || "");
   validateComponentGroupBytes(request.group_bytes_hex);
@@ -1734,7 +1647,7 @@ function validateAssemblyRequest(request: AssemblyRequest): void {
   }
 }
 
-function validateGuardedAssemblyResponse(response: GuardedAssemblyResponse): void {
+function validateAssemblyResponse(response: AssemblyResponse): void {
   if (!response.request_id) {
     throw new SignerError("request_id is required");
   }
@@ -2050,10 +1963,10 @@ export interface PreparedGuardedGroupOptions {
 
 export interface GuardedSignResult {
   signedGroup: string[];
-  userComponentResponses: ComponentSignResponse[];
-  sentryComponentResponses: ComponentSignResponse[];
+  userComponentResponses: ComponentResponse[];
+  sentryComponentResponses: ComponentResponse[];
   primarySignResponse?: GroupSignResponse;
-  assemblyResponse: GuardedAssemblyResponse;
+  assemblyResponse: AssemblyResponse;
   boundedComponentResponse?: ComponentResponse;
   boundedAssemblyResponse?: AssemblyResponse;
 }
@@ -3910,42 +3823,6 @@ export class SignerClient {
     return data;
   }
 
-  /**
-   * Send a raw role-specific component signing request to /sign/component.
-   *
-   * This is a low-level building block for guarded-account flows. The SDK
-   * validates request and response shape but does not assemble transactions.
-   */
-  async requestComponentSign(
-    request: ComponentSignRequest,
-    options?: { signal?: AbortSignal },
-  ): Promise<ComponentSignResponse> {
-    const requestBody: ComponentSignRequest = {
-      ...request,
-      request_id: request.request_id || newSignRequestId(),
-    };
-    try {
-      validateComponentSignRequest(requestBody);
-    } catch (error) {
-      throw new SignerError(
-        `invalid component sign request: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-
-    const response = await this.requestComponents(componentSignToUnified(requestBody), options);
-    const result: ComponentSignResponse = {
-      request_id: response.request_id,
-      component_key: requestBody.component_key,
-      signatures: response.components.map((component) => ({
-        target_index: component.target_index,
-        signature: component.signature || "",
-        signature_scheme: component.signature_scheme,
-      })),
-    };
-    validateComponentSignResponse(result, requestBody);
-    return result;
-  }
-
   async requestComponents(
     request: ComponentRequest,
     options?: { signal?: AbortSignal },
@@ -3982,47 +3859,21 @@ export class SignerClient {
     if (response.status === 503) throw new SignerUnavailableError(await this.errorMessage(response, "Signer unavailable"));
     if (response.status === 400) throw await this.badRequestError(response);
     if (response.status !== 200) throw await this.signerHTTPError(response, `Component signing failed: HTTP ${response.status}`);
-    let data: ComponentResponse & { error?: string; signatures?: ComponentSignResponse["signatures"] };
+    let data: ComponentResponse & { error?: string };
     try {
       data = (await response.json()) as ComponentResponse & { error?: string };
     } catch {
       throw new SignerError("Server returned invalid JSON");
     }
     if (data.error) throw new SignerError(data.error);
-    if ((!data.components || data.components.length === 0) && data.signatures?.length) {
-      data = {
-        ...data,
-        components: data.signatures.map((signature) => ({
-          target_index: signature.target_index,
-          kind: "sentry",
-          signature: signature.signature,
-          signature_scheme: signature.signature_scheme,
-        })),
-      };
-    } else if (data.components?.some((component: any) => !component.kind && component.bounded_account)) {
-      data = {
-        ...data,
-        components: data.components.map((component: any) => ({
-          ...component,
-          kind: "bounded-base",
-          auth_address: component.bounded_account,
-        })),
-      };
-    }
     validateComponentResponse(data);
     if (data.request_id !== requestBody.request_id) throw new SignerError("component response request_id does not match request");
+    const expected = new Map(requestBody.targets.map((target) => [target.target_index, target.kind]));
+    const actual = new Map(data.components.map((component) => [component.target_index, component.kind]));
+    if (expected.size !== actual.size || [...expected].some(([index, kind]) => actual.get(index) !== kind)) {
+      throw new SignerError("component response target indices or kinds do not match request");
+    }
     return data;
-  }
-
-  /**
-   * Send a raw guarded transaction assembly request to /sign/assemble.
-   */
-  async requestGuardedAssemble(
-    request: GuardedAssemblyRequest,
-    options?: { signal?: AbortSignal },
-  ): Promise<GuardedAssemblyResponse> {
-    const response = await this.requestAssemble(guardedAssemblyToUnified(request), options);
-    return response;
   }
 
   async requestAssemble(
@@ -4080,7 +3931,7 @@ export class SignerClient {
     }
 
     try {
-      validateGuardedAssemblyResponse(data);
+      validateAssemblyResponse(data);
     } catch (error) {
       throw new SignerError(
         `invalid assembly response: ${error instanceof Error ? error.message : String(error)}`

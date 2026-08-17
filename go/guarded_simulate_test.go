@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestRequestComponentSignUserRoleDiscoversApprovalWait(t *testing.T) {
+func TestRequestComponentsUserKindDiscoversApprovalWait(t *testing.T) {
 	var paths []string
 	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
@@ -21,13 +21,13 @@ func TestRequestComponentSignUserRoleDiscoversApprovalWait(t *testing.T) {
 				ApprovalWaitSeconds: 60,
 			})
 		case "/sign/component":
-			var req ComponentSignRequest
+			var req ComponentRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("decode component request: %v", err)
 			}
-			json.NewEncoder(w).Encode(ComponentSignResponse{
+			json.NewEncoder(w).Encode(ComponentResponse{
 				RequestID: req.RequestID,
-				Signatures: []ComponentSignature{{
+				Components: []Component{{Kind: req.Targets[0].Kind,
 					TargetIndex:     0,
 					Signature:       "sig",
 					SignatureScheme: KeyTypeWitnessFalcon1024,
@@ -39,28 +39,24 @@ func TestRequestComponentSignUserRoleDiscoversApprovalWait(t *testing.T) {
 	})
 	defer server.Close()
 
-	userReq := ComponentSignRequest{
-		Role:          ComponentSignRoleUser,
-		ComponentKey:  "GUARDED",
+	userReq := ComponentRequest{
 		GroupBytesHex: []string{"5458a16374786ea0"},
-		TargetIndices: []int{0},
+		Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindUser, AuthAddress: "GUARDED"}},
 	}
-	if _, err := client.RequestComponentSign(userReq); err != nil {
-		t.Fatalf("RequestComponentSign(user) error = %v", err)
+	if _, err := client.RequestComponents(userReq); err != nil {
+		t.Fatalf("RequestComponents(user) error = %v", err)
 	}
 	if len(paths) != 2 || paths[0] != "/status" || paths[1] != "/sign/component" {
 		t.Fatalf("user-role request paths = %v, want approval-wait discovery before component signing", paths)
 	}
 
 	paths = nil
-	sentryReq := ComponentSignRequest{
-		Role:          ComponentSignRoleSentry,
-		ComponentKey:  "SENTRYKEY",
+	sentryReq := ComponentRequest{
 		GroupBytesHex: []string{"5458a16374786ea0"},
-		TargetIndices: []int{0},
+		Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindSentry, ComponentKey: "SENTRYKEY"}},
 	}
-	if _, err := client.RequestComponentSign(sentryReq); err != nil {
-		t.Fatalf("RequestComponentSign(sentry) error = %v", err)
+	if _, err := client.RequestComponents(sentryReq); err != nil {
+		t.Fatalf("RequestComponents(sentry) error = %v", err)
 	}
 	if len(paths) != 1 || paths[0] != "/sign/component" {
 		t.Fatalf("sentry-role request paths = %v, want no approval-wait discovery", paths)
