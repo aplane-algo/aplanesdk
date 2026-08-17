@@ -44,8 +44,10 @@ SSH tunnel connection:
 	client, err := aplane.ConnectSSH(
 		"signer.example.com",
 		"your-token",
-		"~/.ssh/id_ed25519",
-		nil,
+		"~/aplane/apclient/.ssh/id_ed25519",
+		&aplane.SSHConnectOptions{
+			KnownHostsPath: "~/aplane/apclient/.ssh/known_hosts",
+		},
 	)
 
 From environment (reads endpoints.yaml and the selected endpoint token from

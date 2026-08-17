@@ -105,6 +105,9 @@ yourself in a larger application environment.
 The Python SDK follows the same client data directory convention as
 `apshell`.
 
+APlane never reads or writes the operating-system user's personal `~/.ssh`
+directory. Managed SSH keys and host trust live under `<data_dir>/.ssh/`.
+
 Resolution order (the SDK has no implicit default — `SignerClient.from_env`
 raises `SignerError` if neither is set):
 
@@ -219,8 +222,8 @@ from aplanesdk import SignerClient
 with SignerClient.connect_ssh(
     host="signer.example.com",
     token="your-token",
-    ssh_key_path="~/.ssh/id_ed25519",
-    known_hosts_path="~/.ssh/known_hosts",
+    ssh_key_path="~/aplane/apclient/.ssh/id_ed25519",
+    known_hosts_path="~/aplane/apclient/.ssh/known_hosts",
     ssh_port=1127,
     signer_port=11270,
 ) as client:

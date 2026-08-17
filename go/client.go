@@ -200,6 +200,7 @@ func ConnectSSH(host, token, sshKeyPath string, opts *SSHConnectOptions) (*Signe
 	}
 
 	trustOnFirstUse := opts != nil && opts.TrustOnFirstUse
+	knownHostsPath = ExpandPath(knownHostsPath)
 	tunnel := &sshTunnel{knownHostsPath: knownHostsPath, trustOnFirstUse: trustOnFirstUse}
 	resolvedLocalPort, err := tunnel.connect(host, sshPort, signerPort, localPort, token, ExpandPath(sshKeyPath))
 	if err != nil {

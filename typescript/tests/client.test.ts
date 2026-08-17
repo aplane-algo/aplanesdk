@@ -3490,14 +3490,14 @@ describe("loadClientEndpointRegistry", () => {
 describe("requestToken", () => {
   it("rejects the removed identity option", async () => {
     await assert.rejects(
-      requestToken("signer.example.com", "~/.ssh/id_ed25519", { identity: "other-identity" } as never),
+      requestToken("signer.example.com", "~/aplane/apclient/.ssh/id_ed25519", { identity: "other-identity" } as never),
       { message: /option "identity" was removed/ },
     );
   });
 
   it("rejects missing known_hosts path locally", async () => {
     await assert.rejects(
-      requestToken("signer.example.com", "~/.ssh/id_ed25519"),
+      requestToken("signer.example.com", "~/aplane/apclient/.ssh/id_ed25519"),
       { message: /known_hosts path is required/ },
     );
   });
@@ -3809,7 +3809,7 @@ describe("fromEnv", () => {
 describe("connectSsh", () => {
   it("rejects missing knownHostsPath at method entry", async () => {
     await assert.rejects(
-      SignerClient.connectSsh("example.com", "token", "~/.ssh/id_ed25519"),
+      SignerClient.connectSsh("example.com", "token", "~/aplane/apclient/.ssh/id_ed25519"),
       { message: /known_hosts path is required/ },
     );
   });

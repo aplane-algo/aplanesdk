@@ -86,11 +86,12 @@ Connect to apsigner on a remote machine through an SSH tunnel with 2FA:
 client, err := aplane.ConnectSSH(
 	"signer.example.com",
 	"your-token",           // used for both SSH auth and HTTP API
-	"~/.ssh/id_ed25519",
+	"~/aplane/apclient/.ssh/id_ed25519",
 	&aplane.SSHConnectOptions{
-		SSHPort:    1127,   // default
-		SignerPort: 11270,  // default
-		Timeout:    30,     // optional explicit shorter request timeout
+		SSHPort:        1127,   // default
+		SignerPort:     11270,  // default
+		Timeout:        30,     // optional explicit shorter request timeout
+		KnownHostsPath: "~/aplane/apclient/.ssh/known_hosts",
 	},
 )
 if err != nil {

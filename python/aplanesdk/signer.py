@@ -2563,7 +2563,8 @@ class SignerClient:
         client = SignerClient.connect_ssh(
             host="signer.example.com",
             token="...",
-            ssh_key_path="~/.ssh/id_ed25519"
+            ssh_key_path="~/aplane/apclient/.ssh/id_ed25519",
+            known_hosts_path="~/aplane/apclient/.ssh/known_hosts",
         )
 
         # Sign transactions
@@ -2629,7 +2630,7 @@ class SignerClient:
         Args:
             host: Remote host running apsigner
             token: Authentication token (proven during SSH auth and used by the HTTP API)
-            ssh_key_path: Path to SSH private key (e.g., ~/.ssh/id_ed25519)
+            ssh_key_path: Path to the APlane client SSH private key
             ssh_port: SSH port on remote (default: 1127)
             signer_port: Signer REST port on remote (default: 11270)
             timeout: Optional explicit request timeout in seconds
@@ -2646,6 +2647,7 @@ class SignerClient:
         import os
 
         ssh_key_path = os.path.expanduser(ssh_key_path)
+        known_hosts_path = os.path.expanduser(known_hosts_path)
 
         # Find a free local port unless the endpoint pins one.
         local_port = local_port or _find_free_port()
@@ -6116,7 +6118,8 @@ def request_token(
     host: str,
     ssh_key_path: str,
     ssh_port: int = DEFAULT_SSH_PORT,
-    known_hosts_path: Optional[str] = None,
+    *,
+    known_hosts_path: str,
     auto_add_host: bool = False,
 ) -> str:
     """
@@ -6129,9 +6132,9 @@ def request_token(
 
     Args:
         host: Signer host (e.g., "signer.example.com" or "localhost")
-        ssh_key_path: Path to SSH private key (e.g., "~/.ssh/id_ed25519")
+        ssh_key_path: Path to the APlane client SSH private key
         ssh_port: SSH port on remote (default: 1127)
-        known_hosts_path: Path to known_hosts file (default: ~/.ssh/known_hosts)
+        known_hosts_path: Path to the APlane client known_hosts file (required)
         auto_add_host: If True, automatically trust unknown hosts (TOFU).
                        If False (default), prompt user for confirmation.
 
@@ -6146,13 +6149,19 @@ def request_token(
         # Request token interactively (prompts for host key confirmation)
         token = request_token(
             host="signer.example.com",
-            ssh_key_path="~/.ssh/id_ed25519"
+            ssh_key_path="~/aplane/apclient/.ssh/id_ed25519",
+            known_hosts_path="~/aplane/apclient/.ssh/known_hosts",
         )
 
         # Save to file
         with open("~/aplane/apclient/aplane.token", "w") as f:
             f.write(token)
     """
+    if not isinstance(auto_add_host, bool):
+        raise TypeError("auto_add_host must be a bool")
+    if not known_hosts_path:
+        raise SignerError("known_hosts_path is required for SSH host key verification")
+
     ssh_key_path = os.path.expanduser(ssh_key_path)
     if not os.path.exists(ssh_key_path):
         raise SignerError(f"SSH key not found: {ssh_key_path}")
@@ -6168,10 +6177,7 @@ def request_token(
             raise SignerError(f"Failed to load SSH key: {e}")
 
     # Set up host key policy
-    if known_hosts_path:
-        known_hosts_path = os.path.expanduser(known_hosts_path)
-    else:
-        known_hosts_path = os.path.expanduser("~/.ssh/known_hosts")
+    known_hosts_path = os.path.expanduser(known_hosts_path)
 
     client = paramiko.SSHClient()
 
@@ -6270,6 +6276,7 @@ class _InteractiveHostKeyPolicy(paramiko.MissingHostKeyPolicy):
 def request_token_to_file(
     data_dir: Optional[str] = None,
     endpoint: Optional[str] = None,
+    *,
     auto_add_host: bool = False,
 ) -> str:
     """
@@ -6300,6 +6307,9 @@ def request_token_to_file(
         # Now you can use SignerClient.from_env()
         client = SignerClient.from_env()
     """
+    if not isinstance(auto_add_host, bool):
+        raise TypeError("auto_add_host must be a bool")
+
     data_dir = _resolve_data_dir(data_dir)
 
     load_config(data_dir)

@@ -110,6 +110,9 @@ node --input-type=module -e 'import("aplanesdk").then(m => console.log(typeof m.
 The TypeScript SDK follows the same client data directory convention as
 `apshell`.
 
+APlane never reads or writes the operating-system user's personal SSH
+directory. Managed SSH keys and host trust live under `<data_dir>/.ssh/`.
+
 Resolution order (the SDK has no implicit default — `resolveDataDir` throws
 `SignerError` if neither is set):
 
@@ -225,11 +228,11 @@ import { SignerClient, expandPath } from "aplanesdk";
 const client = await SignerClient.connectSsh(
   "signer.example.com",
   "your-token",
-  "~/.ssh/id_ed25519",
+  "~/aplane/apclient/.ssh/id_ed25519",
   {
     sshPort: 1127,
     signerPort: 11270,
-    knownHostsPath: expandPath("~/.ssh/known_hosts"),
+    knownHostsPath: expandPath("~/aplane/apclient/.ssh/known_hosts"),
     trustOnFirstUse: false,
   }
 );

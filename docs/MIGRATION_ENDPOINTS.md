@@ -47,7 +47,9 @@ Python `request_token_to_file` and TypeScript `requestTokenToFile` also select
 an endpoint alias and require that endpoint to use `ssh://`. Their former
 `host` and `ssh_port`/`sshPort` overrides were removed. The raw
 `request_token(host, ...)` and `requestToken(host, ...)` functions remain for
-caller-owned, ad-hoc provisioning flows.
+caller-owned, ad-hoc provisioning flows. They do not fall back to the
+operating-system user's personal SSH directory; callers must provide explicit
+application-owned key and host-trust paths.
 
 Trust-on-first-use is no longer persisted in routing configuration. Pass
 `trust_on_first_use=True`, `trustOnFirstUse: true`, or the Go

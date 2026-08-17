@@ -92,11 +92,12 @@ Connect to apsigner on a remote machine through an SSH tunnel with 2FA:
 const client = await SignerClient.connectSsh(
   "signer.example.com",
   "your-token",              // used for both SSH auth and HTTP API
-  "~/.ssh/id_ed25519",
+  "~/aplane/apclient/.ssh/id_ed25519",
   {
     sshPort: 1127,           // default: 1127
     signerPort: 11270,       // default: 11270
     timeout: 30000,          // optional explicit shorter request timeout
+    knownHostsPath: "~/aplane/apclient/.ssh/known_hosts",
   }
 );
 ```
