@@ -12,9 +12,6 @@ const maxSignRequestIDLength = 128
 const maxComponentGroupSize = 16
 
 const (
-	ComponentSignRoleUser   ComponentSignRole = "user"
-	ComponentSignRoleSentry ComponentSignRole = "sentry"
-
 	AuthorizationKindEd25519  = "ed25519"
 	AuthorizationKindNativePQ = "native_pq"
 	AuthorizationKindLogicSig = "logic_sig"
@@ -86,59 +83,100 @@ type GroupSignRequest struct {
 	Requests  []SignRequest `json:"requests"`
 }
 
-// ComponentSignRole is the role-specific component signature requested from
-// POST /sign/component.
-type ComponentSignRole string
+type ComponentTargetKind string
 
-// ComponentSignRequest is the request payload for POST /sign/component.
-type ComponentSignRequest struct {
-	RequestID     string            `json:"request_id,omitempty"`
-	Role          ComponentSignRole `json:"role"`
-	ComponentKey  string            `json:"component_key,omitempty"`
-	GroupBytesHex []string          `json:"group_bytes_hex"`
-	TargetIndices []int             `json:"target_indices"`
+const (
+	ComponentTargetKindUser        ComponentTargetKind = "user"
+	ComponentTargetKindSentry      ComponentTargetKind = "sentry"
+	ComponentTargetKindBoundedBase ComponentTargetKind = "bounded-base"
+)
+
+type ComponentRequest struct {
+	RequestID           string                     `json:"request_id,omitempty"`
+	GroupBytesHex       []string                   `json:"group_bytes_hex"`
+	Targets             []ComponentTarget          `json:"targets"`
+	ContextualPositions []ComponentContextPosition `json:"contextual_positions,omitempty"`
+	DummyPositions      []ComponentDummyPosition   `json:"dummy_positions,omitempty"`
 }
 
-// ComponentSignature carries one raw role-separated component signature.
-type ComponentSignature struct {
-	TargetIndex     int    `json:"target_index"`
-	Signature       string `json:"signature"`
-	SignatureScheme string `json:"signature_scheme"`
+type ComponentTarget struct {
+	TargetIndex  int                 `json:"target_index"`
+	Kind         ComponentTargetKind `json:"kind"`
+	AuthAddress  string              `json:"auth_address,omitempty"`
+	ComponentKey string              `json:"component_key,omitempty"`
+	LsigArgs     map[string]string   `json:"lsig_args,omitempty"`
+	AppCallInfo  *AppCallInfo        `json:"app_call_info,omitempty"`
 }
 
-// ComponentSignResponse is the response payload from POST /sign/component.
-type ComponentSignResponse struct {
-	RequestID    string               `json:"request_id"`
-	ComponentKey string               `json:"component_key,omitempty"`
-	Signatures   []ComponentSignature `json:"signatures"`
+type ComponentContextPosition struct {
+	TargetIndex   int                    `json:"target_index"`
+	LsigResources *LogicSigResourceUsage `json:"lsig_resources,omitempty"`
+	PQScheme      string                 `json:"pq_scheme,omitempty"`
+	AppCallInfo   *AppCallInfo           `json:"app_call_info,omitempty"`
 }
 
-// GuardedAssemblyRequest is the request payload for POST /sign/assemble.
-type GuardedAssemblyRequest struct {
-	RequestID     string                   `json:"request_id,omitempty"`
-	GroupBytesHex []string                 `json:"group_bytes_hex"`
-	Targets       []GuardedAssemblyTarget  `json:"targets,omitempty"`
-	Passthrough   []GuardedPassthroughItem `json:"passthrough,omitempty"`
+type ComponentDummyPosition struct {
+	TargetIndex int `json:"target_index"`
 }
 
-// GuardedAssemblyTarget carries one guarded-account group position plus its
-// user and sentry component signatures.
-type GuardedAssemblyTarget struct {
-	TargetIndex           int      `json:"target_index"`
-	GuardedAccount        string   `json:"guarded_account"`
-	UserSignature         string   `json:"user_signature"`
-	UserSourceRequestID   string   `json:"user_source_request_id,omitempty"`
-	SentrySignature       string   `json:"sentry_signature"`
-	SentrySourceRequestID string   `json:"sentry_source_request_id,omitempty"`
-	RuntimeArgs           []string `json:"runtime_args,omitempty"`
+type Component struct {
+	TargetIndex     int                 `json:"target_index"`
+	Kind            ComponentTargetKind `json:"kind"`
+	Signature       string              `json:"signature,omitempty"`
+	SignatureScheme string              `json:"signature_scheme"`
+	AuthAddress     string              `json:"auth_address,omitempty"`
+	BaseSignatures  []string            `json:"base_signatures,omitempty"`
+	RuntimeArgs     map[string]string   `json:"runtime_args,omitempty"`
+	AssemblyReceipt string              `json:"assembly_receipt,omitempty"`
 }
 
-// GuardedPassthroughItem carries an already-signed group position to preserve
-// unchanged during guarded assembly.
-type GuardedPassthroughItem struct {
+type ComponentResponse struct {
+	RequestID  string      `json:"request_id"`
+	Components []Component `json:"components"`
+}
+
+type AssemblyTargetKind string
+
+const (
+	AssemblyTargetKindGuarded       AssemblyTargetKind = "guarded"
+	AssemblyTargetKindBoundedSentry AssemblyTargetKind = "bounded-sentry"
+)
+
+// AssemblyRequest is the shared request payload for POST /sign/assemble.
+type AssemblyRequest struct {
+	RequestID     string                    `json:"request_id,omitempty"`
+	GroupBytesHex []string                  `json:"group_bytes_hex"`
+	Targets       []AssemblyTarget          `json:"targets,omitempty"`
+	Passthrough   []AssemblyPassthroughItem `json:"passthrough,omitempty"`
+}
+
+type AssemblyTarget struct {
+	TargetIndex int                `json:"target_index"`
+	Kind        AssemblyTargetKind `json:"kind"`
+	AuthAddress string             `json:"auth_address"`
+
+	UserSignature       string   `json:"user_signature,omitempty"`
+	UserSourceRequestID string   `json:"user_source_request_id,omitempty"`
+	GuardedRuntimeArgs  []string `json:"guarded_runtime_args,omitempty"`
+
+	BaseSignatures      []string          `json:"base_signatures,omitempty"`
+	BoundedRuntimeArgs  map[string]string `json:"bounded_runtime_args,omitempty"`
+	AssemblyReceipt     string            `json:"assembly_receipt,omitempty"`
+	BaseSourceRequestID string            `json:"base_source_request_id,omitempty"`
+
+	SentrySignature       string `json:"sentry_signature"`
+	SentrySourceRequestID string `json:"sentry_source_request_id,omitempty"`
+}
+
+type AssemblyPassthroughItem struct {
 	TargetIndex   int                              `json:"target_index"`
 	SignedTxnHex  string                           `json:"signed_txn_hex"`
 	Authorization *GuardedPassthroughAuthorization `json:"-"`
+}
+
+type AssemblyResponse struct {
+	RequestID   string   `json:"request_id"`
+	SignedGroup []string `json:"signed_group"`
 }
 
 // GuardedPassthroughAuthorization declares the authorization shape used to
@@ -147,12 +185,6 @@ type GuardedPassthroughItem struct {
 type GuardedPassthroughAuthorization struct {
 	LogicSigResources *LogicSigResourceUsage
 	PQScheme          string
-}
-
-// GuardedAssemblyResponse is the response payload from POST /sign/assemble.
-type GuardedAssemblyResponse struct {
-	RequestID   string   `json:"request_id"`
-	SignedGroup []string `json:"signed_group"`
 }
 
 // CancelSignRequest is the request payload for /sign/cancel.
@@ -282,58 +314,7 @@ func (r GroupSignRequest) Validate() error {
 	return nil
 }
 
-// Validate checks the component-sign request shape.
-func (r ComponentSignRequest) Validate() error {
-	if err := validateSignRequestID(r.RequestID); err != nil {
-		return err
-	}
-	switch r.Role {
-	case ComponentSignRoleUser:
-		if r.ComponentKey == "" {
-			return fmt.Errorf("component_key is required for user role")
-		}
-	case ComponentSignRoleSentry:
-	default:
-		return fmt.Errorf("role must be %q or %q", ComponentSignRoleUser, ComponentSignRoleSentry)
-	}
-	if err := validateComponentGroupBytes(r.GroupBytesHex); err != nil {
-		return err
-	}
-	return validateComponentTargetIndices(r.TargetIndices, len(r.GroupBytesHex))
-}
-
-// Validate checks the component-sign response shape.
-func (r ComponentSignResponse) Validate() error {
-	if r.RequestID == "" {
-		return fmt.Errorf("request_id is required")
-	}
-	if err := validateSignRequestID(r.RequestID); err != nil {
-		return err
-	}
-	if len(r.Signatures) == 0 {
-		return fmt.Errorf("signatures array is empty")
-	}
-	seen := make(map[int]struct{}, len(r.Signatures))
-	for i, sig := range r.Signatures {
-		if sig.TargetIndex < 0 {
-			return fmt.Errorf("signature %d: target_index must be non-negative", i+1)
-		}
-		if _, ok := seen[sig.TargetIndex]; ok {
-			return fmt.Errorf("signature %d: duplicate target_index %d", i+1, sig.TargetIndex)
-		}
-		seen[sig.TargetIndex] = struct{}{}
-		if sig.Signature == "" {
-			return fmt.Errorf("signature %d: signature is required", i+1)
-		}
-		if sig.SignatureScheme == "" {
-			return fmt.Errorf("signature %d: signature_scheme is required", i+1)
-		}
-	}
-	return nil
-}
-
-// Validate checks the guarded assembly request shape.
-func (r GuardedAssemblyRequest) Validate() error {
+func (r AssemblyRequest) Validate() error {
 	if err := validateSignRequestID(r.RequestID); err != nil {
 		return err
 	}
@@ -343,33 +324,47 @@ func (r GuardedAssemblyRequest) Validate() error {
 	if len(r.Targets) == 0 && len(r.Passthrough) == 0 {
 		return fmt.Errorf("targets or passthrough is required")
 	}
-
 	covered := make([]bool, len(r.GroupBytesHex))
 	for i, target := range r.Targets {
 		if err := validateAssemblyIndex(target.TargetIndex, len(r.GroupBytesHex), covered); err != nil {
 			return fmt.Errorf("target %d: %w", i+1, err)
 		}
-		if target.GuardedAccount == "" {
-			return fmt.Errorf("target %d: guarded_account is required", i+1)
-		}
-		if target.UserSignature == "" {
-			return fmt.Errorf("target %d: user_signature is required", i+1)
-		}
-		if target.SentrySignature == "" {
-			return fmt.Errorf("target %d: sentry_signature is required", i+1)
-		}
-		if err := validateSignRequestID(target.UserSourceRequestID); err != nil {
-			return fmt.Errorf("target %d: user_source_request_id: %w", i+1, err)
+		if target.AuthAddress == "" || target.SentrySignature == "" {
+			return fmt.Errorf("target %d: auth_address and sentry_signature are required", i+1)
 		}
 		if err := validateSignRequestID(target.SentrySourceRequestID); err != nil {
 			return fmt.Errorf("target %d: sentry_source_request_id: %w", i+1, err)
 		}
+		switch target.Kind {
+		case AssemblyTargetKindGuarded:
+			if target.UserSignature == "" {
+				return fmt.Errorf("target %d: user_signature is required for guarded target", i+1)
+			}
+			if len(target.BaseSignatures) != 0 || len(target.BoundedRuntimeArgs) != 0 || target.AssemblyReceipt != "" || target.BaseSourceRequestID != "" {
+				return fmt.Errorf("target %d: bounded authorization material is forbidden for guarded target", i+1)
+			}
+			if err := validateSignRequestID(target.UserSourceRequestID); err != nil {
+				return fmt.Errorf("target %d: user_source_request_id: %w", i+1, err)
+			}
+		case AssemblyTargetKindBoundedSentry:
+			if len(target.BaseSignatures) == 0 || target.AssemblyReceipt == "" {
+				return fmt.Errorf("target %d: base_signatures and assembly_receipt are required for bounded-sentry target", i+1)
+			}
+			if target.UserSignature != "" || target.UserSourceRequestID != "" || len(target.GuardedRuntimeArgs) != 0 {
+				return fmt.Errorf("target %d: guarded authorization material is forbidden for bounded-sentry target", i+1)
+			}
+			if err := validateSignRequestID(target.BaseSourceRequestID); err != nil {
+				return fmt.Errorf("target %d: base_source_request_id: %w", i+1, err)
+			}
+		default:
+			return fmt.Errorf("target %d: invalid kind %q", i+1, target.Kind)
+		}
 	}
-	for i, passthrough := range r.Passthrough {
-		if err := validateAssemblyIndex(passthrough.TargetIndex, len(r.GroupBytesHex), covered); err != nil {
+	for i, item := range r.Passthrough {
+		if err := validateAssemblyIndex(item.TargetIndex, len(r.GroupBytesHex), covered); err != nil {
 			return fmt.Errorf("passthrough %d: %w", i+1, err)
 		}
-		if passthrough.SignedTxnHex == "" {
+		if item.SignedTxnHex == "" {
 			return fmt.Errorf("passthrough %d: signed_txn_hex is required", i+1)
 		}
 	}
@@ -381,8 +376,7 @@ func (r GuardedAssemblyRequest) Validate() error {
 	return nil
 }
 
-// Validate checks the guarded assembly response shape.
-func (r GuardedAssemblyResponse) Validate() error {
+func (r AssemblyResponse) Validate() error {
 	if r.RequestID == "" {
 		return fmt.Errorf("request_id is required")
 	}
@@ -439,23 +433,6 @@ func validateComponentGroupBytes(items []string) error {
 		if item == "" {
 			return fmt.Errorf("group_bytes_hex %d is empty", i)
 		}
-	}
-	return nil
-}
-
-func validateComponentTargetIndices(indices []int, groupLen int) error {
-	if len(indices) == 0 {
-		return fmt.Errorf("target_indices is empty")
-	}
-	seen := make(map[int]struct{}, len(indices))
-	for _, index := range indices {
-		if index < 0 || index >= groupLen {
-			return fmt.Errorf("target_indices %d out of range", index)
-		}
-		if _, ok := seen[index]; ok {
-			return fmt.Errorf("target_indices contains duplicate %d", index)
-		}
-		seen[index] = struct{}{}
 	}
 	return nil
 }

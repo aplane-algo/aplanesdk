@@ -149,14 +149,10 @@ func TestGoSDKContractFixturesRoundTrip(t *testing.T) {
 		{"group_sign_request_passthrough_lsig.json", assertSDKContractRoundTrip[GroupSignRequest]},
 		{"group_sign_response_mutated.json", assertSDKContractRoundTrip[GroupSignResponse]},
 		{"group_plan_response_mutated.json", assertSDKContractRoundTrip[PlanGroupResponse]},
-		{"component_sign_request_sentry.json", assertSDKContractRoundTrip[ComponentSignRequest]},
-		{"component_sign_response_sentry.json", assertSDKContractRoundTrip[ComponentSignResponse]},
-		{"guarded_assembly_request_mixed.json", assertSDKContractRoundTrip[GuardedAssemblyRequest]},
-		{"guarded_assembly_response.json", assertSDKContractRoundTrip[GuardedAssemblyResponse]},
-		{"bounded_component_request.json", assertSDKContractRoundTrip[BoundedComponentRequest]},
-		{"bounded_component_response.json", assertSDKContractRoundTrip[BoundedComponentResponse]},
-		{"bounded_assembly_request.json", assertSDKContractRoundTrip[BoundedAssemblyRequest]},
-		{"bounded_assembly_response.json", assertSDKContractRoundTrip[BoundedAssemblyResponse]},
+		{"component_request.json", assertSDKContractRoundTrip[ComponentRequest]},
+		{"component_response.json", assertSDKContractRoundTrip[ComponentResponse]},
+		{"assembly_request_mixed.json", assertSDKContractRoundTrip[AssemblyRequest]},
+		{"assembly_response.json", assertSDKContractRoundTrip[AssemblyResponse]},
 		{"keys_response_generic.json", assertSDKContractRoundTrip[KeysResponse]},
 		{"keys_response_component.json", assertSDKContractRoundTrip[KeysResponse]},
 		{"keys_response_guarded.json", assertSDKContractRoundTrip[KeysResponse]},
@@ -180,6 +176,14 @@ func TestGoSDKContractFixturesRoundTrip(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tt.run(t, tt.name)
 		})
+	}
+}
+
+func TestGoSDKComponentRequestFixtureValidates(t *testing.T) {
+	var request ComponentRequest
+	readContractMetadata(t, "component_request.json", &request)
+	if err := request.Validate(); err != nil {
+		t.Fatalf("component_request.json does not satisfy its wire validator: %v", err)
 	}
 }
 

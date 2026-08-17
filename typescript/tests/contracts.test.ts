@@ -13,14 +13,10 @@ import type {
   AdminSyncSentryReferencesRequest,
   AdminSyncSentryReferencesResponse,
   CancelSignResponse,
-  ComponentSignRequest,
-  ComponentSignResponse,
-  GuardedAssemblyRequest,
-  GuardedAssemblyResponse,
-  BoundedComponentRequest,
-  BoundedComponentResponse,
-  BoundedAssemblyRequest,
-  BoundedAssemblyResponse,
+  ComponentRequest,
+  ComponentResponse,
+  AssemblyRequest,
+  AssemblyResponse,
 } from "../src/types.js";
 
 interface MockFetch {
@@ -410,27 +406,34 @@ describe("signer API contract fixtures", () => {
   });
 
   it("round-trips sentry component and assembly fixture DTOs", () => {
-    const componentReq = fixture("component_sign_request_sentry.json") as ComponentSignRequest;
-    assert.equal(componentReq.role, "sentry");
-    assert.equal(componentReq.target_indices[0], 0);
+    const unifiedComponentReq = fixture("component_request.json") as ComponentRequest;
+    assert.equal(unifiedComponentReq.targets[0].kind, "bounded-base");
+    const unifiedComponentResp = fixture("component_response.json") as ComponentResponse;
+    assert.ok(unifiedComponentResp.components[0].assembly_receipt);
 
-    const componentResp = fixture("component_sign_response_sentry.json") as ComponentSignResponse;
-    assert.equal(componentResp.signatures[0].signature_scheme, "aplane.witness-falcon1024.v1");
+    const unifiedReq = fixture("assembly_request_mixed.json") as AssemblyRequest;
+    assert.equal(unifiedReq.targets?.[0].kind, "guarded");
+    const unifiedResp = fixture("assembly_response.json") as AssemblyResponse;
+    assert.equal(unifiedResp.signed_group.length, 3);
 
-    const assemblyReq = fixture("guarded_assembly_request_mixed.json") as GuardedAssemblyRequest;
-    assert.equal(assemblyReq.targets?.[0].guarded_account, "LOGICSIGACCOUNTADDRESSAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+  });
 
-    const assemblyResp = fixture("guarded_assembly_response.json") as GuardedAssemblyResponse;
-    assert.equal(assemblyResp.signed_group.length, 2);
+  it("accepts the canonical component request through runtime validation", async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: async () => fixture("status_response_ready.json"),
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: async () => fixture("component_response.json"),
+      });
 
-    const boundedComponentReq = fixture("bounded_component_request.json") as BoundedComponentRequest;
-    assert.ok(boundedComponentReq.requests[0].auth_address);
-    const boundedComponentResp = fixture("bounded_component_response.json") as BoundedComponentResponse;
-    assert.ok(boundedComponentResp.components[0].assembly_receipt);
-    const boundedAssemblyReq = fixture("bounded_assembly_request.json") as BoundedAssemblyRequest;
-    assert.ok(boundedAssemblyReq.targets[0].sentry_signature);
-    const boundedAssemblyResp = fixture("bounded_assembly_response.json") as BoundedAssemblyResponse;
-    assert.equal(boundedAssemblyResp.signed_group.length, 2);
+    const client = new SignerClient("http://localhost:11270", "test-token");
+    const response = await client.requestComponents(fixture("component_request.json") as ComponentRequest);
+    assert.equal(response.components[0].kind, "bounded-base");
   });
 
   it("projects bounded inventory layer3 policy", async () => {

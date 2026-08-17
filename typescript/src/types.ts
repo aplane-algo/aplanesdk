@@ -8,9 +8,6 @@ import { SignerError } from "./errors.js";
  * Runtime argument specification for a generic LogicSig.
  * Position in the array corresponds to the TEAL arg index.
  */
-export const COMPONENT_SIGN_ROLE_USER = "user";
-export const COMPONENT_SIGN_ROLE_SENTRY = "sentry";
-
 /**
  * Signing choreography label for the sentry co-signed component flow (one
  * user plus one sentry component signature per target, assembled via
@@ -467,48 +464,68 @@ export interface CancelSignResponse {
   error?: string;
 }
 
-export type ComponentSignRole = typeof COMPONENT_SIGN_ROLE_USER | typeof COMPONENT_SIGN_ROLE_SENTRY;
+export type ComponentTargetKind = "user" | "sentry" | "bounded-base";
 
-/**
- * Request payload for /sign/component.
- */
-export interface ComponentSignRequest {
+export interface ComponentRequest {
   request_id?: string;
-  role: ComponentSignRole;
-  component_key?: string;
   group_bytes_hex: string[];
-  target_indices: number[];
+  targets: ComponentTarget[];
+  contextual_positions?: ComponentContextPosition[];
+  dummy_positions?: ComponentDummyPosition[];
 }
 
-/**
- * One raw role-separated component signature.
- */
-export interface ComponentSignature {
+export interface ComponentTarget {
   target_index: number;
-  signature: string;
-  signature_scheme: string;
-}
-
-/**
- * Response payload from /sign/component.
- */
-export interface ComponentSignResponse {
-  request_id: string;
+  kind: ComponentTargetKind;
+  auth_address?: string;
   component_key?: string;
-  signatures: ComponentSignature[];
+  lsig_args?: Record<string, string>;
+  app_call_info?: AppCallInfo;
 }
 
-/**
- * One guarded-account group position plus user and sentry component signatures.
- */
-export interface GuardedAssemblyTarget {
+export interface Component {
   target_index: number;
-  guarded_account: string;
-  user_signature: string;
+  kind: ComponentTargetKind;
+  signature?: string;
+  signature_scheme: string;
+  auth_address?: string;
+  base_signatures?: string[];
+  runtime_args?: Record<string, string>;
+  assembly_receipt?: string;
+}
+
+export interface ComponentResponse {
+  request_id: string;
+  components: Component[];
+}
+
+export type AssemblyTargetKind = "guarded" | "bounded-sentry";
+
+export interface AssemblyTarget {
+  target_index: number;
+  kind: AssemblyTargetKind;
+  auth_address: string;
+  user_signature?: string;
   user_source_request_id?: string;
+  guarded_runtime_args?: string[];
+  base_signatures?: string[];
+  bounded_runtime_args?: Record<string, string>;
+  assembly_receipt?: string;
+  base_source_request_id?: string;
   sentry_signature: string;
   sentry_source_request_id?: string;
-  runtime_args?: string[];
+}
+
+export interface AssemblyRequest {
+  request_id?: string;
+  group_bytes_hex: string[];
+  targets?: AssemblyTarget[];
+  passthrough?: GuardedPassthroughItem[];
+}
+
+export interface AssemblyResponse {
+  request_id: string;
+  signed_group: string[];
 }
 
 /**
@@ -528,72 +545,17 @@ export interface GuardedPassthroughAuthorization {
   pqScheme?: string;
 }
 
-/**
- * Request payload for /sign/assemble.
- */
-export interface GuardedAssemblyRequest {
-  request_id?: string;
-  group_bytes_hex: string[];
-  targets?: GuardedAssemblyTarget[];
-  passthrough?: GuardedPassthroughItem[];
-}
-
-/**
- * Response payload from /sign/assemble.
- */
-export interface GuardedAssemblyResponse {
-  request_id: string;
-  signed_group: string[];
-}
-
-/** Request payload for /sign/bounded-component. */
-export interface BoundedComponentRequest {
-  request_id?: string;
-  requests: SignRequest[];
-}
-
-/** One user-signer contribution to bounded assembly. */
-export interface BoundedBaseComponent {
+/** Authorization-budget context for a non-target original position. */
+export interface ComponentContextPosition {
   target_index: number;
-  bounded_account: string;
-  base_signatures: string[];
-  runtime_args?: Record<string, string>;
-  assembly_receipt: string;
-  signature_scheme: string;
+  lsig_resources?: SignRequest["lsig_resources"];
+  pq_scheme?: string;
+  app_call_info?: AppCallInfo;
 }
 
-/** Response payload from /sign/bounded-component. */
-export interface BoundedComponentResponse {
-  request_id: string;
-  transactions: string[];
-  components: BoundedBaseComponent[];
-  mutations?: MutationReport;
-}
-
-/** One source-bound bounded-sentry assembly target. */
-export interface BoundedAssemblyTarget {
+/** One signer-added canonical dummy position in the frozen suffix. */
+export interface ComponentDummyPosition {
   target_index: number;
-  bounded_account: string;
-  base_signatures: string[];
-  runtime_args?: Record<string, string>;
-  assembly_receipt: string;
-  base_source_request_id?: string;
-  sentry_signature: string;
-  sentry_source_request_id?: string;
-}
-
-/** Request payload for /sign/bounded-assemble. */
-export interface BoundedAssemblyRequest {
-  request_id?: string;
-  group_bytes_hex: string[];
-  targets: BoundedAssemblyTarget[];
-  passthrough?: GuardedPassthroughItem[];
-}
-
-/** Response payload from /sign/bounded-assemble. */
-export interface BoundedAssemblyResponse {
-  request_id: string;
-  signed_group: string[];
 }
 
 /**

@@ -29,6 +29,7 @@ func TestSignPreparedBoundedSentryGroupOneTarget(t *testing.T) {
 	bounded := sdkTestAddress(21)
 	receiver := sdkTestAddress(22)
 	var frozenGroup []string
+	componentCalls := 0
 
 	userClient, userServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -36,29 +37,36 @@ func TestSignPreparedBoundedSentryGroupOneTarget(t *testing.T) {
 			json.NewEncoder(w).Encode(StatusResponse{
 				IdentityID: "default", State: "unlocked", ApprovalWaitSeconds: 60,
 			})
-		case "/sign/bounded-component":
-			var req BoundedComponentRequest
+		case "/plan":
+			var req GroupSignRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode plan request: %v", err)
+			}
+			frozenGroup = []string{req.Requests[0].TxnBytesHex}
+			json.NewEncoder(w).Encode(PlanGroupResponse{Transactions: frozenGroup})
+		case "/sign/component":
+			componentCalls++
+			var req ComponentRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("decode bounded component request: %v", err)
 			}
-			if len(req.Requests) != 1 || req.Requests[0].AuthAddress != bounded {
+			if len(req.Targets) != 1 || req.Targets[0].AuthAddress != bounded {
 				t.Fatalf("bounded component request = %+v", req)
 			}
-			frozenGroup = []string{req.Requests[0].TxnBytesHex}
-			json.NewEncoder(w).Encode(BoundedComponentResponse{
-				RequestID:    req.RequestID,
-				Transactions: frozenGroup,
-				Components: []BoundedBaseComponent{{
+			json.NewEncoder(w).Encode(ComponentResponse{
+				RequestID: req.RequestID,
+				Components: []Component{{
 					TargetIndex:     0,
-					BoundedAccount:  bounded,
+					Kind:            ComponentTargetKindBoundedBase,
+					AuthAddress:     bounded,
 					BaseSignatures:  []string{"base-sig"},
 					RuntimeArgs:     map[string]string{"proof": "aabb"},
 					AssemblyReceipt: "receipt",
 					SignatureScheme: "aplane.falcon1024.v1",
 				}},
 			})
-		case "/sign/bounded-assemble":
-			var req BoundedAssemblyRequest
+		case "/sign/assemble":
+			var req AssemblyRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("decode bounded assembly request: %v", err)
 			}
@@ -66,7 +74,7 @@ func TestSignPreparedBoundedSentryGroupOneTarget(t *testing.T) {
 				req.Targets[0].SentrySignature != "sentry-sig" {
 				t.Fatalf("bounded assembly targets = %+v", req.Targets)
 			}
-			json.NewEncoder(w).Encode(BoundedAssemblyResponse{
+			json.NewEncoder(w).Encode(AssemblyResponse{
 				RequestID: req.RequestID, SignedGroup: signedGroupFor(t, req.GroupBytesHex),
 			})
 		default:
@@ -79,17 +87,20 @@ func TestSignPreparedBoundedSentryGroupOneTarget(t *testing.T) {
 		if r.URL.Path != "/sign/component" {
 			t.Fatalf("unexpected sentry path %s", r.URL.Path)
 		}
-		var req ComponentSignRequest
+		var req capturedComponentRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("decode sentry component request: %v", err)
 		}
-		if req.Role != ComponentSignRoleSentry || req.ComponentKey != "SENTRY_COMPONENT" ||
+		if req.Role != capturedComponentRoleSentry || req.ComponentKey != "SENTRY_COMPONENT" ||
 			len(req.GroupBytesHex) != 1 || req.GroupBytesHex[0] != frozenGroup[0] {
 			t.Fatalf("sentry component request = %+v", req)
 		}
-		json.NewEncoder(w).Encode(ComponentSignResponse{
+		if req.TargetAppInfo[0] == nil || req.TargetAppInfo[0].Mode != "raw" {
+			t.Fatalf("sentry target app-call metadata = %#v", req.TargetAppInfo[0])
+		}
+		json.NewEncoder(w).Encode(ComponentResponse{
 			RequestID: req.RequestID,
-			Signatures: []ComponentSignature{{
+			Components: []Component{{Kind: ComponentTargetKindSentry,
 				TargetIndex: 0, Signature: "sentry-sig", SignatureScheme: KeyTypeWitnessFalcon1024,
 			}},
 		})
@@ -105,11 +116,12 @@ func TestSignPreparedBoundedSentryGroupOneTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MakePaymentTxn() error = %v", err)
 	}
-	result, err := SignPreparedGuardedGroup(PreparedGuardedGroupOptions{
+	options := PreparedGuardedGroupOptions{
 		UserClient: userClient, SentryClient: sentryClient,
 		SentryComponentKey: "SENTRY_COMPONENT",
 		PreparedGroup: NewPreparedGroup(PreparedTransaction{
 			Transaction: &txn, AuthAddress: bounded,
+			AppCallInfo: &AppCallInfo{Mode: "raw"},
 			SignerKey: &KeyInfo{
 				Address: bounded, KeyType: "aplane.corridor.v1",
 				SigningFlow: SigningFlowBoundedSentry1,
@@ -125,7 +137,8 @@ func TestSignPreparedBoundedSentryGroupOneTarget(t *testing.T) {
 				},
 			},
 		}),
-	})
+	}
+	result, err := SignPreparedGuardedGroup(options)
 	if err != nil {
 		t.Fatalf("SignPreparedGuardedGroup() error = %v", err)
 	}
@@ -133,9 +146,18 @@ func TestSignPreparedBoundedSentryGroupOneTarget(t *testing.T) {
 		result.BoundedAssemblyResponse == nil || result.AssemblyResponse != nil {
 		t.Fatalf("result = %+v", result)
 	}
+	componentCalls = 0
+	options.PreparedGroup.Transactions[0].SignerKey.BoundedAuthorization.MaxFee = 999
+	if _, err := SignPreparedGuardedGroup(options); err == nil ||
+		!strings.Contains(err.Error(), "exceeds advertised max_fee") {
+		t.Fatalf("SignPreparedGuardedGroup() error = %v, want max_fee rejection", err)
+	}
+	if componentCalls != 0 {
+		t.Fatalf("component calls = %d, want none before max_fee rejection", componentCalls)
+	}
 }
 
-// A native-PQ primary slot is declared foreign to /sign/bounded-component, so
+// A native-PQ primary slot is contextual to /sign/component, so
 // the signer budgets its fee purely from the declared pq_scheme. Omitting it
 // freezes an under-funded canonical group that the later /sign identity check
 // cannot detect, because the shortfall is already inside the canonical bytes.
@@ -152,22 +174,28 @@ func TestSignPreparedBoundedSentryGroupDeclaresNativePQPrimary(t *testing.T) {
 			json.NewEncoder(w).Encode(StatusResponse{
 				IdentityID: "default", State: "unlocked", ApprovalWaitSeconds: 60,
 			})
-		case "/sign/bounded-component":
-			var req BoundedComponentRequest
+		case "/plan":
+			var req GroupSignRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				t.Fatalf("decode bounded component request: %v", err)
-			}
-			if len(req.Requests) != 2 {
-				t.Fatalf("bounded component requests = %d, want 2", len(req.Requests))
+				t.Fatalf("decode plan request: %v", err)
 			}
 			primaryRequest = req.Requests[1]
 			frozenGroup = []string{req.Requests[0].TxnBytesHex, req.Requests[1].TxnBytesHex}
-			json.NewEncoder(w).Encode(BoundedComponentResponse{
-				RequestID:    req.RequestID,
-				Transactions: frozenGroup,
-				Components: []BoundedBaseComponent{{
+			json.NewEncoder(w).Encode(PlanGroupResponse{Transactions: frozenGroup})
+		case "/sign/component":
+			var req ComponentRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode bounded component request: %v", err)
+			}
+			if len(req.Targets) != 1 || len(req.ContextualPositions) != 1 {
+				t.Fatalf("bounded component partition = %+v", req)
+			}
+			json.NewEncoder(w).Encode(ComponentResponse{
+				RequestID: req.RequestID,
+				Components: []Component{{
 					TargetIndex:     0,
-					BoundedAccount:  bounded,
+					Kind:            ComponentTargetKindBoundedBase,
+					AuthAddress:     bounded,
 					BaseSignatures:  []string{"base-sig"},
 					AssemblyReceipt: "receipt",
 					SignatureScheme: "aplane.falcon1024.v1",
@@ -175,12 +203,12 @@ func TestSignPreparedBoundedSentryGroupDeclaresNativePQPrimary(t *testing.T) {
 			})
 		case "/sign":
 			json.NewEncoder(w).Encode(GroupSignResponse{Signed: signedGroupFor(t, frozenGroup)})
-		case "/sign/bounded-assemble":
-			var req BoundedAssemblyRequest
+		case "/sign/assemble":
+			var req AssemblyRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("decode bounded assembly request: %v", err)
 			}
-			json.NewEncoder(w).Encode(BoundedAssemblyResponse{
+			json.NewEncoder(w).Encode(AssemblyResponse{
 				RequestID: req.RequestID, SignedGroup: signedGroupFor(t, req.GroupBytesHex),
 			})
 		default:
@@ -190,13 +218,13 @@ func TestSignPreparedBoundedSentryGroupDeclaresNativePQPrimary(t *testing.T) {
 	defer userServer.Close()
 
 	sentryClient, sentryServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
-		var req ComponentSignRequest
+		var req capturedComponentRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("decode sentry component request: %v", err)
 		}
-		json.NewEncoder(w).Encode(ComponentSignResponse{
+		json.NewEncoder(w).Encode(ComponentResponse{
 			RequestID: req.RequestID,
-			Signatures: []ComponentSignature{{
+			Components: []Component{{Kind: ComponentTargetKindSentry,
 				TargetIndex: 0, Signature: "sentry-sig", SignatureScheme: KeyTypeWitnessFalcon1024,
 			}},
 		})
@@ -285,11 +313,11 @@ func TestPreparedForeignPQSchemeRejectsContradictoryMetadata(t *testing.T) {
 	}
 }
 
-func TestBoundedAssemblyRequestRejectsMissingCoverage(t *testing.T) {
-	req := BoundedAssemblyRequest{
+func TestUnifiedBoundedAssemblyRejectsMissingCoverage(t *testing.T) {
+	req := AssemblyRequest{
 		GroupBytesHex: []string{"5458aa", "5458bb"},
-		Targets: []BoundedAssemblyTarget{{
-			TargetIndex: 0, BoundedAccount: "BOUNDED", BaseSignatures: []string{"base"},
+		Targets: []AssemblyTarget{{
+			TargetIndex: 0, Kind: AssemblyTargetKindBoundedSentry, AuthAddress: "BOUNDED", BaseSignatures: []string{"base"},
 			AssemblyReceipt: "receipt", SentrySignature: "sentry",
 		}},
 	}
@@ -298,57 +326,89 @@ func TestBoundedAssemblyRequestRejectsMissingCoverage(t *testing.T) {
 	}
 }
 
-func TestBoundedComponentRequestRejectsPassthrough(t *testing.T) {
-	err := (BoundedComponentRequest{
-		RequestID: "bounded-request",
-		Requests:  []SignRequest{{SignedTxnHex: "abcd"}},
-	}).Validate()
-	if err == nil || !strings.Contains(err.Error(), "does not accept signed passthrough") {
-		t.Fatalf("Validate() error = %v, want passthrough rejection", err)
+func TestUnifiedAssemblyRejectsMalformedSourceRequestIDs(t *testing.T) {
+	tests := []struct {
+		name   string
+		target AssemblyTarget
+		want   string
+	}{
+		{name: "guarded user", target: AssemblyTarget{
+			TargetIndex: 0, Kind: AssemblyTargetKindGuarded, AuthAddress: "GUARDED",
+			UserSignature: "user", UserSourceRequestID: "bad id", SentrySignature: "sentry",
+		}, want: "user_source_request_id"},
+		{name: "guarded sentry", target: AssemblyTarget{
+			TargetIndex: 0, Kind: AssemblyTargetKindGuarded, AuthAddress: "GUARDED",
+			UserSignature: "user", SentrySignature: "sentry", SentrySourceRequestID: "bad id",
+		}, want: "sentry_source_request_id"},
+		{name: "bounded base", target: AssemblyTarget{
+			TargetIndex: 0, Kind: AssemblyTargetKindBoundedSentry, AuthAddress: "BOUNDED",
+			BaseSignatures: []string{"base"}, AssemblyReceipt: "receipt", BaseSourceRequestID: "bad id", SentrySignature: "sentry",
+		}, want: "base_source_request_id"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := (AssemblyRequest{GroupBytesHex: []string{"5458aa"}, Targets: []AssemblyTarget{tt.target}}).Validate()
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Validate() error = %v, want %q", err, tt.want)
+			}
+		})
 	}
 }
 
-func TestBoundedComponentResponseRejectsMalformedTargets(t *testing.T) {
-	valid := BoundedBaseComponent{
-		TargetIndex: 0, BoundedAccount: "BOUNDED",
+func TestComponentResponseValidateForRequestRejectsOutOfGroupIndex(t *testing.T) {
+	request := ComponentRequest{
+		GroupBytesHex: []string{"5458aa"},
+		Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindSentry, ComponentKey: "SENTRY"}},
+	}
+	response := ComponentResponse{RequestID: "response", Components: []Component{{
+		TargetIndex: 1, Kind: ComponentTargetKindSentry, Signature: "sig", SignatureScheme: KeyTypeWitnessFalcon1024,
+	}}}
+	if err := response.ValidateForRequest(request); err == nil || !strings.Contains(err.Error(), "indices or kinds") {
+		t.Fatalf("ValidateForRequest() error = %v, want out-of-group rejection", err)
+	}
+}
+
+func TestUnifiedBoundedComponentRejectsMissingFrozenGroup(t *testing.T) {
+	err := (ComponentRequest{
+		RequestID: "bounded-request",
+		Targets:   []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindBoundedBase, AuthAddress: "AUTH"}},
+	}).Validate()
+	if err == nil || !strings.Contains(err.Error(), "group_bytes_hex") {
+		t.Fatalf("Validate() error = %v, want frozen group rejection", err)
+	}
+}
+
+func TestUnifiedBoundedComponentResponseRejectsMalformedTargets(t *testing.T) {
+	valid := Component{
+		TargetIndex: 0, Kind: ComponentTargetKindBoundedBase, AuthAddress: "BOUNDED",
 		BaseSignatures: []string{"base"}, AssemblyReceipt: "receipt",
 		SignatureScheme: "aplane.falcon1024.v1",
 	}
 	tests := []struct {
 		name       string
-		components []BoundedBaseComponent
+		components []Component
 		want       string
 	}{
 		{
 			name:       "duplicate",
-			components: []BoundedBaseComponent{valid, valid},
-			want:       "invalid or duplicate target_index",
-		},
-		{
-			name: "out of range",
-			components: []BoundedBaseComponent{func() BoundedBaseComponent {
-				item := valid
-				item.TargetIndex = 1
-				return item
-			}()},
-			want: "invalid or duplicate target_index",
+			components: []Component{valid, valid},
+			want:       "invalid or duplicate",
 		},
 		{
 			name: "incomplete",
-			components: []BoundedBaseComponent{func() BoundedBaseComponent {
+			components: []Component{func() Component {
 				item := valid
 				item.AssemblyReceipt = ""
 				return item
 			}()},
-			want: "incomplete",
+			want: "invalid bounded-base material",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := (BoundedComponentResponse{
-				RequestID:    "bounded-response",
-				Transactions: []string{"5458aa"},
-				Components:   tt.components,
+			err := (ComponentResponse{
+				RequestID:  "bounded-response",
+				Components: tt.components,
 			}).Validate()
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("Validate() error = %v, want %q", err, tt.want)
@@ -357,13 +417,13 @@ func TestBoundedComponentResponseRejectsMalformedTargets(t *testing.T) {
 	}
 }
 
-func TestRequestBoundedComponentCancelsApprovalWhenContextCanceled(t *testing.T) {
+func TestRequestBoundedKindCancelsApprovalWhenContextCanceled(t *testing.T) {
 	signStarted := make(chan string, 1)
 	cancelReceived := make(chan string, 1)
 	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/sign/bounded-component":
-			var req BoundedComponentRequest
+		case "/sign/component":
+			var req ComponentRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("decode bounded component request: %v", err)
 			}
@@ -388,11 +448,10 @@ func TestRequestBoundedComponentCancelsApprovalWhenContextCanceled(t *testing.T)
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan error, 1)
 	go func() {
-		_, err := client.RequestBoundedComponentWithContext(ctx, BoundedComponentRequest{
-			RequestID: "bounded-cancel-id",
-			Requests: []SignRequest{{
-				AuthAddress: "AUTH", TxnBytesHex: "545801",
-			}},
+		_, err := client.RequestComponentsWithContext(ctx, ComponentRequest{
+			RequestID:     "bounded-cancel-id",
+			GroupBytesHex: []string{"545801"},
+			Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindBoundedBase, AuthAddress: "AUTH"}},
 		})
 		result <- err
 	}()
@@ -418,16 +477,16 @@ func TestRequestBoundedComponentCancelsApprovalWhenContextCanceled(t *testing.T)
 	select {
 	case err := <-result:
 		if err == nil || !strings.Contains(err.Error(), "context canceled") {
-			t.Fatalf("RequestBoundedComponentWithContext() error = %v", err)
+			t.Fatalf("RequestComponentsWithContext() error = %v", err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("RequestBoundedComponentWithContext() did not return")
+		t.Fatal("RequestComponentsWithContext() did not return")
 	}
 }
 
 func TestBoundedEndpointClassifiesNotFound(t *testing.T) {
 	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/sign/bounded-component" {
+		if r.URL.Path != "/sign/component" {
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
 		w.WriteHeader(http.StatusBadRequest)
@@ -436,14 +495,13 @@ func TestBoundedEndpointClassifiesNotFound(t *testing.T) {
 	defer server.Close()
 
 	client.cacheApprovalWait(60)
-	_, err := client.RequestBoundedComponent(BoundedComponentRequest{
-		RequestID: "bounded-not-found",
-		Requests: []SignRequest{{
-			AuthAddress: "AUTH", TxnBytesHex: "545801",
-		}},
+	_, err := client.RequestComponents(ComponentRequest{
+		RequestID:     "bounded-not-found",
+		GroupBytesHex: []string{"545801"},
+		Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindBoundedBase, AuthAddress: "AUTH"}},
 	})
 	if !errors.Is(err, ErrKeyNotFound) {
-		t.Fatalf("RequestBoundedComponent() error = %v, want ErrKeyNotFound", err)
+		t.Fatalf("RequestComponents() error = %v, want ErrKeyNotFound", err)
 	}
 }
 

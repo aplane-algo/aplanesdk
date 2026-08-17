@@ -6,6 +6,8 @@
 import json
 import base64
 import hashlib
+import aplanesdk
+from dataclasses import asdict
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -16,12 +18,10 @@ from aplanesdk.signer import (
     AUTHORIZATION_KIND_LOGIC_SIG,
     AUTHORIZATION_KIND_NATIVE_PQ,
     CancelSignResponse,
-    ComponentSignRequest,
-    ComponentSignResponse,
-    BoundedComponentRequest,
-    BoundedComponentResponse,
-    BoundedAssemblyRequest,
-    BoundedAssemblyResponse,
+    ComponentRequest,
+    ComponentResponse,
+    AssemblyRequest,
+    AssemblyResponse,
     ERR_CODE_BAD_REQUEST,
     ERR_CODE_CACHE_REFRESH,
     ERR_CODE_FORBIDDEN,
@@ -33,12 +33,10 @@ from aplanesdk.signer import (
     ERR_CODE_NOT_FOUND,
     ERR_CODE_UNAUTHORIZED,
     ERR_CODE_UNAVAILABLE,
-    GuardedAssemblyRequest,
-    GuardedAssemblyTarget,
-    GuardedAssemblyResponse,
     LogicSigResourceUsage,
     SignerClient,
     StatusResponse,
+    _validate_component_request,
 )
 
 FIXTURE_DIR = Path(__file__).resolve().parents[2] / "contracts" / "signerapi"
@@ -393,40 +391,20 @@ def test_generate_key_maps_component_response():
 
 
 def test_sentry_dtos_round_trip_fixtures():
-    component_req = ComponentSignRequest(**fixture("component_sign_request_sentry.json"))
-    assert component_req.role == "sentry"
-    component_resp_data = fixture("component_sign_response_sentry.json")
-    component_resp = ComponentSignResponse(
-        request_id=component_resp_data["request_id"],
-        component_key=component_resp_data["component_key"],
-        signatures=component_resp_data["signatures"],
-    )
-    assert component_resp.signatures[0]["signature_scheme"] == "aplane.witness-falcon1024.v1"
+    unified_component_req = ComponentRequest(**fixture("component_request.json"))
+    _validate_component_request(asdict(unified_component_req))
+    assert unified_component_req.targets[0]["kind"] == "bounded-base"
+    unified_component_resp = ComponentResponse(**fixture("component_response.json"))
+    assert unified_component_resp.components[0]["assembly_receipt"]
 
-    assembly_req = GuardedAssemblyRequest(**fixture("guarded_assembly_request_mixed.json"))
-    assert assembly_req.group_bytes_hex[0].startswith("5458")
-    assembly_target = GuardedAssemblyTarget(**assembly_req.targets[0])
-    assert assembly_target.user_signature
-    assert assembly_target.sentry_signature
-    assert assembly_target.runtime_args == ["aa01", "bb02"]
-    assembly_resp = GuardedAssemblyResponse(**fixture("guarded_assembly_response.json"))
-    assert len(assembly_resp.signed_group) == 2
+    unified_req = AssemblyRequest(**fixture("assembly_request_mixed.json"))
+    assert unified_req.targets[0]["kind"] == "guarded"
+    unified_resp = AssemblyResponse(**fixture("assembly_response.json"))
+    assert len(unified_resp.signed_group) == 3
 
-    bounded_component_req = BoundedComponentRequest(**fixture("bounded_component_request.json"))
-    assert bounded_component_req.requests[0]["auth_address"]
-    bounded_component_data = fixture("bounded_component_response.json")
-    bounded_component_resp = BoundedComponentResponse(
-        request_id=bounded_component_data["request_id"],
-        transactions=bounded_component_data["transactions"],
-        components=bounded_component_data["components"],
-        mutations=bounded_component_data.get("mutations"),
-    )
-    assert bounded_component_resp.components[0]["assembly_receipt"]
-
-    bounded_assembly_req = BoundedAssemblyRequest(**fixture("bounded_assembly_request.json"))
-    assert bounded_assembly_req.targets[0]["sentry_signature"]
-    bounded_assembly_resp = BoundedAssemblyResponse(**fixture("bounded_assembly_response.json"))
-    assert len(bounded_assembly_resp.signed_group) == 2
+    assert aplanesdk.ComponentRequest is ComponentRequest
+    assert aplanesdk.ComponentResponse is ComponentResponse
+    assert aplanesdk.COMPONENT_TARGET_KIND_BOUNDED_BASE == "bounded-base"
 
     sync_req = AdminSyncSentryReferencesRequest(**fixture("admin_sync_sentries_request.json"))
     assert sync_req.candidates[0]["component_key"]

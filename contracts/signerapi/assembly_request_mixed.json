@@ -1,0 +1,36 @@
+{
+  "request_id": "asm-contract-001",
+  "group_bytes_hex": [
+    "5458aa",
+    "5458bb",
+    "5458cc"
+  ],
+  "targets": [
+    {
+      "target_index": 0,
+      "kind": "guarded",
+      "auth_address": "GUARDED_ACCOUNT",
+      "user_signature": "aa",
+      "sentry_signature": "bb"
+    },
+    {
+      "target_index": 1,
+      "kind": "bounded-sentry",
+      "auth_address": "BOUNDED_ACCOUNT",
+      "base_signatures": [
+        "cc"
+      ],
+      "bounded_runtime_args": {
+        "proof": "dd"
+      },
+      "assembly_receipt": "ee",
+      "sentry_signature": "ff"
+    }
+  ],
+  "passthrough": [
+    {
+      "target_index": 2,
+      "signed_txn_hex": "abcd"
+    }
+  ]
+}

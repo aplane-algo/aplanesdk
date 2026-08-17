@@ -11,7 +11,6 @@ import {
   simulateGuardedGroup,
 } from "../src/client.js";
 import {
-  COMPONENT_SIGN_ROLE_SENTRY,
   KEY_TYPE_GUARDED_FALCON1024_SENTRY1024,
   KEY_TYPE_WITNESS_FALCON1024,
   SIGNING_FLOW_SENTRY1,
@@ -1194,9 +1193,10 @@ describe("SignerClient", () => {
         ok: true,
         json: async () => ({
           request_id: "sdk-generated",
-          signatures: [
+          components: [
             {
               target_index: 0,
+              kind: "sentry",
               signature: "aabb",
               signature_scheme: KEY_TYPE_WITNESS_FALCON1024,
             },
@@ -1205,22 +1205,20 @@ describe("SignerClient", () => {
       });
 
       const client = new SignerClient("http://localhost:11270", "test-token");
-      const result = await client.requestComponentSign({
+      const result = await client.requestComponents({
         request_id: "sdk-generated",
-        role: COMPONENT_SIGN_ROLE_SENTRY,
-        component_key: "COMPONENT",
         group_bytes_hex: ["5458aa"],
-        target_indices: [0],
+        targets: [{ target_index: 0, kind: "sentry", component_key: "COMPONENT" }],
       });
 
-      assert.equal(result.signatures[0].signature, "aabb");
+      assert.equal(result.components[0].signature, "aabb");
       assert.equal(mockFetch.mock.calls[0][0], "http://localhost:11270/sign/component");
       assert.equal(mockFetch.mock.calls[0][1].method, "POST");
       assert.equal(mockFetch.mock.calls[0][1].headers.Authorization, "aplane test-token");
       const body = JSON.parse(mockFetch.mock.calls[0][1].body);
       assert.match(body.request_id, /^sdk-/);
-      assert.equal(body.role, COMPONENT_SIGN_ROLE_SENTRY);
-      assert.equal(body.component_key, "COMPONENT");
+      assert.equal(body.targets[0].kind, "sentry");
+      assert.equal(body.targets[0].component_key, "COMPONENT");
     });
 
     it("rejects malformed component signing responses", async () => {
@@ -1232,12 +1230,11 @@ describe("SignerClient", () => {
 
       const client = new SignerClient("http://localhost:11270", "test-token");
       await assert.rejects(
-        client.requestComponentSign({
-          role: COMPONENT_SIGN_ROLE_SENTRY,
+        client.requestComponents({
           group_bytes_hex: ["5458aa"],
-          target_indices: [0],
+          targets: [{ target_index: 0, kind: "sentry" }],
         }),
-        { message: /invalid component sign response/ },
+        { message: /invalid component response: components array is empty/ },
       );
     });
 
@@ -1247,8 +1244,9 @@ describe("SignerClient", () => {
         ok: true,
         json: async () => ({
           request_id: "sdk-component",
-          signatures: [{
+          components: [{
             target_index: 1,
+            kind: "sentry",
             signature: "aabb",
             signature_scheme: KEY_TYPE_WITNESS_FALCON1024,
           }],
@@ -1257,13 +1255,39 @@ describe("SignerClient", () => {
 
       const client = new SignerClient("http://localhost:11270", "test-token");
       await assert.rejects(
-        client.requestComponentSign({
+        client.requestComponents({
           request_id: "sdk-component",
-          role: COMPONENT_SIGN_ROLE_SENTRY,
           group_bytes_hex: ["5458aa", "5458bb"],
-          target_indices: [0],
+          targets: [{ target_index: 0, kind: "sentry" }],
+          contextual_positions: [{ target_index: 1 }],
         }),
-        { message: /indices do not match request/ },
+        { message: /indices or kinds do not match request/ },
+      );
+    });
+
+    it("rejects component signatures outside the frozen group", async () => {
+      mockFetch.mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: async () => ({
+          request_id: "sdk-component",
+          components: [{
+            target_index: 2,
+            kind: "sentry",
+            signature: "aabb",
+            signature_scheme: KEY_TYPE_WITNESS_FALCON1024,
+          }],
+        }),
+      });
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      await assert.rejects(
+        client.requestComponents({
+          request_id: "sdk-component",
+          group_bytes_hex: ["5458aa"],
+          targets: [{ target_index: 0, kind: "sentry", component_key: "COMPONENT" }],
+        }),
+        { message: /invalid component response: component 1 target_index is outside the frozen group/ },
       );
     });
 
@@ -1278,12 +1302,13 @@ describe("SignerClient", () => {
       });
 
       const client = new SignerClient("http://localhost:11270", "test-token");
-      const result = await client.requestGuardedAssemble({
+      const result = await client.requestAssemble({
         group_bytes_hex: ["5458aa"],
         targets: [
           {
             target_index: 0,
-            guarded_account: "GUARDED",
+            kind: "guarded",
+            auth_address: "GUARDED",
             user_signature: "aabb",
             sentry_signature: "bbcc",
           },
@@ -1294,18 +1319,20 @@ describe("SignerClient", () => {
       assert.equal(mockFetch.mock.calls[0][0], "http://localhost:11270/sign/assemble");
       const body = JSON.parse(mockFetch.mock.calls[0][1].body);
       assert.match(body.request_id, /^sdk-/);
-      assert.equal(body.targets[0].guarded_account, "GUARDED");
+      assert.equal(body.targets[0].kind, "guarded");
+      assert.equal(body.targets[0].auth_address, "GUARDED");
     });
 
     it("rejects guarded assembly requests with missing coverage before fetch", async () => {
       const client = new SignerClient("http://localhost:11270", "test-token");
       await assert.rejects(
-        client.requestGuardedAssemble({
+        client.requestAssemble({
           group_bytes_hex: ["5458aa", "5458bb"],
           targets: [
             {
               target_index: 0,
-              guarded_account: "GUARDED",
+              kind: "guarded",
+              auth_address: "GUARDED",
               user_signature: "aabb",
               sentry_signature: "bbcc",
             },
@@ -1326,7 +1353,8 @@ describe("SignerClient", () => {
           transactions: ["5458aa"],
           components: [{
             target_index: 0,
-            bounded_account: "BOUNDED",
+            kind: "bounded-base",
+            auth_address: "BOUNDED",
             base_signatures: ["base-sig"],
             assembly_receipt: "receipt",
             signature_scheme: "aplane.falcon1024.v1",
@@ -1348,16 +1376,18 @@ describe("SignerClient", () => {
       });
 
       const client = new SignerClient("http://localhost:11270", "test-token");
-      const component = await client.requestBoundedComponent({
+      const component = await client.requestComponents({
         request_id: "bounded-base-id",
-        requests: [{ auth_address: "BOUNDED", txn_bytes_hex: "5458aa" }],
+        group_bytes_hex: ["5458aa"],
+        targets: [{ target_index: 0, kind: "bounded-base", auth_address: "BOUNDED" }],
       });
-      const assembly = await client.requestBoundedAssemble({
+      const assembly = await client.requestAssemble({
         request_id: "bounded-assembly-id",
         group_bytes_hex: ["5458aa"],
         targets: [{
           target_index: 0,
-          bounded_account: "BOUNDED",
+          kind: "bounded-sentry",
+          auth_address: "BOUNDED",
           base_signatures: ["base-sig"],
           assembly_receipt: "receipt",
           sentry_signature: "sentry-sig",
@@ -1365,11 +1395,9 @@ describe("SignerClient", () => {
       });
 
       assert.equal(component.components[0].assembly_receipt, "receipt");
-      assert.equal(component.mutations?.dummiesAdded, 1);
-      assert.equal(component.mutations?.originalCount, 1);
       assert.deepEqual(assembly.signed_group, ["signed"]);
-      assert.equal(mockFetch.mock.calls[1][0], "http://localhost:11270/sign/bounded-component");
-      assert.equal(mockFetch.mock.calls[2][0], "http://localhost:11270/sign/bounded-assemble");
+      assert.equal(mockFetch.mock.calls[1][0], "http://localhost:11270/sign/component");
+      assert.equal(mockFetch.mock.calls[2][0], "http://localhost:11270/sign/assemble");
     });
 
     it("cancels bounded component approval after timeout", async () => {
@@ -1385,14 +1413,15 @@ describe("SignerClient", () => {
 
       const client = new SignerClient("http://localhost:11270", "test-token");
       await assert.rejects(
-        client.requestBoundedComponent({
+        client.requestComponents({
           request_id: "bounded-cancel-id",
-          requests: [{ auth_address: "BOUNDED", txn_bytes_hex: "5458aa" }],
+          group_bytes_hex: ["5458aa"],
+          targets: [{ target_index: 0, kind: "bounded-base", auth_address: "BOUNDED" }],
         }),
         SignerUnavailableError,
       );
 
-      assert.equal(mockFetch.mock.calls[1][0], "http://localhost:11270/sign/bounded-component");
+      assert.equal(mockFetch.mock.calls[1][0], "http://localhost:11270/sign/component");
       assert.equal(mockFetch.mock.calls[2][0], "http://localhost:11270/sign/cancel");
       assert.equal(
         JSON.parse(mockFetch.mock.calls[2][1].body).request_id,
@@ -1411,22 +1440,24 @@ describe("SignerClient", () => {
 
       const client = new SignerClient("http://localhost:11270", "test-token");
       await assert.rejects(
-        client.requestBoundedComponent({
+        client.requestComponents({
           request_id: "bounded-not-found",
-          requests: [{ auth_address: "BOUNDED", txn_bytes_hex: "5458aa" }],
+          group_bytes_hex: ["5458aa"],
+          targets: [{ target_index: 0, kind: "bounded-base", auth_address: "BOUNDED" }],
         }),
         KeyNotFoundError,
       );
     });
 
-    it("rejects bounded component passthrough before fetch", async () => {
+    it("rejects an incomplete bounded component partition before fetch", async () => {
       const client = new SignerClient("http://localhost:11270", "test-token");
       await assert.rejects(
-        client.requestBoundedComponent({
+        client.requestComponents({
           request_id: "bounded-base-id",
-          requests: [{ signed_txn_hex: "abcd" }],
+          group_bytes_hex: [],
+          targets: [{ target_index: 0, kind: "bounded-base", auth_address: "BOUNDED" }],
         }),
-        /does not accept signed passthrough/,
+        /group_bytes_hex is empty/,
       );
       assert.equal(mockFetch.mock.calls.length, 0);
     });
@@ -1442,9 +1473,10 @@ describe("SignerClient", () => {
       });
       const client = new SignerClient("http://localhost:11270", "test-token");
       await assert.rejects(
-        client.requestBoundedComponent({
+        client.requestComponents({
           request_id: "bounded-base-id",
-          requests: [{ auth_address: "BOUNDED", txn_bytes_hex: "5458aa" }],
+          group_bytes_hex: ["5458aa"],
+          targets: [{ target_index: 0, kind: "bounded-base", auth_address: "BOUNDED" }],
         }),
         (error: unknown) => error instanceof SignerError &&
           error.message === "Server returned invalid JSON",
@@ -1455,7 +1487,8 @@ describe("SignerClient", () => {
       queueStatusResponse();
       const component = {
         target_index: 0,
-        bounded_account: "BOUNDED",
+        kind: "bounded-base",
+        auth_address: "BOUNDED",
         base_signatures: ["base"],
         assembly_receipt: "receipt",
         signature_scheme: "aplane.falcon1024.v1",
@@ -1471,9 +1504,10 @@ describe("SignerClient", () => {
       });
       const client = new SignerClient("http://localhost:11270", "test-token");
       await assert.rejects(
-        client.requestBoundedComponent({
+        client.requestComponents({
           request_id: "bounded-base-id",
-          requests: [{ auth_address: "BOUNDED", txn_bytes_hex: "5458aa" }],
+          group_bytes_hex: ["5458aa"],
+          targets: [{ target_index: 0, kind: "bounded-base", auth_address: "BOUNDED" }],
         }),
         /invalid or duplicate target_index/,
       );
@@ -1509,27 +1543,27 @@ describe("SignerClient", () => {
       const user = new SignerClient("http://localhost:11270", "test-token");
       const sentry = new SignerClient("http://sentry:11270", "sentry-token");
 
-      (user as any).requestComponentSign = async (request: any) => {
-        assert.equal(request.role, "user");
-        assert.equal(request.component_key, "GUARDED");
+      (user as any).requestComponents = async (request: any) => {
+        assert.equal(request.targets[0].kind, "user");
+        assert.equal(request.targets[0].auth_address, "GUARDED");
         return {
           request_id: "user-id",
-          signatures: [
-            { target_index: 0, signature: "user-sig", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
+          components: [
+            { target_index: 0, kind: "user", signature: "user-sig", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
           ],
         };
       };
-      (sentry as any).requestComponentSign = async (request: any) => {
-        assert.equal(request.role, COMPONENT_SIGN_ROLE_SENTRY);
-        assert.equal(request.component_key, "SENTRY_COMPONENT");
+      (sentry as any).requestComponents = async (request: any) => {
+        assert.equal(request.targets[0].kind, "sentry");
+        assert.equal(request.targets[0].component_key, "SENTRY_COMPONENT");
         return {
           request_id: "sentry-id",
-          signatures: [
-            { target_index: 0, signature: "sentry-sig", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
+          components: [
+            { target_index: 0, kind: "sentry", signature: "sentry-sig", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
           ],
         };
       };
-      (user as any).requestGuardedAssemble = async (request: any) => {
+      (user as any).requestAssemble = async (request: any) => {
         assert.equal(request.targets[0].user_signature, "user-sig");
         assert.equal(request.targets[0].sentry_signature, "sentry-sig");
         return { request_id: "assembly-id", signed_group: ["signed-guarded"] };
@@ -1555,28 +1589,28 @@ describe("SignerClient", () => {
       const sentry = new SignerClient("http://sentry:11270", "sentry-token");
       let sentryCalls = 0;
 
-      (user as any).requestComponentSign = async (request: any) => {
-        assert.deepEqual(request.target_indices, [0, 1]);
+      (user as any).requestComponents = async (request: any) => {
+        assert.deepEqual(request.targets.map((target: any) => target.target_index), [0, 1]);
         return {
           request_id: "user-id",
-          signatures: [
-            { target_index: 0, signature: "user-0", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
-            { target_index: 1, signature: "user-1", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
+          components: [
+            { target_index: 0, kind: "user", signature: "user-0", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
+            { target_index: 1, kind: "user", signature: "user-1", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
           ],
         };
       };
-      (sentry as any).requestComponentSign = async (request: any) => {
+      (sentry as any).requestComponents = async (request: any) => {
         sentryCalls += 1;
-        assert.deepEqual(request.target_indices, [0, 1]);
+        assert.deepEqual(request.targets.map((target: any) => target.target_index), [0, 1]);
         return {
           request_id: "sentry-id",
-          signatures: [
-            { target_index: 0, signature: "sentry-0", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
-            { target_index: 1, signature: "sentry-1", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
+          components: [
+            { target_index: 0, kind: "sentry", signature: "sentry-0", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
+            { target_index: 1, kind: "sentry", signature: "sentry-1", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
           ],
         };
       };
-      (user as any).requestGuardedAssemble = async () => ({
+      (user as any).requestAssemble = async () => ({
         request_id: "assembly-id",
         signed_group: ["signed-0", "signed-1"],
       });
@@ -1599,18 +1633,30 @@ describe("SignerClient", () => {
       const user = new SignerClient("http://localhost:11270", "test-token");
       const sentry = new SignerClient("http://sentry:11270", "sentry-token");
 
-      (user as any).requestComponentSign = async () => ({
-        request_id: "user-id",
-        signatures: [
-          { target_index: 1, signature: "user-sig", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
-        ],
-      });
-      (sentry as any).requestComponentSign = async () => ({
-        request_id: "sentry-id",
-        signatures: [
-          { target_index: 1, signature: "sentry-sig", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
-        ],
-      });
+      (user as any).requestComponents = async (request: any) => {
+        assert.deepEqual(
+          request.contextual_positions.find((item: any) => item.target_index === 0).app_call_info,
+          { mode: "abi", method: "primary()void" },
+        );
+        return {
+          request_id: "user-id",
+          components: [
+            { target_index: 1, kind: "sentry", signature: "user-sig", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
+          ],
+        };
+      };
+      (sentry as any).requestComponents = async (request: any) => {
+        assert.deepEqual(
+          request.contextual_positions.find((item: any) => item.target_index === 0).app_call_info,
+          { mode: "abi", method: "primary()void" },
+        );
+        return {
+          request_id: "sentry-id",
+          components: [
+            { target_index: 1, kind: "sentry", signature: "sentry-sig", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
+          ],
+        };
+      };
       (user as any).signRequests = async (requests: any[]) => {
         assert.equal(requests[0].auth_address, "AUTH");
         assert.equal(requests[1].auth_address, undefined);
@@ -1626,7 +1672,7 @@ describe("SignerClient", () => {
         });
         return { signed: ["primary-signed", "", ""] };
       };
-      (user as any).requestGuardedAssemble = async (request: any) => {
+      (user as any).requestAssemble = async (request: any) => {
         assert.deepEqual(
           request.passthrough.map((item: any) => item.target_index).sort(),
           [0, 2],
@@ -1646,7 +1692,11 @@ describe("SignerClient", () => {
         sentryClient: sentry,
         sentryComponentKey: "SENTRY_COMPONENT",
         groupBytesHex: ["5458aa", "5458bb", "5458cc"],
-        primaryTargets: [{ targetIndex: 0, authAddress: "AUTH" }],
+        primaryTargets: [{
+          targetIndex: 0,
+          authAddress: "AUTH",
+          appCallInfo: { mode: "abi", method: "primary()void" },
+        }],
         guardedTargets: [{
           targetIndex: 1,
           guardedAccount: "GUARDED",
@@ -1672,7 +1722,7 @@ describe("SignerClient", () => {
     it("rejects missing resources before component signing", async () => {
       const user = new SignerClient("http://localhost:11270", "test-token");
       let componentCalls = 0;
-      (user as any).requestComponentSign = async () => {
+      (user as any).requestComponents = async () => {
         componentCalls += 1;
         throw new Error("unexpected component request");
       };
@@ -1694,25 +1744,35 @@ describe("SignerClient", () => {
       const user = new SignerClient("http://localhost:11270", "test-token");
       const sentry = new SignerClient("http://sentry:11270", "sentry-token");
 
-      (user as any).requestComponentSign = async (request: any) => {
-        assert.equal(request.component_key, guarded);
+      (user as any).requestComponents = async (request: any) => {
+        assert.equal(request.targets[0].auth_address, guarded);
+        assert.deepEqual(request.targets[0].app_call_info, { mode: "raw" });
         assert.equal(request.group_bytes_hex.length, 4);
-        assert.deepEqual(request.target_indices, [0]);
+        assert.deepEqual(request.targets.map((target: any) => target.target_index), [0]);
+        assert.deepEqual(request.contextual_positions, []);
+        assert.deepEqual(request.dummy_positions, [
+          { target_index: 1 }, { target_index: 2 }, { target_index: 3 },
+        ]);
         return {
           request_id: "user-id",
-          signatures: [
-            { target_index: 0, signature: "user-sig", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
+          components: [
+            { target_index: 0, kind: "user", signature: "user-sig", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
           ],
         };
       };
-      (sentry as any).requestComponentSign = async (request: any) => {
-        assert.equal(request.component_key, "SENTRY_COMPONENT");
+      (sentry as any).requestComponents = async (request: any) => {
+        assert.equal(request.targets[0].component_key, "SENTRY_COMPONENT");
+        assert.deepEqual(request.targets[0].app_call_info, { mode: "raw" });
         assert.equal(request.group_bytes_hex.length, 4);
-        assert.deepEqual(request.target_indices, [0]);
+        assert.deepEqual(request.targets.map((target: any) => target.target_index), [0]);
+        assert.deepEqual(request.contextual_positions, []);
+        assert.deepEqual(request.dummy_positions, [
+          { target_index: 1 }, { target_index: 2 }, { target_index: 3 },
+        ]);
         return {
           request_id: "sentry-id",
-          signatures: [
-            { target_index: 0, signature: "sentry-sig", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
+          components: [
+            { target_index: 0, kind: "sentry", signature: "sentry-sig", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
           ],
         };
       };
@@ -1753,7 +1813,7 @@ describe("SignerClient", () => {
           mutations: { dummiesAdded: 3, originalCount: 1, finalCount: 4, groupIdChanged: true },
         };
       };
-      (user as any).requestGuardedAssemble = async (request: any) => {
+      (user as any).requestAssemble = async (request: any) => {
         assert.equal(request.group_bytes_hex.length, 4);
         assert.equal(request.passthrough.length, 3);
         assert.deepEqual(request.passthrough.map((item: any) => item.target_index), [1, 2, 3]);
@@ -1788,6 +1848,7 @@ describe("SignerClient", () => {
             {
               transaction: txn,
               authAddress: guarded,
+              appCallInfo: { mode: "raw" },
               signerKey: {
                 address: guarded,
                 publicKeyHex: "",
@@ -1884,15 +1945,21 @@ describe("SignerClient", () => {
       const sentry = new SignerClient("http://sentry:11270", "sentry-token");
       let plannedTransactions: string[] | undefined;
       let plannedMutations: any;
+      let baseComponentCalls = 0;
 
-      (user as any).requestBoundedComponent = async (request: any) => {
-        assert.equal(request.requests[0].auth_address, bounded);
+      (user as any).planRequests = async (requests: any[]) => ({
+        transactions: plannedTransactions ?? [requests[0].txn_bytes_hex],
+        mutations: plannedMutations,
+      });
+      (user as any).requestComponents = async (request: any) => {
+        baseComponentCalls += 1;
+        assert.equal(request.targets[0].auth_address, bounded);
         return {
           request_id: "base-id",
-          transactions: plannedTransactions ?? [request.requests[0].txn_bytes_hex],
           components: [{
             target_index: 0,
-            bounded_account: bounded,
+            kind: "bounded-base",
+            auth_address: bounded,
             base_signatures: ["base-sig"],
             runtime_args: { proof: "aabb" },
             assembly_receipt: "receipt",
@@ -1901,14 +1968,16 @@ describe("SignerClient", () => {
           mutations: plannedMutations,
         };
       };
-      (sentry as any).requestComponentSign = async (request: any) => {
-        assert.equal(request.component_key, "SENTRY_COMPONENT");
-        assert.deepEqual(request.target_indices, [0]);
+      (sentry as any).requestComponents = async (request: any) => {
+        assert.equal(request.targets[0].component_key, "SENTRY_COMPONENT");
+        assert.deepEqual(request.targets[0].app_call_info, { mode: "raw" });
+        assert.deepEqual(request.targets.map((target: any) => target.target_index), [0]);
         assert.equal(request.group_bytes_hex.length, 1);
         return {
           request_id: "sentry-id",
-          signatures: [{
+          components: [{
             target_index: 0,
+            kind: "sentry",
             signature: "sentry-sig",
             signature_scheme: KEY_TYPE_WITNESS_FALCON1024,
           }],
@@ -1925,7 +1994,7 @@ describe("SignerClient", () => {
           new algosdk.SignedTransaction({ txn, sig: signature }),
         ));
       };
-      (user as any).requestBoundedAssemble = async (request: any) => {
+      (user as any).requestAssemble = async (request: any) => {
         assert.deepEqual(request.targets[0].base_signatures, ["base-sig"]);
         assert.equal(request.targets[0].assembly_receipt, "receipt");
         assert.equal(request.targets[0].sentry_signature, "sentry-sig");
@@ -1954,6 +2023,7 @@ describe("SignerClient", () => {
           transactions: [{
             transaction: txn,
             authAddress: bounded,
+            appCallInfo: { mode: "raw" },
             signerKey: {
               address: bounded,
               publicKeyHex: "",
@@ -2064,10 +2134,12 @@ describe("SignerClient", () => {
         originalCount: 1,
         finalCount: 1,
       };
+      const callsBeforeInflatedFee = baseComponentCalls;
       await assert.rejects(
         signPreparedGuardedGroup(options),
         /exceeds advertised max_fee/,
       );
+      assert.equal(baseComponentCalls, callsBeforeInflatedFee);
 
       const badDummy = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
         sender: bounded,
@@ -2166,12 +2238,15 @@ describe("SignerClient", () => {
           suggestedParams,
           ...(item.rekey ? { rekeyTo } : {}),
         });
-        (user as any).requestBoundedComponent = async (request: any) => ({
+        (user as any).planRequests = async (requests: any[]) => ({
+          transactions: [requests[0].txn_bytes_hex],
+        });
+        (user as any).requestComponents = async (_request: any) => ({
           request_id: `component-${item.name}`,
-          transactions: [request.requests[0].txn_bytes_hex],
           components: [{
             target_index: 0,
-            bounded_account: bounded,
+            kind: "bounded-base",
+            auth_address: bounded,
             base_signatures: ["base-sig"],
             assembly_receipt: "receipt",
             signature_scheme: "aplane.falcon1024.v1",
@@ -2301,22 +2376,14 @@ describe("SignerClient", () => {
       };
       let plannedGroup: algosdk.Transaction[] = [];
 
-      (user as any).requestBoundedComponent = async (request: any) => {
-        const planned = request.requests.map((entry: any) =>
+      (user as any).planRequests = async (requests: any[]) => {
+        const planned = requests.map((entry: any) =>
           algosdk.decodeUnsignedTransaction(hexToBytes(entry.txn_bytes_hex).slice(2))
         );
         algosdk.assignGroupID(planned);
         plannedGroup = planned;
         return {
-          request_id: "base-id",
           transactions: planned.map((item: algosdk.Transaction) => encodeTransaction(item)[0]),
-          components: [{
-            target_index: 0,
-            bounded_account: bounded,
-            base_signatures: ["base-sig"],
-            assembly_receipt: "receipt",
-            signature_scheme: "aplane.falcon1024.v1",
-          }],
           mutations: {
             dummiesAdded: 0,
             groupIdChanged: true,
@@ -2327,10 +2394,22 @@ describe("SignerClient", () => {
           },
         };
       };
-      (sentry as any).requestComponentSign = async () => ({
+      (user as any).requestComponents = async (_request: any) => ({
+          request_id: "base-id",
+          components: [{
+            target_index: 0,
+            kind: "bounded-base",
+            auth_address: bounded,
+            base_signatures: ["base-sig"],
+            assembly_receipt: "receipt",
+            signature_scheme: "aplane.falcon1024.v1",
+          }],
+        });
+      (sentry as any).requestComponents = async () => ({
         request_id: "sentry-id",
-        signatures: [{
+        components: [{
           target_index: 0,
+          kind: "sentry",
           signature: "sentry-sig",
           signature_scheme: KEY_TYPE_WITNESS_FALCON1024,
         }],
@@ -2343,7 +2422,7 @@ describe("SignerClient", () => {
         primarySignedTxn.group = plannedGroup[1].group;
         return { signed: ["", signedTxnHex(primarySignedTxn)] };
       };
-      (user as any).requestBoundedAssemble = async () => ({
+      (user as any).requestAssemble = async () => ({
         request_id: "assembly-id",
         signed_group: plannedGroup.map(signedTxnHex),
       });
@@ -2409,7 +2488,7 @@ describe("SignerClient", () => {
       assert.equal(result.signedGroup.length, 2);
     });
 
-    // A native-PQ primary slot is declared foreign to /sign/bounded-component,
+    // A native-PQ primary slot is contextual to /sign/component,
     // so the signer budgets its fee purely from the declared pq_scheme.
     // Omitting it freezes an under-funded canonical group that the later /sign
     // identity check cannot detect, because the shortfall is already inside
@@ -2444,24 +2523,15 @@ describe("SignerClient", () => {
       let plannedGroup: algosdk.Transaction[] = [];
       let primaryRequest: any;
 
-      (user as any).requestBoundedComponent = async (request: any) => {
-        assert.equal(request.requests.length, 2);
-        primaryRequest = request.requests[1];
-        const planned = request.requests.map((entry: any) =>
+      (user as any).planRequests = async (requests: any[]) => {
+        primaryRequest = requests[1];
+        const planned = requests.map((entry: any) =>
           algosdk.decodeUnsignedTransaction(hexToBytes(entry.txn_bytes_hex).slice(2))
         );
         algosdk.assignGroupID(planned);
         plannedGroup = planned;
         return {
-          request_id: "base-id",
           transactions: planned.map((item: algosdk.Transaction) => encodeTransaction(item)[0]),
-          components: [{
-            target_index: 0,
-            bounded_account: bounded,
-            base_signatures: ["base-sig"],
-            assembly_receipt: "receipt",
-            signature_scheme: "aplane.falcon1024.v1",
-          }],
           mutations: {
             dummiesAdded: 0,
             groupIdChanged: true,
@@ -2472,10 +2542,26 @@ describe("SignerClient", () => {
           },
         };
       };
-      (sentry as any).requestComponentSign = async () => ({
+      (user as any).requestComponents = async (request: any) => {
+        assert.equal(request.targets.length, 1);
+        assert.equal(request.contextual_positions.length, 1);
+        return {
+          request_id: "base-id",
+          components: [{
+            target_index: 0,
+            kind: "bounded-base",
+            auth_address: bounded,
+            base_signatures: ["base-sig"],
+            assembly_receipt: "receipt",
+            signature_scheme: "aplane.falcon1024.v1",
+          }],
+        };
+      };
+      (sentry as any).requestComponents = async () => ({
         request_id: "sentry-id",
-        signatures: [{
+        components: [{
           target_index: 0,
+          kind: "sentry",
           signature: "sentry-sig",
           signature_scheme: KEY_TYPE_WITNESS_FALCON1024,
         }],
@@ -2483,7 +2569,7 @@ describe("SignerClient", () => {
       (user as any).signRequests = async () => ({
         signed: ["", signedTxnHex(plannedGroup[1])],
       });
-      (user as any).requestBoundedAssemble = async () => ({
+      (user as any).requestAssemble = async () => ({
         request_id: "assembly-id",
         signed_group: plannedGroup.map(signedTxnHex),
       });

@@ -639,8 +639,8 @@ If a direct guarded call combines `primary_targets` with caller-supplied
 `logic_sig_resources` for a LogicSig. This metadata is used only to plan the
 intermediate primary-signing request and is not sent to `/sign/assemble`.
 
-For manual orchestration, use `request_component_sign()` on the user and
-sentry clients, then `request_guarded_assemble()` on the user client.
+For manual orchestration, use `request_components()` on the user and
+sentry clients, then `request_assemble()` on the user client.
 `assemble_group()` remains only the local multi-party concatenation helper.
 
 Corridor is a bounded sentry account: its LogicSig contract is `bounded1`, and
@@ -657,10 +657,11 @@ result = sign_prepared_guarded_group(
 signed_group = result.signed_group
 ```
 
-The sequence is user approval and base-component release through
-`request_bounded_component()`, sentry signing over the frozen group, signing of
-ordinary group positions, and final `request_bounded_assemble()` on the user
-signer. Before requesting any additional signature, the SDK accepts only
+The sequence is `/plan`, user approval and base-component release through
+`request_components()` with a bounded-base target, sentry signing over the
+frozen group, signing of ordinary group positions, and final
+`request_assemble()` on the user signer. Before requesting any additional
+signature, the SDK accepts only
 mutation-report-declared fee pooling and group-ID assignment to the caller's
 prepared positions, and requires every appended position to be a canonical
 budget dummy. It verifies ordinary signed positions and every assembled

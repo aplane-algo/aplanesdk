@@ -519,8 +519,8 @@ If a direct guarded call combines `PrimaryTargets` with caller-supplied
 `LogicSigResources` for a LogicSig. This metadata is used only to plan the
 intermediate primary-signing request and is not sent to `/sign/assemble`.
 
-For manual orchestration, use `RequestComponentSign` on the user and sentry
-clients, then `RequestGuardedAssemble` on the user client. `AssembleGroup`
+For manual orchestration, use `RequestComponents` on the user and sentry
+clients, then `RequestAssemble` on the user client. `AssembleGroup`
 remains only the local multi-party concatenation helper.
 
 Corridor is a bounded sentry account: its LogicSig contract is `bounded1`, and
@@ -537,10 +537,10 @@ result, err := aplane.SignPreparedGuardedGroup(aplane.PreparedGuardedGroupOption
 signedGroup := result.SignedGroup
 ```
 
-The sequence is user approval and base-component release through
-`RequestBoundedComponent`, sentry signing over the frozen group, signing of
-ordinary group positions, and final `RequestBoundedAssemble` on the user
-signer. Before requesting any additional signature, the SDK accepts only
+The sequence is `/plan`, user approval and base-component release through
+`RequestComponents` with a bounded-base target, sentry signing over the frozen
+group, signing of ordinary group positions, and final `RequestAssemble` on the
+user signer. Before requesting any additional signature, the SDK accepts only
 mutation-report-declared fee pooling and group-ID assignment to the caller's
 prepared positions, and requires every appended position to be a canonical
 budget dummy. It verifies ordinary signed positions and every assembled

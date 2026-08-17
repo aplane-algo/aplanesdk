@@ -89,6 +89,7 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 				SentryPublicKeyHex:     boundedSentryPublicKey(key),
 				SentryComponentKeyType: boundedSentryComponentKeyType(key),
 				LogicSigResources:      resources,
+				AppCallInfo:            item.AppCallInfo,
 			})
 		case SigningFlowSentry1:
 			return nil, fmt.Errorf("cannot mix sentry1 and bounded-sentry1 targets in one group")
@@ -96,7 +97,7 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 			if key.SigningFlow != "" && key.SigningFlow != SigningFlowBounded1 {
 				return nil, fmt.Errorf("prepared transaction %d: signer key requires signing flow %q, which this SDK does not support; upgrade the SDK", i, key.SigningFlow)
 			}
-			// This slot is declared foreign to /sign/bounded-component, so the
+			// This slot is contextual to /sign/component, so the
 			// signer cannot infer its authorization envelope from the key. A
 			// native-PQ key publishes no LogicSig profile, so without an
 			// explicit pq_scheme the signer budgets it as an Ed25519 slot and
@@ -126,36 +127,51 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 		return nil, fmt.Errorf("prepared group has no bounded-sentry targets")
 	}
 
-	componentResp, err := opts.UserClient.RequestBoundedComponentWithContext(ctx, BoundedComponentRequest{Requests: requests})
+	planResp, err := opts.UserClient.PlanRequestsWithContext(ctx, requests)
 	if err != nil {
-		return nil, fmt.Errorf("bounded base component signing failed: %w", err)
+		return nil, fmt.Errorf("bounded group planning failed: %w", err)
 	}
-	planned, err := decodeCanonicalGroup(componentResp.Transactions)
+	planned, err := decodeCanonicalGroup(planResp.Transactions)
 	if err != nil {
 		return nil, fmt.Errorf("signer returned invalid bounded canonical group: %w", err)
-	}
-	if len(planned) < len(prepared) {
-		return nil, fmt.Errorf("signer returned %d bounded group positions, want at least %d", len(planned), len(prepared))
 	}
 	original := make([]types.Transaction, len(prepared))
 	for i, item := range prepared {
 		original[i] = *item.Transaction
 	}
-	if err := validateBoundedComponentPlan(original, planned, componentResp.Mutations); err != nil {
+	if err := validateBoundedComponentPlan(original, planned, planResp.Mutations); err != nil {
 		return nil, err
 	}
 	if err := validateBoundedTargetFees(planned, targetMaxFees); err != nil {
 		return nil, err
 	}
-
-	components := make(map[int]BoundedBaseComponent, len(componentResp.Components))
+	componentReq := ComponentRequest{GroupBytesHex: append([]string(nil), planResp.Transactions...)}
+	targetSet := make(map[int]bool, len(targets))
+	for _, target := range targets {
+		targetSet[target.TargetIndex] = true
+	}
+	for i, request := range requests {
+		if targetSet[i] {
+			componentReq.Targets = append(componentReq.Targets, ComponentTarget{TargetIndex: i, Kind: ComponentTargetKindBoundedBase, AuthAddress: request.AuthAddress, LsigArgs: request.LsigArgs, AppCallInfo: request.AppCallInfo})
+		} else {
+			componentReq.ContextualPositions = append(componentReq.ContextualPositions, ComponentContextPosition{TargetIndex: i, LsigResources: request.LsigResources, PQScheme: request.PQScheme, AppCallInfo: request.AppCallInfo})
+		}
+	}
+	for i := len(prepared); i < len(planResp.Transactions); i++ {
+		componentReq.DummyPositions = append(componentReq.DummyPositions, ComponentDummyPosition{TargetIndex: i})
+	}
+	componentResp, err := opts.UserClient.RequestComponentsWithContext(ctx, componentReq)
+	if err != nil {
+		return nil, fmt.Errorf("bounded base component signing failed: %w", err)
+	}
+	components := make(map[int]Component, len(componentResp.Components))
 	targetsByIndex := make(map[int]GuardedSignTarget, len(targets))
 	for _, target := range targets {
 		targetsByIndex[target.TargetIndex] = target
 	}
 	for _, component := range componentResp.Components {
 		target, ok := targetsByIndex[component.TargetIndex]
-		if !ok || component.BoundedAccount != target.GuardedAccount {
+		if !ok || component.Kind != ComponentTargetKindBoundedBase || component.AuthAddress != target.GuardedAccount {
 			return nil, fmt.Errorf("signer returned unexpected bounded component target %d", component.TargetIndex)
 		}
 		if _, duplicate := components[component.TargetIndex]; duplicate {
@@ -175,7 +191,9 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 		SentryClient:       opts.SentryClient,
 		SentryResolver:     opts.SentryResolver,
 		SentryComponentKey: opts.SentryComponentKey,
-		GroupBytesHex:      componentResp.Transactions,
+		GroupBytesHex:      planResp.Transactions,
+		PrimaryTargets:     primaryTargets,
+		DummyPositions:     contiguousIndices(len(prepared), len(planResp.Transactions)),
 	}
 	sentrySignatures, err := requestSentryComponentSignatures(ctx, sentryOpts, targets, result)
 	if err != nil {
@@ -183,7 +201,7 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 	}
 
 	primary, err := requestBoundedPrimaryPassthrough(
-		ctx, opts.UserClient, componentResp.Transactions, len(prepared),
+		ctx, opts.UserClient, planResp.Transactions, len(prepared),
 		targetsByIndex, targetResources, primaryTargets,
 	)
 	if err != nil {
@@ -192,7 +210,7 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 	if primary != nil {
 		result.PrimarySignResponse = primary.response
 	}
-	passthrough := make([]GuardedPassthroughItem, 0, len(planned)-len(targets))
+	passthrough := make([]AssemblyPassthroughItem, 0, len(planned)-len(targets))
 	if primary != nil {
 		passthrough = append(passthrough, primary.passthrough...)
 	}
@@ -202,35 +220,39 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 	}
 	passthrough = append(passthrough, dummies...)
 
-	assemblyTargets := make([]BoundedAssemblyTarget, 0, len(targets))
+	assemblyTargets := make([]AssemblyTarget, 0, len(targets))
 	for _, target := range targets {
 		component := components[target.TargetIndex]
 		sentry, ok := sentrySignatures[target.TargetIndex]
 		if !ok {
 			return nil, fmt.Errorf("missing sentry component signature for target %d", target.TargetIndex)
 		}
-		assemblyTargets = append(assemblyTargets, BoundedAssemblyTarget{
+		assemblyTargets = append(assemblyTargets, AssemblyTarget{
 			TargetIndex:           target.TargetIndex,
-			BoundedAccount:        target.GuardedAccount,
+			Kind:                  AssemblyTargetKindBoundedSentry,
+			AuthAddress:           target.GuardedAccount,
 			BaseSignatures:        append([]string(nil), component.BaseSignatures...),
-			RuntimeArgs:           cloneStringMap(component.RuntimeArgs),
+			BoundedRuntimeArgs:    cloneStringMap(component.RuntimeArgs),
 			AssemblyReceipt:       component.AssemblyReceipt,
 			BaseSourceRequestID:   componentResp.RequestID,
 			SentrySignature:       sentry.signature,
 			SentrySourceRequestID: sentry.requestID,
 		})
 	}
-
-	assemblyResp, err := opts.UserClient.RequestBoundedAssembleWithContext(ctx, BoundedAssemblyRequest{
+	assemblyPassthrough := make([]AssemblyPassthroughItem, 0, len(passthrough))
+	for _, item := range passthrough {
+		assemblyPassthrough = append(assemblyPassthrough, AssemblyPassthroughItem(item))
+	}
+	assemblyResp, err := opts.UserClient.RequestAssembleWithContext(ctx, AssemblyRequest{
 		RequestID:     opts.AssemblyRequestID,
-		GroupBytesHex: append([]string(nil), componentResp.Transactions...),
+		GroupBytesHex: append([]string(nil), planResp.Transactions...),
 		Targets:       assemblyTargets,
-		Passthrough:   passthrough,
+		Passthrough:   assemblyPassthrough,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("bounded-sentry assembly failed: %w", err)
 	}
-	if err := verifyAssembledGroup(componentResp.Transactions, assemblyResp.SignedGroup); err != nil {
+	if err := verifyAssembledGroup(planResp.Transactions, assemblyResp.SignedGroup); err != nil {
 		return nil, err
 	}
 	result.BoundedAssemblyResponse = assemblyResp
@@ -287,7 +309,7 @@ func requestBoundedPrimaryPassthrough(
 	if err != nil {
 		return nil, fmt.Errorf("signing non-bounded group positions failed: %w", err)
 	}
-	passthrough := make([]GuardedPassthroughItem, 0, len(primaryByIndex))
+	passthrough := make([]AssemblyPassthroughItem, 0, len(primaryByIndex))
 	for index := range primaryByIndex {
 		if index >= len(response.Signed) || response.Signed[index] == "" {
 			return nil, fmt.Errorf("primary signer returned no signed transaction for target %d", index)
@@ -295,7 +317,7 @@ func requestBoundedPrimaryPassthrough(
 		if err := signedTxnMatchesCanonical("primary passthrough", index, response.Signed[index], groupBytesHex[index]); err != nil {
 			return nil, err
 		}
-		passthrough = append(passthrough, GuardedPassthroughItem{
+		passthrough = append(passthrough, AssemblyPassthroughItem{
 			TargetIndex: index, SignedTxnHex: response.Signed[index],
 		})
 	}

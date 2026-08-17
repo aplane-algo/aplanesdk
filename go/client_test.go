@@ -841,7 +841,7 @@ func TestDeleteKey_AuthError(t *testing.T) {
 	}
 }
 
-func TestRequestComponentSignPostsToComponentEndpoint(t *testing.T) {
+func TestRequestComponentsPostsToComponentEndpoint(t *testing.T) {
 	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/sign/component" {
 			t.Fatalf("request = %s %s, want POST /sign/component", r.Method, r.URL.Path)
@@ -849,19 +849,19 @@ func TestRequestComponentSignPostsToComponentEndpoint(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != "aplane test-token" {
 			t.Fatalf("Authorization = %q", got)
 		}
-		var req ComponentSignRequest
+		var req ComponentRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("decode component request: %v", err)
 		}
 		if req.RequestID == "" {
 			t.Fatal("request_id was not populated")
 		}
-		if req.Role != ComponentSignRoleSentry || req.ComponentKey != "COMPONENT" {
+		if len(req.Targets) != 1 || req.Targets[0].Kind != ComponentTargetKindSentry || req.Targets[0].ComponentKey != "COMPONENT" {
 			t.Fatalf("component request = %+v", req)
 		}
-		json.NewEncoder(w).Encode(ComponentSignResponse{
+		json.NewEncoder(w).Encode(ComponentResponse{
 			RequestID: req.RequestID,
-			Signatures: []ComponentSignature{{
+			Components: []Component{{Kind: ComponentTargetKindSentry,
 				TargetIndex:     0,
 				Signature:       "aabb",
 				SignatureScheme: KeyTypeWitnessFalcon1024,
@@ -870,98 +870,123 @@ func TestRequestComponentSignPostsToComponentEndpoint(t *testing.T) {
 	})
 	defer server.Close()
 
-	resp, err := client.RequestComponentSign(ComponentSignRequest{
-		Role:          ComponentSignRoleSentry,
-		ComponentKey:  "COMPONENT",
+	resp, err := client.RequestComponents(ComponentRequest{
 		GroupBytesHex: []string{"5458aa"},
-		TargetIndices: []int{0},
+		Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindSentry, ComponentKey: "COMPONENT"}},
 	})
 	if err != nil {
-		t.Fatalf("RequestComponentSign() error = %v", err)
+		t.Fatalf("RequestComponents() error = %v", err)
 	}
-	if len(resp.Signatures) != 1 || resp.Signatures[0].Signature != "aabb" {
+	if len(resp.Components) != 1 || resp.Components[0].Signature != "aabb" {
 		t.Fatalf("component response = %+v", resp)
 	}
 }
 
-func TestRequestComponentSignRejectsMalformedResponse(t *testing.T) {
+func TestRequestComponentsRejectsMalformedResponse(t *testing.T) {
 	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(ComponentSignResponse{RequestID: "sdk-test"})
+		json.NewEncoder(w).Encode(ComponentResponse{RequestID: "sdk-test"})
 	})
 	defer server.Close()
 
-	_, err := client.RequestComponentSign(ComponentSignRequest{
-		Role:          ComponentSignRoleSentry,
+	_, err := client.RequestComponents(ComponentRequest{
 		GroupBytesHex: []string{"5458aa"},
-		TargetIndices: []int{0},
+		Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindSentry}},
 	})
-	if err == nil || !strings.Contains(err.Error(), "invalid component sign response") {
+	if err == nil || !strings.Contains(err.Error(), "invalid component response") {
 		t.Fatalf("expected malformed response error, got %v", err)
 	}
 }
 
-func TestRequestComponentSignRejected(t *testing.T) {
+func TestRequestComponentsRejectsUnrequestedTargetKind(t *testing.T) {
+	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		var req ComponentRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		json.NewEncoder(w).Encode(ComponentResponse{
+			RequestID: req.RequestID,
+			Components: []Component{{
+				TargetIndex: 0, Kind: ComponentTargetKindUser,
+				Signature: "aabb", SignatureScheme: KeyTypeWitnessFalcon1024,
+			}},
+		})
+	})
+	defer server.Close()
+
+	_, err := client.RequestComponents(ComponentRequest{
+		GroupBytesHex: []string{"5458aa"},
+		Targets: []ComponentTarget{{
+			TargetIndex: 0, Kind: ComponentTargetKindSentry, ComponentKey: "COMPONENT",
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "indices or kinds do not match") {
+		t.Fatalf("expected mismatched target error, got %v", err)
+	}
+}
+
+func TestRequestComponentsRejected(t *testing.T) {
 	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(403)
 	})
 	defer server.Close()
 
-	_, err := client.RequestComponentSign(ComponentSignRequest{
-		Role:          ComponentSignRoleSentry,
+	_, err := client.RequestComponents(ComponentRequest{
 		GroupBytesHex: []string{"5458aa"},
-		TargetIndices: []int{0},
+		Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindSentry}},
 	})
 	if err != ErrSigningRejected {
 		t.Fatalf("expected ErrSigningRejected, got %v", err)
 	}
 }
 
-func TestRequestGuardedAssemblePostsToAssembleEndpoint(t *testing.T) {
+func TestRequestAssemblePostsToAssembleEndpoint(t *testing.T) {
 	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/sign/assemble" {
 			t.Fatalf("request = %s %s, want POST /sign/assemble", r.Method, r.URL.Path)
 		}
-		var req GuardedAssemblyRequest
+		var req AssemblyRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("decode assembly request: %v", err)
 		}
 		if req.RequestID == "" {
 			t.Fatal("request_id was not populated")
 		}
-		if len(req.Targets) != 1 || req.Targets[0].GuardedAccount != "GUARDED" {
+		if len(req.Targets) != 1 || req.Targets[0].Kind != AssemblyTargetKindGuarded || req.Targets[0].AuthAddress != "GUARDED" {
 			t.Fatalf("assembly targets = %+v", req.Targets)
 		}
-		json.NewEncoder(w).Encode(GuardedAssemblyResponse{
+		json.NewEncoder(w).Encode(AssemblyResponse{
 			RequestID:   req.RequestID,
 			SignedGroup: []string{"ccdd"},
 		})
 	})
 	defer server.Close()
 
-	resp, err := client.RequestGuardedAssemble(GuardedAssemblyRequest{
+	resp, err := client.RequestAssemble(AssemblyRequest{
 		GroupBytesHex: []string{"5458aa"},
-		Targets: []GuardedAssemblyTarget{{
+		Targets: []AssemblyTarget{{
 			TargetIndex:     0,
-			GuardedAccount:  "GUARDED",
+			Kind:            AssemblyTargetKindGuarded,
+			AuthAddress:     "GUARDED",
 			UserSignature:   "aabb",
 			SentrySignature: "bbcc",
 		}},
 	})
 	if err != nil {
-		t.Fatalf("RequestGuardedAssemble() error = %v", err)
+		t.Fatalf("RequestAssemble() error = %v", err)
 	}
 	if len(resp.SignedGroup) != 1 || resp.SignedGroup[0] != "ccdd" {
 		t.Fatalf("assembly response = %+v", resp)
 	}
 }
 
-func TestRequestGuardedAssembleRejectsMissingCoverage(t *testing.T) {
+func TestRequestAssembleRejectsMissingCoverage(t *testing.T) {
 	client := &SignerClient{baseURL: "http://example.invalid", token: "test", client: http.DefaultClient}
-	_, err := client.RequestGuardedAssemble(GuardedAssemblyRequest{
+	_, err := client.RequestAssemble(AssemblyRequest{
 		GroupBytesHex: []string{"5458aa", "5458bb"},
-		Targets: []GuardedAssemblyTarget{{
+		Targets: []AssemblyTarget{{
 			TargetIndex:     0,
-			GuardedAccount:  "GUARDED",
+			Kind:            AssemblyTargetKindGuarded,
+			AuthAddress:     "GUARDED",
 			UserSignature:   "aabb",
 			SentrySignature: "bbcc",
 		}},
@@ -971,17 +996,18 @@ func TestRequestGuardedAssembleRejectsMissingCoverage(t *testing.T) {
 	}
 }
 
-func TestRequestGuardedAssembleUnavailable(t *testing.T) {
+func TestRequestAssembleUnavailable(t *testing.T) {
 	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(503)
 	})
 	defer server.Close()
 
-	_, err := client.RequestGuardedAssemble(GuardedAssemblyRequest{
+	_, err := client.RequestAssemble(AssemblyRequest{
 		GroupBytesHex: []string{"5458aa"},
-		Targets: []GuardedAssemblyTarget{{
+		Targets: []AssemblyTarget{{
 			TargetIndex:     0,
-			GuardedAccount:  "GUARDED",
+			Kind:            AssemblyTargetKindGuarded,
+			AuthAddress:     "GUARDED",
 			UserSignature:   "aabb",
 			SentrySignature: "bbcc",
 		}},
