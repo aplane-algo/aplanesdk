@@ -659,9 +659,10 @@ class TestSpecializedLowLevelEndpoints:
         client = make_client()
         resp = mock_response(200, {
             "request_id": "sdk-generated",
-            "signatures": [
+            "components": [
                 {
                     "target_index": 0,
+                    "kind": "sentry",
                     "signature": "aabb",
                     "signature_scheme": KEY_TYPE_WITNESS_FALCON1024,
                 },
@@ -681,15 +682,15 @@ class TestSpecializedLowLevelEndpoints:
         assert mock_post.call_args.args[0] == "http://localhost:11270/sign/component"
         body = mock_post.call_args.kwargs["json"]
         assert body["request_id"].startswith("sdk-")
-        assert body["role"] == COMPONENT_SIGN_ROLE_SENTRY
-        assert body["component_key"] == "COMPONENT"
+        assert body["targets"][0]["kind"] == "sentry"
+        assert body["targets"][0]["component_key"] == "COMPONENT"
 
     def test_request_component_sign_rejects_malformed_response(self):
         client = make_client()
         resp = mock_response(200, {"request_id": "sdk-test"})
 
         with patch.object(client.session, "post", return_value=resp):
-            with pytest.raises(SignerError, match="invalid component sign response"):
+            with pytest.raises(SignerError, match="invalid component response"):
                 client.request_component_sign({
                     "role": COMPONENT_SIGN_ROLE_SENTRY,
                     "group_bytes_hex": ["5458aa"],
@@ -700,8 +701,9 @@ class TestSpecializedLowLevelEndpoints:
         client = make_client()
         resp = mock_response(200, {
             "request_id": "sdk-component",
-            "signatures": [{
+            "components": [{
                 "target_index": 1,
+                "kind": "sentry",
                 "signature": "aabb",
                 "signature_scheme": KEY_TYPE_WITNESS_FALCON1024,
             }],
@@ -768,10 +770,10 @@ class TestSpecializedLowLevelEndpoints:
             200,
             {
                 "request_id": "bounded-base-id",
-                "transactions": ["5458aa"],
                 "components": [{
                     "target_index": 0,
-                    "bounded_account": "BOUNDED",
+                    "kind": "bounded-base",
+                    "auth_address": "BOUNDED",
                     "base_signatures": ["base-sig"],
                     "assembly_receipt": "receipt",
                     "signature_scheme": "aplane.falcon1024.v1",
@@ -807,7 +809,7 @@ class TestSpecializedLowLevelEndpoints:
         assert component.components[0].assembly_receipt == "receipt"
         assert assembly.signed_group == ["signed"]
         assert mock_post.call_args_list[0].args[0].endswith(
-            "/sign/bounded-component"
+            "/sign/component"
         )
         assert mock_post.call_args_list[1].args[0].endswith(
             "/sign/assemble"
@@ -833,7 +835,7 @@ class TestSpecializedLowLevelEndpoints:
                 ))
 
         assert mock_post.call_args_list[0].args[0].endswith(
-            "/sign/bounded-component"
+            "/sign/component"
         )
         assert mock_post.call_args_list[1].args[0].endswith("/sign/cancel")
         assert mock_post.call_args_list[1].kwargs["json"] == {

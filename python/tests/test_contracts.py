@@ -18,6 +18,8 @@ from aplanesdk.signer import (
     CancelSignResponse,
     ComponentSignRequest,
     ComponentSignResponse,
+    ComponentRequest,
+    ComponentResponse,
     AssemblyRequest,
     AssemblyResponse,
     BoundedComponentRequest,
@@ -404,6 +406,11 @@ def test_sentry_dtos_round_trip_fixtures():
         signatures=component_resp_data["signatures"],
     )
     assert component_resp.signatures[0]["signature_scheme"] == "aplane.witness-falcon1024.v1"
+
+    unified_component_req = ComponentRequest(**fixture("component_request.json"))
+    assert unified_component_req.targets[0]["kind"] == "bounded-base"
+    unified_component_resp = ComponentResponse(**fixture("component_response.json"))
+    assert unified_component_resp.components[0]["assembly_receipt"]
 
     assembly_req = GuardedAssemblyRequest(**fixture("guarded_assembly_request_mixed.json"))
     assert assembly_req.group_bytes_hex[0].startswith("5458")

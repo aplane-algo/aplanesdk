@@ -48,6 +48,8 @@ import type {
   CancelSignResponse,
   ComponentSignRequest,
   ComponentSignResponse,
+  ComponentRequest,
+  ComponentResponse,
   AssemblyRequest,
   AssemblyResponse,
   GuardedAssemblyRequest,
@@ -1374,6 +1376,100 @@ function validateComponentSignResponse(
   }
 }
 
+function componentSignToUnified(request: ComponentSignRequest): ComponentRequest {
+  const targets = request.target_indices.map((targetIndex) => request.role === COMPONENT_SIGN_ROLE_USER ? {
+    target_index: targetIndex, kind: "user" as const, auth_address: request.component_key || "",
+  } : {
+    target_index: targetIndex, kind: "sentry" as const, component_key: request.component_key,
+  });
+  const targetSet = new Set(request.target_indices);
+  return {
+    request_id: request.request_id,
+    group_bytes_hex: request.group_bytes_hex,
+    targets,
+    contextual_positions: request.group_bytes_hex.flatMap((_, index) =>
+      targetSet.has(index) ? [] : [{ target_index: index }]),
+  };
+}
+
+function boundedComponentToUnified(request: BoundedComponentRequest): ComponentRequest {
+  return {
+    request_id: request.request_id,
+    group_bytes_hex: request.group_bytes_hex,
+    targets: request.targets.map((target) => ({
+      target_index: target.target_index,
+      kind: "bounded-base",
+      auth_address: target.auth_address,
+      lsig_args: target.lsig_args,
+    })),
+    contextual_positions: request.contextual_positions,
+    dummy_positions: request.dummy_positions,
+  };
+}
+
+function validateComponentRequest(request: ComponentRequest): void {
+  const targets = request.targets || [];
+  if (targets.length === 0) throw new SignerError("targets are required");
+  const kind = targets[0].kind;
+  targets.forEach((target, index) => {
+    if (target.kind !== kind) throw new SignerError("mixed component target kinds are not supported");
+    if (kind === "user") {
+      if (!target.auth_address || target.component_key || target.lsig_args) {
+        throw new SignerError(`target ${index + 1}: user target requires only auth_address`);
+      }
+      if (index > 0 && target.auth_address !== targets[0].auth_address) {
+        throw new SignerError("user targets must share one auth_address");
+      }
+    } else if (kind === "sentry") {
+      if (target.auth_address || target.lsig_args) {
+        throw new SignerError(`target ${index + 1}: sentry target forbids auth_address and lsig_args`);
+      }
+      if (index > 0 && target.component_key !== targets[0].component_key) {
+        throw new SignerError("sentry targets must share one component_key");
+      }
+    } else if (kind === "bounded-base") {
+      if (!target.auth_address || target.component_key) {
+        throw new SignerError(`target ${index + 1}: bounded-base target requires auth_address and forbids component_key`);
+      }
+    } else {
+      throw new SignerError(`target ${index + 1}: unsupported component kind`);
+    }
+  });
+  validateBoundedComponentRequest({
+    request_id: request.request_id,
+    group_bytes_hex: request.group_bytes_hex,
+    targets: targets.map((target) => ({
+      target_index: target.target_index,
+      auth_address: target.auth_address || "target",
+    })),
+    contextual_positions: request.contextual_positions,
+    dummy_positions: request.dummy_positions,
+  });
+}
+
+function validateComponentResponse(response: ComponentResponse): void {
+  validateSignRequestId(response.request_id, true);
+  if (!response.components?.length) throw new SignerError("components array is empty");
+  const seen = new Set<number>();
+  response.components.forEach((component, index) => {
+    if (!Number.isInteger(component.target_index) || component.target_index < 0 || seen.has(component.target_index)) {
+      throw new SignerError(`component ${index + 1} has invalid or duplicate target_index`);
+    }
+    seen.add(component.target_index);
+    if (component.kind === "user" || component.kind === "sentry") {
+      if (!component.signature || !component.signature_scheme || component.base_signatures?.length || component.assembly_receipt) {
+        throw new SignerError(`component ${index + 1} has invalid signature material`);
+      }
+    } else if (component.kind === "bounded-base") {
+      if (!component.auth_address || !component.base_signatures?.length || !component.assembly_receipt || !component.signature_scheme || component.signature) {
+        throw new SignerError(`component ${index + 1} has invalid bounded-base material`);
+      }
+    } else {
+      throw new SignerError(`component ${index + 1} has unsupported kind`);
+    }
+  });
+}
+
 function mapRuntimeArg(raw: any): RuntimeArg {
   return {
     name: raw.name || "",
@@ -1712,33 +1808,6 @@ function validateBoundedComponentRequest(request: BoundedComponentRequest): void
   dummies.forEach((dummy, offset) => {
     if (dummy.target_index !== originalCount + offset) {
       throw new SignerError(`dummy position ${offset + 1} is not in the contiguous suffix`);
-    }
-  });
-}
-
-function validateBoundedComponentResponse(response: BoundedComponentResponse): void {
-  validateSignRequestId(response.request_id, true);
-  if (!response.transactions?.length || !response.components?.length) {
-    throw new SignerError("transactions and components are required");
-  }
-  const seen = new Set<number>();
-  response.components.forEach((component, index) => {
-    if (
-      !Number.isInteger(component.target_index) ||
-      component.target_index < 0 ||
-      component.target_index >= response.transactions.length ||
-      seen.has(component.target_index)
-    ) {
-      throw new SignerError(`component ${index + 1} has invalid or duplicate target_index`);
-    }
-    seen.add(component.target_index);
-    if (
-      !component.bounded_account ||
-      !component.base_signatures?.length ||
-      !component.assembly_receipt ||
-      !component.signature_scheme
-    ) {
-      throw new SignerError(`component ${index + 1} is incomplete`);
     }
   });
 }
@@ -3926,58 +3995,85 @@ export class SignerClient {
       );
     }
 
-    // User-role component signing runs the signer-domain approval gates and
-    // can block on a manual approval decision, so it needs the same
-    // approval-aware deadline as /sign. Sentry-role requests are
-    // deterministic and keep the short component deadline.
+    const response = await this.requestComponents(componentSignToUnified(requestBody), options);
+    const result: ComponentSignResponse = {
+      request_id: response.request_id,
+      component_key: requestBody.component_key,
+      signatures: response.components.map((component) => ({
+        target_index: component.target_index,
+        signature: component.signature || "",
+        signature_scheme: component.signature_scheme,
+      })),
+    };
+    validateComponentSignResponse(result, requestBody);
+    return result;
+  }
+
+  async requestComponents(
+    request: ComponentRequest,
+    options?: { signal?: AbortSignal },
+  ): Promise<ComponentResponse> {
+    const requestBody: ComponentRequest = {
+      ...request,
+      request_id: request.request_id || newSignRequestId(),
+    };
+    try {
+      validateComponentRequest(requestBody);
+    } catch (error) {
+      throw new SignerError(`invalid component request: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    const approvalBearing = requestBody.targets[0].kind !== "sentry";
     let timeout = this.timeoutFor(COMPONENT_SIGN_TIMEOUT);
-    if (requestBody.role === COMPONENT_SIGN_ROLE_USER) {
+    if (approvalBearing) {
       await this.discoverApprovalWait();
       timeout = Math.max(timeout, this.signRequestTimeout());
     }
-
-    const response = await this.fetch("/sign/component", {
-      method: "POST",
-      body: JSON.stringify(requestBody),
-      timeout,
-      signal: options?.signal,
-    });
-
-    if (response.status === 401) {
-      throw new AuthenticationError();
-    }
-
-    if (response.status === 403) {
-      throw await this.forbiddenRejectedError(response, "Component signing request rejected");
-    }
-
-    if (response.status === 503) {
-      throw new SignerUnavailableError(await this.errorMessage(response, "Signer unavailable"));
-    }
-
-    if (response.status !== 200) {
-      throw await this.signerHTTPError(response, `Component signing failed: HTTP ${response.status}`);
-    }
-
-    let data: ComponentSignResponse & { error?: string };
+    let response: Response;
     try {
-      data = (await response.json()) as ComponentSignResponse & { error?: string };
+      response = await this.fetch("/sign/component", {
+        method: "POST",
+        body: JSON.stringify(requestBody),
+        timeout,
+        signal: options?.signal,
+      });
+    } catch (error) {
+      if (approvalBearing) await this.bestEffortCancelSignRequest(requestBody.request_id || "");
+      throw error;
+    }
+    if (response.status === 401) throw new AuthenticationError();
+    if (response.status === 403) throw await this.forbiddenRejectedError(response, "Component signing request rejected");
+    if (response.status === 503) throw new SignerUnavailableError(await this.errorMessage(response, "Signer unavailable"));
+    if (response.status === 400) throw await this.badRequestError(response);
+    if (response.status !== 200) throw await this.signerHTTPError(response, `Component signing failed: HTTP ${response.status}`);
+    let data: ComponentResponse & { error?: string; signatures?: ComponentSignResponse["signatures"] };
+    try {
+      data = (await response.json()) as ComponentResponse & { error?: string };
     } catch {
       throw new SignerError("Server returned invalid JSON");
     }
-
-    if (data.error) {
-      throw new SignerError(data.error);
+    if (data.error) throw new SignerError(data.error);
+    if ((!data.components || data.components.length === 0) && data.signatures?.length) {
+      data = {
+        ...data,
+        components: data.signatures.map((signature) => ({
+          target_index: signature.target_index,
+          kind: "sentry",
+          signature: signature.signature,
+          signature_scheme: signature.signature_scheme,
+        })),
+      };
+    } else if (data.components?.some((component: any) => !component.kind && component.bounded_account)) {
+      data = {
+        ...data,
+        components: data.components.map((component: any) => ({
+          ...component,
+          kind: "bounded-base",
+          auth_address: component.bounded_account,
+        })),
+      };
     }
-
-    try {
-      validateComponentSignResponse(data, requestBody);
-    } catch (error) {
-      throw new SignerError(
-        `invalid component sign response: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-
+    validateComponentResponse(data);
+    if (data.request_id !== requestBody.request_id) throw new SignerError("component response request_id does not match request");
     return data;
   }
 
@@ -4077,54 +4173,19 @@ export class SignerClient {
       );
     }
 
-    await this.discoverApprovalWait();
-    let response: Response;
-    try {
-      response = await this.fetch("/sign/bounded-component", {
-        method: "POST",
-        body: JSON.stringify(requestBody),
-        timeout: this.signRequestTimeout(),
-        signal: options?.signal,
-      });
-    } catch (error) {
-      await this.bestEffortCancelSignRequest(requestId);
-      throw error;
-    }
-    if (response.status === 401) throw new AuthenticationError();
-    if (response.status === 400) {
-      throw await this.badRequestError(response);
-    }
-    if (response.status === 403) {
-      throw await this.forbiddenRejectedError(response, "Bounded component signing request rejected");
-    }
-    if (response.status === 503) {
-      throw new SignerUnavailableError(await this.errorMessage(response, "Signer unavailable"));
-    }
-    if (response.status !== 200) {
-      throw await this.signerHTTPError(
-        response,
-        `Bounded component signing failed: HTTP ${response.status}`,
-      );
-    }
-
-    let data: BoundedComponentResponse & { error?: string };
-    try {
-      data = (await response.json()) as BoundedComponentResponse & { error?: string };
-    } catch {
-      throw new SignerError("Server returned invalid JSON");
-    }
-    if (data.error) throw new SignerError(data.error);
-    if (data.mutations) {
-      data = {
-        ...data,
-        mutations: this.normalizeMutationReport(data.mutations),
-      };
-    }
-    validateBoundedComponentResponse(data);
-    if (data.request_id !== requestBody.request_id) {
-      throw new SignerError("bounded component response request_id does not match request");
-    }
-    return data;
+    const response = await this.requestComponents(boundedComponentToUnified(requestBody), options);
+    return {
+      request_id: response.request_id,
+      transactions: [...requestBody.group_bytes_hex],
+      components: response.components.map((component) => ({
+        target_index: component.target_index,
+        bounded_account: component.auth_address || "",
+        base_signatures: [...(component.base_signatures || [])],
+        runtime_args: component.runtime_args,
+        assembly_receipt: component.assembly_receipt || "",
+        signature_scheme: component.signature_scheme,
+      })),
+    };
   }
 
   /**

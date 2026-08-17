@@ -468,6 +468,39 @@ export interface CancelSignResponse {
 }
 
 export type ComponentSignRole = typeof COMPONENT_SIGN_ROLE_USER | typeof COMPONENT_SIGN_ROLE_SENTRY;
+export type ComponentTargetKind = "user" | "sentry" | "bounded-base";
+
+export interface ComponentRequest {
+  request_id?: string;
+  group_bytes_hex: string[];
+  targets: ComponentTarget[];
+  contextual_positions?: ComponentContextPosition[];
+  dummy_positions?: ComponentDummyPosition[];
+}
+
+export interface ComponentTarget {
+  target_index: number;
+  kind: ComponentTargetKind;
+  auth_address?: string;
+  component_key?: string;
+  lsig_args?: Record<string, string>;
+}
+
+export interface Component {
+  target_index: number;
+  kind: ComponentTargetKind;
+  signature?: string;
+  signature_scheme: string;
+  auth_address?: string;
+  base_signatures?: string[];
+  runtime_args?: Record<string, string>;
+  assembly_receipt?: string;
+}
+
+export interface ComponentResponse {
+  request_id: string;
+  components: Component[];
+}
 
 /**
  * Request payload for /sign/component.

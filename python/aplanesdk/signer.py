@@ -529,6 +529,30 @@ class ComponentSignResponse:
     component_key: str = ""
 
 
+COMPONENT_TARGET_KIND_USER = "user"
+COMPONENT_TARGET_KIND_SENTRY = "sentry"
+COMPONENT_TARGET_KIND_BOUNDED_BASE = "bounded-base"
+
+
+@dataclass
+class ComponentRequest:
+    """Discriminated frozen-group request for /sign/component."""
+
+    group_bytes_hex: List[str]
+    targets: List[Dict[str, Any]]
+    request_id: str = ""
+    contextual_positions: Optional[List[Dict[str, Any]]] = None
+    dummy_positions: Optional[List[Dict[str, int]]] = None
+
+
+@dataclass
+class ComponentResponse:
+    """Kind-tagged components returned from /sign/component."""
+
+    request_id: str
+    components: List[Dict[str, Any]]
+
+
 ASSEMBLY_TARGET_KIND_GUARDED = "guarded"
 ASSEMBLY_TARGET_KIND_BOUNDED_SENTRY = "bounded-sentry"
 
@@ -1879,6 +1903,126 @@ def _validate_bounded_component_request(data: Dict[str, Any]) -> None:
     for offset, dummy in enumerate(dummies):
         if dummy.get("target_index") != original_count + offset:
             raise ValueError(f"dummy position {offset + 1} is not in the contiguous suffix")
+
+
+def _component_sign_to_unified(data: Dict[str, Any]) -> Dict[str, Any]:
+    target_indices = list(data.get("target_indices") or [])
+    target_set = set(target_indices)
+    role = data.get("role")
+    kind = (
+        COMPONENT_TARGET_KIND_USER
+        if role == COMPONENT_SIGN_ROLE_USER
+        else COMPONENT_TARGET_KIND_SENTRY
+    )
+    targets = []
+    for index in target_indices:
+        target = {"target_index": index, "kind": kind}
+        if kind == COMPONENT_TARGET_KIND_USER:
+            target["auth_address"] = data.get("component_key", "")
+        else:
+            target["component_key"] = data.get("component_key", "")
+        targets.append(target)
+    return {
+        "request_id": data.get("request_id", ""),
+        "group_bytes_hex": list(data.get("group_bytes_hex") or []),
+        "targets": targets,
+        "contextual_positions": [
+            {"target_index": index}
+            for index in range(len(data.get("group_bytes_hex") or []))
+            if index not in target_set
+        ],
+    }
+
+
+def _bounded_component_to_unified(data: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "request_id": data.get("request_id", ""),
+        "group_bytes_hex": list(data.get("group_bytes_hex") or []),
+        "targets": [
+            {
+                "target_index": target.get("target_index"),
+                "kind": COMPONENT_TARGET_KIND_BOUNDED_BASE,
+                "auth_address": target.get("auth_address", ""),
+                "lsig_args": target.get("lsig_args"),
+            }
+            for target in data.get("targets") or []
+        ],
+        "contextual_positions": list(data.get("contextual_positions") or []),
+        "dummy_positions": list(data.get("dummy_positions") or []),
+    }
+
+
+def _validate_component_request(data: Dict[str, Any]) -> None:
+    _validate_sign_request_id(str(data.get("request_id", "")))
+    group = data.get("group_bytes_hex") or []
+    targets = data.get("targets") or []
+    context = data.get("contextual_positions") or []
+    dummies = data.get("dummy_positions") or []
+    _validate_component_group_bytes(group)
+    if not targets or len(dummies) > len(group):
+        raise ValueError("targets are required and dummy_positions cannot exceed group length")
+    original_count = len(group) - len(dummies)
+    covered = set()
+    kind = targets[0].get("kind")
+    for index, target in enumerate(targets, start=1):
+        target_index = target.get("target_index")
+        if (not isinstance(target_index, int) or target_index < 0
+                or target_index >= original_count or target_index in covered):
+            raise ValueError(f"target {index} has invalid, duplicate, or overlapping target_index")
+        covered.add(target_index)
+        if target.get("kind") != kind:
+            raise ValueError("mixed component target kinds are not supported")
+        if kind == COMPONENT_TARGET_KIND_USER:
+            if (not target.get("auth_address") or target.get("component_key")
+                    or target.get("lsig_args")):
+                raise ValueError(f"target {index}: user target requires only auth_address")
+            if index > 1 and target.get("auth_address") != targets[0].get("auth_address"):
+                raise ValueError("user targets must share one auth_address")
+        elif kind == COMPONENT_TARGET_KIND_SENTRY:
+            if target.get("auth_address") or target.get("lsig_args"):
+                raise ValueError(f"target {index}: sentry target forbids auth_address and lsig_args")
+            if index > 1 and target.get("component_key") != targets[0].get("component_key"):
+                raise ValueError("sentry targets must share one component_key")
+        elif kind == COMPONENT_TARGET_KIND_BOUNDED_BASE:
+            if not target.get("auth_address") or target.get("component_key"):
+                raise ValueError(f"target {index}: bounded-base target requires auth_address and forbids component_key")
+        else:
+            raise ValueError(f"target {index}: unsupported component kind {kind!r}")
+    probe = {
+        "request_id": data.get("request_id", ""),
+        "group_bytes_hex": group,
+        "targets": [{
+            "target_index": target.get("target_index"),
+            "auth_address": target.get("auth_address") or "target",
+        } for target in targets],
+        "contextual_positions": context,
+        "dummy_positions": dummies,
+    }
+    _validate_bounded_component_request(probe)
+
+
+def _validate_component_response(data: Dict[str, Any]) -> None:
+    _validate_sign_request_id(str(data.get("request_id", "")))
+    if not data.get("request_id") or not data.get("components"):
+        raise ValueError("request_id and components are required")
+    seen = set()
+    for index, component in enumerate(data["components"], start=1):
+        target_index = component.get("target_index")
+        if not isinstance(target_index, int) or target_index < 0 or target_index in seen:
+            raise ValueError(f"component {index} has invalid or duplicate target_index")
+        seen.add(target_index)
+        kind = component.get("kind")
+        if kind in (COMPONENT_TARGET_KIND_USER, COMPONENT_TARGET_KIND_SENTRY):
+            if (not component.get("signature") or not component.get("signature_scheme")
+                    or component.get("base_signatures") or component.get("assembly_receipt")):
+                raise ValueError(f"component {index} has invalid signature material")
+        elif kind == COMPONENT_TARGET_KIND_BOUNDED_BASE:
+            if (not component.get("auth_address") or not component.get("base_signatures")
+                    or not component.get("assembly_receipt")
+                    or not component.get("signature_scheme") or component.get("signature")):
+                raise ValueError(f"component {index} has invalid bounded-base material")
+        else:
+            raise ValueError(f"component {index} has unsupported kind")
 
 
 def _validate_bounded_component_response(data: Dict[str, Any]) -> None:
@@ -4130,16 +4274,40 @@ class SignerClient:
             _validate_component_sign_request(request_body)
         except ValueError as e:
             raise ValueError(f"invalid component sign request: {e}") from e
+        response = self.request_components(_component_sign_to_unified(request_body))
+        expected_indices = set(request_body["target_indices"])
+        actual_indices = {item["target_index"] for item in response.components}
+        if actual_indices != expected_indices:
+            raise SignerError("component sign response target indices do not match request")
 
-        # User-role component signing runs the signer-domain approval gates
-        # and can block on a manual approval decision, so it needs the same
-        # approval-aware deadline as /sign. Sentry-role requests are
-        # deterministic and keep the short component deadline.
+        return ComponentSignResponse(
+            request_id=response.request_id,
+            component_key=request_body.get("component_key", ""),
+            signatures=[
+                ComponentSignature(
+                    target_index=item["target_index"],
+                    signature=item["signature"],
+                    signature_scheme=item["signature_scheme"],
+                )
+                for item in response.components
+            ],
+        )
+
+    def request_components(self, request: Any) -> ComponentResponse:
+        request_body = _compact_payload(request)
+        if not isinstance(request_body, dict):
+            raise ValueError("component request must be a mapping or dataclass")
+        if not request_body.get("request_id"):
+            request_body["request_id"] = _new_sign_request_id()
+        try:
+            _validate_component_request(request_body)
+        except ValueError as e:
+            raise ValueError(f"invalid component request: {e}") from e
+        kind = request_body["targets"][0]["kind"]
         timeout = self._timeout_for(COMPONENT_SIGN_TIMEOUT)
-        if request_body.get("role") == COMPONENT_SIGN_ROLE_USER:
+        if kind != COMPONENT_TARGET_KIND_SENTRY:
             self._discover_approval_wait()
             timeout = max(timeout, self._sign_request_timeout())
-
         try:
             resp = self.session.post(
                 f"{self.base_url}/sign/component",
@@ -4147,49 +4315,29 @@ class SignerClient:
                 timeout=timeout,
             )
         except requests.RequestException as e:
+            if kind != COMPONENT_TARGET_KIND_SENTRY:
+                self._best_effort_cancel_sign_request(request_body["request_id"])
             raise SignerUnavailableError(f"Failed to connect: {e}")
-
         if resp.status_code == 401:
             raise AuthenticationError("Invalid or missing token")
-
         if resp.status_code == 403:
             raise self._forbidden_rejected_error(resp, "Component signing request rejected")
-
         if resp.status_code == 503:
             raise SignerUnavailableError(self._error_message(resp, "Signer unavailable"))
-
+        if resp.status_code == 400:
+            raise self._bad_request_error(resp)
         if resp.status_code != 200:
-            raise self._signer_http_error(
-                resp,
-                f"Component signing failed: HTTP {resp.status_code}",
-            )
-
+            raise self._signer_http_error(resp, f"Component signing failed: HTTP {resp.status_code}")
         data = self._safe_json(resp)
         if data.get("error"):
             raise SignerError(data["error"])
         try:
-            _validate_component_sign_response(data)
+            _validate_component_response(data)
         except ValueError as e:
-            raise SignerError(f"invalid component sign response: {e}") from e
+            raise SignerError(f"invalid component response: {e}") from e
         if data["request_id"] != request_body["request_id"]:
-            raise SignerError("component sign response request_id does not match request")
-        expected_indices = set(request_body["target_indices"])
-        actual_indices = {item["target_index"] for item in data.get("signatures", [])}
-        if actual_indices != expected_indices:
-            raise SignerError("component sign response target indices do not match request")
-
-        return ComponentSignResponse(
-            request_id=data["request_id"],
-            component_key=data.get("component_key", ""),
-            signatures=[
-                ComponentSignature(
-                    target_index=item["target_index"],
-                    signature=item["signature"],
-                    signature_scheme=item["signature_scheme"],
-                )
-                for item in data.get("signatures", [])
-            ],
-        )
+            raise SignerError("component response request_id does not match request")
+        return ComponentResponse(request_id=data["request_id"], components=list(data["components"]))
 
     def request_guarded_assemble(
         self,
@@ -4283,55 +4431,22 @@ class SignerClient:
         except ValueError as e:
             raise ValueError(f"invalid bounded component request: {e}") from e
 
-        self._discover_approval_wait()
-        try:
-            resp = self.session.post(
-                f"{self.base_url}/sign/bounded-component",
-                json=request_body,
-                timeout=self._sign_request_timeout(),
-            )
-        except requests.RequestException as e:
-            self._best_effort_cancel_sign_request(request_body["request_id"])
-            raise SignerUnavailableError(f"Failed to connect: {e}")
-
-        if resp.status_code == 401:
-            raise AuthenticationError("Invalid or missing token")
-        if resp.status_code == 403:
-            raise self._forbidden_rejected_error(resp, "Bounded component signing request rejected")
-        if resp.status_code == 503:
-            raise SignerUnavailableError(self._error_message(resp, "Signer unavailable"))
-        if resp.status_code == 400:
-            raise self._bad_request_error(resp)
-        if resp.status_code != 200:
-            raise self._signer_http_error(
-                resp,
-                f"Bounded component signing failed: HTTP {resp.status_code}",
-            )
-
-        data = self._safe_json(resp)
-        if data.get("error"):
-            raise SignerError(data["error"])
-        try:
-            _validate_bounded_component_response(data)
-        except ValueError as e:
-            raise SignerError(f"invalid bounded component response: {e}") from e
-        if data["request_id"] != request_body["request_id"]:
-            raise SignerError("bounded component response request_id does not match request")
+        response = self.request_components(_bounded_component_to_unified(request_body))
         return BoundedComponentResponse(
-            request_id=data["request_id"],
-            transactions=list(data.get("transactions") or []),
+            request_id=response.request_id,
+            transactions=list(request_body["group_bytes_hex"]),
             components=[
                 BoundedBaseComponent(
                     target_index=item["target_index"],
-                    bounded_account=item["bounded_account"],
+                    bounded_account=item["auth_address"],
                     base_signatures=list(item.get("base_signatures") or []),
                     runtime_args=dict(item.get("runtime_args") or {}) or None,
                     assembly_receipt=item["assembly_receipt"],
                     signature_scheme=item["signature_scheme"],
                 )
-                for item in data.get("components", [])
+                for item in response.components
             ],
-            mutations=data.get("mutations"),
+            mutations=None,
         )
 
     def request_bounded_assemble(

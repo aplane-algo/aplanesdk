@@ -43,7 +43,7 @@ func TestSignPreparedBoundedSentryGroupOneTarget(t *testing.T) {
 			}
 			frozenGroup = []string{req.Requests[0].TxnBytesHex}
 			json.NewEncoder(w).Encode(PlanGroupResponse{Transactions: frozenGroup})
-		case "/sign/bounded-component":
+		case "/sign/component":
 			var req BoundedComponentRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("decode bounded component request: %v", err)
@@ -166,7 +166,7 @@ func TestSignPreparedBoundedSentryGroupDeclaresNativePQPrimary(t *testing.T) {
 			primaryRequest = req.Requests[1]
 			frozenGroup = []string{req.Requests[0].TxnBytesHex, req.Requests[1].TxnBytesHex}
 			json.NewEncoder(w).Encode(PlanGroupResponse{Transactions: frozenGroup})
-		case "/sign/bounded-component":
+		case "/sign/component":
 			var req BoundedComponentRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("decode bounded component request: %v", err)
@@ -374,7 +374,7 @@ func TestRequestBoundedComponentCancelsApprovalWhenContextCanceled(t *testing.T)
 	cancelReceived := make(chan string, 1)
 	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/sign/bounded-component":
+		case "/sign/component":
 			var req BoundedComponentRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("decode bounded component request: %v", err)
@@ -438,7 +438,7 @@ func TestRequestBoundedComponentCancelsApprovalWhenContextCanceled(t *testing.T)
 
 func TestBoundedEndpointClassifiesNotFound(t *testing.T) {
 	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/sign/bounded-component" {
+		if r.URL.Path != "/sign/component" {
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
 		w.WriteHeader(http.StatusBadRequest)

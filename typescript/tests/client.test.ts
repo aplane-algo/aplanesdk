@@ -1219,8 +1219,8 @@ describe("SignerClient", () => {
       assert.equal(mockFetch.mock.calls[0][1].headers.Authorization, "aplane test-token");
       const body = JSON.parse(mockFetch.mock.calls[0][1].body);
       assert.match(body.request_id, /^sdk-/);
-      assert.equal(body.role, COMPONENT_SIGN_ROLE_SENTRY);
-      assert.equal(body.component_key, "COMPONENT");
+      assert.equal(body.targets[0].kind, "sentry");
+      assert.equal(body.targets[0].component_key, "COMPONENT");
     });
 
     it("rejects malformed component signing responses", async () => {
@@ -1237,7 +1237,7 @@ describe("SignerClient", () => {
           group_bytes_hex: ["5458aa"],
           target_indices: [0],
         }),
-        { message: /invalid component sign response/ },
+        { message: /components array is empty/ },
       );
     });
 
@@ -1367,10 +1367,8 @@ describe("SignerClient", () => {
       });
 
       assert.equal(component.components[0].assembly_receipt, "receipt");
-      assert.equal(component.mutations?.dummiesAdded, 1);
-      assert.equal(component.mutations?.originalCount, 1);
       assert.deepEqual(assembly.signed_group, ["signed"]);
-      assert.equal(mockFetch.mock.calls[1][0], "http://localhost:11270/sign/bounded-component");
+      assert.equal(mockFetch.mock.calls[1][0], "http://localhost:11270/sign/component");
       assert.equal(mockFetch.mock.calls[2][0], "http://localhost:11270/sign/assemble");
     });
 
@@ -1395,7 +1393,7 @@ describe("SignerClient", () => {
         SignerUnavailableError,
       );
 
-      assert.equal(mockFetch.mock.calls[1][0], "http://localhost:11270/sign/bounded-component");
+      assert.equal(mockFetch.mock.calls[1][0], "http://localhost:11270/sign/component");
       assert.equal(mockFetch.mock.calls[2][0], "http://localhost:11270/sign/cancel");
       assert.equal(
         JSON.parse(mockFetch.mock.calls[2][1].body).request_id,

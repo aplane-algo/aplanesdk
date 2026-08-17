@@ -895,7 +895,7 @@ func TestRequestComponentSignRejectsMalformedResponse(t *testing.T) {
 		GroupBytesHex: []string{"5458aa"},
 		TargetIndices: []int{0},
 	})
-	if err == nil || !strings.Contains(err.Error(), "invalid component sign response") {
+	if err == nil || !strings.Contains(err.Error(), "invalid component response") {
 		t.Fatalf("expected malformed response error, got %v", err)
 	}
 }

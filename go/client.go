@@ -682,71 +682,18 @@ func (c *SignerClient) RequestComponentSign(req ComponentSignRequest) (*Componen
 // RequestComponentSignWithContext sends a role-specific component signing
 // request to /sign/component.
 func (c *SignerClient) RequestComponentSignWithContext(ctx context.Context, reqBody ComponentSignRequest) (*ComponentSignResponse, error) {
-	if reqBody.RequestID == "" {
-		requestID, err := newSignRequestID()
-		if err != nil {
-			return nil, fmt.Errorf("failed to create component sign request ID: %w", err)
-		}
-		reqBody.RequestID = requestID
-	}
 	if err := reqBody.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid component sign request: %w", err)
 	}
-
-	jsonBody, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	// User-role component signing runs the signer-domain approval gates and
-	// can block on a manual approval decision, so it needs the same
-	// approval-aware deadline as /sign. Sentry-role requests are deterministic
-	// and keep the short component deadline.
-	timeout := componentSignTimeout
-	if reqBody.Role == ComponentSignRoleUser {
-		c.discoverApprovalWait(ctx)
-		if signTimeout := c.signRequestTimeout(); signTimeout > timeout {
-			timeout = signTimeout
-		}
-	}
-
-	reqCtx, cancel := c.requestContext(ctx, timeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(reqCtx, "POST", c.baseURL+"/sign/component", bytes.NewBuffer(jsonBody))
+	response, err := c.RequestComponentsWithContext(ctx, reqBody.ComponentRequest())
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "aplane "+c.token)
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to make request to Signer: %w", err)
+	result := &ComponentSignResponse{RequestID: response.RequestID, ComponentKey: reqBody.ComponentKey}
+	for _, component := range response.Components {
+		result.Signatures = append(result.Signatures, ComponentSignature{TargetIndex: component.TargetIndex, Signature: component.Signature, SignatureScheme: component.SignatureScheme})
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == 401 {
-		return nil, ErrAuthentication
-	}
-	if resp.StatusCode == 403 {
-		return nil, rejectedForbiddenError(resp)
-	}
-	if resp.StatusCode == 503 {
-		return nil, ErrSignerUnavailable
-	}
-	if resp.StatusCode != 200 {
-		return nil, signerHTTPError(resp)
-	}
-
-	var componentResp ComponentSignResponse
-	if err := json.NewDecoder(resp.Body).Decode(&componentResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-	if err := componentResp.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid component sign response: %w", err)
-	}
-	return &componentResp, nil
+	return result, nil
 }
 
 // RequestGuardedAssemble sends a guarded transaction assembly request to

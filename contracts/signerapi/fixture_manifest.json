@@ -14,6 +14,8 @@
     "cancel_sign_response_success.json",
     "component_sign_request_sentry.json",
     "component_sign_response_sentry.json",
+    "component_request.json",
+    "component_response.json",
     "error_response.json",
     "bounded_admin_partial_response.json",
     "bounded_admin_request.json",

@@ -90,6 +90,46 @@ type GroupSignRequest struct {
 // POST /sign/component.
 type ComponentSignRole string
 
+type ComponentTargetKind string
+
+const (
+	ComponentTargetKindUser        ComponentTargetKind = "user"
+	ComponentTargetKindSentry      ComponentTargetKind = "sentry"
+	ComponentTargetKindBoundedBase ComponentTargetKind = "bounded-base"
+)
+
+type ComponentRequest struct {
+	RequestID           string                     `json:"request_id,omitempty"`
+	GroupBytesHex       []string                   `json:"group_bytes_hex"`
+	Targets             []ComponentTarget          `json:"targets"`
+	ContextualPositions []ComponentContextPosition `json:"contextual_positions,omitempty"`
+	DummyPositions      []ComponentDummyPosition   `json:"dummy_positions,omitempty"`
+}
+
+type ComponentTarget struct {
+	TargetIndex  int                 `json:"target_index"`
+	Kind         ComponentTargetKind `json:"kind"`
+	AuthAddress  string              `json:"auth_address,omitempty"`
+	ComponentKey string              `json:"component_key,omitempty"`
+	LsigArgs     map[string]string   `json:"lsig_args,omitempty"`
+}
+
+type Component struct {
+	TargetIndex     int                 `json:"target_index"`
+	Kind            ComponentTargetKind `json:"kind"`
+	Signature       string              `json:"signature,omitempty"`
+	SignatureScheme string              `json:"signature_scheme"`
+	AuthAddress     string              `json:"auth_address,omitempty"`
+	BaseSignatures  []string            `json:"base_signatures,omitempty"`
+	RuntimeArgs     map[string]string   `json:"runtime_args,omitempty"`
+	AssemblyReceipt string              `json:"assembly_receipt,omitempty"`
+}
+
+type ComponentResponse struct {
+	RequestID  string      `json:"request_id"`
+	Components []Component `json:"components"`
+}
+
 // ComponentSignRequest is the request payload for POST /sign/component.
 type ComponentSignRequest struct {
 	RequestID     string            `json:"request_id,omitempty"`

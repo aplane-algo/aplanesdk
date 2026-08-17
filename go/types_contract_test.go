@@ -151,6 +151,8 @@ func TestGoSDKContractFixturesRoundTrip(t *testing.T) {
 		{"group_plan_response_mutated.json", assertSDKContractRoundTrip[PlanGroupResponse]},
 		{"component_sign_request_sentry.json", assertSDKContractRoundTrip[ComponentSignRequest]},
 		{"component_sign_response_sentry.json", assertSDKContractRoundTrip[ComponentSignResponse]},
+		{"component_request.json", assertSDKContractRoundTrip[ComponentRequest]},
+		{"component_response.json", assertSDKContractRoundTrip[ComponentResponse]},
 		{"guarded_assembly_request_mixed.json", assertSDKContractRoundTrip[GuardedAssemblyRequest]},
 		{"guarded_assembly_response.json", assertSDKContractRoundTrip[GuardedAssemblyResponse]},
 		{"bounded_component_request.json", assertSDKContractRoundTrip[BoundedComponentRequest]},

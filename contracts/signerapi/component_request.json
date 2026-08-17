@@ -1,0 +1,16 @@
+{
+  "request_id": "component-contract-1",
+  "group_bytes_hex": ["5458a1", "5458a2", "5458a3"],
+  "targets": [
+    {
+      "target_index": 0,
+      "kind": "bounded-base",
+      "auth_address": "BOUNDEDADDR000000000000000000000000000000000000000000000",
+      "lsig_args": {"preimage": "aabb"}
+    }
+  ],
+  "contextual_positions": [
+    {"target_index": 1, "pq_scheme": "aplane.falcon1024.v1"}
+  ],
+  "dummy_positions": [{"target_index": 2}]
+}
