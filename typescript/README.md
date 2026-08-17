@@ -92,19 +92,20 @@ Connect to apsigner on a remote machine through an SSH tunnel with 2FA:
 const client = await SignerClient.connectSsh(
   "signer.example.com",
   "your-token",              // used for both SSH auth and HTTP API
-  "~/.ssh/id_ed25519",
+  "~/aplane/apclient/.ssh/id_ed25519",
   {
     sshPort: 1127,           // default: 1127
     signerPort: 11270,       // default: 11270
     timeout: 30000,          // optional explicit shorter request timeout
+    knownHostsPath: "~/aplane/apclient/.ssh/known_hosts",
   }
 );
 ```
 
 **Note**: SSH verifies the enrolled public key, then performs a programmatic
 mutual proof of the token bound to the accepted host key and fresh nonces. The
-SSH username is the non-secret identity ID; the bearer token is never sent as
-SSH metadata. Remember to close when done:
+SSH uses the fixed product username `default`; the bearer token is never sent
+as SSH metadata. Remember to close when done:
 
 ```typescript
 await client.close();

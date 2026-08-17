@@ -2516,7 +2516,8 @@ function uint64Value(value: bigint): number | bigint {
  * const client = await SignerClient.connectSsh(
  *   "signer.example.com",
  *   "your-token",
- *   "~/.ssh/id_ed25519"
+ *   "~/aplane/apclient/.ssh/id_ed25519",
+ *   { knownHostsPath: "~/aplane/apclient/.ssh/known_hosts" }
  * );
  *
  * // From environment/config (recommended)
@@ -2597,7 +2598,7 @@ export class SignerClient {
    *
    * @param host - Remote host running apsigner
    * @param token - Authentication token (used for both SSH and HTTP API)
-   * @param sshKeyPath - Path to SSH private key (e.g., ~/.ssh/id_ed25519)
+   * @param sshKeyPath - Path to SSH private key (e.g., ~/aplane/apclient/.ssh/id_ed25519)
    * @param options - Connection options
    * @returns Promise<SignerClient> instance with active SSH tunnel
    *
@@ -2606,7 +2607,8 @@ export class SignerClient {
    * const client = await SignerClient.connectSsh(
    *   "signer.example.com",
    *   "your-token",
-   *   "~/.ssh/id_ed25519"
+   *   "~/aplane/apclient/.ssh/id_ed25519",
+   *   { knownHostsPath: "~/aplane/apclient/.ssh/known_hosts" }
    * );
    *
    * // Use the client...
@@ -2626,7 +2628,9 @@ export class SignerClient {
     const signerPort = options.signerPort ?? DEFAULT_SIGNER_PORT;
     const localPort = options.localPort ?? 0;
     const timeout = options.timeout;
-    const knownHostsPath = options.knownHostsPath ?? "";
+    const knownHostsPath = options.knownHostsPath
+      ? expandPath(options.knownHostsPath)
+      : "";
     if (!knownHostsPath) {
       throw new SignerError("known_hosts path is required");
     }

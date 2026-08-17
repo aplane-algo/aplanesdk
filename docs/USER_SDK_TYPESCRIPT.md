@@ -110,6 +110,9 @@ node --input-type=module -e 'import("aplanesdk").then(m => console.log(typeof m.
 The TypeScript SDK follows the same client data directory convention as
 `apshell`.
 
+APlane never reads or writes the operating-system user's personal SSH
+directory. Managed SSH keys and host trust live under `<data_dir>/.ssh/`.
+
 Resolution order (the SDK has no implicit default — `resolveDataDir` throws
 `SignerError` if neither is set):
 
@@ -179,8 +182,8 @@ console.log(`Saved token to ${tokenPath}`);
 - requests a token over SSH as `request-token:default`
 - saves the token to that endpoint's `token_file`
 
-The provisioning helper only supports the current product identity `default`.
-An operator must approve the request in `apadmin`.
+The provisioning helper has no identity selector and always targets the
+product identity `default`. An operator must approve the request in `apadmin`.
 
 Alternatively, you can obtain the token by running `apshell` and executing
 the `request-token` command; `apshell` writes the approved token to
@@ -225,11 +228,11 @@ import { SignerClient, expandPath } from "aplanesdk";
 const client = await SignerClient.connectSsh(
   "signer.example.com",
   "your-token",
-  "~/.ssh/id_ed25519",
+  "~/aplane/apclient/.ssh/id_ed25519",
   {
     sshPort: 1127,
     signerPort: 11270,
-    knownHostsPath: expandPath("~/.ssh/known_hosts"),
+    knownHostsPath: expandPath("~/aplane/apclient/.ssh/known_hosts"),
     trustOnFirstUse: false,
   }
 );
@@ -241,7 +244,7 @@ try {
 }
 ```
 
-The SSH username is the non-secret identity ID. Authentication verifies the
+The SSH username is the fixed product identity `default`. Authentication verifies the
 enrolled public key first, then performs a programmatic mutual proof of the
 token bound to the accepted host key and fresh client/server nonces. The
 server proves token possession before the client returns its proof, and the

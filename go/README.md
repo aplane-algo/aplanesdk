@@ -86,11 +86,12 @@ Connect to apsigner on a remote machine through an SSH tunnel with 2FA:
 client, err := aplane.ConnectSSH(
 	"signer.example.com",
 	"your-token",           // used for both SSH auth and HTTP API
-	"~/.ssh/id_ed25519",
+	"~/aplane/apclient/.ssh/id_ed25519",
 	&aplane.SSHConnectOptions{
-		SSHPort:    1127,   // default
-		SignerPort: 11270,  // default
-		Timeout:    30,     // optional explicit shorter request timeout
+		SSHPort:        1127,   // default
+		SignerPort:     11270,  // default
+		Timeout:        30,     // optional explicit shorter request timeout
+		KnownHostsPath: "~/aplane/apclient/.ssh/known_hosts",
 	},
 )
 if err != nil {
@@ -101,8 +102,8 @@ defer client.Close()
 
 **Note**: SSH verifies the enrolled public key, then performs a programmatic
 mutual proof of the token bound to the accepted host key and fresh nonces. The
-SSH username is the non-secret identity ID; the bearer token is never sent as
-SSH metadata.
+SSH uses the fixed product username `default`; the bearer token is never sent
+as SSH metadata.
 
 ### Environment-Based Connection
 

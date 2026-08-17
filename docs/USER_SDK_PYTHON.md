@@ -105,6 +105,9 @@ yourself in a larger application environment.
 The Python SDK follows the same client data directory convention as
 `apshell`.
 
+APlane never reads or writes the operating-system user's personal `~/.ssh`
+directory. Managed SSH keys and host trust live under `<data_dir>/.ssh/`.
+
 Resolution order (the SDK has no implicit default — `SignerClient.from_env`
 raises `SignerError` if neither is set):
 
@@ -174,8 +177,8 @@ print(f"Saved token to {token_path}")
 - requests a token over SSH as `request-token:default`
 - saves the token to that endpoint's `token_file` with mode `0600`
 
-The provisioning helper only supports the current product identity
-`default`. An operator must approve the request in `apadmin`.
+The provisioning helper has no identity selector and always targets the
+product identity `default`. An operator must approve the request in `apadmin`.
 
 Alternatively, you can obtain the token by running `apshell` and executing
 the `request-token` command; `apshell` writes the approved token to
@@ -219,8 +222,8 @@ from aplanesdk import SignerClient
 with SignerClient.connect_ssh(
     host="signer.example.com",
     token="your-token",
-    ssh_key_path="~/.ssh/id_ed25519",
-    known_hosts_path="~/.ssh/known_hosts",
+    ssh_key_path="~/aplane/apclient/.ssh/id_ed25519",
+    known_hosts_path="~/aplane/apclient/.ssh/known_hosts",
     ssh_port=1127,
     signer_port=11270,
 ) as client:
@@ -233,7 +236,7 @@ This is useful when:
 - you manage the token out-of-band
 - your app needs to choose the signer target dynamically
 
-The SSH username is the non-secret identity ID. Authentication verifies the
+The SSH username is the fixed product identity `default`. Authentication verifies the
 enrolled public key first, then performs a programmatic mutual proof of the
 token bound to the accepted host key and fresh client/server nonces. The
 server proves token possession before the client returns its proof, and the

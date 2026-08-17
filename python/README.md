@@ -64,6 +64,8 @@ print(f"Submitted: {txid}")
 
 Data-directory connections use `endpoints.yaml`. SSH endpoints create a
 managed tunnel; HTTPS and loopback HTTP endpoints connect directly.
+Managed SSH keys and host trust live under the APlane client data directory;
+the SDK does not use the operating-system user's personal SSH directory.
 
 ### Environment-Based Connection (Recommended)
 
@@ -112,7 +114,8 @@ Connect explicitly via SSH tunnel with 2FA:
 client = SignerClient.connect_ssh(
     host="signer.example.com",
     token="your-token",           # used for both SSH auth and HTTP API
-    ssh_key_path="~/.ssh/id_ed25519",
+    ssh_key_path="~/aplane/apclient/.ssh/id_ed25519",
+    known_hosts_path="~/aplane/apclient/.ssh/known_hosts",
     ssh_port=1127,                # default: 1127
     signer_port=11270,            # default: 11270
     timeout=30                    # optional explicit shorter request timeout
@@ -121,8 +124,9 @@ client = SignerClient.connect_ssh(
 
 **Note**: SSH verifies the enrolled public key, then performs a programmatic
 mutual proof of the token bound to the accepted host key and fresh nonces. The
-SSH username is the non-secret identity ID; the bearer token is never sent as
-SSH metadata. Keys are enrolled via the `request-token` operator-approved flow.
+SSH uses the fixed product username `default`; the bearer token is never sent
+as SSH metadata. Keys are enrolled via the `request-token:default`
+operator-approved flow.
 
 The SSH tunnel is established automatically. Remember to close when done:
 
@@ -133,7 +137,12 @@ client.close()
 Or use as a context manager:
 
 ```python
-with SignerClient.connect_ssh(host="...", token="...", ssh_key_path="...") as client:
+with SignerClient.connect_ssh(
+    host="...",
+    token="...",
+    ssh_key_path="~/aplane/apclient/.ssh/id_ed25519",
+    known_hosts_path="~/aplane/apclient/.ssh/known_hosts",
+) as client:
     signed = client.sign_transaction(txn)
 # Tunnel closed automatically
 ```
@@ -556,7 +565,8 @@ def main():
     with SignerClient.connect_ssh(
         host="signer.example.com",
         token=token,
-        ssh_key_path="~/.ssh/id_ed25519"
+        ssh_key_path="~/aplane/apclient/.ssh/id_ed25519",
+        known_hosts_path="~/aplane/apclient/.ssh/known_hosts",
     ) as client:
 
         # List keys

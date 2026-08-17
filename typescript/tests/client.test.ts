@@ -3488,16 +3488,16 @@ describe("loadClientEndpointRegistry", () => {
 });
 
 describe("requestToken", () => {
-  it("rejects unsupported identity locally", async () => {
+  it("rejects the removed identity option", async () => {
     await assert.rejects(
-      requestToken("signer.example.com", "~/.ssh/id_ed25519", { identity: "other-identity" }),
-      { message: /unsupported identity/ },
+      requestToken("signer.example.com", "~/aplane/apclient/.ssh/id_ed25519", { identity: "other-identity" } as never),
+      { message: /option "identity" was removed/ },
     );
   });
 
   it("rejects missing known_hosts path locally", async () => {
     await assert.rejects(
-      requestToken("signer.example.com", "~/.ssh/id_ed25519"),
+      requestToken("signer.example.com", "~/aplane/apclient/.ssh/id_ed25519"),
       { message: /known_hosts path is required/ },
     );
   });
@@ -3510,6 +3510,15 @@ describe("requestTokenToFile", () => {
         host: "signer.example.com",
       } as unknown as Parameters<typeof requestTokenToFile>[0]),
       { message: /option "host" was removed/ },
+    );
+  });
+
+  it("rejects the removed identity option at runtime", async () => {
+    await assert.rejects(
+      requestTokenToFile({
+        identity: "other-identity",
+      } as unknown as Parameters<typeof requestTokenToFile>[0]),
+      { message: /option "identity" was removed/ },
     );
   });
 
@@ -3800,7 +3809,7 @@ describe("fromEnv", () => {
 describe("connectSsh", () => {
   it("rejects missing knownHostsPath at method entry", async () => {
     await assert.rejects(
-      SignerClient.connectSsh("example.com", "token", "~/.ssh/id_ed25519"),
+      SignerClient.connectSsh("example.com", "token", "~/aplane/apclient/.ssh/id_ed25519"),
       { message: /known_hosts path is required/ },
     );
   });

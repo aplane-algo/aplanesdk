@@ -58,6 +58,9 @@ import "github.com/aplane-algo/aplanesdk/go"
 
 The Go SDK follows the same client data directory convention as `apshell`.
 
+APlane never reads or writes the operating-system user's personal SSH
+directory. Managed SSH keys and host trust live under `<data_dir>/.ssh/`.
+
 Resolution order (the SDK has no implicit default — `ResolveDataDir` returns an
 error if neither is set):
 
@@ -167,12 +170,12 @@ client, err := aplane.FromEnv(&aplane.FromEnvOptions{
 client, err := aplane.ConnectSSH(
 	"signer.example.com",
 	"your-token",
-	"~/.ssh/id_ed25519",
+	"~/aplane/apclient/.ssh/id_ed25519",
 	&aplane.SSHConnectOptions{
 		SSHPort:         1127,
 		SignerPort:      11270,
 		Timeout:         30, // optional explicit shorter request timeout
-		KnownHostsPath:  "~/.ssh/known_hosts",
+		KnownHostsPath:  "~/aplane/apclient/.ssh/known_hosts",
 		TrustOnFirstUse: false,
 	},
 )
@@ -182,7 +185,7 @@ if err != nil {
 defer client.Close()
 ```
 
-The SSH username is the non-secret identity ID. Authentication verifies the
+The SSH username is the fixed product identity `default`. Authentication verifies the
 enrolled public key first, then performs a programmatic mutual proof of the
 token bound to the accepted host key and fresh client/server nonces. The
 server proves token possession before the client returns its proof, and the

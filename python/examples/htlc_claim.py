@@ -8,7 +8,7 @@ the preimage that hashes to the stored hash.
 Setup:
     1. Create data directory: mkdir -p ~/aplane/apclient/.ssh
     2. Copy token: cp /path/to/aplane.token ~/aplane/apclient/
-    3. Copy SSH key: cp ~/.ssh/your_key ~/aplane/apclient/.ssh/id_ed25519
+    3. Generate APlane SSH key: ssh-keygen -t ed25519 -f ~/aplane/apclient/.ssh/id_ed25519 -N ''
     4. Create endpoints.yaml (see below)
     5. Set env: export APCLIENT_DATA=~/aplane/apclient
 

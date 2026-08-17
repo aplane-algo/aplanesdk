@@ -3333,13 +3333,48 @@ class TestLoadClientEndpointRegistry:
 
 
 class TestRequestToken:
-    def test_rejects_unsupported_identity_locally(self):
-        with pytest.raises(SignerError, match="unsupported identity"):
+    def test_identity_option_was_removed(self):
+        with pytest.raises(TypeError, match="unexpected keyword argument 'identity'"):
             request_token(
                 host="signer.example.com",
-                ssh_key_path="~/.ssh/id_ed25519",
+                ssh_key_path="/apclient/.ssh/id_ed25519",
+                known_hosts_path="/apclient/.ssh/known_hosts",
                 identity="other-identity",
             )
+
+    def test_to_file_identity_option_was_removed(self):
+        with pytest.raises(TypeError, match="unexpected keyword argument 'identity'"):
+            request_token_to_file(identity="other-identity")
+
+    def test_stale_positional_identity_is_rejected(self):
+        with pytest.raises(TypeError, match="positional"):
+            request_token(
+                "signer.example.com",
+                "/apclient/.ssh/id_ed25519",
+                1127,
+                "default",
+                "/apclient/.ssh/known_hosts",
+            )
+
+    def test_to_file_stale_positional_identity_is_rejected(self):
+        with pytest.raises(TypeError, match="positional"):
+            request_token_to_file("/apclient", "primary", "default")
+
+    def test_request_token_requires_explicit_known_hosts_path(self):
+        with pytest.raises(TypeError, match="known_hosts_path"):
+            request_token("signer.example.com", "/apclient/.ssh/id_ed25519")
+
+    def test_auto_add_host_requires_bool(self):
+        with pytest.raises(TypeError, match="auto_add_host must be a bool"):
+            request_token(
+                "signer.example.com",
+                "/apclient/.ssh/id_ed25519",
+                known_hosts_path="/apclient/.ssh/known_hosts",
+                auto_add_host="false",  # type: ignore[arg-type]
+            )
+
+        with pytest.raises(TypeError, match="auto_add_host must be a bool"):
+            request_token_to_file(auto_add_host="false")  # type: ignore[arg-type]
 
 
 class _FeeParams:
