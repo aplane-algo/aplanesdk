@@ -52,9 +52,6 @@ import type {
   AssemblyTarget,
   AssemblyResponse,
   GuardedPassthroughItem,
-  SentryReferenceCandidate,
-  AdminSyncSentryReferencesRequest,
-  AdminSyncSentryReferencesResponse,
   ErrorResponse,
   BoundedAuthorizationInfo,
   LogicSigResourceUsage,
@@ -3981,43 +3978,6 @@ export class SignerClient {
       throw new SignerError(
         `invalid assembly response: ${error instanceof Error ? error.message : String(error)}`
       );
-    }
-
-    return data;
-  }
-
-  /**
-   * Sync public sentry reference candidates into the connected signer.
-   */
-  async adminSyncSentryReferences(
-    candidates: SentryReferenceCandidate[],
-  ): Promise<AdminSyncSentryReferencesResponse> {
-    const requestBody: AdminSyncSentryReferencesRequest = { candidates };
-    const response = await this.fetch("/admin/sentries/sync", {
-      method: "POST",
-      body: JSON.stringify(requestBody),
-      timeout: this.timeoutFor(MUTATION_TIMEOUT),
-    });
-
-    if (response.status === 401) {
-      throw new AuthenticationError();
-    }
-    if (response.status === 403) {
-      throw await this.forbiddenLockedError(response);
-    }
-    if (response.status !== 200) {
-      throw await this.signerHTTPError(response, `Sentry reference sync failed: HTTP ${response.status}`);
-    }
-
-    let data: AdminSyncSentryReferencesResponse;
-    try {
-      data = (await response.json()) as AdminSyncSentryReferencesResponse;
-    } catch {
-      throw new SignerError("Server returned invalid JSON");
-    }
-
-    if (data.error) {
-      throw new SignerError(data.error);
     }
 
     return data;

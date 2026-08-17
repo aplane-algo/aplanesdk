@@ -1513,29 +1513,6 @@ describe("SignerClient", () => {
       );
     });
 
-    it("posts sentry reference sync requests to the admin endpoint", async () => {
-      mockFetch.mockResolvedValueOnce({
-        status: 200,
-        ok: true,
-        json: async () => ({ added: 1, updated: 0, removed: 0, count: 1 }),
-      });
-
-      const client = new SignerClient("http://localhost:11270", "test-token");
-      const result = await client.adminSyncSentryReferences([
-        {
-          endpoint_alias: "sentry-local",
-          component_key: "COMPONENT",
-          key_type: KEY_TYPE_WITNESS_FALCON1024,
-          public_key_hex: "aabb",
-        },
-      ]);
-
-      assert.equal(result.added, 1);
-      assert.equal(result.count, 1);
-      assert.equal(mockFetch.mock.calls[0][0], "http://localhost:11270/admin/sentries/sync");
-      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-      assert.equal(body.candidates[0].component_key, "COMPONENT");
-    });
   });
 
   describe("signGuardedGroup", () => {
@@ -3523,6 +3500,8 @@ describe("loadClientEndpointRegistry", () => {
     "invalid_token_file_type.yaml",
     "invalid_unknown_field.yaml",
     "invalid_unknown_tag.yaml",
+    "invalid_v2_published_sentries.yaml",
+    "invalid_13_sentry_endpoints.yaml",
   ]) {
     it(`rejects ${fixture}`, () => {
       const tmpDir = fixtureDir(fixture);
@@ -3535,20 +3514,39 @@ describe("loadClientEndpointRegistry", () => {
   }
 
   for (const fixture of [
-    "valid_empty_signer_published_sentries.yaml",
     "valid_schema_version_null.yaml",
     "valid_schema_version_zero.yaml",
+    "valid_12_sentry_endpoints.yaml",
   ]) {
     it(`accepts ${fixture}`, () => {
       const tmpDir = fixtureDir(fixture);
       try {
         const registry = loadClientEndpointRegistry(tmpDir);
-        assert.equal(registry.schemaVersion, 1);
+        assert.equal(registry.schemaVersion, 2);
       } finally {
         fs.rmSync(tmpDir, { recursive: true });
       }
     });
   }
+
+  it("discards v1 published sentry inventory", () => {
+    const tmpDir = fixtureDir("valid_v1_published_sentries.yaml");
+    try {
+      const registry = loadClientEndpointRegistry(tmpDir);
+      assert.equal(registry.schemaVersion, 2);
+      assert.deepEqual(registry.endpoints["sentry-old"], {
+        role: "sentry",
+        url: "https://sentry.example.com",
+        signerPort: 0,
+        localPort: 0,
+        identityFile: "",
+        knownHostsPath: "",
+        tokenFile: path.join(tmpDir, "tokens", "sentry-old.token"),
+      });
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
 
   it("derives the signer default and alias-based token paths", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-endpoints-"));

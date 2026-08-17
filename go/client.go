@@ -733,57 +733,6 @@ func (c *SignerClient) RequestAssembleWithContext(ctx context.Context, reqBody A
 	return &assemblyResp, nil
 }
 
-// AdminSyncSentryReferences syncs public sentry reference candidates into the
-// connected signer identity.
-func (c *SignerClient) AdminSyncSentryReferences(candidates []SentryReferenceCandidate) (*AdminSyncSentryReferencesResponse, error) {
-	return c.AdminSyncSentryReferencesWithContext(context.Background(), candidates)
-}
-
-// AdminSyncSentryReferencesWithContext syncs public sentry reference
-// candidates into the connected signer identity.
-func (c *SignerClient) AdminSyncSentryReferencesWithContext(ctx context.Context, candidates []SentryReferenceCandidate) (*AdminSyncSentryReferencesResponse, error) {
-	reqBody := AdminSyncSentryReferencesRequest{Candidates: candidates}
-	jsonBody, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	reqCtx, cancel := c.requestContext(ctx, mutationTimeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(reqCtx, "POST", c.baseURL+"/admin/sentries/sync", bytes.NewBuffer(jsonBody))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "aplane "+c.token)
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to sync sentry references: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == 401 {
-		return nil, ErrAuthentication
-	}
-	if resp.StatusCode == 403 {
-		return nil, lockedForbiddenError(resp)
-	}
-	if resp.StatusCode != 200 {
-		return nil, signerHTTPError(resp)
-	}
-
-	var syncResp AdminSyncSentryReferencesResponse
-	if err := json.NewDecoder(resp.Body).Decode(&syncResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-	if syncResp.Error != "" {
-		return nil, fmt.Errorf("sentry reference sync failed: %s", syncResp.Error)
-	}
-	return &syncResp, nil
-}
-
 // PlanGroup previews group building without signing or approval.
 func (c *SignerClient) PlanGroup(txns []types.Transaction, authAddresses []string, lsigArgsMap LsigArgsMap, opts *SignOptions) (*PlanGroupResponse, error) {
 	requests, err := buildSignRequestsWithOptions(txns, authAddresses, lsigArgsMap, opts)

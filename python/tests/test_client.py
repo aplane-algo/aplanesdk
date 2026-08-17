@@ -51,7 +51,6 @@ from aplanesdk.signer import (
     BoundedSignatureArgLayout,
     GuardedSignTarget,
     GuardedPrimarySignTarget,
-    SentryReferenceCandidate,
     PreparedTransaction,
     PreparedGroup,
     COMPONENT_TARGET_KIND_BOUNDED_BASE,
@@ -967,27 +966,6 @@ class TestSpecializedLowLevelEndpoints:
                         "sentry_signature": "sentry-sig",
                     }],
                 })
-
-    def test_admin_sync_sentry_references_posts_to_admin_endpoint(self):
-        client = make_client()
-        resp = mock_response(200, {"added": 1, "updated": 0, "removed": 0, "count": 1})
-
-        with patch.object(client.session, "post", return_value=resp) as mock_post:
-            result = client.admin_sync_sentry_references([
-                SentryReferenceCandidate(
-                    endpoint_alias="sentry-local",
-                    component_key="COMPONENT",
-                    key_type=KEY_TYPE_WITNESS_FALCON1024,
-                    public_key_hex="aabb",
-                ),
-            ])
-
-        assert result.added == 1
-        assert result.count == 1
-        assert mock_post.call_args.args[0] == "http://localhost:11270/admin/sentries/sync"
-        body = mock_post.call_args.kwargs["json"]
-        assert body["candidates"][0]["component_key"] == "COMPONENT"
-
 
 class TestSignGuardedGroup:
     def test_signs_one_guarded_target(self):
@@ -3413,6 +3391,8 @@ class TestLoadClientEndpointRegistry:
             "invalid_token_file_type.yaml",
             "invalid_unknown_field.yaml",
             "invalid_unknown_tag.yaml",
+            "invalid_v2_published_sentries.yaml",
+            "invalid_13_sentry_endpoints.yaml",
         ],
     )
     def test_rejects_shared_invalid_fixtures(self, tmp_path, name):
@@ -3423,15 +3403,24 @@ class TestLoadClientEndpointRegistry:
     @pytest.mark.parametrize(
         "name",
         [
-            "valid_empty_signer_published_sentries.yaml",
             "valid_schema_version_null.yaml",
             "valid_schema_version_zero.yaml",
+            "valid_12_sentry_endpoints.yaml",
         ],
     )
     def test_accepts_shared_edge_fixtures(self, tmp_path, name):
         self._fixture(tmp_path, name)
         registry = load_client_endpoint_registry(str(tmp_path))
-        assert registry.schema_version == 1
+        assert registry.schema_version == 2
+
+    def test_discards_v1_published_sentry_inventory(self, tmp_path):
+        self._fixture(tmp_path, "valid_v1_published_sentries.yaml")
+        registry = load_client_endpoint_registry(str(tmp_path))
+        assert registry.schema_version == 2
+        endpoint = registry.endpoints["sentry-old"]
+        assert endpoint.role == "sentry"
+        assert endpoint.url == "https://sentry.example.com"
+        assert not hasattr(endpoint, "published_sentries")
 
     def test_derives_default_and_alias_token_paths(self, tmp_path):
         (tmp_path / "endpoints.yaml").write_text(

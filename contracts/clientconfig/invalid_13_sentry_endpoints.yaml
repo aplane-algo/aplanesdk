@@ -1,0 +1,15 @@
+schema_version: 2
+endpoints:
+  s01: {role: sentry, url: self}
+  s02: {role: sentry, url: self}
+  s03: {role: sentry, url: self}
+  s04: {role: sentry, url: self}
+  s05: {role: sentry, url: self}
+  s06: {role: sentry, url: self}
+  s07: {role: sentry, url: self}
+  s08: {role: sentry, url: self}
+  s09: {role: sentry, url: self}
+  s10: {role: sentry, url: self}
+  s11: {role: sentry, url: self}
+  s12: {role: sentry, url: self}
+  s13: {role: sentry, url: self}

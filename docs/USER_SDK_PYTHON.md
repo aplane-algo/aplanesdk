@@ -136,7 +136,7 @@ The SDK reads:
 Example `endpoints.yaml`:
 
 ```yaml
-schema_version: 1
+schema_version: 2
 default: primary
 endpoints:
   primary:

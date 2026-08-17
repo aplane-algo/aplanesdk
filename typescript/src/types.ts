@@ -209,13 +209,6 @@ export interface ClientConfig {
   theme: string;
 }
 
-/** Endpoint-local sentry discovery metadata. */
-export interface ClientEndpointPublishedSentry {
-  componentKey: string;
-  keyType: string;
-  lastSeenAt?: string;
-}
-
 /** One signer or sentry connection profile from endpoints.yaml. */
 export interface ClientEndpointConfig {
   role: "signer" | "sentry";
@@ -225,12 +218,11 @@ export interface ClientEndpointConfig {
   identityFile: string;
   knownHostsPath: string;
   tokenFile: string;
-  publishedSentries?: Record<string, ClientEndpointPublishedSentry>;
 }
 
 /** Normalized client-local endpoint registry. */
 export interface ClientEndpointRegistry {
-  schemaVersion: 1;
+  schemaVersion: 2;
   default: string;
   endpoints: Record<string, ClientEndpointConfig>;
 }
@@ -556,41 +548,6 @@ export interface ComponentContextPosition {
 /** One signer-added canonical dummy position in the frozen suffix. */
 export interface ComponentDummyPosition {
   target_index: number;
-}
-
-/**
- * Public sentry metadata synced into a signer identity's reference catalog.
- */
-export interface SentryReferenceCandidate {
-  endpoint_alias: string;
-  component_key: string;
-  key_type: string;
-  public_key_hex: string;
-  last_seen_at?: string;
-}
-
-export interface AdminSyncSentryReferencesRequest {
-  candidates: SentryReferenceCandidate[];
-}
-
-export interface SyncedSentryReferenceInfo {
-  name: string;
-  source: string;
-  endpoint_alias?: string;
-  component_key: string;
-  key_type: string;
-  public_key_hex: string;
-  last_seen_at?: string;
-  synced_at?: string;
-}
-
-export interface AdminSyncSentryReferencesResponse {
-  added: number;
-  updated: number;
-  removed: number;
-  count: number;
-  records?: SyncedSentryReferenceInfo[];
-  error?: string;
 }
 
 /**

@@ -139,7 +139,7 @@ Data directory structure (installer default: `~/aplane/apclient`):
 
 Example `endpoints.yaml` (remote via SSH):
 ```yaml
-schema_version: 1
+schema_version: 2
 default: primary
 endpoints:
   primary:

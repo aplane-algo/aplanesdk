@@ -162,8 +162,6 @@ func TestGoSDKContractFixturesRoundTrip(t *testing.T) {
 		{"admin_generate_request_generic.json", assertSDKContractRoundTrip[generateRequest]},
 		{"admin_generate_response_generic.json", assertSDKContractRoundTrip[GenerateResult]},
 		{"admin_generate_response_component.json", assertSDKContractRoundTrip[GenerateResult]},
-		{"admin_sync_sentries_request.json", assertSDKContractRoundTrip[AdminSyncSentryReferencesRequest]},
-		{"admin_sync_sentries_response.json", assertSDKContractRoundTrip[AdminSyncSentryReferencesResponse]},
 		{"cancel_sign_request.json", assertSDKContractRoundTrip[CancelSignRequest]},
 		{"cancel_sign_response_not_found.json", assertSDKContractRoundTrip[CancelSignResponse]},
 		{"cancel_sign_response_success.json", assertSDKContractRoundTrip[CancelSignResponse]},
@@ -282,6 +280,49 @@ func TestSDKProductionSurfaceExcludesBoundedAdminWorkflow(t *testing.T) {
 			for _, token := range forbidden {
 				if strings.Contains(string(content), token) {
 					t.Errorf("%s exposes forbidden bounded-admin workflow token %q", path, token)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("scan SDK production surface %s: %v", root.path, err)
+		}
+	}
+}
+
+func TestSDKProductionSurfaceExcludesSentryReferenceSync(t *testing.T) {
+	roots := []struct {
+		path string
+		ext  string
+	}{
+		{path: ".", ext: ".go"},
+		{path: "../python/aplanesdk", ext: ".py"},
+		{path: "../typescript/src", ext: ".ts"},
+	}
+	forbidden := []string{
+		"AdminSyncSentry",
+		"SyncSentryReferences",
+		"sync_sentry_references",
+		"syncSentryReferences",
+		"/admin/sentries/sync",
+		"sentries.sync",
+	}
+
+	for _, root := range roots {
+		err := filepath.WalkDir(root.path, func(path string, entry os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() || filepath.Ext(path) != root.ext || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			content, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			for _, token := range forbidden {
+				if strings.Contains(string(content), token) {
+					t.Errorf("%s exposes retired sentry-reference sync token %q", path, token)
 				}
 			}
 			return nil

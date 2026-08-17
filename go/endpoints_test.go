@@ -65,6 +65,8 @@ func TestLoadClientEndpointRegistryRejectsSharedInvalidFixtures(t *testing.T) {
 		"invalid_token_file_type.yaml",
 		"invalid_unknown_field.yaml",
 		"invalid_unknown_tag.yaml",
+		"invalid_v2_published_sentries.yaml",
+		"invalid_13_sentry_endpoints.yaml",
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := LoadClientEndpointRegistry(copyEndpointFixture(t, name))
@@ -77,19 +79,33 @@ func TestLoadClientEndpointRegistryRejectsSharedInvalidFixtures(t *testing.T) {
 
 func TestLoadClientEndpointRegistryAcceptsSharedEdgeFixtures(t *testing.T) {
 	for _, name := range []string{
-		"valid_empty_signer_published_sentries.yaml",
 		"valid_schema_version_null.yaml",
 		"valid_schema_version_zero.yaml",
+		"valid_12_sentry_endpoints.yaml",
 	} {
 		t.Run(name, func(t *testing.T) {
 			registry, err := LoadClientEndpointRegistry(copyEndpointFixture(t, name))
 			if err != nil {
 				t.Fatalf("LoadClientEndpointRegistry: %v", err)
 			}
-			if registry.SchemaVersion != 1 {
-				t.Fatalf("SchemaVersion = %d, want 1", registry.SchemaVersion)
+			if registry.SchemaVersion != ClientEndpointSchemaVersion {
+				t.Fatalf("SchemaVersion = %d, want %d", registry.SchemaVersion, ClientEndpointSchemaVersion)
 			}
 		})
+	}
+}
+
+func TestLoadClientEndpointRegistryDiscardsV1PublishedSentries(t *testing.T) {
+	registry, err := LoadClientEndpointRegistry(copyEndpointFixture(t, "valid_v1_published_sentries.yaml"))
+	if err != nil {
+		t.Fatalf("LoadClientEndpointRegistry: %v", err)
+	}
+	if registry.SchemaVersion != ClientEndpointSchemaVersion {
+		t.Fatalf("SchemaVersion = %d, want %d", registry.SchemaVersion, ClientEndpointSchemaVersion)
+	}
+	endpoint := registry.Endpoints["sentry-old"]
+	if endpoint.Role != ClientEndpointRoleSentry || endpoint.URL != "https://sentry.example.com" {
+		t.Fatalf("endpoint = %#v", endpoint)
 	}
 }
 

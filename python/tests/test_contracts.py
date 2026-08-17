@@ -12,8 +12,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from aplanesdk.signer import (
-    AdminSyncSentryReferencesRequest,
-    AdminSyncSentryReferencesResponse,
     AUTHORIZATION_KIND_ED25519,
     AUTHORIZATION_KIND_LOGIC_SIG,
     AUTHORIZATION_KIND_NATIVE_PQ,
@@ -405,12 +403,6 @@ def test_sentry_dtos_round_trip_fixtures():
     assert aplanesdk.ComponentRequest is ComponentRequest
     assert aplanesdk.ComponentResponse is ComponentResponse
     assert aplanesdk.COMPONENT_TARGET_KIND_BOUNDED_BASE == "bounded-base"
-
-    sync_req = AdminSyncSentryReferencesRequest(**fixture("admin_sync_sentries_request.json"))
-    assert sync_req.candidates[0]["component_key"]
-    sync_resp = AdminSyncSentryReferencesResponse(**fixture("admin_sync_sentries_response.json"))
-    assert sync_resp.records[0]["source"] == "client_discovery"
-
 
 def test_bounded_inventory_projects_layer3_policy():
     client = make_client()

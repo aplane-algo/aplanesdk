@@ -9,7 +9,6 @@ import { isScalar, parse as parseYaml, parseDocument } from "yaml";
 import type {
   ClientConfig,
   ClientEndpointConfig,
-  ClientEndpointPublishedSentry,
   ClientEndpointRegistry,
 } from "./types.js";
 import { SignerError } from "./errors.js";
@@ -19,6 +18,8 @@ export const DEFAULT_SSH_PORT = 1127;
 export const DEFAULT_SIGNER_PORT = 11270;
 export const CLIENT_ENDPOINTS_FILE = "endpoints.yaml";
 export const DEFAULT_CLIENT_ENDPOINT_NAME = "primary";
+export const CLIENT_ENDPOINT_SCHEMA_VERSION = 2;
+export const MAX_CLIENT_SENTRY_ENDPOINTS = 12;
 
 /**
  * Expand ~ in paths to the user's home directory.
@@ -139,6 +140,7 @@ function normalizeEndpoint(
   dataDir: string,
   alias: string,
   raw: unknown,
+  legacyV1: boolean,
 ): ClientEndpointConfig {
   requireMapping(raw, `endpoint "${alias}"`);
   requireKnownFields(raw, [
@@ -149,7 +151,7 @@ function normalizeEndpoint(
     "identity_file",
     "known_hosts_path",
     "token_file",
-    "published_sentries",
+    ...(legacyV1 ? ["published_sentries"] : []),
   ], `endpoint "${alias}"`);
 
   const role = optionalString(raw.role, "role").trim();
@@ -213,28 +215,6 @@ function normalizeEndpoint(
     knownHostsPath = resolvePath(knownHostsPath, dataDir);
   }
 
-  let publishedSentries: Record<string, ClientEndpointPublishedSentry> | undefined;
-  if (raw.published_sentries !== undefined && raw.published_sentries !== null) {
-    requireMapping(raw.published_sentries, `endpoint "${alias}" published_sentries`);
-    if (role !== "sentry" && Object.keys(raw.published_sentries).length > 0) {
-      throw new SignerError(`endpoint "${alias}": published_sentries are only valid on "sentry" endpoints`);
-    }
-    publishedSentries = {};
-    for (const [publicKey, value] of Object.entries(raw.published_sentries)) {
-      requireMapping(value, `published sentry "${publicKey}"`);
-      requireKnownFields(value, ["component_key", "key_type", "last_seen_at"], `published sentry "${publicKey}"`);
-      if (typeof value.component_key !== "string" || typeof value.key_type !== "string") {
-        throw new SignerError(`published sentry "${publicKey}" requires component_key and key_type`);
-      }
-      const lastSeenAt = optionalString(value.last_seen_at, "last_seen_at").trim();
-      publishedSentries[publicKey] = {
-        componentKey: value.component_key,
-        keyType: value.key_type,
-        ...(lastSeenAt ? { lastSeenAt } : {}),
-      };
-    }
-  }
-
   return {
     role,
     url: endpointUrl,
@@ -243,14 +223,13 @@ function normalizeEndpoint(
     identityFile,
     knownHostsPath,
     tokenFile: resolvePath(tokenFile, dataDir),
-    ...(publishedSentries ? { publishedSentries } : {}),
   };
 }
 
 /** Load and normalize dataDir/endpoints.yaml. */
 export function loadClientEndpointRegistry(dataDir: string): ClientEndpointRegistry {
   const registry: ClientEndpointRegistry = {
-    schemaVersion: 1,
+    schemaVersion: CLIENT_ENDPOINT_SCHEMA_VERSION,
     default: "",
     endpoints: {},
   };
@@ -286,15 +265,17 @@ export function loadClientEndpointRegistry(dataDir: string): ClientEndpointRegis
       && schemaVersionSource !== ""
       && !/^[+-]?\d+$/.test(schemaVersionSource)
     )
-    || schemaVersion !== 1
+    || (schemaVersion !== 1 && schemaVersion !== CLIENT_ENDPOINT_SCHEMA_VERSION)
   ) {
-    throw new SignerError(`${CLIENT_ENDPOINTS_FILE} schema_version = ${String(schemaVersion)}, want 1`);
+    throw new SignerError(
+      `${CLIENT_ENDPOINTS_FILE} schema_version = ${String(schemaVersion)}, want 1 or ${CLIENT_ENDPOINT_SCHEMA_VERSION}`,
+    );
   }
   const endpointsRaw = raw.endpoints ?? {};
   requireMapping(endpointsRaw, `${CLIENT_ENDPOINTS_FILE} endpoints`);
   for (const [alias, endpointRaw] of Object.entries(endpointsRaw)) {
     validateAlias(alias);
-    registry.endpoints[alias] = normalizeEndpoint(dataDir, alias, endpointRaw);
+    registry.endpoints[alias] = normalizeEndpoint(dataDir, alias, endpointRaw, schemaVersion === 1);
   }
 
   registry.default = optionalString(raw.default, "default").trim();
@@ -302,6 +283,10 @@ export function loadClientEndpointRegistry(dataDir: string): ClientEndpointRegis
   const signerAliases = Object.entries(registry.endpoints)
     .filter(([, endpoint]) => endpoint.role === "signer")
     .map(([alias]) => alias);
+  const sentryCount = Object.values(registry.endpoints).filter((endpoint) => endpoint.role === "sentry").length;
+  if (sentryCount > MAX_CLIENT_SENTRY_ENDPOINTS) {
+    throw new SignerError(`${CLIENT_ENDPOINTS_FILE} configures ${sentryCount} sentry endpoints; maximum is ${MAX_CLIENT_SENTRY_ENDPOINTS}; remove or consolidate endpoint profiles`);
+  }
   if (signerAliases.length > 1) {
     throw new SignerError(
       `${CLIENT_ENDPOINTS_FILE} may contain at most one "signer" endpoint`,

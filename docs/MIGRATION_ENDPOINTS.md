@@ -16,7 +16,7 @@ endpoint:
 Move that routing into an endpoint profile:
 
 ```yaml
-schema_version: 1
+schema_version: 2
 default: primary
 endpoints:
   primary:
@@ -35,8 +35,18 @@ For registries shared with APlane tooling, prefer paths relative to
 `APCLIENT_DATA` or absolute paths. SDK helpers expand `~`, while APlane
 currently treats it as a literal path segment. Use lowercase SSH hostnames so
 URL normalization and `known_hosts` lookup remain consistent across runtimes.
-Treat `published_sentries` as APlane-managed discovery metadata rather than
-hand-edited SDK configuration.
+Schema v2 contains connection profiles only. Loaders accept schema v1 as a
+bounded migration input, discard its retired `published_sentries` inventory,
+and return the v2 runtime shape. Schema v2 rejects that field. Configure no
+more than 12 `sentry` profiles; all SDK loaders reject larger registries.
+
+The former sentry-reference synchronization client methods and wire types are
+removed. APlane now keeps generation trust inputs and transaction routing
+separate: operators explicitly export/import public sentry references for
+guarded-account generation, while the APlane engine discovers routes from live
+authenticated `/keys` responses for each signing operation. SDK applications
+continue to choose or resolve their sentry client explicitly; loading
+`endpoints.yaml` never creates a durable sentry-key inventory.
 
 Go `FromEnv`, Python `SignerClient.from_env`, and TypeScript
 `SignerClient.fromEnv` select the default signer unless given an endpoint

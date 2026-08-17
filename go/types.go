@@ -744,45 +744,6 @@ type GenerateResult struct {
 	Error             string            `json:"error,omitempty"`
 }
 
-// SentryReferenceCandidate is public sentry metadata synced into a signer
-// identity's generation reference catalog.
-type SentryReferenceCandidate struct {
-	EndpointAlias string `json:"endpoint_alias"`
-	ComponentKey  string `json:"component_key"`
-	KeyType       string `json:"key_type"`
-	PublicKeyHex  string `json:"public_key_hex"`
-	LastSeenAt    string `json:"last_seen_at,omitempty"`
-}
-
-// AdminSyncSentryReferencesRequest is the request payload for
-// POST /admin/sentries/sync.
-type AdminSyncSentryReferencesRequest struct {
-	Candidates []SentryReferenceCandidate `json:"candidates"`
-}
-
-// SyncedSentryReferenceInfo describes a signer-local reference after sync.
-type SyncedSentryReferenceInfo struct {
-	Name          string `json:"name"`
-	Source        string `json:"source"`
-	EndpointAlias string `json:"endpoint_alias,omitempty"`
-	ComponentKey  string `json:"component_key"`
-	KeyType       string `json:"key_type"`
-	PublicKeyHex  string `json:"public_key_hex"`
-	LastSeenAt    string `json:"last_seen_at,omitempty"`
-	SyncedAt      string `json:"synced_at,omitempty"`
-}
-
-// AdminSyncSentryReferencesResponse is the response payload for
-// POST /admin/sentries/sync.
-type AdminSyncSentryReferencesResponse struct {
-	Added   int                         `json:"added"`
-	Updated int                         `json:"updated"`
-	Removed int                         `json:"removed"`
-	Count   int                         `json:"count"`
-	Records []SyncedSentryReferenceInfo `json:"records,omitempty"`
-	Error   string                      `json:"error,omitempty"`
-}
-
 // generateRequest is the request payload for key generation.
 type generateRequest struct {
 	KeyType    string            `json:"key_type"`

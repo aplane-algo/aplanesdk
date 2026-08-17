@@ -1017,36 +1017,6 @@ func TestRequestAssembleUnavailable(t *testing.T) {
 	}
 }
 
-func TestAdminSyncSentryReferencesPostsToAdminEndpoint(t *testing.T) {
-	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/admin/sentries/sync" {
-			t.Fatalf("request = %s %s, want POST /admin/sentries/sync", r.Method, r.URL.Path)
-		}
-		var req AdminSyncSentryReferencesRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode sync request: %v", err)
-		}
-		if len(req.Candidates) != 1 || req.Candidates[0].ComponentKey != "COMPONENT" {
-			t.Fatalf("sync candidates = %+v", req.Candidates)
-		}
-		json.NewEncoder(w).Encode(AdminSyncSentryReferencesResponse{Added: 1, Count: 1})
-	})
-	defer server.Close()
-
-	resp, err := client.AdminSyncSentryReferences([]SentryReferenceCandidate{{
-		EndpointAlias: "sentry-local",
-		ComponentKey:  "COMPONENT",
-		KeyType:       KeyTypeWitnessFalcon1024,
-		PublicKeyHex:  "aabb",
-	}})
-	if err != nil {
-		t.Fatalf("AdminSyncSentryReferences() error = %v", err)
-	}
-	if resp.Added != 1 || resp.Count != 1 {
-		t.Fatalf("sync response = %+v", resp)
-	}
-}
-
 // --- PlanGroup tests ---
 
 func TestPlanGroup_Success(t *testing.T) {
