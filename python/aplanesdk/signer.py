@@ -642,71 +642,6 @@ class GuardedAssemblyResponse:
 
 
 @dataclass
-class BoundedComponentRequest:
-    """Request payload for /sign/bounded-component."""
-
-    group_bytes_hex: List[str]
-    targets: List[Dict[str, Any]]
-    request_id: str = ""
-    contextual_positions: Optional[List[Dict[str, Any]]] = None
-    dummy_positions: Optional[List[Dict[str, int]]] = None
-
-
-@dataclass
-class BoundedBaseComponent:
-    """One user-signer contribution to bounded assembly."""
-
-    target_index: int
-    bounded_account: str
-    base_signatures: List[str]
-    assembly_receipt: str
-    signature_scheme: str
-    runtime_args: Optional[Dict[str, str]] = None
-
-
-@dataclass
-class BoundedComponentResponse:
-    """Response payload from /sign/bounded-component."""
-
-    request_id: str
-    transactions: List[str]
-    components: List[BoundedBaseComponent]
-    mutations: Optional[Dict[str, Any]] = None
-
-
-@dataclass
-class BoundedAssemblyTarget:
-    """One source-bound bounded-sentry assembly target."""
-
-    target_index: int
-    bounded_account: str
-    base_signatures: List[str]
-    assembly_receipt: str
-    sentry_signature: str
-    runtime_args: Optional[Dict[str, str]] = None
-    base_source_request_id: str = ""
-    sentry_source_request_id: str = ""
-
-
-@dataclass
-class BoundedAssemblyRequest:
-    """Request payload for /sign/bounded-assemble."""
-
-    group_bytes_hex: List[str]
-    targets: List[BoundedAssemblyTarget]
-    request_id: str = ""
-    passthrough: Optional[List[GuardedPassthroughItem]] = None
-
-
-@dataclass
-class BoundedAssemblyResponse:
-    """Response payload from /sign/bounded-assemble."""
-
-    request_id: str
-    signed_group: List[str]
-
-
-@dataclass
 class SentryReferenceCandidate:
     """Public sentry metadata synced into the signer reference catalog"""
 
@@ -783,8 +718,8 @@ class GuardedSignResult:
     sentry_component_responses: List[ComponentSignResponse]
     assembly_response: Optional[GuardedAssemblyResponse]
     primary_sign_response: Optional[GroupSignResponse] = None
-    bounded_component_response: Optional[BoundedComponentResponse] = None
-    bounded_assembly_response: Optional[BoundedAssemblyResponse] = None
+    bounded_component_response: Optional[ComponentResponse] = None
+    bounded_assembly_response: Optional[AssemblyResponse] = None
 
 
 @dataclass
@@ -4416,53 +4351,6 @@ class SignerClient:
             signed_group=data.get("signed_group", []),
         )
 
-    def request_bounded_component(
-        self,
-        request: Any,
-    ) -> BoundedComponentResponse:
-        """Request approved bounded base components from the user signer."""
-        request_body = _compact_payload(request)
-        if not isinstance(request_body, dict):
-            raise ValueError("bounded component request must be a mapping or dataclass")
-        if not request_body.get("request_id"):
-            request_body["request_id"] = _new_sign_request_id()
-        try:
-            _validate_bounded_component_request(request_body)
-        except ValueError as e:
-            raise ValueError(f"invalid bounded component request: {e}") from e
-
-        response = self.request_components(_bounded_component_to_unified(request_body))
-        return BoundedComponentResponse(
-            request_id=response.request_id,
-            transactions=list(request_body["group_bytes_hex"]),
-            components=[
-                BoundedBaseComponent(
-                    target_index=item["target_index"],
-                    bounded_account=item["auth_address"],
-                    base_signatures=list(item.get("base_signatures") or []),
-                    runtime_args=dict(item.get("runtime_args") or {}) or None,
-                    assembly_receipt=item["assembly_receipt"],
-                    signature_scheme=item["signature_scheme"],
-                )
-                for item in response.components
-            ],
-            mutations=None,
-        )
-
-    def request_bounded_assemble(
-        self,
-        request: Any,
-    ) -> BoundedAssemblyResponse:
-        """Send source-bound bounded-sentry material to the user signer."""
-        request_body = _compact_payload(request)
-        if not isinstance(request_body, dict):
-            raise ValueError("bounded assembly request must be a mapping or dataclass")
-        response = self.request_assemble(_bounded_assembly_to_unified(request_body))
-        return BoundedAssemblyResponse(
-            request_id=response.request_id,
-            signed_group=response.signed_group,
-        )
-
     def admin_sync_sentry_references(
         self,
         candidates: List[Any],
@@ -5776,7 +5664,7 @@ def sign_prepared_bounded_sentry_group(
         request = {"txn_bytes_hex": txn_hex}
         if resources:
             request["lsig_resources"] = _wire_lsig_resources(resources)
-        # This slot is declared foreign to /sign/bounded-component, so the
+        # This slot is contextual to /sign/component, so the
         # signer cannot infer its authorization envelope from the key. A
         # native-PQ key publishes no LogicSig profile, so without an explicit
         # pq_scheme the signer budgets it as an Ed25519 slot and freezes an
@@ -5820,6 +5708,7 @@ def sign_prepared_bounded_sentry_group(
             component_targets.append(
                 {
                     "target_index": index,
+                    "kind": COMPONENT_TARGET_KIND_BOUNDED_BASE,
                     "auth_address": request["auth_address"],
                     "lsig_args": request.get("lsig_args"),
                 }
@@ -5832,8 +5721,8 @@ def sign_prepared_bounded_sentry_group(
                     "pq_scheme": request.get("pq_scheme", ""),
                 }
             )
-    component_response = user_client.request_bounded_component(
-        BoundedComponentRequest(
+    component_response = user_client.request_components(
+        ComponentRequest(
             group_bytes_hex=frozen_group,
             targets=component_targets,
             contextual_positions=contextual_positions or None,
@@ -5843,22 +5732,21 @@ def sign_prepared_bounded_sentry_group(
             ] or None,
         )
     )
-    if component_response.transactions != frozen_group:
-        raise SignerError("bounded component response changed the frozen group")
     _validate_bounded_target_fees(planned, target_max_fees)
     target_by_index = {target["target_index"]: target for target in targets}
-    components: Dict[int, BoundedBaseComponent] = {}
+    components: Dict[int, Dict[str, Any]] = {}
     for component in component_response.components:
-        target = target_by_index.get(component.target_index)
-        if target is None or component.bounded_account != target["guarded_account"]:
+        target = target_by_index.get(component["target_index"])
+        if (target is None or component.get("kind") != COMPONENT_TARGET_KIND_BOUNDED_BASE
+                or component.get("auth_address") != target["guarded_account"]):
             raise SignerError(
-                f"signer returned unexpected bounded component target " f"{component.target_index}"
+                f"signer returned unexpected bounded component target " f"{component['target_index']}"
             )
-        if component.target_index in components:
+        if component["target_index"] in components:
             raise SignerError(
-                f"signer returned duplicate bounded component target " f"{component.target_index}"
+                f"signer returned duplicate bounded component target " f"{component['target_index']}"
             )
-        components[component.target_index] = component
+        components[component["target_index"]] = component
     for target in targets:
         if target["target_index"] not in components:
             raise SignerError(
@@ -5903,7 +5791,7 @@ def sign_prepared_bounded_sentry_group(
         primary_targets,
     )
     passthrough.extend(_sign_guarded_dummies(planned[len(prepared) :], len(prepared)))
-    assembly_targets: List[BoundedAssemblyTarget] = []
+    assembly_targets: List[AssemblyTarget] = []
     for target in targets:
         index = target["target_index"]
         sentry = sentry_signatures.get(index)
@@ -5911,19 +5799,20 @@ def sign_prepared_bounded_sentry_group(
             raise SignerError(f"missing sentry component signature for target {index}")
         component = components[index]
         assembly_targets.append(
-            BoundedAssemblyTarget(
+            AssemblyTarget(
                 target_index=index,
-                bounded_account=component.bounded_account,
-                base_signatures=list(component.base_signatures),
-                runtime_args=dict(component.runtime_args or {}) or None,
-                assembly_receipt=component.assembly_receipt,
+                kind=ASSEMBLY_TARGET_KIND_BOUNDED_SENTRY,
+                auth_address=component["auth_address"],
+                base_signatures=list(component.get("base_signatures") or []),
+                bounded_runtime_args=dict(component.get("runtime_args") or {}) or None,
+                assembly_receipt=component["assembly_receipt"],
                 base_source_request_id=component_response.request_id,
                 sentry_signature=sentry["signature"],
                 sentry_source_request_id=sentry["request_id"],
             )
         )
-    assembly_response = user_client.request_bounded_assemble(
-        BoundedAssemblyRequest(
+    assembly_response = user_client.request_assemble(
+        AssemblyRequest(
             request_id=assembly_request_id,
             group_bytes_hex=list(frozen_group),
             targets=assembly_targets,

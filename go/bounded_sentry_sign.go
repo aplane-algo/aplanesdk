@@ -96,7 +96,7 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 			if key.SigningFlow != "" && key.SigningFlow != SigningFlowBounded1 {
 				return nil, fmt.Errorf("prepared transaction %d: signer key requires signing flow %q, which this SDK does not support; upgrade the SDK", i, key.SigningFlow)
 			}
-			// This slot is declared foreign to /sign/bounded-component, so the
+			// This slot is contextual to /sign/component, so the
 			// signer cannot infer its authorization envelope from the key. A
 			// native-PQ key publishes no LogicSig profile, so without an
 			// explicit pq_scheme the signer budgets it as an Ed25519 slot and
@@ -141,14 +141,14 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 	if err := validateBoundedComponentPlan(original, planned, planResp.Mutations); err != nil {
 		return nil, err
 	}
-	componentReq := BoundedComponentRequest{GroupBytesHex: append([]string(nil), planResp.Transactions...)}
+	componentReq := ComponentRequest{GroupBytesHex: append([]string(nil), planResp.Transactions...)}
 	targetSet := make(map[int]bool, len(targets))
 	for _, target := range targets {
 		targetSet[target.TargetIndex] = true
 	}
 	for i, request := range requests {
 		if targetSet[i] {
-			componentReq.Targets = append(componentReq.Targets, BoundedComponentTarget{TargetIndex: i, AuthAddress: request.AuthAddress, LsigArgs: request.LsigArgs})
+			componentReq.Targets = append(componentReq.Targets, ComponentTarget{TargetIndex: i, Kind: ComponentTargetKindBoundedBase, AuthAddress: request.AuthAddress, LsigArgs: request.LsigArgs})
 		} else {
 			componentReq.ContextualPositions = append(componentReq.ContextualPositions, ComponentContextPosition{TargetIndex: i, LsigResources: request.LsigResources, PQScheme: request.PQScheme})
 		}
@@ -156,30 +156,22 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 	for i := len(prepared); i < len(planResp.Transactions); i++ {
 		componentReq.DummyPositions = append(componentReq.DummyPositions, ComponentDummyPosition{TargetIndex: i})
 	}
-	componentResp, err := opts.UserClient.RequestBoundedComponentWithContext(ctx, componentReq)
+	componentResp, err := opts.UserClient.RequestComponentsWithContext(ctx, componentReq)
 	if err != nil {
 		return nil, fmt.Errorf("bounded base component signing failed: %w", err)
-	}
-	if len(componentResp.Transactions) != len(planResp.Transactions) {
-		return nil, fmt.Errorf("bounded component response group length changed")
-	}
-	for i := range planResp.Transactions {
-		if componentResp.Transactions[i] != planResp.Transactions[i] {
-			return nil, fmt.Errorf("bounded component response changed frozen transaction %d", i)
-		}
 	}
 	if err := validateBoundedTargetFees(planned, targetMaxFees); err != nil {
 		return nil, err
 	}
 
-	components := make(map[int]BoundedBaseComponent, len(componentResp.Components))
+	components := make(map[int]Component, len(componentResp.Components))
 	targetsByIndex := make(map[int]GuardedSignTarget, len(targets))
 	for _, target := range targets {
 		targetsByIndex[target.TargetIndex] = target
 	}
 	for _, component := range componentResp.Components {
 		target, ok := targetsByIndex[component.TargetIndex]
-		if !ok || component.BoundedAccount != target.GuardedAccount {
+		if !ok || component.Kind != ComponentTargetKindBoundedBase || component.AuthAddress != target.GuardedAccount {
 			return nil, fmt.Errorf("signer returned unexpected bounded component target %d", component.TargetIndex)
 		}
 		if _, duplicate := components[component.TargetIndex]; duplicate {
@@ -261,7 +253,7 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 	if err := verifyAssembledGroup(planResp.Transactions, assemblyResp.SignedGroup); err != nil {
 		return nil, err
 	}
-	result.BoundedAssemblyResponse = &BoundedAssemblyResponse{RequestID: assemblyResp.RequestID, SignedGroup: assemblyResp.SignedGroup}
+	result.BoundedAssemblyResponse = assemblyResp
 	result.SignedGroup = append([]string(nil), assemblyResp.SignedGroup...)
 	return result, nil
 }

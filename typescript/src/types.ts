@@ -608,22 +608,6 @@ export interface GuardedAssemblyResponse {
   signed_group: string[];
 }
 
-/** Request payload for /sign/bounded-component. */
-export interface BoundedComponentRequest {
-  request_id?: string;
-  group_bytes_hex: string[];
-  targets: BoundedComponentTarget[];
-  contextual_positions?: ComponentContextPosition[];
-  dummy_positions?: ComponentDummyPosition[];
-}
-
-/** One bounded target in a frozen component-signing group. */
-export interface BoundedComponentTarget {
-  target_index: number;
-  auth_address: string;
-  lsig_args?: Record<string, string>;
-}
-
 /** Authorization-budget context for a non-target original position. */
 export interface ComponentContextPosition {
   target_index: number;
@@ -634,50 +618,6 @@ export interface ComponentContextPosition {
 /** One signer-added canonical dummy position in the frozen suffix. */
 export interface ComponentDummyPosition {
   target_index: number;
-}
-
-/** One user-signer contribution to bounded assembly. */
-export interface BoundedBaseComponent {
-  target_index: number;
-  bounded_account: string;
-  base_signatures: string[];
-  runtime_args?: Record<string, string>;
-  assembly_receipt: string;
-  signature_scheme: string;
-}
-
-/** Response payload from /sign/bounded-component. */
-export interface BoundedComponentResponse {
-  request_id: string;
-  transactions: string[];
-  components: BoundedBaseComponent[];
-  mutations?: MutationReport;
-}
-
-/** One source-bound bounded-sentry assembly target. */
-export interface BoundedAssemblyTarget {
-  target_index: number;
-  bounded_account: string;
-  base_signatures: string[];
-  runtime_args?: Record<string, string>;
-  assembly_receipt: string;
-  base_source_request_id?: string;
-  sentry_signature: string;
-  sentry_source_request_id?: string;
-}
-
-/** Request payload for /sign/bounded-assemble. */
-export interface BoundedAssemblyRequest {
-  request_id?: string;
-  group_bytes_hex: string[];
-  targets: BoundedAssemblyTarget[];
-  passthrough?: GuardedPassthroughItem[];
-}
-
-/** Response payload from /sign/bounded-assemble. */
-export interface BoundedAssemblyResponse {
-  request_id: string;
-  signed_group: string[];
 }
 
 /**

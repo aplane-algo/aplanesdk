@@ -36,6 +36,11 @@ from aplanesdk.signer import (
     ComponentSignRequest,
     ComponentSignature,
     ComponentSignResponse,
+    ComponentRequest,
+    ComponentResponse,
+    AssemblyRequest,
+    AssemblyTarget,
+    AssemblyResponse,
     GroupSignResponse,
     KeyInfo,
     LogicSigResourceProfile,
@@ -46,10 +51,6 @@ from aplanesdk.signer import (
     GuardedPassthroughAuthorization,
     GuardedPassthroughItem,
     _normalize_guarded_passthrough_item,
-    BoundedComponentRequest,
-    BoundedBaseComponent,
-    BoundedComponentResponse,
-    BoundedAssemblyResponse,
     BoundedSentryAuthorizationInfo,
     BoundedAuthorizationInfo,
     BoundedAdminOperationInfo,
@@ -60,6 +61,8 @@ from aplanesdk.signer import (
     PreparedTransaction,
     PreparedGroup,
     COMPONENT_SIGN_ROLE_SENTRY,
+    COMPONENT_TARGET_KIND_BOUNDED_BASE,
+    ASSEMBLY_TARGET_KIND_BOUNDED_SENTRY,
     KEY_TYPE_GUARDED_FALCON1024_SENTRY1024,
     KEY_TYPE_WITNESS_FALCON1024,
     SIGNING_FLOW_SENTRY1,
@@ -789,24 +792,25 @@ class TestSpecializedLowLevelEndpoints:
             "post",
             side_effect=[component_response, assembly_response],
         ) as mock_post, patch.object(client, "_discover_approval_wait"):
-            component = client.request_bounded_component(BoundedComponentRequest(
+            component = client.request_components(ComponentRequest(
                 request_id="bounded-base-id",
                 group_bytes_hex=["5458aa"],
-                targets=[{"target_index": 0, "auth_address": "BOUNDED"}],
+                targets=[{"target_index": 0, "kind": COMPONENT_TARGET_KIND_BOUNDED_BASE, "auth_address": "BOUNDED"}],
             ))
-            assembly = client.request_bounded_assemble({
+            assembly = client.request_assemble({
                 "request_id": "bounded-assembly-id",
                 "group_bytes_hex": ["5458aa"],
                 "targets": [{
                     "target_index": 0,
-                    "bounded_account": "BOUNDED",
+                    "kind": ASSEMBLY_TARGET_KIND_BOUNDED_SENTRY,
+                    "auth_address": "BOUNDED",
                     "base_signatures": ["base-sig"],
                     "assembly_receipt": "receipt",
                     "sentry_signature": "sentry-sig",
                 }],
             })
 
-        assert component.components[0].assembly_receipt == "receipt"
+        assert component.components[0]["assembly_receipt"] == "receipt"
         assert assembly.signed_group == ["signed"]
         assert mock_post.call_args_list[0].args[0].endswith(
             "/sign/component"
@@ -828,10 +832,10 @@ class TestSpecializedLowLevelEndpoints:
             side_effect=[requests.Timeout("timed out"), cancel_response],
         ) as mock_post, patch.object(client, "_discover_approval_wait"):
             with pytest.raises(SignerUnavailableError):
-                client.request_bounded_component(BoundedComponentRequest(
+                client.request_components(ComponentRequest(
                     request_id="bounded-cancel-id",
                     group_bytes_hex=["5458aa"],
-                    targets=[{"target_index": 0, "auth_address": "BOUNDED"}],
+                    targets=[{"target_index": 0, "kind": COMPONENT_TARGET_KIND_BOUNDED_BASE, "auth_address": "BOUNDED"}],
                 ))
 
         assert mock_post.call_args_list[0].args[0].endswith(
@@ -851,10 +855,10 @@ class TestSpecializedLowLevelEndpoints:
             client.session, "post", return_value=response
         ), patch.object(client, "_discover_approval_wait"):
             with pytest.raises(KeyNotFoundError):
-                client.request_bounded_component(BoundedComponentRequest(
+                client.request_components(ComponentRequest(
                     request_id="bounded-not-found",
                     group_bytes_hex=["5458aa"],
-                    targets=[{"target_index": 0, "auth_address": "BOUNDED"}],
+                    targets=[{"target_index": 0, "kind": COMPONENT_TARGET_KIND_BOUNDED_BASE, "auth_address": "BOUNDED"}],
                 ))
 
     def test_bounded_endpoints_surface_200_error_bodies(self):
@@ -864,20 +868,21 @@ class TestSpecializedLowLevelEndpoints:
             client.session, "post", return_value=error_response
         ), patch.object(client, "_discover_approval_wait"):
             with pytest.raises(SignerError, match="bounded failed"):
-                client.request_bounded_component(BoundedComponentRequest(
+                client.request_components(ComponentRequest(
                     request_id="bounded-base-id",
                     group_bytes_hex=["5458aa"],
-                    targets=[{"target_index": 0, "auth_address": "BOUNDED"}],
+                    targets=[{"target_index": 0, "kind": COMPONENT_TARGET_KIND_BOUNDED_BASE, "auth_address": "BOUNDED"}],
                 ))
 
         with patch.object(client.session, "post", return_value=error_response):
             with pytest.raises(SignerError, match="bounded failed"):
-                client.request_bounded_assemble({
+                client.request_assemble({
                     "request_id": "bounded-assembly-id",
                     "group_bytes_hex": ["5458aa"],
                     "targets": [{
                         "target_index": 0,
-                        "bounded_account": "BOUNDED",
+                        "kind": ASSEMBLY_TARGET_KIND_BOUNDED_SENTRY,
+                        "auth_address": "BOUNDED",
                         "base_signatures": ["base-sig"],
                         "assembly_receipt": "receipt",
                         "sentry_signature": "sentry-sig",
@@ -1464,22 +1469,19 @@ class TestSignGuardedGroup:
         sentry = make_client("http://sentry:11270")
 
         def bounded_component(req):
-            assert isinstance(req, BoundedComponentRequest)
+            assert isinstance(req, ComponentRequest)
             assert req.targets[0]["auth_address"] == bounded
-            return BoundedComponentResponse(
+            return ComponentResponse(
                 request_id="base-id",
-                transactions=list(req.group_bytes_hex),
-                components=[BoundedBaseComponent(
-                    target_index=0,
-                    bounded_account=bounded,
-                    base_signatures=["base-sig"],
-                    runtime_args={"proof": "aabb"},
-                    assembly_receipt="receipt",
-                    signature_scheme="aplane.falcon1024.v1",
-                )],
+                components=[{
+                    "target_index": 0, "kind": COMPONENT_TARGET_KIND_BOUNDED_BASE,
+                    "auth_address": bounded, "base_signatures": ["base-sig"],
+                    "runtime_args": {"proof": "aabb"}, "assembly_receipt": "receipt",
+                    "signature_scheme": "aplane.falcon1024.v1",
+                }],
             )
 
-        user.request_bounded_component = MagicMock(side_effect=bounded_component)
+        user.request_components = MagicMock(side_effect=bounded_component)
         user.plan_requests = MagicMock(side_effect=lambda requests: {
             "transactions": [requests[0]["txn_bytes_hex"]],
         })
@@ -1503,12 +1505,12 @@ class TestSignGuardedGroup:
             assert req.targets[0].base_signatures == ["base-sig"]
             assert req.targets[0].assembly_receipt == "receipt"
             assert req.targets[0].sentry_signature == "sentry-sig"
-            return BoundedAssemblyResponse(
+            return AssemblyResponse(
                 request_id="assembly-id",
                 signed_group=[signed_txn_hex(assembled_txn[0])],
             )
 
-        user.request_bounded_assemble = MagicMock(side_effect=bounded_assemble)
+        user.request_assemble = MagicMock(side_effect=bounded_assemble)
         user.sign_requests = MagicMock(
             side_effect=AssertionError("all-bounded path must not call /sign")
         )
@@ -1620,16 +1622,14 @@ class TestSignGuardedGroup:
         def bounded_component(req):
             assert len(req.targets) == 1
             assert len(req.contextual_positions) == 1
-            return BoundedComponentResponse(
+            return ComponentResponse(
                 request_id="base-id",
-                transactions=planned_hex,
-                components=[BoundedBaseComponent(
-                    target_index=0,
-                    bounded_account=bounded,
-                    base_signatures=["base-sig"],
-                    assembly_receipt="receipt",
-                    signature_scheme="aplane.falcon1024.v1",
-                )],
+                components=[{
+                    "target_index": 0, "kind": COMPONENT_TARGET_KIND_BOUNDED_BASE,
+                    "auth_address": bounded, "base_signatures": ["base-sig"],
+                    "assembly_receipt": "receipt",
+                    "signature_scheme": "aplane.falcon1024.v1",
+                }],
             )
 
         def signed_txn_hex(signed_txn):
@@ -1639,7 +1639,7 @@ class TestSignGuardedGroup:
             )
             return base64.b64decode(encoded).hex()
 
-        user.request_bounded_component = MagicMock(side_effect=bounded_component)
+        user.request_components = MagicMock(side_effect=bounded_component)
         user.plan_requests = MagicMock(side_effect=lambda requests: (
             captured.update(primary=requests[1]) or {
                 "transactions": planned_hex,
@@ -1654,7 +1654,7 @@ class TestSignGuardedGroup:
         user.sign_requests = MagicMock(return_value=GroupSignResponse(
             signed=["", signed_txn_hex(native_txn)]
         ))
-        user.request_bounded_assemble = MagicMock(return_value=BoundedAssemblyResponse(
+        user.request_assemble = MagicMock(return_value=AssemblyResponse(
             request_id="assembly-id",
             signed_group=[signed_txn_hex(bounded_txn), signed_txn_hex(native_txn)],
         ))

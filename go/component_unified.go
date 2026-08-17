@@ -211,11 +211,3 @@ func (r ComponentSignRequest) ComponentRequest() ComponentRequest {
 	}
 	return ComponentRequest{RequestID: r.RequestID, GroupBytesHex: r.GroupBytesHex, Targets: targets, ContextualPositions: context}
 }
-
-func (r BoundedComponentRequest) ComponentRequest() ComponentRequest {
-	targets := make([]ComponentTarget, 0, len(r.Targets))
-	for _, target := range r.Targets {
-		targets = append(targets, ComponentTarget{TargetIndex: target.TargetIndex, Kind: ComponentTargetKindBoundedBase, AuthAddress: target.AuthAddress, LsigArgs: target.LsigArgs})
-	}
-	return ComponentRequest{RequestID: r.RequestID, GroupBytesHex: r.GroupBytesHex, Targets: targets, ContextualPositions: r.ContextualPositions, DummyPositions: r.DummyPositions}
-}

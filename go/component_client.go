@@ -12,33 +12,6 @@ import (
 	"sync"
 )
 
-// RequestBoundedComponent sends a bounded base-component request to the user
-// signer.
-func (c *SignerClient) RequestBoundedComponent(req BoundedComponentRequest) (*BoundedComponentResponse, error) {
-	return c.RequestBoundedComponentWithContext(context.Background(), req)
-}
-
-// RequestBoundedComponentWithContext sends a bounded base-component request
-// to the user signer. This endpoint can wait on operator approval.
-func (c *SignerClient) RequestBoundedComponentWithContext(ctx context.Context, reqBody BoundedComponentRequest) (*BoundedComponentResponse, error) {
-	if err := reqBody.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid bounded component request: %w", err)
-	}
-	response, err := c.RequestComponentsWithContext(ctx, reqBody.ComponentRequest())
-	if err != nil {
-		return nil, err
-	}
-	result := &BoundedComponentResponse{RequestID: response.RequestID, Transactions: append([]string(nil), reqBody.GroupBytesHex...)}
-	for _, component := range response.Components {
-		result.Components = append(result.Components, BoundedBaseComponent{
-			TargetIndex: component.TargetIndex, BoundedAccount: component.AuthAddress,
-			BaseSignatures: component.BaseSignatures, RuntimeArgs: component.RuntimeArgs,
-			AssemblyReceipt: component.AssemblyReceipt, SignatureScheme: component.SignatureScheme,
-		})
-	}
-	return result, nil
-}
-
 func (c *SignerClient) RequestComponents(req ComponentRequest) (*ComponentResponse, error) {
 	return c.RequestComponentsWithContext(context.Background(), req)
 }
@@ -132,20 +105,4 @@ func (c *SignerClient) RequestComponentsWithContext(ctx context.Context, reqBody
 		return nil, fmt.Errorf("component response request_id does not match request")
 	}
 	return &result, nil
-}
-
-// RequestBoundedAssemble sends a source-bound bounded assembly request to the
-// user signer.
-func (c *SignerClient) RequestBoundedAssemble(req BoundedAssemblyRequest) (*BoundedAssemblyResponse, error) {
-	return c.RequestBoundedAssembleWithContext(context.Background(), req)
-}
-
-// RequestBoundedAssembleWithContext sends a source-bound bounded assembly
-// request to the user signer.
-func (c *SignerClient) RequestBoundedAssembleWithContext(ctx context.Context, reqBody BoundedAssemblyRequest) (*BoundedAssemblyResponse, error) {
-	result, err := c.RequestAssembleWithContext(ctx, reqBody.AssemblyRequest())
-	if err != nil {
-		return nil, err
-	}
-	return &BoundedAssemblyResponse{RequestID: result.RequestID, SignedGroup: result.SignedGroup}, nil
 }

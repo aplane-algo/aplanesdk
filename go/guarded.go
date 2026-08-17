@@ -89,8 +89,8 @@ type GuardedSignResult struct {
 	SentryComponentResponses []*ComponentSignResponse
 	PrimarySignResponse      *GroupSignResponse
 	AssemblyResponse         *GuardedAssemblyResponse
-	BoundedComponentResponse *BoundedComponentResponse
-	BoundedAssemblyResponse  *BoundedAssemblyResponse
+	BoundedComponentResponse *ComponentResponse
+	BoundedAssemblyResponse  *AssemblyResponse
 }
 
 // PreparedGuardedGroupOptions configures SignPreparedGuardedGroup.

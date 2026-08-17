@@ -51,15 +51,11 @@ import type {
   ComponentRequest,
   ComponentResponse,
   AssemblyRequest,
+  AssemblyTarget,
   AssemblyResponse,
   GuardedAssemblyRequest,
   GuardedAssemblyResponse,
   GuardedPassthroughItem,
-  BoundedComponentRequest,
-  BoundedComponentResponse,
-  BoundedAssemblyRequest,
-  BoundedAssemblyResponse,
-  BoundedAssemblyTarget,
   SentryReferenceCandidate,
   AdminSyncSentryReferencesRequest,
   AdminSyncSentryReferencesResponse,
@@ -874,7 +870,7 @@ export async function signPreparedBoundedSentryGroup(
     if (!item.authAddress) {
       throw new SignerError(`prepared transaction ${index}: primary auth address is required`);
     }
-    // This slot is declared foreign to /sign/bounded-component, so the signer
+    // This slot is contextual to /sign/component, so the signer
     // cannot infer its authorization envelope from the key. A native-PQ key
     // publishes no LogicSig profile, so without an explicit pq_scheme the
     // signer budgets it as an Ed25519 slot and freezes an under-funded
@@ -905,11 +901,12 @@ export async function signPreparedBoundedSentryGroup(
     planResponse.mutations,
   );
   const targetIndices = new Set(targets.map((target) => target.targetIndex));
-  const componentResponse = await options.userClient.requestBoundedComponent(
+  const componentResponse = await options.userClient.requestComponents(
     {
       group_bytes_hex: frozenGroup,
       targets: requests.flatMap((request, index) => targetIndices.has(index) ? [{
         target_index: index,
+        kind: "bounded-base",
         auth_address: request.auth_address || "",
         lsig_args: request.lsig_args,
       }] : []),
@@ -929,16 +926,13 @@ export async function signPreparedBoundedSentryGroup(
       `signer returned ${frozenGroup.length} bounded group positions, want at least ${prepared.length}`,
     );
   }
-  if (componentResponse.transactions.length !== frozenGroup.length ||
-      componentResponse.transactions.some((txn, index) => txn !== frozenGroup[index])) {
-    throw new SignerError("bounded component response changed the frozen group");
-  }
   validateBoundedTargetFees(planned, targetMaxFees);
   const targetsByIndex = new Map(targets.map((target) => [target.targetIndex, target]));
   const components = new Map<number, (typeof componentResponse.components)[number]>();
   for (const component of componentResponse.components) {
     const target = targetsByIndex.get(component.target_index);
-    if (!target || component.bounded_account !== target.guardedAccount) {
+    if (!target || component.kind !== "bounded-base" ||
+        component.auth_address !== target.guardedAccount) {
       throw new SignerError(`signer returned unexpected bounded component target ${component.target_index}`);
     }
     if (components.has(component.target_index)) {
@@ -1002,7 +996,7 @@ export async function signPreparedBoundedSentryGroup(
     ...primary.passthrough,
     ...signGuardedDummies(planned.slice(prepared.length), prepared.length),
   ];
-  const assemblyTargets: BoundedAssemblyTarget[] = targets.map((target) => {
+  const assemblyTargets: AssemblyTarget[] = targets.map((target) => {
     const component = components.get(target.targetIndex);
     const sentry = sentrySignatures.get(target.targetIndex);
     if (!component) {
@@ -1013,16 +1007,17 @@ export async function signPreparedBoundedSentryGroup(
     }
     return {
       target_index: target.targetIndex,
-      bounded_account: component.bounded_account,
-      base_signatures: [...component.base_signatures],
-      runtime_args: component.runtime_args ? { ...component.runtime_args } : undefined,
-      assembly_receipt: component.assembly_receipt,
+      kind: "bounded-sentry",
+      auth_address: component.auth_address || "",
+      base_signatures: [...(component.base_signatures || [])],
+      bounded_runtime_args: component.runtime_args ? { ...component.runtime_args } : undefined,
+      assembly_receipt: component.assembly_receipt || "",
       base_source_request_id: componentResponse.request_id,
       sentry_signature: sentry.signature,
       sentry_source_request_id: sentry.requestId,
     };
   });
-  const assemblyResponse = await options.userClient.requestBoundedAssemble({
+  const assemblyResponse = await options.userClient.requestAssemble({
     request_id: options.assemblyRequestId,
     group_bytes_hex: [...frozenGroup],
     targets: assemblyTargets,
@@ -1392,21 +1387,6 @@ function componentSignToUnified(request: ComponentSignRequest): ComponentRequest
   };
 }
 
-function boundedComponentToUnified(request: BoundedComponentRequest): ComponentRequest {
-  return {
-    request_id: request.request_id,
-    group_bytes_hex: request.group_bytes_hex,
-    targets: request.targets.map((target) => ({
-      target_index: target.target_index,
-      kind: "bounded-base",
-      auth_address: target.auth_address,
-      lsig_args: target.lsig_args,
-    })),
-    contextual_positions: request.contextual_positions,
-    dummy_positions: request.dummy_positions,
-  };
-}
-
 function validateComponentRequest(request: ComponentRequest): void {
   const targets = request.targets || [];
   if (targets.length === 0) throw new SignerError("targets are required");
@@ -1435,15 +1415,44 @@ function validateComponentRequest(request: ComponentRequest): void {
       throw new SignerError(`target ${index + 1}: unsupported component kind`);
     }
   });
-  validateBoundedComponentRequest({
-    request_id: request.request_id,
-    group_bytes_hex: request.group_bytes_hex,
-    targets: targets.map((target) => ({
-      target_index: target.target_index,
-      auth_address: target.auth_address || "target",
-    })),
-    contextual_positions: request.contextual_positions,
-    dummy_positions: request.dummy_positions,
+  validateSignRequestId(request.request_id || "");
+  validateComponentGroupBytes(request.group_bytes_hex || []);
+  const contextual = request.contextual_positions || [];
+  const dummies = request.dummy_positions || [];
+  if (dummies.length > request.group_bytes_hex.length) {
+    throw new SignerError("dummy_positions cannot exceed group length");
+  }
+  const originalCount = request.group_bytes_hex.length - dummies.length;
+  const covered = new Set<number>();
+  [...targets, ...contextual].forEach((position, index) => {
+    if (!Number.isInteger(position.target_index) || position.target_index < 0 ||
+        position.target_index >= originalCount || covered.has(position.target_index)) {
+      throw new SignerError(`position ${index + 1} has invalid, duplicate, or overlapping target_index`);
+    }
+    covered.add(position.target_index);
+  });
+  contextual.forEach((position, index) => {
+    if (position.lsig_resources && position.pq_scheme) {
+      throw new SignerError(`contextual position ${index + 1} cannot specify both lsig_resources and pq_scheme`);
+    }
+    if (position.lsig_resources) {
+      validateLogicSigResources({
+        programBytes: position.lsig_resources.program_bytes,
+        argumentBytes: position.lsig_resources.argument_bytes,
+        maxOpcodeCost: position.lsig_resources.max_opcode_cost,
+      }, `contextual position ${index + 1}`);
+    }
+    if (position.pq_scheme && position.pq_scheme !== PQ_SCHEME_FALCON1024) {
+      throw new SignerError(`contextual position ${index + 1} has unsupported pq_scheme`);
+    }
+  });
+  for (let index = 0; index < originalCount; index++) {
+    if (!covered.has(index)) throw new SignerError(`original group position ${index} is not covered`);
+  }
+  dummies.forEach((dummy, offset) => {
+    if (dummy.target_index !== originalCount + offset) {
+      throw new SignerError(`dummy position ${offset + 1} is not in the contiguous suffix`);
+    }
   });
 }
 
@@ -1673,25 +1682,6 @@ function guardedAssemblyToUnified(request: GuardedAssemblyRequest): AssemblyRequ
   };
 }
 
-function boundedAssemblyToUnified(request: BoundedAssemblyRequest): AssemblyRequest {
-  return {
-    request_id: request.request_id,
-    group_bytes_hex: request.group_bytes_hex,
-    targets: request.targets.map((target) => ({
-      target_index: target.target_index,
-      kind: "bounded-sentry",
-      auth_address: target.bounded_account,
-      base_signatures: target.base_signatures,
-      bounded_runtime_args: target.runtime_args,
-      assembly_receipt: target.assembly_receipt,
-      base_source_request_id: target.base_source_request_id,
-      sentry_signature: target.sentry_signature,
-      sentry_source_request_id: target.sentry_source_request_id,
-    })),
-    passthrough: request.passthrough,
-  };
-}
-
 function validateAssemblyRequest(request: AssemblyRequest): void {
   validateSignRequestId(request.request_id || "");
   validateComponentGroupBytes(request.group_bytes_hex);
@@ -1755,59 +1745,6 @@ function validateGuardedAssemblyResponse(response: GuardedAssemblyResponse): voi
   response.signed_group.forEach((signed, index) => {
     if (!signed) {
       throw new SignerError(`signed_group ${index} is empty`);
-    }
-  });
-}
-
-function validateBoundedComponentRequest(request: BoundedComponentRequest): void {
-  validateSignRequestId(request.request_id || "");
-  validateComponentGroupBytes(request.group_bytes_hex || []);
-  const targets = request.targets || [];
-  const contextual = request.contextual_positions || [];
-  const dummies = request.dummy_positions || [];
-  if (targets.length === 0 || dummies.length > request.group_bytes_hex.length) {
-    throw new SignerError("targets are required and dummy_positions cannot exceed group length");
-  }
-  const originalCount = request.group_bytes_hex.length - dummies.length;
-  const covered = new Set<number>();
-  targets.forEach((target, index) => {
-    if (!Number.isInteger(target.target_index) || target.target_index < 0 ||
-        target.target_index >= originalCount || covered.has(target.target_index)) {
-      throw new SignerError(`target ${index + 1} has invalid, duplicate, or overlapping target_index`);
-    }
-    covered.add(target.target_index);
-    if (!target.auth_address) {
-      throw new SignerError(`target ${index + 1}: auth_address is required`);
-    }
-  });
-  contextual.forEach((position, index) => {
-    if (!Number.isInteger(position.target_index) || position.target_index < 0 ||
-        position.target_index >= originalCount || covered.has(position.target_index)) {
-      throw new SignerError(`contextual position ${index + 1} has invalid, duplicate, or overlapping target_index`);
-    }
-    covered.add(position.target_index);
-    if (position.lsig_resources && position.pq_scheme) {
-      throw new SignerError(`contextual position ${index + 1} cannot specify both lsig_resources and pq_scheme`);
-    }
-    if (position.lsig_resources) {
-      validateLogicSigResources({
-        programBytes: position.lsig_resources.program_bytes,
-        argumentBytes: position.lsig_resources.argument_bytes,
-        maxOpcodeCost: position.lsig_resources.max_opcode_cost,
-      }, `contextual position ${index + 1}`);
-    }
-    if (position.pq_scheme && position.pq_scheme !== PQ_SCHEME_FALCON1024) {
-      throw new SignerError(`contextual position ${index + 1} has unsupported pq_scheme`);
-    }
-  });
-  for (let index = 0; index < originalCount; index++) {
-    if (!covered.has(index)) {
-      throw new SignerError(`original group position ${index} is not covered`);
-    }
-  }
-  dummies.forEach((dummy, offset) => {
-    if (dummy.target_index !== originalCount + offset) {
-      throw new SignerError(`dummy position ${offset + 1} is not in the contiguous suffix`);
     }
   });
 }
@@ -2117,8 +2054,8 @@ export interface GuardedSignResult {
   sentryComponentResponses: ComponentSignResponse[];
   primarySignResponse?: GroupSignResponse;
   assemblyResponse: GuardedAssemblyResponse;
-  boundedComponentResponse?: BoundedComponentResponse;
-  boundedAssemblyResponse?: BoundedAssemblyResponse;
+  boundedComponentResponse?: ComponentResponse;
+  boundedAssemblyResponse?: AssemblyResponse;
 }
 
 export interface GuardedSimulationResult {
@@ -4151,51 +4088,6 @@ export class SignerClient {
     }
 
     return data;
-  }
-
-  /**
-   * Request approved bounded base components from the user signer.
-   */
-  async requestBoundedComponent(
-    request: BoundedComponentRequest,
-    options?: { signal?: AbortSignal },
-  ): Promise<BoundedComponentResponse> {
-    const requestId = request.request_id || newSignRequestId();
-    const requestBody: BoundedComponentRequest = {
-      ...request,
-      request_id: requestId,
-    };
-    try {
-      validateBoundedComponentRequest(requestBody);
-    } catch (error) {
-      throw new SignerError(
-        `invalid bounded component request: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-
-    const response = await this.requestComponents(boundedComponentToUnified(requestBody), options);
-    return {
-      request_id: response.request_id,
-      transactions: [...requestBody.group_bytes_hex],
-      components: response.components.map((component) => ({
-        target_index: component.target_index,
-        bounded_account: component.auth_address || "",
-        base_signatures: [...(component.base_signatures || [])],
-        runtime_args: component.runtime_args,
-        assembly_receipt: component.assembly_receipt || "",
-        signature_scheme: component.signature_scheme,
-      })),
-    };
-  }
-
-  /**
-   * Send source-bound bounded-sentry material to the user signer.
-   */
-  async requestBoundedAssemble(
-    request: BoundedAssemblyRequest,
-    options?: { signal?: AbortSignal },
-  ): Promise<BoundedAssemblyResponse> {
-	return this.requestAssemble(boundedAssemblyToUnified(request), options);
   }
 
   /**

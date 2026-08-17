@@ -114,6 +114,16 @@ type ComponentTarget struct {
 	LsigArgs     map[string]string   `json:"lsig_args,omitempty"`
 }
 
+type ComponentContextPosition struct {
+	TargetIndex   int                    `json:"target_index"`
+	LsigResources *LogicSigResourceUsage `json:"lsig_resources,omitempty"`
+	PQScheme      string                 `json:"pq_scheme,omitempty"`
+}
+
+type ComponentDummyPosition struct {
+	TargetIndex int `json:"target_index"`
+}
+
 type Component struct {
 	TargetIndex     int                 `json:"target_index"`
 	Kind            ComponentTargetKind `json:"kind"`
