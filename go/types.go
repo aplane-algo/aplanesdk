@@ -105,12 +105,14 @@ type ComponentTarget struct {
 	AuthAddress  string              `json:"auth_address,omitempty"`
 	ComponentKey string              `json:"component_key,omitempty"`
 	LsigArgs     map[string]string   `json:"lsig_args,omitempty"`
+	AppCallInfo  *AppCallInfo        `json:"app_call_info,omitempty"`
 }
 
 type ComponentContextPosition struct {
 	TargetIndex   int                    `json:"target_index"`
 	LsigResources *LogicSigResourceUsage `json:"lsig_resources,omitempty"`
 	PQScheme      string                 `json:"pq_scheme,omitempty"`
+	AppCallInfo   *AppCallInfo           `json:"app_call_info,omitempty"`
 }
 
 type ComponentDummyPosition struct {

@@ -633,6 +633,7 @@ class GuardedSignTarget:
     sentry_component_key_type: str = ""
     sentry_component_key: str = ""
     runtime_args: Optional[List[str]] = None
+    app_call_info: Optional[Dict[str, str]] = None
 
 
 @dataclass
@@ -4758,8 +4759,10 @@ def _component_request_for_indices(
     kind: str,
     key: str,
     dummy_positions: Optional[List[int]] = None,
+    app_call_info: Optional[Dict[int, Optional[Dict[str, str]]]] = None,
 ) -> ComponentRequest:
     dummy_positions = list(dummy_positions or [])
+    app_call_info = dict(app_call_info or {})
     target_set = set(indices)
     targets = []
     for index in indices:
@@ -4768,12 +4771,14 @@ def _component_request_for_indices(
             target["auth_address"] = key
         else:
             target["component_key"] = key
+        if app_call_info.get(index):
+            target["app_call_info"] = app_call_info[index]
         targets.append(target)
     return ComponentRequest(
         group_bytes_hex=list(group_bytes_hex),
         targets=targets,
         contextual_positions=[
-            {"target_index": index}
+            {"target_index": index, "app_call_info": app_call_info.get(index)}
             for index in range(len(group_bytes_hex) - len(dummy_positions))
             if index not in target_set
         ] or None,
@@ -4902,6 +4907,7 @@ def _build_prepared_guarded_sign_inputs(
                     logic_sig_resources=resources,
                     sentry_public_key_hex=(key.parameters or {}).get("sentry_public_key", ""),
                     sentry_component_key_type=key.sentry_component_key_type,
+                    app_call_info=item.app_call_info,
                 )
             )
             continue
@@ -5473,6 +5479,7 @@ def sign_prepared_bounded_sentry_group(
                     "sentry_public_key_hex": _bounded_sentry_public_key(key),
                     "sentry_component_key_type": _bounded_sentry_component_key_type(key),
                     "logic_sig_resources": resources,
+                    "app_call_info": item.app_call_info,
                 }
             )
             continue
@@ -5487,6 +5494,8 @@ def sign_prepared_bounded_sentry_group(
             raise ValueError(f"prepared transaction {index}: primary auth address is required")
         txn_hex, _ = encode_transaction(item.transaction)
         request = {"txn_bytes_hex": txn_hex}
+        if item.app_call_info:
+            request["app_call_info"] = item.app_call_info
         if resources:
             request["lsig_resources"] = _wire_lsig_resources(resources)
         # This slot is contextual to /sign/component, so the
@@ -5537,12 +5546,14 @@ def sign_prepared_bounded_sentry_group(
                     "kind": COMPONENT_TARGET_KIND_BOUNDED_BASE,
                     "auth_address": request["auth_address"],
                     "lsig_args": request.get("lsig_args"),
+                    "app_call_info": request.get("app_call_info"),
                 }
             )
         else:
             position = {
                 "target_index": index,
                 "lsig_resources": request.get("lsig_resources"),
+                "app_call_info": request.get("app_call_info"),
             }
             if request.get("pq_scheme"):
                 position["pq_scheme"] = request["pq_scheme"]
@@ -5603,6 +5614,10 @@ def sign_prepared_bounded_sentry_group(
                 COMPONENT_TARGET_KIND_SENTRY,
                 group["component_key"],
                 list(range(len(prepared), len(frozen_group))),
+                {
+                    index: request.get("app_call_info")
+                    for index, request in enumerate(requests_data)
+                },
             )
         )
         sentry_component_responses.append(response)
@@ -5724,6 +5739,9 @@ def sign_guarded_group(
     if not targets:
         raise ValueError("at least one guarded target is required")
     targets.sort(key=lambda item: item["target_index"])
+    app_call_info = {
+        target["target_index"]: target.get("app_call_info") for target in targets
+    }
 
     guarded_by_index: Dict[int, Dict[str, Any]] = {}
     user_groups: Dict[str, List[int]] = {}
@@ -5754,6 +5772,7 @@ def sign_guarded_group(
                 COMPONENT_TARGET_KIND_USER,
                 guarded_account,
                 dummy_positions,
+                app_call_info,
             )
         )
         user_component_responses.append(response)
@@ -5783,6 +5802,7 @@ def sign_guarded_group(
                 COMPONENT_TARGET_KIND_SENTRY,
                 group["component_key"],
                 dummy_positions,
+                app_call_info,
             )
         )
         sentry_component_responses.append(response)

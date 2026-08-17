@@ -56,6 +56,7 @@ type GuardedSignTarget struct {
 	SentryComponentKey     string
 	RuntimeArgs            []string
 	LogicSigResources      *LogicSigResourceUsage
+	AppCallInfo            *AppCallInfo
 }
 
 // GuardedPrimarySignTarget describes one non-guarded group position that the
@@ -139,6 +140,7 @@ func SignGuardedGroupWithContext(ctx context.Context, opts GuardedSignOptions) (
 	})
 
 	guardedByIndex := make(map[int]GuardedSignTarget, len(targets))
+	appCallInfoByIndex := make(map[int]*AppCallInfo, len(targets))
 	userGroups := make(map[string][]int)
 	for i := range targets {
 		target := &targets[i]
@@ -158,11 +160,12 @@ func SignGuardedGroupWithContext(ctx context.Context, opts GuardedSignOptions) (
 			return nil, fmt.Errorf("guarded target %d has invalid LogicSig resources: %w", target.TargetIndex, err)
 		}
 		guardedByIndex[target.TargetIndex] = *target
+		appCallInfoByIndex[target.TargetIndex] = target.AppCallInfo
 		userGroups[target.GuardedAccount] = append(userGroups[target.GuardedAccount], target.TargetIndex)
 	}
 
 	result := &GuardedSignResult{}
-	userSignatures, err := requestUserComponentSignatures(ctx, opts.UserClient, opts.GroupBytesHex, opts.DummyPositions, userGroups, result)
+	userSignatures, err := requestUserComponentSignatures(ctx, opts.UserClient, opts.GroupBytesHex, opts.DummyPositions, userGroups, appCallInfoByIndex, result)
 	if err != nil {
 		return nil, err
 	}
@@ -415,6 +418,7 @@ func buildPreparedGuardedSignOptions(ctx context.Context, opts PreparedGuardedGr
 				SentryPublicKeyHex:     guardedSentryPublicKey(key),
 				SentryComponentKeyType: key.SentryComponentKeyType,
 				LogicSigResources:      resources,
+				AppCallInfo:            item.AppCallInfo,
 			})
 			continue
 		}
@@ -580,7 +584,7 @@ func validateGuardedDummies(dummies []types.Transaction) error {
 	return nil
 }
 
-func requestUserComponentSignatures(ctx context.Context, client *SignerClient, groupBytesHex []string, dummyPositions []int, userGroups map[string][]int, result *GuardedSignResult) (map[int]guardedComponentSignature, error) {
+func requestUserComponentSignatures(ctx context.Context, client *SignerClient, groupBytesHex []string, dummyPositions []int, userGroups map[string][]int, appCallInfo map[int]*AppCallInfo, result *GuardedSignResult) (map[int]guardedComponentSignature, error) {
 	accounts := make([]string, 0, len(userGroups))
 	for account := range userGroups {
 		accounts = append(accounts, account)
@@ -591,7 +595,7 @@ func requestUserComponentSignatures(ctx context.Context, client *SignerClient, g
 	for _, account := range accounts {
 		indices := append([]int(nil), userGroups[account]...)
 		sort.Ints(indices)
-		resp, err := client.RequestComponentsWithContext(ctx, componentRequestForIndices(groupBytesHex, indices, dummyPositions, ComponentTargetKindUser, account))
+		resp, err := client.RequestComponentsWithContext(ctx, componentRequestForIndices(groupBytesHex, indices, dummyPositions, ComponentTargetKindUser, account, appCallInfo))
 		if err != nil {
 			return nil, err
 		}
@@ -608,7 +612,9 @@ func requestUserComponentSignatures(ctx context.Context, client *SignerClient, g
 
 func requestSentryComponentSignatures(ctx context.Context, opts GuardedSignOptions, targets []GuardedSignTarget, result *GuardedSignResult) (map[int]guardedComponentSignature, error) {
 	groups := make(map[sentrySignGroupKey][]int)
+	appCallInfo := make(map[int]*AppCallInfo, len(targets))
 	for _, target := range targets {
+		appCallInfo[target.TargetIndex] = target.AppCallInfo
 		client, componentKey, err := resolveGuardedSentry(ctx, opts, target)
 		if err != nil {
 			return nil, err
@@ -622,7 +628,7 @@ func requestSentryComponentSignatures(ctx context.Context, opts GuardedSignOptio
 	signatures := make(map[int]guardedComponentSignature)
 	for group, indices := range groups {
 		sort.Ints(indices)
-		resp, err := group.client.RequestComponentsWithContext(ctx, componentRequestForIndices(opts.GroupBytesHex, indices, opts.DummyPositions, ComponentTargetKindSentry, group.componentKey))
+		resp, err := group.client.RequestComponentsWithContext(ctx, componentRequestForIndices(opts.GroupBytesHex, indices, opts.DummyPositions, ComponentTargetKindSentry, group.componentKey, appCallInfo))
 		if err != nil {
 			return nil, err
 		}
@@ -637,7 +643,7 @@ func requestSentryComponentSignatures(ctx context.Context, opts GuardedSignOptio
 	return signatures, nil
 }
 
-func componentRequestForIndices(groupBytesHex []string, indices, dummyPositions []int, kind ComponentTargetKind, key string) ComponentRequest {
+func componentRequestForIndices(groupBytesHex []string, indices, dummyPositions []int, kind ComponentTargetKind, key string, appCallInfo map[int]*AppCallInfo) ComponentRequest {
 	targetSet := make(map[int]bool, len(indices))
 	request := ComponentRequest{GroupBytesHex: groupBytesHex}
 	for _, index := range indices {
@@ -648,11 +654,12 @@ func componentRequestForIndices(groupBytesHex []string, indices, dummyPositions 
 		} else {
 			target.ComponentKey = key
 		}
+		target.AppCallInfo = appCallInfo[index]
 		request.Targets = append(request.Targets, target)
 	}
 	for index := 0; index < len(groupBytesHex)-len(dummyPositions); index++ {
 		if !targetSet[index] {
-			request.ContextualPositions = append(request.ContextualPositions, ComponentContextPosition{TargetIndex: index})
+			request.ContextualPositions = append(request.ContextualPositions, ComponentContextPosition{TargetIndex: index, AppCallInfo: appCallInfo[index]})
 		}
 	}
 	for _, index := range dummyPositions {

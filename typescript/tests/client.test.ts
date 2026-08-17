@@ -1730,6 +1730,7 @@ describe("SignerClient", () => {
 
       (user as any).requestComponents = async (request: any) => {
         assert.equal(request.targets[0].auth_address, guarded);
+        assert.deepEqual(request.targets[0].app_call_info, { mode: "raw" });
         assert.equal(request.group_bytes_hex.length, 4);
         assert.deepEqual(request.targets.map((target: any) => target.target_index), [0]);
         assert.deepEqual(request.contextual_positions, []);
@@ -1745,6 +1746,7 @@ describe("SignerClient", () => {
       };
       (sentry as any).requestComponents = async (request: any) => {
         assert.equal(request.targets[0].component_key, "SENTRY_COMPONENT");
+        assert.deepEqual(request.targets[0].app_call_info, { mode: "raw" });
         assert.equal(request.group_bytes_hex.length, 4);
         assert.deepEqual(request.targets.map((target: any) => target.target_index), [0]);
         assert.deepEqual(request.contextual_positions, []);
@@ -1830,6 +1832,7 @@ describe("SignerClient", () => {
             {
               transaction: txn,
               authAddress: guarded,
+              appCallInfo: { mode: "raw" },
               signerKey: {
                 address: guarded,
                 publicKeyHex: "",

@@ -517,6 +517,9 @@ func TestSignPreparedGuardedGroupUsesSignerPlan(t *testing.T) {
 			if len(req.Contextual) != 0 || len(req.Dummies) != 3 || req.Dummies[0].TargetIndex != 1 || req.Dummies[2].TargetIndex != 3 {
 				t.Fatalf("user component partition = context %+v dummies %+v", req.Contextual, req.Dummies)
 			}
+			if info := req.TargetAppInfo[0]; info == nil || info.Mode != "raw" {
+				t.Fatalf("user component app-call info = %#v, want raw", info)
+			}
 			json.NewEncoder(w).Encode(ComponentResponse{
 				RequestID: req.RequestID,
 				Components: []Component{{Kind: ComponentTargetKindUser,
@@ -602,6 +605,9 @@ func TestSignPreparedGuardedGroupUsesSignerPlan(t *testing.T) {
 		if len(req.Contextual) != 0 || len(req.Dummies) != 3 || req.Dummies[0].TargetIndex != 1 || req.Dummies[2].TargetIndex != 3 {
 			t.Fatalf("sentry component partition = context %+v dummies %+v", req.Contextual, req.Dummies)
 		}
+		if info := req.TargetAppInfo[0]; info == nil || info.Mode != "raw" {
+			t.Fatalf("sentry component app-call info = %#v, want raw", info)
+		}
 		json.NewEncoder(w).Encode(ComponentResponse{
 			RequestID: req.RequestID,
 			Components: []Component{{Kind: ComponentTargetKindSentry,
@@ -634,6 +640,7 @@ func TestSignPreparedGuardedGroupUsesSignerPlan(t *testing.T) {
 		PreparedGroup: NewPreparedGroup(PreparedTransaction{
 			Transaction: &txn,
 			AuthAddress: guarded,
+			AppCallInfo: &AppCallInfo{Mode: "raw"},
 			SignerKey: &KeyInfo{
 				Address:                guarded,
 				KeyType:                KeyTypeGuardedFalcon1024Sentry1024,

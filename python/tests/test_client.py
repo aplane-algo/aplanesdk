@@ -1248,6 +1248,7 @@ class TestSignGuardedGroup:
                 PreparedTransaction(
                     transaction=txn,
                     auth_address=guarded,
+                    app_call_info={"mode": "raw"},
                     signer_key=KeyInfo(
                         address=guarded,
                         key_type=KEY_TYPE_GUARDED_FALCON1024_SENTRY1024,
@@ -1268,6 +1269,7 @@ class TestSignGuardedGroup:
             request = client.request_components.call_args.args[0]
             assert request.contextual_positions is None
             assert request.dummy_positions == [{"target_index": 1}]
+            assert request.targets[0]["app_call_info"] == {"mode": "raw"}
         user.plan_requests.assert_called_once()
         user_req = user.request_components.call_args.args[0]
         assert user_req.targets[0]["auth_address"] == guarded

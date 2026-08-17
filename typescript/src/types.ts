@@ -480,6 +480,7 @@ export interface ComponentTarget {
   auth_address?: string;
   component_key?: string;
   lsig_args?: Record<string, string>;
+  app_call_info?: AppCallInfo;
 }
 
 export interface Component {
@@ -549,6 +550,7 @@ export interface ComponentContextPosition {
   target_index: number;
   lsig_resources?: SignRequest["lsig_resources"];
   pq_scheme?: string;
+  app_call_info?: AppCallInfo;
 }
 
 /** One signer-added canonical dummy position in the frozen suffix. */

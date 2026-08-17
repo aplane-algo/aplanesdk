@@ -22,6 +22,7 @@ type capturedComponentRequest struct {
 	ComponentKey  string
 	GroupBytesHex []string
 	TargetIndices []int
+	TargetAppInfo map[int]*AppCallInfo
 	Contextual    []ComponentContextPosition
 	Dummies       []ComponentDummyPosition
 }
@@ -33,8 +34,10 @@ func (r *capturedComponentRequest) UnmarshalJSON(data []byte) error {
 	}
 	r.RequestID, r.GroupBytesHex = unified.RequestID, unified.GroupBytesHex
 	r.Contextual, r.Dummies = unified.ContextualPositions, unified.DummyPositions
+	r.TargetAppInfo = make(map[int]*AppCallInfo, len(unified.Targets))
 	for _, target := range unified.Targets {
 		r.TargetIndices = append(r.TargetIndices, target.TargetIndex)
+		r.TargetAppInfo[target.TargetIndex] = target.AppCallInfo
 		if target.Kind == ComponentTargetKindUser {
 			r.Role, r.ComponentKey = capturedComponentRoleUser, target.AuthAddress
 		} else {

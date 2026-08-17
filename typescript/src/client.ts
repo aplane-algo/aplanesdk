@@ -59,6 +59,7 @@ import type {
   BoundedAuthorizationInfo,
   LogicSigResourceUsage,
   LogicSigResourceProfile,
+  AppCallInfo,
 } from "./types.js";
 import {
   ErrorCodes,
@@ -170,6 +171,7 @@ function componentRequestForIndices(
   kind: "user" | "sentry",
   key: string,
   dummyPositions: number[] = [],
+  appCallInfo: Map<number, AppCallInfo | undefined> = new Map(),
 ): ComponentRequest {
   const targetSet = new Set(indices);
   return {
@@ -178,13 +180,15 @@ function componentRequestForIndices(
       target_index: targetIndex,
       kind,
       auth_address: key,
+      app_call_info: appCallInfo.get(targetIndex),
     } : {
       target_index: targetIndex,
       kind,
       component_key: key,
+      app_call_info: appCallInfo.get(targetIndex),
     }),
     contextual_positions: groupBytesHex.slice(0, groupBytesHex.length - dummyPositions.length).flatMap((_, index) =>
-      targetSet.has(index) ? [] : [{ target_index: index }]),
+      targetSet.has(index) ? [] : [{ target_index: index, app_call_info: appCallInfo.get(index) }]),
     dummy_positions: dummyPositions.length > 0
       ? dummyPositions.map((target_index) => ({ target_index }))
       : undefined,
@@ -464,6 +468,7 @@ async function buildPreparedGuardedSignOptions(
         sentryPublicKeyHex: key.parameters?.sentry_public_key || "",
         sentryComponentKeyType: key.sentryComponentKeyType || "",
         logicSigResources: resources,
+        appCallInfo: item.appCallInfo,
       });
       continue;
     }
@@ -878,6 +883,7 @@ export async function signPreparedBoundedSentryGroup(
         sentryPublicKeyHex: boundedSentryPublicKey(key),
         sentryComponentKeyType: boundedSentryComponentKeyType(key),
         logicSigResources: requiredResources,
+        appCallInfo: item.appCallInfo,
       });
       continue;
     }
@@ -937,11 +943,13 @@ export async function signPreparedBoundedSentryGroup(
         kind: "bounded-base",
         auth_address: request.auth_address || "",
         lsig_args: request.lsig_args,
+        app_call_info: request.app_call_info,
       }] : []),
       contextual_positions: requests.flatMap((request, index) => targetIndices.has(index) ? [] : [{
         target_index: index,
         lsig_resources: request.lsig_resources,
         pq_scheme: request.pq_scheme,
+        app_call_info: request.app_call_info,
       }]),
       dummy_positions: frozenGroup.slice(prepared.length).map((_, offset) => ({
         target_index: prepared.length + offset,
@@ -1189,6 +1197,7 @@ export async function signGuardedGroup(options: GuardedSignOptions): Promise<Gua
   validateComponentGroupBytes(options.groupBytesHex);
 
   const targets = [...options.guardedTargets].sort((a, b) => a.targetIndex - b.targetIndex);
+  const appCallInfo = new Map(targets.map((target) => [target.targetIndex, target.appCallInfo]));
   const guardedIndices = new Set<number>();
   const userGroups = new Map<string, number[]>();
   for (const target of targets) {
@@ -1218,6 +1227,7 @@ export async function signGuardedGroup(options: GuardedSignOptions): Promise<Gua
         "user",
         guardedAccount,
         options.dummyPositions,
+        appCallInfo,
       ),
       { signal: options.signal },
     );
@@ -1254,6 +1264,7 @@ export async function signGuardedGroup(options: GuardedSignOptions): Promise<Gua
         "sentry",
         group.componentKey,
         options.dummyPositions,
+        appCallInfo,
       ),
       { signal: options.signal },
     );
@@ -1935,6 +1946,7 @@ export interface GuardedSignTarget {
   sentryComponentKey?: string;
   runtimeArgs?: string[];
   logicSigResources: LogicSigResourceUsage;
+  appCallInfo?: AppCallInfo;
 }
 
 export interface GuardedPrimarySignTarget {

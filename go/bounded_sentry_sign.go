@@ -89,6 +89,7 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 				SentryPublicKeyHex:     boundedSentryPublicKey(key),
 				SentryComponentKeyType: boundedSentryComponentKeyType(key),
 				LogicSigResources:      resources,
+				AppCallInfo:            item.AppCallInfo,
 			})
 		case SigningFlowSentry1:
 			return nil, fmt.Errorf("cannot mix sentry1 and bounded-sentry1 targets in one group")
@@ -151,9 +152,9 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 	}
 	for i, request := range requests {
 		if targetSet[i] {
-			componentReq.Targets = append(componentReq.Targets, ComponentTarget{TargetIndex: i, Kind: ComponentTargetKindBoundedBase, AuthAddress: request.AuthAddress, LsigArgs: request.LsigArgs})
+			componentReq.Targets = append(componentReq.Targets, ComponentTarget{TargetIndex: i, Kind: ComponentTargetKindBoundedBase, AuthAddress: request.AuthAddress, LsigArgs: request.LsigArgs, AppCallInfo: request.AppCallInfo})
 		} else {
-			componentReq.ContextualPositions = append(componentReq.ContextualPositions, ComponentContextPosition{TargetIndex: i, LsigResources: request.LsigResources, PQScheme: request.PQScheme})
+			componentReq.ContextualPositions = append(componentReq.ContextualPositions, ComponentContextPosition{TargetIndex: i, LsigResources: request.LsigResources, PQScheme: request.PQScheme, AppCallInfo: request.AppCallInfo})
 		}
 	}
 	for i := len(prepared); i < len(planResp.Transactions); i++ {
