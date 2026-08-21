@@ -61,11 +61,11 @@ Install a specific published version:
 python -m pip install 'aplanesdk==<version>'
 ```
 
-Install AlgoKit Utils in the same environment when using the optional AlgoKit
-adapter:
+Install the current AlgoKit Utils Python v5 beta in the same environment when
+using the optional AlgoKit adapter. The adapter is tested against 5.0.0b5:
 
 ```bash
-python -m pip install 'algokit-utils>=5.0.0b1'
+python -m pip install --pre 'algokit-utils==5.0.0b5'
 ```
 
 Verify that the package imports and reports the installed version:
@@ -464,8 +464,8 @@ Use `plan_group()` when you need:
 
 ### AlgoKit Utils Adapter
 
-The Python SDK also exposes an optional AlgoKit Utils 4 (utils-py v5) adapter
-for AlgoKit transaction signing.
+The Python SDK exposes an optional adapter for AlgoKit Utils Python v5 beta
+transaction signing. It is tested against 5.0.0b5.
 
 The minimal repository example is `python/examples/algokit_self_send.py`. From
 a checkout, run it as a module so Python imports the local SDK source instead

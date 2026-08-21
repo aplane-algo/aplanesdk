@@ -28,6 +28,9 @@ jobs:
       - name: Install Python test dependencies
         run: python -m pip install -e python[dev]
 
+      - name: Install AlgoKit Utils adapter test dependency
+        run: python -m pip install --pre 'algokit-utils==5.0.0b5'
+
       - name: Install TypeScript dependencies
         working-directory: typescript
         run: npm ci

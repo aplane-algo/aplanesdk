@@ -93,6 +93,31 @@ def test_create_apsigner_account() -> None:
     assert callable(account.signer)
 
 
+def test_default_encoder_supports_current_algokit_utils_v5() -> None:
+    pytest.importorskip("algokit_transact.codec.transaction")
+    from algosdk import transaction
+    from aplanesdk.algokit import _default_encode_transaction
+
+    params = transaction.SuggestedParams(
+        fee=1_000,
+        first=1,
+        last=1_000,
+        gh=b"\x00" * 32,
+        flat_fee=True,
+    )
+    txn = transaction.PaymentTxn(
+        sender="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAY5HFKQ",
+        sp=params,
+        receiver="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAY5HFKQ",
+        amt=0,
+    )
+
+    encoded = _default_encode_transaction(txn)
+
+    assert isinstance(encoded, bytes)
+    assert encoded
+
+
 def test_cancel_sends_current_request_id_best_effort() -> None:
     client = MockSignerClient()
     account = ApsignerAccount(

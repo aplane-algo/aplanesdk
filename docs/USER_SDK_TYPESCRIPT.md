@@ -56,11 +56,12 @@ Install a specific published version:
 npm install aplanesdk@<version> algosdk
 ```
 
-Install AlgoKit Utils 4 in the same project when using the optional AlgoKit
-adapter example/client helpers:
+Install the current AlgoKit Utils TypeScript v10 beta in the same project when
+using the optional AlgoKit adapter example/client helpers. The adapter is
+tested against 10.0.0-beta.4:
 
 ```bash
-npm install "@algorandfoundation/algokit-utils@^10.0.0-beta.2"
+npm install "@algorandfoundation/algokit-utils@^10.0.0-beta.4"
 ```
 
 If your install omits optional dependencies or the runtime cannot resolve
@@ -482,8 +483,8 @@ slots are accepted by `planGroup()` only.
 
 ### AlgoKit Utils Adapter
 
-The TypeScript SDK also exposes an optional AlgoKit Utils 4 (utils-ts v10)
-adapter for AlgoKit transaction signing.
+The TypeScript SDK exposes an optional adapter for AlgoKit Utils TypeScript
+v10 beta transaction signing. It is tested against 10.0.0-beta.4.
 
 The minimal repository example is `typescript/examples/algokit_self_send.ts`.
 From a checkout with dependencies installed and the SDK built:
@@ -491,7 +492,7 @@ From a checkout with dependencies installed and the SDK built:
 ```bash
 cd ~/aplanesdk/typescript
 npm install
-npm install --no-save "@algorandfoundation/algokit-utils@^10.0.0-beta.2"
+npm install --no-save "@algorandfoundation/algokit-utils@^10.0.0-beta.4"
 npm run build
 export APCLIENT_DATA=~/aplane/apclient
 export APLANE_ADDRESS=SENDER_ADDRESS

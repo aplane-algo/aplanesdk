@@ -18,10 +18,11 @@ pip install aplanesdk
 
 The published package is `aplanesdk` on PyPI.
 
-For the AlgoKit adapter, install AlgoKit Utils in the same environment:
+For the optional AlgoKit adapter, install the current AlgoKit Utils Python v5
+beta in the same environment. The adapter is tested against 5.0.0b5:
 
 ```bash
-pip install 'algokit-utils>=5.0.0b1'
+pip install --pre 'algokit-utils==5.0.0b5'
 ```
 
 Or install from source:

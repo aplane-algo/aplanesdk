@@ -3,6 +3,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import algosdk from "algosdk";
 import {
   ApsignerAlgoKitAccount,
   createApsignerAccount,
@@ -135,6 +136,37 @@ describe("AlgoKit adapter", () => {
 
     assert.equal(account.addr.toString(), zeroAddress);
     assert.equal(typeof account.signer, "function");
+  });
+
+  it("uses the current AlgoKit Utils v10 encoder by default", async () => {
+    const client = {
+      async signRequests(requests: SignRequest[]): Promise<GroupSignResponse> {
+        assert.equal(requests.length, 1);
+        assert.ok(requests[0].txn_bytes_hex.length > 0);
+        return { signed: ["aabb"] };
+      },
+    };
+    const account = createApsignerAccount({
+      client: client as unknown as MockSignerClient,
+      address: zeroAddress,
+    });
+    const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+      sender: zeroAddress,
+      receiver: zeroAddress,
+      amount: 0,
+      suggestedParams: {
+        fee: 1_000,
+        firstValid: 1,
+        lastValid: 1_000,
+        genesisHash: new Uint8Array(32),
+        genesisID: "testnet-v1.0",
+        flatFee: true,
+      },
+    });
+
+    const signed = await account.signer([txn], [0]);
+
+    assert.deepEqual(signed, [new Uint8Array([0xaa, 0xbb])]);
   });
 
   it("rejects signer responses with too few signed transactions", async () => {

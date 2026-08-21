@@ -16,11 +16,11 @@ The native-Falcon SDK release line requires an APlane signer release after
 npm install aplanesdk algosdk
 ```
 
-For the AlgoKit adapter example/client helpers, install AlgoKit Utils 4 in the
-same project:
+For the optional AlgoKit adapter example/client helpers, install the current
+AlgoKit Utils TypeScript v10 beta. The adapter is tested against 10.0.0-beta.4:
 
 ```bash
-npm install "@algorandfoundation/algokit-utils@^10.0.0-beta.2"
+npm install "@algorandfoundation/algokit-utils@^10.0.0-beta.4"
 ```
 
 Or with yarn/pnpm:
@@ -298,9 +298,10 @@ const response = await client.signRequests(
 
 ### AlgoKit Utils Adapter
 
-For AlgoKit Utils 4 (utils-ts v10) transaction signing, use the adapter
-account. It connects AlgoKit clients to APlane's transaction signing functions
-and presents the `addr` + `signer(txnGroup, indexesToSign)` shape.
+For AlgoKit Utils TypeScript v10 beta transaction signing, use the adapter
+account. It is tested against 10.0.0-beta.4, connects AlgoKit clients to
+APlane's transaction signing functions, and presents the `addr` +
+`signer(txnGroup, indexesToSign)` shape.
 
 The minimal repository example is `examples/algokit_self_send.ts`. From a
 checkout with dependencies installed and the SDK built:
@@ -308,7 +309,7 @@ checkout with dependencies installed and the SDK built:
 ```bash
 cd ~/aplanesdk/typescript
 npm install
-npm install --no-save "@algorandfoundation/algokit-utils@^10.0.0-beta.2"
+npm install --no-save "@algorandfoundation/algokit-utils@^10.0.0-beta.4"
 npm run build
 export APCLIENT_DATA=~/aplane/apclient
 export APLANE_ADDRESS=SENDER_ADDRESS
