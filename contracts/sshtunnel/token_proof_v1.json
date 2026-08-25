@@ -1,15 +1,16 @@
 {
   "schema_version": 1,
   "protocol": "aplane-ssh-token-proof-v1",
+  "username": "aplane",
   "token": "contract-token",
   "host_key_hash": "ERERERERERERERERERERERERERERERERERERERERERE",
   "client_nonce": "IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI",
   "server_nonce": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
-  "transcript_hex": "0000001961706c616e652d7373682d746f6b656e2d70726f6f662d7631000000201111111111111111111111111111111111111111111111111111111111111111000000202222222222222222222222222222222222222222222222222222222222222222000000203333333333333333333333333333333333333333333333333333333333333333",
-  "server_proof": "D7H_A7Jm7F6cyiupIx0Pu95Col1rORvO4Kahrmsxmw0",
-  "client_proof": "i6IHp0E0QRgKAT_cuElB2fUpIoYnHtztcMeGDA5-6r0",
+  "transcript_hex": "0000001961706c616e652d7373682d746f6b656e2d70726f6f662d76310000000661706c616e65000000201111111111111111111111111111111111111111111111111111111111111111000000202222222222222222222222222222222222222222222222222222222222222222000000203333333333333333333333333333333333333333333333333333333333333333",
+  "server_proof": "18jFUMUdDyglxyHRcHW9c2eSdg6Ix1peum9-lH2xbTs",
+  "client_proof": "YzyQTcl_BlRBXSKu3z_jikKxHW_ut-CD08raGd9Xkjw",
   "client_nonce_question": "{\"version\":1,\"step\":\"client_nonce\"}",
   "client_nonce_answer": "{\"client_nonce\":\"IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI\"}",
-  "server_proof_question": "{\"version\":1,\"step\":\"server_proof\",\"server_nonce\":\"MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM\",\"proof\":\"D7H_A7Jm7F6cyiupIx0Pu95Col1rORvO4Kahrmsxmw0\"}",
-  "client_proof_answer": "{\"client_proof\":\"i6IHp0E0QRgKAT_cuElB2fUpIoYnHtztcMeGDA5-6r0\"}"
+  "server_proof_question": "{\"version\":1,\"step\":\"server_proof\",\"server_nonce\":\"MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM\",\"proof\":\"18jFUMUdDyglxyHRcHW9c2eSdg6Ix1peum9-lH2xbTs\"}",
+  "client_proof_answer": "{\"client_proof\":\"YzyQTcl_BlRBXSKu3z_jikKxHW_ut-CD08raGd9Xkjw\"}"
 }

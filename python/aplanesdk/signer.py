@@ -59,6 +59,7 @@ from algosdk.v2client import models
 
 import paramiko
 
+from ._ssh_tokenproof import PROVISIONING_USERNAME as SSH_TOKEN_PROVISIONING_USERNAME
 from ._ssh_tokenproof import USERNAME as SSH_TOKEN_PROOF_USERNAME
 from ._ssh_tokenproof import TokenProofClient
 
@@ -2747,7 +2748,7 @@ class SignerClient:
             keyset_revision=data.get("keyset_revision", 0),
             protocol_version=data.get("protocol_version"),
             build_version=data.get("build_version", ""),
-            approval_wait_seconds=data.get("approval_wait_seconds", 0),
+            approval_wait_seconds=data.get("approval_wait_seconds") or 0,
         )
         self._cache_approval_wait(status.approval_wait_seconds)
         return status
@@ -6009,14 +6010,11 @@ def request_token(
     else:
         client.set_missing_host_key_policy(_InteractiveHostKeyPolicy(known_hosts_path))
 
-    # Connect with special username for token provisioning
-    username = "request-token"
-
     try:
         client.connect(
             hostname=host,
             port=ssh_port,
-            username=username,
+            username=SSH_TOKEN_PROVISIONING_USERNAME,
             pkey=pkey,
             look_for_keys=False,
             allow_agent=False,

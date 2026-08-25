@@ -19,6 +19,7 @@ import (
 )
 
 const (
+	sshTokenProofVersion     = 1
 	sshTokenProofDomain      = "aplane-ssh-token-proof-v1"
 	sshTokenProofUsername    = "aplane"
 	sshTokenProofNonceSize   = 32
@@ -65,7 +66,7 @@ func (a *sshTokenProofClient) challenge(name, instruction string, questions []st
 	switch a.round {
 	case 0:
 		fields, err := parseTokenProofObject(questions[0], "version", "step")
-		if err != nil || jsonInt(fields["version"]) != 1 || jsonString(fields["step"]) != "client_nonce" {
+		if err != nil || jsonInt(fields["version"]) != sshTokenProofVersion || jsonString(fields["step"]) != "client_nonce" {
 			return nil, fmt.Errorf("unexpected token proof client-nonce question")
 		}
 		a.clientNonce = make([]byte, sshTokenProofNonceSize)
@@ -76,7 +77,7 @@ func (a *sshTokenProofClient) challenge(name, instruction string, questions []st
 		return []string{fmt.Sprintf(`{"client_nonce":"%s"}`, encodeTokenProofBytes(a.clientNonce))}, nil
 	case 1:
 		fields, err := parseTokenProofObject(questions[0], "version", "step", "server_nonce", "proof")
-		if err != nil || jsonInt(fields["version"]) != 1 || jsonString(fields["step"]) != "server_proof" {
+		if err != nil || jsonInt(fields["version"]) != sshTokenProofVersion || jsonString(fields["step"]) != "server_proof" {
 			return nil, fmt.Errorf("unexpected token proof server-proof question")
 		}
 		serverNonce, err := decodeTokenProofBytes(jsonString(fields["server_nonce"]), sshTokenProofNonceSize)
@@ -129,7 +130,13 @@ func encodeTokenProofTranscript(hostHash, clientNonce, serverNonce []byte) ([]by
 		return nil, fmt.Errorf("invalid SSH token proof transcript")
 	}
 	var out bytes.Buffer
-	for _, field := range [][]byte{[]byte(sshTokenProofDomain), hostHash, clientNonce, serverNonce} {
+	for _, field := range [][]byte{
+		[]byte(sshTokenProofDomain),
+		[]byte(sshTokenProofUsername),
+		hostHash,
+		clientNonce,
+		serverNonce,
+	} {
 		writeTokenProofField(&out, field)
 	}
 	return out.Bytes(), nil

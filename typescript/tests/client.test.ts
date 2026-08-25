@@ -217,11 +217,11 @@ describe("SignerClient", () => {
       });
 
       const client = new SignerClient("http://localhost:11270", "test-token");
-      const identity = await client.getStatus();
+      const status = await client.getStatus();
 
-      assert.equal(identity.state, "locked");
-      assert.equal(identity.signerLocked, true);
-      assert.equal(identity.readyForSigning, false);
+      assert.equal(status.state, "locked");
+      assert.equal(status.signerLocked, true);
+      assert.equal(status.readyForSigning, false);
     });
 
     it("throws AuthenticationError on 401", async () => {
@@ -3567,13 +3567,6 @@ describe("loadClientEndpointRegistry", () => {
 });
 
 describe("requestToken", () => {
-  it("rejects the removed identity option", async () => {
-    await assert.rejects(
-      requestToken("signer.example.com", "~/aplane/apclient/.ssh/id_ed25519", { identity: "other-identity" } as never),
-      { message: /option "identity" was removed/ },
-    );
-  });
-
   it("rejects missing known_hosts path locally", async () => {
     await assert.rejects(
       requestToken("signer.example.com", "~/aplane/apclient/.ssh/id_ed25519"),
@@ -3589,15 +3582,6 @@ describe("requestTokenToFile", () => {
         host: "signer.example.com",
       } as unknown as Parameters<typeof requestTokenToFile>[0]),
       { message: /option "host" was removed/ },
-    );
-  });
-
-  it("rejects the removed identity option at runtime", async () => {
-    await assert.rejects(
-      requestTokenToFile({
-        identity: "other-identity",
-      } as unknown as Parameters<typeof requestTokenToFile>[0]),
-      { message: /option "identity" was removed/ },
     );
   });
 

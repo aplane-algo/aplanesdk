@@ -14,7 +14,9 @@ import struct
 from typing import Any
 
 DOMAIN = "aplane-ssh-token-proof-v1"
+VERSION = 1
 USERNAME = "aplane"
+PROVISIONING_USERNAME = "request-token"
 NONCE_SIZE = 32
 MAX_MESSAGE_SIZE = 1024
 
@@ -38,6 +40,7 @@ def encode_transcript(
         _field(value)
         for value in (
             DOMAIN.encode(),
+            USERNAME.encode(),
             host_key_hash,
             client_nonce,
             server_nonce,
@@ -123,7 +126,7 @@ class TokenProofClient:
             message = parse_message(question, {"version", "step"})
             if (
                 type(message["version"]) is not int
-                or message["version"] != 1
+                or message["version"] != VERSION
                 or message["step"] != "client_nonce"
             ):
                 raise ValueError("unexpected token proof client-nonce question")
@@ -139,7 +142,7 @@ class TokenProofClient:
             message = parse_message(question, {"version", "step", "server_nonce", "proof"})
             if (
                 type(message["version"]) is not int
-                or message["version"] != 1
+                or message["version"] != VERSION
                 or message["step"] != "server_proof"
             ):
                 raise ValueError("unexpected token proof server-proof question")

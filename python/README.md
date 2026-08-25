@@ -124,7 +124,7 @@ client = SignerClient.connect_ssh(
 ```
 
 **Note**: SSH verifies the enrolled public key, then performs a programmatic
-mutual proof of the token bound to the accepted host key and fresh nonces. The
+mutual proof of the token bound to the fixed username, accepted host key, and fresh nonces. The
 SSH uses the fixed non-secret username `aplane`; the bearer token is never sent
 as SSH metadata. Keys are enrolled via the `request-token`
 operator-approved flow.
@@ -181,8 +181,8 @@ if client.health():
 Fetch authenticated signer status. This works while the signer is locked.
 
 ```python
-identity = client.get_status()
-print(identity.state, identity.keyset_revision)
+status = client.get_status()
+print(status.state, status.keyset_revision)
 ```
 
 `keyset_revision` is process-local and useful for deciding when to refresh

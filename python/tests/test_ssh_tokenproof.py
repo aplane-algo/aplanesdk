@@ -10,6 +10,9 @@ import paramiko
 
 from aplanesdk._ssh_tokenproof import (
     DOMAIN,
+    PROVISIONING_USERNAME,
+    USERNAME,
+    VERSION,
     TokenProofClient,
     compute_proof,
     decode_bytes,
@@ -31,6 +34,9 @@ def _vector():
 
 def test_token_proof_contract_vector():
     vector = _vector()
+    assert vector["schema_version"] == VERSION
+    assert vector["protocol"] == DOMAIN
+    assert vector["username"] == USERNAME
     decode = lambda value: decode_bytes(value, 32)
     transcript = encode_transcript(
         decode(vector["host_key_hash"]),
@@ -53,6 +59,10 @@ def test_token_proof_contract_vector():
     )
     assert answer == [vector["client_proof_answer"]]
     assert proof.server_verified
+
+
+def test_token_provisioning_uses_fixed_username():
+    assert PROVISIONING_USERNAME == "request-token"
 
 
 def test_token_proof_rejects_duplicate_and_padded_fields():
