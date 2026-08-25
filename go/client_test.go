@@ -395,7 +395,6 @@ func TestGetStatus_Success(t *testing.T) {
 			t.Fatalf("Authorization = %q, want aplane test-token", got)
 		}
 		json.NewEncoder(w).Encode(StatusResponse{
-			IdentityID:          "default",
 			State:               "unlocked",
 			ReadyForSigning:     true,
 			KeyCount:            37,
@@ -405,25 +404,21 @@ func TestGetStatus_Success(t *testing.T) {
 	})
 	defer server.Close()
 
-	identity, err := client.GetStatus()
+	status, err := client.GetStatus()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if identity.IdentityID != "default" {
-		t.Fatalf("IdentityID = %q, want default", identity.IdentityID)
+	if status.KeysetRevision != 4 {
+		t.Fatalf("KeysetRevision = %d, want 4", status.KeysetRevision)
 	}
-	if identity.KeysetRevision != 4 {
-		t.Fatalf("KeysetRevision = %d, want 4", identity.KeysetRevision)
-	}
-	if identity.ApprovalWaitSeconds != 60 {
-		t.Fatalf("ApprovalWaitSeconds = %d, want 60", identity.ApprovalWaitSeconds)
+	if status.ApprovalWaitSeconds != 60 {
+		t.Fatalf("ApprovalWaitSeconds = %d, want 60", status.ApprovalWaitSeconds)
 	}
 }
 
 func TestGetStatus_LockedStateIsSuccess(t *testing.T) {
 	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(StatusResponse{
-			IdentityID:      "default",
 			State:           "locked",
 			SignerLocked:    true,
 			ReadyForSigning: false,
@@ -479,7 +474,6 @@ func TestSignRequestsDiscoversApprovalWaitBeforeSigning(t *testing.T) {
 		switch r.URL.Path {
 		case "/status":
 			json.NewEncoder(w).Encode(StatusResponse{
-				IdentityID:          "default",
 				State:               "unlocked",
 				ApprovalWaitSeconds: 60,
 			})

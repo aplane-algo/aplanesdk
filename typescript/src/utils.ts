@@ -302,7 +302,7 @@ export async function requestToken(
   }
 
   const privateKey = fs.readFileSync(expandedKeyPath, "utf-8");
-  const username = "request-token:default";
+  const username = "request-token";
 
   return new Promise((resolve, reject) => {
     const client = new Client();

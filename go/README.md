@@ -102,7 +102,7 @@ defer client.Close()
 
 **Note**: SSH verifies the enrolled public key, then performs a programmatic
 mutual proof of the token bound to the accepted host key and fresh nonces. The
-SSH uses the fixed product username `default`; the bearer token is never sent
+SSH uses the fixed non-secret username `aplane`; the bearer token is never sent
 as SSH metadata.
 
 ### Environment-Based Connection

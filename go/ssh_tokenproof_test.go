@@ -13,7 +13,6 @@ import (
 
 type tokenProofVector struct {
 	Token               string `json:"token"`
-	IdentityID          string `json:"identity_id"`
 	HostKeyHash         string `json:"host_key_hash"`
 	ClientNonce         string `json:"client_nonce"`
 	ServerNonce         string `json:"server_nonce"`
@@ -40,7 +39,7 @@ func TestSSHTokenProofContractVector(t *testing.T) {
 		}
 		return decoded
 	}
-	transcript, err := encodeTokenProofTranscript(vector.IdentityID, decode(vector.HostKeyHash), decode(vector.ClientNonce), decode(vector.ServerNonce))
+	transcript, err := encodeTokenProofTranscript(decode(vector.HostKeyHash), decode(vector.ClientNonce), decode(vector.ServerNonce))
 	if err != nil {
 		t.Fatal(err)
 	}

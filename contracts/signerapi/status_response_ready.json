@@ -1,5 +1,4 @@
 {
-  "identity_id": "default",
   "node_role": "signer",
   "protocol_version": {
     "major": 2,

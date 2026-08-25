@@ -95,7 +95,6 @@ function queueStatusResponse(
     status: 200,
     ok: true,
     json: async () => ({
-      identity_id: "default",
       state: "unlocked",
       signer_locked: false,
       ready_for_signing: true,
@@ -186,7 +185,6 @@ describe("SignerClient", () => {
         status: 200,
         ok: true,
         json: async () => ({
-          identity_id: "default",
           state: "unlocked",
           signer_locked: false,
           ready_for_signing: true,
@@ -197,11 +195,10 @@ describe("SignerClient", () => {
       });
 
       const client = new SignerClient("http://localhost:11270", "test-token");
-      const identity = await client.getStatus();
+      const status = await client.getStatus();
 
-      assert.equal(identity.identityId, "default");
-      assert.equal(identity.keysetRevision, 4);
-      assert.equal(identity.approvalWaitSeconds, 60);
+      assert.equal(status.keysetRevision, 4);
+      assert.equal(status.approvalWaitSeconds, 60);
       assert.equal(mockFetch.mock.calls[0][0], "http://localhost:11270/status");
       assert.equal(mockFetch.mock.calls[0][1].method, "GET");
     });
@@ -211,7 +208,6 @@ describe("SignerClient", () => {
         status: 200,
         ok: true,
         json: async () => ({
-          identity_id: "default",
           state: "locked",
           signer_locked: true,
           ready_for_signing: false,
@@ -3051,7 +3047,6 @@ describe("SignerClient", () => {
             status: 200,
             ok: true,
             json: async () => ({
-              identity_id: "default",
               state: "unlocked",
               signer_locked: false,
               ready_for_signing: true,

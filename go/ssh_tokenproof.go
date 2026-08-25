@@ -20,7 +20,7 @@ import (
 
 const (
 	sshTokenProofDomain      = "aplane-ssh-token-proof-v1"
-	sshTokenProofIdentity    = "default"
+	sshTokenProofUsername    = "aplane"
 	sshTokenProofNonceSize   = 32
 	sshTokenProofMessageSize = 1024
 )
@@ -87,7 +87,7 @@ func (a *sshTokenProofClient) challenge(name, instruction string, questions []st
 		if err != nil {
 			return nil, fmt.Errorf("invalid SSH server token proof: %w", err)
 		}
-		transcript, err := encodeTokenProofTranscript(sshTokenProofIdentity, a.hostHash, a.clientNonce, serverNonce)
+		transcript, err := encodeTokenProofTranscript(a.hostHash, a.clientNonce, serverNonce)
 		if err != nil {
 			return nil, err
 		}
@@ -124,12 +124,12 @@ func (a *sshTokenProofClient) clear() {
 	a.token = ""
 }
 
-func encodeTokenProofTranscript(identity string, hostHash, clientNonce, serverNonce []byte) ([]byte, error) {
-	if identity == "" || len(identity) > 128 || len(hostHash) != sha256.Size || len(clientNonce) != sshTokenProofNonceSize || len(serverNonce) != sshTokenProofNonceSize {
+func encodeTokenProofTranscript(hostHash, clientNonce, serverNonce []byte) ([]byte, error) {
+	if len(hostHash) != sha256.Size || len(clientNonce) != sshTokenProofNonceSize || len(serverNonce) != sshTokenProofNonceSize {
 		return nil, fmt.Errorf("invalid SSH token proof transcript")
 	}
 	var out bytes.Buffer
-	for _, field := range [][]byte{[]byte(sshTokenProofDomain), []byte(identity), hostHash, clientNonce, serverNonce} {
+	for _, field := range [][]byte{[]byte(sshTokenProofDomain), hostHash, clientNonce, serverNonce} {
 		writeTokenProofField(&out, field)
 	}
 	return out.Bytes(), nil

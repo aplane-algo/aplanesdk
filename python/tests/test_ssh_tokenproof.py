@@ -33,7 +33,6 @@ def test_token_proof_contract_vector():
     vector = _vector()
     decode = lambda value: decode_bytes(value, 32)
     transcript = encode_transcript(
-        vector["identity_id"],
         decode(vector["host_key_hash"]),
         decode(vector["client_nonce"]),
         decode(vector["server_nonce"]),

@@ -288,7 +288,6 @@ class TestGetStatus:
     def test_returns_signer_status(self):
         client = make_client()
         resp = mock_response(200, {
-            "identity_id": "default",
             "state": "unlocked",
             "signer_locked": False,
             "ready_for_signing": True,
@@ -298,18 +297,16 @@ class TestGetStatus:
         })
 
         with patch.object(client.session, "get", return_value=resp) as mock_get:
-            identity = client.get_status()
+            status = client.get_status()
 
-        assert identity.identity_id == "default"
-        assert identity.keyset_revision == 4
-        assert identity.approval_wait_seconds == 60
+        assert status.keyset_revision == 4
+        assert status.approval_wait_seconds == 60
         assert mock_get.call_args.args[0] == "http://localhost:11270/status"
         assert mock_get.call_args.kwargs["timeout"] == 5
 
     def test_locked_state_is_success(self):
         client = make_client()
         resp = mock_response(200, {
-            "identity_id": "default",
             "state": "locked",
             "signer_locked": True,
             "ready_for_signing": False,
@@ -435,7 +432,6 @@ class TestListKeys:
 class TestAuthResolution:
     def _status(self, revision=1):
         return mock_response(200, {
-            "identity_id": "default",
             "state": "unlocked",
             "signer_locked": False,
             "ready_for_signing": True,
@@ -2556,7 +2552,6 @@ def test_package_root_exports_native_falcon_scheme():
 class TestPrepHelpers:
     def _status(self):
         return mock_response(200, {
-            "identity_id": "default",
             "state": "unlocked",
             "signer_locked": False,
             "ready_for_signing": True,

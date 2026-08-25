@@ -86,7 +86,7 @@ import {
   hexToBytes,
 } from "./encoding.js";
 import { preparedGroupToSignRequests, preparedTransactionToSignRequest } from "./prepared.js";
-import { SSH_TOKEN_PROOF_IDENTITY, SSHTokenProofClient } from "./ssh-tokenproof.js";
+import { SSH_TOKEN_PROOF_USERNAME, SSHTokenProofClient } from "./ssh-tokenproof.js";
 import {
   loadConfig,
   loadClientEndpointRegistry,
@@ -1848,14 +1848,14 @@ class SSHTunnel {
       this.sshClient.connect({
         host: options.host,
         port: options.sshPort,
-        username: SSH_TOKEN_PROOF_IDENTITY,
+        username: SSH_TOKEN_PROOF_USERNAME,
         privateKey: privateKey,
         authHandler: (methodsLeft, partialSuccess, next) => {
           if (authStage === 0 && (methodsLeft === null || methodsLeft === undefined)) {
             authStage = 1;
             next({
               type: "publickey",
-              username: SSH_TOKEN_PROOF_IDENTITY,
+              username: SSH_TOKEN_PROOF_USERNAME,
               key: privateKey,
             });
             return;
@@ -1868,7 +1868,7 @@ class SSHTunnel {
             authStage = 2;
             next({
               type: "keyboard-interactive",
-              username: SSH_TOKEN_PROOF_IDENTITY,
+              username: SSH_TOKEN_PROOF_USERNAME,
               prompt: (name, instructions, _lang, prompts, finish) => {
                 try {
                   finish(proof.challenge(name, instructions, prompts));
@@ -2806,8 +2806,7 @@ export class SignerClient {
 
     const data = (await response.json()) as Record<string, unknown>;
     const rawProtocolVersion = data.protocol_version as Record<string, unknown> | undefined;
-    const identity: StatusResponse = {
-      identityId: String(data.identity_id || ""),
+    const status: StatusResponse = {
       nodeRole: typeof data.node_role === "string" ? data.node_role : undefined,
       protocolVersion:
         rawProtocolVersion && typeof rawProtocolVersion === "object"
@@ -2825,8 +2824,8 @@ export class SignerClient {
       approvalWaitSeconds:
         typeof data.approval_wait_seconds === "number" ? data.approval_wait_seconds : undefined,
     };
-    this.cacheApprovalWait(identity.approvalWaitSeconds);
-    return identity;
+    this.cacheApprovalWait(status.approvalWaitSeconds);
+    return status;
   }
 
   private cacheApprovalWait(seconds?: number): void {

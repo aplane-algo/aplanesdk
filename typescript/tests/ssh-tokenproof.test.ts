@@ -25,7 +25,6 @@ const vector = JSON.parse(
 test("SSH token proof matches the contract vector", () => {
   const decode = (value: string) => decodeTokenProofBytes(value, 32);
   const transcript = encodeTokenProofTranscript(
-    vector.identity_id,
     decode(vector.host_key_hash),
     decode(vector.client_nonce),
     decode(vector.server_nonce)

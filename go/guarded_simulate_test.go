@@ -30,7 +30,6 @@ func TestRequestComponentsUserKindDiscoversApprovalWait(t *testing.T) {
 		switch r.URL.Path {
 		case "/status":
 			json.NewEncoder(w).Encode(StatusResponse{
-				IdentityID:          "default",
 				State:               "unlocked",
 				ApprovalWaitSeconds: 60,
 			})

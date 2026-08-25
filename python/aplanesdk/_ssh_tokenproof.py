@@ -14,7 +14,7 @@ import struct
 from typing import Any
 
 DOMAIN = "aplane-ssh-token-proof-v1"
-IDENTITY = "default"
+USERNAME = "aplane"
 NONCE_SIZE = 32
 MAX_MESSAGE_SIZE = 1024
 
@@ -24,15 +24,12 @@ def _field(value: bytes) -> bytes:
 
 
 def encode_transcript(
-    identity: str,
     host_key_hash: bytes,
     client_nonce: bytes,
     server_nonce: bytes,
 ) -> bytes:
     if (
-        not identity
-        or len(identity.encode()) > 128
-        or len(host_key_hash) != 32
+        len(host_key_hash) != 32
         or len(client_nonce) != NONCE_SIZE
         or len(server_nonce) != NONCE_SIZE
     ):
@@ -41,7 +38,6 @@ def encode_transcript(
         _field(value)
         for value in (
             DOMAIN.encode(),
-            identity.encode(),
             host_key_hash,
             client_nonce,
             server_nonce,
@@ -149,9 +145,7 @@ class TokenProofClient:
                 raise ValueError("unexpected token proof server-proof question")
             server_nonce = decode_bytes(message["server_nonce"], NONCE_SIZE)
             server_proof = decode_bytes(message["proof"], hashlib.sha256().digest_size)
-            transcript = encode_transcript(
-                IDENTITY, self._host_hash, self._client_nonce, server_nonce
-            )
+            transcript = encode_transcript(self._host_hash, self._client_nonce, server_nonce)
             expected = compute_proof(self._token, "server", transcript)
             if not hmac.compare_digest(expected, server_proof):
                 raise ValueError("SSH server token proof is invalid")

@@ -263,20 +263,19 @@ def test_list_key_types_maps_creation_and_runtime_metadata():
 
 def test_status_fixture_maps_metadata():
     data = fixture("status_response_ready.json")
-    identity = StatusResponse(**data)
+    status = StatusResponse(**data)
 
-    assert identity.identity_id == "default"
-    assert identity.node_role == "signer"
-    assert identity.protocol_version is not None
-    assert identity.protocol_version.major == 2
-    assert identity.protocol_version.minor == 0
-    assert identity.build_version.startswith("v0.30.0 ")
-    assert identity.state == "unlocked"
-    assert identity.signer_locked is False
-    assert identity.ready_for_signing is True
-    assert identity.key_count == 37
-    assert identity.keyset_revision == 4
-    assert identity.approval_wait_seconds == 60
+    assert status.node_role == "signer"
+    assert status.protocol_version is not None
+    assert status.protocol_version.major == 2
+    assert status.protocol_version.minor == 0
+    assert status.build_version.startswith("v0.30.0 ")
+    assert status.state == "unlocked"
+    assert status.signer_locked is False
+    assert status.ready_for_signing is True
+    assert status.key_count == 37
+    assert status.keyset_revision == 4
+    assert status.approval_wait_seconds == 60
 
 
 def test_cancel_response_fixture_maps_state():

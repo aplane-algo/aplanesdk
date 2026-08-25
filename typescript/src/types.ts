@@ -375,8 +375,6 @@ export interface ProtocolVersion {
  * Response from the /status endpoint.
  */
 export interface StatusResponse {
-  /** Authenticated identity ID resolved from the signer token */
-  identityId: string;
   /** Signer node role, such as "signer" or "sentry", when reported */
   nodeRole?: string;
   /** Signer protocol version, when reported */
@@ -385,9 +383,9 @@ export interface StatusResponse {
   buildVersion?: string;
   /** Current lock state: "locked", "unlocked", or "unknown" */
   state: string;
-  /** True when the signer identity is locked */
+  /** True when the signer is locked */
   signerLocked: boolean;
-  /** True when the identity can currently sign */
+  /** True when the signer can currently sign */
   readyForSigning: boolean;
   /** Number of currently loaded keys */
   keyCount: number;

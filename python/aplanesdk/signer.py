@@ -59,7 +59,7 @@ from algosdk.v2client import models
 
 import paramiko
 
-from ._ssh_tokenproof import IDENTITY as SSH_TOKEN_PROOF_IDENTITY
+from ._ssh_tokenproof import USERNAME as SSH_TOKEN_PROOF_USERNAME
 from ._ssh_tokenproof import TokenProofClient
 
 # -----------------------------------------------------------------------------
@@ -441,7 +441,6 @@ class ProtocolVersion:
 class StatusResponse:
     """Authenticated signer status from /status"""
 
-    identity_id: str
     state: str
     signer_locked: bool
     ready_for_signing: bool
@@ -2326,13 +2325,13 @@ class _SSHTunnel:
 
             proof = TokenProofClient(self._token)
             proof.capture_host_key(server_key.asbytes())
-            methods = transport.auth_publickey(SSH_TOKEN_PROOF_IDENTITY, pkey)
+            methods = transport.auth_publickey(SSH_TOKEN_PROOF_USERNAME, pkey)
             if transport.is_authenticated() or "keyboard-interactive" not in methods:
                 raise SignerError(
                     "SSH server did not require token proof after public-key authentication"
                 )
             _continue_keyboard_interactive_auth(
-                transport, SSH_TOKEN_PROOF_IDENTITY, proof.challenge
+                transport, SSH_TOKEN_PROOF_USERNAME, proof.challenge
             )
             if not transport.is_authenticated() or not proof.server_verified:
                 raise SignerError("SSH token proof authentication did not complete")
@@ -2739,8 +2738,7 @@ class SignerClient:
             )
 
         data = resp.json()
-        identity = StatusResponse(
-            identity_id=data.get("identity_id", ""),
+        status = StatusResponse(
             node_role=data.get("node_role", ""),
             state=data.get("state", ""),
             signer_locked=data.get("signer_locked", False),
@@ -2751,8 +2749,8 @@ class SignerClient:
             build_version=data.get("build_version", ""),
             approval_wait_seconds=data.get("approval_wait_seconds", 0),
         )
-        self._cache_approval_wait(identity.approval_wait_seconds)
-        return identity
+        self._cache_approval_wait(status.approval_wait_seconds)
+        return status
 
     def _cache_approval_wait(self, seconds: int) -> None:
         self._approval_wait_seconds = (
@@ -6012,7 +6010,7 @@ def request_token(
         client.set_missing_host_key_policy(_InteractiveHostKeyPolicy(known_hosts_path))
 
     # Connect with special username for token provisioning
-    username = "request-token:default"
+    username = "request-token"
 
     try:
         client.connect(

@@ -185,7 +185,7 @@ if err != nil {
 defer client.Close()
 ```
 
-The SSH username is the fixed product identity `default`. Authentication verifies the
+The SSH username is the fixed non-secret value `aplane`. Authentication verifies the
 enrolled public key first, then performs a programmatic mutual proof of the
 token bound to the accepted host key and fresh client/server nonces. The
 server proves token possession before the client returns its proof, and the

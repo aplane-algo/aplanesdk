@@ -180,7 +180,7 @@ console.log(`Saved token to ${tokenPath}`);
 - uses the same data-dir resolution as `SignerClient.fromEnv()`
 - selects the default signer or named endpoint from `endpoints.yaml`
 - uses that endpoint's SSH host, port, key, and `known_hosts` path
-- requests a token over SSH as `request-token:default`
+- requests a token over SSH as `request-token`
 - saves the token to that endpoint's `token_file`
 
 The provisioning helper has no identity selector and always targets the
@@ -245,7 +245,7 @@ try {
 }
 ```
 
-The SSH username is the fixed product identity `default`. Authentication verifies the
+The SSH username is the fixed non-secret value `aplane`. Authentication verifies the
 enrolled public key first, then performs a programmatic mutual proof of the
 token bound to the accepted host key and fresh client/server nonces. The
 server proves token possession before the client returns its proof, and the

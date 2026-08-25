@@ -342,9 +342,6 @@ func TestGoSDKContractStatusMetadata(t *testing.T) {
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		t.Fatalf("unmarshal status fixture: %v", err)
 	}
-	if resp.IdentityID != "default" {
-		t.Fatalf("IdentityID = %q, want default", resp.IdentityID)
-	}
 	if resp.NodeRole != "signer" {
 		t.Fatalf("NodeRole = %q, want signer", resp.NodeRole)
 	}
