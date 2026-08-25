@@ -345,13 +345,13 @@ func (c *SignerClient) GetStatusWithContext(ctx context.Context) (*StatusRespons
 		return nil, signerHTTPError(resp)
 	}
 
-	var identityResp StatusResponse
-	if err := json.NewDecoder(resp.Body).Decode(&identityResp); err != nil {
+	var statusResp StatusResponse
+	if err := json.NewDecoder(resp.Body).Decode(&statusResp); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
-	c.cacheApprovalWait(identityResp.ApprovalWaitSeconds)
+	c.cacheApprovalWait(statusResp.ApprovalWaitSeconds)
 
-	return &identityResp, nil
+	return &statusResp, nil
 }
 
 func (c *SignerClient) cacheApprovalWait(seconds int64) {

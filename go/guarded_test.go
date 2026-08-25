@@ -163,7 +163,6 @@ func TestSignGuardedGroupOneTarget(t *testing.T) {
 			})
 		case "/status":
 			json.NewEncoder(w).Encode(StatusResponse{
-				IdentityID:          "default",
 				State:               "unlocked",
 				ApprovalWaitSeconds: 60,
 			})
@@ -244,7 +243,6 @@ func TestSignGuardedGroupBatchesSharedSentryKey(t *testing.T) {
 			})
 		case "/status":
 			json.NewEncoder(w).Encode(StatusResponse{
-				IdentityID:          "default",
 				State:               "unlocked",
 				ApprovalWaitSeconds: 60,
 			})
@@ -322,7 +320,6 @@ func TestSignGuardedGroupRejectsMismatchedAssembly(t *testing.T) {
 					json.NewEncoder(w).Encode(AssemblyResponse{RequestID: req.RequestID, SignedGroup: badSignedGroup})
 				case "/status":
 					json.NewEncoder(w).Encode(StatusResponse{
-						IdentityID:          "default",
 						State:               "unlocked",
 						ApprovalWaitSeconds: 60,
 					})
@@ -365,7 +362,6 @@ func TestSignGuardedGroupMixedPrimaryAndGuarded(t *testing.T) {
 		switch r.URL.Path {
 		case "/status":
 			json.NewEncoder(w).Encode(StatusResponse{
-				IdentityID:          "default",
 				State:               "unlocked",
 				ReadyForSigning:     true,
 				KeysetRevision:      1,
@@ -590,7 +586,6 @@ func TestSignPreparedGuardedGroupUsesSignerPlan(t *testing.T) {
 			t.Fatalf("prepared all-guarded path must not call %s", r.URL.Path)
 		case "/status":
 			json.NewEncoder(w).Encode(StatusResponse{
-				IdentityID:          "default",
 				State:               "unlocked",
 				ApprovalWaitSeconds: 60,
 			})

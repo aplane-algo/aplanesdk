@@ -251,18 +251,17 @@ describe("signer API contract fixtures", () => {
     });
 
     const client = new SignerClient("http://localhost:11270", "test-token");
-    const identity = await client.getStatus();
+    const status = await client.getStatus();
 
-    assert.equal(identity.identityId, "default");
-    assert.equal(identity.nodeRole, "signer");
-    assert.deepEqual(identity.protocolVersion, { major: 2, minor: 0 });
-    assert.match(identity.buildVersion || "", /^v0\.30\.0 /);
-    assert.equal(identity.state, "unlocked");
-    assert.equal(identity.signerLocked, false);
-    assert.equal(identity.readyForSigning, true);
-    assert.equal(identity.keyCount, 37);
-    assert.equal(identity.keysetRevision, 4);
-    assert.equal(identity.approvalWaitSeconds, 60);
+    assert.equal(status.nodeRole, "signer");
+    assert.deepEqual(status.protocolVersion, { major: 2, minor: 0 });
+    assert.match(status.buildVersion || "", /^v0\.30\.0 /);
+    assert.equal(status.state, "unlocked");
+    assert.equal(status.signerLocked, false);
+    assert.equal(status.readyForSigning, true);
+    assert.equal(status.keyCount, 37);
+    assert.equal(status.keysetRevision, 4);
+    assert.equal(status.approvalWaitSeconds, 60);
   });
 
   it("maps /sign/cancel response state", () => {

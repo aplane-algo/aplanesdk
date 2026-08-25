@@ -95,7 +95,6 @@ function queueStatusResponse(
     status: 200,
     ok: true,
     json: async () => ({
-      identity_id: "default",
       state: "unlocked",
       signer_locked: false,
       ready_for_signing: true,
@@ -186,7 +185,6 @@ describe("SignerClient", () => {
         status: 200,
         ok: true,
         json: async () => ({
-          identity_id: "default",
           state: "unlocked",
           signer_locked: false,
           ready_for_signing: true,
@@ -197,11 +195,10 @@ describe("SignerClient", () => {
       });
 
       const client = new SignerClient("http://localhost:11270", "test-token");
-      const identity = await client.getStatus();
+      const status = await client.getStatus();
 
-      assert.equal(identity.identityId, "default");
-      assert.equal(identity.keysetRevision, 4);
-      assert.equal(identity.approvalWaitSeconds, 60);
+      assert.equal(status.keysetRevision, 4);
+      assert.equal(status.approvalWaitSeconds, 60);
       assert.equal(mockFetch.mock.calls[0][0], "http://localhost:11270/status");
       assert.equal(mockFetch.mock.calls[0][1].method, "GET");
     });
@@ -211,7 +208,6 @@ describe("SignerClient", () => {
         status: 200,
         ok: true,
         json: async () => ({
-          identity_id: "default",
           state: "locked",
           signer_locked: true,
           ready_for_signing: false,
@@ -221,11 +217,11 @@ describe("SignerClient", () => {
       });
 
       const client = new SignerClient("http://localhost:11270", "test-token");
-      const identity = await client.getStatus();
+      const status = await client.getStatus();
 
-      assert.equal(identity.state, "locked");
-      assert.equal(identity.signerLocked, true);
-      assert.equal(identity.readyForSigning, false);
+      assert.equal(status.state, "locked");
+      assert.equal(status.signerLocked, true);
+      assert.equal(status.readyForSigning, false);
     });
 
     it("throws AuthenticationError on 401", async () => {
@@ -3051,7 +3047,6 @@ describe("SignerClient", () => {
             status: 200,
             ok: true,
             json: async () => ({
-              identity_id: "default",
               state: "unlocked",
               signer_locked: false,
               ready_for_signing: true,
@@ -3572,13 +3567,6 @@ describe("loadClientEndpointRegistry", () => {
 });
 
 describe("requestToken", () => {
-  it("rejects the removed identity option", async () => {
-    await assert.rejects(
-      requestToken("signer.example.com", "~/aplane/apclient/.ssh/id_ed25519", { identity: "other-identity" } as never),
-      { message: /option "identity" was removed/ },
-    );
-  });
-
   it("rejects missing known_hosts path locally", async () => {
     await assert.rejects(
       requestToken("signer.example.com", "~/aplane/apclient/.ssh/id_ed25519"),
@@ -3594,15 +3582,6 @@ describe("requestTokenToFile", () => {
         host: "signer.example.com",
       } as unknown as Parameters<typeof requestTokenToFile>[0]),
       { message: /option "host" was removed/ },
-    );
-  });
-
-  it("rejects the removed identity option at runtime", async () => {
-    await assert.rejects(
-      requestTokenToFile({
-        identity: "other-identity",
-      } as unknown as Parameters<typeof requestTokenToFile>[0]),
-      { message: /option "identity" was removed/ },
     );
   });
 

@@ -35,7 +35,7 @@ func TestSignPreparedBoundedSentryGroupOneTarget(t *testing.T) {
 		switch r.URL.Path {
 		case "/status":
 			json.NewEncoder(w).Encode(StatusResponse{
-				IdentityID: "default", State: "unlocked", ApprovalWaitSeconds: 60,
+				State: "unlocked", ApprovalWaitSeconds: 60,
 			})
 		case "/plan":
 			var req GroupSignRequest
@@ -172,7 +172,7 @@ func TestSignPreparedBoundedSentryGroupDeclaresNativePQPrimary(t *testing.T) {
 		switch r.URL.Path {
 		case "/status":
 			json.NewEncoder(w).Encode(StatusResponse{
-				IdentityID: "default", State: "unlocked", ApprovalWaitSeconds: 60,
+				State: "unlocked", ApprovalWaitSeconds: 60,
 			})
 		case "/plan":
 			var req GroupSignRequest
@@ -647,7 +647,7 @@ func TestRequestBoundedPrimaryPassthroughVerifiesTransactionIdentity(t *testing.
 		switch r.URL.Path {
 		case "/status":
 			json.NewEncoder(w).Encode(StatusResponse{
-				IdentityID: "default", State: "unlocked", ApprovalWaitSeconds: 60,
+				State: "unlocked", ApprovalWaitSeconds: 60,
 			})
 		case "/sign":
 			json.NewEncoder(w).Encode(GroupSignResponse{

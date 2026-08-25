@@ -185,9 +185,9 @@ if err != nil {
 defer client.Close()
 ```
 
-The SSH username is the fixed product identity `default`. Authentication verifies the
+The SSH username is the fixed non-secret value `aplane`. Authentication verifies the
 enrolled public key first, then performs a programmatic mutual proof of the
-token bound to the accepted host key and fresh client/server nonces. The
+token bound to that username, the accepted host key, and fresh client/server nonces. The
 server proves token possession before the client returns its proof, and the
 bearer token is never sent as SSH metadata.
 
@@ -222,14 +222,14 @@ Use this when:
 healthy, err := client.Health()
 ```
 
-### Identity Status
+### Signer Status
 
 ```go
-identity, err := client.GetStatus()
+status, err := client.GetStatus()
 if err != nil {
 	return err
 }
-fmt.Println(identity.State, identity.KeysetRevision, identity.ApprovalWaitSeconds)
+fmt.Println(status.State, status.KeysetRevision, status.ApprovalWaitSeconds)
 ```
 
 `GetStatus(...)` calls authenticated `/status`. It does not require the

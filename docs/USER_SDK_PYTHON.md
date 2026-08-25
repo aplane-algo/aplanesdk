@@ -174,11 +174,11 @@ print(f"Saved token to {token_path}")
 - uses the same data-dir resolution as `SignerClient.from_env()`
 - selects the default signer or named endpoint from `endpoints.yaml`
 - uses that endpoint's SSH host, port, key, and `known_hosts` path
-- requests a token over SSH as `request-token:default`
+- requests a token over SSH as `request-token`
 - saves the token to that endpoint's `token_file` with mode `0600`
 
-The provisioning helper has no identity selector and always targets the
-product identity `default`. An operator must approve the request in `apadmin`.
+Token provisioning targets the signer's product store. An operator must
+approve the request in `apadmin`.
 
 Alternatively, you can obtain the token by running `apshell` and executing
 the `request-token` command; `apshell` writes the approved token to
@@ -236,9 +236,9 @@ This is useful when:
 - you manage the token out-of-band
 - your app needs to choose the signer target dynamically
 
-The SSH username is the fixed product identity `default`. Authentication verifies the
+The SSH username is the fixed non-secret value `aplane`. Authentication verifies the
 enrolled public key first, then performs a programmatic mutual proof of the
-token bound to the accepted host key and fresh client/server nonces. The
+token bound to that username, the accepted host key, and fresh client/server nonces. The
 server proves token possession before the client returns its proof, and the
 bearer token is never sent as SSH metadata.
 
@@ -279,11 +279,11 @@ if client.health():
 `health()` returns `True` on HTTP 200 and `False` on unreachable or unhealthy
 responses.
 
-### Identity Status
+### Signer Status
 
 ```python
-identity = client.get_status()
-print(identity.state, identity.keyset_revision, identity.approval_wait_seconds)
+status = client.get_status()
+print(status.state, status.keyset_revision, status.approval_wait_seconds)
 ```
 
 `get_status()` calls authenticated `/status`. It does not require unlock; a

@@ -57,7 +57,7 @@ func (t *sshTunnel) connect(host string, sshPort, signerPort, localPort int, tok
 	}
 
 	config := &ssh.ClientConfig{
-		User: sshTokenProofIdentity,
+		User: sshTokenProofUsername,
 		Auth: []ssh.AuthMethod{
 			ssh.PublicKeys(signer),
 			ssh.KeyboardInteractive(proof.challenge),

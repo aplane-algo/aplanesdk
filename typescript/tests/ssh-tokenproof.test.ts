@@ -9,6 +9,9 @@ import test from "node:test";
 
 import {
   SSH_TOKEN_PROOF_DOMAIN,
+  SSH_TOKEN_PROOF_USERNAME,
+  SSH_TOKEN_PROOF_VERSION,
+  SSH_TOKEN_PROVISIONING_USERNAME,
   SSHTokenProofClient,
   computeTokenProof,
   decodeTokenProofBytes,
@@ -18,14 +21,29 @@ import {
 } from "../src/ssh-tokenproof.js";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
+type TokenProofVector = {
+  schema_version: number;
+  protocol: string;
+  username: string;
+  token: string;
+  host_key_hash: string;
+  client_nonce: string;
+  server_nonce: string;
+  transcript_hex: string;
+  server_proof: string;
+  server_proof_question: string;
+  client_proof_answer: string;
+};
 const vector = JSON.parse(
   fs.readFileSync(path.resolve(dirname, "../../contracts/sshtunnel/token_proof_v1.json"), "utf8")
-) as Record<string, string>;
+) as TokenProofVector;
 
 test("SSH token proof matches the contract vector", () => {
+  assert.equal(vector.schema_version, SSH_TOKEN_PROOF_VERSION);
+  assert.equal(vector.protocol, SSH_TOKEN_PROOF_DOMAIN);
+  assert.equal(vector.username, SSH_TOKEN_PROOF_USERNAME);
   const decode = (value: string) => decodeTokenProofBytes(value, 32);
   const transcript = encodeTokenProofTranscript(
-    vector.identity_id,
     decode(vector.host_key_hash),
     decode(vector.client_nonce),
     decode(vector.server_nonce)
@@ -49,6 +67,10 @@ test("SSH token proof matches the contract vector", () => {
     [vector.client_proof_answer]
   );
   assert.equal(proof.serverVerified, true);
+});
+
+test("SSH token provisioning uses the fixed username", () => {
+  assert.equal(SSH_TOKEN_PROVISIONING_USERNAME, "request-token");
 });
 
 test("SSH token proof rejects duplicate fields and padded base64url", () => {

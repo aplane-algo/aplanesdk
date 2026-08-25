@@ -25,6 +25,7 @@ import {
   expandPath,
   DEFAULT_SSH_PORT,
 } from "./config.js";
+import { SSH_TOKEN_PROVISIONING_USERNAME } from "./ssh-tokenproof.js";
 
 // Re-export config utilities
 export {
@@ -284,12 +285,6 @@ export async function requestToken(
   } = {}
 ): Promise<string> {
   const sshPort = options.sshPort ?? DEFAULT_SSH_PORT;
-  const rawOptions = options as Record<string, unknown>;
-  if ("identity" in rawOptions) {
-    throw new SignerError(
-      'requestToken option "identity" was removed; token provisioning targets the product identity',
-    );
-  }
   if (!options.knownHostsPath) {
     throw new SignerError("known_hosts path is required for SSH host key verification");
   }
@@ -302,8 +297,6 @@ export async function requestToken(
   }
 
   const privateKey = fs.readFileSync(expandedKeyPath, "utf-8");
-  const username = "request-token:default";
-
   return new Promise((resolve, reject) => {
     const client = new Client();
     let hostKeyError = "";
@@ -351,7 +344,7 @@ export async function requestToken(
     client.connect({
       host,
       port: sshPort,
-      username,
+      username: SSH_TOKEN_PROVISIONING_USERNAME,
       privateKey,
       hostVerifier: (key: Buffer): boolean => {
         const storedKey = loadKnownHostKey(knownHostsPath, host, sshPort);

@@ -4,7 +4,9 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "crypto";
 
 export const SSH_TOKEN_PROOF_DOMAIN = "aplane-ssh-token-proof-v1";
-export const SSH_TOKEN_PROOF_IDENTITY = "default";
+export const SSH_TOKEN_PROOF_VERSION = 1;
+export const SSH_TOKEN_PROOF_USERNAME = "aplane";
+export const SSH_TOKEN_PROVISIONING_USERNAME = "request-token";
 const NONCE_SIZE = 32;
 const MAX_MESSAGE_SIZE = 1024;
 
@@ -15,14 +17,11 @@ function field(value: Buffer): Buffer {
 }
 
 export function encodeTokenProofTranscript(
-  identity: string,
   hostKeyHash: Buffer,
   clientNonce: Buffer,
   serverNonce: Buffer
 ): Buffer {
   if (
-    !identity ||
-    Buffer.byteLength(identity) > 128 ||
     hostKeyHash.length !== 32 ||
     clientNonce.length !== NONCE_SIZE ||
     serverNonce.length !== NONCE_SIZE
@@ -31,7 +30,7 @@ export function encodeTokenProofTranscript(
   }
   return Buffer.concat([
     field(Buffer.from(SSH_TOKEN_PROOF_DOMAIN)),
-    field(Buffer.from(identity)),
+    field(Buffer.from(SSH_TOKEN_PROOF_USERNAME)),
     field(hostKeyHash),
     field(clientNonce),
     field(serverNonce),
@@ -155,7 +154,7 @@ export class SSHTokenProofClient {
 
     if (this.round === 0) {
       const message = parseTokenProofMessage(prompts[0].prompt, ["version", "step"]);
-      if (message.version !== 1 || message.step !== "client_nonce") {
+      if (message.version !== SSH_TOKEN_PROOF_VERSION || message.step !== "client_nonce") {
         throw new Error("unexpected token proof client-nonce question");
       }
       this.clientNonce = randomBytes(NONCE_SIZE);
@@ -170,13 +169,12 @@ export class SSHTokenProofClient {
         "server_nonce",
         "proof",
       ]);
-      if (message.version !== 1 || message.step !== "server_proof") {
+      if (message.version !== SSH_TOKEN_PROOF_VERSION || message.step !== "server_proof") {
         throw new Error("unexpected token proof server-proof question");
       }
       const serverNonce = decodeTokenProofBytes(message.server_nonce, NONCE_SIZE);
       const serverProof = decodeTokenProofBytes(message.proof, 32);
       const transcript = encodeTokenProofTranscript(
-        SSH_TOKEN_PROOF_IDENTITY,
         this.hostHash,
         this.clientNonce,
         serverNonce

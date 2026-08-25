@@ -288,7 +288,6 @@ class TestGetStatus:
     def test_returns_signer_status(self):
         client = make_client()
         resp = mock_response(200, {
-            "identity_id": "default",
             "state": "unlocked",
             "signer_locked": False,
             "ready_for_signing": True,
@@ -298,18 +297,16 @@ class TestGetStatus:
         })
 
         with patch.object(client.session, "get", return_value=resp) as mock_get:
-            identity = client.get_status()
+            status = client.get_status()
 
-        assert identity.identity_id == "default"
-        assert identity.keyset_revision == 4
-        assert identity.approval_wait_seconds == 60
+        assert status.keyset_revision == 4
+        assert status.approval_wait_seconds == 60
         assert mock_get.call_args.args[0] == "http://localhost:11270/status"
         assert mock_get.call_args.kwargs["timeout"] == 5
 
     def test_locked_state_is_success(self):
         client = make_client()
         resp = mock_response(200, {
-            "identity_id": "default",
             "state": "locked",
             "signer_locked": True,
             "ready_for_signing": False,
@@ -318,11 +315,23 @@ class TestGetStatus:
         })
 
         with patch.object(client.session, "get", return_value=resp):
-            identity = client.get_status()
+            status = client.get_status()
 
-        assert identity.state == "locked"
-        assert identity.signer_locked is True
-        assert identity.ready_for_signing is False
+        assert status.state == "locked"
+        assert status.signer_locked is True
+        assert status.ready_for_signing is False
+
+    def test_null_approval_wait_defaults_to_zero(self):
+        client = make_client()
+        resp = mock_response(200, {
+            "state": "unlocked",
+            "approval_wait_seconds": None,
+        })
+
+        with patch.object(client.session, "get", return_value=resp):
+            status = client.get_status()
+
+        assert status.approval_wait_seconds == 0
 
     def test_auth_error(self):
         client = make_client()
@@ -435,7 +444,6 @@ class TestListKeys:
 class TestAuthResolution:
     def _status(self, revision=1):
         return mock_response(200, {
-            "identity_id": "default",
             "state": "unlocked",
             "signer_locked": False,
             "ready_for_signing": True,
@@ -2556,7 +2564,6 @@ def test_package_root_exports_native_falcon_scheme():
 class TestPrepHelpers:
     def _status(self):
         return mock_response(200, {
-            "identity_id": "default",
             "state": "unlocked",
             "signer_locked": False,
             "ready_for_signing": True,
@@ -3439,33 +3446,6 @@ class TestLoadClientEndpointRegistry:
 
 
 class TestRequestToken:
-    def test_identity_option_was_removed(self):
-        with pytest.raises(TypeError, match="unexpected keyword argument 'identity'"):
-            request_token(
-                host="signer.example.com",
-                ssh_key_path="/apclient/.ssh/id_ed25519",
-                known_hosts_path="/apclient/.ssh/known_hosts",
-                identity="other-identity",
-            )
-
-    def test_to_file_identity_option_was_removed(self):
-        with pytest.raises(TypeError, match="unexpected keyword argument 'identity'"):
-            request_token_to_file(identity="other-identity")
-
-    def test_stale_positional_identity_is_rejected(self):
-        with pytest.raises(TypeError, match="positional"):
-            request_token(
-                "signer.example.com",
-                "/apclient/.ssh/id_ed25519",
-                1127,
-                "default",
-                "/apclient/.ssh/known_hosts",
-            )
-
-    def test_to_file_stale_positional_identity_is_rejected(self):
-        with pytest.raises(TypeError, match="positional"):
-            request_token_to_file("/apclient", "primary", "default")
-
     def test_request_token_requires_explicit_known_hosts_path(self):
         with pytest.raises(TypeError, match="known_hosts_path"):
             request_token("signer.example.com", "/apclient/.ssh/id_ed25519")

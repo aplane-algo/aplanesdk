@@ -12,8 +12,10 @@ import (
 )
 
 type tokenProofVector struct {
+	SchemaVersion       int    `json:"schema_version"`
+	Protocol            string `json:"protocol"`
+	Username            string `json:"username"`
 	Token               string `json:"token"`
-	IdentityID          string `json:"identity_id"`
 	HostKeyHash         string `json:"host_key_hash"`
 	ClientNonce         string `json:"client_nonce"`
 	ServerNonce         string `json:"server_nonce"`
@@ -33,6 +35,9 @@ func TestSSHTokenProofContractVector(t *testing.T) {
 	if err := json.Unmarshal(data, &vector); err != nil {
 		t.Fatal(err)
 	}
+	if vector.SchemaVersion != sshTokenProofVersion || vector.Protocol != sshTokenProofDomain || vector.Username != sshTokenProofUsername {
+		t.Fatalf("unexpected token proof contract: %#v", vector)
+	}
 	decode := func(value string) []byte {
 		decoded, err := base64.RawURLEncoding.DecodeString(value)
 		if err != nil {
@@ -40,7 +45,7 @@ func TestSSHTokenProofContractVector(t *testing.T) {
 		}
 		return decoded
 	}
-	transcript, err := encodeTokenProofTranscript(vector.IdentityID, decode(vector.HostKeyHash), decode(vector.ClientNonce), decode(vector.ServerNonce))
+	transcript, err := encodeTokenProofTranscript(decode(vector.HostKeyHash), decode(vector.ClientNonce), decode(vector.ServerNonce))
 	if err != nil {
 		t.Fatal(err)
 	}
