@@ -360,6 +360,9 @@ func TestGoSDKContractStatusMetadata(t *testing.T) {
 	if resp.ApprovalWaitSeconds != 60 {
 		t.Fatalf("ApprovalWaitSeconds = %d, want 60", resp.ApprovalWaitSeconds)
 	}
+	if len(resp.Warnings) != 1 || !strings.Contains(resp.Warnings[0], "authenticated prune") {
+		t.Fatalf("Warnings = %q, want persistent archive warning", resp.Warnings)
+	}
 }
 
 func TestGoSDKContractKeyTypeMetadata(t *testing.T) {

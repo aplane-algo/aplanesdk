@@ -183,19 +183,21 @@ healthy, err := client.Health()
 #### `GetStatus() (*StatusResponse, error)`
 
 Fetch authenticated signer status. This endpoint works while the signer is
-locked and exposes `KeysetRevision` plus `ApprovalWaitSeconds`.
+locked and exposes `KeysetRevision`, `ApprovalWaitSeconds`, and persistent
+operator-facing `Warnings`.
 
 ```go
 status, err := client.GetStatus()
 if err != nil {
 	log.Fatal(err)
 }
-fmt.Println(status.State, status.KeysetRevision)
+fmt.Println(status.State, status.KeysetRevision, status.Warnings)
 ```
 
 `KeysetRevision` is process-local and useful for deciding when to refresh
 `/keys`; it is not a durable storage version. `ApprovalWaitSeconds` is used by
-the SDK to size `/sign` deadlines.
+the SDK to size `/sign` deadlines. Display non-empty `Warnings` to operators;
+they report persistent health conditions that require attention.
 
 #### `ListKeys(refresh bool) ([]KeyInfo, error)`
 

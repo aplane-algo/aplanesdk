@@ -294,6 +294,7 @@ class TestGetStatus:
             "key_count": 37,
             "keyset_revision": 4,
             "approval_wait_seconds": 60,
+            "warnings": ["authenticated prune is required", 7],
         })
 
         with patch.object(client.session, "get", return_value=resp) as mock_get:
@@ -301,6 +302,7 @@ class TestGetStatus:
 
         assert status.keyset_revision == 4
         assert status.approval_wait_seconds == 60
+        assert status.warnings == ["authenticated prune is required"]
         assert mock_get.call_args.args[0] == "http://localhost:11270/status"
         assert mock_get.call_args.kwargs["timeout"] == 5
 
@@ -332,6 +334,18 @@ class TestGetStatus:
             status = client.get_status()
 
         assert status.approval_wait_seconds == 0
+
+    def test_invalid_warnings_default_to_empty(self):
+        client = make_client()
+        resp = mock_response(200, {
+            "state": "unlocked",
+            "warnings": None,
+        })
+
+        with patch.object(client.session, "get", return_value=resp):
+            status = client.get_status()
+
+        assert status.warnings == []
 
     def test_auth_error(self):
         client = make_client()

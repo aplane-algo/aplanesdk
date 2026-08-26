@@ -276,6 +276,9 @@ def test_status_fixture_maps_metadata():
     assert status.key_count == 37
     assert status.keyset_revision == 4
     assert status.approval_wait_seconds == 60
+    assert status.warnings == [
+        "deleted archive emergency reserve is consumed; authenticated prune is required"
+    ]
 
 
 def test_cancel_response_fixture_maps_state():

@@ -451,6 +451,7 @@ class StatusResponse:
     build_version: str = ""
     approval_wait_seconds: int = 0
     node_role: str = ""
+    warnings: List[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if isinstance(self.protocol_version, dict):
@@ -2739,6 +2740,7 @@ class SignerClient:
             )
 
         data = resp.json()
+        raw_warnings = data.get("warnings")
         status = StatusResponse(
             node_role=data.get("node_role", ""),
             state=data.get("state", ""),
@@ -2749,6 +2751,11 @@ class SignerClient:
             protocol_version=data.get("protocol_version"),
             build_version=data.get("build_version", ""),
             approval_wait_seconds=data.get("approval_wait_seconds") or 0,
+            warnings=(
+                [warning for warning in raw_warnings if isinstance(warning, str)]
+                if isinstance(raw_warnings, list)
+                else []
+            ),
         )
         self._cache_approval_wait(status.approval_wait_seconds)
         return status

@@ -2823,6 +2823,9 @@ export class SignerClient {
       keysetRevision: Number(data.keyset_revision || 0),
       approvalWaitSeconds:
         typeof data.approval_wait_seconds === "number" ? data.approval_wait_seconds : undefined,
+      warnings: Array.isArray(data.warnings)
+        ? data.warnings.filter((warning): warning is string => typeof warning === "string")
+        : undefined,
     };
     this.cacheApprovalWait(status.approvalWaitSeconds);
     return status;
