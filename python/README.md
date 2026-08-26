@@ -182,12 +182,14 @@ Fetch authenticated signer status. This works while the signer is locked.
 
 ```python
 status = client.get_status()
-print(status.state, status.keyset_revision)
+print(status.state, status.keyset_revision, status.warnings)
 ```
 
 `keyset_revision` is process-local and useful for deciding when to refresh
 `list_keys(refresh=True)`; it is not durable across apsigner restarts.
-`approval_wait_seconds` is used by the SDK to size `/sign` deadlines.
+`approval_wait_seconds` is used by the SDK to size `/sign` deadlines. Display
+non-empty `warnings` to operators; they report persistent health conditions
+that require attention.
 
 #### `list_keys() -> List[KeyInfo]`
 

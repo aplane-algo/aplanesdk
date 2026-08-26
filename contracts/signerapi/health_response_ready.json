@@ -9,5 +9,8 @@
   "signer_locked": false,
   "ready_for_signing": true,
   "ssh_enabled": true,
-  "ipc_enabled": true
+  "ipc_enabled": true,
+  "warnings": [
+    "deleted archive emergency reserve is consumed; authenticated prune is required"
+  ]
 }

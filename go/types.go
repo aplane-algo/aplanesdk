@@ -508,6 +508,7 @@ type HealthResponse struct {
 	ReadyForSigning bool            `json:"ready_for_signing"`
 	SSHEnabled      bool            `json:"ssh_enabled"`
 	IPCEnabled      bool            `json:"ipc_enabled"`
+	Warnings        []string        `json:"warnings,omitempty"`
 }
 
 // StatusResponse is the response from the /status endpoint.
@@ -521,6 +522,7 @@ type StatusResponse struct {
 	KeyCount            int             `json:"key_count"`
 	KeysetRevision      uint64          `json:"keyset_revision"`
 	ApprovalWaitSeconds int64           `json:"approval_wait_seconds,omitempty"`
+	Warnings            []string        `json:"warnings,omitempty"`
 }
 
 // RuntimeArg describes a runtime argument for generic LogicSig keys.

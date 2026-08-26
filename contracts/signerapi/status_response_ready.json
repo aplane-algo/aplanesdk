@@ -10,5 +10,8 @@
   "ready_for_signing": true,
   "key_count": 37,
   "keyset_revision": 4,
-  "approval_wait_seconds": 60
+  "approval_wait_seconds": 60,
+  "warnings": [
+    "deleted archive emergency reserve is consumed; authenticated prune is required"
+  ]
 }

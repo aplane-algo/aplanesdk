@@ -191,6 +191,7 @@ describe("SignerClient", () => {
           key_count: 37,
           keyset_revision: 4,
           approval_wait_seconds: 60,
+          warnings: ["authenticated prune is required", 7],
         }),
       });
 
@@ -199,6 +200,7 @@ describe("SignerClient", () => {
 
       assert.equal(status.keysetRevision, 4);
       assert.equal(status.approvalWaitSeconds, 60);
+      assert.deepEqual(status.warnings, ["authenticated prune is required"]);
       assert.equal(mockFetch.mock.calls[0][0], "http://localhost:11270/status");
       assert.equal(mockFetch.mock.calls[0][1].method, "GET");
     });

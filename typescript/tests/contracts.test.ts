@@ -262,6 +262,9 @@ describe("signer API contract fixtures", () => {
     assert.equal(status.keyCount, 37);
     assert.equal(status.keysetRevision, 4);
     assert.equal(status.approvalWaitSeconds, 60);
+    assert.deepEqual(status.warnings, [
+      "deleted archive emergency reserve is consumed; authenticated prune is required",
+    ]);
   });
 
   it("maps /sign/cancel response state", () => {

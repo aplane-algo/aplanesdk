@@ -188,12 +188,14 @@ Fetch authenticated signer status. This works while the signer is locked.
 
 ```typescript
 const status = await client.getStatus();
-console.log(status.state, status.keysetRevision);
+console.log(status.state, status.keysetRevision, status.warnings);
 ```
 
 `keysetRevision` is process-local and useful for deciding when to refresh
 `listKeys(true)`; it is not durable across apsigner restarts.
-`approvalWaitSeconds` is used by the SDK to size `/sign` deadlines.
+`approvalWaitSeconds` is used by the SDK to size `/sign` deadlines. Display
+non-empty `warnings` to operators; they report persistent health conditions
+that require attention.
 
 #### `listKeys(refresh?: boolean): Promise<KeyInfo[]>`
 

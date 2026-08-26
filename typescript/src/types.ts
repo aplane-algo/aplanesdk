@@ -393,6 +393,8 @@ export interface StatusResponse {
   keysetRevision: number;
   /** Effective manual approval wait in seconds, when provided */
   approvalWaitSeconds?: number;
+  /** Persistent signer health warnings intended for operator display */
+  warnings?: string[];
 }
 
 /**
