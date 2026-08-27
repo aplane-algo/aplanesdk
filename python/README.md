@@ -291,7 +291,7 @@ response = client.sign_requests(
 
 ### AlgoKit Utils Adapter
 
-For AlgoKit Utils 4 (utils-py v5) transaction composers, use the adapter
+For AlgoKit Utils Python v5 transaction composers, use the adapter
 account. It connects AlgoKit clients to APlane's transaction signing functions
 and presents the `addr` + `signer(txn_group, indexes_to_sign)` shape.
 

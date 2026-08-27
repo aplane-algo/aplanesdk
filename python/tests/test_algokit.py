@@ -95,21 +95,22 @@ def test_create_apsigner_account() -> None:
 
 def test_default_encoder_supports_current_algokit_utils_v5() -> None:
     pytest.importorskip("algokit_transact.codec.transaction")
-    from algosdk import transaction
+    from algokit_transact.models.transaction import (
+        PaymentTransactionFields,
+        Transaction,
+        TransactionType,
+    )
     from aplanesdk.algokit import _default_encode_transaction
 
-    params = transaction.SuggestedParams(
+    zero_address = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAY5HFKQ"
+    txn = Transaction(
+        transaction_type=TransactionType.Payment,
+        sender=zero_address,
+        first_valid=1,
+        last_valid=1_000,
         fee=1_000,
-        first=1,
-        last=1_000,
-        gh=b"\x00" * 32,
-        flat_fee=True,
-    )
-    txn = transaction.PaymentTxn(
-        sender="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAY5HFKQ",
-        sp=params,
-        receiver="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAY5HFKQ",
-        amt=0,
+        genesis_hash=b"\x00" * 32,
+        payment=PaymentTransactionFields(receiver=zero_address, amount=0),
     )
 
     encoded = _default_encode_transaction(txn)
@@ -227,6 +228,7 @@ def test_rejects_regrouped_signer_response() -> None:
     # dummies or recomputed the group ID) produces signatures AlgoKit cannot
     # submit. The adapter must fail fast rather than return them.
     for mutations in ({"dummies_added": 2}, {"group_id_changed": True}):
+
         class RegroupedClient(MockSignerClient):
             def sign_requests(self, requests, *, request_id=None):
                 self.sign_calls.append((requests, request_id))
