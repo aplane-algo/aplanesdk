@@ -2729,11 +2729,6 @@ export class SignerClient {
     loadConfig(dataDir);
     const registry = loadClientEndpointRegistry(dataDir);
     const { endpoint } = resolveClientEndpoint(registry, options.endpoint);
-    if (endpoint.url === "self") {
-      throw new SignerError(
-        `endpoint URL "${endpoint.url}" is not supported by the external SDK`,
-      );
-    }
     const token = loadToken(endpoint.tokenFile);
 
     if (endpoint.url.startsWith("ssh://")) {

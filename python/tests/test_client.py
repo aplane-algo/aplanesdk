@@ -6,8 +6,9 @@
 import base64
 import copy
 import json
-from unittest.mock import patch, MagicMock
 import os
+import re
+from unittest.mock import patch, MagicMock
 
 import pytest
 from algosdk import account, encoding as algo_encoding, transaction
@@ -3161,12 +3162,19 @@ class TestFromEnv:
         with pytest.raises(SignerError, match=rf"{token_path}.*empty"):
             SignerClient.from_env(data_dir=str(tmp_path))
 
-    def test_rejects_self_endpoint(self, tmp_path):
-        (tmp_path / "endpoints.yaml").write_text(
-            "schema_version: 1\nendpoints:\n"
-            "  primary:\n    role: signer\n    url: self\n"
-        )
-        with pytest.raises(SignerError, match="not supported by the external SDK"):
+    @pytest.mark.parametrize(
+        "fixture,want",
+        [
+            ("invalid_self_signer.yaml", 'endpoint "primary": url "self" is not supported'),
+            ("invalid_self_sentry.yaml", 'endpoint "sentry": url "self" is not supported'),
+            ("invalid_sentry_local_port.yaml", 'endpoint "sentry": local_port is not supported'),
+        ],
+    )
+    def test_rejects_invalid_endpoint_before_token_loading(self, tmp_path, fixture, want):
+        source = os.path.join("..", "contracts", "clientconfig", fixture)
+        with open(source, "rb") as fixture_file:
+            (tmp_path / "endpoints.yaml").write_bytes(fixture_file.read())
+        with pytest.raises(SignerError, match=re.escape(want)):
             SignerClient.from_env(data_dir=str(tmp_path))
 
 
@@ -3412,8 +3420,6 @@ class TestLoadClientEndpointRegistry:
             "invalid_token_file_type.yaml",
             "invalid_unknown_field.yaml",
             "invalid_unknown_tag.yaml",
-            "invalid_v2_published_sentries.yaml",
-            "invalid_13_sentry_endpoints.yaml",
         ],
     )
     def test_rejects_shared_invalid_fixtures(self, tmp_path, name):
@@ -3422,17 +3428,37 @@ class TestLoadClientEndpointRegistry:
             load_client_endpoint_registry(str(tmp_path))
 
     @pytest.mark.parametrize(
+        "name,want",
+        [
+            ("invalid_self_signer.yaml", 'endpoint "primary": url "self" is not supported'),
+            ("invalid_self_sentry.yaml", 'endpoint "sentry": url "self" is not supported'),
+            ("invalid_sentry_local_port.yaml", 'endpoint "sentry": local_port is not supported'),
+            ("invalid_13_sentry_endpoints.yaml", "configures 13 sentry endpoints; maximum is 12"),
+            ("invalid_v2_published_sentries.yaml", "published_sentries"),
+        ],
+    )
+    def test_rejects_shared_fixture_for_expected_reason(self, tmp_path, name, want):
+        self._fixture(tmp_path, name)
+        with pytest.raises(SignerError, match=re.escape(want)):
+            load_client_endpoint_registry(str(tmp_path))
+
+    @pytest.mark.parametrize(
         "name",
         [
             "valid_schema_version_null.yaml",
             "valid_schema_version_zero.yaml",
             "valid_12_sentry_endpoints.yaml",
+            "valid_sentry_zero_local_port.yaml",
         ],
     )
     def test_accepts_shared_edge_fixtures(self, tmp_path, name):
         self._fixture(tmp_path, name)
         registry = load_client_endpoint_registry(str(tmp_path))
         assert registry.schema_version == 2
+        if name == "valid_12_sentry_endpoints.yaml":
+            assert len(registry.endpoints) == 12
+        if name == "valid_sentry_zero_local_port.yaml":
+            assert registry.endpoints["sentry"].local_port == 0
 
     def test_discards_v1_published_sentry_inventory(self, tmp_path):
         self._fixture(tmp_path, "valid_v1_published_sentries.yaml")

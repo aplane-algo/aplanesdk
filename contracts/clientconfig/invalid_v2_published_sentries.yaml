@@ -2,5 +2,5 @@ schema_version: 2
 endpoints:
   sentry:
     role: sentry
-    url: self
+    url: https://sentry.example.com
     published_sentries: {}

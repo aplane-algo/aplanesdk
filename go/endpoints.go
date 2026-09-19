@@ -265,7 +265,7 @@ func normalizeClientEndpoint(dataDir, alias string, endpoint ClientEndpointConfi
 	if err := validateClientEndpointURL(alias, endpoint); err != nil {
 		return endpoint, err
 	}
-	if endpoint.TokenFile == "" && endpoint.URL != "self" {
+	if endpoint.TokenFile == "" {
 		if alias == DefaultClientEndpointName {
 			endpoint.TokenFile = "aplane.token"
 		} else {
@@ -296,8 +296,11 @@ func validateClientEndpointURL(alias string, endpoint ClientEndpointConfig) erro
 	if endpoint.LocalPort < 0 || endpoint.LocalPort > 65535 {
 		return fmt.Errorf("local_port must be 1-65535 when set")
 	}
+	if endpoint.Role == ClientEndpointRoleSentry && endpoint.LocalPort != 0 {
+		return fmt.Errorf("local_port is not supported for sentry endpoints")
+	}
 	if endpoint.URL == "self" {
-		return nil
+		return fmt.Errorf("url %q is not supported; configure an explicit ssh://, https://, or loopback http:// endpoint", endpoint.URL)
 	}
 	parsed, err := url.Parse(endpoint.URL)
 	if err != nil {
