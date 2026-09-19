@@ -108,18 +108,21 @@ endpoints:
 	}
 }
 
-func TestFromEnvRejectsSelfEndpoint(t *testing.T) {
-	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "endpoints.yaml"), []byte(`
-schema_version: 1
-endpoints:
-  primary:
-    role: signer
-    url: self
-`), 0o600)
-	_, err := FromEnv(&FromEnvOptions{DataDir: dir})
-	if err == nil || !strings.Contains(err.Error(), "not supported by the external SDK") {
-		t.Fatalf("expected self endpoint error, got %v", err)
+func TestFromEnvRejectsInvalidEndpointBeforeTokenLoading(t *testing.T) {
+	for _, tc := range []struct {
+		fixture string
+		want    string
+	}{
+		{"invalid_self_signer.yaml", `endpoint "primary": url "self" is not supported`},
+		{"invalid_self_sentry.yaml", `endpoint "sentry": url "self" is not supported`},
+		{"invalid_sentry_local_port.yaml", `endpoint "sentry": local_port is not supported`},
+	} {
+		t.Run(tc.fixture, func(t *testing.T) {
+			_, err := FromEnv(&FromEnvOptions{DataDir: copyEndpointFixture(t, tc.fixture)})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("FromEnv error = %v, want %q before token loading", err, tc.want)
+			}
+		})
 	}
 }
 

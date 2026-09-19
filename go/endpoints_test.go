@@ -65,8 +65,6 @@ func TestLoadClientEndpointRegistryRejectsSharedInvalidFixtures(t *testing.T) {
 		"invalid_token_file_type.yaml",
 		"invalid_unknown_field.yaml",
 		"invalid_unknown_tag.yaml",
-		"invalid_v2_published_sentries.yaml",
-		"invalid_13_sentry_endpoints.yaml",
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := LoadClientEndpointRegistry(copyEndpointFixture(t, name))
@@ -77,11 +75,32 @@ func TestLoadClientEndpointRegistryRejectsSharedInvalidFixtures(t *testing.T) {
 	}
 }
 
+func TestLoadClientEndpointRegistryRejectsSpecificEndpointRules(t *testing.T) {
+	for _, tc := range []struct {
+		fixture string
+		want    string
+	}{
+		{"invalid_self_signer.yaml", `endpoint "primary": url "self" is not supported`},
+		{"invalid_self_sentry.yaml", `endpoint "sentry": url "self" is not supported`},
+		{"invalid_sentry_local_port.yaml", `endpoint "sentry": local_port is not supported for sentry endpoints`},
+		{"invalid_13_sentry_endpoints.yaml", "configures 13 sentry endpoints; maximum is 12"},
+		{"invalid_v2_published_sentries.yaml", "published_sentries"},
+	} {
+		t.Run(tc.fixture, func(t *testing.T) {
+			_, err := LoadClientEndpointRegistry(copyEndpointFixture(t, tc.fixture))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("LoadClientEndpointRegistry error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadClientEndpointRegistryAcceptsSharedEdgeFixtures(t *testing.T) {
 	for _, name := range []string{
 		"valid_schema_version_null.yaml",
 		"valid_schema_version_zero.yaml",
 		"valid_12_sentry_endpoints.yaml",
+		"valid_sentry_zero_local_port.yaml",
 	} {
 		t.Run(name, func(t *testing.T) {
 			registry, err := LoadClientEndpointRegistry(copyEndpointFixture(t, name))
@@ -90,6 +109,12 @@ func TestLoadClientEndpointRegistryAcceptsSharedEdgeFixtures(t *testing.T) {
 			}
 			if registry.SchemaVersion != ClientEndpointSchemaVersion {
 				t.Fatalf("SchemaVersion = %d, want %d", registry.SchemaVersion, ClientEndpointSchemaVersion)
+			}
+			if name == "valid_12_sentry_endpoints.yaml" && len(registry.Endpoints) != 12 {
+				t.Fatalf("endpoint count = %d, want 12", len(registry.Endpoints))
+			}
+			if name == "valid_sentry_zero_local_port.yaml" && registry.Endpoints["sentry"].LocalPort != 0 {
+				t.Fatalf("sentry local_port = %d, want 0", registry.Endpoints["sentry"].LocalPort)
 			}
 		})
 	}

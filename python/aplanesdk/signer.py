@@ -878,27 +878,33 @@ def _normalize_client_endpoint(
     for field, port in (("signer_port", signer_port), ("local_port", local_port)):
         if port < 0 or port > 65535:
             raise SignerError(f'endpoint "{alias}": {field} must be 1-65535 when set')
+    if role == "sentry" and local_port != 0:
+        raise SignerError(f'endpoint "{alias}": local_port is not supported for sentry endpoints')
+    if endpoint_url == "self":
+        raise SignerError(
+            f'endpoint "{alias}": url "self" is not supported; configure an explicit '
+            "ssh://, https://, or loopback http:// endpoint"
+        )
 
-    if endpoint_url != "self":
-        try:
-            parsed = urlparse(endpoint_url)
-            parsed_port = parsed.port
-        except ValueError as exc:
-            raise SignerError(f'endpoint "{alias}": invalid url: {exc}') from exc
-        if parsed.scheme not in ("ssh", "https", "http"):
-            raise SignerError(f'endpoint "{alias}": unsupported url scheme "{parsed.scheme}"')
-        if not parsed.hostname:
-            raise SignerError(f'endpoint "{alias}": url host is required')
-        if parsed_port is not None and not 1 <= parsed_port <= 65535:
-            raise SignerError(f'endpoint "{alias}": invalid url port "{parsed_port}"')
-        if parsed.scheme == "http" and not _is_loopback_endpoint_host(parsed.hostname):
-            raise SignerError(
-                "raw http endpoints must be loopback; use ssh:// or https:// "
-                f'for remote endpoint "{alias}"'
-            )
+    try:
+        parsed = urlparse(endpoint_url)
+        parsed_port = parsed.port
+    except ValueError as exc:
+        raise SignerError(f'endpoint "{alias}": invalid url: {exc}') from exc
+    if parsed.scheme not in ("ssh", "https", "http"):
+        raise SignerError(f'endpoint "{alias}": unsupported url scheme "{parsed.scheme}"')
+    if not parsed.hostname:
+        raise SignerError(f'endpoint "{alias}": url host is required')
+    if parsed_port is not None and not 1 <= parsed_port <= 65535:
+        raise SignerError(f'endpoint "{alias}": invalid url port "{parsed_port}"')
+    if parsed.scheme == "http" and not _is_loopback_endpoint_host(parsed.hostname):
+        raise SignerError(
+            "raw http endpoints must be loopback; use ssh:// or https:// "
+            f'for remote endpoint "{alias}"'
+        )
 
     token_file = _optional_string(raw.get("token_file"), "token_file")
-    if not token_file and endpoint_url != "self":
+    if not token_file:
         token_file = (
             "aplane.token"
             if alias == DEFAULT_CLIENT_ENDPOINT_NAME
@@ -2658,8 +2664,6 @@ class SignerClient:
         load_config(data_dir)
         registry = load_client_endpoint_registry(data_dir)
         _, selected = resolve_client_endpoint(registry, endpoint)
-        if selected.url == "self":
-            raise SignerError(f'endpoint URL "{selected.url}" is not supported by the external SDK')
         token_path = selected.token_file
         if not os.path.exists(token_path):
             raise SignerError(f"No token found at {token_path}")

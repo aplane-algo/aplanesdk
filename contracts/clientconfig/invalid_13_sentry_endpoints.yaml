@@ -1,15 +1,15 @@
 schema_version: 2
 endpoints:
-  s01: {role: sentry, url: self}
-  s02: {role: sentry, url: self}
-  s03: {role: sentry, url: self}
-  s04: {role: sentry, url: self}
-  s05: {role: sentry, url: self}
-  s06: {role: sentry, url: self}
-  s07: {role: sentry, url: self}
-  s08: {role: sentry, url: self}
-  s09: {role: sentry, url: self}
-  s10: {role: sentry, url: self}
-  s11: {role: sentry, url: self}
-  s12: {role: sentry, url: self}
-  s13: {role: sentry, url: self}
+  s01: {role: sentry, url: https://s01.example.com}
+  s02: {role: sentry, url: https://s02.example.com}
+  s03: {role: sentry, url: https://s03.example.com}
+  s04: {role: sentry, url: https://s04.example.com}
+  s05: {role: sentry, url: https://s05.example.com}
+  s06: {role: sentry, url: https://s06.example.com}
+  s07: {role: sentry, url: https://s07.example.com}
+  s08: {role: sentry, url: https://s08.example.com}
+  s09: {role: sentry, url: https://s09.example.com}
+  s10: {role: sentry, url: https://s10.example.com}
+  s11: {role: sentry, url: https://s11.example.com}
+  s12: {role: sentry, url: https://s12.example.com}
+  s13: {role: sentry, url: https://s13.example.com}

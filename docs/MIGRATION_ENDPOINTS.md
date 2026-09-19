@@ -51,7 +51,15 @@ continue to choose or resolve their sentry client explicitly; loading
 Go `FromEnv`, Python `SignerClient.from_env`, and TypeScript
 `SignerClient.fromEnv` select the default signer unless given an endpoint
 alias. SSH URLs create a managed tunnel. HTTPS and loopback HTTP URLs connect
-directly. The client-local `self` URL is not supported by external SDKs.
+directly. The shared registry rejects `url: self` for both signer and sentry
+roles, including when the two processes run on one host. Replace it with an
+explicit client-reachable URL such as `ssh://host:1127` for each process, using
+its actual SSH port. For a sentry SSH endpoint, set `signer_port` to that
+sentry process's REST port behind SSH. Sentry endpoint records also reject a
+nonzero `local_port`; remove that field from existing sentry records. A
+signer endpoint may still use `local_port`, and the explicit SDK SSH connection
+APIs retain their local-port option. Correct older files manually; the SDK
+cannot infer the intended host and ports.
 
 Python `request_token_to_file` and TypeScript `requestTokenToFile` also select
 an endpoint alias and require that endpoint to use `ssh://`. Their former

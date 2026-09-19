@@ -3497,8 +3497,6 @@ describe("loadClientEndpointRegistry", () => {
     "invalid_token_file_type.yaml",
     "invalid_unknown_field.yaml",
     "invalid_unknown_tag.yaml",
-    "invalid_v2_published_sentries.yaml",
-    "invalid_13_sentry_endpoints.yaml",
   ]) {
     it(`rejects ${fixture}`, () => {
       const tmpDir = fixtureDir(fixture);
@@ -3510,16 +3508,42 @@ describe("loadClientEndpointRegistry", () => {
     });
   }
 
+  for (const [fixture, message] of [
+    ["invalid_self_signer.yaml", 'endpoint "primary": url "self" is not supported'],
+    ["invalid_self_sentry.yaml", 'endpoint "sentry": url "self" is not supported'],
+    ["invalid_sentry_local_port.yaml", 'endpoint "sentry": local_port is not supported'],
+    ["invalid_13_sentry_endpoints.yaml", "configures 13 sentry endpoints; maximum is 12"],
+    ["invalid_v2_published_sentries.yaml", "published_sentries"],
+  ]) {
+    it(`rejects ${fixture} for the expected reason`, () => {
+      const tmpDir = fixtureDir(fixture);
+      try {
+        assert.throws(() => loadClientEndpointRegistry(tmpDir), (error: unknown) =>
+          error instanceof Error && error.message.includes(message),
+        );
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true });
+      }
+    });
+  }
+
   for (const fixture of [
     "valid_schema_version_null.yaml",
     "valid_schema_version_zero.yaml",
     "valid_12_sentry_endpoints.yaml",
+    "valid_sentry_zero_local_port.yaml",
   ]) {
     it(`accepts ${fixture}`, () => {
       const tmpDir = fixtureDir(fixture);
       try {
         const registry = loadClientEndpointRegistry(tmpDir);
         assert.equal(registry.schemaVersion, 2);
+        if (fixture === "valid_12_sentry_endpoints.yaml") {
+          assert.equal(Object.keys(registry.endpoints).length, 12);
+        }
+        if (fixture === "valid_sentry_zero_local_port.yaml") {
+          assert.equal(registry.endpoints.sentry.localPort, 0);
+        }
       } finally {
         fs.rmSync(tmpDir, { recursive: true });
       }
@@ -3852,23 +3876,26 @@ describe("fromEnv", () => {
     }
   });
 
-  it("rejects self endpoints", async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-test-"));
-    try {
-      fs.writeFileSync(
-        path.join(tmpDir, "endpoints.yaml"),
-        "schema_version: 1\nendpoints:\n" +
-        "  primary:\n    role: signer\n    url: self\n",
-      );
-
-      await assert.rejects(
-        SignerClient.fromEnv({ dataDir: tmpDir }),
-        { message: /not supported by the external SDK/ },
-      );
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true });
-    }
-  });
+  for (const [fixture, message] of [
+    ["invalid_self_signer.yaml", 'endpoint "primary": url "self" is not supported'],
+    ["invalid_self_sentry.yaml", 'endpoint "sentry": url "self" is not supported'],
+    ["invalid_sentry_local_port.yaml", 'endpoint "sentry": local_port is not supported'],
+  ]) {
+    it(`rejects ${fixture} before token loading`, async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-test-"));
+      try {
+        fs.copyFileSync(
+          path.join("..", "contracts", "clientconfig", fixture),
+          path.join(tmpDir, "endpoints.yaml"),
+        );
+        await assert.rejects(SignerClient.fromEnv({ dataDir: tmpDir }), (error: unknown) =>
+          error instanceof Error && error.message.includes(message),
+        );
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true });
+      }
+    });
+  }
 });
 
 describe("connectSsh", () => {

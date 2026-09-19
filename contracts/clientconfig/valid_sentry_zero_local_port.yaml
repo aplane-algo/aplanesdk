@@ -1,0 +1,6 @@
+schema_version: 2
+endpoints:
+  sentry:
+    role: sentry
+    url: ssh://sentry.example.com
+    local_port: 0

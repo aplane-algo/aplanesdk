@@ -253,9 +253,6 @@ func FromEnv(opts *FromEnvOptions) (*SignerClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	if endpoint.URL == "self" {
-		return nil, fmt.Errorf("endpoint URL %q is not supported by the external SDK", endpoint.URL)
-	}
 	token, err := LoadToken(endpoint.TokenFile)
 	if err != nil {
 		return nil, err

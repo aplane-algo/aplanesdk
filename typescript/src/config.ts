@@ -171,35 +171,41 @@ function normalizeEndpoint(
       throw new SignerError(`endpoint "${alias}": ${field} must be 1-65535 when set`);
     }
   }
+  if (role === "sentry" && localPort !== 0) {
+    throw new SignerError(`endpoint "${alias}": local_port is not supported for sentry endpoints`);
+  }
+  if (endpointUrl === "self") {
+    throw new SignerError(
+      `endpoint "${alias}": url "self" is not supported; configure an explicit ssh://, https://, or loopback http:// endpoint`,
+    );
+  }
 
-  if (endpointUrl !== "self") {
-    let parsed: URL;
-    try {
-      parsed = new URL(endpointUrl);
-    } catch (error) {
-      throw new SignerError(`endpoint "${alias}": invalid url: ${errorMessage(error)}`);
+  let parsed: URL;
+  try {
+    parsed = new URL(endpointUrl);
+  } catch (error) {
+    throw new SignerError(`endpoint "${alias}": invalid url: ${errorMessage(error)}`);
+  }
+  if (!["ssh:", "https:", "http:"].includes(parsed.protocol)) {
+    throw new SignerError(`endpoint "${alias}": unsupported url scheme "${parsed.protocol.slice(0, -1)}"`);
+  }
+  if (!parsed.hostname) {
+    throw new SignerError(`endpoint "${alias}": url host is required`);
+  }
+  if (parsed.port) {
+    const urlPort = Number(parsed.port);
+    if (!Number.isInteger(urlPort) || urlPort < 1 || urlPort > 65535) {
+      throw new SignerError(`endpoint "${alias}": invalid url port "${parsed.port}"`);
     }
-    if (!["ssh:", "https:", "http:"].includes(parsed.protocol)) {
-      throw new SignerError(`endpoint "${alias}": unsupported url scheme "${parsed.protocol.slice(0, -1)}"`);
-    }
-    if (!parsed.hostname) {
-      throw new SignerError(`endpoint "${alias}": url host is required`);
-    }
-    if (parsed.port) {
-      const urlPort = Number(parsed.port);
-      if (!Number.isInteger(urlPort) || urlPort < 1 || urlPort > 65535) {
-        throw new SignerError(`endpoint "${alias}": invalid url port "${parsed.port}"`);
-      }
-    }
-    if (parsed.protocol === "http:" && !isLoopbackHost(parsed.hostname)) {
-      throw new SignerError(
-        `raw http endpoints must be loopback; use ssh:// or https:// for remote endpoint "${alias}"`,
-      );
-    }
+  }
+  if (parsed.protocol === "http:" && !isLoopbackHost(parsed.hostname)) {
+    throw new SignerError(
+      `raw http endpoints must be loopback; use ssh:// or https:// for remote endpoint "${alias}"`,
+    );
   }
 
   let tokenFile = optionalString(raw.token_file, "token_file");
-  if (!tokenFile && endpointUrl !== "self") {
+  if (!tokenFile) {
     tokenFile = alias === DEFAULT_CLIENT_ENDPOINT_NAME
       ? "aplane.token"
       : path.join("tokens", `${alias}.token`);
