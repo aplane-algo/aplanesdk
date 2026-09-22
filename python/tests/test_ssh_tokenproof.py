@@ -3,6 +3,7 @@
 
 import json
 from pathlib import Path
+import socket
 import threading
 
 import pytest
@@ -22,8 +23,10 @@ from aplanesdk._ssh_tokenproof import (
 )
 from aplanesdk.signer import (
     SignerError,
+    TokenProvisioningError,
     _SSHTunnel,
     _continue_keyboard_interactive_auth,
+    request_token,
 )
 
 
@@ -154,3 +157,75 @@ def test_partial_auth_continuation_sends_only_userauth_request():
     assert request.get_text() == ""
     assert request.get_text() == ""
     assert request.get_remainder() == b""
+
+
+def _start_stalled_peer():
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    accepted = threading.Event()
+    peer_closed = threading.Event()
+
+    def stall_peer():
+        conn, _ = listener.accept()
+        accepted.set()
+        conn.settimeout(2)
+        try:
+            while conn.recv(1024):
+                pass
+            peer_closed.set()
+        except OSError:
+            pass
+        finally:
+            conn.close()
+
+    thread = threading.Thread(target=stall_peer, daemon=True)
+    thread.start()
+    return listener, accepted, peer_closed, thread
+
+
+def test_ssh_setup_timeout_closes_stalled_peer(tmp_path):
+    listener, accepted, peer_closed, thread = _start_stalled_peer()
+    key_path = tmp_path / "id_rsa"
+    paramiko.RSAKey.generate(1024).write_private_key_file(str(key_path))
+    tunnel = _SSHTunnel(
+        ssh_host="127.0.0.1",
+        ssh_port=listener.getsockname()[1],
+        token="token",
+        ssh_pkey_path=str(key_path),
+        remote_host="127.0.0.1",
+        remote_port=11270,
+        local_port=0,
+        known_hosts_path=str(tmp_path / "known_hosts"),
+        setup_timeout=0.05,
+    )
+
+    try:
+        with pytest.raises(SignerError, match="SSH setup timed out"):
+            tunnel.start()
+        assert accepted.wait(1)
+        assert peer_closed.wait(1)
+    finally:
+        listener.close()
+        thread.join(timeout=1)
+
+
+def test_token_provisioning_setup_timeout_closes_stalled_peer(tmp_path):
+    listener, accepted, peer_closed, thread = _start_stalled_peer()
+    key_path = tmp_path / "id_rsa"
+    paramiko.RSAKey.generate(1024).write_private_key_file(str(key_path))
+
+    try:
+        with pytest.raises(TokenProvisioningError, match="SSH setup timed out"):
+            request_token(
+                "127.0.0.1",
+                str(key_path),
+                ssh_port=listener.getsockname()[1],
+                known_hosts_path=str(tmp_path / "known_hosts"),
+                setup_timeout=0.05,
+            )
+        assert accepted.wait(1)
+        assert peer_closed.wait(1)
+    finally:
+        listener.close()
+        thread.join(timeout=1)

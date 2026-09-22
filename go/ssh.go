@@ -4,16 +4,20 @@
 package aplane
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 )
+
+const defaultSSHSetupTimeout = 60 * time.Second
 
 // sshTunnel manages an SSH tunnel to the signer.
 type sshTunnel struct {
@@ -29,7 +33,13 @@ type sshTunnel struct {
 // The bearer token is proven through a host-key-bound challenge and is never
 // sent as the SSH username.
 // Returns the local port that forwards to the signer.
-func (t *sshTunnel) connect(host string, sshPort, signerPort, localPort int, token, sshKeyPath string) (int, error) {
+func (t *sshTunnel) connect(
+	ctx context.Context,
+	host string,
+	sshPort, signerPort, localPort int,
+	token, sshKeyPath string,
+	setupTimeout time.Duration,
+) (int, error) {
 	// Load SSH private key
 	keyData, err := os.ReadFile(sshKeyPath)
 	if err != nil {
@@ -65,9 +75,11 @@ func (t *sshTunnel) connect(host string, sshPort, signerPort, localPort int, tok
 		HostKeyCallback: verifiedHostKeyCallback,
 	}
 
-	// Connect to SSH server
+	// Bound TCP dialing and SSH authentication together. The setup context is
+	// detached after authentication so it cannot terminate the established
+	// tunnel or a later approval-bearing HTTP request.
 	addr := fmt.Sprintf("%s:%d", host, sshPort)
-	client, err := ssh.Dial("tcp", addr, config)
+	client, err := dialSSHHandshake(ctx, "tcp", addr, config, setupTimeout)
 	if err != nil {
 		return 0, fmt.Errorf("failed to connect to SSH server: %w", err)
 	}
@@ -122,6 +134,41 @@ func (t *sshTunnel) connect(host string, sshPort, signerPort, localPort int, tok
 	}()
 
 	return boundPort, nil
+}
+
+func dialSSHHandshake(
+	ctx context.Context,
+	network, addr string,
+	config *ssh.ClientConfig,
+	setupTimeout time.Duration,
+) (*ssh.Client, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if setupTimeout <= 0 {
+		setupTimeout = defaultSSHSetupTimeout
+	}
+	setupCtx, cancel := context.WithTimeout(ctx, setupTimeout)
+	defer cancel()
+
+	conn, err := (&net.Dialer{}).DialContext(setupCtx, network, addr)
+	if err != nil {
+		return nil, err
+	}
+	stopCancellation := context.AfterFunc(setupCtx, func() { _ = conn.Close() })
+	sshConn, channels, requests, err := ssh.NewClientConn(conn, addr, config)
+	detached := stopCancellation()
+	if err != nil || !detached || setupCtx.Err() != nil {
+		_ = conn.Close()
+		if setupErr := setupCtx.Err(); setupErr != nil {
+			return nil, setupErr
+		}
+		if err == nil {
+			err = context.Canceled
+		}
+		return nil, err
+	}
+	return ssh.NewClient(sshConn, channels, requests), nil
 }
 
 // close closes the SSH tunnel.

@@ -7,8 +7,17 @@ export const SSH_TOKEN_PROOF_DOMAIN = "aplane-ssh-token-proof-v1";
 export const SSH_TOKEN_PROOF_VERSION = 1;
 export const SSH_TOKEN_PROOF_USERNAME = "aplane";
 export const SSH_TOKEN_PROVISIONING_USERNAME = "request-token";
+export const DEFAULT_SSH_SETUP_TIMEOUT_MS = 60_000;
 const NONCE_SIZE = 32;
 const MAX_MESSAGE_SIZE = 1024;
+
+export function normalizeSSHSetupTimeout(value?: number): number {
+  if (value === undefined) return DEFAULT_SSH_SETUP_TIMEOUT_MS;
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error("SSH setup timeout must be a positive number");
+  }
+  return value;
+}
 
 function field(value: Buffer): Buffer {
   const length = Buffer.allocUnsafe(4);

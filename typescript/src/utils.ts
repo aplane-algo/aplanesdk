@@ -25,7 +25,10 @@ import {
   expandPath,
   DEFAULT_SSH_PORT,
 } from "./config.js";
-import { SSH_TOKEN_PROVISIONING_USERNAME } from "./ssh-tokenproof.js";
+import {
+  SSH_TOKEN_PROVISIONING_USERNAME,
+  normalizeSSHSetupTimeout,
+} from "./ssh-tokenproof.js";
 
 // Re-export config utilities
 export {
@@ -282,9 +285,12 @@ export async function requestToken(
     sshPort?: number;
     knownHostsPath?: string;
     autoAddHost?: boolean;
+    setupTimeout?: number;
+    signal?: AbortSignal;
   } = {}
 ): Promise<string> {
   const sshPort = options.sshPort ?? DEFAULT_SSH_PORT;
+  const setupTimeout = normalizeSSHSetupTimeout(options.setupTimeout);
   if (!options.knownHostsPath) {
     throw new SignerError("known_hosts path is required for SSH host key verification");
   }
@@ -300,8 +306,22 @@ export async function requestToken(
   return new Promise((resolve, reject) => {
     const client = new Client();
     let hostKeyError = "";
+    let setupComplete = false;
+    const cleanupSetup = () => options.signal?.removeEventListener("abort", abortSetup);
+    const abortSetup = () => {
+      if (setupComplete) return;
+      client.destroy();
+      reject(new TokenProvisioningError("SSH setup canceled"));
+    };
+    if (options.signal?.aborted) {
+      abortSetup();
+      return;
+    }
+    options.signal?.addEventListener("abort", abortSetup, { once: true });
 
     client.on("ready", () => {
+      setupComplete = true;
+      cleanupSetup();
       client.exec("provision", (err: Error | undefined, channel: import("ssh2").ClientChannel) => {
         if (err) {
           client.end();
@@ -338,6 +358,7 @@ export async function requestToken(
     });
 
     client.on("error", (err: Error) => {
+      cleanupSetup();
       reject(new TokenProvisioningError(hostKeyError || `SSH connection failed: ${err.message}`));
     });
 
@@ -346,6 +367,7 @@ export async function requestToken(
       port: sshPort,
       username: SSH_TOKEN_PROVISIONING_USERNAME,
       privateKey,
+      readyTimeout: setupTimeout,
       hostVerifier: (key: Buffer): boolean => {
         const storedKey = loadKnownHostKey(knownHostsPath, host, sshPort);
 
@@ -387,6 +409,8 @@ export async function requestTokenToFile(
     dataDir?: string;
     endpoint?: string;
     autoAddHost?: boolean;
+    setupTimeout?: number;
+    signal?: AbortSignal;
   } = {}
 ): Promise<string> {
   const rawOptions = options as Record<string, unknown>;
@@ -421,6 +445,8 @@ export async function requestTokenToFile(
     sshPort,
     knownHostsPath,
     autoAddHost: options.autoAddHost,
+    setupTimeout: options.setupTimeout,
+    signal: options.signal,
   });
 
   // Save token with secure permissions

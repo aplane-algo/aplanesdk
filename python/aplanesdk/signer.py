@@ -43,6 +43,7 @@ import base64
 import copy
 import json
 import ipaddress
+import math
 import os
 import re
 import requests
@@ -70,6 +71,7 @@ from ._ssh_tokenproof import TokenProofClient
 # Default ports (match apshell/apsigner defaults)
 DEFAULT_SSH_PORT = 1127
 DEFAULT_SIGNER_PORT = 11270
+DEFAULT_SSH_SETUP_TIMEOUT = 60.0
 CLIENT_ENDPOINTS_FILE = "endpoints.yaml"
 DEFAULT_CLIENT_ENDPOINT_NAME = "primary"
 HEALTH_TIMEOUT = 3
@@ -2288,6 +2290,7 @@ class _SSHTunnel:
         local_port: int,
         known_hosts_path: str = "",
         trust_on_first_use: bool = False,
+        setup_timeout: float = DEFAULT_SSH_SETUP_TIMEOUT,
     ):
         self._transport: Optional[paramiko.Transport] = None
         self._ssh_client: Optional[paramiko.SSHClient] = None
@@ -2304,6 +2307,13 @@ class _SSHTunnel:
         self.local_bind_port = local_port
         self._known_hosts_path = known_hosts_path
         self._trust_on_first_use = trust_on_first_use
+        if (
+            not isinstance(setup_timeout, (int, float))
+            or not math.isfinite(setup_timeout)
+            or setup_timeout <= 0
+        ):
+            raise SignerError("SSH setup timeout must be positive")
+        self._setup_timeout = float(setup_timeout)
 
     def start(self):
         """Establish SSH connection and start local port forward listener."""
@@ -2323,16 +2333,49 @@ class _SSHTunnel:
 
         sock: Optional[socket.socket] = None
         transport: Optional[paramiko.Transport] = None
+        transport_socket_timeout: Optional[float] = None
         proof: Optional[TokenProofClient] = None
+        timeout_timer: Optional[threading.Timer] = None
+        setup_timed_out = threading.Event()
+        setup_lock = threading.Lock()
+        setup_complete = False
+        deadline = time.monotonic() + self._setup_timeout
+
+        def remaining_setup_time() -> float:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("SSH setup deadline exceeded")
+            return remaining
+
+        def expire_setup() -> None:
+            with setup_lock:
+                if setup_complete:
+                    return
+                setup_timed_out.set()
+                if sock is not None:
+                    try:
+                        sock.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+                    sock.close()
+
         try:
-            sock = socket.create_connection((self._ssh_host, self._ssh_port))
+            sock = socket.create_connection(
+                (self._ssh_host, self._ssh_port), timeout=remaining_setup_time()
+            )
+            sock.settimeout(remaining_setup_time())
+            timeout_timer = threading.Timer(remaining_setup_time(), expire_setup)
+            timeout_timer.daemon = True
+            timeout_timer.start()
             transport = paramiko.Transport(sock)
-            transport.start_client()
+            transport_socket_timeout = sock.gettimeout()
+            transport.start_client(timeout=remaining_setup_time())
             server_key = transport.get_remote_server_key()
             self._verify_host_key(server_key)
 
             proof = TokenProofClient(self._token)
             proof.capture_host_key(server_key.asbytes())
+            sock.settimeout(remaining_setup_time())
             methods = transport.auth_publickey(SSH_TOKEN_PROOF_USERNAME, pkey)
             if transport.is_authenticated() or "keyboard-interactive" not in methods:
                 raise SignerError(
@@ -2343,25 +2386,35 @@ class _SSHTunnel:
             )
             if not transport.is_authenticated() or not proof.server_verified:
                 raise SignerError("SSH token proof authentication did not complete")
-        except SignerError:
+            with setup_lock:
+                if setup_timed_out.is_set() or time.monotonic() >= deadline:
+                    raise TimeoutError("SSH setup deadline exceeded")
+                setup_complete = True
+            timeout_timer.cancel()
+            sock.settimeout(transport_socket_timeout)
+        except Exception as exc:
+            if timeout_timer is not None:
+                timeout_timer.cancel()
             if transport:
                 transport.close()
             elif sock:
                 sock.close()
-            raise
-        except paramiko.ssh_exception.SSHException as e:
-            if transport:
-                transport.close()
-            elif sock:
-                sock.close()
-            raise SignerError(f"SSH connection failed: {e}")
-        except Exception:
-            if transport:
-                transport.close()
-            elif sock:
-                sock.close()
+            if (
+                setup_timed_out.is_set()
+                or isinstance(exc, (TimeoutError, socket.timeout))
+                or time.monotonic() >= deadline
+            ):
+                raise SignerError(
+                    f"SSH setup timed out after {self._setup_timeout:g} seconds"
+                ) from exc
+            if isinstance(exc, SignerError):
+                raise
+            if isinstance(exc, paramiko.ssh_exception.SSHException):
+                raise SignerError(f"SSH connection failed: {exc}") from exc
             raise
         finally:
+            if timeout_timer is not None:
+                timeout_timer.cancel()
             if proof is not None:
                 proof.clear()
 
@@ -2559,6 +2612,7 @@ class SignerClient:
         known_hosts_path: str = "",
         trust_on_first_use: bool = False,
         local_port: int = 0,
+        ssh_setup_timeout: float = DEFAULT_SSH_SETUP_TIMEOUT,
     ) -> "SignerClient":
         """
         Connect to remote apsigner via SSH tunnel.
@@ -2576,6 +2630,7 @@ class SignerClient:
             timeout: Optional explicit request timeout in seconds
             known_hosts_path: Path to known_hosts file for host key verification (required)
             trust_on_first_use: If true, auto-trust unknown host keys (default: false)
+            ssh_setup_timeout: Maximum seconds for TCP connection and SSH authentication
 
         Returns:
             SignerClient instance with active SSH tunnel
@@ -2603,6 +2658,7 @@ class SignerClient:
                 local_port=local_port,
                 known_hosts_path=known_hosts_path,
                 trust_on_first_use=trust_on_first_use,
+                setup_timeout=ssh_setup_timeout,
             )
             tunnel.start()
         except SignerError:
@@ -2630,6 +2686,7 @@ class SignerClient:
         timeout: Optional[int] = None,
         endpoint: Optional[str] = None,
         trust_on_first_use: bool = False,
+        ssh_setup_timeout: float = DEFAULT_SSH_SETUP_TIMEOUT,
     ) -> "SignerClient":
         """
         Connect using the endpoint registry from a data directory.
@@ -2645,6 +2702,7 @@ class SignerClient:
             timeout: Optional explicit request timeout in seconds
             endpoint: Optional signer or cosigner endpoint alias
             trust_on_first_use: Explicitly trust an unknown SSH host key
+            ssh_setup_timeout: Maximum seconds for TCP connection and SSH authentication
 
         Returns:
             SignerClient instance
@@ -2683,6 +2741,7 @@ class SignerClient:
                 known_hosts_path=selected.known_hosts_path,
                 trust_on_first_use=trust_on_first_use,
                 local_port=selected.local_port,
+                ssh_setup_timeout=ssh_setup_timeout,
             )
         return cls(selected.url, token, timeout)
 
@@ -5952,6 +6011,7 @@ def request_token(
     *,
     known_hosts_path: str,
     auto_add_host: bool = False,
+    setup_timeout: float = DEFAULT_SSH_SETUP_TIMEOUT,
 ) -> str:
     """
     Request an API token from apsigner via SSH.
@@ -5968,6 +6028,7 @@ def request_token(
         known_hosts_path: Path to the APlane client known_hosts file (required)
         auto_add_host: If True, automatically trust unknown hosts (TOFU).
                        If False (default), prompt user for confirmation.
+        setup_timeout: Maximum seconds for TCP connection and SSH authentication.
 
     Returns:
         The provisioned token string
@@ -6021,7 +6082,45 @@ def request_token(
     else:
         client.set_missing_host_key_policy(_InteractiveHostKeyPolicy(known_hosts_path))
 
+    if (
+        not isinstance(setup_timeout, (int, float))
+        or not math.isfinite(setup_timeout)
+        or setup_timeout <= 0
+    ):
+        raise TypeError("setup_timeout must be a positive number")
+
+    setup_timeout = float(setup_timeout)
+    setup_started = time.monotonic()
+    sock: Optional[socket.socket] = None
+    timeout_timer: Optional[threading.Timer] = None
+    setup_timed_out = threading.Event()
+    setup_lock = threading.Lock()
+    setup_complete = False
+
+    def remaining_setup_time() -> float:
+        remaining = setup_timeout - (time.monotonic() - setup_started)
+        if remaining <= 0:
+            raise TimeoutError("SSH setup deadline exceeded")
+        return remaining
+
+    def expire_setup() -> None:
+        with setup_lock:
+            if setup_complete:
+                return
+            setup_timed_out.set()
+            if sock is not None:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                sock.close()
+
     try:
+        sock = socket.create_connection((host, ssh_port), timeout=remaining_setup_time())
+        sock.settimeout(remaining_setup_time())
+        timeout_timer = threading.Timer(remaining_setup_time(), expire_setup)
+        timeout_timer.daemon = True
+        timeout_timer.start()
         client.connect(
             hostname=host,
             port=ssh_port,
@@ -6029,14 +6128,44 @@ def request_token(
             pkey=pkey,
             look_for_keys=False,
             allow_agent=False,
-            timeout=30,
+            sock=sock,
+            timeout=remaining_setup_time(),
+            banner_timeout=remaining_setup_time(),
+            auth_timeout=remaining_setup_time(),
         )
+        with setup_lock:
+            if setup_timed_out.is_set() or time.monotonic() - setup_started >= setup_timeout:
+                raise TimeoutError("SSH setup deadline exceeded")
+            setup_complete = True
+        timeout_timer.cancel()
     except paramiko.ssh_exception.AuthenticationException as e:
+        client.close()
+        if setup_timed_out.is_set() or time.monotonic() - setup_started >= setup_timeout:
+            raise TokenProvisioningError(
+                f"SSH setup timed out after {setup_timeout:g} seconds"
+            ) from e
         raise TokenProvisioningError(f"SSH authentication failed: {e}")
     except paramiko.ssh_exception.SSHException as e:
+        client.close()
+        if setup_timed_out.is_set() or time.monotonic() - setup_started >= setup_timeout:
+            raise TokenProvisioningError(
+                f"SSH setup timed out after {setup_timeout:g} seconds"
+            ) from e
         raise TokenProvisioningError(f"SSH connection failed: {e}")
     except Exception as e:
+        client.close()
+        if (
+            setup_timed_out.is_set()
+            or isinstance(e, (TimeoutError, socket.timeout))
+            or time.monotonic() - setup_started >= setup_timeout
+        ):
+            raise TokenProvisioningError(
+                f"SSH setup timed out after {setup_timeout:g} seconds"
+            ) from e
         raise TokenProvisioningError(f"Connection failed: {e}")
+    finally:
+        if timeout_timer is not None:
+            timeout_timer.cancel()
 
     try:
         # Execute the provisioning command
@@ -6106,6 +6235,7 @@ def request_token_to_file(
     endpoint: Optional[str] = None,
     *,
     auto_add_host: bool = False,
+    setup_timeout: float = DEFAULT_SSH_SETUP_TIMEOUT,
 ) -> str:
     """
     Request a token and save it to the data directory.
@@ -6117,6 +6247,7 @@ def request_token_to_file(
         data_dir: Client data directory. Required unless APCLIENT_DATA env var is set.
         endpoint: Endpoint alias (default: the registry's signer endpoint)
         auto_add_host: If True, automatically trust unknown hosts
+        setup_timeout: Maximum seconds for TCP connection and SSH authentication
 
     Returns:
         Path to the saved token file
@@ -6169,6 +6300,7 @@ def request_token_to_file(
         ssh_port=ssh_port,
         known_hosts_path=known_hosts_path,
         auto_add_host=auto_add_host,
+        setup_timeout=setup_timeout,
     )
 
     # Save token with secure permissions

@@ -37,6 +37,8 @@ import { preparedGroupToSignRequests } from "../src/prepared.js";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import * as net from "net";
+import { generateKeyPairSync } from "node:crypto";
 
 // --- Mock fetch helper ---
 
@@ -75,6 +77,13 @@ function createMockFetch(): MockFetch {
   };
 
   return fn;
+}
+
+async function waitForSocketsToClose(sockets: Set<net.Socket>): Promise<void> {
+  const deadline = Date.now() + 1_000;
+  while (sockets.size > 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }
 
 function guardedTestResources() {
@@ -3599,6 +3608,43 @@ describe("requestToken", () => {
       { message: /known_hosts path is required/ },
     );
   });
+
+  it("closes a stalled SSH handshake at the setup deadline", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-token-timeout-"));
+    const sockets = new Set<net.Socket>();
+    const server = net.createServer((socket) => {
+      sockets.add(socket);
+      socket.on("close", () => sockets.delete(socket));
+      socket.resume();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    const { privateKey } = generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+      privateKeyEncoding: { type: "pkcs1", format: "pem" },
+      publicKeyEncoding: { type: "pkcs1", format: "pem" },
+    });
+    const keyPath = path.join(tmpDir, "id_rsa");
+    fs.writeFileSync(keyPath, privateKey, { mode: 0o600 });
+
+    try {
+      await assert.rejects(
+        requestToken("127.0.0.1", keyPath, {
+          sshPort: address.port,
+          knownHostsPath: path.join(tmpDir, "known_hosts"),
+          setupTimeout: 50,
+        }),
+        /timed out|timeout/i,
+      );
+      await waitForSocketsToClose(sockets);
+      assert.equal(sockets.size, 0);
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
 });
 
 describe("requestTokenToFile", () => {
@@ -3904,6 +3950,81 @@ describe("connectSsh", () => {
       SignerClient.connectSsh("example.com", "token", "~/aplane/apclient/.ssh/id_ed25519"),
       { message: /known_hosts path is required/ },
     );
+  });
+
+  it("closes a stalled SSH handshake at the setup deadline", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-ssh-timeout-"));
+    const sockets = new Set<net.Socket>();
+    const server = net.createServer((socket) => {
+      sockets.add(socket);
+      socket.on("close", () => sockets.delete(socket));
+      socket.resume();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    const { privateKey } = generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+      privateKeyEncoding: { type: "pkcs1", format: "pem" },
+      publicKeyEncoding: { type: "pkcs1", format: "pem" },
+    });
+    const keyPath = path.join(tmpDir, "id_rsa");
+    fs.writeFileSync(keyPath, privateKey, { mode: 0o600 });
+
+    try {
+      await assert.rejects(
+        SignerClient.connectSsh("127.0.0.1", "token", keyPath, {
+          sshPort: address.port,
+          knownHostsPath: path.join(tmpDir, "known_hosts"),
+          sshSetupTimeout: 50,
+        }),
+        /timed out|timeout/i,
+      );
+      await waitForSocketsToClose(sockets);
+      assert.equal(sockets.size, 0);
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  it("cancels a stalled SSH handshake and closes its socket", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-ssh-cancel-"));
+    const sockets = new Set<net.Socket>();
+    const server = net.createServer((socket) => {
+      sockets.add(socket);
+      socket.on("close", () => sockets.delete(socket));
+      socket.resume();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    const { privateKey } = generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+      privateKeyEncoding: { type: "pkcs1", format: "pem" },
+      publicKeyEncoding: { type: "pkcs1", format: "pem" },
+    });
+    const keyPath = path.join(tmpDir, "id_rsa");
+    fs.writeFileSync(keyPath, privateKey, { mode: 0o600 });
+    const controller = new AbortController();
+
+    try {
+      const connecting = SignerClient.connectSsh("127.0.0.1", "token", keyPath, {
+        sshPort: address.port,
+        knownHostsPath: path.join(tmpDir, "known_hosts"),
+        sshSetupTimeout: 1_000,
+        signal: controller.signal,
+      });
+      controller.abort();
+      await assert.rejects(connecting, /SSH setup canceled/);
+      await waitForSocketsToClose(sockets);
+      assert.equal(sockets.size, 0);
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      fs.rmSync(tmpDir, { recursive: true });
+    }
   });
 });
 
