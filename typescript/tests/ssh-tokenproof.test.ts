@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import {
+  DEFAULT_SSH_SETUP_TIMEOUT_MS,
+  MAX_SSH_SETUP_TIMEOUT_MS,
   SSH_TOKEN_PROOF_DOMAIN,
   SSH_TOKEN_PROOF_USERNAME,
   SSH_TOKEN_PROOF_VERSION,
@@ -17,6 +19,7 @@ import {
   decodeTokenProofBytes,
   encodeTokenProofBytes,
   encodeTokenProofTranscript,
+  normalizeSSHSetupTimeout,
   parseTokenProofMessage,
 } from "../src/ssh-tokenproof.js";
 
@@ -115,4 +118,15 @@ test("SSH token proof disposal zeros and releases authentication state", () => {
       token: "",
     }
   );
+});
+
+test("SSH setup timeout rejects values Node timers cannot represent", () => {
+  assert.equal(normalizeSSHSetupTimeout(undefined), DEFAULT_SSH_SETUP_TIMEOUT_MS);
+  assert.equal(normalizeSSHSetupTimeout(MAX_SSH_SETUP_TIMEOUT_MS), MAX_SSH_SETUP_TIMEOUT_MS);
+  for (const value of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.throws(() => normalizeSSHSetupTimeout(value), /positive number/);
+  }
+  for (const value of [MAX_SSH_SETUP_TIMEOUT_MS + 1, Number.MAX_SAFE_INTEGER]) {
+    assert.throws(() => normalizeSSHSetupTimeout(value), /must not exceed/);
+  }
 });

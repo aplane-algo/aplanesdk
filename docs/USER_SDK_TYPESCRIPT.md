@@ -233,6 +233,7 @@ const client = await SignerClient.connectSsh(
   {
     sshPort: 1127,
     signerPort: 11270,
+    sshSetupTimeout: 60_000,
     knownHostsPath: expandPath("~/aplane/apclient/.ssh/known_hosts"),
     trustOnFirstUse: false,
   }
@@ -244,6 +245,12 @@ try {
   await client.close();
 }
 ```
+
+`sshSetupTimeout` separately bounds TCP dialing and SSH authentication and
+defaults to 60 seconds. An optional `signal` cancels setup. Both controls detach
+after authentication and do not shorten the established tunnel or operator
+approval waits. Token provisioning exposes equivalent `setupTimeout` and
+`signal` options.
 
 The SSH username is the fixed non-secret value `aplane`. Authentication verifies the
 enrolled public key first, then performs a programmatic mutual proof of the

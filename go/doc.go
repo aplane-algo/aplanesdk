@@ -46,7 +46,8 @@ SSH tunnel connection:
 		"your-token",
 		"~/aplane/apclient/.ssh/id_ed25519",
 		&aplane.SSHConnectOptions{
-			KnownHostsPath: "~/aplane/apclient/.ssh/known_hosts",
+			KnownHostsPath:  "~/aplane/apclient/.ssh/known_hosts",
+			SSHSetupTimeout: 60 * time.Second,
 		},
 	)
 

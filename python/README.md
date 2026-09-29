@@ -119,9 +119,15 @@ client = SignerClient.connect_ssh(
     known_hosts_path="~/aplane/apclient/.ssh/known_hosts",
     ssh_port=1127,                # default: 1127
     signer_port=11270,            # default: 11270
-    timeout=30                    # optional explicit shorter request timeout
+    timeout=30,                   # optional explicit shorter request timeout
+    ssh_setup_timeout=60,         # TCP dial + SSH authentication only
 )
 ```
+
+SSH setup uses its own 60-second deadline, independent of HTTP request and
+operator approval timeouts. The deadline is cleared after authentication.
+`request_token()` and `request_token_to_file()` expose the same setup-only
+deadline as `setup_timeout`.
 
 **Note**: SSH verifies the enrolled public key, then performs a programmatic
 mutual proof of the token bound to the fixed username, accepted host key, and fresh nonces. The

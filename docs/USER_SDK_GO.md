@@ -175,6 +175,7 @@ client, err := aplane.ConnectSSH(
 		SSHPort:         1127,
 		SignerPort:      11270,
 		Timeout:         30, // optional explicit shorter request timeout
+		SSHSetupTimeout: 60 * time.Second,
 		KnownHostsPath:  "~/aplane/apclient/.ssh/known_hosts",
 		TrustOnFirstUse: false,
 	},
@@ -184,6 +185,12 @@ if err != nil {
 }
 defer client.Close()
 ```
+
+SSH setup has a separate 60-second default covering TCP dialing and
+authentication. `SSHSetupTimeout` overrides that setup deadline without
+shortening approval-bearing HTTP requests. Use `ConnectSSHWithContext` or
+`FromEnvWithContext` when the caller must cancel setup; a successful connection
+detaches from the setup context and remains active until `Close`.
 
 The SSH username is the fixed non-secret value `aplane`. Authentication verifies the
 enrolled public key first, then performs a programmatic mutual proof of the

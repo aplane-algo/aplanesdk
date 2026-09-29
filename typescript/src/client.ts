@@ -86,7 +86,11 @@ import {
   hexToBytes,
 } from "./encoding.js";
 import { preparedGroupToSignRequests, preparedTransactionToSignRequest } from "./prepared.js";
-import { SSH_TOKEN_PROOF_USERNAME, SSHTokenProofClient } from "./ssh-tokenproof.js";
+import {
+  SSH_TOKEN_PROOF_USERNAME,
+  SSHTokenProofClient,
+  normalizeSSHSetupTimeout,
+} from "./ssh-tokenproof.js";
 import {
   loadConfig,
   loadClientEndpointRegistry,
@@ -1772,6 +1776,7 @@ function saveHostKey(knownHostsPath: string, host: string, port: number, key: Bu
  */
 class SSHTunnel {
   private sshClient: SSHClient | null = null;
+  private sshClosed = true;
   private server: net.Server | null = null;
   localPort: number = 0;
 
@@ -1785,6 +1790,8 @@ class SSHTunnel {
     localPort: number;
     knownHostsPath: string;
     trustOnFirstUse: boolean;
+    setupTimeout: number;
+    signal?: AbortSignal;
   }): Promise<void> {
     if (!options.knownHostsPath) {
       throw new SignerError(
@@ -1805,11 +1812,40 @@ class SSHTunnel {
 
     const connection = new Promise<void>((resolve, reject) => {
       this.sshClient = new Client();
+      this.sshClosed = false;
+      // ssh2 reports a peer that disconnects mid-handshake with close alone
+      // and clears readyTimeout, so an unsettled setup must fail here.
+      this.sshClient.once("close", () => {
+        this.sshClosed = true;
+        failSetup(new SignerUnavailableError(
+          hostKeyError || "SSH connection closed before setup completed"
+        ));
+      });
+      let settled = false;
+      const cleanupSetup = () => {
+        options.signal?.removeEventListener("abort", abortSetup);
+      };
+      const failSetup = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        cleanupSetup();
+        this.server?.close();
+        this.sshClosed = true;
+        this.sshClient?.destroy();
+        reject(error);
+      };
+      const abortSetup = () => {
+        failSetup(new SignerUnavailableError("SSH setup canceled"));
+      };
+      if (options.signal?.aborted) {
+        abortSetup();
+        return;
+      }
+      options.signal?.addEventListener("abort", abortSetup, { once: true });
 
       this.sshClient.on("ready", () => {
         if (!proof.serverVerified) {
-          this.sshClient!.end();
-          reject(new SignerUnavailableError(
+          failSetup(new SignerUnavailableError(
             "SSH server accepted authentication without completing token proof"
           ));
           return;
@@ -1832,17 +1868,23 @@ class SSHTunnel {
         });
 
         this.server.listen(this.localPort, "127.0.0.1", () => {
+          if (settled) {
+            this.server?.close();
+            return;
+          }
+          settled = true;
+          cleanupSetup();
           resolve();
         });
 
         this.server.on("error", (err) => {
-          reject(new SignerUnavailableError(`SSH tunnel server error: ${err.message}`));
+          failSetup(new SignerUnavailableError(`SSH tunnel server error: ${err.message}`));
         });
       });
 
       this.sshClient.on("error", (err: Error) => {
         const msg = hostKeyError || `SSH connection failed: ${err.message}`;
-        reject(new SignerUnavailableError(msg));
+        failSetup(new SignerUnavailableError(msg));
       });
 
       this.sshClient.connect({
@@ -1850,6 +1892,7 @@ class SSHTunnel {
         port: options.sshPort,
         username: SSH_TOKEN_PROOF_USERNAME,
         privateKey: privateKey,
+        readyTimeout: options.setupTimeout,
         authHandler: (methodsLeft, partialSuccess, next) => {
           if (authStage === 0 && (methodsLeft === null || methodsLeft === undefined)) {
             authStage = 1;
@@ -1926,6 +1969,7 @@ class SSHTunnel {
   async close(): Promise<void> {
     const server = this.server;
     const sshClient = this.sshClient;
+    const sshClosed = this.sshClosed;
     this.server = null;
     this.sshClient = null;
 
@@ -1934,7 +1978,7 @@ class SSHTunnel {
           server.close(() => resolve());
         })
       : Promise.resolve();
-    const closeSSH = sshClient
+    const closeSSH = sshClient && !sshClosed
       ? new Promise<void>((resolve) => {
           sshClient.once("close", () => resolve());
           sshClient.end();
@@ -2645,6 +2689,7 @@ export class SignerClient {
     const signerPort = options.signerPort ?? DEFAULT_SIGNER_PORT;
     const localPort = options.localPort ?? 0;
     const timeout = options.timeout;
+    const sshSetupTimeout = normalizeSSHSetupTimeout(options.sshSetupTimeout);
     const knownHostsPath = options.knownHostsPath
       ? expandPath(options.knownHostsPath)
       : "";
@@ -2672,6 +2717,8 @@ export class SignerClient {
         localPort,
         knownHostsPath,
         trustOnFirstUse,
+        setupTimeout: sshSetupTimeout,
+        signal: options.signal,
       });
     } catch (error) {
       await tunnel.close();
@@ -2743,6 +2790,8 @@ export class SignerClient {
         signerPort: endpoint.signerPort,
         localPort: endpoint.localPort,
         timeout,
+        sshSetupTimeout: options.sshSetupTimeout,
+        signal: options.signal,
         knownHostsPath: endpoint.knownHostsPath,
         trustOnFirstUse: options.trustOnFirstUse ?? false,
       });

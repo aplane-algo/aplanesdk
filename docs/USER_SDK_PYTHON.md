@@ -226,9 +226,15 @@ with SignerClient.connect_ssh(
     known_hosts_path="~/aplane/apclient/.ssh/known_hosts",
     ssh_port=1127,
     signer_port=11270,
+    ssh_setup_timeout=60,
 ) as client:
     print(client.health())
 ```
+
+`ssh_setup_timeout` separately bounds TCP dialing and SSH authentication and
+defaults to 60 seconds. The deadline is cleared after authentication, so it
+does not shorten the established tunnel or an operator approval wait. Token
+provisioning exposes the same setup-only control as `setup_timeout`.
 
 This is useful when:
 

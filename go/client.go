@@ -174,9 +174,17 @@ func withDefaultTimeout(ctx context.Context, timeout time.Duration) (context.Con
 
 // ConnectSSH creates a client connected via SSH tunnel.
 func ConnectSSH(host, token, sshKeyPath string, opts *SSHConnectOptions) (*SignerClient, error) {
+	return ConnectSSHWithContext(context.Background(), host, token, sshKeyPath, opts)
+}
+
+// ConnectSSHWithContext creates a client connected via SSH tunnel and allows
+// the caller to cancel TCP dialing or SSH authentication. Once connected, the
+// returned client's lifetime is independent of ctx.
+func ConnectSSHWithContext(ctx context.Context, host, token, sshKeyPath string, opts *SSHConnectOptions) (*SignerClient, error) {
 	sshPort := DefaultSSHPort
 	signerPort := DefaultSignerPort
 	timeout := DefaultTimeout
+	sshSetupTimeout := defaultSSHSetupTimeout
 	localPort := 0
 
 	var knownHostsPath string
@@ -191,6 +199,9 @@ func ConnectSSH(host, token, sshKeyPath string, opts *SSHConnectOptions) (*Signe
 		if opts.Timeout > 0 {
 			timeout = opts.Timeout
 		}
+		if opts.SSHSetupTimeout > 0 {
+			sshSetupTimeout = opts.SSHSetupTimeout
+		}
 		if opts.LocalPort > 0 {
 			localPort = opts.LocalPort
 		}
@@ -202,7 +213,7 @@ func ConnectSSH(host, token, sshKeyPath string, opts *SSHConnectOptions) (*Signe
 	trustOnFirstUse := opts != nil && opts.TrustOnFirstUse
 	knownHostsPath = ExpandPath(knownHostsPath)
 	tunnel := &sshTunnel{knownHostsPath: knownHostsPath, trustOnFirstUse: trustOnFirstUse}
-	resolvedLocalPort, err := tunnel.connect(host, sshPort, signerPort, localPort, token, ExpandPath(sshKeyPath))
+	resolvedLocalPort, err := tunnel.connect(ctx, host, sshPort, signerPort, localPort, token, ExpandPath(sshKeyPath), sshSetupTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("failed to establish SSH tunnel: %w", err)
 	}
@@ -221,9 +232,16 @@ func ConnectSSH(host, token, sshKeyPath string, opts *SSHConnectOptions) (*Signe
 // Routing and token paths come from dataDir/endpoints.yaml. An empty endpoint
 // option selects the default signer.
 func FromEnv(opts *FromEnvOptions) (*SignerClient, error) {
+	return FromEnvWithContext(context.Background(), opts)
+}
+
+// FromEnvWithContext is the context-aware form of FromEnv. The context bounds
+// SSH connection setup only; established clients remain valid until Close.
+func FromEnvWithContext(ctx context.Context, opts *FromEnvOptions) (*SignerClient, error) {
 	dataDir := ""
 	endpointAlias := ""
 	timeout := 0
+	sshSetupTimeout := time.Duration(0)
 	trustOnFirstUse := false
 
 	if opts != nil {
@@ -234,6 +252,7 @@ func FromEnv(opts *FromEnvOptions) (*SignerClient, error) {
 		if opts.Timeout > 0 {
 			timeout = opts.Timeout
 		}
+		sshSetupTimeout = opts.SSHSetupTimeout
 		trustOnFirstUse = opts.TrustOnFirstUse
 	}
 
@@ -269,11 +288,12 @@ func FromEnv(opts *FromEnvOptions) (*SignerClient, error) {
 			LocalPort:       endpoint.LocalPort,
 			KnownHostsPath:  endpoint.KnownHostsPath,
 			TrustOnFirstUse: trustOnFirstUse,
+			SSHSetupTimeout: sshSetupTimeout,
 		}
 		if timeout > 0 {
 			sshOpts.Timeout = timeout
 		}
-		return ConnectSSH(host, token, endpoint.IdentityFile, sshOpts)
+		return ConnectSSHWithContext(ctx, host, token, endpoint.IdentityFile, sshOpts)
 	}
 
 	client := NewSignerClientWithToken(endpoint.URL, token)

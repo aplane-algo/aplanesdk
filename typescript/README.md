@@ -97,10 +97,15 @@ const client = await SignerClient.connectSsh(
     sshPort: 1127,           // default: 1127
     signerPort: 11270,       // default: 11270
     timeout: 30000,          // optional explicit shorter request timeout
+    sshSetupTimeout: 60000,  // TCP dial + SSH authentication only
     knownHostsPath: "~/aplane/apclient/.ssh/known_hosts",
   }
 );
 ```
+
+SSH setup uses its own 60-second deadline, independent of HTTP request and
+operator approval timeouts. Pass `signal` to cancel setup. Token provisioning
+offers the same controls as `setupTimeout` and `signal`.
 
 **Note**: SSH verifies the enrolled public key, then performs a programmatic
 mutual proof of the token bound to the fixed username, accepted host key, and fresh nonces. The

@@ -239,6 +239,10 @@ export interface ConnectSshOptions {
   localPort?: number;
   /** Optional explicit shorter request timeout in milliseconds */
   timeout?: number;
+  /** TCP connection and SSH authentication timeout in milliseconds (default: 60000) */
+  sshSetupTimeout?: number;
+  /** Optional cancellation signal for TCP connection and SSH authentication */
+  signal?: AbortSignal;
   /** Path to known_hosts file for SSH host key verification (required) */
   knownHostsPath?: string;
   /** If true, automatically trust and save unknown host keys (TOFU). Default: false */
@@ -255,6 +259,10 @@ export interface FromEnvOptions {
   endpoint?: string;
   /** Optional explicit shorter request timeout in milliseconds */
   timeout?: number;
+  /** TCP connection and SSH authentication timeout in milliseconds (default: 60000) */
+  sshSetupTimeout?: number;
+  /** Optional cancellation signal for TCP connection and SSH authentication */
+  signal?: AbortSignal;
   /** If true, explicitly trust and save an unknown SSH host key */
   trustOnFirstUse?: boolean;
 }

@@ -6,6 +6,7 @@ package aplane
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 const maxSignRequestIDLength = 128
@@ -794,19 +795,24 @@ type Config struct {
 
 // SSHConnectOptions contains options for SSH tunnel connections.
 type SSHConnectOptions struct {
-	SSHPort         int
-	SignerPort      int
-	LocalPort       int
-	Timeout         int
+	SSHPort    int
+	SignerPort int
+	LocalPort  int
+	Timeout    int
+	// SSHSetupTimeout bounds TCP dialing and SSH authentication. It is
+	// independent of Timeout, which bounds HTTP requests after setup.
+	SSHSetupTimeout time.Duration
 	KnownHostsPath  string
 	TrustOnFirstUse bool
 }
 
 // FromEnvOptions contains options for FromEnv().
 type FromEnvOptions struct {
-	DataDir         string
-	Endpoint        string
-	Timeout         int
+	DataDir  string
+	Endpoint string
+	Timeout  int
+	// SSHSetupTimeout bounds TCP dialing and SSH authentication.
+	SSHSetupTimeout time.Duration
 	TrustOnFirstUse bool
 }
 

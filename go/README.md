@@ -88,10 +88,11 @@ client, err := aplane.ConnectSSH(
 	"your-token",           // used for both SSH auth and HTTP API
 	"~/aplane/apclient/.ssh/id_ed25519",
 	&aplane.SSHConnectOptions{
-		SSHPort:        1127,   // default
-		SignerPort:     11270,  // default
-		Timeout:        30,     // optional explicit shorter request timeout
-		KnownHostsPath: "~/aplane/apclient/.ssh/known_hosts",
+		SSHPort:         1127,   // default
+		SignerPort:      11270,  // default
+		Timeout:         30,     // optional explicit shorter request timeout
+		SSHSetupTimeout: 60 * time.Second,
+		KnownHostsPath:  "~/aplane/apclient/.ssh/known_hosts",
 	},
 )
 if err != nil {
@@ -99,6 +100,11 @@ if err != nil {
 }
 defer client.Close()
 ```
+
+TCP dialing and SSH authentication share a separate 60-second setup deadline.
+Override it with `SSHSetupTimeout`; use `ConnectSSHWithContext` or
+`FromEnvWithContext` for caller cancellation. Established tunnels detach from
+the setup deadline and remain active until `Close`.
 
 **Note**: SSH verifies the enrolled public key, then performs a programmatic
 mutual proof of the token bound to the fixed username, accepted host key, and fresh nonces. The
