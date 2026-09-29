@@ -46,7 +46,7 @@ from aplanesdk.signer import (
     GuardedPassthroughAuthorization,
     GuardedPassthroughItem,
     _normalize_guarded_passthrough_item,
-    BoundedSentryAuthorizationInfo,
+    BoundedCosignerAuthorizationInfo,
     BoundedAuthorizationInfo,
     BoundedAdminOperationInfo,
     BoundedSignatureArgLayout,
@@ -55,11 +55,11 @@ from aplanesdk.signer import (
     PreparedTransaction,
     PreparedGroup,
     COMPONENT_TARGET_KIND_BOUNDED_BASE,
-    ASSEMBLY_TARGET_KIND_BOUNDED_SENTRY,
-    KEY_TYPE_GUARDED_FALCON1024_SENTRY1024,
+    ASSEMBLY_TARGET_KIND_BOUNDED_COSIGNER,
+    KEY_TYPE_GUARDED_FALCON1024_COSIGNER1024,
     KEY_TYPE_WITNESS_FALCON1024,
-    SIGNING_FLOW_SENTRY1,
-    SIGNING_FLOW_BOUNDED_SENTRY1,
+    SIGNING_FLOW_COSIGNER1,
+    SIGNING_FLOW_BOUNDED_COSIGNER1,
     request_token,
     request_token_to_file,
     encode_transaction,
@@ -75,12 +75,12 @@ from aplanesdk.signer import (
 )
 
 TEST_COMPONENT_KIND_USER = "user"
-TEST_COMPONENT_KIND_SENTRY = "sentry"
+TEST_COMPONENT_KIND_COSIGNER = "cosigner"
 
 
 def component_request(*, role, group_bytes_hex, target_indices, request_id="", component_key=""):
     target_set = set(target_indices)
-    kind = "user" if role == TEST_COMPONENT_KIND_USER else "sentry"
+    kind = "user" if role == TEST_COMPONENT_KIND_USER else "cosigner"
     targets = []
     for index in target_indices:
         target = {"target_index": index, "kind": kind}
@@ -101,7 +101,7 @@ def component_request(*, role, group_bytes_hex, target_indices, request_id="", c
 def component_signature(target_index, signature, signature_scheme):
     return {
         "target_index": target_index,
-        "kind": "sentry",
+        "kind": "cosigner",
         "signature": signature,
         "signature_scheme": signature_scheme,
     }
@@ -113,17 +113,17 @@ def component_response(*, request_id, signatures, component_key=""):
 
 
 def guarded_assembly_target(
-    *, target_index, guarded_account, user_signature, sentry_signature,
-    user_source_request_id="", sentry_source_request_id="", runtime_args=None,
+    *, target_index, guarded_account, user_signature, cosigner_signature,
+    user_source_request_id="", cosigner_source_request_id="", runtime_args=None,
 ):
     return AssemblyTarget(
         target_index=target_index,
         kind="guarded",
         auth_address=guarded_account,
         user_signature=user_signature,
-        sentry_signature=sentry_signature,
+        cosigner_signature=cosigner_signature,
         user_source_request_id=user_source_request_id,
-        sentry_source_request_id=sentry_source_request_id,
+        cosigner_source_request_id=cosigner_source_request_id,
         guarded_runtime_args=runtime_args,
     )
 
@@ -734,7 +734,7 @@ class TestDeleteKey:
 
 
 # ---------------------------------------------------------------------------
-# sentry low-level endpoints
+# cosigner low-level endpoints
 # ---------------------------------------------------------------------------
 
 class TestSpecializedLowLevelEndpoints:
@@ -745,7 +745,7 @@ class TestSpecializedLowLevelEndpoints:
             "components": [
                 {
                     "target_index": 0,
-                    "kind": "sentry",
+                    "kind": "cosigner",
                     "signature": "aabb",
                     "signature_scheme": KEY_TYPE_WITNESS_FALCON1024,
                 },
@@ -755,7 +755,7 @@ class TestSpecializedLowLevelEndpoints:
         with patch.object(client.session, "post", return_value=resp) as mock_post:
             result = client.request_components(component_request(
                 request_id="sdk-generated",
-                role=TEST_COMPONENT_KIND_SENTRY,
+                role=TEST_COMPONENT_KIND_COSIGNER,
                 component_key="COMPONENT",
                 group_bytes_hex=["5458aa"],
                 target_indices=[0],
@@ -765,7 +765,7 @@ class TestSpecializedLowLevelEndpoints:
         assert mock_post.call_args.args[0] == "http://localhost:11270/sign/component"
         body = mock_post.call_args.kwargs["json"]
         assert body["request_id"].startswith("sdk-")
-        assert body["targets"][0]["kind"] == "sentry"
+        assert body["targets"][0]["kind"] == "cosigner"
         assert body["targets"][0]["component_key"] == "COMPONENT"
 
     def test_request_components_rejects_malformed_response(self):
@@ -775,7 +775,7 @@ class TestSpecializedLowLevelEndpoints:
         with patch.object(client.session, "post", return_value=resp):
             with pytest.raises(SignerError, match="invalid component response"):
                 client.request_components(component_request(
-                    role=TEST_COMPONENT_KIND_SENTRY,
+                    role=TEST_COMPONENT_KIND_COSIGNER,
                     group_bytes_hex=["5458aa"],
                     target_indices=[0],
                 ))
@@ -786,7 +786,7 @@ class TestSpecializedLowLevelEndpoints:
             "request_id": "sdk-component",
             "components": [{
                 "target_index": 1,
-                "kind": "sentry",
+                "kind": "cosigner",
                 "signature": "aabb",
                 "signature_scheme": KEY_TYPE_WITNESS_FALCON1024,
             }],
@@ -796,7 +796,7 @@ class TestSpecializedLowLevelEndpoints:
             with pytest.raises(SignerError, match="indices or kinds do not match"):
                 client.request_components(component_request(
                     request_id="sdk-component",
-                    role=TEST_COMPONENT_KIND_SENTRY,
+                    role=TEST_COMPONENT_KIND_COSIGNER,
                     group_bytes_hex=["5458aa", "5458bb"],
                     target_indices=[0],
                 ))
@@ -807,7 +807,7 @@ class TestSpecializedLowLevelEndpoints:
             "request_id": "sdk-component",
             "components": [{
                 "target_index": 1,
-                "kind": "sentry",
+                "kind": "cosigner",
                 "signature": "aabb",
                 "signature_scheme": KEY_TYPE_WITNESS_FALCON1024,
             }],
@@ -817,7 +817,7 @@ class TestSpecializedLowLevelEndpoints:
             with pytest.raises(SignerError, match="outside the frozen group"):
                 client.request_components(component_request(
                     request_id="sdk-component",
-                    role=TEST_COMPONENT_KIND_SENTRY,
+                    role=TEST_COMPONENT_KIND_COSIGNER,
                     group_bytes_hex=["5458aa"],
                     target_indices=[0],
                 ))
@@ -838,7 +838,7 @@ class TestSpecializedLowLevelEndpoints:
                         target_index=0,
                         guarded_account="GUARDED",
                         user_signature="aabb",
-                        sentry_signature="bbcc",
+                        cosigner_signature="bbcc",
                     ),
                 ],
             ))
@@ -861,7 +861,7 @@ class TestSpecializedLowLevelEndpoints:
                             target_index=0,
                             guarded_account="GUARDED",
                             user_signature="aabb",
-                            sentry_signature="bbcc",
+                            cosigner_signature="bbcc",
                         ),
                     ],
                 ))
@@ -903,11 +903,11 @@ class TestSpecializedLowLevelEndpoints:
                 "group_bytes_hex": ["5458aa"],
                 "targets": [{
                     "target_index": 0,
-                    "kind": ASSEMBLY_TARGET_KIND_BOUNDED_SENTRY,
+                    "kind": ASSEMBLY_TARGET_KIND_BOUNDED_COSIGNER,
                     "auth_address": "BOUNDED",
                     "base_signatures": ["base-sig"],
                     "assembly_receipt": "receipt",
-                    "sentry_signature": "sentry-sig",
+                    "cosigner_signature": "cosigner-sig",
                 }],
             })
 
@@ -982,31 +982,31 @@ class TestSpecializedLowLevelEndpoints:
                     "group_bytes_hex": ["5458aa"],
                     "targets": [{
                         "target_index": 0,
-                        "kind": ASSEMBLY_TARGET_KIND_BOUNDED_SENTRY,
+                        "kind": ASSEMBLY_TARGET_KIND_BOUNDED_COSIGNER,
                         "auth_address": "BOUNDED",
                         "base_signatures": ["base-sig"],
                         "assembly_receipt": "receipt",
-                        "sentry_signature": "sentry-sig",
+                        "cosigner_signature": "cosigner-sig",
                     }],
                 })
 
 class TestSignGuardedGroup:
     def test_signs_one_guarded_target(self):
         user = make_client()
-        sentry = make_client("http://sentry:11270")
+        cosigner = make_client("http://cosigner:11270")
 
         user.request_components = MagicMock(return_value=component_response(
             request_id="user-id",
             signatures=[component_signature(0, "user-sig", KEY_TYPE_WITNESS_FALCON1024)],
         ))
-        sentry.request_components = MagicMock(return_value=component_response(
-            request_id="sentry-id",
-            signatures=[component_signature(0, "sentry-sig", KEY_TYPE_WITNESS_FALCON1024)],
+        cosigner.request_components = MagicMock(return_value=component_response(
+            request_id="cosigner-id",
+            signatures=[component_signature(0, "cosigner-sig", KEY_TYPE_WITNESS_FALCON1024)],
         ))
 
         def assemble(req):
             assert req.targets[0].user_signature == "user-sig"
-            assert req.targets[0].sentry_signature == "sentry-sig"
+            assert req.targets[0].cosigner_signature == "cosigner-sig"
             return assembly_response(
                 request_id=req.request_id or "assembly-id",
                 signed_group=["signed-guarded"],
@@ -1016,8 +1016,8 @@ class TestSignGuardedGroup:
 
         result = sign_guarded_group(
             user_client=user,
-            sentry_client=sentry,
-            sentry_component_key="SENTRY_COMPONENT",
+            cosigner_client=cosigner,
+            cosigner_component_key="COSIGNER_COMPONENT",
             group_bytes_hex=["5458aa"],
             guarded_targets=[
                 GuardedSignTarget(
@@ -1032,13 +1032,13 @@ class TestSignGuardedGroup:
         user_req = user.request_components.call_args.args[0]
         assert user_req.targets[0]["kind"] == "user"
         assert user_req.targets[0]["auth_address"] == "GUARDED"
-        sentry_req = sentry.request_components.call_args.args[0]
-        assert sentry_req.targets[0]["kind"] == "sentry"
-        assert sentry_req.targets[0]["component_key"] == "SENTRY_COMPONENT"
+        cosigner_req = cosigner.request_components.call_args.args[0]
+        assert cosigner_req.targets[0]["kind"] == "cosigner"
+        assert cosigner_req.targets[0]["component_key"] == "COSIGNER_COMPONENT"
 
-    def test_batches_targets_for_shared_sentry_key(self):
+    def test_batches_targets_for_shared_cosigner_key(self):
         user = make_client()
-        sentry = make_client("http://sentry:11270")
+        cosigner = make_client("http://cosigner:11270")
         user.request_components = MagicMock(return_value=component_response(
             request_id="user-id",
             signatures=[
@@ -1046,11 +1046,11 @@ class TestSignGuardedGroup:
                 component_signature(1, "user-1", KEY_TYPE_WITNESS_FALCON1024),
             ],
         ))
-        sentry.request_components = MagicMock(return_value=component_response(
-            request_id="sentry-id",
+        cosigner.request_components = MagicMock(return_value=component_response(
+            request_id="cosigner-id",
             signatures=[
-                component_signature(0, "sentry-0", KEY_TYPE_WITNESS_FALCON1024),
-                component_signature(1, "sentry-1", KEY_TYPE_WITNESS_FALCON1024),
+                component_signature(0, "cosigner-0", KEY_TYPE_WITNESS_FALCON1024),
+                component_signature(1, "cosigner-1", KEY_TYPE_WITNESS_FALCON1024),
             ],
         ))
         user.request_assemble = MagicMock(return_value=assembly_response(
@@ -1060,8 +1060,8 @@ class TestSignGuardedGroup:
 
         sign_guarded_group(
             user_client=user,
-            sentry_client=sentry,
-            sentry_component_key="SENTRY_COMPONENT",
+            cosigner_client=cosigner,
+            cosigner_component_key="COSIGNER_COMPONENT",
             group_bytes_hex=["5458aa", "5458bb"],
             guarded_targets=[
                 GuardedSignTarget(
@@ -1077,12 +1077,12 @@ class TestSignGuardedGroup:
             ],
         )
 
-        assert sentry.request_components.call_count == 1
-        assert [target["target_index"] for target in sentry.request_components.call_args.args[0].targets] == [0, 1]
+        assert cosigner.request_components.call_count == 1
+        assert [target["target_index"] for target in cosigner.request_components.call_args.args[0].targets] == [0, 1]
 
     def test_mixed_primary_and_guarded_group(self):
         user = make_client()
-        sentry = make_client("http://sentry:11270")
+        cosigner = make_client("http://cosigner:11270")
         sender = sdk_test_address(7)
         receiver = sdk_test_address(8)
         params = transaction.SuggestedParams(
@@ -1103,9 +1103,9 @@ class TestSignGuardedGroup:
             request_id="user-id",
             signatures=[component_signature(1, "user-sig", KEY_TYPE_WITNESS_FALCON1024)],
         ))
-        sentry.request_components = MagicMock(return_value=component_response(
-            request_id="sentry-id",
-            signatures=[component_signature(1, "sentry-sig", KEY_TYPE_WITNESS_FALCON1024)],
+        cosigner.request_components = MagicMock(return_value=component_response(
+            request_id="cosigner-id",
+            signatures=[component_signature(1, "cosigner-sig", KEY_TYPE_WITNESS_FALCON1024)],
         ))
         user.sign_requests = MagicMock(return_value=GroupSignResponse(
             signed=[primary_signed, "", ""],
@@ -1124,8 +1124,8 @@ class TestSignGuardedGroup:
 
         result = sign_guarded_group(
             user_client=user,
-            sentry_client=sentry,
-            sentry_component_key="SENTRY_COMPONENT",
+            cosigner_client=cosigner,
+            cosigner_component_key="COSIGNER_COMPONENT",
             group_bytes_hex=[primary_hex, "5458bb", "5458cc"],
             primary_targets=[
                 GuardedPrimarySignTarget(
@@ -1163,7 +1163,7 @@ class TestSignGuardedGroup:
             "argument_bytes": 1423,
             "max_opcode_cost": 20000,
         }
-        for client in (user, sentry):
+        for client in (user, cosigner):
             request = client.request_components.call_args.args[0]
             primary_context = next(
                 item
@@ -1200,15 +1200,15 @@ class TestSignGuardedGroup:
         guarded = sdk_test_address(1)
         receiver = sdk_test_address(2)
         user = make_client()
-        sentry = make_client("http://sentry:11270")
+        cosigner = make_client("http://cosigner:11270")
 
         user.request_components = MagicMock(return_value=component_response(
             request_id="user-id",
             signatures=[component_signature(0, "user-sig", KEY_TYPE_WITNESS_FALCON1024)],
         ))
-        sentry.request_components = MagicMock(return_value=component_response(
-            request_id="sentry-id",
-            signatures=[component_signature(0, "sentry-sig", KEY_TYPE_WITNESS_FALCON1024)],
+        cosigner.request_components = MagicMock(return_value=component_response(
+            request_id="cosigner-id",
+            signatures=[component_signature(0, "cosigner-sig", KEY_TYPE_WITNESS_FALCON1024)],
         ))
         user.sign_requests = MagicMock(side_effect=AssertionError("all-guarded path must not call /sign"))
 
@@ -1258,8 +1258,8 @@ class TestSignGuardedGroup:
 
         result = sign_prepared_guarded_group(
             user_client=user,
-            sentry_client=sentry,
-            sentry_component_key="SENTRY_COMPONENT",
+            cosigner_client=cosigner,
+            cosigner_component_key="COSIGNER_COMPONENT",
             prepared_group=PreparedGroup([
                 PreparedTransaction(
                     transaction=txn,
@@ -1267,13 +1267,13 @@ class TestSignGuardedGroup:
                     app_call_info={"mode": "raw"},
                     signer_key=KeyInfo(
                         address=guarded,
-                        key_type=KEY_TYPE_GUARDED_FALCON1024_SENTRY1024,
-                        signing_flow=SIGNING_FLOW_SENTRY1,
-                        sentry_component_key_type=KEY_TYPE_WITNESS_FALCON1024,
+                        key_type=KEY_TYPE_GUARDED_FALCON1024_COSIGNER1024,
+                        signing_flow=SIGNING_FLOW_COSIGNER1,
+                        cosigner_component_key_type=KEY_TYPE_WITNESS_FALCON1024,
                         logic_sig_resources=LogicSigResourceProfile(
                             spend=LogicSigResourceUsage(1612, 1423, 20000)
                         ),
-                        parameters={"sentry_public_key": "aabbcc"},
+                        parameters={"cosigner_public_key": "aabbcc"},
                     ),
                 )
             ]),
@@ -1281,7 +1281,7 @@ class TestSignGuardedGroup:
 
         assert len(result.signed_group) == 2
         assert result.primary_sign_response is None
-        for client in (user, sentry):
+        for client in (user, cosigner):
             request = client.request_components.call_args.args[0]
             assert request.contextual_positions is None
             assert request.dummy_positions == [{"target_index": 1}]
@@ -1290,9 +1290,9 @@ class TestSignGuardedGroup:
         user_req = user.request_components.call_args.args[0]
         assert user_req.targets[0]["auth_address"] == guarded
         assert len(user_req.group_bytes_hex) == 2
-        sentry_req = sentry.request_components.call_args.args[0]
-        assert sentry_req.targets[0]["component_key"] == "SENTRY_COMPONENT"
-        assert len(sentry_req.group_bytes_hex) == 2
+        cosigner_req = cosigner.request_components.call_args.args[0]
+        assert cosigner_req.targets[0]["component_key"] == "COSIGNER_COMPONENT"
+        assert len(cosigner_req.group_bytes_hex) == 2
 
     def test_prepared_plan_preserves_per_slot_args_for_repeated_auth_address(self):
         guarded = sdk_test_address(31)
@@ -1308,13 +1308,13 @@ class TestSignGuardedGroup:
         )
         signer_key = KeyInfo(
             address=guarded,
-            key_type=KEY_TYPE_GUARDED_FALCON1024_SENTRY1024,
-            signing_flow=SIGNING_FLOW_SENTRY1,
-            sentry_component_key_type=KEY_TYPE_WITNESS_FALCON1024,
+            key_type=KEY_TYPE_GUARDED_FALCON1024_COSIGNER1024,
+            signing_flow=SIGNING_FLOW_COSIGNER1,
+            cosigner_component_key_type=KEY_TYPE_WITNESS_FALCON1024,
             logic_sig_resources=LogicSigResourceProfile(
                 spend=LogicSigResourceUsage(1612, 1423, 20000)
             ),
-            parameters={"sentry_public_key": "aabbcc"},
+            parameters={"cosigner_public_key": "aabbcc"},
         )
 
         def assert_per_slot_requests(requests):
@@ -1483,7 +1483,7 @@ class TestSignGuardedGroup:
                 ],
             })
 
-        with pytest.raises(ValueError, match="cannot mix sentry1 and bounded-sentry1"):
+        with pytest.raises(ValueError, match="cannot mix cosigner1 and bounded-cosigner1"):
             sign_prepared_guarded_group(
                 user_client=make_client(),
                 prepared_group=PreparedGroup([
@@ -1491,14 +1491,14 @@ class TestSignGuardedGroup:
                         signer_key=KeyInfo(
                             address="bounded",
                             key_type="bounded",
-                            signing_flow=SIGNING_FLOW_BOUNDED_SENTRY1,
+                            signing_flow=SIGNING_FLOW_BOUNDED_COSIGNER1,
                         )
                     ),
                     PreparedTransaction(
                         signer_key=KeyInfo(
                             address="guarded",
                             key_type="guarded",
-                            signing_flow=SIGNING_FLOW_SENTRY1,
+                            signing_flow=SIGNING_FLOW_COSIGNER1,
                         )
                     ),
                 ]),
@@ -1563,11 +1563,11 @@ class TestSignGuardedGroup:
                 [{"target_index": 0, "auth_address": sender}],
             )
 
-    def test_prepared_bounded_sentry_uses_user_first_flow(self):
+    def test_prepared_bounded_cosigner_uses_user_first_flow(self):
         bounded = sdk_test_address(11)
         receiver = sdk_test_address(12)
         user = make_client()
-        sentry = make_client("http://sentry:11270")
+        cosigner = make_client("http://cosigner:11270")
 
         def bounded_component(req):
             assert isinstance(req, ComponentRequest)
@@ -1586,10 +1586,10 @@ class TestSignGuardedGroup:
         user.plan_requests = MagicMock(side_effect=lambda requests: {
             "transactions": [requests[0]["txn_bytes_hex"]],
         })
-        sentry.request_components = MagicMock(return_value=component_response(
-            request_id="sentry-id",
+        cosigner.request_components = MagicMock(return_value=component_response(
+            request_id="cosigner-id",
             signatures=[component_signature(
-                0, "sentry-sig", KEY_TYPE_WITNESS_FALCON1024
+                0, "cosigner-sig", KEY_TYPE_WITNESS_FALCON1024
             )],
         ))
 
@@ -1605,7 +1605,7 @@ class TestSignGuardedGroup:
         def bounded_assemble(req):
             assert req.targets[0].base_signatures == ["base-sig"]
             assert req.targets[0].assembly_receipt == "receipt"
-            assert req.targets[0].sentry_signature == "sentry-sig"
+            assert req.targets[0].cosigner_signature == "cosigner-sig"
             return AssemblyResponse(
                 request_id="assembly-id",
                 signed_group=[signed_txn_hex(assembled_txn[0])],
@@ -1634,8 +1634,8 @@ class TestSignGuardedGroup:
                     signer_key=KeyInfo(
                         address=bounded,
                         key_type="aplane.corridor.v1",
-                        signing_flow=SIGNING_FLOW_BOUNDED_SENTRY1,
-                        sentry_component_key_type=KEY_TYPE_WITNESS_FALCON1024,
+                        signing_flow=SIGNING_FLOW_BOUNDED_COSIGNER1,
+                        cosigner_component_key_type=KEY_TYPE_WITNESS_FALCON1024,
                         logic_sig_resources=LogicSigResourceProfile(
                             spend=LogicSigResourceUsage(5308, 3358, 20000)
                         ),
@@ -1651,8 +1651,8 @@ class TestSignGuardedGroup:
                             derived_args=[],
                             argument_layout=[],
                             layer3_policy="merkle_allowlist",
-                            sentry=BoundedSentryAuthorizationInfo(
-                                contract="sentry1",
+                            cosigner=BoundedCosignerAuthorizationInfo(
+                                contract="cosigner1",
                                 component_key_type=KEY_TYPE_WITNESS_FALCON1024,
                                 public_key_hex="aabb",
                             ),
@@ -1669,16 +1669,16 @@ class TestSignGuardedGroup:
         ):
             sign_prepared_guarded_group(
                 user_client=user,
-                sentry_client=sentry,
-                sentry_component_key="SENTRY_COMPONENT",
+                cosigner_client=cosigner,
+                cosigner_component_key="COSIGNER_COMPONENT",
                 prepared_group=prepared_group,
             )
 
         assembled_txn[0] = txn
         result = sign_prepared_guarded_group(
             user_client=user,
-            sentry_client=sentry,
-            sentry_component_key="SENTRY_COMPONENT",
+            cosigner_client=cosigner,
+            cosigner_component_key="COSIGNER_COMPONENT",
             prepared_group=prepared_group,
         )
 
@@ -1686,24 +1686,24 @@ class TestSignGuardedGroup:
         assert result.assembly_response is None
         assert result.bounded_component_response is not None
         assert result.bounded_assembly_response is not None
-        sentry_req = sentry.request_components.call_args.args[0]
-        assert len(sentry_req.group_bytes_hex) == 1
-        assert sentry_req.group_bytes_hex[0].startswith("5458")
-        assert [target["target_index"] for target in sentry_req.targets] == [0]
-        assert sentry_req.targets[0]["app_call_info"] == {"mode": "raw"}
+        cosigner_req = cosigner.request_components.call_args.args[0]
+        assert len(cosigner_req.group_bytes_hex) == 1
+        assert cosigner_req.group_bytes_hex[0].startswith("5458")
+        assert [target["target_index"] for target in cosigner_req.targets] == [0]
+        assert cosigner_req.targets[0]["app_call_info"] == {"mode": "raw"}
 
         user.request_components.reset_mock()
         prepared_group.transactions[0].signer_key.bounded_authorization.max_fee = 999
         with pytest.raises(SignerError, match="exceeds advertised max_fee"):
             sign_prepared_guarded_group(
                 user_client=user,
-                sentry_client=sentry,
-                sentry_component_key="SENTRY_COMPONENT",
+                cosigner_client=cosigner,
+                cosigner_component_key="COSIGNER_COMPONENT",
                 prepared_group=prepared_group,
             )
         user.request_components.assert_not_called()
 
-    def test_prepared_bounded_sentry_declares_native_pq_primary(self):
+    def test_prepared_bounded_cosigner_declares_native_pq_primary(self):
         """A native-PQ primary slot is declared foreign to
         /sign/component request, so the signer budgets its fee purely from the
         declared pq_scheme. Omitting it freezes an under-funded canonical group
@@ -1714,7 +1714,7 @@ class TestSignGuardedGroup:
         native_pq = sdk_test_address(42)
         receiver = sdk_test_address(43)
         user = make_client()
-        sentry = make_client("http://sentry:11270")
+        cosigner = make_client("http://cosigner:11270")
         captured = {}
 
         params = transaction.SuggestedParams(
@@ -1759,10 +1759,10 @@ class TestSignGuardedGroup:
                 "transactions": planned_hex,
             }
         ))
-        sentry.request_components = MagicMock(return_value=component_response(
-            request_id="sentry-id",
+        cosigner.request_components = MagicMock(return_value=component_response(
+            request_id="cosigner-id",
             signatures=[component_signature(
-                0, "sentry-sig", KEY_TYPE_WITNESS_FALCON1024
+                0, "cosigner-sig", KEY_TYPE_WITNESS_FALCON1024
             )],
         ))
         user.sign_requests = MagicMock(return_value=GroupSignResponse(
@@ -1775,8 +1775,8 @@ class TestSignGuardedGroup:
 
         sign_prepared_guarded_group(
             user_client=user,
-            sentry_client=sentry,
-            sentry_component_key="SENTRY_COMPONENT",
+            cosigner_client=cosigner,
+            cosigner_component_key="COSIGNER_COMPONENT",
             prepared_group=PreparedGroup([
                 PreparedTransaction(
                     transaction=bounded_txn,
@@ -1785,8 +1785,8 @@ class TestSignGuardedGroup:
                         address=bounded,
                         key_type="aplane.corridor.v1",
                         authorization_kind=AUTHORIZATION_KIND_LOGIC_SIG,
-                        signing_flow=SIGNING_FLOW_BOUNDED_SENTRY1,
-                        sentry_component_key_type=KEY_TYPE_WITNESS_FALCON1024,
+                        signing_flow=SIGNING_FLOW_BOUNDED_COSIGNER1,
+                        cosigner_component_key_type=KEY_TYPE_WITNESS_FALCON1024,
                         logic_sig_resources=LogicSigResourceProfile(
                             spend=LogicSigResourceUsage(5308, 3358, 20000)
                         ),
@@ -1802,8 +1802,8 @@ class TestSignGuardedGroup:
                             derived_args=[],
                             argument_layout=[],
                             layer3_policy="merkle_allowlist",
-                            sentry=BoundedSentryAuthorizationInfo(
-                                contract="sentry1",
+                            cosigner=BoundedCosignerAuthorizationInfo(
+                                contract="cosigner1",
                                 component_key_type=KEY_TYPE_WITNESS_FALCON1024,
                                 public_key_hex="aabb",
                             ),
@@ -1854,7 +1854,7 @@ class TestSignGuardedGroup:
             flat_fee=True,
         )
         txn = transaction.PaymentTxn(guarded, params, receiver, 1000)
-        with pytest.raises(ValueError, match="signing flow 'sentry2'"):
+        with pytest.raises(ValueError, match="signing flow 'cosigner2'"):
             sign_prepared_guarded_group(
                 user_client=user,
                 prepared_group=PreparedGroup([
@@ -1864,7 +1864,7 @@ class TestSignGuardedGroup:
                         signer_key=KeyInfo(
                             address=guarded,
                             key_type="aplane.future-guarded.v1",
-                            signing_flow="sentry2",
+                            signing_flow="cosigner2",
                             logic_sig_resources=LogicSigResourceProfile(
                                 spend=LogicSigResourceUsage(1612, 1423, 20000)
                             ),
@@ -3143,7 +3143,7 @@ class TestFromEnv:
         (tmp_path / "endpoints.yaml").write_text(
             "schema_version: 1\nendpoints:\n"
             "  primary:\n    role: signer\n    url: https://signer.example.com/\n"
-            "  qa:\n    role: sentry\n    url: http://127.0.0.1:11271/\n"
+            "  qa:\n    role: cosigner\n    url: http://127.0.0.1:11271/\n"
         )
         client = SignerClient.from_env(
             data_dir=str(tmp_path), endpoint="qa", timeout=7
@@ -3166,8 +3166,8 @@ class TestFromEnv:
         "fixture,want",
         [
             ("invalid_self_signer.yaml", 'endpoint "primary": url "self" is not supported'),
-            ("invalid_self_sentry.yaml", 'endpoint "sentry": url "self" is not supported'),
-            ("invalid_sentry_local_port.yaml", 'endpoint "sentry": local_port is not supported'),
+            ("invalid_self_cosigner.yaml", 'endpoint "cosigner": url "self" is not supported'),
+            ("invalid_cosigner_local_port.yaml", 'endpoint "cosigner": local_port is not supported'),
         ],
     )
     def test_rejects_invalid_endpoint_before_token_loading(self, tmp_path, fixture, want):
@@ -3239,7 +3239,7 @@ class TestRequestTokenToFile:
         (tmp_path / "endpoints.yaml").write_text(
             "schema_version: 1\nendpoints:\n"
             "  primary:\n    role: signer\n    url: ssh://signer.example.com\n"
-            "  qa:\n    role: sentry\n    url: ssh://sentry.example.com:2222\n"
+            "  qa:\n    role: cosigner\n    url: ssh://cosigner.example.com:2222\n"
         )
         ssh_dir = tmp_path / ".ssh"
         ssh_dir.mkdir()
@@ -3255,7 +3255,7 @@ class TestRequestTokenToFile:
 
         assert os.path.exists(path)
         assert (tmp_path / "tokens" / "qa.token").read_text() == "test-token"
-        assert provision.call_args.kwargs["host"] == "sentry.example.com"
+        assert provision.call_args.kwargs["host"] == "cosigner.example.com"
         assert provision.call_args.kwargs["ssh_port"] == 2222
         assert provision.call_args.kwargs["known_hosts_path"] == str(
             tmp_path / ".ssh" / "known_hosts"
@@ -3405,8 +3405,8 @@ class TestLoadClientEndpointRegistry:
         assert primary.local_port == 18080
         assert primary.identity_file == str(tmp_path / ".ssh" / "primary")
         assert primary.token_file == str(tmp_path / "aplane.token")
-        sentry = registry.endpoints["sentry.qa"]
-        assert sentry.token_file == str(tmp_path / "credentials" / "sentry.token")
+        cosigner = registry.endpoints["cosigner.qa"]
+        assert cosigner.token_file == str(tmp_path / "credentials" / "cosigner.token")
 
     @pytest.mark.parametrize(
         "name",
@@ -3431,10 +3431,10 @@ class TestLoadClientEndpointRegistry:
         "name,want",
         [
             ("invalid_self_signer.yaml", 'endpoint "primary": url "self" is not supported'),
-            ("invalid_self_sentry.yaml", 'endpoint "sentry": url "self" is not supported'),
-            ("invalid_sentry_local_port.yaml", 'endpoint "sentry": local_port is not supported'),
-            ("invalid_13_sentry_endpoints.yaml", "configures 13 sentry endpoints; maximum is 12"),
-            ("invalid_v2_published_sentries.yaml", "published_sentries"),
+            ("invalid_self_cosigner.yaml", 'endpoint "cosigner": url "self" is not supported'),
+            ("invalid_cosigner_local_port.yaml", 'endpoint "cosigner": local_port is not supported'),
+            ("invalid_13_cosigner_endpoints.yaml", "configures 13 cosigner endpoints; maximum is 12"),
+            ("invalid_v2_published_cosigners.yaml", "published_cosigners"),
         ],
     )
     def test_rejects_shared_fixture_for_expected_reason(self, tmp_path, name, want):
@@ -3447,33 +3447,33 @@ class TestLoadClientEndpointRegistry:
         [
             "valid_schema_version_null.yaml",
             "valid_schema_version_zero.yaml",
-            "valid_12_sentry_endpoints.yaml",
-            "valid_sentry_zero_local_port.yaml",
+            "valid_12_cosigner_endpoints.yaml",
+            "valid_cosigner_zero_local_port.yaml",
         ],
     )
     def test_accepts_shared_edge_fixtures(self, tmp_path, name):
         self._fixture(tmp_path, name)
         registry = load_client_endpoint_registry(str(tmp_path))
         assert registry.schema_version == 2
-        if name == "valid_12_sentry_endpoints.yaml":
+        if name == "valid_12_cosigner_endpoints.yaml":
             assert len(registry.endpoints) == 12
-        if name == "valid_sentry_zero_local_port.yaml":
-            assert registry.endpoints["sentry"].local_port == 0
+        if name == "valid_cosigner_zero_local_port.yaml":
+            assert registry.endpoints["cosigner"].local_port == 0
 
-    def test_discards_v1_published_sentry_inventory(self, tmp_path):
-        self._fixture(tmp_path, "valid_v1_published_sentries.yaml")
+    def test_discards_v1_published_cosigner_inventory(self, tmp_path):
+        self._fixture(tmp_path, "valid_v1_published_cosigners.yaml")
         registry = load_client_endpoint_registry(str(tmp_path))
         assert registry.schema_version == 2
-        endpoint = registry.endpoints["sentry-old"]
-        assert endpoint.role == "sentry"
-        assert endpoint.url == "https://sentry.example.com"
-        assert not hasattr(endpoint, "published_sentries")
+        endpoint = registry.endpoints["cosigner-old"]
+        assert endpoint.role == "cosigner"
+        assert endpoint.url == "https://cosigner.example.com"
+        assert not hasattr(endpoint, "published_cosigners")
 
     def test_derives_default_and_alias_token_paths(self, tmp_path):
         (tmp_path / "endpoints.yaml").write_text(
             "schema_version: 1\nendpoints:\n"
             "  main:\n    role: signer\n    url: ssh://localhost\n"
-            "  qa:\n    role: sentry\n    url: http://127.0.0.1:11271\n"
+            "  qa:\n    role: cosigner\n    url: http://127.0.0.1:11271\n"
         )
         registry = load_client_endpoint_registry(str(tmp_path))
         assert registry.default == "main"
@@ -3482,7 +3482,7 @@ class TestLoadClientEndpointRegistry:
             tmp_path / "tokens" / "main.token"
         )
         assert resolve_client_endpoint(registry)[0] == "main"
-        assert resolve_client_endpoint(registry, "qa")[1].role == "sentry"
+        assert resolve_client_endpoint(registry, "qa")[1].role == "cosigner"
 
 
 class TestRequestToken:

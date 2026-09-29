@@ -90,16 +90,16 @@
           "default": "aplane"
         },
         {
-          "name": "sentry",
-          "label": "Sentry",
-          "description": "Imported sentry public-key reference",
+          "name": "cosigner",
+          "label": "Cosigner",
+          "description": "Imported cosigner public-key reference",
           "type": "select",
           "required": true,
           "options": [
-            "lab-sentry",
-            "backup-sentry"
+            "lab-cosigner",
+            "backup-cosigner"
           ],
-          "default": "lab-sentry"
+          "default": "lab-cosigner"
         }
       ],
       "runtime_args": [

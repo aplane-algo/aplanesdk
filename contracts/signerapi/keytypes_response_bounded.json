@@ -53,14 +53,14 @@
       "key_type": "aplane.corridor.v1",
       "family": "corridor",
       "display_name": "Corridor",
-      "description": "Bounded Falcon-1024 account with sentry authorization and a Merkle recipient allowlist.",
+      "description": "Bounded Falcon-1024 account with cosigner authorization and a Merkle recipient allowlist.",
       "authorization_kind": "logic_sig",
       "requires_logicsig": true,
       "mnemonic_word_count": 0,
       "mnemonic_import": false,
       "mnemonic_scheme": "",
-      "signing_flow": "bounded-sentry1",
-      "sentry_component_key_type": "aplane.witness-falcon1024.v1",
+      "signing_flow": "bounded-cosigner1",
+      "cosigner_component_key_type": "aplane.witness-falcon1024.v1",
       "bounded_authorization": {
         "contract": "bounded1",
         "base_signature_arg_layout": {
@@ -82,8 +82,8 @@
             "policy_gate": "none"
           }
         ],
-        "sentry": {
-          "contract": "sentry1",
+        "cosigner": {
+          "contract": "cosigner1",
           "component_key_type": "aplane.witness-falcon1024.v1",
           "signature_max_size": 1423,
           "required_on": [
@@ -124,8 +124,8 @@
           },
           {
             "index": 2,
-            "name": "sentry_signature",
-            "source": "sentry",
+            "name": "cosigner_signature",
+            "source": "cosigner",
             "max_size": 1423,
             "paths": {
               "spend": "required",
@@ -159,7 +159,7 @@
           "placeholder": "ADDR1, ADDR2, ADDR3"
         },
         {
-          "name": "sentry",
+          "name": "cosigner",
           "label": "Witness Key ID",
           "description": "Imported Witness Key ID to embed in the guarded account",
           "type": "select",

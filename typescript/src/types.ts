@@ -9,19 +9,19 @@ import { SignerError } from "./errors.js";
  * Position in the array corresponds to the TEAL arg index.
  */
 /**
- * Signing choreography label for the sentry co-signed component flow (one
- * user plus one sentry component signature per target, assembled via
+ * Signing choreography label for the cosigner co-signed component flow (one
+ * user plus one cosigner component signature per target, assembled via
  * /sign/assemble). Signer inventory labels guarded keys with this flow;
  * clients route on the label and must fail fast on flow labels they do not
  * implement. An empty signing_flow means the ordinary /sign path.
  */
-export const SIGNING_FLOW_SENTRY1 = "sentry1";
+export const SIGNING_FLOW_COSIGNER1 = "cosigner1";
 export const SIGNING_FLOW_BOUNDED1 = "bounded1";
-export const SIGNING_FLOW_BOUNDED_SENTRY1 = "bounded-sentry1";
+export const SIGNING_FLOW_BOUNDED_COSIGNER1 = "bounded-cosigner1";
 
 export const KEY_TYPE_WITNESS_FALCON1024 = "aplane.witness-falcon1024.v1";
-export const KEY_TYPE_GUARDED_FALCON1024_SENTRY1024 =
-  "aplane.falcon1024-sentry1024.v1";
+export const KEY_TYPE_GUARDED_FALCON1024_COSIGNER1024 =
+  "aplane.falcon1024-cosigner1024.v1";
 export const PQ_SCHEME_FALCON1024 = "f1";
 
 export const AUTHORIZATION_KIND_ED25519 = "ed25519";
@@ -132,7 +132,7 @@ export interface BoundedArgumentSlotInfo {
   paths: BoundedArgumentPathMask;
 }
 
-export interface BoundedSentryAuthorizationInfo {
+export interface BoundedCosignerAuthorizationInfo {
   contract: string;
   componentKeyType: string;
   publicKeyHex?: string;
@@ -147,7 +147,7 @@ export interface BoundedAuthorizationInfo {
   spendEffects: string[];
   maxFee: number;
   adminOperations: BoundedAdminOperationInfo[];
-  sentry?: BoundedSentryAuthorizationInfo;
+  cosigner?: BoundedCosignerAuthorizationInfo;
   runtimeArgs: RuntimeArg[];
   derivedArgs: BoundedDerivedArgInfo[];
   argumentLayout: BoundedArgumentSlotInfo[];
@@ -172,10 +172,10 @@ export interface KeyInfo {
    * accounts. Never infer Ed25519 from an absent value.
    */
   authorizationKind?: AuthorizationKind;
-  /** Signing choreography label (e.g. "sentry1"); empty/absent = plain /sign path */
+  /** Signing choreography label (e.g. "cosigner1"); empty/absent = plain /sign path */
   signingFlow?: string;
-  /** Sentry component key type for signing flow "sentry1" */
-  sentryComponentKeyType?: string;
+  /** Cosigner component key type for signing flow "cosigner1" */
+  cosignerComponentKeyType?: string;
   /** Independent LogicSig resources by authorization path. */
   logicSigResources?: LogicSigResourceProfile;
   /** True if this is a generic LogicSig (no cryptographic signature needed) */
@@ -188,7 +188,7 @@ export interface KeyInfo {
   boundedAuthorization?: BoundedAuthorizationInfo;
   /** Key-file-owned signing arguments for LogicSigs */
   signingArgs?: SigningArg[];
-  /** Non-secret key parameters such as guarded-account sentry_public_key */
+  /** Non-secret key parameters such as guarded-account cosigner_public_key */
   parameters?: Record<string, string>;
   /** Template provenance status, when the signer reports one */
   templateProvenanceStatus?: string;
@@ -209,9 +209,9 @@ export interface ClientConfig {
   theme: string;
 }
 
-/** One signer or sentry connection profile from endpoints.yaml. */
+/** One signer or cosigner connection profile from endpoints.yaml. */
 export interface ClientEndpointConfig {
-  role: "signer" | "sentry";
+  role: "signer" | "cosigner";
   url: string;
   signerPort: number;
   localPort: number;
@@ -323,7 +323,7 @@ export interface CreationParam {
   placeholder?: string;
   /** Default value */
   default?: string;
-  /** Select options for parameters such as sentry references */
+  /** Select options for parameters such as cosigner references */
   options?: string[];
 }
 
@@ -349,10 +349,10 @@ export interface KeyTypeInfo {
   mnemonicImport?: boolean;
   /** Mnemonic scheme name */
   mnemonicScheme?: string;
-  /** Signing choreography label (e.g. "sentry1"); empty/absent = plain /sign path */
+  /** Signing choreography label (e.g. "cosigner1"); empty/absent = plain /sign path */
   signingFlow?: string;
-  /** Sentry component key type for signing flow "sentry1" */
-  sentryComponentKeyType?: string;
+  /** Cosigner component key type for signing flow "cosigner1" */
+  cosignerComponentKeyType?: string;
   /** Definition-level transaction-authorization capability */
   boundedAuthorization?: BoundedAuthorizationInfo;
   /** Creation parameters */
@@ -375,7 +375,7 @@ export interface ProtocolVersion {
  * Response from the /status endpoint.
  */
 export interface StatusResponse {
-  /** Signer node role, such as "signer" or "sentry", when reported */
+  /** Signer node role, such as "signer" or "cosigner", when reported */
   nodeRole?: string;
   /** Signer protocol version, when reported */
   protocolVersion?: ProtocolVersion;
@@ -456,7 +456,7 @@ export interface CancelSignResponse {
   error?: string;
 }
 
-export type ComponentTargetKind = "user" | "sentry" | "bounded-base";
+export type ComponentTargetKind = "user" | "cosigner" | "bounded-base";
 
 export interface ComponentRequest {
   request_id?: string;
@@ -491,7 +491,7 @@ export interface ComponentResponse {
   components: Component[];
 }
 
-export type AssemblyTargetKind = "guarded" | "bounded-sentry";
+export type AssemblyTargetKind = "guarded" | "bounded-cosigner";
 
 export interface AssemblyTarget {
   target_index: number;
@@ -504,8 +504,8 @@ export interface AssemblyTarget {
   bounded_runtime_args?: Record<string, string>;
   assembly_receipt?: string;
   base_source_request_id?: string;
-  sentry_signature: string;
-  sentry_source_request_id?: string;
+  cosigner_signature: string;
+  cosigner_source_request_id?: string;
 }
 
 export interface AssemblyRequest {
@@ -988,7 +988,7 @@ export const ErrorCodes = {
   Unavailable: "unavailable",
   CacheRefresh: "cache_refresh",
   BoundedAdminRequired: "bounded_admin_required",
-  BoundedSentryRequired: "bounded_sentry_required",
+  BoundedCosignerRequired: "bounded_cosigner_required",
   Internal: "internal",
 } as const;
 

@@ -43,8 +43,8 @@
       "public_key_hex": "ffeeddccbbaa99887766554433221100",
       "key_type": "aplane.corridor.v1",
       "authorization_kind": "logic_sig",
-      "signing_flow": "bounded-sentry1",
-      "sentry_component_key_type": "aplane.witness-falcon1024.v1",
+      "signing_flow": "bounded-cosigner1",
+      "cosigner_component_key_type": "aplane.witness-falcon1024.v1",
       "logic_sig_resources": {
         "spend": {"program_bytes": 5308, "argument_bytes": 3358, "max_opcode_cost": 20000},
         "spending_rekey": {"program_bytes": 5308, "argument_bytes": 1423, "max_opcode_cost": 20000},
@@ -71,11 +71,11 @@
             "policy_gate": "none"
           }
         ],
-        "sentry": {
-          "contract": "sentry1",
+        "cosigner": {
+          "contract": "cosigner1",
           "component_key_type": "aplane.witness-falcon1024.v1",
           "public_key_hex": "11223344556677889900aabbccddeeff",
-          "component_key_id": "sentry:falcon1024:EXAMPLE",
+          "component_key_id": "cosigner:falcon1024:EXAMPLE",
           "signature_max_size": 1423,
           "required_on": [
             "spend"
@@ -115,8 +115,8 @@
           },
           {
             "index": 2,
-            "name": "sentry_signature",
-            "source": "sentry",
+            "name": "cosigner_signature",
+            "source": "cosigner",
             "max_size": 1423,
             "paths": {
               "spend": "required",
@@ -142,7 +142,7 @@
       },
       "parameters": {
         "recipients": "ADDR1,ADDR2",
-        "sentry_public_key": "11223344556677889900aabbccddeeff",
+        "cosigner_public_key": "11223344556677889900aabbccddeeff",
         "bounded_admin_public_key": "000102030405060708090a0b0c0d0e0f"
       }
     }

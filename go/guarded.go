@@ -27,36 +27,36 @@ func guardedDummyLogicSigResources() *LogicSigResourceUsage {
 	}
 }
 
-// GuardedSentryResolver resolves a guarded target to the sentry client that
-// should provide the sentry component signature.
-type GuardedSentryResolver interface {
-	ResolveSentry(ctx context.Context, sentryPublicKeyHex string, componentKeyType string) (*SignerClient, string, error)
+// GuardedCosignerResolver resolves a guarded target to the cosigner client that
+// should provide the cosigner component signature.
+type GuardedCosignerResolver interface {
+	ResolveCosigner(ctx context.Context, cosignerPublicKeyHex string, componentKeyType string) (*SignerClient, string, error)
 }
 
-// StaticSentryResolver routes every guarded target to one sentry client.
-type StaticSentryResolver struct {
+// StaticCosignerResolver routes every guarded target to one cosigner client.
+type StaticCosignerResolver struct {
 	Client       *SignerClient
 	ComponentKey string
 }
 
-// ResolveSentry implements GuardedSentryResolver.
-func (r StaticSentryResolver) ResolveSentry(ctx context.Context, sentryPublicKeyHex string, componentKeyType string) (*SignerClient, string, error) {
+// ResolveCosigner implements GuardedCosignerResolver.
+func (r StaticCosignerResolver) ResolveCosigner(ctx context.Context, cosignerPublicKeyHex string, componentKeyType string) (*SignerClient, string, error) {
 	if r.Client == nil {
-		return nil, "", fmt.Errorf("sentry client is required")
+		return nil, "", fmt.Errorf("cosigner client is required")
 	}
 	return r.Client, r.ComponentKey, nil
 }
 
 // GuardedSignTarget describes one guarded-account group position.
 type GuardedSignTarget struct {
-	TargetIndex            int
-	GuardedAccount         string
-	SentryPublicKeyHex     string
-	SentryComponentKeyType string
-	SentryComponentKey     string
-	RuntimeArgs            []string
-	LogicSigResources      *LogicSigResourceUsage
-	AppCallInfo            *AppCallInfo
+	TargetIndex              int
+	GuardedAccount           string
+	CosignerPublicKeyHex     string
+	CosignerComponentKeyType string
+	CosignerComponentKey     string
+	RuntimeArgs              []string
+	LogicSigResources        *LogicSigResourceUsage
+	AppCallInfo              *AppCallInfo
 }
 
 // GuardedPrimarySignTarget describes one non-guarded group position that the
@@ -71,38 +71,38 @@ type GuardedPrimarySignTarget struct {
 
 // GuardedSignOptions configures SignGuardedGroup.
 type GuardedSignOptions struct {
-	UserClient         *SignerClient
-	SentryClient       *SignerClient
-	SentryResolver     GuardedSentryResolver
-	SentryComponentKey string
-	GroupBytesHex      []string
-	Targets            []GuardedSignTarget
-	PrimaryTargets     []GuardedPrimarySignTarget
-	Passthrough        []AssemblyPassthroughItem
-	DummyPositions     []int
-	AssemblyRequestID  string
+	UserClient           *SignerClient
+	CosignerClient       *SignerClient
+	CosignerResolver     GuardedCosignerResolver
+	CosignerComponentKey string
+	GroupBytesHex        []string
+	Targets              []GuardedSignTarget
+	PrimaryTargets       []GuardedPrimarySignTarget
+	Passthrough          []AssemblyPassthroughItem
+	DummyPositions       []int
+	AssemblyRequestID    string
 }
 
 // GuardedSignResult contains the final assembled group and intermediate
 // component-sign responses for audit and UI correlation.
 type GuardedSignResult struct {
-	SignedGroup              []string
-	UserComponentResponses   []*ComponentResponse
-	SentryComponentResponses []*ComponentResponse
-	PrimarySignResponse      *GroupSignResponse
-	AssemblyResponse         *AssemblyResponse
-	BoundedComponentResponse *ComponentResponse
-	BoundedAssemblyResponse  *AssemblyResponse
+	SignedGroup                []string
+	UserComponentResponses     []*ComponentResponse
+	CosignerComponentResponses []*ComponentResponse
+	PrimarySignResponse        *GroupSignResponse
+	AssemblyResponse           *AssemblyResponse
+	BoundedComponentResponse   *ComponentResponse
+	BoundedAssemblyResponse    *AssemblyResponse
 }
 
 // PreparedGuardedGroupOptions configures SignPreparedGuardedGroup.
 type PreparedGuardedGroupOptions struct {
-	UserClient         *SignerClient
-	SentryClient       *SignerClient
-	SentryResolver     GuardedSentryResolver
-	SentryComponentKey string
-	PreparedGroup      PreparedGroup
-	AssemblyRequestID  string
+	UserClient           *SignerClient
+	CosignerClient       *SignerClient
+	CosignerResolver     GuardedCosignerResolver
+	CosignerComponentKey string
+	PreparedGroup        PreparedGroup
+	AssemblyRequestID    string
 }
 
 type guardedComponentSignature struct {
@@ -110,7 +110,7 @@ type guardedComponentSignature struct {
 	requestID string
 }
 
-type sentrySignGroupKey struct {
+type cosignerSignGroupKey struct {
 	client       *SignerClient
 	componentKey string
 }
@@ -172,7 +172,7 @@ func SignGuardedGroupWithContext(ctx context.Context, opts GuardedSignOptions) (
 	if err != nil {
 		return nil, err
 	}
-	sentrySignatures, err := requestSentryComponentSignatures(ctx, opts, targets, result)
+	cosignerSignatures, err := requestCosignerComponentSignatures(ctx, opts, targets, result)
 	if err != nil {
 		return nil, err
 	}
@@ -200,19 +200,19 @@ func SignGuardedGroupWithContext(ctx context.Context, opts GuardedSignOptions) (
 		if !ok {
 			return nil, fmt.Errorf("missing user component signature for target %d", target.TargetIndex)
 		}
-		sentrySig, ok := sentrySignatures[target.TargetIndex]
+		cosignerSig, ok := cosignerSignatures[target.TargetIndex]
 		if !ok {
-			return nil, fmt.Errorf("missing sentry component signature for target %d", target.TargetIndex)
+			return nil, fmt.Errorf("missing cosigner component signature for target %d", target.TargetIndex)
 		}
 		assemblyTargets = append(assemblyTargets, AssemblyTarget{
-			TargetIndex:           target.TargetIndex,
-			Kind:                  AssemblyTargetKindGuarded,
-			AuthAddress:           target.GuardedAccount,
-			UserSignature:         userSig.signature,
-			UserSourceRequestID:   userSig.requestID,
-			SentrySignature:       sentrySig.signature,
-			SentrySourceRequestID: sentrySig.requestID,
-			GuardedRuntimeArgs:    append([]string(nil), target.RuntimeArgs...),
+			TargetIndex:             target.TargetIndex,
+			Kind:                    AssemblyTargetKindGuarded,
+			AuthAddress:             target.GuardedAccount,
+			UserSignature:           userSig.signature,
+			UserSourceRequestID:     userSig.requestID,
+			CosignerSignature:       cosignerSig.signature,
+			CosignerSourceRequestID: cosignerSig.requestID,
+			GuardedRuntimeArgs:      append([]string(nil), target.RuntimeArgs...),
 		})
 	}
 	assemblyPassthrough := make([]AssemblyPassthroughItem, 0, len(passthrough))
@@ -290,15 +290,15 @@ func SignPreparedGuardedGroup(opts PreparedGuardedGroupOptions) (*GuardedSignRes
 // SignPreparedGuardedGroupWithContext is the context-aware form of
 // SignPreparedGuardedGroup.
 func SignPreparedGuardedGroupWithContext(ctx context.Context, opts PreparedGuardedGroupOptions) (*GuardedSignResult, error) {
-	resolvedOpts, hasBoundedSentry, hasLegacyGuarded, err := resolvePreparedSentryFlowKinds(ctx, opts)
+	resolvedOpts, hasBoundedCosigner, hasLegacyGuarded, err := resolvePreparedCosignerFlowKinds(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
-	if hasBoundedSentry {
+	if hasBoundedCosigner {
 		if hasLegacyGuarded {
-			return nil, fmt.Errorf("cannot mix sentry1 and bounded-sentry1 targets in one group")
+			return nil, fmt.Errorf("cannot mix cosigner1 and bounded-cosigner1 targets in one group")
 		}
-		return signPreparedBoundedSentryGroupWithContext(ctx, resolvedOpts)
+		return signPreparedBoundedCosignerGroupWithContext(ctx, resolvedOpts)
 	}
 	signOpts, err := buildPreparedGuardedSignOptions(ctx, resolvedOpts)
 	if err != nil {
@@ -307,9 +307,9 @@ func SignPreparedGuardedGroupWithContext(ctx context.Context, opts PreparedGuard
 	return SignGuardedGroupWithContext(ctx, signOpts)
 }
 
-func resolvePreparedSentryFlowKinds(ctx context.Context, opts PreparedGuardedGroupOptions) (
+func resolvePreparedCosignerFlowKinds(ctx context.Context, opts PreparedGuardedGroupOptions) (
 	resolved PreparedGuardedGroupOptions,
-	boundedSentry bool,
+	boundedCosigner bool,
 	legacyGuarded bool,
 	err error,
 ) {
@@ -335,13 +335,13 @@ func resolvePreparedSentryFlowKinds(ctx context.Context, opts PreparedGuardedGro
 			continue
 		}
 		switch key.SigningFlow {
-		case SigningFlowBoundedSentry1:
-			boundedSentry = true
-		case SigningFlowSentry1:
+		case SigningFlowBoundedCosigner1:
+			boundedCosigner = true
+		case SigningFlowCosigner1:
 			legacyGuarded = true
 		}
 	}
-	return resolved, boundedSentry, legacyGuarded, nil
+	return resolved, boundedCosigner, legacyGuarded, nil
 }
 
 func buildPreparedGuardedSignOptions(ctx context.Context, opts PreparedGuardedGroupOptions) (GuardedSignOptions, error) {
@@ -402,7 +402,7 @@ func buildPreparedGuardedSignOptions(ctx context.Context, opts PreparedGuardedGr
 				})
 				continue
 			}
-			if key.SigningFlow != SigningFlowSentry1 {
+			if key.SigningFlow != SigningFlowCosigner1 {
 				return GuardedSignOptions{}, fmt.Errorf("prepared transaction %d: signer key requires signing flow %q, which this SDK does not support; upgrade the SDK", i, key.SigningFlow)
 			}
 			if item.AuthAddress == "" {
@@ -416,12 +416,12 @@ func buildPreparedGuardedSignOptions(ctx context.Context, opts PreparedGuardedGr
 				return GuardedSignOptions{}, fmt.Errorf("prepared transaction %d: guarded LogicSig resources are unavailable", i)
 			}
 			targets = append(targets, GuardedSignTarget{
-				TargetIndex:            i,
-				GuardedAccount:         item.AuthAddress,
-				SentryPublicKeyHex:     guardedSentryPublicKey(key),
-				SentryComponentKeyType: key.SentryComponentKeyType,
-				LogicSigResources:      resources,
-				AppCallInfo:            item.AppCallInfo,
+				TargetIndex:              i,
+				GuardedAccount:           item.AuthAddress,
+				CosignerPublicKeyHex:     guardedCosignerPublicKey(key),
+				CosignerComponentKeyType: key.CosignerComponentKeyType,
+				LogicSigResources:        resources,
+				AppCallInfo:              item.AppCallInfo,
 			})
 			continue
 		}
@@ -465,16 +465,16 @@ func buildPreparedGuardedSignOptions(ctx context.Context, opts PreparedGuardedGr
 	}
 
 	return GuardedSignOptions{
-		UserClient:         opts.UserClient,
-		SentryClient:       opts.SentryClient,
-		SentryResolver:     opts.SentryResolver,
-		SentryComponentKey: opts.SentryComponentKey,
-		GroupBytesHex:      groupBytesHex,
-		Targets:            targets,
-		PrimaryTargets:     primaryTargets,
-		Passthrough:        dummyPassthrough,
-		DummyPositions:     contiguousIndices(len(txns), len(allTxns)),
-		AssemblyRequestID:  opts.AssemblyRequestID,
+		UserClient:           opts.UserClient,
+		CosignerClient:       opts.CosignerClient,
+		CosignerResolver:     opts.CosignerResolver,
+		CosignerComponentKey: opts.CosignerComponentKey,
+		GroupBytesHex:        groupBytesHex,
+		Targets:              targets,
+		PrimaryTargets:       primaryTargets,
+		Passthrough:          dummyPassthrough,
+		DummyPositions:       contiguousIndices(len(txns), len(allTxns)),
+		AssemblyRequestID:    opts.AssemblyRequestID,
 	}, nil
 }
 
@@ -528,11 +528,11 @@ func preparedForeignPQScheme(key *KeyInfo, resources *LogicSigResourceUsage) (st
 	return PQSchemeFalcon1024, nil
 }
 
-func guardedSentryPublicKey(key *KeyInfo) string {
+func guardedCosignerPublicKey(key *KeyInfo) string {
 	if key == nil || key.Parameters == nil {
 		return ""
 	}
-	return key.Parameters["sentry_public_key"]
+	return key.Parameters["cosigner_public_key"]
 }
 
 func encodeGuardedLsigArgs(args LsigArgs) map[string]string {
@@ -613,20 +613,20 @@ func requestUserComponentSignatures(ctx context.Context, client *SignerClient, g
 	return signatures, nil
 }
 
-func requestSentryComponentSignatures(ctx context.Context, opts GuardedSignOptions, targets []GuardedSignTarget, result *GuardedSignResult) (map[int]guardedComponentSignature, error) {
-	groups := make(map[sentrySignGroupKey][]int)
+func requestCosignerComponentSignatures(ctx context.Context, opts GuardedSignOptions, targets []GuardedSignTarget, result *GuardedSignResult) (map[int]guardedComponentSignature, error) {
+	groups := make(map[cosignerSignGroupKey][]int)
 	appCallInfo := make(map[int]*AppCallInfo, len(targets)+len(opts.PrimaryTargets))
 	for _, target := range opts.PrimaryTargets {
 		appCallInfo[target.TargetIndex] = target.AppCallInfo
 	}
 	for _, target := range targets {
 		appCallInfo[target.TargetIndex] = target.AppCallInfo
-		client, componentKey, err := resolveGuardedSentry(ctx, opts, target)
+		client, componentKey, err := resolveGuardedCosigner(ctx, opts, target)
 		if err != nil {
 			return nil, err
 		}
-		groups[sentrySignGroupKey{client: client, componentKey: componentKey}] = append(
-			groups[sentrySignGroupKey{client: client, componentKey: componentKey}],
+		groups[cosignerSignGroupKey{client: client, componentKey: componentKey}] = append(
+			groups[cosignerSignGroupKey{client: client, componentKey: componentKey}],
 			target.TargetIndex,
 		)
 	}
@@ -634,11 +634,11 @@ func requestSentryComponentSignatures(ctx context.Context, opts GuardedSignOptio
 	signatures := make(map[int]guardedComponentSignature)
 	for group, indices := range groups {
 		sort.Ints(indices)
-		resp, err := group.client.RequestComponentsWithContext(ctx, componentRequestForIndices(opts.GroupBytesHex, indices, opts.DummyPositions, ComponentTargetKindSentry, group.componentKey, appCallInfo))
+		resp, err := group.client.RequestComponentsWithContext(ctx, componentRequestForIndices(opts.GroupBytesHex, indices, opts.DummyPositions, ComponentTargetKindCosigner, group.componentKey, appCallInfo))
 		if err != nil {
 			return nil, err
 		}
-		result.SentryComponentResponses = append(result.SentryComponentResponses, resp)
+		result.CosignerComponentResponses = append(result.CosignerComponentResponses, resp)
 		for _, component := range resp.Components {
 			signatures[component.TargetIndex] = guardedComponentSignature{
 				signature: component.Signature,
@@ -682,18 +682,18 @@ func contiguousIndices(start, end int) []int {
 	return indices
 }
 
-func resolveGuardedSentry(ctx context.Context, opts GuardedSignOptions, target GuardedSignTarget) (*SignerClient, string, error) {
-	if opts.SentryResolver != nil {
-		return opts.SentryResolver.ResolveSentry(ctx, target.SentryPublicKeyHex, target.SentryComponentKeyType)
+func resolveGuardedCosigner(ctx context.Context, opts GuardedSignOptions, target GuardedSignTarget) (*SignerClient, string, error) {
+	if opts.CosignerResolver != nil {
+		return opts.CosignerResolver.ResolveCosigner(ctx, target.CosignerPublicKeyHex, target.CosignerComponentKeyType)
 	}
-	if opts.SentryClient == nil {
-		return nil, "", fmt.Errorf("sentry client or resolver is required")
+	if opts.CosignerClient == nil {
+		return nil, "", fmt.Errorf("cosigner client or resolver is required")
 	}
-	componentKey := target.SentryComponentKey
+	componentKey := target.CosignerComponentKey
 	if componentKey == "" {
-		componentKey = opts.SentryComponentKey
+		componentKey = opts.CosignerComponentKey
 	}
-	return opts.SentryClient, componentKey, nil
+	return opts.CosignerClient, componentKey, nil
 }
 
 type primaryGuardedPassthrough struct {

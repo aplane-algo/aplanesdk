@@ -7,7 +7,7 @@ APlane Python SDK - Transaction signing via apsigner
 Data directory (required via APCLIENT_DATA env var or data_dir parameter):
     <data_dir>/
     ├── aplane.token         # API token (from request_token_to_file)
-    ├── endpoints.yaml       # Signer and sentry routing
+    ├── endpoints.yaml       # Signer and cosigner routing
     └── .ssh/
         └── id_ed25519       # SSH key for authentication
 
@@ -95,17 +95,17 @@ AUTHORIZATION_KIND_ED25519 = "ed25519"
 AUTHORIZATION_KIND_NATIVE_PQ = "native_pq"
 AUTHORIZATION_KIND_LOGIC_SIG = "logic_sig"
 
-# Signing choreography label for the sentry co-signed component flow (one
-# user plus one sentry component signature per target, assembled via
+# Signing choreography label for the cosigner co-signed component flow (one
+# user plus one cosigner component signature per target, assembled via
 # /sign/assemble). Signer inventory labels guarded keys with this flow;
 # clients route on the label and must fail fast on flow labels they do not
 # implement. An empty signing_flow means the ordinary /sign path.
-SIGNING_FLOW_SENTRY1 = "sentry1"
+SIGNING_FLOW_COSIGNER1 = "cosigner1"
 SIGNING_FLOW_BOUNDED1 = "bounded1"
-SIGNING_FLOW_BOUNDED_SENTRY1 = "bounded-sentry1"
+SIGNING_FLOW_BOUNDED_COSIGNER1 = "bounded-cosigner1"
 
 KEY_TYPE_WITNESS_FALCON1024 = "aplane.witness-falcon1024.v1"
-KEY_TYPE_GUARDED_FALCON1024_SENTRY1024 = "aplane.falcon1024-sentry1024.v1"
+KEY_TYPE_GUARDED_FALCON1024_COSIGNER1024 = "aplane.falcon1024-cosigner1024.v1"
 
 
 def _resolve_data_dir(data_dir: Optional[str]) -> str:
@@ -136,7 +136,7 @@ ERR_CODE_UNAVAILABLE = "unavailable"
 ERR_CODE_CACHE_REFRESH = "cache_refresh"
 ERR_CODE_INTERNAL = "internal"
 ERR_CODE_BOUNDED_ADMIN_REQUIRED = "bounded_admin_required"
-ERR_CODE_BOUNDED_SENTRY_REQUIRED = "bounded_sentry_required"
+ERR_CODE_BOUNDED_COSIGNER_REQUIRED = "bounded_cosigner_required"
 
 
 class SignerError(Exception):
@@ -276,8 +276,8 @@ class BoundedArgumentSlotInfo:
 
 
 @dataclass
-class BoundedSentryAuthorizationInfo:
-    """Public sentry authority embedded in a bounded account."""
+class BoundedCosignerAuthorizationInfo:
+    """Public cosigner authority embedded in a bounded account."""
 
     contract: str
     component_key_type: str
@@ -317,7 +317,7 @@ class BoundedAuthorizationInfo:
     derived_args: List[BoundedDerivedArgInfo]
     argument_layout: List[BoundedArgumentSlotInfo]
     layer3_policy: str
-    sentry: Optional[BoundedSentryAuthorizationInfo] = None
+    cosigner: Optional[BoundedCosignerAuthorizationInfo] = None
     admin_key_id: str = ""
     program_binding: str = ""
 
@@ -332,8 +332,8 @@ class KeyInfo:
     # Account authorization envelope; empty when the signer does not report it
     # or the key is not a spending account. Never infer ed25519 from empty.
     authorization_kind: str = ""
-    signing_flow: str = ""  # Signing choreography label (e.g. "sentry1"); empty = plain /sign
-    sentry_component_key_type: str = ""  # Sentry component key type for signing flow "sentry1"
+    signing_flow: str = ""  # Signing choreography label (e.g. "cosigner1"); empty = plain /sign
+    cosigner_component_key_type: str = ""  # Cosigner component key type for signing flow "cosigner1"
     logic_sig_resources: Optional[LogicSigResourceProfile] = None
     is_generic_lsig: bool = False
     is_witness_key: bool = False
@@ -358,7 +358,7 @@ class ClientConfig:
 
 @dataclass
 class ClientEndpointConfig:
-    """One signer or sentry connection profile from endpoints.yaml."""
+    """One signer or cosigner connection profile from endpoints.yaml."""
 
     role: str
     url: str
@@ -423,8 +423,8 @@ class KeyTypeInfo:
     mnemonic_word_count: int = 0
     mnemonic_import: bool = False
     mnemonic_scheme: str = ""
-    signing_flow: str = ""  # Signing choreography label (e.g. "sentry1"); empty = plain /sign
-    sentry_component_key_type: str = ""  # Sentry component key type for signing flow "sentry1"
+    signing_flow: str = ""  # Signing choreography label (e.g. "cosigner1"); empty = plain /sign
+    cosigner_component_key_type: str = ""  # Cosigner component key type for signing flow "cosigner1"
     bounded_authorization: Optional[BoundedAuthorizationInfo] = None
     creation_params: Optional[List[CreationParam]] = None
     runtime_args: Optional[List[RuntimeArg]] = None
@@ -489,7 +489,7 @@ class SimulationResult:
 
 
 COMPONENT_TARGET_KIND_USER = "user"
-COMPONENT_TARGET_KIND_SENTRY = "sentry"
+COMPONENT_TARGET_KIND_COSIGNER = "cosigner"
 COMPONENT_TARGET_KIND_BOUNDED_BASE = "bounded-base"
 
 
@@ -513,7 +513,7 @@ class ComponentResponse:
 
 
 ASSEMBLY_TARGET_KIND_GUARDED = "guarded"
-ASSEMBLY_TARGET_KIND_BOUNDED_SENTRY = "bounded-sentry"
+ASSEMBLY_TARGET_KIND_BOUNDED_COSIGNER = "bounded-cosigner"
 
 
 @dataclass
@@ -523,7 +523,7 @@ class AssemblyTarget:
     target_index: int
     kind: str
     auth_address: str
-    sentry_signature: str
+    cosigner_signature: str
     user_signature: str = ""
     user_source_request_id: str = ""
     guarded_runtime_args: Optional[List[str]] = None
@@ -531,7 +531,7 @@ class AssemblyTarget:
     bounded_runtime_args: Optional[Dict[str, str]] = None
     assembly_receipt: str = ""
     base_source_request_id: str = ""
-    sentry_source_request_id: str = ""
+    cosigner_source_request_id: str = ""
 
 
 @dataclass
@@ -576,9 +576,9 @@ class GuardedSignTarget:
     target_index: int
     guarded_account: str
     logic_sig_resources: LogicSigResourceUsage
-    sentry_public_key_hex: str = ""
-    sentry_component_key_type: str = ""
-    sentry_component_key: str = ""
+    cosigner_public_key_hex: str = ""
+    cosigner_component_key_type: str = ""
+    cosigner_component_key: str = ""
     runtime_args: Optional[List[str]] = None
     app_call_info: Optional[Dict[str, str]] = None
 
@@ -600,7 +600,7 @@ class GuardedSignResult:
 
     signed_group: List[str]
     user_component_responses: List[ComponentResponse]
-    sentry_component_responses: List[ComponentResponse]
+    cosigner_component_responses: List[ComponentResponse]
     assembly_response: Optional[AssemblyResponse]
     primary_sign_response: Optional[GroupSignResponse] = None
     bounded_component_response: Optional[ComponentResponse] = None
@@ -860,14 +860,14 @@ def _normalize_client_endpoint(
             "identity_file",
             "known_hosts_path",
             "token_file",
-            *({"published_sentries"} if legacy_v1 else set()),
+            *({"published_cosigners"} if legacy_v1 else set()),
         },
         f'endpoint "{alias}"',
     )
     role = _optional_string(raw.get("role"), "role").strip()
-    if role not in ("signer", "sentry"):
+    if role not in ("signer", "cosigner"):
         raise SignerError(
-            f'endpoint "{alias}": unsupported role "{role}" ' '(expected "signer" or "sentry")'
+            f'endpoint "{alias}": unsupported role "{role}" ' '(expected "signer" or "cosigner")'
         )
     endpoint_url = _optional_string(raw.get("url"), "url").strip().rstrip("/")
     if not endpoint_url:
@@ -878,8 +878,8 @@ def _normalize_client_endpoint(
     for field, port in (("signer_port", signer_port), ("local_port", local_port)):
         if port < 0 or port > 65535:
             raise SignerError(f'endpoint "{alias}": {field} must be 1-65535 when set')
-    if role == "sentry" and local_port != 0:
-        raise SignerError(f'endpoint "{alias}": local_port is not supported for sentry endpoints')
+    if role == "cosigner" and local_port != 0:
+        raise SignerError(f'endpoint "{alias}": local_port is not supported for cosigner endpoints')
     if endpoint_url == "self":
         raise SignerError(
             f'endpoint "{alias}": url "self" is not supported; configure an explicit '
@@ -968,12 +968,12 @@ def load_client_endpoint_registry(data_dir: str) -> ClientEndpointRegistry:
             data_dir, raw_alias, endpoint_raw, legacy_v1=schema_version == 1
         )
 
-    sentry_count = sum(
-        endpoint.role == "sentry" for endpoint in registry.endpoints.values()
+    cosigner_count = sum(
+        endpoint.role == "cosigner" for endpoint in registry.endpoints.values()
     )
-    if sentry_count > 12:
+    if cosigner_count > 12:
         raise SignerError(
-            f"{CLIENT_ENDPOINTS_FILE} configures {sentry_count} sentry endpoints; "
+            f"{CLIENT_ENDPOINTS_FILE} configures {cosigner_count} cosigner endpoints; "
             "maximum is 12; remove or consolidate endpoint profiles"
         )
 
@@ -1447,7 +1447,7 @@ def _parse_bounded_authorization(data: Any) -> Optional[BoundedAuthorizationInfo
     runtime_args = data.get("runtime_args") or []
     derived_args = data.get("derived_args") or []
     argument_layout = data.get("argument_layout") or []
-    sentry = data.get("sentry")
+    cosigner = data.get("cosigner")
     return BoundedAuthorizationInfo(
         contract=data.get("contract", ""),
         base_signature_arg_layout=BoundedSignatureArgLayout(
@@ -1499,16 +1499,16 @@ def _parse_bounded_authorization(data: Any) -> Optional[BoundedAuthorizationInfo
             for item in argument_layout
         ],
         layer3_policy=data.get("layer3_policy", ""),
-        sentry=(
-            BoundedSentryAuthorizationInfo(
-                contract=sentry.get("contract", ""),
-                component_key_type=sentry.get("component_key_type", ""),
-                public_key_hex=sentry.get("public_key_hex", ""),
-                component_key_id=sentry.get("component_key_id", ""),
-                signature_max_size=sentry.get("signature_max_size", 0),
-                required_on=list(sentry.get("required_on") or []),
+        cosigner=(
+            BoundedCosignerAuthorizationInfo(
+                contract=cosigner.get("contract", ""),
+                component_key_type=cosigner.get("component_key_type", ""),
+                public_key_hex=cosigner.get("public_key_hex", ""),
+                component_key_id=cosigner.get("component_key_id", ""),
+                signature_max_size=cosigner.get("signature_max_size", 0),
+                required_on=list(cosigner.get("required_on") or []),
             )
-            if isinstance(sentry, dict)
+            if isinstance(cosigner, dict)
             else None
         ),
         admin_key_id=data.get("admin_key_id", ""),
@@ -1521,14 +1521,14 @@ def _bounded_assembly_to_unified(data: Dict[str, Any]) -> Dict[str, Any]:
     converted["targets"] = [
         {
             "target_index": target.get("target_index"),
-            "kind": ASSEMBLY_TARGET_KIND_BOUNDED_SENTRY,
+            "kind": ASSEMBLY_TARGET_KIND_BOUNDED_COSIGNER,
             "auth_address": target.get("bounded_account", ""),
             "base_signatures": target.get("base_signatures"),
             "bounded_runtime_args": target.get("runtime_args"),
             "assembly_receipt": target.get("assembly_receipt", ""),
             "base_source_request_id": target.get("base_source_request_id", ""),
-            "sentry_signature": target.get("sentry_signature", ""),
-            "sentry_source_request_id": target.get("sentry_source_request_id", ""),
+            "cosigner_signature": target.get("cosigner_signature", ""),
+            "cosigner_source_request_id": target.get("cosigner_source_request_id", ""),
         }
         for target in data.get("targets") or []
     ]
@@ -1547,8 +1547,8 @@ def _validate_assembly_request(data: Dict[str, Any]) -> None:
     covered = set()
     for i, target in enumerate(targets, start=1):
         _validate_assembly_index(target.get("target_index"), len(group_bytes_hex), covered)
-        if not target.get("auth_address") or not target.get("sentry_signature"):
-            raise ValueError(f"target {i}: auth_address and sentry_signature are required")
+        if not target.get("auth_address") or not target.get("cosigner_signature"):
+            raise ValueError(f"target {i}: auth_address and cosigner_signature are required")
         kind = target.get("kind")
         if kind == ASSEMBLY_TARGET_KIND_GUARDED:
             if not target.get("user_signature"):
@@ -1557,16 +1557,16 @@ def _validate_assembly_request(data: Dict[str, Any]) -> None:
                     or target.get("assembly_receipt") or target.get("base_source_request_id")):
                 raise ValueError(f"target {i}: bounded authorization material is forbidden for guarded target")
             _validate_sign_request_id(str(target.get("user_source_request_id", "")))
-        elif kind == ASSEMBLY_TARGET_KIND_BOUNDED_SENTRY:
+        elif kind == ASSEMBLY_TARGET_KIND_BOUNDED_COSIGNER:
             if not target.get("base_signatures") or not target.get("assembly_receipt"):
-                raise ValueError(f"target {i}: base_signatures and assembly_receipt are required for bounded-sentry target")
+                raise ValueError(f"target {i}: base_signatures and assembly_receipt are required for bounded-cosigner target")
             if (target.get("user_signature") or target.get("user_source_request_id")
                     or target.get("guarded_runtime_args")):
-                raise ValueError(f"target {i}: guarded authorization material is forbidden for bounded-sentry target")
+                raise ValueError(f"target {i}: guarded authorization material is forbidden for bounded-cosigner target")
             _validate_sign_request_id(str(target.get("base_source_request_id", "")))
         else:
             raise ValueError(f"target {i}: invalid kind")
-        _validate_sign_request_id(str(target.get("sentry_source_request_id", "")))
+        _validate_sign_request_id(str(target.get("cosigner_source_request_id", "")))
 
     for i, item in enumerate(passthrough, start=1):
         _validate_assembly_index(item.get("target_index"), len(group_bytes_hex), covered)
@@ -1680,11 +1680,11 @@ def _validate_component_request(data: Dict[str, Any]) -> None:
                 raise ValueError(f"target {index}: user target requires only auth_address")
             if index > 1 and target.get("auth_address") != targets[0].get("auth_address"):
                 raise ValueError("user targets must share one auth_address")
-        elif kind == COMPONENT_TARGET_KIND_SENTRY:
+        elif kind == COMPONENT_TARGET_KIND_COSIGNER:
             if target.get("auth_address") or target.get("lsig_args"):
-                raise ValueError(f"target {index}: sentry target forbids auth_address and lsig_args")
+                raise ValueError(f"target {index}: cosigner target forbids auth_address and lsig_args")
             if index > 1 and target.get("component_key") != targets[0].get("component_key"):
-                raise ValueError("sentry targets must share one component_key")
+                raise ValueError("cosigner targets must share one component_key")
         elif kind == COMPONENT_TARGET_KIND_BOUNDED_BASE:
             if not target.get("auth_address") or target.get("component_key"):
                 raise ValueError(f"target {index}: bounded-base target requires auth_address and forbids component_key")
@@ -1718,7 +1718,7 @@ def _validate_component_response(
             raise ValueError(f"component {index} target_index is outside the frozen group")
         seen.add(target_index)
         kind = component.get("kind")
-        if kind in (COMPONENT_TARGET_KIND_USER, COMPONENT_TARGET_KIND_SENTRY):
+        if kind in (COMPONENT_TARGET_KIND_USER, COMPONENT_TARGET_KIND_COSIGNER):
             if (not component.get("signature") or not component.get("signature_scheme")
                     or component.get("base_signatures") or component.get("assembly_receipt")):
                 raise ValueError(f"component {index} has invalid signature material")
@@ -2635,7 +2635,7 @@ class SignerClient:
         Connect using the endpoint registry from a data directory.
 
         Data directory contents:
-            - endpoints.yaml: Signer and sentry routing
+            - endpoints.yaml: Signer and cosigner routing
             - aplane.token or tokens/<alias>.token: Authentication token
             - .ssh/id_ed25519: SSH key for authentication
 
@@ -2643,7 +2643,7 @@ class SignerClient:
             data_dir: Client data directory. Required unless APCLIENT_DATA
                 environment variable is set.
             timeout: Optional explicit request timeout in seconds
-            endpoint: Optional signer or sentry endpoint alias
+            endpoint: Optional signer or cosigner endpoint alias
             trust_on_first_use: Explicitly trust an unknown SSH host key
 
         Returns:
@@ -2854,7 +2854,7 @@ class SignerClient:
                 public_key_hex=k.get("public_key_hex", ""),
                 authorization_kind=k.get("authorization_kind", ""),
                 signing_flow=k.get("signing_flow", ""),
-                sentry_component_key_type=k.get("sentry_component_key_type", ""),
+                cosigner_component_key_type=k.get("cosigner_component_key_type", ""),
                 logic_sig_resources=_parse_lsig_resource_profile(k.get("logic_sig_resources")),
                 is_generic_lsig=k.get("is_generic_lsig", False),
                 is_witness_key=k.get("is_witness_key", False),
@@ -3743,7 +3743,7 @@ class SignerClient:
                     mnemonic_import=kt.get("mnemonic_import", False),
                     mnemonic_scheme=kt.get("mnemonic_scheme", ""),
                     signing_flow=kt.get("signing_flow", ""),
-                    sentry_component_key_type=kt.get("sentry_component_key_type", ""),
+                    cosigner_component_key_type=kt.get("cosigner_component_key_type", ""),
                     bounded_authorization=_parse_bounded_authorization(
                         kt.get("bounded_authorization")
                     ),
@@ -3976,7 +3976,7 @@ class SignerClient:
             raise ValueError(f"invalid component request: {e}") from e
         kind = request_body["targets"][0]["kind"]
         timeout = self._timeout_for(COMPONENT_SIGN_TIMEOUT)
-        if kind != COMPONENT_TARGET_KIND_SENTRY:
+        if kind != COMPONENT_TARGET_KIND_COSIGNER:
             self._discover_approval_wait()
             timeout = max(timeout, self._sign_request_timeout())
         try:
@@ -3986,7 +3986,7 @@ class SignerClient:
                 timeout=timeout,
             )
         except requests.RequestException as e:
-            if kind != COMPONENT_TARGET_KIND_SENTRY:
+            if kind != COMPONENT_TARGET_KIND_COSIGNER:
                 self._best_effort_cancel_sign_request(request_body["request_id"])
             raise SignerUnavailableError(f"Failed to connect: {e}")
         if resp.status_code == 401:
@@ -4712,9 +4712,9 @@ def _encode_guarded_lsig_args(args: Optional[Dict[str, bytes]]) -> Optional[Dict
 def _build_prepared_guarded_sign_inputs(
     user_client: SignerClient,
     prepared_group: PreparedGroup,
-    sentry_client: Optional[SignerClient],
-    sentry_resolver: Optional[Any],
-    sentry_component_key: str,
+    cosigner_client: Optional[SignerClient],
+    cosigner_resolver: Optional[Any],
+    cosigner_component_key: str,
     assembly_request_id: str,
 ) -> Dict[str, Any]:
     if user_client is None:
@@ -4750,7 +4750,7 @@ def _build_prepared_guarded_sign_inputs(
         if key.signing_flow:
             if key.signing_flow == SIGNING_FLOW_BOUNDED1:
                 pass
-            elif key.signing_flow != SIGNING_FLOW_SENTRY1:
+            elif key.signing_flow != SIGNING_FLOW_COSIGNER1:
                 raise ValueError(
                     f"prepared transaction {index}: signer key requires signing flow "
                     f"{key.signing_flow!r}, which this SDK does not support; upgrade the SDK"
@@ -4782,8 +4782,8 @@ def _build_prepared_guarded_sign_inputs(
                     target_index=index,
                     guarded_account=item.auth_address,
                     logic_sig_resources=resources,
-                    sentry_public_key_hex=(key.parameters or {}).get("sentry_public_key", ""),
-                    sentry_component_key_type=key.sentry_component_key_type,
+                    cosigner_public_key_hex=(key.parameters or {}).get("cosigner_public_key", ""),
+                    cosigner_component_key_type=key.cosigner_component_key_type,
                     app_call_info=item.app_call_info,
                 )
             )
@@ -4824,9 +4824,9 @@ def _build_prepared_guarded_sign_inputs(
         "user_client": user_client,
         "group_bytes_hex": group_bytes_hex,
         "guarded_targets": guarded_targets,
-        "sentry_client": sentry_client,
-        "sentry_resolver": sentry_resolver,
-        "sentry_component_key": sentry_component_key,
+        "cosigner_client": cosigner_client,
+        "cosigner_resolver": cosigner_resolver,
+        "cosigner_component_key": cosigner_component_key,
         "primary_targets": primary_targets,
         "passthrough": dummy_passthrough,
         "dummy_positions": list(range(len(txns), len(all_txns))),
@@ -4834,25 +4834,25 @@ def _build_prepared_guarded_sign_inputs(
     }
 
 
-def _resolve_sentry_for_target(
+def _resolve_cosigner_for_target(
     target: Dict[str, Any],
-    sentry_client: Optional[SignerClient],
-    sentry_component_key: str,
-    sentry_resolver: Optional[Any],
+    cosigner_client: Optional[SignerClient],
+    cosigner_component_key: str,
+    cosigner_resolver: Optional[Any],
 ) -> tuple:
-    if sentry_resolver is not None:
-        resolved = sentry_resolver(target)
+    if cosigner_resolver is not None:
+        resolved = cosigner_resolver(target)
         if isinstance(resolved, dict):
             client = resolved.get("client")
             component_key = resolved.get("component_key", "")
         else:
             client, component_key = resolved
         if client is None:
-            raise SignerError("sentry resolver returned no client")
+            raise SignerError("cosigner resolver returned no client")
         return client, component_key or ""
-    if sentry_client is None:
-        raise SignerError("sentry_client or sentry_resolver is required")
-    return sentry_client, target.get("sentry_component_key") or sentry_component_key
+    if cosigner_client is None:
+        raise SignerError("cosigner_client or cosigner_resolver is required")
+    return cosigner_client, target.get("cosigner_component_key") or cosigner_component_key
 
 
 def _request_primary_guarded_passthrough(
@@ -4968,11 +4968,11 @@ def _request_primary_guarded_passthrough(
     return response, primary_passthrough
 
 
-def _prepared_sentry_flow_kinds(
+def _prepared_cosigner_flow_kinds(
     user_client: SignerClient,
     prepared_group: PreparedGroup,
 ) -> tuple:
-    bounded_sentry = False
+    bounded_cosigner = False
     legacy_guarded = False
     for index, item in enumerate(prepared_group.transactions):
         key = item.signer_key
@@ -4985,11 +4985,11 @@ def _prepared_sentry_flow_kinds(
                 raise SignerError(f"prepared transaction {index}: resolve signer key: {e}") from e
         if key is None:
             continue
-        if key.signing_flow == SIGNING_FLOW_BOUNDED_SENTRY1:
-            bounded_sentry = True
-        elif key.signing_flow == SIGNING_FLOW_SENTRY1:
+        if key.signing_flow == SIGNING_FLOW_BOUNDED_COSIGNER1:
+            bounded_cosigner = True
+        elif key.signing_flow == SIGNING_FLOW_COSIGNER1:
             legacy_guarded = True
-    return bounded_sentry, legacy_guarded
+    return bounded_cosigner, legacy_guarded
 
 
 def _decode_canonical_group(group_bytes_hex: List[str]) -> List[transaction.Transaction]:
@@ -5220,18 +5220,18 @@ def _verify_signed_transaction_matches_canonical(
         raise SignerError(f"{label} {index} does not match the submitted canonical bytes")
 
 
-def _bounded_sentry_public_key(key: KeyInfo) -> str:
-    if key.bounded_authorization and key.bounded_authorization.sentry:
-        if key.bounded_authorization.sentry.public_key_hex:
-            return key.bounded_authorization.sentry.public_key_hex
-    return (key.parameters or {}).get("sentry_public_key", "")
+def _bounded_cosigner_public_key(key: KeyInfo) -> str:
+    if key.bounded_authorization and key.bounded_authorization.cosigner:
+        if key.bounded_authorization.cosigner.public_key_hex:
+            return key.bounded_authorization.cosigner.public_key_hex
+    return (key.parameters or {}).get("cosigner_public_key", "")
 
 
-def _bounded_sentry_component_key_type(key: KeyInfo) -> str:
-    if key.sentry_component_key_type:
-        return key.sentry_component_key_type
-    if key.bounded_authorization and key.bounded_authorization.sentry:
-        return key.bounded_authorization.sentry.component_key_type
+def _bounded_cosigner_component_key_type(key: KeyInfo) -> str:
+    if key.cosigner_component_key_type:
+        return key.cosigner_component_key_type
+    if key.bounded_authorization and key.bounded_authorization.cosigner:
+        return key.bounded_authorization.cosigner.component_key_type
     return ""
 
 
@@ -5300,16 +5300,16 @@ def _request_bounded_primary_passthrough(
     return response, passthrough
 
 
-def sign_prepared_bounded_sentry_group(
+def sign_prepared_bounded_cosigner_group(
     *,
     user_client: SignerClient,
     prepared_group: PreparedGroup,
-    sentry_client: Optional[SignerClient] = None,
-    sentry_resolver: Optional[Any] = None,
-    sentry_component_key: str = "",
+    cosigner_client: Optional[SignerClient] = None,
+    cosigner_resolver: Optional[Any] = None,
+    cosigner_component_key: str = "",
     assembly_request_id: str = "",
 ) -> GuardedSignResult:
-    """Sign a prepared bounded-sentry1 group using the user-first flow."""
+    """Sign a prepared bounded-cosigner1 group using the user-first flow."""
     if user_client is None:
         raise SignerError("user_client is required")
     prepared = prepared_group.transactions
@@ -5325,7 +5325,7 @@ def sign_prepared_bounded_sentry_group(
         if item.signed_transaction_base64:
             raise ValueError(
                 f"prepared transaction {index}: passthrough entries are not "
-                "supported in prepared bounded-sentry groups"
+                "supported in prepared bounded-cosigner groups"
             )
         if item.transaction is None:
             raise ValueError(f"prepared transaction {index}: transaction is required")
@@ -5335,7 +5335,7 @@ def sign_prepared_bounded_sentry_group(
         if key is None:
             raise ValueError(f"prepared transaction {index}: signer key metadata is required")
         resources = _selected_prepared_resources(key, item.transaction)
-        if key.signing_flow == SIGNING_FLOW_BOUNDED_SENTRY1:
+        if key.signing_flow == SIGNING_FLOW_BOUNDED_COSIGNER1:
             if not item.auth_address:
                 raise ValueError(f"prepared transaction {index}: bounded auth address is required")
             resources = _require_lsig_resources(
@@ -5353,15 +5353,15 @@ def sign_prepared_bounded_sentry_group(
                 {
                     "target_index": index,
                     "guarded_account": item.auth_address,
-                    "sentry_public_key_hex": _bounded_sentry_public_key(key),
-                    "sentry_component_key_type": _bounded_sentry_component_key_type(key),
+                    "cosigner_public_key_hex": _bounded_cosigner_public_key(key),
+                    "cosigner_component_key_type": _bounded_cosigner_component_key_type(key),
                     "logic_sig_resources": resources,
                     "app_call_info": item.app_call_info,
                 }
             )
             continue
-        if key.signing_flow == SIGNING_FLOW_SENTRY1:
-            raise ValueError("cannot mix sentry1 and bounded-sentry1 targets in one group")
+        if key.signing_flow == SIGNING_FLOW_COSIGNER1:
+            raise ValueError("cannot mix cosigner1 and bounded-cosigner1 targets in one group")
         if key.signing_flow not in ("", SIGNING_FLOW_BOUNDED1):
             raise ValueError(
                 f"prepared transaction {index}: signer key requires signing flow "
@@ -5396,7 +5396,7 @@ def sign_prepared_bounded_sentry_group(
             }
         )
     if not targets:
-        raise ValueError("prepared group has no bounded-sentry targets")
+        raise ValueError("prepared group has no bounded-cosigner targets")
 
     plan_response = user_client.plan_requests(requests_data)
     frozen_group = list(plan_response.get("transactions") or [])
@@ -5467,13 +5467,13 @@ def sign_prepared_bounded_sentry_group(
                 f"{target['target_index']}"
             )
 
-    sentry_groups: Dict[tuple, Dict[str, Any]] = {}
+    cosigner_groups: Dict[tuple, Dict[str, Any]] = {}
     for target in targets:
-        client, component_key = _resolve_sentry_for_target(
-            target, sentry_client, sentry_component_key, sentry_resolver
+        client, component_key = _resolve_cosigner_for_target(
+            target, cosigner_client, cosigner_component_key, cosigner_resolver
         )
         group_key = (id(client), component_key)
-        sentry_groups.setdefault(
+        cosigner_groups.setdefault(
             group_key,
             {
                 "client": client,
@@ -5481,14 +5481,14 @@ def sign_prepared_bounded_sentry_group(
                 "indices": [],
             },
         )["indices"].append(target["target_index"])
-    sentry_component_responses = []
-    sentry_signatures: Dict[int, Dict[str, str]] = {}
-    for group in sentry_groups.values():
+    cosigner_component_responses = []
+    cosigner_signatures: Dict[int, Dict[str, str]] = {}
+    for group in cosigner_groups.values():
         response = group["client"].request_components(
             _component_request_for_indices(
                 frozen_group,
                 sorted(group["indices"]),
-                COMPONENT_TARGET_KIND_SENTRY,
+                COMPONENT_TARGET_KIND_COSIGNER,
                 group["component_key"],
                 list(range(len(prepared), len(frozen_group))),
                 {
@@ -5497,8 +5497,8 @@ def sign_prepared_bounded_sentry_group(
                 },
             )
         )
-        sentry_component_responses.append(response)
-        sentry_signatures.update(_component_signatures_by_index(response))
+        cosigner_component_responses.append(response)
+        cosigner_signatures.update(_component_signatures_by_index(response))
 
     primary_response, passthrough = _request_bounded_primary_passthrough(
         user_client,
@@ -5512,21 +5512,21 @@ def sign_prepared_bounded_sentry_group(
     assembly_targets: List[AssemblyTarget] = []
     for target in targets:
         index = target["target_index"]
-        sentry = sentry_signatures.get(index)
-        if sentry is None:
-            raise SignerError(f"missing sentry component signature for target {index}")
+        cosigner = cosigner_signatures.get(index)
+        if cosigner is None:
+            raise SignerError(f"missing cosigner component signature for target {index}")
         component = components[index]
         assembly_targets.append(
             AssemblyTarget(
                 target_index=index,
-                kind=ASSEMBLY_TARGET_KIND_BOUNDED_SENTRY,
+                kind=ASSEMBLY_TARGET_KIND_BOUNDED_COSIGNER,
                 auth_address=component["auth_address"],
                 base_signatures=list(component.get("base_signatures") or []),
                 bounded_runtime_args=dict(component.get("runtime_args") or {}) or None,
                 assembly_receipt=component["assembly_receipt"],
                 base_source_request_id=component_response.request_id,
-                sentry_signature=sentry["signature"],
-                sentry_source_request_id=sentry["request_id"],
+                cosigner_signature=cosigner["signature"],
+                cosigner_source_request_id=cosigner["request_id"],
             )
         )
     assembly_response = user_client.request_assemble(
@@ -5541,7 +5541,7 @@ def sign_prepared_bounded_sentry_group(
     return GuardedSignResult(
         signed_group=list(assembly_response.signed_group),
         user_component_responses=[],
-        sentry_component_responses=sentry_component_responses,
+        cosigner_component_responses=cosigner_component_responses,
         primary_sign_response=primary_response,
         assembly_response=None,
         bounded_component_response=component_response,
@@ -5553,9 +5553,9 @@ def sign_prepared_guarded_group(
     *,
     user_client: SignerClient,
     prepared_group: PreparedGroup,
-    sentry_client: Optional[SignerClient] = None,
-    sentry_resolver: Optional[Any] = None,
-    sentry_component_key: str = "",
+    cosigner_client: Optional[SignerClient] = None,
+    cosigner_resolver: Optional[Any] = None,
+    cosigner_component_key: str = "",
     assembly_request_id: str = "",
 ) -> GuardedSignResult:
     """
@@ -5565,26 +5565,26 @@ def sign_prepared_guarded_group(
     The signer /plan endpoint owns canonical group sizing, dummy insertion,
     and authorization-fee pooling before component signatures are collected.
     """
-    has_bounded_sentry, has_legacy_guarded = _prepared_sentry_flow_kinds(
+    has_bounded_cosigner, has_legacy_guarded = _prepared_cosigner_flow_kinds(
         user_client, prepared_group
     )
-    if has_bounded_sentry:
+    if has_bounded_cosigner:
         if has_legacy_guarded:
-            raise ValueError("cannot mix sentry1 and bounded-sentry1 targets in one group")
-        return sign_prepared_bounded_sentry_group(
+            raise ValueError("cannot mix cosigner1 and bounded-cosigner1 targets in one group")
+        return sign_prepared_bounded_cosigner_group(
             user_client=user_client,
             prepared_group=prepared_group,
-            sentry_client=sentry_client,
-            sentry_resolver=sentry_resolver,
-            sentry_component_key=sentry_component_key,
+            cosigner_client=cosigner_client,
+            cosigner_resolver=cosigner_resolver,
+            cosigner_component_key=cosigner_component_key,
             assembly_request_id=assembly_request_id,
         )
     inputs = _build_prepared_guarded_sign_inputs(
         user_client,
         prepared_group,
-        sentry_client,
-        sentry_resolver,
-        sentry_component_key,
+        cosigner_client,
+        cosigner_resolver,
+        cosigner_component_key,
         assembly_request_id,
     )
     return sign_guarded_group(**inputs)
@@ -5595,9 +5595,9 @@ def sign_guarded_group(
     user_client: SignerClient,
     group_bytes_hex: List[str],
     guarded_targets: List[Any],
-    sentry_client: Optional[SignerClient] = None,
-    sentry_resolver: Optional[Any] = None,
-    sentry_component_key: str = "",
+    cosigner_client: Optional[SignerClient] = None,
+    cosigner_resolver: Optional[Any] = None,
+    cosigner_component_key: str = "",
     primary_targets: Optional[List[Any]] = None,
     passthrough: Optional[List[Any]] = None,
     dummy_positions: Optional[List[int]] = None,
@@ -5661,35 +5661,35 @@ def sign_guarded_group(
         user_component_responses.append(response)
         user_signatures.update(_component_signatures_by_index(response))
 
-    sentry_groups: Dict[tuple, Dict[str, Any]] = {}
+    cosigner_groups: Dict[tuple, Dict[str, Any]] = {}
     for target in targets:
-        client, component_key = _resolve_sentry_for_target(
-            target, sentry_client, sentry_component_key, sentry_resolver
+        client, component_key = _resolve_cosigner_for_target(
+            target, cosigner_client, cosigner_component_key, cosigner_resolver
         )
         key = (id(client), component_key)
-        if key not in sentry_groups:
-            sentry_groups[key] = {
+        if key not in cosigner_groups:
+            cosigner_groups[key] = {
                 "client": client,
                 "component_key": component_key,
                 "indices": [],
             }
-        sentry_groups[key]["indices"].append(target["target_index"])
+        cosigner_groups[key]["indices"].append(target["target_index"])
 
-    sentry_component_responses = []
-    sentry_signatures: Dict[int, Dict[str, str]] = {}
-    for group in sentry_groups.values():
+    cosigner_component_responses = []
+    cosigner_signatures: Dict[int, Dict[str, str]] = {}
+    for group in cosigner_groups.values():
         response = group["client"].request_components(
             _component_request_for_indices(
                 group_bytes_hex,
                 sorted(group["indices"]),
-                COMPONENT_TARGET_KIND_SENTRY,
+                COMPONENT_TARGET_KIND_COSIGNER,
                 group["component_key"],
                 dummy_positions,
                 app_call_info,
             )
         )
-        sentry_component_responses.append(response)
-        sentry_signatures.update(_component_signatures_by_index(response))
+        cosigner_component_responses.append(response)
+        cosigner_signatures.update(_component_signatures_by_index(response))
 
     primary_sign_response = None
     assembly_passthrough = [
@@ -5710,8 +5710,8 @@ def sign_guarded_group(
         index = target["target_index"]
         if index not in user_signatures:
             raise SignerError(f"missing user component signature for target {index}")
-        if index not in sentry_signatures:
-            raise SignerError(f"missing sentry component signature for target {index}")
+        if index not in cosigner_signatures:
+            raise SignerError(f"missing cosigner component signature for target {index}")
         assembly_targets.append(
             AssemblyTarget(
                 target_index=index,
@@ -5719,8 +5719,8 @@ def sign_guarded_group(
                 auth_address=target["guarded_account"],
                 user_signature=user_signatures[index]["signature"],
                 user_source_request_id=user_signatures[index]["request_id"],
-                sentry_signature=sentry_signatures[index]["signature"],
-                sentry_source_request_id=sentry_signatures[index]["request_id"],
+                cosigner_signature=cosigner_signatures[index]["signature"],
+                cosigner_source_request_id=cosigner_signatures[index]["request_id"],
                 guarded_runtime_args=target.get("runtime_args"),
             )
         )
@@ -5736,7 +5736,7 @@ def sign_guarded_group(
     return GuardedSignResult(
         signed_group=assembly_response.signed_group,
         user_component_responses=user_component_responses,
-        sentry_component_responses=sentry_component_responses,
+        cosigner_component_responses=cosigner_component_responses,
         primary_sign_response=primary_sign_response,
         assembly_response=assembly_response,
     )
@@ -6130,7 +6130,7 @@ def request_token_to_file(
         request_token_to_file()
 
         # Or with explicit parameters
-        request_token_to_file(data_dir="/custom/path", endpoint="sentry.qa")
+        request_token_to_file(data_dir="/custom/path", endpoint="cosigner.qa")
 
         # Now you can use SignerClient.from_env()
         client = SignerClient.from_env()

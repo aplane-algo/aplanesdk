@@ -25,7 +25,7 @@ type sdkNoncanonicalMap []interface{}
 
 func (sdkNoncanonicalMap) MapBySlice() {}
 
-func TestSignPreparedBoundedSentryGroupOneTarget(t *testing.T) {
+func TestSignPreparedBoundedCosignerGroupOneTarget(t *testing.T) {
 	bounded := sdkTestAddress(21)
 	receiver := sdkTestAddress(22)
 	var frozenGroup []string
@@ -71,7 +71,7 @@ func TestSignPreparedBoundedSentryGroupOneTarget(t *testing.T) {
 				t.Fatalf("decode bounded assembly request: %v", err)
 			}
 			if len(req.Targets) != 1 || req.Targets[0].AssemblyReceipt != "receipt" ||
-				req.Targets[0].SentrySignature != "sentry-sig" {
+				req.Targets[0].CosignerSignature != "cosigner-sig" {
 				t.Fatalf("bounded assembly targets = %+v", req.Targets)
 			}
 			json.NewEncoder(w).Encode(AssemblyResponse{
@@ -83,29 +83,29 @@ func TestSignPreparedBoundedSentryGroupOneTarget(t *testing.T) {
 	})
 	defer userServer.Close()
 
-	sentryClient, sentryServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+	cosignerClient, cosignerServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/sign/component" {
-			t.Fatalf("unexpected sentry path %s", r.URL.Path)
+			t.Fatalf("unexpected cosigner path %s", r.URL.Path)
 		}
 		var req capturedComponentRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode sentry component request: %v", err)
+			t.Fatalf("decode cosigner component request: %v", err)
 		}
-		if req.Role != capturedComponentRoleSentry || req.ComponentKey != "SENTRY_COMPONENT" ||
+		if req.Role != capturedComponentRoleCosigner || req.ComponentKey != "COSIGNER_COMPONENT" ||
 			len(req.GroupBytesHex) != 1 || req.GroupBytesHex[0] != frozenGroup[0] {
-			t.Fatalf("sentry component request = %+v", req)
+			t.Fatalf("cosigner component request = %+v", req)
 		}
 		if req.TargetAppInfo[0] == nil || req.TargetAppInfo[0].Mode != "raw" {
-			t.Fatalf("sentry target app-call metadata = %#v", req.TargetAppInfo[0])
+			t.Fatalf("cosigner target app-call metadata = %#v", req.TargetAppInfo[0])
 		}
 		json.NewEncoder(w).Encode(ComponentResponse{
 			RequestID: req.RequestID,
-			Components: []Component{{Kind: ComponentTargetKindSentry,
-				TargetIndex: 0, Signature: "sentry-sig", SignatureScheme: KeyTypeWitnessFalcon1024,
+			Components: []Component{{Kind: ComponentTargetKindCosigner,
+				TargetIndex: 0, Signature: "cosigner-sig", SignatureScheme: KeyTypeWitnessFalcon1024,
 			}},
 		})
 	})
-	defer sentryServer.Close()
+	defer cosignerServer.Close()
 
 	var genesisHash types.Digest
 	sp := types.SuggestedParams{
@@ -117,21 +117,21 @@ func TestSignPreparedBoundedSentryGroupOneTarget(t *testing.T) {
 		t.Fatalf("MakePaymentTxn() error = %v", err)
 	}
 	options := PreparedGuardedGroupOptions{
-		UserClient: userClient, SentryClient: sentryClient,
-		SentryComponentKey: "SENTRY_COMPONENT",
+		UserClient: userClient, CosignerClient: cosignerClient,
+		CosignerComponentKey: "COSIGNER_COMPONENT",
 		PreparedGroup: NewPreparedGroup(PreparedTransaction{
 			Transaction: &txn, AuthAddress: bounded,
 			AppCallInfo: &AppCallInfo{Mode: "raw"},
 			SignerKey: &KeyInfo{
 				Address: bounded, KeyType: "aplane.corridor.v1",
-				SigningFlow: SigningFlowBoundedSentry1,
+				SigningFlow: SigningFlowBoundedCosigner1,
 				LogicSigResources: &LogicSigResourceProfile{
 					Spend: &LogicSigResourceUsage{ProgramBytes: 5308, ArgumentBytes: 3358, MaxOpcodeCost: 20000},
 				},
-				SentryComponentKeyType: KeyTypeWitnessFalcon1024,
+				CosignerComponentKeyType: KeyTypeWitnessFalcon1024,
 				BoundedAuthorization: &BoundedAuthorizationInfo{
 					MaxFee: 1000,
-					Sentry: &BoundedSentryAuthorizationInfo{
+					Cosigner: &BoundedCosignerAuthorizationInfo{
 						ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: "aabb",
 					},
 				},
@@ -161,7 +161,7 @@ func TestSignPreparedBoundedSentryGroupOneTarget(t *testing.T) {
 // the signer budgets its fee purely from the declared pq_scheme. Omitting it
 // freezes an under-funded canonical group that the later /sign identity check
 // cannot detect, because the shortfall is already inside the canonical bytes.
-func TestSignPreparedBoundedSentryGroupDeclaresNativePQPrimary(t *testing.T) {
+func TestSignPreparedBoundedCosignerGroupDeclaresNativePQPrimary(t *testing.T) {
 	bounded := sdkTestAddress(51)
 	nativePQ := sdkTestAddress(52)
 	receiver := sdkTestAddress(53)
@@ -217,19 +217,19 @@ func TestSignPreparedBoundedSentryGroupDeclaresNativePQPrimary(t *testing.T) {
 	})
 	defer userServer.Close()
 
-	sentryClient, sentryServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+	cosignerClient, cosignerServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		var req capturedComponentRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode sentry component request: %v", err)
+			t.Fatalf("decode cosigner component request: %v", err)
 		}
 		json.NewEncoder(w).Encode(ComponentResponse{
 			RequestID: req.RequestID,
-			Components: []Component{{Kind: ComponentTargetKindSentry,
-				TargetIndex: 0, Signature: "sentry-sig", SignatureScheme: KeyTypeWitnessFalcon1024,
+			Components: []Component{{Kind: ComponentTargetKindCosigner,
+				TargetIndex: 0, Signature: "cosigner-sig", SignatureScheme: KeyTypeWitnessFalcon1024,
 			}},
 		})
 	})
-	defer sentryServer.Close()
+	defer cosignerServer.Close()
 
 	var genesisHash types.Digest
 	sp := types.SuggestedParams{
@@ -252,22 +252,22 @@ func TestSignPreparedBoundedSentryGroupDeclaresNativePQPrimary(t *testing.T) {
 	nativeTxn.Group = groupID
 
 	_, err = SignPreparedGuardedGroup(PreparedGuardedGroupOptions{
-		UserClient: userClient, SentryClient: sentryClient,
-		SentryComponentKey: "SENTRY_COMPONENT",
+		UserClient: userClient, CosignerClient: cosignerClient,
+		CosignerComponentKey: "COSIGNER_COMPONENT",
 		PreparedGroup: NewPreparedGroup(
 			PreparedTransaction{
 				Transaction: &corridorTxn, AuthAddress: bounded,
 				SignerKey: &KeyInfo{
 					Address: bounded, KeyType: "aplane.corridor.v1",
 					AuthorizationKind: AuthorizationKindLogicSig,
-					SigningFlow:       SigningFlowBoundedSentry1,
+					SigningFlow:       SigningFlowBoundedCosigner1,
 					LogicSigResources: &LogicSigResourceProfile{
 						Spend: &LogicSigResourceUsage{ProgramBytes: 5308, ArgumentBytes: 3358, MaxOpcodeCost: 20000},
 					},
-					SentryComponentKeyType: KeyTypeWitnessFalcon1024,
+					CosignerComponentKeyType: KeyTypeWitnessFalcon1024,
 					BoundedAuthorization: &BoundedAuthorizationInfo{
 						MaxFee: 1000,
-						Sentry: &BoundedSentryAuthorizationInfo{
+						Cosigner: &BoundedCosignerAuthorizationInfo{
 							ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: "aabb",
 						},
 					},
@@ -317,8 +317,8 @@ func TestUnifiedBoundedAssemblyRejectsMissingCoverage(t *testing.T) {
 	req := AssemblyRequest{
 		GroupBytesHex: []string{"5458aa", "5458bb"},
 		Targets: []AssemblyTarget{{
-			TargetIndex: 0, Kind: AssemblyTargetKindBoundedSentry, AuthAddress: "BOUNDED", BaseSignatures: []string{"base"},
-			AssemblyReceipt: "receipt", SentrySignature: "sentry",
+			TargetIndex: 0, Kind: AssemblyTargetKindBoundedCosigner, AuthAddress: "BOUNDED", BaseSignatures: []string{"base"},
+			AssemblyReceipt: "receipt", CosignerSignature: "cosigner",
 		}},
 	}
 	if err := req.Validate(); err == nil {
@@ -334,15 +334,15 @@ func TestUnifiedAssemblyRejectsMalformedSourceRequestIDs(t *testing.T) {
 	}{
 		{name: "guarded user", target: AssemblyTarget{
 			TargetIndex: 0, Kind: AssemblyTargetKindGuarded, AuthAddress: "GUARDED",
-			UserSignature: "user", UserSourceRequestID: "bad id", SentrySignature: "sentry",
+			UserSignature: "user", UserSourceRequestID: "bad id", CosignerSignature: "cosigner",
 		}, want: "user_source_request_id"},
-		{name: "guarded sentry", target: AssemblyTarget{
+		{name: "guarded cosigner", target: AssemblyTarget{
 			TargetIndex: 0, Kind: AssemblyTargetKindGuarded, AuthAddress: "GUARDED",
-			UserSignature: "user", SentrySignature: "sentry", SentrySourceRequestID: "bad id",
-		}, want: "sentry_source_request_id"},
+			UserSignature: "user", CosignerSignature: "cosigner", CosignerSourceRequestID: "bad id",
+		}, want: "cosigner_source_request_id"},
 		{name: "bounded base", target: AssemblyTarget{
-			TargetIndex: 0, Kind: AssemblyTargetKindBoundedSentry, AuthAddress: "BOUNDED",
-			BaseSignatures: []string{"base"}, AssemblyReceipt: "receipt", BaseSourceRequestID: "bad id", SentrySignature: "sentry",
+			TargetIndex: 0, Kind: AssemblyTargetKindBoundedCosigner, AuthAddress: "BOUNDED",
+			BaseSignatures: []string{"base"}, AssemblyReceipt: "receipt", BaseSourceRequestID: "bad id", CosignerSignature: "cosigner",
 		}, want: "base_source_request_id"},
 	}
 	for _, tt := range tests {
@@ -358,10 +358,10 @@ func TestUnifiedAssemblyRejectsMalformedSourceRequestIDs(t *testing.T) {
 func TestComponentResponseValidateForRequestRejectsOutOfGroupIndex(t *testing.T) {
 	request := ComponentRequest{
 		GroupBytesHex: []string{"5458aa"},
-		Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindSentry, ComponentKey: "SENTRY"}},
+		Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindCosigner, ComponentKey: "COSIGNER"}},
 	}
 	response := ComponentResponse{RequestID: "response", Components: []Component{{
-		TargetIndex: 1, Kind: ComponentTargetKindSentry, Signature: "sig", SignatureScheme: KeyTypeWitnessFalcon1024,
+		TargetIndex: 1, Kind: ComponentTargetKindCosigner, Signature: "sig", SignatureScheme: KeyTypeWitnessFalcon1024,
 	}}}
 	if err := response.ValidateForRequest(request); err == nil || !strings.Contains(err.Error(), "indices or kinds") {
 		t.Fatalf("ValidateForRequest() error = %v, want out-of-group rejection", err)
@@ -611,15 +611,15 @@ func TestDecodeCanonicalGroupRejectsNoncanonicalBytes(t *testing.T) {
 	}
 }
 
-func TestPreparedBoundedSentryRejectsMixedFlow(t *testing.T) {
+func TestPreparedBoundedCosignerRejectsMixedFlow(t *testing.T) {
 	_, err := SignPreparedGuardedGroup(PreparedGuardedGroupOptions{
 		UserClient: &SignerClient{},
 		PreparedGroup: NewPreparedGroup(
-			PreparedTransaction{SignerKey: &KeyInfo{SigningFlow: SigningFlowBoundedSentry1}},
-			PreparedTransaction{SignerKey: &KeyInfo{SigningFlow: SigningFlowSentry1}},
+			PreparedTransaction{SignerKey: &KeyInfo{SigningFlow: SigningFlowBoundedCosigner1}},
+			PreparedTransaction{SignerKey: &KeyInfo{SigningFlow: SigningFlowCosigner1}},
 		),
 	})
-	if err == nil || !strings.Contains(err.Error(), "cannot mix sentry1 and bounded-sentry1") {
+	if err == nil || !strings.Contains(err.Error(), "cannot mix cosigner1 and bounded-cosigner1") {
 		t.Fatalf("SignPreparedGuardedGroup() error = %v, want mixed-flow rejection", err)
 	}
 }

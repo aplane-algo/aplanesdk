@@ -45,12 +45,12 @@ func TestLoadClientEndpointRegistrySharedFixture(t *testing.T) {
 	if primary.TokenFile != filepath.Join(dataDir, "aplane.token") {
 		t.Fatalf("TokenFile = %q", primary.TokenFile)
 	}
-	sentry := registry.Endpoints["sentry.qa"]
-	if sentry.URL != "https://sentry.example.com" {
-		t.Fatalf("sentry URL = %q", sentry.URL)
+	cosigner := registry.Endpoints["cosigner.qa"]
+	if cosigner.URL != "https://cosigner.example.com" {
+		t.Fatalf("cosigner URL = %q", cosigner.URL)
 	}
-	if sentry.TokenFile != filepath.Join(dataDir, "credentials", "sentry.token") {
-		t.Fatalf("sentry TokenFile = %q", sentry.TokenFile)
+	if cosigner.TokenFile != filepath.Join(dataDir, "credentials", "cosigner.token") {
+		t.Fatalf("cosigner TokenFile = %q", cosigner.TokenFile)
 	}
 }
 
@@ -81,10 +81,10 @@ func TestLoadClientEndpointRegistryRejectsSpecificEndpointRules(t *testing.T) {
 		want    string
 	}{
 		{"invalid_self_signer.yaml", `endpoint "primary": url "self" is not supported`},
-		{"invalid_self_sentry.yaml", `endpoint "sentry": url "self" is not supported`},
-		{"invalid_sentry_local_port.yaml", `endpoint "sentry": local_port is not supported for sentry endpoints`},
-		{"invalid_13_sentry_endpoints.yaml", "configures 13 sentry endpoints; maximum is 12"},
-		{"invalid_v2_published_sentries.yaml", "published_sentries"},
+		{"invalid_self_cosigner.yaml", `endpoint "cosigner": url "self" is not supported`},
+		{"invalid_cosigner_local_port.yaml", `endpoint "cosigner": local_port is not supported for cosigner endpoints`},
+		{"invalid_13_cosigner_endpoints.yaml", "configures 13 cosigner endpoints; maximum is 12"},
+		{"invalid_v2_published_cosigners.yaml", "published_cosigners"},
 	} {
 		t.Run(tc.fixture, func(t *testing.T) {
 			_, err := LoadClientEndpointRegistry(copyEndpointFixture(t, tc.fixture))
@@ -99,8 +99,8 @@ func TestLoadClientEndpointRegistryAcceptsSharedEdgeFixtures(t *testing.T) {
 	for _, name := range []string{
 		"valid_schema_version_null.yaml",
 		"valid_schema_version_zero.yaml",
-		"valid_12_sentry_endpoints.yaml",
-		"valid_sentry_zero_local_port.yaml",
+		"valid_12_cosigner_endpoints.yaml",
+		"valid_cosigner_zero_local_port.yaml",
 	} {
 		t.Run(name, func(t *testing.T) {
 			registry, err := LoadClientEndpointRegistry(copyEndpointFixture(t, name))
@@ -110,26 +110,26 @@ func TestLoadClientEndpointRegistryAcceptsSharedEdgeFixtures(t *testing.T) {
 			if registry.SchemaVersion != ClientEndpointSchemaVersion {
 				t.Fatalf("SchemaVersion = %d, want %d", registry.SchemaVersion, ClientEndpointSchemaVersion)
 			}
-			if name == "valid_12_sentry_endpoints.yaml" && len(registry.Endpoints) != 12 {
+			if name == "valid_12_cosigner_endpoints.yaml" && len(registry.Endpoints) != 12 {
 				t.Fatalf("endpoint count = %d, want 12", len(registry.Endpoints))
 			}
-			if name == "valid_sentry_zero_local_port.yaml" && registry.Endpoints["sentry"].LocalPort != 0 {
-				t.Fatalf("sentry local_port = %d, want 0", registry.Endpoints["sentry"].LocalPort)
+			if name == "valid_cosigner_zero_local_port.yaml" && registry.Endpoints["cosigner"].LocalPort != 0 {
+				t.Fatalf("cosigner local_port = %d, want 0", registry.Endpoints["cosigner"].LocalPort)
 			}
 		})
 	}
 }
 
-func TestLoadClientEndpointRegistryDiscardsV1PublishedSentries(t *testing.T) {
-	registry, err := LoadClientEndpointRegistry(copyEndpointFixture(t, "valid_v1_published_sentries.yaml"))
+func TestLoadClientEndpointRegistryDiscardsV1PublishedCosigners(t *testing.T) {
+	registry, err := LoadClientEndpointRegistry(copyEndpointFixture(t, "valid_v1_published_cosigners.yaml"))
 	if err != nil {
 		t.Fatalf("LoadClientEndpointRegistry: %v", err)
 	}
 	if registry.SchemaVersion != ClientEndpointSchemaVersion {
 		t.Fatalf("SchemaVersion = %d, want %d", registry.SchemaVersion, ClientEndpointSchemaVersion)
 	}
-	endpoint := registry.Endpoints["sentry-old"]
-	if endpoint.Role != ClientEndpointRoleSentry || endpoint.URL != "https://sentry.example.com" {
+	endpoint := registry.Endpoints["cosigner-old"]
+	if endpoint.Role != ClientEndpointRoleCosigner || endpoint.URL != "https://cosigner.example.com" {
 		t.Fatalf("endpoint = %#v", endpoint)
 	}
 }
@@ -143,7 +143,7 @@ endpoints:
     role: signer
     url: ssh://localhost
   qa:
-    role: sentry
+    role: cosigner
     url: http://127.0.0.1:11271
 `)
 	if err := os.WriteFile(filepath.Join(dataDir, ClientEndpointsFile), data, 0o600); err != nil {
@@ -168,16 +168,16 @@ func TestResolveClientEndpoint(t *testing.T) {
 	registry := &ClientEndpointRegistry{
 		Default: "primary",
 		Endpoints: map[string]ClientEndpointConfig{
-			"primary": {Role: ClientEndpointRoleSigner},
-			"sentry":  {Role: ClientEndpointRoleSentry},
+			"primary":  {Role: ClientEndpointRoleSigner},
+			"cosigner": {Role: ClientEndpointRoleCosigner},
 		},
 	}
 	alias, endpoint, err := ResolveClientEndpoint(registry, "")
 	if err != nil || alias != "primary" || endpoint.Role != ClientEndpointRoleSigner {
 		t.Fatalf("default resolution = %q %+v %v", alias, endpoint, err)
 	}
-	alias, endpoint, err = ResolveClientEndpoint(registry, "sentry")
-	if err != nil || alias != "sentry" || endpoint.Role != ClientEndpointRoleSentry {
+	alias, endpoint, err = ResolveClientEndpoint(registry, "cosigner")
+	if err != nil || alias != "cosigner" || endpoint.Role != ClientEndpointRoleCosigner {
 		t.Fatalf("explicit resolution = %q %+v %v", alias, endpoint, err)
 	}
 	_, _, err = ResolveClientEndpoint(registry, "missing")

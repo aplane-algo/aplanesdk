@@ -7,7 +7,7 @@
  * Data directory (required via APCLIENT_DATA env var or dataDir option):
  *     <data_dir>/
  *     ├── aplane.token         # API token
- *     └── endpoints.yaml       # Signer and sentry routing
+ *     └── endpoints.yaml       # Signer and cosigner routing
  *
  * Example endpoints.yaml:
  *     schema_version: 2
@@ -32,7 +32,7 @@ export {
   SignerClient,
   signGuardedGroup,
   signPreparedGuardedGroup,
-  signPreparedBoundedSentryGroup,
+  signPreparedBoundedCosignerGroup,
   simulateGuardedGroup,
   simulatePreparedGuardedGroup,
 } from "./client.js";
@@ -41,8 +41,8 @@ export type { ErrorCode } from "./types.js";
 export type {
   GuardedSignTarget,
   GuardedPrimarySignTarget,
-  GuardedSentryResolution,
-  GuardedSentryResolver,
+  GuardedCosignerResolution,
+  GuardedCosignerResolver,
   GuardedSignOptions,
   GuardedSignResult,
   GuardedSimulationResult,
@@ -109,7 +109,7 @@ export type {
   BoundedDerivedArgInfo,
   BoundedArgumentPathMask,
   BoundedArgumentSlotInfo,
-  BoundedSentryAuthorizationInfo,
+  BoundedCosignerAuthorizationInfo,
   BoundedAuthorizationInfo,
   RuntimeArg,
   SigningArg,
@@ -161,11 +161,11 @@ export type {
 } from "./types.js";
 
 export {
-  SIGNING_FLOW_SENTRY1,
+  SIGNING_FLOW_COSIGNER1,
   SIGNING_FLOW_BOUNDED1,
-  SIGNING_FLOW_BOUNDED_SENTRY1,
+  SIGNING_FLOW_BOUNDED_COSIGNER1,
   KEY_TYPE_WITNESS_FALCON1024,
-  KEY_TYPE_GUARDED_FALCON1024_SENTRY1024,
+  KEY_TYPE_GUARDED_FALCON1024_COSIGNER1024,
   PQ_SCHEME_FALCON1024,
   AUTHORIZATION_KIND_ED25519,
   AUTHORIZATION_KIND_NATIVE_PQ,

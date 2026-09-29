@@ -64,14 +64,14 @@ func TestRequestComponentsUserKindDiscoversApprovalWait(t *testing.T) {
 	}
 
 	paths = nil
-	sentryReq := ComponentRequest{
+	cosignerReq := ComponentRequest{
 		GroupBytesHex: []string{"5458a16374786ea0"},
-		Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindSentry, ComponentKey: "SENTRYKEY"}},
+		Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindCosigner, ComponentKey: "COSIGNERKEY"}},
 	}
-	if _, err := client.RequestComponents(sentryReq); err != nil {
-		t.Fatalf("RequestComponents(sentry) error = %v", err)
+	if _, err := client.RequestComponents(cosignerReq); err != nil {
+		t.Fatalf("RequestComponents(cosigner) error = %v", err)
 	}
 	if len(paths) != 1 || paths[0] != "/sign/component" {
-		t.Fatalf("sentry-role request paths = %v, want no approval-wait discovery", paths)
+		t.Fatalf("cosigner-role request paths = %v, want no approval-wait discovery", paths)
 	}
 }

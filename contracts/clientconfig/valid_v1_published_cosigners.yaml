@@ -1,9 +1,9 @@
 schema_version: 1
 endpoints:
-  sentry-old:
-    role: sentry
-    url: https://sentry.example.com
-    published_sentries:
+  cosigner-old:
+    role: cosigner
+    url: https://cosigner.example.com
+    published_cosigners:
       deadbeef:
         component_key: LEGACY
         key_type: legacy

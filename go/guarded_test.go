@@ -154,7 +154,7 @@ func TestSignGuardedGroupOneTarget(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("decode assembly request: %v", err)
 			}
-			if len(req.Targets) != 1 || req.Targets[0].UserSignature != "user-sig" || req.Targets[0].SentrySignature != "sentry-sig" {
+			if len(req.Targets) != 1 || req.Targets[0].UserSignature != "user-sig" || req.Targets[0].CosignerSignature != "cosigner-sig" {
 				t.Fatalf("assembly targets = %+v", req.Targets)
 			}
 			json.NewEncoder(w).Encode(AssemblyResponse{
@@ -172,34 +172,34 @@ func TestSignGuardedGroupOneTarget(t *testing.T) {
 	})
 	defer userServer.Close()
 
-	sentryClient, sentryServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+	cosignerClient, cosignerServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/sign/component" {
-			t.Fatalf("unexpected sentry path %s", r.URL.Path)
+			t.Fatalf("unexpected cosigner path %s", r.URL.Path)
 		}
 		var req capturedComponentRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode sentry component request: %v", err)
+			t.Fatalf("decode cosigner component request: %v", err)
 		}
-		if req.Role != capturedComponentRoleSentry || req.ComponentKey != "SENTRY_COMPONENT" {
-			t.Fatalf("sentry component request = %+v", req)
+		if req.Role != capturedComponentRoleCosigner || req.ComponentKey != "COSIGNER_COMPONENT" {
+			t.Fatalf("cosigner component request = %+v", req)
 		}
 		json.NewEncoder(w).Encode(ComponentResponse{
 			RequestID: req.RequestID,
-			Components: []Component{{Kind: ComponentTargetKindSentry,
+			Components: []Component{{Kind: ComponentTargetKindCosigner,
 				TargetIndex:     0,
-				Signature:       "sentry-sig",
+				Signature:       "cosigner-sig",
 				SignatureScheme: KeyTypeWitnessFalcon1024,
 			}},
 		})
 	})
-	defer sentryServer.Close()
+	defer cosignerServer.Close()
 
 	group := []string{canonicalTxnHex(1)}
 	result, err := SignGuardedGroup(GuardedSignOptions{
-		UserClient:         userClient,
-		SentryClient:       sentryClient,
-		SentryComponentKey: "SENTRY_COMPONENT",
-		GroupBytesHex:      group,
+		UserClient:           userClient,
+		CosignerClient:       cosignerClient,
+		CosignerComponentKey: "COSIGNER_COMPONENT",
+		GroupBytesHex:        group,
 		Targets: []GuardedSignTarget{{
 			TargetIndex:       0,
 			GuardedAccount:    "GUARDED",
@@ -214,7 +214,7 @@ func TestSignGuardedGroupOneTarget(t *testing.T) {
 	}
 }
 
-func TestSignGuardedGroupBatchesSharedSentryKey(t *testing.T) {
+func TestSignGuardedGroupBatchesSharedCosignerKey(t *testing.T) {
 	userClient, userServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/sign/component":
@@ -252,31 +252,31 @@ func TestSignGuardedGroupBatchesSharedSentryKey(t *testing.T) {
 	})
 	defer userServer.Close()
 
-	sentryCalls := 0
-	sentryClient, sentryServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
-		sentryCalls++
+	cosignerCalls := 0
+	cosignerClient, cosignerServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		cosignerCalls++
 		var req capturedComponentRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode sentry component request: %v", err)
+			t.Fatalf("decode cosigner component request: %v", err)
 		}
 		if len(req.TargetIndices) != 2 {
-			t.Fatalf("sentry target indices = %+v", req.TargetIndices)
+			t.Fatalf("cosigner target indices = %+v", req.TargetIndices)
 		}
 		json.NewEncoder(w).Encode(ComponentResponse{
 			RequestID: req.RequestID,
 			Components: []Component{
-				{TargetIndex: 0, Kind: ComponentTargetKindSentry, Signature: "sentry-0", SignatureScheme: KeyTypeWitnessFalcon1024},
-				{TargetIndex: 1, Kind: ComponentTargetKindSentry, Signature: "sentry-1", SignatureScheme: KeyTypeWitnessFalcon1024},
+				{TargetIndex: 0, Kind: ComponentTargetKindCosigner, Signature: "cosigner-0", SignatureScheme: KeyTypeWitnessFalcon1024},
+				{TargetIndex: 1, Kind: ComponentTargetKindCosigner, Signature: "cosigner-1", SignatureScheme: KeyTypeWitnessFalcon1024},
 			},
 		})
 	})
-	defer sentryServer.Close()
+	defer cosignerServer.Close()
 
 	_, err := SignGuardedGroup(GuardedSignOptions{
-		UserClient:         userClient,
-		SentryClient:       sentryClient,
-		SentryComponentKey: "SENTRY_COMPONENT",
-		GroupBytesHex:      []string{canonicalTxnHex(1), canonicalTxnHex(2)},
+		UserClient:           userClient,
+		CosignerClient:       cosignerClient,
+		CosignerComponentKey: "COSIGNER_COMPONENT",
+		GroupBytesHex:        []string{canonicalTxnHex(1), canonicalTxnHex(2)},
 		Targets: []GuardedSignTarget{
 			{TargetIndex: 0, GuardedAccount: "GUARDED", LogicSigResources: guardedTestResources()},
 			{TargetIndex: 1, GuardedAccount: "GUARDED", LogicSigResources: guardedTestResources()},
@@ -285,8 +285,8 @@ func TestSignGuardedGroupBatchesSharedSentryKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SignGuardedGroup() error = %v", err)
 	}
-	if sentryCalls != 1 {
-		t.Fatalf("sentry component calls = %d, want 1", sentryCalls)
+	if cosignerCalls != 1 {
+		t.Fatalf("cosigner component calls = %d, want 1", cosignerCalls)
 	}
 }
 
@@ -329,21 +329,21 @@ func TestSignGuardedGroupRejectsMismatchedAssembly(t *testing.T) {
 			})
 			defer userServer.Close()
 
-			sentryClient, sentryServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+			cosignerClient, cosignerServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 				var req capturedComponentRequest
 				_ = json.NewDecoder(r.Body).Decode(&req)
 				json.NewEncoder(w).Encode(ComponentResponse{
 					RequestID:  req.RequestID,
-					Components: []Component{{Kind: ComponentTargetKindSentry, TargetIndex: 0, Signature: "sentry-sig", SignatureScheme: KeyTypeWitnessFalcon1024}},
+					Components: []Component{{Kind: ComponentTargetKindCosigner, TargetIndex: 0, Signature: "cosigner-sig", SignatureScheme: KeyTypeWitnessFalcon1024}},
 				})
 			})
-			defer sentryServer.Close()
+			defer cosignerServer.Close()
 
 			_, err := SignGuardedGroup(GuardedSignOptions{
-				UserClient:         userClient,
-				SentryClient:       sentryClient,
-				SentryComponentKey: "SENTRY_COMPONENT",
-				GroupBytesHex:      []string{canonicalTxnHex(1)},
+				UserClient:           userClient,
+				CosignerClient:       cosignerClient,
+				CosignerComponentKey: "COSIGNER_COMPONENT",
+				GroupBytesHex:        []string{canonicalTxnHex(1)},
 				Targets: []GuardedSignTarget{{
 					TargetIndex:       0,
 					GuardedAccount:    "GUARDED",
@@ -425,31 +425,31 @@ func TestSignGuardedGroupMixedPrimaryAndGuarded(t *testing.T) {
 	})
 	defer userServer.Close()
 
-	sentryClient, sentryServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+	cosignerClient, cosignerServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		var req capturedComponentRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode sentry component request: %v", err)
+			t.Fatalf("decode cosigner component request: %v", err)
 		}
 		if len(req.Contextual) != 2 || req.Contextual[0].TargetIndex != 0 ||
 			req.Contextual[0].AppCallInfo == nil || req.Contextual[0].AppCallInfo.Method != "primary()void" {
-			t.Fatalf("sentry component contextual metadata = %+v", req.Contextual)
+			t.Fatalf("cosigner component contextual metadata = %+v", req.Contextual)
 		}
 		json.NewEncoder(w).Encode(ComponentResponse{
 			RequestID: req.RequestID,
-			Components: []Component{{Kind: ComponentTargetKindSentry,
+			Components: []Component{{Kind: ComponentTargetKindCosigner,
 				TargetIndex:     1,
-				Signature:       "sentry-sig",
+				Signature:       "cosigner-sig",
 				SignatureScheme: KeyTypeWitnessFalcon1024,
 			}},
 		})
 	})
-	defer sentryServer.Close()
+	defer cosignerServer.Close()
 
 	result, err := SignGuardedGroup(GuardedSignOptions{
-		UserClient:         userClient,
-		SentryClient:       sentryClient,
-		SentryComponentKey: "SENTRY_COMPONENT",
-		GroupBytesHex:      []string{canonicalTxnHex(1), canonicalTxnHex(2), canonicalTxnHex(3)},
+		UserClient:           userClient,
+		CosignerClient:       cosignerClient,
+		CosignerComponentKey: "COSIGNER_COMPONENT",
+		GroupBytesHex:        []string{canonicalTxnHex(1), canonicalTxnHex(2), canonicalTxnHex(3)},
 		PrimaryTargets: []GuardedPrimarySignTarget{{
 			TargetIndex: 0,
 			AuthAddress: "AUTH",
@@ -595,33 +595,33 @@ func TestSignPreparedGuardedGroupUsesSignerPlan(t *testing.T) {
 	})
 	defer userServer.Close()
 
-	sentryClient, sentryServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+	cosignerClient, cosignerServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/sign/component" {
-			t.Fatalf("unexpected sentry path %s", r.URL.Path)
+			t.Fatalf("unexpected cosigner path %s", r.URL.Path)
 		}
 		var req capturedComponentRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode sentry component request: %v", err)
+			t.Fatalf("decode cosigner component request: %v", err)
 		}
-		if req.Role != capturedComponentRoleSentry || len(req.GroupBytesHex) != 4 || len(req.TargetIndices) != 1 || req.TargetIndices[0] != 0 {
-			t.Fatalf("sentry component request = %+v", req)
+		if req.Role != capturedComponentRoleCosigner || len(req.GroupBytesHex) != 4 || len(req.TargetIndices) != 1 || req.TargetIndices[0] != 0 {
+			t.Fatalf("cosigner component request = %+v", req)
 		}
 		if len(req.Contextual) != 0 || len(req.Dummies) != 3 || req.Dummies[0].TargetIndex != 1 || req.Dummies[2].TargetIndex != 3 {
-			t.Fatalf("sentry component partition = context %+v dummies %+v", req.Contextual, req.Dummies)
+			t.Fatalf("cosigner component partition = context %+v dummies %+v", req.Contextual, req.Dummies)
 		}
 		if info := req.TargetAppInfo[0]; info == nil || info.Mode != "raw" {
-			t.Fatalf("sentry component app-call info = %#v, want raw", info)
+			t.Fatalf("cosigner component app-call info = %#v, want raw", info)
 		}
 		json.NewEncoder(w).Encode(ComponentResponse{
 			RequestID: req.RequestID,
-			Components: []Component{{Kind: ComponentTargetKindSentry,
+			Components: []Component{{Kind: ComponentTargetKindCosigner,
 				TargetIndex:     0,
-				Signature:       "sentry-sig",
+				Signature:       "cosigner-sig",
 				SignatureScheme: KeyTypeWitnessFalcon1024,
 			}},
 		})
 	})
-	defer sentryServer.Close()
+	defer cosignerServer.Close()
 
 	var genesisHash types.Digest
 	sp := types.SuggestedParams{
@@ -638,22 +638,22 @@ func TestSignPreparedGuardedGroupUsesSignerPlan(t *testing.T) {
 	}
 
 	result, err := SignPreparedGuardedGroup(PreparedGuardedGroupOptions{
-		UserClient:         userClient,
-		SentryClient:       sentryClient,
-		SentryComponentKey: "SENTRY_COMPONENT",
+		UserClient:           userClient,
+		CosignerClient:       cosignerClient,
+		CosignerComponentKey: "COSIGNER_COMPONENT",
 		PreparedGroup: NewPreparedGroup(PreparedTransaction{
 			Transaction: &txn,
 			AuthAddress: guarded,
 			AppCallInfo: &AppCallInfo{Mode: "raw"},
 			SignerKey: &KeyInfo{
-				Address:                guarded,
-				KeyType:                KeyTypeGuardedFalcon1024Sentry1024,
-				SigningFlow:            SigningFlowSentry1,
-				SentryComponentKeyType: KeyTypeWitnessFalcon1024,
+				Address:                  guarded,
+				KeyType:                  KeyTypeGuardedFalcon1024Cosigner1024,
+				SigningFlow:              SigningFlowCosigner1,
+				CosignerComponentKeyType: KeyTypeWitnessFalcon1024,
 				LogicSigResources: &LogicSigResourceProfile{
 					Spend: &LogicSigResourceUsage{ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000},
 				},
-				Parameters: map[string]string{"sentry_public_key": "aabbcc"},
+				Parameters: map[string]string{"cosigner_public_key": "aabbcc"},
 			},
 		}),
 	})
@@ -690,14 +690,14 @@ func TestSignPreparedGuardedGroupRejectsUnsupportedSigningFlow(t *testing.T) {
 			SignerKey: &KeyInfo{
 				Address:     guarded,
 				KeyType:     "aplane.future-guarded.v1",
-				SigningFlow: "sentry2",
+				SigningFlow: "cosigner2",
 				LogicSigResources: &LogicSigResourceProfile{
 					Spend: &LogicSigResourceUsage{ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000},
 				},
 			},
 		}),
 	})
-	if err == nil || !strings.Contains(err.Error(), `signing flow "sentry2"`) {
+	if err == nil || !strings.Contains(err.Error(), `signing flow "cosigner2"`) {
 		t.Fatalf("SignPreparedGuardedGroup() error = %v, want unsupported signing flow rejection", err)
 	}
 }

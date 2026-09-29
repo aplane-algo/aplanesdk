@@ -134,7 +134,7 @@ Typical client layout (installer default: `~/aplane/apclient`):
 
 The SDK reads:
 
-- `endpoints.yaml` for signer/sentry URLs, ports, paths, and token files
+- `endpoints.yaml` for signer/cosigner URLs, ports, paths, and token files
 - the selected endpoint's token for HTTP authentication and SSH mutual proof
 - `.ssh/id_ed25519` for client SSH auth
 - `.ssh/known_hosts` for SSH host key verification
@@ -171,7 +171,7 @@ Provision and save a token with the TypeScript helper:
 ```ts
 import { requestTokenToFile } from "aplanesdk";
 
-const tokenPath = await requestTokenToFile({ endpoint: "sentry.qa" });
+const tokenPath = await requestTokenToFile({ endpoint: "cosigner.qa" });
 console.log(`Saved token to ${tokenPath}`);
 ```
 
@@ -545,10 +545,10 @@ Use `createTransaction.*` when APlane must own final signing and any
 APlane-managed group expansion. `algorand.send.*` owns the composer send path
 and signs inside that path.
 
-### Guarded Sentry Signing
+### Guarded Cosigner Signing
 
 Guarded accounts use component signatures from both the user signer and a
-sentry signer. Sentry component selectors are public policy keys, not Algorand
+cosigner signer. Cosigner component selectors are public policy keys, not Algorand
 spending accounts, and must not be used as senders, receivers, auth addresses,
 or rekey targets.
 
@@ -559,8 +559,8 @@ reviewed spend-path resource profile returned by `listKeys()`:
 ```ts
 const result = await signGuardedGroup({
   userClient,
-  sentryClient,
-  sentryComponentKey: "SENTRY_COMPONENT_SELECTOR",
+  cosignerClient,
+  cosignerComponentKey: "COSIGNER_COMPONENT_SELECTOR",
   groupBytesHex: ["5458..."],
   guardedTargets: [
     {
@@ -580,26 +580,26 @@ If a direct guarded call combines `primaryTargets` with caller-supplied
 `logicSigResources` for a LogicSig. This metadata is used only to plan the
 intermediate primary-signing request and is not sent to `/sign/assemble`.
 
-For manual orchestration, use `requestComponents()` on the user and sentry
+For manual orchestration, use `requestComponents()` on the user and cosigner
 clients, then `requestAssemble()` on the user client. `assembleGroup()`
 remains only the local multi-party concatenation helper.
 
-Corridor is a bounded sentry account: its LogicSig contract is `bounded1`, and
-its online spend flow is `bounded-sentry1`. These are separate compatibility
+Corridor is a bounded cosigner account: its LogicSig contract is `bounded1`, and
+its online spend flow is `bounded-cosigner1`. These are separate compatibility
 dimensions. `signPreparedGuardedGroup()` discovers the flow from signer
 inventory and performs the user-first sequence:
 
 ```ts
 const result = await signPreparedGuardedGroup({
   userClient,
-  sentryResolver,
+  cosignerResolver,
   preparedGroup,
 });
 const signedGroup = result.signedGroup;
 ```
 
 The sequence is `/plan`, user approval and base-component release through
-`requestComponents()` with a bounded-base target, sentry signing over the
+`requestComponents()` with a bounded-base target, cosigner signing over the
 frozen group, signing of ordinary group positions, and final
 `requestAssemble()` on the user signer. Before requesting any additional signature, the SDK accepts only
 mutation-report-declared fee pooling and group-ID assignment to the caller's
@@ -611,13 +611,13 @@ also public for applications that own the orchestration.
 The signer planner owns fee selection, authorization-resource sizing, and any
 reported group mutations for both guarded flows.
 
-The v1 sentry gate applies only to spends. Contract-admin rekeys use the
+The v1 cosigner gate applies only to spends. Contract-admin rekeys use the
 external `aprekey` witness ceremony and are outside SDK completion.
 
 User-role component signing runs the signer-domain approval gates and can
 block on a manual operator decision. The SDK automatically discovers the
 signer's `approval_wait_seconds` and sizes the request deadline accordingly,
-exactly like `/sign`; sentry-role component requests stay on the short
+exactly like `/sign`; cosigner-role component requests stay on the short
 deterministic deadline.
 
 Full simulation uses ordinary executable signing and the caller's algod. The

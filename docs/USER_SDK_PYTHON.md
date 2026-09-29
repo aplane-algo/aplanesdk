@@ -128,7 +128,7 @@ Typical client layout (installer default: `~/aplane/apclient`):
 
 The SDK reads:
 
-- `endpoints.yaml` for signer/sentry URLs, ports, paths, and token files
+- `endpoints.yaml` for signer/cosigner URLs, ports, paths, and token files
 - the selected endpoint's token for HTTP authentication and SSH mutual proof
 - `.ssh/id_ed25519` for client SSH auth
 - `.ssh/known_hosts` for SSH host key verification
@@ -165,7 +165,7 @@ Provision and save a token with the Python helper:
 ```python
 from aplanesdk import request_token_to_file
 
-token_path = request_token_to_file(endpoint="sentry.qa")
+token_path = request_token_to_file(endpoint="cosigner.qa")
 print(f"Saved token to {token_path}")
 ```
 
@@ -604,10 +604,10 @@ combined = assemble_group([alice_signed_list, bob_signed_list])
 
 Each slot must have exactly one non-empty signed entry across the input lists.
 
-### Guarded Sentry Signing
+### Guarded Cosigner Signing
 
 Guarded accounts use component signatures from both the user signer and a
-sentry signer. Sentry component selectors are public policy keys, not Algorand
+cosigner signer. Cosigner component selectors are public policy keys, not Algorand
 spending accounts, and must not be used as senders, receivers, auth addresses,
 or rekey targets.
 
@@ -618,8 +618,8 @@ reviewed spend-path resource profile returned by `list_keys()`:
 ```python
 result = sign_guarded_group(
     user_client=user_client,
-    sentry_client=sentry_client,
-    sentry_component_key="SENTRY_COMPONENT_SELECTOR",
+    cosigner_client=cosigner_client,
+    cosigner_component_key="COSIGNER_COMPONENT_SELECTOR",
     group_bytes_hex=["5458..."],
     guarded_targets=[
         GuardedSignTarget(
@@ -640,25 +640,25 @@ If a direct guarded call combines `primary_targets` with caller-supplied
 intermediate primary-signing request and is not sent to `/sign/assemble`.
 
 For manual orchestration, use `request_components()` on the user and
-sentry clients, then `request_assemble()` on the user client.
+cosigner clients, then `request_assemble()` on the user client.
 `assemble_group()` remains only the local multi-party concatenation helper.
 
-Corridor is a bounded sentry account: its LogicSig contract is `bounded1`, and
-its online spend flow is `bounded-sentry1`. These are separate compatibility
+Corridor is a bounded cosigner account: its LogicSig contract is `bounded1`, and
+its online spend flow is `bounded-cosigner1`. These are separate compatibility
 dimensions. `sign_prepared_guarded_group()` discovers the flow from signer
 inventory and performs the user-first sequence:
 
 ```python
 result = sign_prepared_guarded_group(
     user_client=user_client,
-    sentry_resolver=sentry_resolver,
+    cosigner_resolver=cosigner_resolver,
     prepared_group=prepared_group,
 )
 signed_group = result.signed_group
 ```
 
 The sequence is `/plan`, user approval and base-component release through
-`request_components()` with a bounded-base target, sentry signing over the
+`request_components()` with a bounded-base target, cosigner signing over the
 frozen group, signing of ordinary group positions, and final
 `request_assemble()` on the user signer. Before requesting any additional
 signature, the SDK accepts only
@@ -671,13 +671,13 @@ also public for applications that own the orchestration.
 The signer planner owns fee selection, authorization-resource sizing, and any
 reported group mutations for both guarded flows.
 
-The v1 sentry gate applies only to spends. Contract-admin rekeys use the
+The v1 cosigner gate applies only to spends. Contract-admin rekeys use the
 external `aprekey` witness ceremony and are outside SDK completion.
 
 User-role component signing runs the signer-domain approval gates and can
 block on a manual operator decision. The SDK automatically discovers the
 signer's `approval_wait_seconds` and sizes the request deadline accordingly,
-exactly like `/sign`; sentry-role component requests stay on the short
+exactly like `/sign`; cosigner-role component requests stay on the short
 deterministic deadline.
 
 Full simulation uses ordinary executable signing and the caller's algod. The

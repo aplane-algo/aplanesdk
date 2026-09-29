@@ -130,7 +130,7 @@ Data directory structure (installer default: `~/aplane/apclient`):
 ```
 <data_dir>/
   config.yaml          # Non-routing client settings
-  endpoints.yaml       # Signer and sentry routing
+  endpoints.yaml       # Signer and cosigner routing
   aplane.token         # Authentication token
   .ssh/
     id_ed25519         # SSH key
@@ -151,7 +151,7 @@ endpoints:
 ```
 
 Pass `trustOnFirstUse: true` to `SignerClient.fromEnv` only when the call may
-trust and save an unknown host key. Use `endpoint: "sentry.qa"` to select a
+trust and save an unknown host key. Use `endpoint: "cosigner.qa"` to select a
 named endpoint.
 
 ## Authentication
@@ -388,9 +388,9 @@ controller.abort();
 | `ed25519` | Native Algorand keys | Standard signing |
 | `aplane.falcon1024.v1` | Post-quantum LogicSig | Signature in LogicSig.Args[0] |
 | `aplane.ed25519.v1` | Ed25519 DSA LogicSig | Library-visible plain DSA account |
-| `aplane.witness-falcon1024.v1` | Witness key | Sentry-custodied policy signature key; not a spending account |
-| `aplane.falcon1024-sentry1024.v1` | Guarded account | Requires user and sentry component signatures |
-| `aplane.corridor.v1` | Bounded Corridor account | `bounded1` contract; `bounded-sentry1` spend flow |
+| `aplane.witness-falcon1024.v1` | Witness key | Cosigner-custodied policy signature key; not a spending account |
+| `aplane.falcon1024-cosigner1024.v1` | Guarded account | Requires user and cosigner component signatures |
+| `aplane.corridor.v1` | Bounded Corridor account | `bounded1` contract; `bounded-cosigner1` spend flow |
 | `aplane.falcon1024-allowlist.v1` | Bounded allowlist | Inline allowlist; `bounded1` signing flow |
 | `aplane.falcon1024-allowlist.v2` | Bounded allowlist | Merkle allowlist; `bounded1` signing flow |
 | `aplane.falcon1024-timelock.v1` | Bounded timelock | Round-gated `bounded1` signing flow |
@@ -399,9 +399,9 @@ controller.abort();
 
 The server assembles the complete signed transaction - the SDK returns a base64 string ready for submission.
 
-## Sentry And Guarded Accounts
+## Cosigner And Guarded Accounts
 
-Witness keys enrolled as sentries are public policy-signature selectors, not Algorand
+Witness keys enrolled as cosigners are public policy-signature selectors, not Algorand
 spending accounts. Do not use them as senders, receivers, auth addresses, or
 rekey targets. Guarded account keys must be signed through the guarded flow.
 
@@ -417,12 +417,12 @@ const userPart = await userClient.requestComponents({
   }],
 });
 
-const sentryPart = await sentryClient.requestComponents({
+const cosignerPart = await cosignerClient.requestComponents({
   group_bytes_hex: ["5458..."],
   targets: [{
     target_index: 0,
-    kind: "sentry",
-    component_key: "SENTRY_COMPONENT_SELECTOR",
+    kind: "cosigner",
+    component_key: "COSIGNER_COMPONENT_SELECTOR",
   }],
 });
 
@@ -433,7 +433,7 @@ const assembled = await userClient.requestAssemble({
     kind: "guarded",
     auth_address: "GUARDED_ACCOUNT_ADDRESS",
     user_signature: userPart.components[0].signature!,
-    sentry_signature: sentryPart.components[0].signature!,
+    cosigner_signature: cosignerPart.components[0].signature!,
   }],
 });
 ```
@@ -445,8 +445,8 @@ resource profile returned by `listKeys()`:
 ```typescript
 const result = await signGuardedGroup({
   userClient,
-  sentryClient,
-  sentryComponentKey: "SENTRY_COMPONENT_SELECTOR",
+  cosignerClient,
+  cosignerComponentKey: "COSIGNER_COMPONENT_SELECTOR",
   groupBytesHex: ["5458..."],
   guardedTargets: [
     {
@@ -462,10 +462,10 @@ const signedGroup = result.signedGroup;
 `assembleGroup()` remains the local multi-party concatenation helper; it is not
 the same operation as server-side guarded assembly.
 
-### Bounded Sentry Accounts
+### Bounded Cosigner Accounts
 
 Corridor uses the bounded contract `bounded1` with the distinct
-`bounded-sentry1` online signing flow. The contract identifies the LogicSig
+`bounded-cosigner1` online signing flow. The contract identifies the LogicSig
 rules; the flow identifies the user-first multi-endpoint choreography. The
 prepared helper detects that flow from signer inventory and routes it
 automatically:
@@ -473,7 +473,7 @@ automatically:
 ```typescript
 const result = await signPreparedGuardedGroup({
   userClient,
-  sentryResolver,
+  cosignerResolver,
   preparedGroup,
 });
 const signedGroup = result.signedGroup;
@@ -481,7 +481,7 @@ const signedGroup = result.signedGroup;
 
 The SDK first freezes the complete canonical group through `/plan`; the user
 signer then approves those bytes through `requestComponents()` with
-`kind: "bounded-base"`. Only then does the SDK request sentry signatures over
+`kind: "bounded-base"`. Only then does the SDK request cosigner signatures over
 the same bytes, sign ordinary positions, and call `requestAssemble()`. Before
 signing anything, the SDK compares the
 signer-produced plan with the caller's prepared group: only reported fee
@@ -500,7 +500,7 @@ The signer planner owns fee selection, authorization-resource sizing, and any
 reported group mutations for both guarded flows.
 
 Applications that own orchestration can call `requestComponents()` and
-`requestAssemble()` directly. Sentry authorization is spend-only in this
+`requestAssemble()` directly. Cosigner authorization is spend-only in this
 contract; bounded contract-admin rekeys remain an external `aprekey` ceremony
 and are not completed by the SDK.
 

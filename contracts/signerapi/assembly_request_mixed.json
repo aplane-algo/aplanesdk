@@ -11,11 +11,11 @@
       "kind": "guarded",
       "auth_address": "GUARDED_ACCOUNT",
       "user_signature": "aa",
-      "sentry_signature": "bb"
+      "cosigner_signature": "bb"
     },
     {
       "target_index": 1,
-      "kind": "bounded-sentry",
+      "kind": "bounded-cosigner",
       "auth_address": "BOUNDED_ACCOUNT",
       "base_signatures": [
         "cc"
@@ -24,7 +24,7 @@
         "proof": "dd"
       },
       "assembly_receipt": "ee",
-      "sentry_signature": "ff"
+      "cosigner_signature": "ff"
     }
   ],
   "passthrough": [

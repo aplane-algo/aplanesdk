@@ -11,10 +11,10 @@ import {
   simulateGuardedGroup,
 } from "../src/client.js";
 import {
-  KEY_TYPE_GUARDED_FALCON1024_SENTRY1024,
+  KEY_TYPE_GUARDED_FALCON1024_COSIGNER1024,
   KEY_TYPE_WITNESS_FALCON1024,
-  SIGNING_FLOW_SENTRY1,
-  SIGNING_FLOW_BOUNDED_SENTRY1,
+  SIGNING_FLOW_COSIGNER1,
+  SIGNING_FLOW_BOUNDED_COSIGNER1,
 } from "../src/types.js";
 import {
   AuthenticationError,
@@ -1194,7 +1194,7 @@ describe("SignerClient", () => {
           components: [
             {
               target_index: 0,
-              kind: "sentry",
+              kind: "cosigner",
               signature: "aabb",
               signature_scheme: KEY_TYPE_WITNESS_FALCON1024,
             },
@@ -1206,7 +1206,7 @@ describe("SignerClient", () => {
       const result = await client.requestComponents({
         request_id: "sdk-generated",
         group_bytes_hex: ["5458aa"],
-        targets: [{ target_index: 0, kind: "sentry", component_key: "COMPONENT" }],
+        targets: [{ target_index: 0, kind: "cosigner", component_key: "COMPONENT" }],
       });
 
       assert.equal(result.components[0].signature, "aabb");
@@ -1215,7 +1215,7 @@ describe("SignerClient", () => {
       assert.equal(mockFetch.mock.calls[0][1].headers.Authorization, "aplane test-token");
       const body = JSON.parse(mockFetch.mock.calls[0][1].body);
       assert.match(body.request_id, /^sdk-/);
-      assert.equal(body.targets[0].kind, "sentry");
+      assert.equal(body.targets[0].kind, "cosigner");
       assert.equal(body.targets[0].component_key, "COMPONENT");
     });
 
@@ -1230,7 +1230,7 @@ describe("SignerClient", () => {
       await assert.rejects(
         client.requestComponents({
           group_bytes_hex: ["5458aa"],
-          targets: [{ target_index: 0, kind: "sentry" }],
+          targets: [{ target_index: 0, kind: "cosigner" }],
         }),
         { message: /invalid component response: components array is empty/ },
       );
@@ -1244,7 +1244,7 @@ describe("SignerClient", () => {
           request_id: "sdk-component",
           components: [{
             target_index: 1,
-            kind: "sentry",
+            kind: "cosigner",
             signature: "aabb",
             signature_scheme: KEY_TYPE_WITNESS_FALCON1024,
           }],
@@ -1256,7 +1256,7 @@ describe("SignerClient", () => {
         client.requestComponents({
           request_id: "sdk-component",
           group_bytes_hex: ["5458aa", "5458bb"],
-          targets: [{ target_index: 0, kind: "sentry" }],
+          targets: [{ target_index: 0, kind: "cosigner" }],
           contextual_positions: [{ target_index: 1 }],
         }),
         { message: /indices or kinds do not match request/ },
@@ -1271,7 +1271,7 @@ describe("SignerClient", () => {
           request_id: "sdk-component",
           components: [{
             target_index: 2,
-            kind: "sentry",
+            kind: "cosigner",
             signature: "aabb",
             signature_scheme: KEY_TYPE_WITNESS_FALCON1024,
           }],
@@ -1283,7 +1283,7 @@ describe("SignerClient", () => {
         client.requestComponents({
           request_id: "sdk-component",
           group_bytes_hex: ["5458aa"],
-          targets: [{ target_index: 0, kind: "sentry", component_key: "COMPONENT" }],
+          targets: [{ target_index: 0, kind: "cosigner", component_key: "COMPONENT" }],
         }),
         { message: /invalid component response: component 1 target_index is outside the frozen group/ },
       );
@@ -1308,7 +1308,7 @@ describe("SignerClient", () => {
             kind: "guarded",
             auth_address: "GUARDED",
             user_signature: "aabb",
-            sentry_signature: "bbcc",
+            cosigner_signature: "bbcc",
           },
         ],
       });
@@ -1332,7 +1332,7 @@ describe("SignerClient", () => {
               kind: "guarded",
               auth_address: "GUARDED",
               user_signature: "aabb",
-              sentry_signature: "bbcc",
+              cosigner_signature: "bbcc",
             },
           ],
         }),
@@ -1384,11 +1384,11 @@ describe("SignerClient", () => {
         group_bytes_hex: ["5458aa"],
         targets: [{
           target_index: 0,
-          kind: "bounded-sentry",
+          kind: "bounded-cosigner",
           auth_address: "BOUNDED",
           base_signatures: ["base-sig"],
           assembly_receipt: "receipt",
-          sentry_signature: "sentry-sig",
+          cosigner_signature: "cosigner-sig",
         }],
       });
 
@@ -1516,7 +1516,7 @@ describe("SignerClient", () => {
   describe("signGuardedGroup", () => {
     it("signs one guarded target", async () => {
       const user = new SignerClient("http://localhost:11270", "test-token");
-      const sentry = new SignerClient("http://sentry:11270", "sentry-token");
+      const cosigner = new SignerClient("http://cosigner:11270", "cosigner-token");
 
       (user as any).requestComponents = async (request: any) => {
         assert.equal(request.targets[0].kind, "user");
@@ -1528,26 +1528,26 @@ describe("SignerClient", () => {
           ],
         };
       };
-      (sentry as any).requestComponents = async (request: any) => {
-        assert.equal(request.targets[0].kind, "sentry");
-        assert.equal(request.targets[0].component_key, "SENTRY_COMPONENT");
+      (cosigner as any).requestComponents = async (request: any) => {
+        assert.equal(request.targets[0].kind, "cosigner");
+        assert.equal(request.targets[0].component_key, "COSIGNER_COMPONENT");
         return {
-          request_id: "sentry-id",
+          request_id: "cosigner-id",
           components: [
-            { target_index: 0, kind: "sentry", signature: "sentry-sig", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
+            { target_index: 0, kind: "cosigner", signature: "cosigner-sig", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
           ],
         };
       };
       (user as any).requestAssemble = async (request: any) => {
         assert.equal(request.targets[0].user_signature, "user-sig");
-        assert.equal(request.targets[0].sentry_signature, "sentry-sig");
+        assert.equal(request.targets[0].cosigner_signature, "cosigner-sig");
         return { request_id: "assembly-id", signed_group: ["signed-guarded"] };
       };
 
       const result = await signGuardedGroup({
         userClient: user,
-        sentryClient: sentry,
-        sentryComponentKey: "SENTRY_COMPONENT",
+        cosignerClient: cosigner,
+        cosignerComponentKey: "COSIGNER_COMPONENT",
         groupBytesHex: ["5458aa"],
         guardedTargets: [{
           targetIndex: 0,
@@ -1559,10 +1559,10 @@ describe("SignerClient", () => {
       assert.deepEqual(result.signedGroup, ["signed-guarded"]);
     });
 
-    it("batches targets for a shared sentry key", async () => {
+    it("batches targets for a shared cosigner key", async () => {
       const user = new SignerClient("http://localhost:11270", "test-token");
-      const sentry = new SignerClient("http://sentry:11270", "sentry-token");
-      let sentryCalls = 0;
+      const cosigner = new SignerClient("http://cosigner:11270", "cosigner-token");
+      let cosignerCalls = 0;
 
       (user as any).requestComponents = async (request: any) => {
         assert.deepEqual(request.targets.map((target: any) => target.target_index), [0, 1]);
@@ -1574,14 +1574,14 @@ describe("SignerClient", () => {
           ],
         };
       };
-      (sentry as any).requestComponents = async (request: any) => {
-        sentryCalls += 1;
+      (cosigner as any).requestComponents = async (request: any) => {
+        cosignerCalls += 1;
         assert.deepEqual(request.targets.map((target: any) => target.target_index), [0, 1]);
         return {
-          request_id: "sentry-id",
+          request_id: "cosigner-id",
           components: [
-            { target_index: 0, kind: "sentry", signature: "sentry-0", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
-            { target_index: 1, kind: "sentry", signature: "sentry-1", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
+            { target_index: 0, kind: "cosigner", signature: "cosigner-0", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
+            { target_index: 1, kind: "cosigner", signature: "cosigner-1", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
           ],
         };
       };
@@ -1592,8 +1592,8 @@ describe("SignerClient", () => {
 
       await signGuardedGroup({
         userClient: user,
-        sentryClient: sentry,
-        sentryComponentKey: "SENTRY_COMPONENT",
+        cosignerClient: cosigner,
+        cosignerComponentKey: "COSIGNER_COMPONENT",
         groupBytesHex: ["5458aa", "5458bb"],
         guardedTargets: [
           { targetIndex: 0, guardedAccount: "GUARDED", logicSigResources: guardedTestResources() },
@@ -1601,12 +1601,12 @@ describe("SignerClient", () => {
         ],
       });
 
-      assert.equal(sentryCalls, 1);
+      assert.equal(cosignerCalls, 1);
     });
 
     it("handles mixed primary and guarded groups", async () => {
       const user = new SignerClient("http://localhost:11270", "test-token");
-      const sentry = new SignerClient("http://sentry:11270", "sentry-token");
+      const cosigner = new SignerClient("http://cosigner:11270", "cosigner-token");
 
       (user as any).requestComponents = async (request: any) => {
         assert.deepEqual(
@@ -1616,19 +1616,19 @@ describe("SignerClient", () => {
         return {
           request_id: "user-id",
           components: [
-            { target_index: 1, kind: "sentry", signature: "user-sig", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
+            { target_index: 1, kind: "cosigner", signature: "user-sig", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
           ],
         };
       };
-      (sentry as any).requestComponents = async (request: any) => {
+      (cosigner as any).requestComponents = async (request: any) => {
         assert.deepEqual(
           request.contextual_positions.find((item: any) => item.target_index === 0).app_call_info,
           { mode: "abi", method: "primary()void" },
         );
         return {
-          request_id: "sentry-id",
+          request_id: "cosigner-id",
           components: [
-            { target_index: 1, kind: "sentry", signature: "sentry-sig", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
+            { target_index: 1, kind: "cosigner", signature: "cosigner-sig", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
           ],
         };
       };
@@ -1664,8 +1664,8 @@ describe("SignerClient", () => {
 
       const result = await signGuardedGroup({
         userClient: user,
-        sentryClient: sentry,
-        sentryComponentKey: "SENTRY_COMPONENT",
+        cosignerClient: cosigner,
+        cosignerComponentKey: "COSIGNER_COMPONENT",
         groupBytesHex: ["5458aa", "5458bb", "5458cc"],
         primaryTargets: [{
           targetIndex: 0,
@@ -1717,7 +1717,7 @@ describe("SignerClient", () => {
       const guarded = testAddress(1);
       const receiver = testAddress(2);
       const user = new SignerClient("http://localhost:11270", "test-token");
-      const sentry = new SignerClient("http://sentry:11270", "sentry-token");
+      const cosigner = new SignerClient("http://cosigner:11270", "cosigner-token");
 
       (user as any).requestComponents = async (request: any) => {
         assert.equal(request.targets[0].auth_address, guarded);
@@ -1735,8 +1735,8 @@ describe("SignerClient", () => {
           ],
         };
       };
-      (sentry as any).requestComponents = async (request: any) => {
-        assert.equal(request.targets[0].component_key, "SENTRY_COMPONENT");
+      (cosigner as any).requestComponents = async (request: any) => {
+        assert.equal(request.targets[0].component_key, "COSIGNER_COMPONENT");
         assert.deepEqual(request.targets[0].app_call_info, { mode: "raw" });
         assert.equal(request.group_bytes_hex.length, 4);
         assert.deepEqual(request.targets.map((target: any) => target.target_index), [0]);
@@ -1745,9 +1745,9 @@ describe("SignerClient", () => {
           { target_index: 1 }, { target_index: 2 }, { target_index: 3 },
         ]);
         return {
-          request_id: "sentry-id",
+          request_id: "cosigner-id",
           components: [
-            { target_index: 0, kind: "sentry", signature: "sentry-sig", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
+            { target_index: 0, kind: "cosigner", signature: "cosigner-sig", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
           ],
         };
       };
@@ -1816,8 +1816,8 @@ describe("SignerClient", () => {
 
       const result = await signPreparedGuardedGroup({
         userClient: user,
-        sentryClient: sentry,
-        sentryComponentKey: "SENTRY_COMPONENT",
+        cosignerClient: cosigner,
+        cosignerComponentKey: "COSIGNER_COMPONENT",
         preparedGroup: {
           transactions: [
             {
@@ -1827,14 +1827,14 @@ describe("SignerClient", () => {
               signerKey: {
                 address: guarded,
                 publicKeyHex: "",
-                keyType: KEY_TYPE_GUARDED_FALCON1024_SENTRY1024,
-                signingFlow: SIGNING_FLOW_SENTRY1,
-                sentryComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
+                keyType: KEY_TYPE_GUARDED_FALCON1024_COSIGNER1024,
+                signingFlow: SIGNING_FLOW_COSIGNER1,
+                cosignerComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
                 logicSigResources: {
                   spend: { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 },
                 },
                 isGenericLsig: false,
-                parameters: { sentry_public_key: "aabbcc" },
+                parameters: { cosigner_public_key: "aabbcc" },
               },
             },
           ],
@@ -1861,14 +1861,14 @@ describe("SignerClient", () => {
       const signerKey = {
         address: guarded,
         publicKeyHex: "",
-        keyType: KEY_TYPE_GUARDED_FALCON1024_SENTRY1024,
-        signingFlow: SIGNING_FLOW_SENTRY1,
-        sentryComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
+        keyType: KEY_TYPE_GUARDED_FALCON1024_COSIGNER1024,
+        signingFlow: SIGNING_FLOW_COSIGNER1,
+        cosignerComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
         logicSigResources: {
           spend: { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 },
         },
         isGenericLsig: false,
-        parameters: { sentry_public_key: "aabbcc" },
+        parameters: { cosigner_public_key: "aabbcc" },
       };
       (user as any).planRequests = async (requests: any[]) => {
         assert.equal(requests.length, 2);
@@ -1913,11 +1913,11 @@ describe("SignerClient", () => {
       );
     });
 
-    it("routes prepared bounded-sentry groups through the user-first flow", async () => {
+    it("routes prepared bounded-cosigner groups through the user-first flow", async () => {
       const bounded = testAddress(11);
       const receiver = testAddress(12);
       const user = new SignerClient("http://localhost:11270", "test-token");
-      const sentry = new SignerClient("http://sentry:11270", "sentry-token");
+      const cosigner = new SignerClient("http://cosigner:11270", "cosigner-token");
       let plannedTransactions: string[] | undefined;
       let plannedMutations: any;
       let baseComponentCalls = 0;
@@ -1943,17 +1943,17 @@ describe("SignerClient", () => {
           mutations: plannedMutations,
         };
       };
-      (sentry as any).requestComponents = async (request: any) => {
-        assert.equal(request.targets[0].component_key, "SENTRY_COMPONENT");
+      (cosigner as any).requestComponents = async (request: any) => {
+        assert.equal(request.targets[0].component_key, "COSIGNER_COMPONENT");
         assert.deepEqual(request.targets[0].app_call_info, { mode: "raw" });
         assert.deepEqual(request.targets.map((target: any) => target.target_index), [0]);
         assert.equal(request.group_bytes_hex.length, 1);
         return {
-          request_id: "sentry-id",
+          request_id: "cosigner-id",
           components: [{
             target_index: 0,
-            kind: "sentry",
-            signature: "sentry-sig",
+            kind: "cosigner",
+            signature: "cosigner-sig",
             signature_scheme: KEY_TYPE_WITNESS_FALCON1024,
           }],
         };
@@ -1972,7 +1972,7 @@ describe("SignerClient", () => {
       (user as any).requestAssemble = async (request: any) => {
         assert.deepEqual(request.targets[0].base_signatures, ["base-sig"]);
         assert.equal(request.targets[0].assembly_receipt, "receipt");
-        assert.equal(request.targets[0].sentry_signature, "sentry-sig");
+        assert.equal(request.targets[0].cosigner_signature, "cosigner-sig");
         return { request_id: "assembly-id", signed_group: [signedTxnHex(assembledTxn)] };
       };
 
@@ -1992,8 +1992,8 @@ describe("SignerClient", () => {
       });
       const options = {
         userClient: user,
-        sentryClient: sentry,
-        sentryComponentKey: "SENTRY_COMPONENT",
+        cosignerClient: cosigner,
+        cosignerComponentKey: "COSIGNER_COMPONENT",
         preparedGroup: {
           transactions: [{
             transaction: txn,
@@ -2003,8 +2003,8 @@ describe("SignerClient", () => {
               address: bounded,
               publicKeyHex: "",
               keyType: "aplane.corridor.v1",
-              signingFlow: SIGNING_FLOW_BOUNDED_SENTRY1,
-              sentryComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
+              signingFlow: SIGNING_FLOW_BOUNDED_COSIGNER1,
+              cosignerComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
               logicSigResources: {
                 spend: { programBytes: 5308, argumentBytes: 3358, maxOpcodeCost: 20000 },
               },
@@ -2015,8 +2015,8 @@ describe("SignerClient", () => {
                 spendEffects: ["pay"],
                 maxFee: 1000,
                 adminOperations: [],
-                sentry: {
-                  contract: "sentry1",
+                cosigner: {
+                  contract: "cosigner1",
                   componentKeyType: KEY_TYPE_WITNESS_FALCON1024,
                   publicKeyHex: "aabb",
                   signatureMaxSize: 1280,
@@ -2231,7 +2231,7 @@ describe("SignerClient", () => {
         await assert.rejects(
           signPreparedGuardedGroup({
             userClient: user,
-            sentryResolver: async (target) => {
+            cosignerResolver: async (target) => {
               assert.deepEqual(target.logicSigResources, item.expected);
               throw new Error(`observed ${item.name}`);
             },
@@ -2243,8 +2243,8 @@ describe("SignerClient", () => {
                   address: bounded,
                   publicKeyHex: "",
                   keyType: "aplane.corridor.v1",
-                  signingFlow: SIGNING_FLOW_BOUNDED_SENTRY1,
-                  sentryComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
+                  signingFlow: SIGNING_FLOW_BOUNDED_COSIGNER1,
+                  cosignerComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
                   logicSigResources: profiles,
                   isGenericLsig: false,
                   boundedAuthorization: {
@@ -2257,8 +2257,8 @@ describe("SignerClient", () => {
                       authorization: item.authorization,
                       policyGate: "none",
                     }],
-                    sentry: {
-                      contract: "sentry1",
+                    cosigner: {
+                      contract: "cosigner1",
                       componentKeyType: KEY_TYPE_WITNESS_FALCON1024,
                       publicKeyHex: "aabb",
                       signatureMaxSize: 1423,
@@ -2278,7 +2278,7 @@ describe("SignerClient", () => {
       }
     });
 
-    it("rejects mixed sentry1 and bounded-sentry1 prepared groups", async () => {
+    it("rejects mixed cosigner1 and bounded-cosigner1 prepared groups", async () => {
       const user = new SignerClient("http://localhost:11270", "test-token");
       await assert.rejects(
         signPreparedGuardedGroup({
@@ -2290,7 +2290,7 @@ describe("SignerClient", () => {
                   address: "bounded",
                   publicKeyHex: "",
                   keyType: "bounded",
-                  signingFlow: SIGNING_FLOW_BOUNDED_SENTRY1,
+                  signingFlow: SIGNING_FLOW_BOUNDED_COSIGNER1,
                   isGenericLsig: false,
                 },
               },
@@ -2299,14 +2299,14 @@ describe("SignerClient", () => {
                   address: "guarded",
                   publicKeyHex: "",
                   keyType: "guarded",
-                  signingFlow: SIGNING_FLOW_SENTRY1,
+                  signingFlow: SIGNING_FLOW_COSIGNER1,
                   isGenericLsig: false,
                 },
               },
             ],
           },
         }),
-        /cannot mix sentry1 and bounded-sentry1/,
+        /cannot mix cosigner1 and bounded-cosigner1/,
       );
     });
 
@@ -2315,7 +2315,7 @@ describe("SignerClient", () => {
       const primary = testAddress(22);
       const receiver = testAddress(23);
       const user = new SignerClient("http://localhost:11270", "test-token");
-      const sentry = new SignerClient("http://sentry:11270", "sentry-token");
+      const cosigner = new SignerClient("http://cosigner:11270", "cosigner-token");
       const suggestedParams = {
         fee: 1000n,
         minFee: 1000n,
@@ -2380,12 +2380,12 @@ describe("SignerClient", () => {
             signature_scheme: "aplane.falcon1024.v1",
           }],
         });
-      (sentry as any).requestComponents = async () => ({
-        request_id: "sentry-id",
+      (cosigner as any).requestComponents = async () => ({
+        request_id: "cosigner-id",
         components: [{
           target_index: 0,
-          kind: "sentry",
-          signature: "sentry-sig",
+          kind: "cosigner",
+          signature: "cosigner-sig",
           signature_scheme: KEY_TYPE_WITNESS_FALCON1024,
         }],
       });
@@ -2404,8 +2404,8 @@ describe("SignerClient", () => {
 
       const options = {
         userClient: user,
-        sentryClient: sentry,
-        sentryComponentKey: "SENTRY_COMPONENT",
+        cosignerClient: cosigner,
+        cosignerComponentKey: "COSIGNER_COMPONENT",
         preparedGroup: {
           transactions: [
             {
@@ -2415,8 +2415,8 @@ describe("SignerClient", () => {
                 address: bounded,
                 publicKeyHex: "",
                 keyType: "aplane.corridor.v1",
-                signingFlow: SIGNING_FLOW_BOUNDED_SENTRY1,
-                sentryComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
+                signingFlow: SIGNING_FLOW_BOUNDED_COSIGNER1,
+                cosignerComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
                 logicSigResources: {
                   spend: { programBytes: 5308, argumentBytes: 3358, maxOpcodeCost: 20000 },
                 },
@@ -2427,8 +2427,8 @@ describe("SignerClient", () => {
                   spendEffects: ["pay"],
                   maxFee: 1000,
                   adminOperations: [],
-                  sentry: {
-                    contract: "sentry1",
+                  cosigner: {
+                    contract: "cosigner1",
                     componentKeyType: KEY_TYPE_WITNESS_FALCON1024,
                     publicKeyHex: "aabb",
                     signatureMaxSize: 1280,
@@ -2468,12 +2468,12 @@ describe("SignerClient", () => {
     // Omitting it freezes an under-funded canonical group that the later /sign
     // identity check cannot detect, because the shortfall is already inside
     // the canonical bytes.
-    it("declares pq_scheme for a native-PQ primary slot in bounded-sentry groups", async () => {
+    it("declares pq_scheme for a native-PQ primary slot in bounded-cosigner groups", async () => {
       const bounded = testAddress(31);
       const nativePq = testAddress(32);
       const receiver = testAddress(33);
       const user = new SignerClient("http://localhost:11270", "test-token");
-      const sentry = new SignerClient("http://sentry:11270", "sentry-token");
+      const cosigner = new SignerClient("http://cosigner:11270", "cosigner-token");
       const suggestedParams = {
         fee: 1000n,
         minFee: 1000n,
@@ -2532,12 +2532,12 @@ describe("SignerClient", () => {
           }],
         };
       };
-      (sentry as any).requestComponents = async () => ({
-        request_id: "sentry-id",
+      (cosigner as any).requestComponents = async () => ({
+        request_id: "cosigner-id",
         components: [{
           target_index: 0,
-          kind: "sentry",
-          signature: "sentry-sig",
+          kind: "cosigner",
+          signature: "cosigner-sig",
           signature_scheme: KEY_TYPE_WITNESS_FALCON1024,
         }],
       });
@@ -2551,8 +2551,8 @@ describe("SignerClient", () => {
 
       await signPreparedGuardedGroup({
         userClient: user,
-        sentryClient: sentry,
-        sentryComponentKey: "SENTRY_COMPONENT",
+        cosignerClient: cosigner,
+        cosignerComponentKey: "COSIGNER_COMPONENT",
         preparedGroup: {
           transactions: [
             {
@@ -2563,8 +2563,8 @@ describe("SignerClient", () => {
                 publicKeyHex: "",
                 keyType: "aplane.corridor.v1",
                 authorizationKind: "logic_sig",
-                signingFlow: SIGNING_FLOW_BOUNDED_SENTRY1,
-                sentryComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
+                signingFlow: SIGNING_FLOW_BOUNDED_COSIGNER1,
+                cosignerComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
                 isGenericLsig: false,
                 logicSigResources: {
                   spend: { programBytes: 5308, argumentBytes: 3358, maxOpcodeCost: 20000 },
@@ -2575,8 +2575,8 @@ describe("SignerClient", () => {
                   spendEffects: ["pay"],
                   maxFee: 1000,
                   adminOperations: [],
-                  sentry: {
-                    contract: "sentry1",
+                  cosigner: {
+                    contract: "cosigner1",
                     componentKeyType: KEY_TYPE_WITNESS_FALCON1024,
                     publicKeyHex: "aabb",
                     signatureMaxSize: 1280,
@@ -2640,7 +2640,7 @@ describe("SignerClient", () => {
                   address: guarded,
                   publicKeyHex: "",
                   keyType: "aplane.future-guarded.v1",
-                  signingFlow: "sentry2",
+                  signingFlow: "cosigner2",
                   logicSigResources: {
                     spend: { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 },
                   },
@@ -2650,7 +2650,7 @@ describe("SignerClient", () => {
             ],
           },
         }),
-        /signing flow "sentry2"/,
+        /signing flow "cosigner2"/,
       );
     });
   });
@@ -3479,8 +3479,8 @@ describe("loadClientEndpointRegistry", () => {
         path.join(tmpDir, "aplane.token"),
       );
       assert.equal(
-        registry.endpoints["sentry.qa"].tokenFile,
-        path.join(tmpDir, "credentials", "sentry.token"),
+        registry.endpoints["cosigner.qa"].tokenFile,
+        path.join(tmpDir, "credentials", "cosigner.token"),
       );
     } finally {
       fs.rmSync(tmpDir, { recursive: true });
@@ -3510,10 +3510,10 @@ describe("loadClientEndpointRegistry", () => {
 
   for (const [fixture, message] of [
     ["invalid_self_signer.yaml", 'endpoint "primary": url "self" is not supported'],
-    ["invalid_self_sentry.yaml", 'endpoint "sentry": url "self" is not supported'],
-    ["invalid_sentry_local_port.yaml", 'endpoint "sentry": local_port is not supported'],
-    ["invalid_13_sentry_endpoints.yaml", "configures 13 sentry endpoints; maximum is 12"],
-    ["invalid_v2_published_sentries.yaml", "published_sentries"],
+    ["invalid_self_cosigner.yaml", 'endpoint "cosigner": url "self" is not supported'],
+    ["invalid_cosigner_local_port.yaml", 'endpoint "cosigner": local_port is not supported'],
+    ["invalid_13_cosigner_endpoints.yaml", "configures 13 cosigner endpoints; maximum is 12"],
+    ["invalid_v2_published_cosigners.yaml", "published_cosigners"],
   ]) {
     it(`rejects ${fixture} for the expected reason`, () => {
       const tmpDir = fixtureDir(fixture);
@@ -3530,19 +3530,19 @@ describe("loadClientEndpointRegistry", () => {
   for (const fixture of [
     "valid_schema_version_null.yaml",
     "valid_schema_version_zero.yaml",
-    "valid_12_sentry_endpoints.yaml",
-    "valid_sentry_zero_local_port.yaml",
+    "valid_12_cosigner_endpoints.yaml",
+    "valid_cosigner_zero_local_port.yaml",
   ]) {
     it(`accepts ${fixture}`, () => {
       const tmpDir = fixtureDir(fixture);
       try {
         const registry = loadClientEndpointRegistry(tmpDir);
         assert.equal(registry.schemaVersion, 2);
-        if (fixture === "valid_12_sentry_endpoints.yaml") {
+        if (fixture === "valid_12_cosigner_endpoints.yaml") {
           assert.equal(Object.keys(registry.endpoints).length, 12);
         }
-        if (fixture === "valid_sentry_zero_local_port.yaml") {
-          assert.equal(registry.endpoints.sentry.localPort, 0);
+        if (fixture === "valid_cosigner_zero_local_port.yaml") {
+          assert.equal(registry.endpoints.cosigner.localPort, 0);
         }
       } finally {
         fs.rmSync(tmpDir, { recursive: true });
@@ -3550,19 +3550,19 @@ describe("loadClientEndpointRegistry", () => {
     });
   }
 
-  it("discards v1 published sentry inventory", () => {
-    const tmpDir = fixtureDir("valid_v1_published_sentries.yaml");
+  it("discards v1 published cosigner inventory", () => {
+    const tmpDir = fixtureDir("valid_v1_published_cosigners.yaml");
     try {
       const registry = loadClientEndpointRegistry(tmpDir);
       assert.equal(registry.schemaVersion, 2);
-      assert.deepEqual(registry.endpoints["sentry-old"], {
-        role: "sentry",
-        url: "https://sentry.example.com",
+      assert.deepEqual(registry.endpoints["cosigner-old"], {
+        role: "cosigner",
+        url: "https://cosigner.example.com",
         signerPort: 0,
         localPort: 0,
         identityFile: "",
         knownHostsPath: "",
-        tokenFile: path.join(tmpDir, "tokens", "sentry-old.token"),
+        tokenFile: path.join(tmpDir, "tokens", "cosigner-old.token"),
       });
     } finally {
       fs.rmSync(tmpDir, { recursive: true });
@@ -3576,7 +3576,7 @@ describe("loadClientEndpointRegistry", () => {
         path.join(tmpDir, "endpoints.yaml"),
         "schema_version: 1\nendpoints:\n" +
         "  main:\n    role: signer\n    url: ssh://localhost\n" +
-        "  qa:\n    role: sentry\n    url: http://127.0.0.1:11271\n",
+        "  qa:\n    role: cosigner\n    url: http://127.0.0.1:11271\n",
       );
       const registry = loadClientEndpointRegistry(tmpDir);
       assert.equal(registry.default, "main");
@@ -3585,7 +3585,7 @@ describe("loadClientEndpointRegistry", () => {
         path.join(tmpDir, "tokens", "main.token"),
       );
       assert.equal(resolveClientEndpoint(registry).alias, "main");
-      assert.equal(resolveClientEndpoint(registry, "qa").endpoint.role, "sentry");
+      assert.equal(resolveClientEndpoint(registry, "qa").endpoint.role, "cosigner");
     } finally {
       fs.rmSync(tmpDir, { recursive: true });
     }
@@ -3618,7 +3618,7 @@ describe("requestTokenToFile", () => {
         path.join(tmpDir, "endpoints.yaml"),
         "schema_version: 1\nendpoints:\n" +
         "  primary:\n    role: signer\n    url: ssh://signer.example.com\n" +
-        "  qa:\n    role: sentry\n    url: ssh://sentry.example.com:2222\n" +
+        "  qa:\n    role: cosigner\n    url: ssh://cosigner.example.com:2222\n" +
         "    identity_file: .ssh/qa\n",
       );
       await assert.rejects(
@@ -3836,7 +3836,7 @@ describe("fromEnv", () => {
         path.join(tmpDir, "endpoints.yaml"),
         "schema_version: 1\nendpoints:\n" +
         "  primary:\n    role: signer\n    url: https://signer.example.com/\n" +
-        "  qa:\n    role: sentry\n    url: http://127.0.0.1:11271/\n",
+        "  qa:\n    role: cosigner\n    url: http://127.0.0.1:11271/\n",
       );
       fs.writeFileSync(path.join(tmpDir, "tokens", "qa.token"), "qa-token");
       const client = await SignerClient.fromEnv({
@@ -3878,8 +3878,8 @@ describe("fromEnv", () => {
 
   for (const [fixture, message] of [
     ["invalid_self_signer.yaml", 'endpoint "primary": url "self" is not supported'],
-    ["invalid_self_sentry.yaml", 'endpoint "sentry": url "self" is not supported'],
-    ["invalid_sentry_local_port.yaml", 'endpoint "sentry": local_port is not supported'],
+    ["invalid_self_cosigner.yaml", 'endpoint "cosigner": url "self" is not supported'],
+    ["invalid_cosigner_local_port.yaml", 'endpoint "cosigner": local_port is not supported'],
   ]) {
     it(`rejects ${fixture} before token loading`, async () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-test-"));

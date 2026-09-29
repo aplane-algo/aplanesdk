@@ -12,8 +12,8 @@ import (
 type capturedComponentRole string
 
 const (
-	capturedComponentRoleUser   capturedComponentRole = "user"
-	capturedComponentRoleSentry capturedComponentRole = "sentry"
+	capturedComponentRoleUser     capturedComponentRole = "user"
+	capturedComponentRoleCosigner capturedComponentRole = "cosigner"
 )
 
 type capturedComponentRequest struct {
@@ -41,20 +41,20 @@ func (r *capturedComponentRequest) UnmarshalJSON(data []byte) error {
 		if target.Kind == ComponentTargetKindUser {
 			r.Role, r.ComponentKey = capturedComponentRoleUser, target.AuthAddress
 		} else {
-			r.Role, r.ComponentKey = capturedComponentRoleSentry, target.ComponentKey
+			r.Role, r.ComponentKey = capturedComponentRoleCosigner, target.ComponentKey
 		}
 	}
 	return nil
 }
 
 type capturedAssemblyTarget struct {
-	TargetIndex           int
-	GuardedAccount        string
-	UserSignature         string
-	UserSourceRequestID   string
-	SentrySignature       string
-	SentrySourceRequestID string
-	RuntimeArgs           []string
+	TargetIndex             int
+	GuardedAccount          string
+	UserSignature           string
+	UserSourceRequestID     string
+	CosignerSignature       string
+	CosignerSourceRequestID string
+	RuntimeArgs             []string
 }
 
 type capturedAssemblyRequest struct {
@@ -74,7 +74,7 @@ func (r *capturedAssemblyRequest) UnmarshalJSON(data []byte) error {
 		r.Targets = append(r.Targets, capturedAssemblyTarget{
 			TargetIndex: target.TargetIndex, GuardedAccount: target.AuthAddress,
 			UserSignature: target.UserSignature, UserSourceRequestID: target.UserSourceRequestID,
-			SentrySignature: target.SentrySignature, SentrySourceRequestID: target.SentrySourceRequestID,
+			CosignerSignature: target.CosignerSignature, CosignerSourceRequestID: target.CosignerSourceRequestID,
 			RuntimeArgs: target.GuardedRuntimeArgs,
 		})
 	}

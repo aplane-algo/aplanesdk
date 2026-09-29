@@ -34,12 +34,12 @@ func (r ComponentRequest) Validate() error {
 			if i > 0 && target.AuthAddress != r.Targets[0].AuthAddress {
 				return fmt.Errorf("user targets must share one auth_address")
 			}
-		case ComponentTargetKindSentry:
+		case ComponentTargetKindCosigner:
 			if target.AuthAddress != "" || len(target.LsigArgs) != 0 {
-				return fmt.Errorf("target %d: sentry target forbids auth_address and lsig_args", i+1)
+				return fmt.Errorf("target %d: cosigner target forbids auth_address and lsig_args", i+1)
 			}
 			if i > 0 && target.ComponentKey != r.Targets[0].ComponentKey {
-				return fmt.Errorf("sentry targets must share one component_key")
+				return fmt.Errorf("cosigner targets must share one component_key")
 			}
 		case ComponentTargetKindBoundedBase:
 			if target.AuthAddress == "" || target.ComponentKey != "" {
@@ -96,7 +96,7 @@ func (r ComponentResponse) Validate() error {
 		}
 		seen[component.TargetIndex] = true
 		switch component.Kind {
-		case ComponentTargetKindUser, ComponentTargetKindSentry:
+		case ComponentTargetKindUser, ComponentTargetKindCosigner:
 			if component.Signature == "" || component.SignatureScheme == "" || len(component.BaseSignatures) != 0 || component.AssemblyReceipt != "" {
 				return fmt.Errorf("component %d has invalid signature material", i+1)
 			}

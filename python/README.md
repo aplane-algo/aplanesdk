@@ -87,7 +87,7 @@ Data directory structure (installer default: `~/aplane/apclient`):
 ```
 <data_dir>/
   config.yaml          # Non-routing client settings
-  endpoints.yaml       # Signer and sentry routing
+  endpoints.yaml       # Signer and cosigner routing
   aplane.token         # Authentication token
   .ssh/
     id_ed25519         # SSH private key for authentication
@@ -151,7 +151,7 @@ with SignerClient.connect_ssh(
 ## Authentication
 
 The recommended way to obtain a token is via the endpoint-based
-`request-token` flow. `request_token_to_file(endpoint="sentry.qa")` selects a
+`request-token` flow. `request_token_to_file(endpoint="cosigner.qa")` selects a
 named endpoint; without an alias it selects the default signer. The selected
 endpoint determines the token destination.
 
@@ -390,9 +390,9 @@ client.close()
 | `ed25519` | Native Algorand keys | Standard signing |
 | `aplane.falcon1024.v1` | Post-quantum LogicSig | Signature in LogicSig.Args[0] |
 | `aplane.ed25519.v1` | Ed25519 DSA LogicSig | Library-visible plain DSA account |
-| `aplane.witness-falcon1024.v1` | Witness key | Sentry-custodied policy signature key; not a spending account |
-| `aplane.falcon1024-sentry1024.v1` | Guarded account | Requires user and sentry component signatures |
-| `aplane.corridor.v1` | Bounded Corridor account | `bounded1` contract; `bounded-sentry1` spend flow |
+| `aplane.witness-falcon1024.v1` | Witness key | Cosigner-custodied policy signature key; not a spending account |
+| `aplane.falcon1024-cosigner1024.v1` | Guarded account | Requires user and cosigner component signatures |
+| `aplane.corridor.v1` | Bounded Corridor account | `bounded1` contract; `bounded-cosigner1` spend flow |
 | `aplane.falcon1024-allowlist.v1` | Bounded allowlist | Inline allowlist; `bounded1` signing flow |
 | `aplane.falcon1024-allowlist.v2` | Bounded allowlist | Merkle allowlist; `bounded1` signing flow |
 | `aplane.falcon1024-timelock.v1` | Bounded timelock | Round-gated `bounded1` signing flow |
@@ -401,9 +401,9 @@ client.close()
 
 The server assembles the complete signed transaction - the SDK returns a base64 string ready for submission.
 
-## Sentry And Guarded Accounts
+## Cosigner And Guarded Accounts
 
-Witness keys enrolled as sentries are public policy-signature selectors, not Algorand
+Witness keys enrolled as cosigners are public policy-signature selectors, not Algorand
 spending accounts. Do not use them as senders, receivers, auth addresses, or
 rekey targets. Guarded account keys must be signed through the guarded flow.
 
@@ -414,7 +414,7 @@ from aplanesdk import (
     AssemblyRequest,
     AssemblyTarget,
     ComponentRequest,
-    COMPONENT_TARGET_KIND_SENTRY,
+    COMPONENT_TARGET_KIND_COSIGNER,
     COMPONENT_TARGET_KIND_USER,
 )
 
@@ -427,12 +427,12 @@ user_part = user_client.request_components(ComponentRequest(
     }],
 ))
 
-sentry_part = sentry_client.request_components(ComponentRequest(
+cosigner_part = cosigner_client.request_components(ComponentRequest(
     group_bytes_hex=["5458..."],
     targets=[{
         "target_index": 0,
-        "kind": COMPONENT_TARGET_KIND_SENTRY,
-        "component_key": "SENTRY_COMPONENT_SELECTOR",
+        "kind": COMPONENT_TARGET_KIND_COSIGNER,
+        "component_key": "COSIGNER_COMPONENT_SELECTOR",
     }],
 ))
 
@@ -443,7 +443,7 @@ assembled = user_client.request_assemble(AssemblyRequest(
         kind=ASSEMBLY_TARGET_KIND_GUARDED,
         auth_address="GUARDED_ACCOUNT_ADDRESS",
         user_signature=user_part.components[0]["signature"],
-        sentry_signature=sentry_part.components[0]["signature"],
+        cosigner_signature=cosigner_part.components[0]["signature"],
     )],
 ))
 ```
@@ -455,8 +455,8 @@ resource profile returned by `list_keys()`:
 ```python
 result = sign_guarded_group(
     user_client=user_client,
-    sentry_client=sentry_client,
-    sentry_component_key="SENTRY_COMPONENT_SELECTOR",
+    cosigner_client=cosigner_client,
+    cosigner_component_key="COSIGNER_COMPONENT_SELECTOR",
     group_bytes_hex=["5458..."],
     guarded_targets=[
         GuardedSignTarget(
@@ -472,10 +472,10 @@ signed_group = result.signed_group
 `assemble_group()` remains the local multi-party concatenation helper; it is
 not the same operation as server-side guarded assembly.
 
-### Bounded Sentry Accounts
+### Bounded Cosigner Accounts
 
 Corridor uses the bounded contract `bounded1` with the distinct
-`bounded-sentry1` online signing flow. The contract identifies the LogicSig
+`bounded-cosigner1` online signing flow. The contract identifies the LogicSig
 rules; the flow identifies the user-first multi-endpoint choreography. The
 prepared helper detects that flow from signer inventory and routes it
 automatically:
@@ -483,7 +483,7 @@ automatically:
 ```python
 result = sign_prepared_guarded_group(
     user_client=user_client,
-    sentry_resolver=sentry_resolver,
+    cosigner_resolver=cosigner_resolver,
     prepared_group=prepared_group,
 )
 signed_group = result.signed_group
@@ -491,7 +491,7 @@ signed_group = result.signed_group
 
 The SDK first freezes the complete canonical group through `/plan`; the user
 signer then approves those bytes through `request_components()` with
-`kind="bounded-base"`. Only then does the SDK request sentry signatures over
+`kind="bounded-base"`. Only then does the SDK request cosigner signatures over
 the same bytes, sign ordinary positions, and call `request_assemble()`. Before
 signing anything, the SDK compares the
 signer-produced plan with the caller's prepared group: only reported fee
@@ -510,7 +510,7 @@ The signer planner owns fee selection, authorization-resource sizing, and any
 reported group mutations for both guarded flows.
 
 Applications that own orchestration can call `request_components()` and
-`request_assemble()` directly. Sentry authorization is spend-only in
+`request_assemble()` directly. Cosigner authorization is spend-only in
 this contract; bounded contract-admin rekeys remain an external `aprekey`
 ceremony and are not completed by the SDK.
 

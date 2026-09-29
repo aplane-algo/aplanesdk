@@ -11,7 +11,7 @@ deliberately reject ambiguous YAML scalar coercions, including forms that a
 plain `yaml.v3` decode may coerce, rather than repairing them to defaults.
 
 Endpoint records require an explicit `ssh://`, `https://`, or loopback
-`http://` URL; `self` is invalid for both roles. Sentry records reject a
-nonzero `local_port`, while signer records may use it. The 12- and 13-sentry
+`http://` URL; `self` is invalid for both roles. Cosigner records reject a
+nonzero `local_port`, while signer records may use it. The 12- and 13-cosigner
 fixtures use distinct URLs for readability; URL uniqueness is not a loader
 rule.
