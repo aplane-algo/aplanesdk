@@ -79,6 +79,47 @@ function createMockFetch(): MockFetch {
   return fn;
 }
 
+// A peer that sends its SSH identification and then closes before the
+// handshake completes. ssh2 reports this with close (no error) and clears its
+// readyTimeout, so setup must fail on close rather than wait for a deadline.
+async function withEarlyClosingSSHPeer(
+  prefix: string,
+  run: (port: number, keyPath: string, knownHostsPath: string) => Promise<void>,
+): Promise<void> {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const sockets = new Set<net.Socket>();
+  const server = net.createServer((socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+    socket.end("SSH-2.0-aplane-test\r\n");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs1", format: "pem" },
+    publicKeyEncoding: { type: "pkcs1", format: "pem" },
+  });
+  const keyPath = path.join(tmpDir, "id_rsa");
+  fs.writeFileSync(keyPath, privateKey, { mode: 0o600 });
+  try {
+    await run(address.port, keyPath, path.join(tmpDir, "known_hosts"));
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    fs.rmSync(tmpDir, { recursive: true });
+  }
+}
+
+function settlesWithin<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const watchdog = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`did not settle within ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, watchdog]).finally(() => clearTimeout(timer));
+}
+
 async function waitForSocketsToClose(sockets: Set<net.Socket>): Promise<void> {
   const deadline = Date.now() + 1_000;
   while (sockets.size > 0 && Date.now() < deadline) {
@@ -3645,6 +3686,18 @@ describe("requestToken", () => {
       fs.rmSync(tmpDir, { recursive: true });
     }
   });
+
+  it("fails when the peer closes before the handshake completes", async () => {
+    await withEarlyClosingSSHPeer("aplane-token-early-close-", async (port, keyPath, knownHostsPath) => {
+      await assert.rejects(
+        settlesWithin(
+          requestToken("127.0.0.1", keyPath, { sshPort: port, knownHostsPath, setupTimeout: 60_000 }),
+          2_000,
+        ),
+        /closed before setup completed/,
+      );
+    });
+  });
 });
 
 describe("requestTokenToFile", () => {
@@ -3987,6 +4040,22 @@ describe("connectSsh", () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       fs.rmSync(tmpDir, { recursive: true });
     }
+  });
+
+  it("fails when the peer closes before the handshake completes", async () => {
+    await withEarlyClosingSSHPeer("aplane-ssh-early-close-", async (port, keyPath, knownHostsPath) => {
+      await assert.rejects(
+        settlesWithin(
+          SignerClient.connectSsh("127.0.0.1", "token", keyPath, {
+            sshPort: port,
+            knownHostsPath,
+            sshSetupTimeout: 60_000,
+          }),
+          2_000,
+        ),
+        /closed before setup completed/,
+      );
+    });
   });
 
   it("cancels a stalled SSH handshake and closes its socket", async () => {

@@ -8,6 +8,8 @@ export const SSH_TOKEN_PROOF_VERSION = 1;
 export const SSH_TOKEN_PROOF_USERNAME = "aplane";
 export const SSH_TOKEN_PROVISIONING_USERNAME = "request-token";
 export const DEFAULT_SSH_SETUP_TIMEOUT_MS = 60_000;
+// Node timers overflow above 2^31-1 ms and fire after 1 ms instead.
+export const MAX_SSH_SETUP_TIMEOUT_MS = 2_147_483_647;
 const NONCE_SIZE = 32;
 const MAX_MESSAGE_SIZE = 1024;
 
@@ -15,6 +17,9 @@ export function normalizeSSHSetupTimeout(value?: number): number {
   if (value === undefined) return DEFAULT_SSH_SETUP_TIMEOUT_MS;
   if (!Number.isFinite(value) || value <= 0) {
     throw new Error("SSH setup timeout must be a positive number");
+  }
+  if (value > MAX_SSH_SETUP_TIMEOUT_MS) {
+    throw new Error(`SSH setup timeout must not exceed ${MAX_SSH_SETUP_TIMEOUT_MS} ms`);
   }
   return value;
 }

@@ -6077,11 +6077,6 @@ def request_token(
     if os.path.exists(known_hosts_path):
         client.load_host_keys(known_hosts_path)
 
-    if auto_add_host:
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    else:
-        client.set_missing_host_key_policy(_InteractiveHostKeyPolicy(known_hosts_path))
-
     if (
         not isinstance(setup_timeout, (int, float))
         or not math.isfinite(setup_timeout)
@@ -6090,7 +6085,7 @@ def request_token(
         raise TypeError("setup_timeout must be a positive number")
 
     setup_timeout = float(setup_timeout)
-    setup_started = time.monotonic()
+    deadline = time.monotonic() + setup_timeout
     sock: Optional[socket.socket] = None
     timeout_timer: Optional[threading.Timer] = None
     setup_timed_out = threading.Event()
@@ -6098,7 +6093,7 @@ def request_token(
     setup_complete = False
 
     def remaining_setup_time() -> float:
-        remaining = setup_timeout - (time.monotonic() - setup_started)
+        remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("SSH setup deadline exceeded")
         return remaining
@@ -6114,6 +6109,36 @@ def request_token(
                 except OSError:
                     pass
                 sock.close()
+
+    # Operator think time at the first-use host-key prompt is not setup time:
+    # stop the clock while the prompt waits and resume with what was left.
+    def pause_setup_deadline() -> float:
+        with setup_lock:
+            if timeout_timer is not None:
+                timeout_timer.cancel()
+            return deadline - time.monotonic()
+
+    def resume_setup_deadline(remaining: float) -> None:
+        nonlocal deadline, timeout_timer
+        with setup_lock:
+            if setup_complete or setup_timed_out.is_set():
+                return
+            remaining = max(remaining, 0.0)
+            deadline = time.monotonic() + remaining
+            timeout_timer = threading.Timer(remaining, expire_setup)
+            timeout_timer.daemon = True
+            timeout_timer.start()
+
+    if auto_add_host:
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    else:
+        client.set_missing_host_key_policy(
+            _InteractiveHostKeyPolicy(
+                known_hosts_path,
+                pause_deadline=pause_setup_deadline,
+                resume_deadline=resume_setup_deadline,
+            )
+        )
 
     try:
         sock = socket.create_connection((host, ssh_port), timeout=remaining_setup_time())
@@ -6134,20 +6159,20 @@ def request_token(
             auth_timeout=remaining_setup_time(),
         )
         with setup_lock:
-            if setup_timed_out.is_set() or time.monotonic() - setup_started >= setup_timeout:
+            if setup_timed_out.is_set() or time.monotonic() >= deadline:
                 raise TimeoutError("SSH setup deadline exceeded")
             setup_complete = True
         timeout_timer.cancel()
     except paramiko.ssh_exception.AuthenticationException as e:
         client.close()
-        if setup_timed_out.is_set() or time.monotonic() - setup_started >= setup_timeout:
+        if setup_timed_out.is_set() or time.monotonic() >= deadline:
             raise TokenProvisioningError(
                 f"SSH setup timed out after {setup_timeout:g} seconds"
             ) from e
         raise TokenProvisioningError(f"SSH authentication failed: {e}")
     except paramiko.ssh_exception.SSHException as e:
         client.close()
-        if setup_timed_out.is_set() or time.monotonic() - setup_started >= setup_timeout:
+        if setup_timed_out.is_set() or time.monotonic() >= deadline:
             raise TokenProvisioningError(
                 f"SSH setup timed out after {setup_timeout:g} seconds"
             ) from e
@@ -6157,7 +6182,7 @@ def request_token(
         if (
             setup_timed_out.is_set()
             or isinstance(e, (TimeoutError, socket.timeout))
-            or time.monotonic() - setup_started >= setup_timeout
+            or time.monotonic() >= deadline
         ):
             raise TokenProvisioningError(
                 f"SSH setup timed out after {setup_timeout:g} seconds"
@@ -6195,8 +6220,15 @@ def request_token(
 class _InteractiveHostKeyPolicy(paramiko.MissingHostKeyPolicy):
     """Host key policy that prompts user for confirmation (TOFU)."""
 
-    def __init__(self, known_hosts_path: str):
+    def __init__(
+        self,
+        known_hosts_path: str,
+        pause_deadline: Optional[Callable[[], float]] = None,
+        resume_deadline: Optional[Callable[[float], None]] = None,
+    ):
         self.known_hosts_path = known_hosts_path
+        self._pause_deadline = pause_deadline
+        self._resume_deadline = resume_deadline
 
     def missing_host_key(self, client, hostname, key):
         fingerprint = key.get_fingerprint().hex()
@@ -6207,7 +6239,12 @@ class _InteractiveHostKeyPolicy(paramiko.MissingHostKeyPolicy):
 
         print(f"\nUnknown host: {hostname}")
         print(f"Host key ({key_type}): {fingerprint_formatted}")
-        response = input("Do you want to trust this server? [y/N]: ").strip().lower()
+        remaining = self._pause_deadline() if self._pause_deadline is not None else None
+        try:
+            response = input("Do you want to trust this server? [y/N]: ").strip().lower()
+        finally:
+            if self._resume_deadline is not None and remaining is not None:
+                self._resume_deadline(remaining)
 
         if response not in ("y", "yes"):
             raise TokenProvisioningError("Host key rejected by user")

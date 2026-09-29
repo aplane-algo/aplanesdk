@@ -362,6 +362,16 @@ export async function requestToken(
       reject(new TokenProvisioningError(hostKeyError || `SSH connection failed: ${err.message}`));
     });
 
+    // ssh2 reports a peer that disconnects mid-handshake with close alone and
+    // clears readyTimeout, so an unfinished setup must fail here.
+    client.on("close", () => {
+      if (setupComplete) return;
+      cleanupSetup();
+      reject(new TokenProvisioningError(
+        hostKeyError || "SSH connection closed before setup completed"
+      ));
+    });
+
     client.connect({
       host,
       port: sshPort,

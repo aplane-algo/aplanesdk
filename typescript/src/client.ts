@@ -1813,8 +1813,13 @@ class SSHTunnel {
     const connection = new Promise<void>((resolve, reject) => {
       this.sshClient = new Client();
       this.sshClosed = false;
+      // ssh2 reports a peer that disconnects mid-handshake with close alone
+      // and clears readyTimeout, so an unsettled setup must fail here.
       this.sshClient.once("close", () => {
         this.sshClosed = true;
+        failSetup(new SignerUnavailableError(
+          hostKeyError || "SSH connection closed before setup completed"
+        ));
       });
       let settled = false;
       const cleanupSetup = () => {
