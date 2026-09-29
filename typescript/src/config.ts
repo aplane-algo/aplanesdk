@@ -19,7 +19,7 @@ export const DEFAULT_SIGNER_PORT = 11270;
 export const CLIENT_ENDPOINTS_FILE = "endpoints.yaml";
 export const DEFAULT_CLIENT_ENDPOINT_NAME = "primary";
 export const CLIENT_ENDPOINT_SCHEMA_VERSION = 2;
-export const MAX_CLIENT_SENTRY_ENDPOINTS = 12;
+export const MAX_CLIENT_COSIGNER_ENDPOINTS = 12;
 
 /**
  * Expand ~ in paths to the user's home directory.
@@ -151,13 +151,13 @@ function normalizeEndpoint(
     "identity_file",
     "known_hosts_path",
     "token_file",
-    ...(legacyV1 ? ["published_sentries"] : []),
+    ...(legacyV1 ? ["published_cosigners"] : []),
   ], `endpoint "${alias}"`);
 
   const role = optionalString(raw.role, "role").trim();
-  if (role !== "signer" && role !== "sentry") {
+  if (role !== "signer" && role !== "cosigner") {
     throw new SignerError(
-      `endpoint "${alias}": unsupported role "${role}" (expected "signer" or "sentry")`,
+      `endpoint "${alias}": unsupported role "${role}" (expected "signer" or "cosigner")`,
     );
   }
   const endpointUrl = optionalString(raw.url, "url").trim().replace(/\/+$/, "");
@@ -171,8 +171,8 @@ function normalizeEndpoint(
       throw new SignerError(`endpoint "${alias}": ${field} must be 1-65535 when set`);
     }
   }
-  if (role === "sentry" && localPort !== 0) {
-    throw new SignerError(`endpoint "${alias}": local_port is not supported for sentry endpoints`);
+  if (role === "cosigner" && localPort !== 0) {
+    throw new SignerError(`endpoint "${alias}": local_port is not supported for cosigner endpoints`);
   }
   if (endpointUrl === "self") {
     throw new SignerError(
@@ -289,9 +289,9 @@ export function loadClientEndpointRegistry(dataDir: string): ClientEndpointRegis
   const signerAliases = Object.entries(registry.endpoints)
     .filter(([, endpoint]) => endpoint.role === "signer")
     .map(([alias]) => alias);
-  const sentryCount = Object.values(registry.endpoints).filter((endpoint) => endpoint.role === "sentry").length;
-  if (sentryCount > MAX_CLIENT_SENTRY_ENDPOINTS) {
-    throw new SignerError(`${CLIENT_ENDPOINTS_FILE} configures ${sentryCount} sentry endpoints; maximum is ${MAX_CLIENT_SENTRY_ENDPOINTS}; remove or consolidate endpoint profiles`);
+  const cosignerCount = Object.values(registry.endpoints).filter((endpoint) => endpoint.role === "cosigner").length;
+  if (cosignerCount > MAX_CLIENT_COSIGNER_ENDPOINTS) {
+    throw new SignerError(`${CLIENT_ENDPOINTS_FILE} configures ${cosignerCount} cosigner endpoints; maximum is ${MAX_CLIENT_COSIGNER_ENDPOINTS}; remove or consolidate endpoint profiles`);
   }
   if (signerAliases.length > 1) {
     throw new SignerError(

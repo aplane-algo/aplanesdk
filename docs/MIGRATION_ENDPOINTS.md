@@ -36,27 +36,27 @@ For registries shared with APlane tooling, prefer paths relative to
 currently treats it as a literal path segment. Use lowercase SSH hostnames so
 URL normalization and `known_hosts` lookup remain consistent across runtimes.
 Schema v2 contains connection profiles only. Loaders accept schema v1 as a
-bounded migration input, discard its retired `published_sentries` inventory,
+bounded migration input, discard its retired `published_cosigners` inventory,
 and return the v2 runtime shape. Schema v2 rejects that field. Configure no
-more than 12 `sentry` profiles; all SDK loaders reject larger registries.
+more than 12 `cosigner` profiles; all SDK loaders reject larger registries.
 
-The former sentry-reference synchronization client methods and wire types are
+The former cosigner-reference synchronization client methods and wire types are
 removed. APlane now keeps generation trust inputs and transaction routing
-separate: operators explicitly export/import public sentry references for
+separate: operators explicitly export/import public cosigner references for
 guarded-account generation, while the APlane engine discovers routes from live
 authenticated `/keys` responses for each signing operation. SDK applications
-continue to choose or resolve their sentry client explicitly; loading
-`endpoints.yaml` never creates a durable sentry-key inventory.
+continue to choose or resolve their cosigner client explicitly; loading
+`endpoints.yaml` never creates a durable cosigner-key inventory.
 
 Go `FromEnv`, Python `SignerClient.from_env`, and TypeScript
 `SignerClient.fromEnv` select the default signer unless given an endpoint
 alias. SSH URLs create a managed tunnel. HTTPS and loopback HTTP URLs connect
-directly. The shared registry rejects `url: self` for both signer and sentry
+directly. The shared registry rejects `url: self` for both signer and cosigner
 roles, including when the two processes run on one host. Replace it with an
 explicit client-reachable URL such as `ssh://host:1127` for each process, using
-its actual SSH port. For a sentry SSH endpoint, set `signer_port` to that
-sentry process's REST port behind SSH. Sentry endpoint records also reject a
-nonzero `local_port`; remove that field from existing sentry records. A
+its actual SSH port. For a cosigner SSH endpoint, set `signer_port` to that
+cosigner process's REST port behind SSH. Cosigner endpoint records also reject a
+nonzero `local_port`; remove that field from existing cosigner records. A
 signer endpoint may still use `local_port`, and the explicit SDK SSH connection
 APIs retain their local-port option. Correct older files manually; the SDK
 cannot infer the intended host and ports.

@@ -60,9 +60,9 @@ import type {
 } from "./types.js";
 import {
   ErrorCodes,
-  SIGNING_FLOW_SENTRY1,
+  SIGNING_FLOW_COSIGNER1,
   SIGNING_FLOW_BOUNDED1,
-  SIGNING_FLOW_BOUNDED_SENTRY1,
+  SIGNING_FLOW_BOUNDED_COSIGNER1,
   PQ_SCHEME_FALCON1024,
   AUTHORIZATION_KIND_NATIVE_PQ,
   validateLogicSigResources,
@@ -165,7 +165,7 @@ function componentSignaturesByIndex(response: ComponentResponse): ComponentSigna
 function componentRequestForIndices(
   groupBytesHex: string[],
   indices: number[],
-  kind: "user" | "sentry",
+  kind: "user" | "cosigner",
   key: string,
   dummyPositions: number[] = [],
   appCallInfo: Map<number, AppCallInfo | undefined> = new Map(),
@@ -192,23 +192,23 @@ function componentRequestForIndices(
   };
 }
 
-async function resolveSentryForTarget(
+async function resolveCosignerForTarget(
   target: GuardedSignTarget,
   options: GuardedSignOptions,
-): Promise<GuardedSentryResolution> {
-  if (options.sentryResolver) {
-    const resolved = await options.sentryResolver(target);
+): Promise<GuardedCosignerResolution> {
+  if (options.cosignerResolver) {
+    const resolved = await options.cosignerResolver(target);
     if (!resolved.client) {
-      throw new SignerError("sentry resolver returned no client");
+      throw new SignerError("cosigner resolver returned no client");
     }
     return resolved;
   }
-  if (!options.sentryClient) {
-    throw new SignerError("sentryClient or sentryResolver is required");
+  if (!options.cosignerClient) {
+    throw new SignerError("cosignerClient or cosignerResolver is required");
   }
   return {
-    client: options.sentryClient,
-    componentKey: target.sentryComponentKey || options.sentryComponentKey || "",
+    client: options.cosignerClient,
+    componentKey: target.cosignerComponentKey || options.cosignerComponentKey || "",
   };
 }
 
@@ -446,7 +446,7 @@ async function buildPreparedGuardedSignOptions(
         });
         continue;
       }
-      if (key.signingFlow !== SIGNING_FLOW_SENTRY1) {
+      if (key.signingFlow !== SIGNING_FLOW_COSIGNER1) {
         throw new SignerError(
           `prepared transaction ${index}: signer key requires signing flow "${key.signingFlow}", which this SDK does not support; upgrade the SDK`,
         );
@@ -462,8 +462,8 @@ async function buildPreparedGuardedSignOptions(
       guardedTargets.push({
         targetIndex: index,
         guardedAccount: item.authAddress,
-        sentryPublicKeyHex: key.parameters?.sentry_public_key || "",
-        sentryComponentKeyType: key.sentryComponentKeyType || "",
+        cosignerPublicKeyHex: key.parameters?.cosigner_public_key || "",
+        cosignerComponentKeyType: key.cosignerComponentKeyType || "",
         logicSigResources: resources,
         appCallInfo: item.appCallInfo,
       });
@@ -492,9 +492,9 @@ async function buildPreparedGuardedSignOptions(
 
   return {
     userClient: options.userClient,
-    sentryClient: options.sentryClient,
-    sentryResolver: options.sentryResolver,
-    sentryComponentKey: options.sentryComponentKey,
+    cosignerClient: options.cosignerClient,
+    cosignerResolver: options.cosignerResolver,
+    cosignerComponentKey: options.cosignerComponentKey,
     groupBytesHex: allTxns.map((txn) => encodeTransaction(txn)[0]),
     guardedTargets,
     primaryTargets,
@@ -505,10 +505,10 @@ async function buildPreparedGuardedSignOptions(
   };
 }
 
-async function preparedSentryFlowKinds(
+async function preparedCosignerFlowKinds(
   options: PreparedGuardedGroupOptions,
-): Promise<{ boundedSentry: boolean; legacyGuarded: boolean }> {
-  let boundedSentry = false;
+): Promise<{ boundedCosigner: boolean; legacyGuarded: boolean }> {
+  let boundedCosigner = false;
   let legacyGuarded = false;
   for (let index = 0; index < options.preparedGroup.transactions.length; index++) {
     const item = options.preparedGroup.transactions[index];
@@ -516,10 +516,10 @@ async function preparedSentryFlowKinds(
     if (!key && item.authAddress) {
       key = await options.userClient.getKeyInfo(item.authAddress);
     }
-    if (key?.signingFlow === SIGNING_FLOW_BOUNDED_SENTRY1) boundedSentry = true;
-    if (key?.signingFlow === SIGNING_FLOW_SENTRY1) legacyGuarded = true;
+    if (key?.signingFlow === SIGNING_FLOW_BOUNDED_COSIGNER1) boundedCosigner = true;
+    if (key?.signingFlow === SIGNING_FLOW_COSIGNER1) legacyGuarded = true;
   }
-  return { boundedSentry, legacyGuarded };
+  return { boundedCosigner, legacyGuarded };
 }
 
 function decodeCanonicalGroup(groupBytesHex: string[]): Transaction[] {
@@ -762,12 +762,12 @@ function signedTransactionMatchesCanonical(
   }
 }
 
-function boundedSentryPublicKey(key: KeyInfo): string {
-  return key.boundedAuthorization?.sentry?.publicKeyHex || key.parameters?.sentry_public_key || "";
+function boundedCosignerPublicKey(key: KeyInfo): string {
+  return key.boundedAuthorization?.cosigner?.publicKeyHex || key.parameters?.cosigner_public_key || "";
 }
 
-function boundedSentryComponentKeyType(key: KeyInfo): string {
-  return key.sentryComponentKeyType || key.boundedAuthorization?.sentry?.componentKeyType || "";
+function boundedCosignerComponentKeyType(key: KeyInfo): string {
+  return key.cosignerComponentKeyType || key.boundedAuthorization?.cosigner?.componentKeyType || "";
 }
 
 async function requestBoundedPrimaryPassthrough(
@@ -826,9 +826,9 @@ async function requestBoundedPrimaryPassthrough(
 }
 
 /**
- * Sign a prepared bounded-sentry1 group using the user-first choreography.
+ * Sign a prepared bounded-cosigner1 group using the user-first choreography.
  */
-export async function signPreparedBoundedSentryGroup(
+export async function signPreparedBoundedCosignerGroup(
   options: PreparedGuardedGroupOptions,
 ): Promise<GuardedSignResult> {
   if (!options.userClient) throw new SignerError("userClient is required");
@@ -844,7 +844,7 @@ export async function signPreparedBoundedSentryGroup(
     const item = prepared[index];
     if (item.signedTransactionBase64) {
       throw new SignerError(
-        `prepared transaction ${index}: passthrough entries are not supported in prepared bounded-sentry groups`,
+        `prepared transaction ${index}: passthrough entries are not supported in prepared bounded-cosigner groups`,
       );
     }
     if (!item.transaction) {
@@ -858,7 +858,7 @@ export async function signPreparedBoundedSentryGroup(
       throw new SignerError(`prepared transaction ${index}: signer key metadata is required`);
     }
     const resources = selectedPreparedResources(key, item.transaction);
-    if (key.signingFlow === SIGNING_FLOW_BOUNDED_SENTRY1) {
+    if (key.signingFlow === SIGNING_FLOW_BOUNDED_COSIGNER1) {
       if (!item.authAddress) {
         throw new SignerError(`prepared transaction ${index}: bounded auth address is required`);
       }
@@ -877,15 +877,15 @@ export async function signPreparedBoundedSentryGroup(
       targets.push({
         targetIndex: index,
         guardedAccount: item.authAddress,
-        sentryPublicKeyHex: boundedSentryPublicKey(key),
-        sentryComponentKeyType: boundedSentryComponentKeyType(key),
+        cosignerPublicKeyHex: boundedCosignerPublicKey(key),
+        cosignerComponentKeyType: boundedCosignerComponentKeyType(key),
         logicSigResources: requiredResources,
         appCallInfo: item.appCallInfo,
       });
       continue;
     }
-    if (key.signingFlow === SIGNING_FLOW_SENTRY1) {
-      throw new SignerError("cannot mix sentry1 and bounded-sentry1 targets in one group");
+    if (key.signingFlow === SIGNING_FLOW_COSIGNER1) {
+      throw new SignerError("cannot mix cosigner1 and bounded-cosigner1 targets in one group");
     }
     if (key.signingFlow && key.signingFlow !== SIGNING_FLOW_BOUNDED1) {
       throw new SignerError(
@@ -914,7 +914,7 @@ export async function signPreparedBoundedSentryGroup(
     });
   }
   if (targets.length === 0) {
-    throw new SignerError("prepared group has no bounded-sentry targets");
+    throw new SignerError("prepared group has no bounded-cosigner targets");
   }
 
   const planResponse = await options.userClient.planRequests(requests);
@@ -973,48 +973,48 @@ export async function signPreparedBoundedSentryGroup(
     }
   }
 
-  const sentryOptions: GuardedSignOptions = {
+  const cosignerOptions: GuardedSignOptions = {
     userClient: options.userClient,
-    sentryClient: options.sentryClient,
-    sentryResolver: options.sentryResolver,
-    sentryComponentKey: options.sentryComponentKey,
+    cosignerClient: options.cosignerClient,
+    cosignerResolver: options.cosignerResolver,
+    cosignerComponentKey: options.cosignerComponentKey,
     groupBytesHex: frozenGroup,
     guardedTargets: targets,
     signal: options.signal,
   };
-  const sentryGroups: Array<{ client: SignerClient; componentKey: string; indices: number[] }> = [];
+  const cosignerGroups: Array<{ client: SignerClient; componentKey: string; indices: number[] }> = [];
   for (const target of targets) {
-    const resolved = await resolveSentryForTarget(target, sentryOptions);
-    let group = sentryGroups.find(
+    const resolved = await resolveCosignerForTarget(target, cosignerOptions);
+    let group = cosignerGroups.find(
       (candidate) => candidate.client === resolved.client &&
         candidate.componentKey === (resolved.componentKey || ""),
     );
     if (!group) {
       group = { client: resolved.client, componentKey: resolved.componentKey || "", indices: [] };
-      sentryGroups.push(group);
+      cosignerGroups.push(group);
     }
     group.indices.push(target.targetIndex);
   }
-  const sentryComponentResponses: ComponentResponse[] = [];
-  const sentrySignatures: ComponentSignatureByIndex = new Map();
+  const cosignerComponentResponses: ComponentResponse[] = [];
+  const cosignerSignatures: ComponentSignatureByIndex = new Map();
   const appCallInfo = new Map<number, AppCallInfo | undefined>(
     requests.map((request, index) => [index, request.app_call_info]),
   );
-  for (const group of sentryGroups) {
+  for (const group of cosignerGroups) {
     const response = await group.client.requestComponents(
       componentRequestForIndices(
         frozenGroup,
         group.indices.sort((a, b) => a - b),
-        "sentry",
+        "cosigner",
         group.componentKey,
         frozenGroup.slice(prepared.length).map((_, offset) => prepared.length + offset),
         appCallInfo,
       ),
       { signal: options.signal },
     );
-    sentryComponentResponses.push(response);
+    cosignerComponentResponses.push(response);
     for (const [index, signature] of componentSignaturesByIndex(response)) {
-      sentrySignatures.set(index, signature);
+      cosignerSignatures.set(index, signature);
     }
   }
 
@@ -1033,23 +1033,23 @@ export async function signPreparedBoundedSentryGroup(
   ];
   const assemblyTargets: AssemblyTarget[] = targets.map((target) => {
     const component = components.get(target.targetIndex);
-    const sentry = sentrySignatures.get(target.targetIndex);
+    const cosigner = cosignerSignatures.get(target.targetIndex);
     if (!component) {
       throw new SignerError(`missing bounded base component for target ${target.targetIndex}`);
     }
-    if (!sentry) {
-      throw new SignerError(`missing sentry component signature for target ${target.targetIndex}`);
+    if (!cosigner) {
+      throw new SignerError(`missing cosigner component signature for target ${target.targetIndex}`);
     }
     return {
       target_index: target.targetIndex,
-      kind: "bounded-sentry",
+      kind: "bounded-cosigner",
       auth_address: component.auth_address || "",
       base_signatures: [...(component.base_signatures || [])],
       bounded_runtime_args: component.runtime_args ? { ...component.runtime_args } : undefined,
       assembly_receipt: component.assembly_receipt || "",
       base_source_request_id: componentResponse.request_id,
-      sentry_signature: sentry.signature,
-      sentry_source_request_id: sentry.requestId,
+      cosigner_signature: cosigner.signature,
+      cosigner_source_request_id: cosigner.requestId,
     };
   });
   const assemblyResponse = await options.userClient.requestAssemble({
@@ -1065,7 +1065,7 @@ export async function signPreparedBoundedSentryGroup(
   return {
     signedGroup: [...assemblyResponse.signed_group],
     userComponentResponses: [],
-    sentryComponentResponses,
+    cosignerComponentResponses,
     primarySignResponse: primary.response,
     assemblyResponse,
     boundedComponentResponse: componentResponse,
@@ -1082,12 +1082,12 @@ export async function signPreparedBoundedSentryGroup(
 export async function signPreparedGuardedGroup(
   options: PreparedGuardedGroupOptions,
 ): Promise<GuardedSignResult> {
-  const flows = await preparedSentryFlowKinds(options);
-  if (flows.boundedSentry) {
+  const flows = await preparedCosignerFlowKinds(options);
+  if (flows.boundedCosigner) {
     if (flows.legacyGuarded) {
-      throw new SignerError("cannot mix sentry1 and bounded-sentry1 targets in one group");
+      throw new SignerError("cannot mix cosigner1 and bounded-cosigner1 targets in one group");
     }
-    return signPreparedBoundedSentryGroup(options);
+    return signPreparedBoundedCosignerGroup(options);
   }
   return signGuardedGroup(await buildPreparedGuardedSignOptions(options));
 }
@@ -1244,40 +1244,40 @@ export async function signGuardedGroup(options: GuardedSignOptions): Promise<Gua
     }
   }
 
-  const sentryGroups: Array<{
+  const cosignerGroups: Array<{
     client: SignerClient;
     componentKey: string;
     indices: number[];
   }> = [];
   for (const target of targets) {
-    const resolved = await resolveSentryForTarget(target, options);
-    let group = sentryGroups.find(
+    const resolved = await resolveCosignerForTarget(target, options);
+    let group = cosignerGroups.find(
       (item) => item.client === resolved.client && item.componentKey === (resolved.componentKey || "")
     );
     if (!group) {
       group = { client: resolved.client, componentKey: resolved.componentKey || "", indices: [] };
-      sentryGroups.push(group);
+      cosignerGroups.push(group);
     }
     group.indices.push(target.targetIndex);
   }
 
-  const sentryComponentResponses: ComponentResponse[] = [];
-  const sentrySignatures: ComponentSignatureByIndex = new Map();
-  for (const group of sentryGroups) {
+  const cosignerComponentResponses: ComponentResponse[] = [];
+  const cosignerSignatures: ComponentSignatureByIndex = new Map();
+  for (const group of cosignerGroups) {
     const response = await group.client.requestComponents(
       componentRequestForIndices(
         options.groupBytesHex,
         group.indices.sort((a, b) => a - b),
-        "sentry",
+        "cosigner",
         group.componentKey,
         options.dummyPositions,
         appCallInfo,
       ),
       { signal: options.signal },
     );
-    sentryComponentResponses.push(response);
+    cosignerComponentResponses.push(response);
     for (const [index, signature] of componentSignaturesByIndex(response)) {
-      sentrySignatures.set(index, signature);
+      cosignerSignatures.set(index, signature);
     }
   }
 
@@ -1298,12 +1298,12 @@ export async function signGuardedGroup(options: GuardedSignOptions): Promise<Gua
 
   const assemblyTargets = targets.map((target) => {
     const userSignature = userSignatures.get(target.targetIndex);
-    const sentrySignature = sentrySignatures.get(target.targetIndex);
+    const cosignerSignature = cosignerSignatures.get(target.targetIndex);
     if (!userSignature) {
       throw new SignerError(`missing user component signature for target ${target.targetIndex}`);
     }
-    if (!sentrySignature) {
-      throw new SignerError(`missing sentry component signature for target ${target.targetIndex}`);
+    if (!cosignerSignature) {
+      throw new SignerError(`missing cosigner component signature for target ${target.targetIndex}`);
     }
     return {
       target_index: target.targetIndex,
@@ -1311,8 +1311,8 @@ export async function signGuardedGroup(options: GuardedSignOptions): Promise<Gua
       auth_address: target.guardedAccount,
       user_signature: userSignature.signature,
       user_source_request_id: userSignature.requestId,
-      sentry_signature: sentrySignature.signature,
-      sentry_source_request_id: sentrySignature.requestId,
+      cosigner_signature: cosignerSignature.signature,
+      cosigner_source_request_id: cosignerSignature.requestId,
       guarded_runtime_args: target.runtimeArgs,
     };
   });
@@ -1327,7 +1327,7 @@ export async function signGuardedGroup(options: GuardedSignOptions): Promise<Gua
   return {
     signedGroup: assemblyResponse.signed_group,
     userComponentResponses,
-    sentryComponentResponses,
+    cosignerComponentResponses,
     primarySignResponse,
     assemblyResponse,
   };
@@ -1362,12 +1362,12 @@ function validateComponentRequest(request: ComponentRequest): void {
       if (index > 0 && target.auth_address !== targets[0].auth_address) {
         throw new SignerError("user targets must share one auth_address");
       }
-    } else if (kind === "sentry") {
+    } else if (kind === "cosigner") {
       if (target.auth_address || target.lsig_args) {
-        throw new SignerError(`target ${index + 1}: sentry target forbids auth_address and lsig_args`);
+        throw new SignerError(`target ${index + 1}: cosigner target forbids auth_address and lsig_args`);
       }
       if (index > 0 && target.component_key !== targets[0].component_key) {
-        throw new SignerError("sentry targets must share one component_key");
+        throw new SignerError("cosigner targets must share one component_key");
       }
     } else if (kind === "bounded-base") {
       if (!target.auth_address || target.component_key) {
@@ -1430,7 +1430,7 @@ function validateComponentResponse(response: ComponentResponse, request?: Compon
       throw new SignerError(`component ${index + 1} target_index is outside the frozen group`);
     }
     seen.add(component.target_index);
-    if (component.kind === "user" || component.kind === "sentry") {
+    if (component.kind === "user" || component.kind === "cosigner") {
       if (!component.signature || !component.signature_scheme || component.base_signatures?.length || component.assembly_receipt) {
         throw new SignerError(`component ${index + 1} has invalid signature material`);
       }
@@ -1471,14 +1471,14 @@ function mapBoundedAuthorization(raw: any): BoundedAuthorizationInfo | undefined
       authorization: operation.authorization || "",
       policyGate: operation.policy_gate || "",
     })),
-    sentry: raw.sentry
+    cosigner: raw.cosigner
       ? {
-          contract: raw.sentry.contract || "",
-          componentKeyType: raw.sentry.component_key_type || "",
-          publicKeyHex: raw.sentry.public_key_hex || undefined,
-          componentKeyId: raw.sentry.component_key_id || undefined,
-          signatureMaxSize: raw.sentry.signature_max_size || 0,
-          requiredOn: raw.sentry.required_on || [],
+          contract: raw.cosigner.contract || "",
+          componentKeyType: raw.cosigner.component_key_type || "",
+          publicKeyHex: raw.cosigner.public_key_hex || undefined,
+          componentKeyId: raw.cosigner.component_key_id || undefined,
+          signatureMaxSize: raw.cosigner.signature_max_size || 0,
+          requiredOn: raw.cosigner.required_on || [],
         }
       : undefined,
     runtimeArgs: (raw.runtime_args || []).map(mapRuntimeArg),
@@ -1642,8 +1642,8 @@ function validateAssemblyRequest(request: AssemblyRequest): void {
   targets.forEach((target, index) => {
     const item = index + 1;
     validateAssemblyIndex(target.target_index, request.group_bytes_hex.length, covered);
-    if (!target.auth_address || !target.sentry_signature) {
-      throw new SignerError(`target ${item}: auth_address and sentry_signature are required`);
+    if (!target.auth_address || !target.cosigner_signature) {
+      throw new SignerError(`target ${item}: auth_address and cosigner_signature are required`);
     }
     if (target.kind === "guarded") {
       if (!target.user_signature) {
@@ -1653,18 +1653,18 @@ function validateAssemblyRequest(request: AssemblyRequest): void {
         throw new SignerError(`target ${item}: bounded authorization material is forbidden for guarded target`);
       }
       validateSignRequestId(target.user_source_request_id || "");
-    } else if (target.kind === "bounded-sentry") {
+    } else if (target.kind === "bounded-cosigner") {
       if (!target.base_signatures?.length || !target.assembly_receipt) {
-        throw new SignerError(`target ${item}: base_signatures and assembly_receipt are required for bounded-sentry target`);
+        throw new SignerError(`target ${item}: base_signatures and assembly_receipt are required for bounded-cosigner target`);
       }
       if (target.user_signature || target.user_source_request_id || target.guarded_runtime_args?.length) {
-        throw new SignerError(`target ${item}: guarded authorization material is forbidden for bounded-sentry target`);
+        throw new SignerError(`target ${item}: guarded authorization material is forbidden for bounded-cosigner target`);
       }
       validateSignRequestId(target.base_source_request_id || "");
     } else {
       throw new SignerError(`target ${item}: invalid kind`);
     }
-    validateSignRequestId(target.sentry_source_request_id || "");
+    validateSignRequestId(target.cosigner_source_request_id || "");
   });
 
   passthrough.forEach((item, index) => {
@@ -1948,9 +1948,9 @@ class SSHTunnel {
 export interface GuardedSignTarget {
   targetIndex: number;
   guardedAccount: string;
-  sentryPublicKeyHex?: string;
-  sentryComponentKeyType?: string;
-  sentryComponentKey?: string;
+  cosignerPublicKeyHex?: string;
+  cosignerComponentKeyType?: string;
+  cosignerComponentKey?: string;
   runtimeArgs?: string[];
   logicSigResources: LogicSigResourceUsage;
   appCallInfo?: AppCallInfo;
@@ -1964,20 +1964,20 @@ export interface GuardedPrimarySignTarget {
   appCallInfo?: { mode?: string; method?: string };
 }
 
-export interface GuardedSentryResolution {
+export interface GuardedCosignerResolution {
   client: SignerClient;
   componentKey?: string;
 }
 
-export type GuardedSentryResolver = (
+export type GuardedCosignerResolver = (
   target: GuardedSignTarget
-) => GuardedSentryResolution | Promise<GuardedSentryResolution>;
+) => GuardedCosignerResolution | Promise<GuardedCosignerResolution>;
 
 export interface GuardedSignOptions {
   userClient: SignerClient;
-  sentryClient?: SignerClient;
-  sentryResolver?: GuardedSentryResolver;
-  sentryComponentKey?: string;
+  cosignerClient?: SignerClient;
+  cosignerResolver?: GuardedCosignerResolver;
+  cosignerComponentKey?: string;
   groupBytesHex: string[];
   guardedTargets: GuardedSignTarget[];
   primaryTargets?: GuardedPrimarySignTarget[];
@@ -1990,9 +1990,9 @@ export interface GuardedSignOptions {
 export interface PreparedGuardedGroupOptions {
   userClient: SignerClient;
   preparedGroup: PreparedGroup;
-  sentryClient?: SignerClient;
-  sentryResolver?: GuardedSentryResolver;
-  sentryComponentKey?: string;
+  cosignerClient?: SignerClient;
+  cosignerResolver?: GuardedCosignerResolver;
+  cosignerComponentKey?: string;
   assemblyRequestId?: string;
   signal?: AbortSignal;
 }
@@ -2000,7 +2000,7 @@ export interface PreparedGuardedGroupOptions {
 export interface GuardedSignResult {
   signedGroup: string[];
   userComponentResponses: ComponentResponse[];
-  sentryComponentResponses: ComponentResponse[];
+  cosignerComponentResponses: ComponentResponse[];
   primarySignResponse?: GroupSignResponse;
   assemblyResponse: AssemblyResponse;
   boundedComponentResponse?: ComponentResponse;
@@ -2703,7 +2703,7 @@ export class SignerClient {
    * Connect using the endpoint registry from a data directory.
    *
    * Data directory contents:
-   *   - endpoints.yaml: Signer and sentry routing
+   *   - endpoints.yaml: Signer and cosigner routing
    *   - aplane.token or tokens/<alias>.token: Authentication token
    *   - .ssh/id_ed25519: SSH key (if using SSH tunnel)
    *
@@ -2930,7 +2930,7 @@ export class SignerClient {
         keyType: raw.key_type || "",
         authorizationKind: raw.authorization_kind || undefined,
         signingFlow: raw.signing_flow || undefined,
-        sentryComponentKeyType: raw.sentry_component_key_type || undefined,
+        cosignerComponentKeyType: raw.cosigner_component_key_type || undefined,
         logicSigResources: mapLogicSigResourceProfile(raw.logic_sig_resources),
         isGenericLsig: raw.is_generic_lsig || false,
         isWitnessKey: raw.is_witness_key || false,
@@ -3730,7 +3730,7 @@ export class SignerClient {
         mnemonicImport: kt.mnemonic_import,
         mnemonicScheme: kt.mnemonic_scheme,
         signingFlow: kt.signing_flow || undefined,
-        sentryComponentKeyType: kt.sentry_component_key_type || undefined,
+        cosignerComponentKeyType: kt.cosigner_component_key_type || undefined,
         boundedAuthorization: mapBoundedAuthorization(kt.bounded_authorization),
         creationParams,
         runtimeArgs,
@@ -3869,7 +3869,7 @@ export class SignerClient {
     } catch (error) {
       throw new SignerError(`invalid component request: ${error instanceof Error ? error.message : String(error)}`);
     }
-    const approvalBearing = requestBody.targets[0].kind !== "sentry";
+    const approvalBearing = requestBody.targets[0].kind !== "cosigner";
     let timeout = this.timeoutFor(COMPONENT_SIGN_TIMEOUT);
     if (approvalBearing) {
       await this.discoverApprovalWait();

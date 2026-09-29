@@ -32,7 +32,7 @@ func (c *SignerClient) RequestComponentsWithContext(ctx context.Context, reqBody
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal component request: %w", err)
 	}
-	approvalBearing := reqBody.TargetKind() != ComponentTargetKindSentry
+	approvalBearing := reqBody.TargetKind() != ComponentTargetKindCosigner
 	timeout := c.componentRequestTimeout(ctx, approvalBearing)
 	reqCtx, cancel := c.requestContext(ctx, timeout)
 	defer cancel()

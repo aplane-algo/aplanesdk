@@ -25,7 +25,7 @@ from aplanesdk.signer import (
     ERR_CODE_FORBIDDEN,
     ERR_CODE_INTERNAL,
     ERR_CODE_BOUNDED_ADMIN_REQUIRED,
-    ERR_CODE_BOUNDED_SENTRY_REQUIRED,
+    ERR_CODE_BOUNDED_COSIGNER_REQUIRED,
     ERR_CODE_INVALID_PASSPHRASE,
     ERR_CODE_LOCKED,
     ERR_CODE_NOT_FOUND,
@@ -93,7 +93,7 @@ def sdk_error_codes() -> list[str]:
         ERR_CODE_CACHE_REFRESH,
         ERR_CODE_INTERNAL,
         ERR_CODE_BOUNDED_ADMIN_REQUIRED,
-        ERR_CODE_BOUNDED_SENTRY_REQUIRED,
+        ERR_CODE_BOUNDED_COSIGNER_REQUIRED,
     ]
 
 
@@ -254,7 +254,7 @@ def test_list_key_types_maps_creation_and_runtime_metadata():
     assert generic_policy.creation_params[3].input_modes[1].byte_length == 32
     assert generic_policy.creation_params[3].input_modes[1].input_type == "bytes"
     assert generic_policy.creation_params[4].param_type == "select"
-    assert generic_policy.creation_params[4].options == ["lab-sentry", "backup-sentry"]
+    assert generic_policy.creation_params[4].options == ["lab-cosigner", "backup-cosigner"]
     assert generic_policy.runtime_args is not None
     assert generic_policy.runtime_args[0].label == "Preimage"
     assert generic_policy.runtime_args[0].required is True
@@ -334,9 +334,9 @@ def test_list_keys_maps_component_and_guarded_metadata():
         return_value=mock_response(200, fixture("keys_response_guarded.json")),
     ):
         guarded = client.list_keys(refresh=True)[0]
-    assert guarded.key_type == "aplane.falcon1024-sentry1024.v1"
+    assert guarded.key_type == "aplane.falcon1024-cosigner1024.v1"
     assert guarded.parameters is not None
-    assert guarded.parameters["sentry_public_key"]
+    assert guarded.parameters["cosigner_public_key"]
 
 
 def test_plan_group_returns_wire_mutation_report():
@@ -390,7 +390,7 @@ def test_generate_key_maps_component_response():
     assert generated.is_spending_account is False
 
 
-def test_sentry_dtos_round_trip_fixtures():
+def test_cosigner_dtos_round_trip_fixtures():
     unified_component_req = ComponentRequest(**fixture("component_request.json"))
     _validate_component_request(asdict(unified_component_req))
     assert unified_component_req.targets[0]["kind"] == "bounded-base"
@@ -426,11 +426,11 @@ def test_bounded_inventory_projects_layer3_policy():
     assert key.bounded_authorization.admin_operations[0].policy_gate == "none"
     assert key.bounded_authorization.argument_layout[1].source == "admin"
     corridor = keys[1]
-    assert corridor.signing_flow == "bounded-sentry1"
-    assert corridor.sentry_component_key_type == "aplane.witness-falcon1024.v1"
-    assert corridor.bounded_authorization.sentry.public_key_hex
-    assert corridor.bounded_authorization.sentry.component_key_id
-    assert corridor.bounded_authorization.sentry.required_on == ["spend"]
+    assert corridor.signing_flow == "bounded-cosigner1"
+    assert corridor.cosigner_component_key_type == "aplane.witness-falcon1024.v1"
+    assert corridor.bounded_authorization.cosigner.public_key_hex
+    assert corridor.bounded_authorization.cosigner.component_key_id
+    assert corridor.bounded_authorization.cosigner.required_on == ["spend"]
 
     with patch.object(
         client.session,
@@ -442,6 +442,6 @@ def test_bounded_inventory_projects_layer3_policy():
     assert key_type.bounded_authorization.layer3_policy == "fixed_allowlist"
     assert key_type.bounded_authorization.admin_key_id == ""
     corridor_type = key_types[1]
-    assert corridor_type.signing_flow == "bounded-sentry1"
-    assert corridor_type.sentry_component_key_type == "aplane.witness-falcon1024.v1"
-    assert corridor_type.bounded_authorization.sentry.required_on == ["spend"]
+    assert corridor_type.signing_flow == "bounded-cosigner1"
+    assert corridor_type.cosigner_component_key_type == "aplane.witness-falcon1024.v1"
+    assert corridor_type.bounded_authorization.cosigner.required_on == ["spend"]

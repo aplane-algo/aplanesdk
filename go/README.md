@@ -123,7 +123,7 @@ Data directory structure (installer default: `~/aplane/apclient`):
 ```
 <data_dir>/
   config.yaml          # Network and algod settings
-  endpoints.yaml       # Signer and sentry routing
+  endpoints.yaml       # Signer and cosigner routing
   aplane.token         # Authentication token
   .ssh/
     id_ed25519         # SSH key
@@ -147,7 +147,7 @@ Select a named endpoint or explicitly allow first-use trust for one call:
 
 ```go
 client, err := aplane.FromEnv(&aplane.FromEnvOptions{
-	Endpoint:        "sentry.qa",
+	Endpoint:        "cosigner.qa",
 	TrustOnFirstUse: true,
 })
 ```
@@ -349,21 +349,21 @@ callers migrating from older contract names, `GroupPlanResponse` and
 | `ed25519` | Native Algorand keys | Standard signing |
 | `aplane.falcon1024.v1` | Post-quantum LogicSig | Large signature (~3KB) |
 | `aplane.ed25519.v1` | Ed25519 DSA LogicSig | Library-visible plain DSA account |
-| `aplane.witness-falcon1024.v1` | Witness key | Sentry-custodied policy signature key; not a spending account |
-| `aplane.falcon1024-sentry1024.v1` | Guarded account | Requires user and sentry component signatures |
-| `aplane.corridor.v1` | Bounded Corridor account | `bounded1` contract; `bounded-sentry1` spend flow |
+| `aplane.witness-falcon1024.v1` | Witness key | Cosigner-custodied policy signature key; not a spending account |
+| `aplane.falcon1024-cosigner1024.v1` | Guarded account | Requires user and cosigner component signatures |
+| `aplane.corridor.v1` | Bounded Corridor account | `bounded1` contract; `bounded-cosigner1` spend flow |
 | `aplane.falcon1024-allowlist.v1` | Bounded allowlist | Inline allowlist; `bounded1` signing flow |
 | `aplane.falcon1024-allowlist.v2` | Bounded allowlist | Merkle allowlist; `bounded1` signing flow |
 | `aplane.falcon1024-timelock.v1` | Bounded timelock | Round-gated `bounded1` signing flow |
 | `aplane.falcon1024-allowlist-alock.v1` | Rekey-locked bounded allowlist | Ordinary spending uses `bounded1`; admin rekey is outside SDK scope |
 | `aplane.htlc.v1` | Hash-locked funds | Requires `preimage` arg |
 
-## Sentry And Guarded Accounts
+## Cosigner And Guarded Accounts
 
-Witness keys enrolled as sentries use 52-character public selectors for policy-signature
+Witness keys enrolled as cosigners use 52-character public selectors for policy-signature
 keys. They are not Algorand spending accounts and must not be used as senders,
 receivers, auth addresses, or rekey targets. Guarded account keys embed the
-sentry public key and are assembled through `/sign/assemble`; ordinary `/sign`
+cosigner public key and are assembled through `/sign/assemble`; ordinary `/sign`
 is not sufficient for guarded slots.
 
 Use the low-level methods when your application owns the orchestration:
@@ -378,12 +378,12 @@ userPart, err := userClient.RequestComponents(aplane.ComponentRequest{
 	}},
 })
 
-sentryPart, err := sentryClient.RequestComponents(aplane.ComponentRequest{
+cosignerPart, err := cosignerClient.RequestComponents(aplane.ComponentRequest{
 	GroupBytesHex: []string{"5458..."},
 	Targets: []aplane.ComponentTarget{{
 		TargetIndex: 0,
-		Kind: aplane.ComponentTargetKindSentry,
-		ComponentKey: "SENTRY_COMPONENT_SELECTOR",
+		Kind: aplane.ComponentTargetKindCosigner,
+		ComponentKey: "COSIGNER_COMPONENT_SELECTOR",
 	}},
 })
 
@@ -394,7 +394,7 @@ assembled, err := userClient.RequestAssemble(aplane.AssemblyRequest{
 		Kind:            aplane.AssemblyTargetKindGuarded,
 		AuthAddress:     "GUARDED_ACCOUNT_ADDRESS",
 		UserSignature:   userPart.Components[0].Signature,
-		SentrySignature: sentryPart.Components[0].Signature,
+		CosignerSignature: cosignerPart.Components[0].Signature,
 	}},
 })
 ```
@@ -406,8 +406,8 @@ resource profile returned by `ListKeys`:
 ```go
 result, err := aplane.SignGuardedGroup(aplane.GuardedSignOptions{
 	UserClient:         userClient,
-	SentryClient:       sentryClient,
-	SentryComponentKey: "SENTRY_COMPONENT_SELECTOR",
+	CosignerClient:       cosignerClient,
+	CosignerComponentKey: "COSIGNER_COMPONENT_SELECTOR",
 	GroupBytesHex:      []string{"5458..."},
 	Targets: []aplane.GuardedSignTarget{{
 		TargetIndex:       0,
@@ -421,10 +421,10 @@ signedGroup := result.SignedGroup
 `AssembleGroup` is still the local multi-party concatenation helper. It is not
 the same operation as server-side `RequestAssemble`.
 
-### Bounded Sentry Accounts
+### Bounded Cosigner Accounts
 
 Corridor uses the bounded contract `bounded1` with the distinct
-`bounded-sentry1` online signing flow. The contract identifies the LogicSig
+`bounded-cosigner1` online signing flow. The contract identifies the LogicSig
 rules; the flow identifies the user-first multi-endpoint choreography. The
 prepared helper detects that flow from signer inventory and routes it
 automatically:
@@ -432,7 +432,7 @@ automatically:
 ```go
 result, err := aplane.SignPreparedGuardedGroup(aplane.PreparedGuardedGroupOptions{
 	UserClient:     userClient,
-	SentryResolver: sentryResolver,
+	CosignerResolver: cosignerResolver,
 	PreparedGroup:  preparedGroup,
 })
 signedGroup := result.SignedGroup
@@ -440,7 +440,7 @@ signedGroup := result.SignedGroup
 
 The SDK first freezes the complete canonical group through `/plan`; the user
 signer then approves those bytes through `RequestComponents` with
-`kind: "bounded-base"`. Only then does the SDK request sentry signatures over
+`kind: "bounded-base"`. Only then does the SDK request cosigner signatures over
 the same bytes, sign ordinary positions, and call `RequestAssemble`. Before
 signing anything, the SDK compares the
 signer-produced plan with the caller's prepared group: only reported fee
@@ -458,7 +458,7 @@ The signer planner owns fee selection, authorization-resource sizing, and any
 reported group mutations for both guarded flows.
 
 Applications that own orchestration can call `RequestComponents` and
-`RequestAssemble` directly. Sentry authorization is spend-only in this
+`RequestAssemble` directly. Cosigner authorization is spend-only in this
 contract; bounded contract-admin rekeys remain an external `aprekey` ceremony
 and are not completed by the SDK.
 

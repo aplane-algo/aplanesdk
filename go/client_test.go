@@ -45,7 +45,7 @@ endpoints:
     role: signer
     url: https://signer.example.com/
   qa:
-    role: sentry
+    role: cosigner
     url: http://127.0.0.1:11271/
 `), 0o600)
 
@@ -70,7 +70,7 @@ endpoints:
     role: signer
     url: https://signer.example.com
   qa:
-    role: sentry
+    role: cosigner
     url: http://127.0.0.1:11271
 `), 0o600); err != nil {
 		t.Fatal(err)
@@ -114,8 +114,8 @@ func TestFromEnvRejectsInvalidEndpointBeforeTokenLoading(t *testing.T) {
 		want    string
 	}{
 		{"invalid_self_signer.yaml", `endpoint "primary": url "self" is not supported`},
-		{"invalid_self_sentry.yaml", `endpoint "sentry": url "self" is not supported`},
-		{"invalid_sentry_local_port.yaml", `endpoint "sentry": local_port is not supported`},
+		{"invalid_self_cosigner.yaml", `endpoint "cosigner": url "self" is not supported`},
+		{"invalid_cosigner_local_port.yaml", `endpoint "cosigner": local_port is not supported`},
 	} {
 		t.Run(tc.fixture, func(t *testing.T) {
 			_, err := FromEnv(&FromEnvOptions{DataDir: copyEndpointFixture(t, tc.fixture)})
@@ -853,12 +853,12 @@ func TestRequestComponentsPostsToComponentEndpoint(t *testing.T) {
 		if req.RequestID == "" {
 			t.Fatal("request_id was not populated")
 		}
-		if len(req.Targets) != 1 || req.Targets[0].Kind != ComponentTargetKindSentry || req.Targets[0].ComponentKey != "COMPONENT" {
+		if len(req.Targets) != 1 || req.Targets[0].Kind != ComponentTargetKindCosigner || req.Targets[0].ComponentKey != "COMPONENT" {
 			t.Fatalf("component request = %+v", req)
 		}
 		json.NewEncoder(w).Encode(ComponentResponse{
 			RequestID: req.RequestID,
-			Components: []Component{{Kind: ComponentTargetKindSentry,
+			Components: []Component{{Kind: ComponentTargetKindCosigner,
 				TargetIndex:     0,
 				Signature:       "aabb",
 				SignatureScheme: KeyTypeWitnessFalcon1024,
@@ -869,7 +869,7 @@ func TestRequestComponentsPostsToComponentEndpoint(t *testing.T) {
 
 	resp, err := client.RequestComponents(ComponentRequest{
 		GroupBytesHex: []string{"5458aa"},
-		Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindSentry, ComponentKey: "COMPONENT"}},
+		Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindCosigner, ComponentKey: "COMPONENT"}},
 	})
 	if err != nil {
 		t.Fatalf("RequestComponents() error = %v", err)
@@ -887,7 +887,7 @@ func TestRequestComponentsRejectsMalformedResponse(t *testing.T) {
 
 	_, err := client.RequestComponents(ComponentRequest{
 		GroupBytesHex: []string{"5458aa"},
-		Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindSentry}},
+		Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindCosigner}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "invalid component response") {
 		t.Fatalf("expected malformed response error, got %v", err)
@@ -913,7 +913,7 @@ func TestRequestComponentsRejectsUnrequestedTargetKind(t *testing.T) {
 	_, err := client.RequestComponents(ComponentRequest{
 		GroupBytesHex: []string{"5458aa"},
 		Targets: []ComponentTarget{{
-			TargetIndex: 0, Kind: ComponentTargetKindSentry, ComponentKey: "COMPONENT",
+			TargetIndex: 0, Kind: ComponentTargetKindCosigner, ComponentKey: "COMPONENT",
 		}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "indices or kinds do not match") {
@@ -929,7 +929,7 @@ func TestRequestComponentsRejected(t *testing.T) {
 
 	_, err := client.RequestComponents(ComponentRequest{
 		GroupBytesHex: []string{"5458aa"},
-		Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindSentry}},
+		Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindCosigner}},
 	})
 	if err != ErrSigningRejected {
 		t.Fatalf("expected ErrSigningRejected, got %v", err)
@@ -961,11 +961,11 @@ func TestRequestAssemblePostsToAssembleEndpoint(t *testing.T) {
 	resp, err := client.RequestAssemble(AssemblyRequest{
 		GroupBytesHex: []string{"5458aa"},
 		Targets: []AssemblyTarget{{
-			TargetIndex:     0,
-			Kind:            AssemblyTargetKindGuarded,
-			AuthAddress:     "GUARDED",
-			UserSignature:   "aabb",
-			SentrySignature: "bbcc",
+			TargetIndex:       0,
+			Kind:              AssemblyTargetKindGuarded,
+			AuthAddress:       "GUARDED",
+			UserSignature:     "aabb",
+			CosignerSignature: "bbcc",
 		}},
 	})
 	if err != nil {
@@ -981,11 +981,11 @@ func TestRequestAssembleRejectsMissingCoverage(t *testing.T) {
 	_, err := client.RequestAssemble(AssemblyRequest{
 		GroupBytesHex: []string{"5458aa", "5458bb"},
 		Targets: []AssemblyTarget{{
-			TargetIndex:     0,
-			Kind:            AssemblyTargetKindGuarded,
-			AuthAddress:     "GUARDED",
-			UserSignature:   "aabb",
-			SentrySignature: "bbcc",
+			TargetIndex:       0,
+			Kind:              AssemblyTargetKindGuarded,
+			AuthAddress:       "GUARDED",
+			UserSignature:     "aabb",
+			CosignerSignature: "bbcc",
 		}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "not covered") {
@@ -1002,11 +1002,11 @@ func TestRequestAssembleUnavailable(t *testing.T) {
 	_, err := client.RequestAssemble(AssemblyRequest{
 		GroupBytesHex: []string{"5458aa"},
 		Targets: []AssemblyTarget{{
-			TargetIndex:     0,
-			Kind:            AssemblyTargetKindGuarded,
-			AuthAddress:     "GUARDED",
-			UserSignature:   "aabb",
-			SentrySignature: "bbcc",
+			TargetIndex:       0,
+			Kind:              AssemblyTargetKindGuarded,
+			AuthAddress:       "GUARDED",
+			UserSignature:     "aabb",
+			CosignerSignature: "bbcc",
 		}},
 	})
 	if err != ErrSignerUnavailable {

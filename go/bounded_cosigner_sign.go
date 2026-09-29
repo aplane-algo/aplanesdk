@@ -15,20 +15,20 @@ import (
 	"github.com/algorand/go-algorand-sdk/v2/types"
 )
 
-// SignPreparedBoundedSentryGroup signs a prepared group containing one or more
-// bounded-sentry1 targets. Most callers can use SignPreparedGuardedGroup,
+// SignPreparedBoundedCosignerGroup signs a prepared group containing one or more
+// bounded-cosigner1 targets. Most callers can use SignPreparedGuardedGroup,
 // which dispatches to this choreography from signer inventory metadata.
-func SignPreparedBoundedSentryGroup(opts PreparedGuardedGroupOptions) (*GuardedSignResult, error) {
-	return SignPreparedBoundedSentryGroupWithContext(context.Background(), opts)
+func SignPreparedBoundedCosignerGroup(opts PreparedGuardedGroupOptions) (*GuardedSignResult, error) {
+	return SignPreparedBoundedCosignerGroupWithContext(context.Background(), opts)
 }
 
-// SignPreparedBoundedSentryGroupWithContext is the context-aware form of
-// SignPreparedBoundedSentryGroup.
-func SignPreparedBoundedSentryGroupWithContext(ctx context.Context, opts PreparedGuardedGroupOptions) (*GuardedSignResult, error) {
-	return signPreparedBoundedSentryGroupWithContext(ctx, opts)
+// SignPreparedBoundedCosignerGroupWithContext is the context-aware form of
+// SignPreparedBoundedCosignerGroup.
+func SignPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts PreparedGuardedGroupOptions) (*GuardedSignResult, error) {
+	return signPreparedBoundedCosignerGroupWithContext(ctx, opts)
 }
 
-func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts PreparedGuardedGroupOptions) (*GuardedSignResult, error) {
+func signPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts PreparedGuardedGroupOptions) (*GuardedSignResult, error) {
 	if opts.UserClient == nil {
 		return nil, fmt.Errorf("user client is required")
 	}
@@ -44,7 +44,7 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 	targetMaxFees := make(map[int]uint64)
 	for i, item := range prepared {
 		if item.SignedTransactionBase64 != "" {
-			return nil, fmt.Errorf("prepared transaction %d: passthrough entries are not supported in prepared bounded-sentry groups", i)
+			return nil, fmt.Errorf("prepared transaction %d: passthrough entries are not supported in prepared bounded-cosigner groups", i)
 		}
 		if item.Transaction == nil {
 			return nil, fmt.Errorf("prepared transaction %d: transaction is required", i)
@@ -66,7 +66,7 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 			return nil, fmt.Errorf("prepared transaction %d: %w", i, err)
 		}
 		switch key.SigningFlow {
-		case SigningFlowBoundedSentry1:
+		case SigningFlowBoundedCosigner1:
 			if item.AuthAddress == "" {
 				return nil, fmt.Errorf("prepared transaction %d: bounded auth address is required", i)
 			}
@@ -84,15 +84,15 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 			}
 			targetMaxFees[i] = key.BoundedAuthorization.MaxFee
 			targets = append(targets, GuardedSignTarget{
-				TargetIndex:            i,
-				GuardedAccount:         item.AuthAddress,
-				SentryPublicKeyHex:     boundedSentryPublicKey(key),
-				SentryComponentKeyType: boundedSentryComponentKeyType(key),
-				LogicSigResources:      resources,
-				AppCallInfo:            item.AppCallInfo,
+				TargetIndex:              i,
+				GuardedAccount:           item.AuthAddress,
+				CosignerPublicKeyHex:     boundedCosignerPublicKey(key),
+				CosignerComponentKeyType: boundedCosignerComponentKeyType(key),
+				LogicSigResources:        resources,
+				AppCallInfo:              item.AppCallInfo,
 			})
-		case SigningFlowSentry1:
-			return nil, fmt.Errorf("cannot mix sentry1 and bounded-sentry1 targets in one group")
+		case SigningFlowCosigner1:
+			return nil, fmt.Errorf("cannot mix cosigner1 and bounded-cosigner1 targets in one group")
 		default:
 			if key.SigningFlow != "" && key.SigningFlow != SigningFlowBounded1 {
 				return nil, fmt.Errorf("prepared transaction %d: signer key requires signing flow %q, which this SDK does not support; upgrade the SDK", i, key.SigningFlow)
@@ -124,7 +124,7 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 		}
 	}
 	if len(targets) == 0 {
-		return nil, fmt.Errorf("prepared group has no bounded-sentry targets")
+		return nil, fmt.Errorf("prepared group has no bounded-cosigner targets")
 	}
 
 	planResp, err := opts.UserClient.PlanRequestsWithContext(ctx, requests)
@@ -186,16 +186,16 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 	}
 
 	result := &GuardedSignResult{BoundedComponentResponse: componentResp}
-	sentryOpts := GuardedSignOptions{
-		UserClient:         opts.UserClient,
-		SentryClient:       opts.SentryClient,
-		SentryResolver:     opts.SentryResolver,
-		SentryComponentKey: opts.SentryComponentKey,
-		GroupBytesHex:      planResp.Transactions,
-		PrimaryTargets:     primaryTargets,
-		DummyPositions:     contiguousIndices(len(prepared), len(planResp.Transactions)),
+	cosignerOpts := GuardedSignOptions{
+		UserClient:           opts.UserClient,
+		CosignerClient:       opts.CosignerClient,
+		CosignerResolver:     opts.CosignerResolver,
+		CosignerComponentKey: opts.CosignerComponentKey,
+		GroupBytesHex:        planResp.Transactions,
+		PrimaryTargets:       primaryTargets,
+		DummyPositions:       contiguousIndices(len(prepared), len(planResp.Transactions)),
 	}
-	sentrySignatures, err := requestSentryComponentSignatures(ctx, sentryOpts, targets, result)
+	cosignerSignatures, err := requestCosignerComponentSignatures(ctx, cosignerOpts, targets, result)
 	if err != nil {
 		return nil, err
 	}
@@ -223,20 +223,20 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 	assemblyTargets := make([]AssemblyTarget, 0, len(targets))
 	for _, target := range targets {
 		component := components[target.TargetIndex]
-		sentry, ok := sentrySignatures[target.TargetIndex]
+		cosigner, ok := cosignerSignatures[target.TargetIndex]
 		if !ok {
-			return nil, fmt.Errorf("missing sentry component signature for target %d", target.TargetIndex)
+			return nil, fmt.Errorf("missing cosigner component signature for target %d", target.TargetIndex)
 		}
 		assemblyTargets = append(assemblyTargets, AssemblyTarget{
-			TargetIndex:           target.TargetIndex,
-			Kind:                  AssemblyTargetKindBoundedSentry,
-			AuthAddress:           target.GuardedAccount,
-			BaseSignatures:        append([]string(nil), component.BaseSignatures...),
-			BoundedRuntimeArgs:    cloneStringMap(component.RuntimeArgs),
-			AssemblyReceipt:       component.AssemblyReceipt,
-			BaseSourceRequestID:   componentResp.RequestID,
-			SentrySignature:       sentry.signature,
-			SentrySourceRequestID: sentry.requestID,
+			TargetIndex:             target.TargetIndex,
+			Kind:                    AssemblyTargetKindBoundedCosigner,
+			AuthAddress:             target.GuardedAccount,
+			BaseSignatures:          append([]string(nil), component.BaseSignatures...),
+			BoundedRuntimeArgs:      cloneStringMap(component.RuntimeArgs),
+			AssemblyReceipt:         component.AssemblyReceipt,
+			BaseSourceRequestID:     componentResp.RequestID,
+			CosignerSignature:       cosigner.signature,
+			CosignerSourceRequestID: cosigner.requestID,
 		})
 	}
 	assemblyPassthrough := make([]AssemblyPassthroughItem, 0, len(passthrough))
@@ -250,7 +250,7 @@ func signPreparedBoundedSentryGroupWithContext(ctx context.Context, opts Prepare
 		Passthrough:   assemblyPassthrough,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("bounded-sentry assembly failed: %w", err)
+		return nil, fmt.Errorf("bounded-cosigner assembly failed: %w", err)
 	}
 	if err := verifyAssembledGroup(planResp.Transactions, assemblyResp.SignedGroup); err != nil {
 		return nil, err
@@ -469,23 +469,23 @@ func validateBoundedTargetFees(planned []types.Transaction, maxFees map[int]uint
 	return nil
 }
 
-func boundedSentryPublicKey(key *KeyInfo) string {
-	if key != nil && key.BoundedAuthorization != nil && key.BoundedAuthorization.Sentry != nil &&
-		key.BoundedAuthorization.Sentry.PublicKeyHex != "" {
-		return key.BoundedAuthorization.Sentry.PublicKeyHex
+func boundedCosignerPublicKey(key *KeyInfo) string {
+	if key != nil && key.BoundedAuthorization != nil && key.BoundedAuthorization.Cosigner != nil &&
+		key.BoundedAuthorization.Cosigner.PublicKeyHex != "" {
+		return key.BoundedAuthorization.Cosigner.PublicKeyHex
 	}
-	return guardedSentryPublicKey(key)
+	return guardedCosignerPublicKey(key)
 }
 
-func boundedSentryComponentKeyType(key *KeyInfo) string {
+func boundedCosignerComponentKeyType(key *KeyInfo) string {
 	if key == nil {
 		return ""
 	}
-	if key.SentryComponentKeyType != "" {
-		return key.SentryComponentKeyType
+	if key.CosignerComponentKeyType != "" {
+		return key.CosignerComponentKeyType
 	}
-	if key.BoundedAuthorization != nil && key.BoundedAuthorization.Sentry != nil {
-		return key.BoundedAuthorization.Sentry.ComponentKeyType
+	if key.BoundedAuthorization != nil && key.BoundedAuthorization.Cosigner != nil {
+		return key.BoundedAuthorization.Cosigner.ComponentKeyType
 	}
 	return ""
 }

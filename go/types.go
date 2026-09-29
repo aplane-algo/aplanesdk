@@ -16,8 +16,8 @@ const (
 	AuthorizationKindNativePQ = "native_pq"
 	AuthorizationKindLogicSig = "logic_sig"
 
-	KeyTypeWitnessFalcon1024           = "aplane.witness-falcon1024.v1"
-	KeyTypeGuardedFalcon1024Sentry1024 = "aplane.falcon1024-sentry1024.v1"
+	KeyTypeWitnessFalcon1024             = "aplane.witness-falcon1024.v1"
+	KeyTypeGuardedFalcon1024Cosigner1024 = "aplane.falcon1024-cosigner1024.v1"
 )
 
 // LogicSigResourceUsage is one selected authorization path's independent
@@ -87,7 +87,7 @@ type ComponentTargetKind string
 
 const (
 	ComponentTargetKindUser        ComponentTargetKind = "user"
-	ComponentTargetKindSentry      ComponentTargetKind = "sentry"
+	ComponentTargetKindCosigner    ComponentTargetKind = "cosigner"
 	ComponentTargetKindBoundedBase ComponentTargetKind = "bounded-base"
 )
 
@@ -138,8 +138,8 @@ type ComponentResponse struct {
 type AssemblyTargetKind string
 
 const (
-	AssemblyTargetKindGuarded       AssemblyTargetKind = "guarded"
-	AssemblyTargetKindBoundedSentry AssemblyTargetKind = "bounded-sentry"
+	AssemblyTargetKindGuarded         AssemblyTargetKind = "guarded"
+	AssemblyTargetKindBoundedCosigner AssemblyTargetKind = "bounded-cosigner"
 )
 
 // AssemblyRequest is the shared request payload for POST /sign/assemble.
@@ -164,8 +164,8 @@ type AssemblyTarget struct {
 	AssemblyReceipt     string            `json:"assembly_receipt,omitempty"`
 	BaseSourceRequestID string            `json:"base_source_request_id,omitempty"`
 
-	SentrySignature       string `json:"sentry_signature"`
-	SentrySourceRequestID string `json:"sentry_source_request_id,omitempty"`
+	CosignerSignature       string `json:"cosigner_signature"`
+	CosignerSourceRequestID string `json:"cosigner_source_request_id,omitempty"`
 }
 
 type AssemblyPassthroughItem struct {
@@ -329,11 +329,11 @@ func (r AssemblyRequest) Validate() error {
 		if err := validateAssemblyIndex(target.TargetIndex, len(r.GroupBytesHex), covered); err != nil {
 			return fmt.Errorf("target %d: %w", i+1, err)
 		}
-		if target.AuthAddress == "" || target.SentrySignature == "" {
-			return fmt.Errorf("target %d: auth_address and sentry_signature are required", i+1)
+		if target.AuthAddress == "" || target.CosignerSignature == "" {
+			return fmt.Errorf("target %d: auth_address and cosigner_signature are required", i+1)
 		}
-		if err := validateSignRequestID(target.SentrySourceRequestID); err != nil {
-			return fmt.Errorf("target %d: sentry_source_request_id: %w", i+1, err)
+		if err := validateSignRequestID(target.CosignerSourceRequestID); err != nil {
+			return fmt.Errorf("target %d: cosigner_source_request_id: %w", i+1, err)
 		}
 		switch target.Kind {
 		case AssemblyTargetKindGuarded:
@@ -346,12 +346,12 @@ func (r AssemblyRequest) Validate() error {
 			if err := validateSignRequestID(target.UserSourceRequestID); err != nil {
 				return fmt.Errorf("target %d: user_source_request_id: %w", i+1, err)
 			}
-		case AssemblyTargetKindBoundedSentry:
+		case AssemblyTargetKindBoundedCosigner:
 			if len(target.BaseSignatures) == 0 || target.AssemblyReceipt == "" {
-				return fmt.Errorf("target %d: base_signatures and assembly_receipt are required for bounded-sentry target", i+1)
+				return fmt.Errorf("target %d: base_signatures and assembly_receipt are required for bounded-cosigner target", i+1)
 			}
 			if target.UserSignature != "" || target.UserSourceRequestID != "" || len(target.GuardedRuntimeArgs) != 0 {
-				return fmt.Errorf("target %d: guarded authorization material is forbidden for bounded-sentry target", i+1)
+				return fmt.Errorf("target %d: guarded authorization material is forbidden for bounded-cosigner target", i+1)
 			}
 			if err := validateSignRequestID(target.BaseSourceRequestID); err != nil {
 				return fmt.Errorf("target %d: base_source_request_id: %w", i+1, err)
@@ -578,36 +578,36 @@ type CreationParam struct {
 
 // KeyTypeInfo describes an available key type on the signer.
 type KeyTypeInfo struct {
-	KeyType                string                    `json:"key_type"`
-	Family                 string                    `json:"family"`
-	DisplayName            string                    `json:"display_name"`
-	Description            string                    `json:"description"`
-	AuthorizationKind      string                    `json:"authorization_kind,omitempty"`
-	RequiresLogicSig       bool                      `json:"requires_logicsig"`
-	MnemonicWordCount      int                       `json:"mnemonic_word_count"`
-	MnemonicImport         bool                      `json:"mnemonic_import"`
-	MnemonicScheme         string                    `json:"mnemonic_scheme"`
-	SigningFlow            string                    `json:"signing_flow,omitempty"`
-	SentryComponentKeyType string                    `json:"sentry_component_key_type,omitempty"`
-	BoundedAuthorization   *BoundedAuthorizationInfo `json:"bounded_authorization,omitempty"`
-	CreationParams         []CreationParam           `json:"creation_params"`
-	RuntimeArgs            []RuntimeArg              `json:"runtime_args"`
+	KeyType                  string                    `json:"key_type"`
+	Family                   string                    `json:"family"`
+	DisplayName              string                    `json:"display_name"`
+	Description              string                    `json:"description"`
+	AuthorizationKind        string                    `json:"authorization_kind,omitempty"`
+	RequiresLogicSig         bool                      `json:"requires_logicsig"`
+	MnemonicWordCount        int                       `json:"mnemonic_word_count"`
+	MnemonicImport           bool                      `json:"mnemonic_import"`
+	MnemonicScheme           string                    `json:"mnemonic_scheme"`
+	SigningFlow              string                    `json:"signing_flow,omitempty"`
+	CosignerComponentKeyType string                    `json:"cosigner_component_key_type,omitempty"`
+	BoundedAuthorization     *BoundedAuthorizationInfo `json:"bounded_authorization,omitempty"`
+	CreationParams           []CreationParam           `json:"creation_params"`
+	RuntimeArgs              []RuntimeArg              `json:"runtime_args"`
 }
 
-// SigningFlowSentry1 names the sentry co-signed component signing
-// choreography (one user plus one sentry component signature per target,
+// SigningFlowCosigner1 names the cosigner co-signed component signing
+// choreography (one user plus one cosigner component signature per target,
 // assembled via /sign/assemble). Signer inventory labels guarded keys with
 // this flow; clients route on the label and must fail fast on flow labels
 // they do not implement. An empty signing_flow means the ordinary /sign path.
-const SigningFlowSentry1 = "sentry1"
+const SigningFlowCosigner1 = "cosigner1"
 
 // SigningFlowBounded1 names the transaction-aware LogicSig choreography.
 const SigningFlowBounded1 = "bounded1"
 
-// SigningFlowBoundedSentry1 names the combined bounded spend choreography:
-// user-signer bounded base release, sentry component signing, and source-bound
+// SigningFlowBoundedCosigner1 names the combined bounded spend choreography:
+// user-signer bounded base release, cosigner component signing, and source-bound
 // bounded assembly.
-const SigningFlowBoundedSentry1 = "bounded-sentry1"
+const SigningFlowBoundedCosigner1 = "bounded-cosigner1"
 
 type BoundedSignatureArgLayout struct {
 	Count    int   `json:"count"`
@@ -641,9 +641,9 @@ type BoundedArgumentSlotInfo struct {
 	Paths   BoundedArgumentPathMask `json:"paths"`
 }
 
-// BoundedSentryAuthorizationInfo is the public non-secret projection of the
-// optional sentry authority embedded in a bounded account.
-type BoundedSentryAuthorizationInfo struct {
+// BoundedCosignerAuthorizationInfo is the public non-secret projection of the
+// optional cosigner authority embedded in a bounded account.
+type BoundedCosignerAuthorizationInfo struct {
 	Contract         string   `json:"contract"`
 	ComponentKeyType string   `json:"component_key_type"`
 	PublicKeyHex     string   `json:"public_key_hex,omitempty"`
@@ -653,18 +653,18 @@ type BoundedSentryAuthorizationInfo struct {
 }
 
 type BoundedAuthorizationInfo struct {
-	Contract               string                          `json:"contract"`
-	BaseSignatureArgLayout BoundedSignatureArgLayout       `json:"base_signature_arg_layout"`
-	SpendEffects           []string                        `json:"spend_effects"`
-	MaxFee                 uint64                          `json:"max_fee"`
-	AdminOperations        []BoundedAdminOperationInfo     `json:"admin_operations"`
-	Sentry                 *BoundedSentryAuthorizationInfo `json:"sentry,omitempty"`
-	RuntimeArgs            []RuntimeArg                    `json:"runtime_args"`
-	DerivedArgs            []BoundedDerivedArgInfo         `json:"derived_args"`
-	ArgumentLayout         []BoundedArgumentSlotInfo       `json:"argument_layout"`
-	Layer3Policy           string                          `json:"layer3_policy"`
-	AdminKeyID             string                          `json:"admin_key_id,omitempty"`
-	ProgramBindingHex      string                          `json:"program_binding,omitempty"`
+	Contract               string                            `json:"contract"`
+	BaseSignatureArgLayout BoundedSignatureArgLayout         `json:"base_signature_arg_layout"`
+	SpendEffects           []string                          `json:"spend_effects"`
+	MaxFee                 uint64                            `json:"max_fee"`
+	AdminOperations        []BoundedAdminOperationInfo       `json:"admin_operations"`
+	Cosigner               *BoundedCosignerAuthorizationInfo `json:"cosigner,omitempty"`
+	RuntimeArgs            []RuntimeArg                      `json:"runtime_args"`
+	DerivedArgs            []BoundedDerivedArgInfo           `json:"derived_args"`
+	ArgumentLayout         []BoundedArgumentSlotInfo         `json:"argument_layout"`
+	Layer3Policy           string                            `json:"layer3_policy"`
+	AdminKeyID             string                            `json:"admin_key_id,omitempty"`
+	ProgramBindingHex      string                            `json:"program_binding,omitempty"`
 }
 
 // KeyInfo represents a key returned from the /keys endpoint.
@@ -674,7 +674,7 @@ type KeyInfo struct {
 	KeyType                  string                    `json:"key_type"`
 	AuthorizationKind        string                    `json:"authorization_kind,omitempty"` // account authorization envelope; empty = not reported or not a spending account
 	SigningFlow              string                    `json:"signing_flow,omitempty"`
-	SentryComponentKeyType   string                    `json:"sentry_component_key_type,omitempty"`
+	CosignerComponentKeyType string                    `json:"cosigner_component_key_type,omitempty"`
 	LogicSigResources        *LogicSigResourceProfile  `json:"logic_sig_resources,omitempty"`
 	IsGenericLsig            bool                      `json:"is_generic_lsig,omitempty"`
 	IsWitnessKey             bool                      `json:"is_witness_key,omitempty"`

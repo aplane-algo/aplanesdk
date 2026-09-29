@@ -21,11 +21,11 @@ const (
 	ClientEndpointsFile       = "endpoints.yaml"
 	DefaultClientEndpointName = "primary"
 
-	ClientEndpointRoleSigner = "signer"
-	ClientEndpointRoleSentry = "sentry"
+	ClientEndpointRoleSigner   = "signer"
+	ClientEndpointRoleCosigner = "cosigner"
 
 	ClientEndpointSchemaVersion = 2
-	MaxClientSentryEndpoints    = 12
+	MaxClientCosignerEndpoints  = 12
 )
 
 // ClientEndpointRegistry stores client-local endpoint profiles.
@@ -35,7 +35,7 @@ type ClientEndpointRegistry struct {
 	Endpoints     map[string]ClientEndpointConfig `yaml:"endpoints,omitempty"`
 }
 
-// ClientEndpointConfig describes one signer or sentry connection profile.
+// ClientEndpointConfig describes one signer or cosigner connection profile.
 type ClientEndpointConfig struct {
 	Role           string `yaml:"role"`
 	URL            string `yaml:"url"`
@@ -53,17 +53,17 @@ type clientEndpointRegistryV1 struct {
 }
 
 type clientEndpointConfigV1 struct {
-	Role              string                                     `yaml:"role"`
-	URL               string                                     `yaml:"url"`
-	SignerPort        int                                        `yaml:"signer_port,omitempty"`
-	LocalPort         int                                        `yaml:"local_port,omitempty"`
-	IdentityFile      string                                     `yaml:"identity_file,omitempty"`
-	KnownHostsPath    string                                     `yaml:"known_hosts_path,omitempty"`
-	TokenFile         string                                     `yaml:"token_file,omitempty"`
-	PublishedSentries map[string]clientEndpointPublishedSentryV1 `yaml:"published_sentries,omitempty"`
+	Role               string                                       `yaml:"role"`
+	URL                string                                       `yaml:"url"`
+	SignerPort         int                                          `yaml:"signer_port,omitempty"`
+	LocalPort          int                                          `yaml:"local_port,omitempty"`
+	IdentityFile       string                                       `yaml:"identity_file,omitempty"`
+	KnownHostsPath     string                                       `yaml:"known_hosts_path,omitempty"`
+	TokenFile          string                                       `yaml:"token_file,omitempty"`
+	PublishedCosigners map[string]clientEndpointPublishedCosignerV1 `yaml:"published_cosigners,omitempty"`
 }
 
-type clientEndpointPublishedSentryV1 struct {
+type clientEndpointPublishedCosignerV1 struct {
 	ComponentKey string `yaml:"component_key"`
 	KeyType      string `yaml:"key_type"`
 	LastSeenAt   string `yaml:"last_seen_at,omitempty"`
@@ -183,7 +183,7 @@ func validateClientEndpointRegistryScalarTypes(data []byte) error {
 				return err
 			}
 		}
-		published := yamlMappingValue(endpoint, "published_sentries")
+		published := yamlMappingValue(endpoint, "published_cosigners")
 		if published == nil || published.ShortTag() == "!!null" || published.Kind != yaml.MappingNode {
 			continue
 		}
@@ -193,7 +193,7 @@ func validateClientEndpointRegistryScalarTypes(data []byte) error {
 				continue
 			}
 			for _, field := range []string{"component_key", "key_type", "last_seen_at"} {
-				if err := requireYAMLScalarType(yamlMappingValue(entry, field), "published sentry "+field, "!!str", "!!null"); err != nil {
+				if err := requireYAMLScalarType(yamlMappingValue(entry, field), "published cosigner "+field, "!!str", "!!null"); err != nil {
 					return err
 				}
 			}
@@ -255,8 +255,8 @@ func validateClientEndpointAlias(alias string) error {
 
 func normalizeClientEndpoint(dataDir, alias string, endpoint ClientEndpointConfig) (ClientEndpointConfig, error) {
 	endpoint.Role = strings.TrimSpace(endpoint.Role)
-	if endpoint.Role != ClientEndpointRoleSigner && endpoint.Role != ClientEndpointRoleSentry {
-		return endpoint, fmt.Errorf("unsupported role %q (expected %q or %q)", endpoint.Role, ClientEndpointRoleSigner, ClientEndpointRoleSentry)
+	if endpoint.Role != ClientEndpointRoleSigner && endpoint.Role != ClientEndpointRoleCosigner {
+		return endpoint, fmt.Errorf("unsupported role %q (expected %q or %q)", endpoint.Role, ClientEndpointRoleSigner, ClientEndpointRoleCosigner)
 	}
 	endpoint.URL = strings.TrimRight(strings.TrimSpace(endpoint.URL), "/")
 	if endpoint.URL == "" {
@@ -296,8 +296,8 @@ func validateClientEndpointURL(alias string, endpoint ClientEndpointConfig) erro
 	if endpoint.LocalPort < 0 || endpoint.LocalPort > 65535 {
 		return fmt.Errorf("local_port must be 1-65535 when set")
 	}
-	if endpoint.Role == ClientEndpointRoleSentry && endpoint.LocalPort != 0 {
-		return fmt.Errorf("local_port is not supported for sentry endpoints")
+	if endpoint.Role == ClientEndpointRoleCosigner && endpoint.LocalPort != 0 {
+		return fmt.Errorf("local_port is not supported for cosigner endpoints")
 	}
 	if endpoint.URL == "self" {
 		return fmt.Errorf("url %q is not supported; configure an explicit ssh://, https://, or loopback http:// endpoint", endpoint.URL)
@@ -343,10 +343,10 @@ func normalizeClientEndpointRoles(registry *ClientEndpointRegistry) error {
 		}
 	}
 	signerAlias := ""
-	sentryCount := 0
+	cosignerCount := 0
 	for alias, endpoint := range registry.Endpoints {
-		if endpoint.Role == ClientEndpointRoleSentry {
-			sentryCount++
+		if endpoint.Role == ClientEndpointRoleCosigner {
+			cosignerCount++
 		}
 		if endpoint.Role != ClientEndpointRoleSigner {
 			continue
@@ -356,8 +356,8 @@ func normalizeClientEndpointRoles(registry *ClientEndpointRegistry) error {
 		}
 		signerAlias = alias
 	}
-	if sentryCount > MaxClientSentryEndpoints {
-		return fmt.Errorf("%s configures %d sentry endpoints; maximum is %d; remove or consolidate endpoint profiles", ClientEndpointsFile, sentryCount, MaxClientSentryEndpoints)
+	if cosignerCount > MaxClientCosignerEndpoints {
+		return fmt.Errorf("%s configures %d cosigner endpoints; maximum is %d; remove or consolidate endpoint profiles", ClientEndpointsFile, cosignerCount, MaxClientCosignerEndpoints)
 	}
 	if signerAlias == "" {
 		if registry.Default != "" {

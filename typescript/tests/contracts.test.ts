@@ -237,7 +237,7 @@ describe("signer API contract fixtures", () => {
     assert.equal(genericPolicy.creationParams?.[3].inputModes?.[1].byteLength, 32);
     assert.equal(genericPolicy.creationParams?.[3].inputModes?.[1].inputType, "bytes");
     assert.equal(genericPolicy.creationParams?.[4].paramType, "select");
-    assert.deepEqual(genericPolicy.creationParams?.[4].options, ["lab-sentry", "backup-sentry"]);
+    assert.deepEqual(genericPolicy.creationParams?.[4].options, ["lab-cosigner", "backup-cosigner"]);
     assert.equal(genericPolicy.runtimeArgs?.[0].label, "Preimage");
     assert.equal(genericPolicy.runtimeArgs?.[0].required, true);
     assert.equal(genericPolicy.runtimeArgs?.[0].byteLength, 32);
@@ -301,7 +301,7 @@ describe("signer API contract fixtures", () => {
     assert.equal(keys[0].templateProvenanceNote, "template fingerprint differs");
   });
 
-  it("maps sentry component and guarded key metadata", async () => {
+  it("maps cosigner component and guarded key metadata", async () => {
     mockFetch.mockResolvedValueOnce({
       status: 200,
       ok: true,
@@ -322,9 +322,9 @@ describe("signer API contract fixtures", () => {
       json: async () => fixture("keys_response_guarded.json"),
     });
     const guarded = (await client.listKeys(true))[0];
-    assert.equal(guarded.keyType, "aplane.falcon1024-sentry1024.v1");
+    assert.equal(guarded.keyType, "aplane.falcon1024-cosigner1024.v1");
     assert.equal(guarded.authorizationKind, "logic_sig");
-    assert.ok(guarded.parameters?.sentry_public_key);
+    assert.ok(guarded.parameters?.cosigner_public_key);
   });
 
   it("maps authorizationKind for a native-PQ spending key", async () => {
@@ -405,7 +405,7 @@ describe("signer API contract fixtures", () => {
     assert.equal(generated.isSpendingAccount, false);
   });
 
-  it("round-trips sentry component and assembly fixture DTOs", () => {
+  it("round-trips cosigner component and assembly fixture DTOs", () => {
     const unifiedComponentReq = fixture("component_request.json") as ComponentRequest;
     assert.equal(unifiedComponentReq.targets[0].kind, "bounded-base");
     const unifiedComponentResp = fixture("component_response.json") as ComponentResponse;
@@ -458,11 +458,11 @@ describe("signer API contract fixtures", () => {
     assert.equal(key.boundedAuthorization?.adminOperations[0].policyGate, "none");
     assert.equal(key.boundedAuthorization?.argumentLayout[1].source, "admin");
     const corridor = keys[1];
-    assert.equal(corridor.signingFlow, "bounded-sentry1");
-    assert.equal(corridor.sentryComponentKeyType, "aplane.witness-falcon1024.v1");
-    assert.ok(corridor.boundedAuthorization?.sentry?.publicKeyHex);
-    assert.ok(corridor.boundedAuthorization?.sentry?.componentKeyId);
-    assert.deepEqual(corridor.boundedAuthorization?.sentry?.requiredOn, ["spend"]);
+    assert.equal(corridor.signingFlow, "bounded-cosigner1");
+    assert.equal(corridor.cosignerComponentKeyType, "aplane.witness-falcon1024.v1");
+    assert.ok(corridor.boundedAuthorization?.cosigner?.publicKeyHex);
+    assert.ok(corridor.boundedAuthorization?.cosigner?.componentKeyId);
+    assert.deepEqual(corridor.boundedAuthorization?.cosigner?.requiredOn, ["spend"]);
 
     mockFetch.mockResolvedValueOnce({
       status: 200,
@@ -474,9 +474,9 @@ describe("signer API contract fixtures", () => {
     assert.equal(keyType.boundedAuthorization?.layer3Policy, "fixed_allowlist");
     assert.equal(keyType.boundedAuthorization?.adminKeyId, undefined);
     const corridorType = keyTypes[1];
-    assert.equal(corridorType.signingFlow, "bounded-sentry1");
-    assert.equal(corridorType.sentryComponentKeyType, "aplane.witness-falcon1024.v1");
-    assert.deepEqual(corridorType.boundedAuthorization?.sentry?.requiredOn, ["spend"]);
+    assert.equal(corridorType.signingFlow, "bounded-cosigner1");
+    assert.equal(corridorType.cosignerComponentKeyType, "aplane.witness-falcon1024.v1");
+    assert.deepEqual(corridorType.boundedAuthorization?.cosigner?.requiredOn, ["spend"]);
   });
 
 });

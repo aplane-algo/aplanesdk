@@ -218,16 +218,16 @@ func TestBoundedInventoryUsesStructuredResources(t *testing.T) {
 	}
 
 	corridor := response.Keys[1]
-	if corridor.SigningFlow != SigningFlowBoundedSentry1 ||
-		corridor.SentryComponentKeyType != KeyTypeWitnessFalcon1024 {
-		t.Fatalf("Corridor routing = %q/%q, want bounded sentry flow", corridor.SigningFlow, corridor.SentryComponentKeyType)
+	if corridor.SigningFlow != SigningFlowBoundedCosigner1 ||
+		corridor.CosignerComponentKeyType != KeyTypeWitnessFalcon1024 {
+		t.Fatalf("Corridor routing = %q/%q, want bounded cosigner flow", corridor.SigningFlow, corridor.CosignerComponentKeyType)
 	}
-	if corridor.BoundedAuthorization == nil || corridor.BoundedAuthorization.Sentry == nil {
-		t.Fatalf("Corridor bounded authorization = %+v, want sentry metadata", corridor.BoundedAuthorization)
+	if corridor.BoundedAuthorization == nil || corridor.BoundedAuthorization.Cosigner == nil {
+		t.Fatalf("Corridor bounded authorization = %+v, want cosigner metadata", corridor.BoundedAuthorization)
 	}
-	if sentry := corridor.BoundedAuthorization.Sentry; sentry.PublicKeyHex == "" ||
-		sentry.ComponentKeyID == "" || len(sentry.RequiredOn) != 1 || sentry.RequiredOn[0] != "spend" {
-		t.Fatalf("Corridor sentry metadata = %+v, want routable spend authorization", sentry)
+	if cosigner := corridor.BoundedAuthorization.Cosigner; cosigner.PublicKeyHex == "" ||
+		cosigner.ComponentKeyID == "" || len(cosigner.RequiredOn) != 1 || cosigner.RequiredOn[0] != "spend" {
+		t.Fatalf("Corridor cosigner metadata = %+v, want routable spend authorization", cosigner)
 	}
 
 	raw, err = os.ReadFile(sdkContractFixturePath(t, "keytypes_response_bounded.json"))
@@ -242,10 +242,10 @@ func TestBoundedInventoryUsesStructuredResources(t *testing.T) {
 		t.Fatalf("bounded key type count = %d, want 2", len(keyTypes.KeyTypes))
 	}
 	corridorType := keyTypes.KeyTypes[1]
-	if corridorType.SigningFlow != SigningFlowBoundedSentry1 ||
-		corridorType.SentryComponentKeyType != KeyTypeWitnessFalcon1024 ||
-		corridorType.BoundedAuthorization == nil || corridorType.BoundedAuthorization.Sentry == nil {
-		t.Fatalf("Corridor key type routing = %+v, want bounded sentry metadata", corridorType)
+	if corridorType.SigningFlow != SigningFlowBoundedCosigner1 ||
+		corridorType.CosignerComponentKeyType != KeyTypeWitnessFalcon1024 ||
+		corridorType.BoundedAuthorization == nil || corridorType.BoundedAuthorization.Cosigner == nil {
+		t.Fatalf("Corridor key type routing = %+v, want bounded cosigner metadata", corridorType)
 	}
 }
 
@@ -290,7 +290,7 @@ func TestSDKProductionSurfaceExcludesBoundedAdminWorkflow(t *testing.T) {
 	}
 }
 
-func TestSDKProductionSurfaceExcludesSentryReferenceSync(t *testing.T) {
+func TestSDKProductionSurfaceExcludesCosignerReferenceSync(t *testing.T) {
 	roots := []struct {
 		path string
 		ext  string
@@ -300,12 +300,12 @@ func TestSDKProductionSurfaceExcludesSentryReferenceSync(t *testing.T) {
 		{path: "../typescript/src", ext: ".ts"},
 	}
 	forbidden := []string{
-		"AdminSyncSentry",
-		"SyncSentryReferences",
-		"sync_sentry_references",
-		"syncSentryReferences",
-		"/admin/sentries/sync",
-		"sentries.sync",
+		"AdminSyncCosigner",
+		"SyncCosignerReferences",
+		"sync_cosigner_references",
+		"syncCosignerReferences",
+		"/admin/cosigners/sync",
+		"cosigners.sync",
 	}
 
 	for _, root := range roots {
@@ -322,7 +322,7 @@ func TestSDKProductionSurfaceExcludesSentryReferenceSync(t *testing.T) {
 			}
 			for _, token := range forbidden {
 				if strings.Contains(string(content), token) {
-					t.Errorf("%s exposes retired sentry-reference sync token %q", path, token)
+					t.Errorf("%s exposes retired cosigner-reference sync token %q", path, token)
 				}
 			}
 			return nil
@@ -409,16 +409,16 @@ func TestGoSDKContractKeyTypeMetadata(t *testing.T) {
 	if modes[1].InputType != "bytes" {
 		t.Fatalf("InputModes[1].InputType = %q, want bytes", modes[1].InputType)
 	}
-	sentryParam := generic.CreationParams[4]
-	if sentryParam.Type != "select" {
-		t.Fatalf("sentry param type = %q, want select", sentryParam.Type)
+	cosignerParam := generic.CreationParams[4]
+	if cosignerParam.Type != "select" {
+		t.Fatalf("cosigner param type = %q, want select", cosignerParam.Type)
 	}
-	if !reflect.DeepEqual(sentryParam.Options, []string{"lab-sentry", "backup-sentry"}) {
-		t.Fatalf("sentry options = %#v", sentryParam.Options)
+	if !reflect.DeepEqual(cosignerParam.Options, []string{"lab-cosigner", "backup-cosigner"}) {
+		t.Fatalf("cosigner options = %#v", cosignerParam.Options)
 	}
 }
 
-func TestGoSDKContractSentryKeyMetadata(t *testing.T) {
+func TestGoSDKContractCosignerKeyMetadata(t *testing.T) {
 	raw, err := os.ReadFile(sdkContractFixturePath(t, "keys_response_component.json"))
 	if err != nil {
 		t.Fatalf("read component keys fixture: %v", err)
@@ -446,8 +446,8 @@ func TestGoSDKContractSentryKeyMetadata(t *testing.T) {
 	if err := json.Unmarshal(raw, &guarded); err != nil {
 		t.Fatalf("unmarshal guarded keys fixture: %v", err)
 	}
-	if got := guarded.Keys[0].Parameters["sentry_public_key"]; got == "" {
-		t.Fatal("guarded key missing sentry_public_key parameter")
+	if got := guarded.Keys[0].Parameters["cosigner_public_key"]; got == "" {
+		t.Fatal("guarded key missing cosigner_public_key parameter")
 	}
 	if got := guarded.Keys[0].AuthorizationKind; got != AuthorizationKindLogicSig {
 		t.Fatalf("guarded AuthorizationKind = %q, want %q", got, AuthorizationKindLogicSig)
@@ -572,7 +572,7 @@ func signerAPIErrorCodes(t *testing.T) []string {
 		ErrCodeCacheRefresh,
 		ErrCodeInternal,
 		ErrCodeBoundedAdminRequired,
-		ErrCodeBoundedSentryRequired,
+		ErrCodeBoundedCosignerRequired,
 	}
 }
 
