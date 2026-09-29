@@ -6,7 +6,7 @@
   "author": "APlane Project LLC",
   "repository": {
     "type": "git",
-    "url": "https://github.com/aplane-algo/aplanesdk.git",
+    "url": "git+https://github.com/aplane-algo/aplanesdk.git",
     "directory": "typescript"
   },
   "homepage": "https://github.com/aplane-algo/aplanesdk#readme",
