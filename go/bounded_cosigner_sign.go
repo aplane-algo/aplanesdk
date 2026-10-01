@@ -186,6 +186,19 @@ func signPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts Prepa
 	}
 
 	result := &GuardedSignResult{BoundedComponentResponse: componentResp}
+	primary, err := requestBoundedPrimaryPassthrough(
+		ctx, opts.UserClient, planResp.Transactions, len(prepared),
+		targetsByIndex, targetResources, primaryTargets,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if primary != nil {
+		result.PrimarySignResponse = primary.response
+	}
+
+	// The user side is complete, including ordinary primary positions. Only
+	// now may the SDK disclose the frozen group to the cosigner endpoint.
 	cosignerOpts := GuardedSignOptions{
 		UserClient:           opts.UserClient,
 		CosignerClient:       opts.CosignerClient,
@@ -198,17 +211,6 @@ func signPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts Prepa
 	cosignerSignatures, err := requestCosignerComponentSignatures(ctx, cosignerOpts, targets, result)
 	if err != nil {
 		return nil, err
-	}
-
-	primary, err := requestBoundedPrimaryPassthrough(
-		ctx, opts.UserClient, planResp.Transactions, len(prepared),
-		targetsByIndex, targetResources, primaryTargets,
-	)
-	if err != nil {
-		return nil, err
-	}
-	if primary != nil {
-		result.PrimarySignResponse = primary.response
 	}
 	passthrough := make([]AssemblyPassthroughItem, 0, len(planned)-len(targets))
 	if primary != nil {

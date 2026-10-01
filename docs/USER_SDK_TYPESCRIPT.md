@@ -588,7 +588,9 @@ If a direct guarded call combines `primaryTargets` with caller-supplied
 intermediate primary-signing request and is not sent to `/sign/assemble`.
 
 For manual orchestration, use `requestComponents()` on the user and cosigner
-clients, then `requestAssemble()` on the user client. `assembleGroup()`
+clients, then `requestAssemble()` on the user client. Finish the user side (user components and any
+ordinary-position signing) before requesting cosigner components, so a cosigner
+never sees a group the user signer rejects. `assembleGroup()`
 remains only the local multi-party concatenation helper.
 
 Corridor is a bounded cosigner account: its LogicSig contract is `bounded1`, and
@@ -606,8 +608,8 @@ const signedGroup = result.signedGroup;
 ```
 
 The sequence is `/plan`, user approval and base-component release through
-`requestComponents()` with a bounded-base target, cosigner signing over the
-frozen group, signing of ordinary group positions, and final
+`requestComponents()` with a bounded-base target, signing of ordinary group
+positions, cosigner signing over the frozen group, and final
 `requestAssemble()` on the user signer. Before requesting any additional signature, the SDK accepts only
 mutation-report-declared fee pooling and group-ID assignment to the caller's
 prepared positions, and requires every appended position to be a canonical

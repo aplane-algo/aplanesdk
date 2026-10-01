@@ -6,8 +6,10 @@ package aplane
 import (
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/algorand/go-algorand-sdk/v2/crypto"
@@ -358,126 +360,162 @@ func TestSignGuardedGroupRejectsMismatchedAssembly(t *testing.T) {
 }
 
 func TestSignGuardedGroupMixedPrimaryAndGuarded(t *testing.T) {
-	userClient, userServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/status":
-			json.NewEncoder(w).Encode(StatusResponse{
-				State:               "unlocked",
-				ReadyForSigning:     true,
-				KeysetRevision:      1,
-				ApprovalWaitSeconds: 60,
+	for _, rejectSign := range []bool{false, true} {
+		t.Run(fmt.Sprintf("rejectSign=%v", rejectSign), func(t *testing.T) {
+			var eventsMu sync.Mutex
+			var events []string
+			record := func(event string) {
+				eventsMu.Lock()
+				defer eventsMu.Unlock()
+				events = append(events, event)
+			}
+			eventSnapshot := func() string {
+				eventsMu.Lock()
+				defer eventsMu.Unlock()
+				return strings.Join(events, ",")
+			}
+			userClient, userServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/status":
+					json.NewEncoder(w).Encode(StatusResponse{
+						State:               "unlocked",
+						ReadyForSigning:     true,
+						KeysetRevision:      1,
+						ApprovalWaitSeconds: 60,
+					})
+				case "/sign":
+					record("sign")
+					if rejectSign {
+						http.Error(w, "rejected by signer policy", http.StatusForbidden)
+						return
+					}
+					var req GroupSignRequest
+					if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+						t.Fatalf("decode primary sign request: %v", err)
+					}
+					if len(req.Requests) != 3 || req.Requests[0].AuthAddress != "AUTH" || req.Requests[1].AuthAddress != "" {
+						t.Fatalf("primary sign requests = %+v", req.Requests)
+					}
+					if got := req.Requests[1].LsigResources; got == nil || *got != *guardedTestResources() {
+						t.Fatalf("guarded passthrough resources = %#v", got)
+					}
+					foreignResources := LogicSigResourceUsage{ProgramBytes: 5000, ArgumentBytes: 1200, MaxOpcodeCost: 30000}
+					if got := req.Requests[2].LsigResources; got == nil || *got != foreignResources {
+						t.Fatalf("foreign passthrough resources = %#v", got)
+					}
+					json.NewEncoder(w).Encode(GroupSignResponse{Signed: []string{signedTxnHexFor(t, req.Requests[0].TxnBytesHex), "", ""}})
+				case "/sign/component":
+					record("user")
+					var req capturedComponentRequest
+					if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+						t.Fatalf("decode user component request: %v", err)
+					}
+					if len(req.Contextual) != 2 || req.Contextual[0].TargetIndex != 0 ||
+						req.Contextual[0].AppCallInfo == nil || req.Contextual[0].AppCallInfo.Method != "primary()void" {
+						t.Fatalf("user component contextual metadata = %+v", req.Contextual)
+					}
+					json.NewEncoder(w).Encode(ComponentResponse{
+						RequestID: req.RequestID,
+						Components: []Component{{Kind: ComponentTargetKindUser,
+							TargetIndex:     1,
+							Signature:       "user-sig",
+							SignatureScheme: KeyTypeWitnessFalcon1024,
+						}},
+					})
+				case "/sign/assemble":
+					record("assemble")
+					var req capturedAssemblyRequest
+					if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+						t.Fatalf("decode assembly request: %v", err)
+					}
+					if len(req.Passthrough) != 2 {
+						t.Fatalf("assembly passthrough = %+v", req.Passthrough)
+					}
+					seen := map[int]bool{}
+					for _, item := range req.Passthrough {
+						seen[item.TargetIndex] = item.SignedTxnHex != ""
+					}
+					if !seen[0] || !seen[2] {
+						t.Fatalf("assembly passthrough = %+v", req.Passthrough)
+					}
+					json.NewEncoder(w).Encode(AssemblyResponse{
+						RequestID:   req.RequestID,
+						SignedGroup: signedGroupFor(t, req.GroupBytesHex),
+					})
+				default:
+					t.Fatalf("unexpected user path %s", r.URL.Path)
+				}
 			})
-		case "/sign":
-			var req GroupSignRequest
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				t.Fatalf("decode primary sign request: %v", err)
-			}
-			if len(req.Requests) != 3 || req.Requests[0].AuthAddress != "AUTH" || req.Requests[1].AuthAddress != "" {
-				t.Fatalf("primary sign requests = %+v", req.Requests)
-			}
-			if got := req.Requests[1].LsigResources; got == nil || *got != *guardedTestResources() {
-				t.Fatalf("guarded passthrough resources = %#v", got)
-			}
-			foreignResources := LogicSigResourceUsage{ProgramBytes: 5000, ArgumentBytes: 1200, MaxOpcodeCost: 30000}
-			if got := req.Requests[2].LsigResources; got == nil || *got != foreignResources {
-				t.Fatalf("foreign passthrough resources = %#v", got)
-			}
-			json.NewEncoder(w).Encode(GroupSignResponse{Signed: []string{signedTxnHexFor(t, req.Requests[0].TxnBytesHex), "", ""}})
-		case "/sign/component":
-			var req capturedComponentRequest
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				t.Fatalf("decode user component request: %v", err)
-			}
-			if len(req.Contextual) != 2 || req.Contextual[0].TargetIndex != 0 ||
-				req.Contextual[0].AppCallInfo == nil || req.Contextual[0].AppCallInfo.Method != "primary()void" {
-				t.Fatalf("user component contextual metadata = %+v", req.Contextual)
-			}
-			json.NewEncoder(w).Encode(ComponentResponse{
-				RequestID: req.RequestID,
-				Components: []Component{{Kind: ComponentTargetKindUser,
-					TargetIndex:     1,
-					Signature:       "user-sig",
-					SignatureScheme: KeyTypeWitnessFalcon1024,
+			defer userServer.Close()
+
+			cosignerClient, cosignerServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+				record("cosigner")
+				var req capturedComponentRequest
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Fatalf("decode cosigner component request: %v", err)
+				}
+				if len(req.Contextual) != 2 || req.Contextual[0].TargetIndex != 0 ||
+					req.Contextual[0].AppCallInfo == nil || req.Contextual[0].AppCallInfo.Method != "primary()void" {
+					t.Fatalf("cosigner component contextual metadata = %+v", req.Contextual)
+				}
+				json.NewEncoder(w).Encode(ComponentResponse{
+					RequestID: req.RequestID,
+					Components: []Component{{Kind: ComponentTargetKindCosigner,
+						TargetIndex:     1,
+						Signature:       "cosigner-sig",
+						SignatureScheme: KeyTypeWitnessFalcon1024,
+					}},
+				})
+			})
+			defer cosignerServer.Close()
+
+			result, err := SignGuardedGroup(GuardedSignOptions{
+				UserClient:           userClient,
+				CosignerClient:       cosignerClient,
+				CosignerComponentKey: "COSIGNER_COMPONENT",
+				GroupBytesHex:        []string{canonicalTxnHex(1), canonicalTxnHex(2), canonicalTxnHex(3)},
+				PrimaryTargets: []GuardedPrimarySignTarget{{
+					TargetIndex: 0,
+					AuthAddress: "AUTH",
+					AppCallInfo: &AppCallInfo{Mode: "abi", Method: "primary()void"},
+				}},
+				Targets: []GuardedSignTarget{{
+					TargetIndex:       1,
+					GuardedAccount:    "GUARDED",
+					LogicSigResources: guardedTestResources(),
+				}},
+				Passthrough: []AssemblyPassthroughItem{{
+					TargetIndex:  2,
+					SignedTxnHex: signedTxnHexFor(t, canonicalTxnHex(3)),
+					Authorization: &GuardedPassthroughAuthorization{
+						LogicSigResources: &LogicSigResourceUsage{
+							ProgramBytes: 5000, ArgumentBytes: 1200, MaxOpcodeCost: 30000,
+						},
+					},
 				}},
 			})
-		case "/sign/assemble":
-			var req capturedAssemblyRequest
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				t.Fatalf("decode assembly request: %v", err)
+			if rejectSign {
+				if err == nil {
+					t.Fatal("expected the /sign rejection to fail the group")
+				}
+				if got := eventSnapshot(); got != "user,sign" {
+					t.Fatalf("calls = %s, want %s (cosigner must not see a group the user side rejected)", got, "user,sign")
+				}
+				return
 			}
-			if len(req.Passthrough) != 2 {
-				t.Fatalf("assembly passthrough = %+v", req.Passthrough)
+			if err != nil {
+				t.Fatalf("SignGuardedGroup() error = %v", err)
 			}
-			seen := map[int]bool{}
-			for _, item := range req.Passthrough {
-				seen[item.TargetIndex] = item.SignedTxnHex != ""
+			if got := eventSnapshot(); got != "user,sign,cosigner,assemble" {
+				t.Fatalf("calls = %s, want %s", got, "user,sign,cosigner,assemble")
 			}
-			if !seen[0] || !seen[2] {
-				t.Fatalf("assembly passthrough = %+v", req.Passthrough)
+			if len(result.SignedGroup) != 3 || result.SignedGroup[1] != signedTxnHexFor(t, canonicalTxnHex(2)) {
+				t.Fatalf("signed group = %+v", result.SignedGroup)
 			}
-			json.NewEncoder(w).Encode(AssemblyResponse{
-				RequestID:   req.RequestID,
-				SignedGroup: signedGroupFor(t, req.GroupBytesHex),
-			})
-		default:
-			t.Fatalf("unexpected user path %s", r.URL.Path)
-		}
-	})
-	defer userServer.Close()
-
-	cosignerClient, cosignerServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
-		var req capturedComponentRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode cosigner component request: %v", err)
-		}
-		if len(req.Contextual) != 2 || req.Contextual[0].TargetIndex != 0 ||
-			req.Contextual[0].AppCallInfo == nil || req.Contextual[0].AppCallInfo.Method != "primary()void" {
-			t.Fatalf("cosigner component contextual metadata = %+v", req.Contextual)
-		}
-		json.NewEncoder(w).Encode(ComponentResponse{
-			RequestID: req.RequestID,
-			Components: []Component{{Kind: ComponentTargetKindCosigner,
-				TargetIndex:     1,
-				Signature:       "cosigner-sig",
-				SignatureScheme: KeyTypeWitnessFalcon1024,
-			}},
+			if result.PrimarySignResponse == nil {
+				t.Fatal("expected primary sign response")
+			}
 		})
-	})
-	defer cosignerServer.Close()
-
-	result, err := SignGuardedGroup(GuardedSignOptions{
-		UserClient:           userClient,
-		CosignerClient:       cosignerClient,
-		CosignerComponentKey: "COSIGNER_COMPONENT",
-		GroupBytesHex:        []string{canonicalTxnHex(1), canonicalTxnHex(2), canonicalTxnHex(3)},
-		PrimaryTargets: []GuardedPrimarySignTarget{{
-			TargetIndex: 0,
-			AuthAddress: "AUTH",
-			AppCallInfo: &AppCallInfo{Mode: "abi", Method: "primary()void"},
-		}},
-		Targets: []GuardedSignTarget{{
-			TargetIndex:       1,
-			GuardedAccount:    "GUARDED",
-			LogicSigResources: guardedTestResources(),
-		}},
-		Passthrough: []AssemblyPassthroughItem{{
-			TargetIndex:  2,
-			SignedTxnHex: signedTxnHexFor(t, canonicalTxnHex(3)),
-			Authorization: &GuardedPassthroughAuthorization{
-				LogicSigResources: &LogicSigResourceUsage{
-					ProgramBytes: 5000, ArgumentBytes: 1200, MaxOpcodeCost: 30000,
-				},
-			},
-		}},
-	})
-	if err != nil {
-		t.Fatalf("SignGuardedGroup() error = %v", err)
-	}
-	if len(result.SignedGroup) != 3 || result.SignedGroup[1] != signedTxnHexFor(t, canonicalTxnHex(2)) {
-		t.Fatalf("signed group = %+v", result.SignedGroup)
-	}
-	if result.PrimarySignResponse == nil {
-		t.Fatal("expected primary sign response")
 	}
 }
 

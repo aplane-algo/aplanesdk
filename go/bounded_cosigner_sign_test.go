@@ -8,9 +8,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -162,138 +164,174 @@ func TestSignPreparedBoundedCosignerGroupOneTarget(t *testing.T) {
 // freezes an under-funded canonical group that the later /sign identity check
 // cannot detect, because the shortfall is already inside the canonical bytes.
 func TestSignPreparedBoundedCosignerGroupDeclaresNativePQPrimary(t *testing.T) {
-	bounded := sdkTestAddress(51)
-	nativePQ := sdkTestAddress(52)
-	receiver := sdkTestAddress(53)
-	var frozenGroup []string
-	var primaryRequest SignRequest
+	for _, rejectSign := range []bool{false, true} {
+		t.Run(fmt.Sprintf("rejectSign=%v", rejectSign), func(t *testing.T) {
+			var eventsMu sync.Mutex
+			var events []string
+			record := func(event string) {
+				eventsMu.Lock()
+				defer eventsMu.Unlock()
+				events = append(events, event)
+			}
+			eventSnapshot := func() string {
+				eventsMu.Lock()
+				defer eventsMu.Unlock()
+				return strings.Join(events, ",")
+			}
+			bounded := sdkTestAddress(51)
+			nativePQ := sdkTestAddress(52)
+			receiver := sdkTestAddress(53)
+			var frozenGroup []string
+			var primaryRequest SignRequest
 
-	userClient, userServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/status":
-			json.NewEncoder(w).Encode(StatusResponse{
-				State: "unlocked", ApprovalWaitSeconds: 60,
+			userClient, userServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/status":
+					json.NewEncoder(w).Encode(StatusResponse{
+						State: "unlocked", ApprovalWaitSeconds: 60,
+					})
+				case "/plan":
+					var req GroupSignRequest
+					if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+						t.Fatalf("decode plan request: %v", err)
+					}
+					primaryRequest = req.Requests[1]
+					frozenGroup = []string{req.Requests[0].TxnBytesHex, req.Requests[1].TxnBytesHex}
+					json.NewEncoder(w).Encode(PlanGroupResponse{Transactions: frozenGroup})
+				case "/sign/component":
+					record("base")
+					var req ComponentRequest
+					if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+						t.Fatalf("decode bounded component request: %v", err)
+					}
+					if len(req.Targets) != 1 || len(req.ContextualPositions) != 1 {
+						t.Fatalf("bounded component partition = %+v", req)
+					}
+					json.NewEncoder(w).Encode(ComponentResponse{
+						RequestID: req.RequestID,
+						Components: []Component{{
+							TargetIndex:     0,
+							Kind:            ComponentTargetKindBoundedBase,
+							AuthAddress:     bounded,
+							BaseSignatures:  []string{"base-sig"},
+							AssemblyReceipt: "receipt",
+							SignatureScheme: "aplane.falcon1024.v1",
+						}},
+					})
+				case "/sign":
+					record("sign")
+					if rejectSign {
+						http.Error(w, "rejected by signer policy", http.StatusForbidden)
+						return
+					}
+					json.NewEncoder(w).Encode(GroupSignResponse{Signed: signedGroupFor(t, frozenGroup)})
+				case "/sign/assemble":
+					record("assemble")
+					var req AssemblyRequest
+					if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+						t.Fatalf("decode bounded assembly request: %v", err)
+					}
+					json.NewEncoder(w).Encode(AssemblyResponse{
+						RequestID: req.RequestID, SignedGroup: signedGroupFor(t, req.GroupBytesHex),
+					})
+				default:
+					t.Fatalf("unexpected user path %s", r.URL.Path)
+				}
 			})
-		case "/plan":
-			var req GroupSignRequest
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				t.Fatalf("decode plan request: %v", err)
-			}
-			primaryRequest = req.Requests[1]
-			frozenGroup = []string{req.Requests[0].TxnBytesHex, req.Requests[1].TxnBytesHex}
-			json.NewEncoder(w).Encode(PlanGroupResponse{Transactions: frozenGroup})
-		case "/sign/component":
-			var req ComponentRequest
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				t.Fatalf("decode bounded component request: %v", err)
-			}
-			if len(req.Targets) != 1 || len(req.ContextualPositions) != 1 {
-				t.Fatalf("bounded component partition = %+v", req)
-			}
-			json.NewEncoder(w).Encode(ComponentResponse{
-				RequestID: req.RequestID,
-				Components: []Component{{
-					TargetIndex:     0,
-					Kind:            ComponentTargetKindBoundedBase,
-					AuthAddress:     bounded,
-					BaseSignatures:  []string{"base-sig"},
-					AssemblyReceipt: "receipt",
-					SignatureScheme: "aplane.falcon1024.v1",
-				}},
+			defer userServer.Close()
+
+			cosignerClient, cosignerServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+				record("cosigner")
+				var req capturedComponentRequest
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Fatalf("decode cosigner component request: %v", err)
+				}
+				json.NewEncoder(w).Encode(ComponentResponse{
+					RequestID: req.RequestID,
+					Components: []Component{{Kind: ComponentTargetKindCosigner,
+						TargetIndex: 0, Signature: "cosigner-sig", SignatureScheme: KeyTypeWitnessFalcon1024,
+					}},
+				})
 			})
-		case "/sign":
-			json.NewEncoder(w).Encode(GroupSignResponse{Signed: signedGroupFor(t, frozenGroup)})
-		case "/sign/assemble":
-			var req AssemblyRequest
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				t.Fatalf("decode bounded assembly request: %v", err)
+			defer cosignerServer.Close()
+
+			var genesisHash types.Digest
+			sp := types.SuggestedParams{
+				Fee: types.MicroAlgos(1000), FirstRoundValid: 1, LastRoundValid: 100,
+				GenesisID: "testnet-v1.0", GenesisHash: genesisHash[:], FlatFee: true,
 			}
-			json.NewEncoder(w).Encode(AssemblyResponse{
-				RequestID: req.RequestID, SignedGroup: signedGroupFor(t, req.GroupBytesHex),
-			})
-		default:
-			t.Fatalf("unexpected user path %s", r.URL.Path)
-		}
-	})
-	defer userServer.Close()
+			corridorTxn, err := transaction.MakePaymentTxn(bounded, receiver, 1000, nil, "", sp)
+			if err != nil {
+				t.Fatalf("MakePaymentTxn() error = %v", err)
+			}
+			nativeTxn, err := transaction.MakePaymentTxn(nativePQ, receiver, 2000, nil, "", sp)
+			if err != nil {
+				t.Fatalf("MakePaymentTxn() error = %v", err)
+			}
+			groupID, err := algocrypto.ComputeGroupID([]types.Transaction{corridorTxn, nativeTxn})
+			if err != nil {
+				t.Fatalf("ComputeGroupID() error = %v", err)
+			}
+			corridorTxn.Group = groupID
+			nativeTxn.Group = groupID
 
-	cosignerClient, cosignerServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
-		var req capturedComponentRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode cosigner component request: %v", err)
-		}
-		json.NewEncoder(w).Encode(ComponentResponse{
-			RequestID: req.RequestID,
-			Components: []Component{{Kind: ComponentTargetKindCosigner,
-				TargetIndex: 0, Signature: "cosigner-sig", SignatureScheme: KeyTypeWitnessFalcon1024,
-			}},
-		})
-	})
-	defer cosignerServer.Close()
-
-	var genesisHash types.Digest
-	sp := types.SuggestedParams{
-		Fee: types.MicroAlgos(1000), FirstRoundValid: 1, LastRoundValid: 100,
-		GenesisID: "testnet-v1.0", GenesisHash: genesisHash[:], FlatFee: true,
-	}
-	corridorTxn, err := transaction.MakePaymentTxn(bounded, receiver, 1000, nil, "", sp)
-	if err != nil {
-		t.Fatalf("MakePaymentTxn() error = %v", err)
-	}
-	nativeTxn, err := transaction.MakePaymentTxn(nativePQ, receiver, 2000, nil, "", sp)
-	if err != nil {
-		t.Fatalf("MakePaymentTxn() error = %v", err)
-	}
-	groupID, err := algocrypto.ComputeGroupID([]types.Transaction{corridorTxn, nativeTxn})
-	if err != nil {
-		t.Fatalf("ComputeGroupID() error = %v", err)
-	}
-	corridorTxn.Group = groupID
-	nativeTxn.Group = groupID
-
-	_, err = SignPreparedGuardedGroup(PreparedGuardedGroupOptions{
-		UserClient: userClient, CosignerClient: cosignerClient,
-		CosignerComponentKey: "COSIGNER_COMPONENT",
-		PreparedGroup: NewPreparedGroup(
-			PreparedTransaction{
-				Transaction: &corridorTxn, AuthAddress: bounded,
-				SignerKey: &KeyInfo{
-					Address: bounded, KeyType: "aplane.corridor.v1",
-					AuthorizationKind: AuthorizationKindLogicSig,
-					SigningFlow:       SigningFlowBoundedCosigner1,
-					LogicSigResources: &LogicSigResourceProfile{
-						Spend: &LogicSigResourceUsage{ProgramBytes: 5308, ArgumentBytes: 3358, MaxOpcodeCost: 20000},
-					},
-					CosignerComponentKeyType: KeyTypeWitnessFalcon1024,
-					BoundedAuthorization: &BoundedAuthorizationInfo{
-						MaxFee: 1000,
-						Cosigner: &BoundedCosignerAuthorizationInfo{
-							ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: "aabb",
+			_, err = SignPreparedGuardedGroup(PreparedGuardedGroupOptions{
+				UserClient: userClient, CosignerClient: cosignerClient,
+				CosignerComponentKey: "COSIGNER_COMPONENT",
+				PreparedGroup: NewPreparedGroup(
+					PreparedTransaction{
+						Transaction: &corridorTxn, AuthAddress: bounded,
+						SignerKey: &KeyInfo{
+							Address: bounded, KeyType: "aplane.corridor.v1",
+							AuthorizationKind: AuthorizationKindLogicSig,
+							SigningFlow:       SigningFlowBoundedCosigner1,
+							LogicSigResources: &LogicSigResourceProfile{
+								Spend: &LogicSigResourceUsage{ProgramBytes: 5308, ArgumentBytes: 3358, MaxOpcodeCost: 20000},
+							},
+							CosignerComponentKeyType: KeyTypeWitnessFalcon1024,
+							BoundedAuthorization: &BoundedAuthorizationInfo{
+								MaxFee: 1000,
+								Cosigner: &BoundedCosignerAuthorizationInfo{
+									ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: "aabb",
+								},
+							},
 						},
 					},
-				},
-			},
-			PreparedTransaction{
-				Transaction: &nativeTxn, AuthAddress: nativePQ,
-				SignerKey: &KeyInfo{
-					Address: nativePQ, KeyType: "falcon1024",
-					AuthorizationKind: AuthorizationKindNativePQ,
-				},
-			},
-		),
-	})
-	if err != nil {
-		t.Fatalf("SignPreparedGuardedGroup() error = %v", err)
-	}
+					PreparedTransaction{
+						Transaction: &nativeTxn, AuthAddress: nativePQ,
+						SignerKey: &KeyInfo{
+							Address: nativePQ, KeyType: "falcon1024",
+							AuthorizationKind: AuthorizationKindNativePQ,
+						},
+					},
+				),
+			})
+			if rejectSign {
+				if err == nil {
+					t.Fatal("expected the /sign rejection to fail the group")
+				}
+				if got := eventSnapshot(); got != "base,sign" {
+					t.Fatalf("calls = %s, want %s (cosigner must not see a group the user side rejected)", got, "base,sign")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("SignPreparedGuardedGroup() error = %v", err)
+			}
+			if got := eventSnapshot(); got != "base,sign,cosigner,assemble" {
+				t.Fatalf("calls = %s, want %s", got, "base,sign,cosigner,assemble")
+			}
 
-	if primaryRequest.PQScheme != PQSchemeFalcon1024 {
-		t.Fatalf("primary slot PQScheme = %q, want %q", primaryRequest.PQScheme, PQSchemeFalcon1024)
-	}
-	if primaryRequest.LsigResources != nil {
-		t.Fatalf("primary slot LsigResources = %+v, want nil", primaryRequest.LsigResources)
-	}
-	if primaryRequest.AuthAddress != "" {
-		t.Fatalf("primary slot AuthAddress = %q, want empty (foreign mode)", primaryRequest.AuthAddress)
+			if primaryRequest.PQScheme != PQSchemeFalcon1024 {
+				t.Fatalf("primary slot PQScheme = %q, want %q", primaryRequest.PQScheme, PQSchemeFalcon1024)
+			}
+			if primaryRequest.LsigResources != nil {
+				t.Fatalf("primary slot LsigResources = %+v, want nil", primaryRequest.LsigResources)
+			}
+			if primaryRequest.AuthAddress != "" {
+				t.Fatalf("primary slot AuthAddress = %q, want empty (foreign mode)", primaryRequest.AuthAddress)
+			}
+		})
 	}
 }
 

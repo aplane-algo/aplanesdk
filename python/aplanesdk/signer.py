@@ -5526,6 +5526,16 @@ def sign_prepared_bounded_cosigner_group(
                 f"{target['target_index']}"
             )
 
+    primary_response, passthrough = _request_bounded_primary_passthrough(
+        user_client,
+        frozen_group,
+        len(prepared),
+        set(target_by_index),
+        target_resources,
+        primary_targets,
+    )
+    # The user side is complete, including ordinary primary positions. Only
+    # now may the SDK disclose the frozen group to the cosigner endpoint.
     cosigner_groups: Dict[tuple, Dict[str, Any]] = {}
     for target in targets:
         client, component_key = _resolve_cosigner_for_target(
@@ -5559,14 +5569,6 @@ def sign_prepared_bounded_cosigner_group(
         cosigner_component_responses.append(response)
         cosigner_signatures.update(_component_signatures_by_index(response))
 
-    primary_response, passthrough = _request_bounded_primary_passthrough(
-        user_client,
-        frozen_group,
-        len(prepared),
-        set(target_by_index),
-        target_resources,
-        primary_targets,
-    )
     passthrough.extend(_sign_guarded_dummies(planned[len(prepared) :], len(prepared)))
     assembly_targets: List[AssemblyTarget] = []
     for target in targets:
@@ -5720,6 +5722,22 @@ def sign_guarded_group(
         user_component_responses.append(response)
         user_signatures.update(_component_signatures_by_index(response))
 
+    primary_sign_response = None
+    assembly_passthrough = [
+        _normalize_guarded_passthrough_item(item) for item in (passthrough or [])
+    ]
+    if primary_targets:
+        primary_sign_response, primary_passthrough = _request_primary_guarded_passthrough(
+            user_client,
+            group_bytes_hex,
+            guarded_by_index,
+            [_compact_payload(target) for target in primary_targets],
+            assembly_passthrough,
+        )
+        assembly_passthrough.extend(primary_passthrough)
+
+    # The user side is complete, including ordinary primary positions. Only
+    # now may the SDK disclose the frozen group to the cosigner endpoint.
     cosigner_groups: Dict[tuple, Dict[str, Any]] = {}
     for target in targets:
         client, component_key = _resolve_cosigner_for_target(
@@ -5749,20 +5767,6 @@ def sign_guarded_group(
         )
         cosigner_component_responses.append(response)
         cosigner_signatures.update(_component_signatures_by_index(response))
-
-    primary_sign_response = None
-    assembly_passthrough = [
-        _normalize_guarded_passthrough_item(item) for item in (passthrough or [])
-    ]
-    if primary_targets:
-        primary_sign_response, primary_passthrough = _request_primary_guarded_passthrough(
-            user_client,
-            group_bytes_hex,
-            guarded_by_index,
-            [_compact_payload(target) for target in primary_targets],
-            assembly_passthrough,
-        )
-        assembly_passthrough.extend(primary_passthrough)
 
     assembly_targets = []
     for target in targets:

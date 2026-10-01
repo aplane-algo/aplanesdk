@@ -497,8 +497,9 @@ signed_group = result.signed_group
 
 The SDK first freezes the complete canonical group through `/plan`; the user
 signer then approves those bytes through `request_components()` with
-`kind="bounded-base"`. Only then does the SDK request cosigner signatures over
-the same bytes, sign ordinary positions, and call `request_assemble()`. Before
+`kind="bounded-base"`. It then signs ordinary positions, and only after
+the user side is complete does it request cosigner signatures over the same
+bytes and call `request_assemble()`. Before
 signing anything, the SDK compares the
 signer-produced plan with the caller's prepared group: only reported fee
 pooling and group-ID assignment are accepted, and appended positions must be

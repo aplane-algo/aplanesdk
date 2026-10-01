@@ -990,6 +990,20 @@ class TestSpecializedLowLevelEndpoints:
                     }],
                 })
 
+def record_call_order(events, **mocks):
+    """Wrap MagicMocks so each call appends its name to events, in call order."""
+    for name, mock in mocks.items():
+        def side_effect(*args, _name=name, _original=mock.side_effect,
+                        _return=mock.return_value, **kwargs):
+            events.append(_name)
+            if isinstance(_original, BaseException):
+                raise _original
+            if _original is not None:
+                return _original(*args, **kwargs)
+            return _return
+        mock.side_effect = side_effect
+
+
 class TestSignGuardedGroup:
     def test_signs_one_guarded_target(self):
         user = make_client()
@@ -1080,7 +1094,8 @@ class TestSignGuardedGroup:
         assert cosigner.request_components.call_count == 1
         assert [target["target_index"] for target in cosigner.request_components.call_args.args[0].targets] == [0, 1]
 
-    def test_mixed_primary_and_guarded_group(self):
+    @pytest.mark.parametrize("reject_sign", [False, True])
+    def test_mixed_primary_and_guarded_group(self, reject_sign):
         user = make_client()
         cosigner = make_client("http://cosigner:11270")
         sender = sdk_test_address(7)
@@ -1110,6 +1125,10 @@ class TestSignGuardedGroup:
         user.sign_requests = MagicMock(return_value=GroupSignResponse(
             signed=[primary_signed, "", ""],
         ))
+        if reject_sign:
+            user.sign_requests = MagicMock(
+                side_effect=SignerError("rejected by signer policy")
+            )
 
         def assemble(req):
             by_index = {item.target_index: item for item in req.passthrough}
@@ -1122,37 +1141,55 @@ class TestSignGuardedGroup:
 
         user.request_assemble = MagicMock(side_effect=assemble)
 
-        result = sign_guarded_group(
-            user_client=user,
-            cosigner_client=cosigner,
-            cosigner_component_key="COSIGNER_COMPONENT",
-            group_bytes_hex=[primary_hex, "5458bb", "5458cc"],
-            primary_targets=[
-                GuardedPrimarySignTarget(
-                    target_index=0,
-                    auth_address="AUTH",
-                    app_call_info={"mode": "abi", "method": "primary()void"},
-                ),
-            ],
-            guarded_targets=[
-                GuardedSignTarget(
-                    target_index=1,
-                    guarded_account="GUARDED",
-                    logic_sig_resources=guarded_test_resources(),
-                )
-            ],
-            passthrough=[{
-                "target_index": 2,
-                "signed_txn_hex": "counterparty-signed",
-                "authorization": {
-                    "logic_sig_resources": {
-                        "program_bytes": 5000,
-                        "argument_bytes": 1200,
-                        "max_opcode_cost": 30000,
-                    },
-                },
-            }],
+        events = []
+        record_call_order(
+            events,
+            user=user.request_components,
+            cosigner=cosigner.request_components,
+            sign=user.sign_requests,
+            assemble=user.request_assemble,
         )
+
+        def run():
+            return sign_guarded_group(
+                user_client=user,
+                cosigner_client=cosigner,
+                cosigner_component_key="COSIGNER_COMPONENT",
+                group_bytes_hex=[primary_hex, "5458bb", "5458cc"],
+                primary_targets=[
+                    GuardedPrimarySignTarget(
+                        target_index=0,
+                        auth_address="AUTH",
+                        app_call_info={"mode": "abi", "method": "primary()void"},
+                    ),
+                ],
+                guarded_targets=[
+                    GuardedSignTarget(
+                        target_index=1,
+                        guarded_account="GUARDED",
+                        logic_sig_resources=guarded_test_resources(),
+                    )
+                ],
+                passthrough=[{
+                    "target_index": 2,
+                    "signed_txn_hex": "counterparty-signed",
+                    "authorization": {
+                        "logic_sig_resources": {
+                            "program_bytes": 5000,
+                            "argument_bytes": 1200,
+                            "max_opcode_cost": 30000,
+                        },
+                    },
+                }],
+            )
+
+        if reject_sign:
+            with pytest.raises(SignerError, match="rejected by signer policy"):
+                run()
+            assert events == ["user", "sign"]
+            return
+        result = run()
+        assert events == ["user", "sign", "cosigner", "assemble"]
 
         assert result.signed_group[1] == "guarded-signed"
         sign_requests = user.sign_requests.call_args.args[0]
@@ -1703,7 +1740,8 @@ class TestSignGuardedGroup:
             )
         user.request_components.assert_not_called()
 
-    def test_prepared_bounded_cosigner_declares_native_pq_primary(self):
+    @pytest.mark.parametrize("reject_sign", [False, True])
+    def test_prepared_bounded_cosigner_declares_native_pq_primary(self, reject_sign):
         """A native-PQ primary slot is declared foreign to
         /sign/component request, so the signer budgets its fee purely from the
         declared pq_scheme. Omitting it freezes an under-funded canonical group
@@ -1768,59 +1806,81 @@ class TestSignGuardedGroup:
         user.sign_requests = MagicMock(return_value=GroupSignResponse(
             signed=["", signed_txn_hex(native_txn)]
         ))
+        if reject_sign:
+            user.sign_requests = MagicMock(
+                side_effect=SignerError("rejected by signer policy")
+            )
         user.request_assemble = MagicMock(return_value=AssemblyResponse(
             request_id="assembly-id",
             signed_group=[signed_txn_hex(bounded_txn), signed_txn_hex(native_txn)],
         ))
 
-        sign_prepared_guarded_group(
-            user_client=user,
-            cosigner_client=cosigner,
-            cosigner_component_key="COSIGNER_COMPONENT",
-            prepared_group=PreparedGroup([
-                PreparedTransaction(
-                    transaction=bounded_txn,
-                    auth_address=bounded,
-                    signer_key=KeyInfo(
-                        address=bounded,
-                        key_type="aplane.corridor.v1",
-                        authorization_kind=AUTHORIZATION_KIND_LOGIC_SIG,
-                        signing_flow=SIGNING_FLOW_BOUNDED_COSIGNER1,
-                        cosigner_component_key_type=KEY_TYPE_WITNESS_FALCON1024,
-                        logic_sig_resources=LogicSigResourceProfile(
-                            spend=LogicSigResourceUsage(5308, 3358, 20000)
-                        ),
-                        bounded_authorization=BoundedAuthorizationInfo(
-                            contract="bounded1",
-                            base_signature_arg_layout=BoundedSignatureArgLayout(
-                                count=1, max_sizes=[1280]
-                            ),
-                            spend_effects=["pay"],
-                            max_fee=1000,
-                            admin_operations=[],
-                            runtime_args=[],
-                            derived_args=[],
-                            argument_layout=[],
-                            layer3_policy="merkle_allowlist",
-                            cosigner=BoundedCosignerAuthorizationInfo(
-                                contract="cosigner1",
-                                component_key_type=KEY_TYPE_WITNESS_FALCON1024,
-                                public_key_hex="aabb",
-                            ),
-                        ),
-                    ),
-                ),
-                PreparedTransaction(
-                    transaction=native_txn,
-                    auth_address=native_pq,
-                    signer_key=KeyInfo(
-                        address=native_pq,
-                        key_type="falcon1024",
-                        authorization_kind=AUTHORIZATION_KIND_NATIVE_PQ,
-                    ),
-                ),
-            ]),
+        events = []
+        record_call_order(
+            events,
+            base=user.request_components,
+            cosigner=cosigner.request_components,
+            sign=user.sign_requests,
+            assemble=user.request_assemble,
         )
+
+        def run():
+            return sign_prepared_guarded_group(
+                user_client=user,
+                cosigner_client=cosigner,
+                cosigner_component_key="COSIGNER_COMPONENT",
+                prepared_group=PreparedGroup([
+                    PreparedTransaction(
+                        transaction=bounded_txn,
+                        auth_address=bounded,
+                        signer_key=KeyInfo(
+                            address=bounded,
+                            key_type="aplane.corridor.v1",
+                            authorization_kind=AUTHORIZATION_KIND_LOGIC_SIG,
+                            signing_flow=SIGNING_FLOW_BOUNDED_COSIGNER1,
+                            cosigner_component_key_type=KEY_TYPE_WITNESS_FALCON1024,
+                            logic_sig_resources=LogicSigResourceProfile(
+                                spend=LogicSigResourceUsage(5308, 3358, 20000)
+                            ),
+                            bounded_authorization=BoundedAuthorizationInfo(
+                                contract="bounded1",
+                                base_signature_arg_layout=BoundedSignatureArgLayout(
+                                    count=1, max_sizes=[1280]
+                                ),
+                                spend_effects=["pay"],
+                                max_fee=1000,
+                                admin_operations=[],
+                                runtime_args=[],
+                                derived_args=[],
+                                argument_layout=[],
+                                layer3_policy="merkle_allowlist",
+                                cosigner=BoundedCosignerAuthorizationInfo(
+                                    contract="cosigner1",
+                                    component_key_type=KEY_TYPE_WITNESS_FALCON1024,
+                                    public_key_hex="aabb",
+                                ),
+                            ),
+                        ),
+                    ),
+                    PreparedTransaction(
+                        transaction=native_txn,
+                        auth_address=native_pq,
+                        signer_key=KeyInfo(
+                            address=native_pq,
+                            key_type="falcon1024",
+                            authorization_kind=AUTHORIZATION_KIND_NATIVE_PQ,
+                        ),
+                    ),
+                ]),
+            )
+
+        if reject_sign:
+            with pytest.raises(SignerError, match="rejected by signer policy"):
+                run()
+            assert events == ["base", "sign"]
+            return
+        run()
+        assert events == ["base", "sign", "cosigner", "assemble"]
 
         assert captured["primary"]["pq_scheme"] == PQ_SCHEME_FALCON1024
         assert "lsig_resources" not in captured["primary"]

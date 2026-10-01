@@ -1654,11 +1654,14 @@ describe("SignerClient", () => {
       assert.equal(cosignerCalls, 1);
     });
 
-    it("handles mixed primary and guarded groups", async () => {
+    for (const rejectSign of [false, true]) {
+    it(`handles mixed primary and guarded groups${rejectSign ? " (user-first when /sign rejects)" : " (user-first order)"}`, async () => {
+      const events: string[] = [];
       const user = new SignerClient("http://localhost:11270", "test-token");
       const cosigner = new SignerClient("http://cosigner:11270", "cosigner-token");
 
       (user as any).requestComponents = async (request: any) => {
+        events.push("user");
         assert.deepEqual(
           request.contextual_positions.find((item: any) => item.target_index === 0).app_call_info,
           { mode: "abi", method: "primary()void" },
@@ -1671,6 +1674,7 @@ describe("SignerClient", () => {
         };
       };
       (cosigner as any).requestComponents = async (request: any) => {
+        events.push("cosigner");
         assert.deepEqual(
           request.contextual_positions.find((item: any) => item.target_index === 0).app_call_info,
           { mode: "abi", method: "primary()void" },
@@ -1683,6 +1687,10 @@ describe("SignerClient", () => {
         };
       };
       (user as any).signRequests = async (requests: any[]) => {
+        events.push("sign");
+        if (rejectSign) {
+          throw new SignerError("rejected by signer policy");
+        }
         assert.equal(requests[0].auth_address, "AUTH");
         assert.equal(requests[1].auth_address, undefined);
         assert.deepEqual(requests[1].lsig_resources, {
@@ -1698,6 +1706,7 @@ describe("SignerClient", () => {
         return { signed: ["primary-signed", "", ""] };
       };
       (user as any).requestAssemble = async (request: any) => {
+        events.push("assemble");
         assert.deepEqual(
           request.passthrough.map((item: any) => item.target_index).sort(),
           [0, 2],
@@ -1712,7 +1721,7 @@ describe("SignerClient", () => {
         };
       };
 
-      const result = await signGuardedGroup({
+      const run = () => signGuardedGroup({
         userClient: user,
         cosignerClient: cosigner,
         cosignerComponentKey: "COSIGNER_COMPONENT",
@@ -1739,10 +1748,17 @@ describe("SignerClient", () => {
           },
         }],
       });
-
+      if (rejectSign) {
+        await assert.rejects(run(), /rejected by signer policy/);
+        assert.deepEqual(events, ["user", "sign"]);
+        return;
+      }
+      const result = await run();
       assert.equal(result.signedGroup[1], "guarded-signed");
+      assert.deepEqual(events, ["user", "sign", "cosigner", "assemble"]);
       assert.ok(result.primarySignResponse);
     });
+    }
 
     it("rejects missing resources before component signing", async () => {
       const user = new SignerClient("http://localhost:11270", "test-token");
@@ -2518,7 +2534,9 @@ describe("SignerClient", () => {
     // Omitting it freezes an under-funded canonical group that the later /sign
     // identity check cannot detect, because the shortfall is already inside
     // the canonical bytes.
-    it("declares pq_scheme for a native-PQ primary slot in bounded-cosigner groups", async () => {
+    for (const rejectSign of [false, true]) {
+    it(`declares pq_scheme for a native-PQ primary slot in bounded-cosigner groups${rejectSign ? " (user-first when /sign rejects)" : " (user-first order)"}`, async () => {
+      const events: string[] = [];
       const bounded = testAddress(31);
       const nativePq = testAddress(32);
       const receiver = testAddress(33);
@@ -2568,6 +2586,7 @@ describe("SignerClient", () => {
         };
       };
       (user as any).requestComponents = async (request: any) => {
+        events.push("base");
         assert.equal(request.targets.length, 1);
         assert.equal(request.contextual_positions.length, 1);
         return {
@@ -2582,24 +2601,34 @@ describe("SignerClient", () => {
           }],
         };
       };
-      (cosigner as any).requestComponents = async () => ({
-        request_id: "cosigner-id",
-        components: [{
-          target_index: 0,
-          kind: "cosigner",
-          signature: "cosigner-sig",
-          signature_scheme: KEY_TYPE_WITNESS_FALCON1024,
-        }],
-      });
-      (user as any).signRequests = async () => ({
-        signed: ["", signedTxnHex(plannedGroup[1])],
-      });
-      (user as any).requestAssemble = async () => ({
-        request_id: "assembly-id",
-        signed_group: plannedGroup.map(signedTxnHex),
-      });
+      (cosigner as any).requestComponents = async () => {
+        events.push("cosigner");
+        return {
+          request_id: "cosigner-id",
+          components: [{
+            target_index: 0,
+            kind: "cosigner",
+            signature: "cosigner-sig",
+            signature_scheme: KEY_TYPE_WITNESS_FALCON1024,
+          }],
+        };
+      };
+      (user as any).signRequests = async () => {
+        events.push("sign");
+        if (rejectSign) {
+          throw new SignerError("rejected by signer policy");
+        }
+        return { signed: ["", signedTxnHex(plannedGroup[1])] };
+      };
+      (user as any).requestAssemble = async () => {
+        events.push("assemble");
+        return {
+          request_id: "assembly-id",
+          signed_group: plannedGroup.map(signedTxnHex),
+        };
+      };
 
-      await signPreparedGuardedGroup({
+      const run = () => signPreparedGuardedGroup({
         userClient: user,
         cosignerClient: cosigner,
         cosignerComponentKey: "COSIGNER_COMPONENT",
@@ -2652,11 +2681,18 @@ describe("SignerClient", () => {
           ],
         },
       } as any);
-
+      if (rejectSign) {
+        await assert.rejects(run(), /rejected by signer policy/);
+        assert.deepEqual(events, ["base", "sign"]);
+        return;
+      }
+      await run();
       assert.equal(primaryRequest.pq_scheme, "f1");
+      assert.deepEqual(events, ["base", "sign", "cosigner", "assemble"]);
       assert.equal(primaryRequest.lsig_resources, undefined);
       assert.equal(primaryRequest.auth_address, undefined);
     });
+    }
 
     it("rejects prepared groups whose keys require an unsupported signing flow", async () => {
       const guarded = testAddress(1);
