@@ -172,11 +172,6 @@ func SignGuardedGroupWithContext(ctx context.Context, opts GuardedSignOptions) (
 	if err != nil {
 		return nil, err
 	}
-	cosignerSignatures, err := requestCosignerComponentSignatures(ctx, opts, targets, result)
-	if err != nil {
-		return nil, err
-	}
-
 	passthrough := append([]AssemblyPassthroughItem(nil), opts.Passthrough...)
 	if len(opts.PrimaryTargets) > 0 {
 		primary, err := requestPrimaryGuardedPassthrough(
@@ -192,6 +187,12 @@ func SignGuardedGroupWithContext(ctx context.Context, opts GuardedSignOptions) (
 		}
 		result.PrimarySignResponse = primary.response
 		passthrough = append(passthrough, primary.passthrough...)
+	}
+	// The user side is complete, including ordinary primary positions. Only
+	// now may the SDK disclose the frozen group to the cosigner endpoint.
+	cosignerSignatures, err := requestCosignerComponentSignatures(ctx, opts, targets, result)
+	if err != nil {
+		return nil, err
 	}
 
 	assemblyTargets := make([]AssemblyTarget, 0, len(targets))

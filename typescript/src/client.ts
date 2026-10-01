@@ -977,6 +977,18 @@ export async function signPreparedBoundedCosignerGroup(
     }
   }
 
+  const primary = await requestBoundedPrimaryPassthrough(
+    options.userClient,
+    frozenGroup,
+    prepared.length,
+    new Set(targetsByIndex.keys()),
+    targetResources,
+    primaryTargets,
+    options.signal,
+  );
+
+  // The user side is complete, including ordinary primary positions. Only
+  // now may the SDK disclose the frozen group to the cosigner endpoint.
   const cosignerOptions: GuardedSignOptions = {
     userClient: options.userClient,
     cosignerClient: options.cosignerClient,
@@ -1022,15 +1034,6 @@ export async function signPreparedBoundedCosignerGroup(
     }
   }
 
-  const primary = await requestBoundedPrimaryPassthrough(
-    options.userClient,
-    frozenGroup,
-    prepared.length,
-    new Set(targetsByIndex.keys()),
-    targetResources,
-    primaryTargets,
-    options.signal,
-  );
   const passthrough = [
     ...primary.passthrough,
     ...signGuardedDummies(planned.slice(prepared.length), prepared.length),
@@ -1248,6 +1251,23 @@ export async function signGuardedGroup(options: GuardedSignOptions): Promise<Gua
     }
   }
 
+  let primarySignResponse: GroupSignResponse | undefined;
+  const passthrough = [...(options.passthrough || [])];
+  if (options.primaryTargets && options.primaryTargets.length > 0) {
+    const primary = await requestPrimaryGuardedPassthrough(
+      options.userClient,
+      options.groupBytesHex,
+      new Map(targets.map((target) => [target.targetIndex, target])),
+      options.primaryTargets,
+      options.passthrough || [],
+      options.signal,
+    );
+    primarySignResponse = primary.response;
+    passthrough.push(...primary.passthrough);
+  }
+
+  // The user side is complete, including ordinary primary positions. Only
+  // now may the SDK disclose the frozen group to the cosigner endpoint.
   const cosignerGroups: Array<{
     client: SignerClient;
     componentKey: string;
@@ -1283,21 +1303,6 @@ export async function signGuardedGroup(options: GuardedSignOptions): Promise<Gua
     for (const [index, signature] of componentSignaturesByIndex(response)) {
       cosignerSignatures.set(index, signature);
     }
-  }
-
-  let primarySignResponse: GroupSignResponse | undefined;
-  const passthrough = [...(options.passthrough || [])];
-  if (options.primaryTargets && options.primaryTargets.length > 0) {
-    const primary = await requestPrimaryGuardedPassthrough(
-      options.userClient,
-      options.groupBytesHex,
-      new Map(targets.map((target) => [target.targetIndex, target])),
-      options.primaryTargets,
-      options.passthrough || [],
-      options.signal,
-    );
-    primarySignResponse = primary.response;
-    passthrough.push(...primary.passthrough);
   }
 
   const assemblyTargets = targets.map((target) => {
