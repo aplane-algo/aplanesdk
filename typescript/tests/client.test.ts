@@ -1269,6 +1269,33 @@ describe("SignerClient", () => {
       assert.equal(body.targets[0].component_key, "COMPONENT");
     });
 
+    it("rejects a cosigner key without a policy", async () => {
+      const witnessKeyId = "A".repeat(52);
+      const message = "cosigner policy rejected request: [cosigner_policy:key_has_no_policy] "
+        + `cosigner key ${witnessKeyId} has no policy`;
+      mockFetch.mockResolvedValueOnce({
+        status: 403,
+        ok: false,
+        json: async () => ({ error: message, code: "forbidden" }),
+      });
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      await assert.rejects(
+        client.requestComponents({
+          group_bytes_hex: ["5458aa"],
+          targets: [{ target_index: 0, kind: "cosigner", component_key: witnessKeyId }],
+        }),
+        (error: unknown) => {
+          assert.ok(error instanceof SigningRejectedError);
+          assert.equal(error.code, "forbidden");
+          assert.equal(error.message, message);
+          return true;
+        },
+      );
+      assert.equal(mockFetch.mock.calls.length, 1);
+      assert.equal(mockFetch.mock.calls[0][0], "http://localhost:11270/sign/component");
+    });
+
     it("rejects malformed component signing responses", async () => {
       mockFetch.mockResolvedValueOnce({
         status: 200,
