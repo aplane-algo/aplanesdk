@@ -500,6 +500,21 @@ cosigner signer. Cosigner component selectors are public policy keys, not Algora
 spending accounts, and must not be used as senders, receivers, auth addresses,
 or rekey targets.
 
+Before signing, an operator must apply a v1 JSON policy for the selected
+cosigner Witness Key ID using `apadmin policy check` and `apadmin policy apply`.
+The cosigner stores it as `policies/<WitnessKeyID>.json` with a `.hmac`
+sidecar in the active generation. Each key needs its own policy; there is no
+node-wide fallback, and a newly generated key rejects every request until its
+policy is applied. This requirement also applies to bounded cosigner accounts
+such as Corridor.
+
+If the cosigner holds the key but it has no policy, `/sign/component` returns
+HTTP 403 with `code: "forbidden"` and rule ID
+`cosigner_policy:key_has_no_policy` in the error message. `RequestComponents`
+returns `ErrSigningRejected`, and the guarded signing helpers propagate that
+error. Apply the key's policy before retrying. See the
+[compatibility note](COMPATIBILITY.md) for policy format and provisioning details.
+
 Use explicit clients; the SDK does not parse or mutate endpoint enrollment
 files. The direct helper does not perform inventory discovery, so pass the
 reviewed spend-path resource profile returned by `ListKeys`:

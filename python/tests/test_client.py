@@ -768,6 +768,29 @@ class TestSpecializedLowLevelEndpoints:
         assert body["targets"][0]["kind"] == "cosigner"
         assert body["targets"][0]["component_key"] == "COMPONENT"
 
+    def test_request_components_rejects_cosigner_key_without_policy(self):
+        client = make_client()
+        witness_key_id = "A" * 52
+        message = (
+            "cosigner policy rejected request: [cosigner_policy:key_has_no_policy] "
+            f"cosigner key {witness_key_id} has no policy"
+        )
+        resp = mock_response(403, {"error": message, "code": "forbidden"})
+
+        with patch.object(client.session, "post", return_value=resp) as mock_post:
+            with pytest.raises(SigningRejectedError) as excinfo:
+                client.request_components(component_request(
+                    role=TEST_COMPONENT_KIND_COSIGNER,
+                    component_key=witness_key_id,
+                    group_bytes_hex=["5458aa"],
+                    target_indices=[0],
+                ))
+
+        assert excinfo.value.code == "forbidden"
+        assert str(excinfo.value) == message
+        mock_post.assert_called_once()
+        assert mock_post.call_args.args[0] == "http://localhost:11270/sign/component"
+
     def test_request_components_rejects_malformed_response(self):
         client = make_client()
         resp = mock_response(200, {"request_id": "sdk-test"})

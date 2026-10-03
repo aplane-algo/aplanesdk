@@ -95,6 +95,38 @@ func TestSign_ForbiddenCodeIsRejected(t *testing.T) {
 	}
 }
 
+func TestRequestComponents_CosignerKeyHasNoPolicyIsRejected(t *testing.T) {
+	witnessKeyID := strings.Repeat("A", 52)
+	calls := 0
+	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Method != http.MethodPost || r.URL.Path != "/sign/component" {
+			t.Errorf("request = %s %s, want POST /sign/component", r.Method, r.URL.Path)
+		}
+		writeCodedError(w, http.StatusForbidden, ErrCodeForbidden,
+			"cosigner policy rejected request: [cosigner_policy:key_has_no_policy] cosigner key "+witnessKeyID+" has no policy")
+	})
+	defer server.Close()
+
+	response, err := client.RequestComponents(ComponentRequest{
+		GroupBytesHex: []string{"5458aa"},
+		Targets: []ComponentTarget{{
+			TargetIndex:  0,
+			Kind:         ComponentTargetKindCosigner,
+			ComponentKey: witnessKeyID,
+		}},
+	})
+	if !errors.Is(err, ErrSigningRejected) {
+		t.Fatalf("expected ErrSigningRejected for missing cosigner policy, got: %v", err)
+	}
+	if response != nil {
+		t.Fatalf("expected no component response, got: %+v", response)
+	}
+	if calls != 1 {
+		t.Fatalf("requests = %d, want one component request without retry", calls)
+	}
+}
+
 func TestGenericErrorCarriesAPIErrorCode(t *testing.T) {
 	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		writeCodedError(w, 500, ErrCodeCacheRefresh, "failed to refresh signer key cache")
