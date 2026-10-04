@@ -342,12 +342,6 @@ if err != nil {
 }
 ```
 
-### Type Compatibility
-
-The SDK uses `PlanGroupResponse` and `RuntimeArg` as its primary names. For
-callers migrating from older contract names, `GroupPlanResponse` and
-`RuntimeArgInfo` remain available as compatibility aliases.
-
 ## Supported Key Types
 
 | Key Type | Description | Notes |

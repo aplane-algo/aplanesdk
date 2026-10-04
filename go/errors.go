@@ -6,7 +6,6 @@ package aplane
 import (
 	"errors"
 	"fmt"
-	"strings"
 )
 
 // Signing errors
@@ -56,7 +55,7 @@ var (
 
 // Stable machine-readable error codes carried in ErrorResponse.Code.
 // These mirror the signer wire contract (pkg/signerapi/error_codes.go in the
-// aplane repo). An empty code means the signer predates code support.
+// aplane repo). Every apsigner error response carries a non-empty code.
 const (
 	ErrCodeBadRequest              = "bad_request"
 	ErrCodeUnauthorized            = "unauthorized"
@@ -73,8 +72,8 @@ const (
 
 // APIError preserves the HTTP status, stable wire error code, and message of
 // a non-2xx signer response for callers that need to classify failures
-// without matching message text. Code is empty when the signer predates wire
-// error codes.
+// without matching message text. Code is empty only when the response body
+// was not a JSON error envelope.
 type APIError struct {
 	StatusCode int
 	Code       string
@@ -100,8 +99,7 @@ func (e *APIError) Unwrap() error {
 	if e == nil {
 		return nil
 	}
-	if e.Code == ErrCodeNotFound ||
-		(e.Code == "" && strings.Contains(strings.ToLower(e.Message), "not found")) {
+	if e.Code == ErrCodeNotFound {
 		return ErrKeyNotFound
 	}
 	return nil

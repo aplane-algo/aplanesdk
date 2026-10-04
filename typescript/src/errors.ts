@@ -6,8 +6,8 @@
  *
  * `code` carries the stable machine-readable wire error code from the signer
  * when one was provided (see ErrorCodes in types.ts); branch on it instead of
- * matching message text. Empty when the signer predates wire error codes or
- * the error was raised client-side.
+ * matching message text. Empty when the error was raised client-side or the
+ * response body was not a JSON error envelope.
  */
 export class SignerError extends Error {
   code: string;

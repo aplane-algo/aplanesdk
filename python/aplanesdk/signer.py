@@ -73,6 +73,7 @@ DEFAULT_SSH_PORT = 1127
 DEFAULT_SIGNER_PORT = 11270
 DEFAULT_SSH_SETUP_TIMEOUT = 60.0
 CLIENT_ENDPOINTS_FILE = "endpoints.yaml"
+CLIENT_ENDPOINT_SCHEMA_VERSION = 2
 DEFAULT_CLIENT_ENDPOINT_NAME = "primary"
 HEALTH_TIMEOUT = 3
 STATUS_TIMEOUT = 5
@@ -127,7 +128,7 @@ def _resolve_data_dir(data_dir: Optional[str]) -> str:
 
 # Stable machine-readable error codes carried in ErrorResponse.code.
 # These mirror the signer wire contract (pkg/signerapi/error_codes.go in the
-# aplane repo). An empty code means the signer predates code support.
+# aplane repo). Every apsigner error response carries a non-empty code.
 ERR_CODE_BAD_REQUEST = "bad_request"
 ERR_CODE_UNAUTHORIZED = "unauthorized"
 ERR_CODE_FORBIDDEN = "forbidden"
@@ -146,8 +147,8 @@ class SignerError(Exception):
 
     ``code`` carries the stable machine-readable wire error code from the
     signer when one was provided (see ERR_CODE_* constants); branch on it
-    instead of matching message text. Empty when the signer predates wire
-    error codes or the error was raised client-side.
+    instead of matching message text. Empty when the error was raised
+    client-side or the response body was not a JSON error envelope.
     """
 
     def __init__(self, *args, code: str = ""):
@@ -345,8 +346,6 @@ class KeyInfo:
     parameters: Optional[Dict[str, str]] = None
     template_provenance_status: str = ""
     template_provenance_note: str = ""
-    template_status: str = ""  # Legacy alias for template_provenance_status
-    template_warning: str = ""  # Legacy alias for template_provenance_note
 
 
 @dataclass
@@ -375,7 +374,7 @@ class ClientEndpointConfig:
 class ClientEndpointRegistry:
     """Normalized client-local endpoint registry."""
 
-    schema_version: int = 2
+    schema_version: int = CLIENT_ENDPOINT_SCHEMA_VERSION
     default: str = ""
     endpoints: Dict[str, ClientEndpointConfig] = field(default_factory=dict)
 
@@ -732,7 +731,7 @@ class ErrorResponse:
 
     ``code`` carries a stable machine-readable classification (see the
     ERR_CODE_* constants); branch on ``code``, never on ``error`` message
-    text. Empty when the signer predates wire error codes.
+    text. Every apsigner error response sets it.
     """
 
     error: str
@@ -849,7 +848,7 @@ def _is_loopback_endpoint_host(host: str) -> bool:
 
 
 def _normalize_client_endpoint(
-    data_dir: str, alias: str, raw_value: Any, *, legacy_v1: bool
+    data_dir: str, alias: str, raw_value: Any
 ) -> ClientEndpointConfig:
     raw = _require_mapping(raw_value, f'endpoint "{alias}"')
     _require_known_fields(
@@ -862,7 +861,6 @@ def _normalize_client_endpoint(
             "identity_file",
             "known_hosts_path",
             "token_file",
-            *({"published_cosigners"} if legacy_v1 else set()),
         },
         f'endpoint "{alias}"',
     )
@@ -948,16 +946,17 @@ def load_client_endpoint_registry(data_dir: str) -> ClientEndpointRegistry:
         raise SignerError(f"failed to parse {endpoints_path}: {exc}") from exc
     raw = _require_mapping(raw_value, CLIENT_ENDPOINTS_FILE)
     _require_known_fields(raw, {"schema_version", "default", "endpoints"}, CLIENT_ENDPOINTS_FILE)
-    schema_version = raw.get("schema_version", 1)
-    if schema_version is None:
-        schema_version = 1
-    if isinstance(schema_version, bool) or not isinstance(schema_version, int):
-        raise SignerError(f"{CLIENT_ENDPOINTS_FILE} schema_version = {schema_version}, want 1")
-    if schema_version == 0:
-        schema_version = 1
-    if schema_version not in (1, 2):
-        raise SignerError(f"{CLIENT_ENDPOINTS_FILE} schema_version = {schema_version}, want 1 or 2")
-    registry.schema_version = 2
+    schema_version = raw.get("schema_version", 0)
+    if (
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+        or schema_version != CLIENT_ENDPOINT_SCHEMA_VERSION
+    ):
+        raise SignerError(
+            f"{CLIENT_ENDPOINTS_FILE} schema_version = {schema_version}, "
+            f"want {CLIENT_ENDPOINT_SCHEMA_VERSION}"
+        )
+    registry.schema_version = CLIENT_ENDPOINT_SCHEMA_VERSION
     endpoints_value = raw.get("endpoints")
     if endpoints_value is None:
         endpoints_value = {}
@@ -967,7 +966,7 @@ def load_client_endpoint_registry(data_dir: str) -> ClientEndpointRegistry:
             raise SignerError("endpoint aliases must be strings")
         _validate_endpoint_alias(raw_alias)
         registry.endpoints[raw_alias] = _normalize_client_endpoint(
-            data_dir, raw_alias, endpoint_raw, legacy_v1=schema_version == 1
+            data_dir, raw_alias, endpoint_raw
         )
 
     cosigner_count = sum(
@@ -1426,8 +1425,10 @@ def _prepared_foreign_pq_scheme(
     Foreign slots carry no auth address, so the signer budgets fees purely from
     what the request declares; only authorization_kind distinguishes a
     native-PQ key from an Ed25519 one, because neither publishes a LogicSig
-    resource profile. An empty authorization_kind means an older signer that
-    does not report it, in which case the slot keeps its previous declaration.
+    resource profile. Any other authorization_kind, including an empty one
+    (the key is not a spending account or the signer omitted the field),
+    declares no native-PQ scheme, so the slot keeps its previous declaration
+    rather than guessing.
     """
     if key is None or key.authorization_kind != AUTHORIZATION_KIND_NATIVE_PQ:
         return ""
@@ -1810,13 +1811,11 @@ def _find_spendable_key(keys: List[KeyInfo], address: str) -> Optional[KeyInfo]:
     return None
 
 
-def _apply_prep_fee(params: Any, fee: Optional[int], use_flat_fee: bool) -> None:
+def _apply_prep_fee(params: Any, fee: Optional[int]) -> None:
     # No fee-per-byte mode: fee is always flat microAlgos, so a set fee can
     # never be silently reinterpreted as EstimateSize*fee. None means unset
     # (keep the suggested fee); an explicit int (including 0, used for fee
-    # pooling) is applied as a flat fee. use_flat_fee is accepted for signature
-    # compatibility but no longer selects a per-byte fee.
-    _ = use_flat_fee
+    # pooling) is applied as a flat fee.
     if fee is None:
         return
     params.fee = fee
@@ -2921,15 +2920,9 @@ class SignerClient:
                 is_spending_account=k.get("is_spending_account"),
                 signing_args=signing_args,
                 parameters=k.get("parameters"),
-                template_provenance_status=(
-                    k.get("template_provenance_status") or k.get("template_status", "")
-                ),
-                template_provenance_note=(
-                    k.get("template_provenance_note") or k.get("template_warning", "")
-                ),
+                template_provenance_status=k.get("template_provenance_status", ""),
+                template_provenance_note=k.get("template_provenance_note", ""),
             )
-            key_info.template_status = key_info.template_provenance_status
-            key_info.template_warning = key_info.template_provenance_note
             keys.append(key_info)
             self._key_cache[key_info.address] = key_info
 
@@ -3022,7 +3015,6 @@ class SignerClient:
         amount: int,
         note: Optional[bytes] = None,
         fee: Optional[int] = None,
-        use_flat_fee: bool = False,
     ) -> PreparedTransaction:
         """Build a prepared ALGO payment transaction."""
         if algod_client is None:
@@ -3033,7 +3025,7 @@ class SignerClient:
             raise ValueError("receiver is required")
 
         params = algod_client.suggested_params()
-        _apply_prep_fee(params, fee, use_flat_fee)
+        _apply_prep_fee(params, fee)
 
         sender_info = algod_client.account_info(sender)
         txn = transaction.PaymentTxn(
@@ -3077,7 +3069,6 @@ class SignerClient:
         amount: int,
         note: Optional[bytes] = None,
         fee: Optional[int] = None,
-        use_flat_fee: bool = False,
     ) -> PreparedTransaction:
         """Build a prepared ASA transfer transaction."""
         if algod_client is None:
@@ -3090,7 +3081,7 @@ class SignerClient:
             raise ValueError("asset_id is required")
 
         params = algod_client.suggested_params()
-        _apply_prep_fee(params, fee, use_flat_fee)
+        _apply_prep_fee(params, fee)
 
         sender_info = algod_client.account_info(sender)
         receiver_info = algod_client.account_info(receiver)
@@ -3140,7 +3131,6 @@ class SignerClient:
         asset_id: int,
         note: Optional[bytes] = None,
         fee: Optional[int] = None,
-        use_flat_fee: bool = False,
     ) -> PreparedTransaction:
         """Build a prepared ASA opt-in transaction."""
         if algod_client is None:
@@ -3151,7 +3141,7 @@ class SignerClient:
             raise ValueError("asset_id is required")
 
         params = algod_client.suggested_params()
-        _apply_prep_fee(params, fee, use_flat_fee)
+        _apply_prep_fee(params, fee)
 
         sender_info = algod_client.account_info(sender)
         checks = _asa_opt_in_checks(sender_info, asset_id, int(getattr(params, "fee", 0)))
@@ -3180,7 +3170,6 @@ class SignerClient:
         close_to: str,
         note: Optional[bytes] = None,
         fee: Optional[int] = None,
-        use_flat_fee: bool = False,
     ) -> PreparedTransaction:
         """Build a prepared ASA opt-out transaction."""
         if algod_client is None:
@@ -3195,7 +3184,7 @@ class SignerClient:
             raise ValueError("asset_id is required")
 
         params = algod_client.suggested_params()
-        _apply_prep_fee(params, fee, use_flat_fee)
+        _apply_prep_fee(params, fee)
 
         sender_info = algod_client.account_info(sender)
         close_info = algod_client.account_info(close_to)
@@ -3225,7 +3214,6 @@ class SignerClient:
         close_to: str,
         note: Optional[bytes] = None,
         fee: Optional[int] = None,
-        use_flat_fee: bool = False,
     ) -> PreparedTransaction:
         """Build a prepared account close transaction."""
         if algod_client is None:
@@ -3238,7 +3226,7 @@ class SignerClient:
             raise ValueError("close_to must differ from sender")
 
         params = algod_client.suggested_params()
-        _apply_prep_fee(params, fee, use_flat_fee)
+        _apply_prep_fee(params, fee)
 
         sender_info = algod_client.account_info(sender)
         checks = _account_close_checks(sender_info, int(getattr(params, "fee", 0)))
@@ -3266,7 +3254,6 @@ class SignerClient:
         rekey_to: str,
         note: Optional[bytes] = None,
         fee: Optional[int] = None,
-        use_flat_fee: bool = False,
     ) -> PreparedTransaction:
         """Build a prepared self-payment rekey transaction."""
         if algod_client is None:
@@ -3277,7 +3264,7 @@ class SignerClient:
             raise ValueError("rekey_to is required")
 
         params = algod_client.suggested_params()
-        _apply_prep_fee(params, fee, use_flat_fee)
+        _apply_prep_fee(params, fee)
 
         sender_info = algod_client.account_info(sender)
         target_info = {"address": rekey_to}
@@ -3314,7 +3301,6 @@ class SignerClient:
         nonpart: bool = False,
         note: Optional[bytes] = None,
         fee: Optional[int] = None,
-        use_flat_fee: bool = False,
     ) -> PreparedTransaction:
         """Build a prepared key registration transaction."""
         if algod_client is None:
@@ -3331,7 +3317,7 @@ class SignerClient:
         )
 
         params = algod_client.suggested_params()
-        _apply_prep_fee(params, fee, use_flat_fee)
+        _apply_prep_fee(params, fee)
 
         sender_info = algod_client.account_info(sender)
         txn = transaction.KeyregTxn(
@@ -3383,7 +3369,6 @@ class SignerClient:
         global_schema: Optional[transaction.StateSchema] = None,
         note: Optional[bytes] = None,
         fee: Optional[int] = None,
-        use_flat_fee: bool = False,
     ) -> PreparedTransaction:
         """Build a prepared raw app-call transaction."""
         return self._prepare_app_call(
@@ -3402,7 +3387,6 @@ class SignerClient:
             global_schema=global_schema,
             note=note,
             fee=fee,
-            use_flat_fee=use_flat_fee,
             app_call_info={"mode": "raw"},
         )
 
@@ -3425,7 +3409,6 @@ class SignerClient:
         global_schema: Optional[transaction.StateSchema] = None,
         note: Optional[bytes] = None,
         fee: Optional[int] = None,
-        use_flat_fee: bool = False,
     ) -> PreparedTransaction:
         """Build a prepared ABI method-call transaction."""
         if not method_signature:
@@ -3456,7 +3439,6 @@ class SignerClient:
             global_schema=global_schema,
             note=note,
             fee=fee,
-            use_flat_fee=use_flat_fee,
             app_call_info={"mode": "abi", "method": method.get_signature()},
         )
 
@@ -3478,7 +3460,6 @@ class SignerClient:
         global_schema: Optional[transaction.StateSchema],
         note: Optional[bytes],
         fee: Optional[int],
-        use_flat_fee: bool,
         app_call_info: Dict[str, str],
     ) -> PreparedTransaction:
         if algod_client is None:
@@ -3493,7 +3474,7 @@ class SignerClient:
             raise ValueError(f"invalid on_complete: {on_complete}")
 
         params = algod_client.suggested_params()
-        _apply_prep_fee(params, fee, use_flat_fee)
+        _apply_prep_fee(params, fee)
 
         sender_info = algod_client.account_info(sender)
         txn = transaction.ApplicationCallTxn(
@@ -3549,7 +3530,6 @@ class SignerClient:
         opt_in: bool = False,
         note: Optional[bytes] = None,
         fee: Optional[int] = None,
-        use_flat_fee: bool = False,
     ) -> PreparedTransaction:
         """Build a prepared application create transaction."""
         if algod_client is None:
@@ -3562,7 +3542,7 @@ class SignerClient:
             raise ValueError("clear_program is required")
 
         params = algod_client.suggested_params()
-        _apply_prep_fee(params, fee, use_flat_fee)
+        _apply_prep_fee(params, fee)
 
         sender_info = algod_client.account_info(sender)
         txn = transaction.ApplicationCreateTxn(
@@ -3936,7 +3916,7 @@ class SignerClient:
         """Return (code, message) for a non-2xx signer response.
 
         ``code`` is the stable machine-readable wire error code, empty when
-        the signer predates code support.
+        the body is not a JSON error envelope.
         """
         data = self._safe_json(resp)
         error = data.get("error")
@@ -3956,37 +3936,36 @@ class SignerClient:
     def _bad_request_error(self, resp: requests.Response) -> SignerError:
         """Classify a 400 at signing/planning endpoints.
 
-        The wire code is authoritative: not_found maps to KeyNotFoundError.
-        Pre-code signers send no code and keep the legacy message-text
-        mapping.
+        Only the not_found wire code maps to KeyNotFoundError; message text is
+        never inspected.
         """
         code, message = self._error_parts(resp, "Bad request")
-        if code == ERR_CODE_NOT_FOUND or (code == "" and "not found" in message.lower()):
+        if code == ERR_CODE_NOT_FOUND:
             return KeyNotFoundError(message, code=code)
         return SignerError(f"Bad request: {message}", code=code)
 
     def _forbidden_locked_error(self, resp: requests.Response) -> SignerError:
-        """Classify a 403 at endpoints that historically reported locked.
+        """Classify a 403 at endpoints that report a locked signer.
 
-        The wire code distinguishes a genuinely locked signer from other
-        forbidden conditions; pre-code signers send no code and keep the
-        legacy locked mapping.
+        Only the locked wire code maps to the locked error; any other code,
+        including an empty one, is a generic SignerError.
         """
-        code, message = self._error_parts(resp, "Signer is locked")
-        if code in ("", ERR_CODE_LOCKED):
+        code, message = self._error_parts(resp, "Forbidden")
+        if code == ERR_CODE_LOCKED:
             return SignerUnavailableError("Signer is locked", code=code)
         return SignerError(message, code=code)
 
     def _forbidden_rejected_error(self, resp: requests.Response, fallback: str) -> SignerError:
-        """Classify a 403 at endpoints that historically reported rejection.
+        """Classify a 403 at endpoints that report a rejected request.
 
-        A locked code maps to the locked error; forbidden (or no code, for
-        pre-code signers) keeps the rejection error.
+        A locked code maps to the locked error and a forbidden code to the
+        rejection error; any other code, including an empty one, is a
+        generic SignerError.
         """
         code, message = self._error_parts(resp, fallback)
         if code == ERR_CODE_LOCKED:
             return SignerUnavailableError("Signer is locked", code=code)
-        if code in ("", ERR_CODE_FORBIDDEN):
+        if code == ERR_CODE_FORBIDDEN:
             return SigningRejectedError(message, code=code)
         return SignerError(message, code=code)
 
@@ -5032,7 +5011,7 @@ def _prepared_cosigner_flow_kinds(
     prepared_group: PreparedGroup,
 ) -> tuple:
     bounded_cosigner = False
-    legacy_guarded = False
+    cosigner1 = False
     for index, item in enumerate(prepared_group.transactions):
         key = item.signer_key
         if key is None and item.auth_address:
@@ -5047,8 +5026,8 @@ def _prepared_cosigner_flow_kinds(
         if key.signing_flow == SIGNING_FLOW_BOUNDED_COSIGNER1:
             bounded_cosigner = True
         elif key.signing_flow == SIGNING_FLOW_COSIGNER1:
-            legacy_guarded = True
-    return bounded_cosigner, legacy_guarded
+            cosigner1 = True
+    return bounded_cosigner, cosigner1
 
 
 def _decode_canonical_group(group_bytes_hex: List[str]) -> List[transaction.Transaction]:
@@ -5626,11 +5605,11 @@ def sign_prepared_guarded_group(
     The signer /plan endpoint owns canonical group sizing, dummy insertion,
     and authorization-fee pooling before component signatures are collected.
     """
-    has_bounded_cosigner, has_legacy_guarded = _prepared_cosigner_flow_kinds(
+    has_bounded_cosigner, has_cosigner1 = _prepared_cosigner_flow_kinds(
         user_client, prepared_group
     )
     if has_bounded_cosigner:
-        if has_legacy_guarded:
+        if has_cosigner1:
             raise ValueError("cannot mix cosigner1 and bounded-cosigner1 targets in one group")
         return sign_prepared_bounded_cosigner_group(
             user_client=user_client,

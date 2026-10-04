@@ -314,7 +314,8 @@ process-local signal to refresh `listKeys(true)` only when the loaded keyset
 changes. Do not treat it as durable across apsigner restarts.
 
 The SDK also uses `approvalWaitSeconds` to size `/sign` deadlines. If discovery
-fails or an older signer omits the field, signing falls back to 6 minutes.
+fails or the field is missing or out of range, signing falls back to 6
+minutes.
 
 ### List Keys
 
@@ -335,8 +336,6 @@ for (const key of keys) {
 - `signingArgs`
 - `templateProvenanceStatus`
 - `templateProvenanceNote`
-- `templateStatus`
-- `templateWarning`
 
 `logicSigResources` publishes independent program-byte, argument-byte, and
 maximum-opcode-cost demand by authorization path. Bounded keys may publish
@@ -347,9 +346,8 @@ different `spend`, `spendingRekey`, and `adminRekey` profiles.
 
 `KeyInfo.authorizationKind` reports the same closed values for a key instance
 and is authoritative for choosing its transaction authorization envelope. It
-is absent for witness keys, which are not spending accounts, and absent
-against older signers that do not report it; never read an absent value as
-Ed25519. Prefer it over checking `logicSigResources`, because a native
+is absent for witness keys, which are not spending accounts, and whenever
+the signer does not report it; never read an absent value as Ed25519. Prefer it over checking `logicSigResources`, because a native
 Falcon-1024 spending key publishes no LogicSig profile and is otherwise
 indistinguishable from an Ed25519 key. `signPreparedGuardedGroup` uses it to
 declare `pq_scheme` on native-PQ group positions that are planned as foreign
@@ -358,9 +356,6 @@ slots.
 The TypeScript SDK exposes bounded inventory and ordinary spend signing only.
 It does not expose `/sign/bounded-admin` or build and complete contract-admin
 rekeys; use the APlane `aprekey` workflow for those operations.
-
-`templateStatus` and `templateWarning` are legacy aliases for
-`templateProvenanceStatus` and `templateProvenanceNote`.
 
 ### List Key Types
 

@@ -87,7 +87,8 @@ func readErrorBody(resp *http.Response) string {
 }
 
 // readErrorParts reads a non-2xx body and returns the stable wire error code
-// (empty on pre-code signers) and the human-readable message.
+// (empty when the body is not a JSON error envelope) and the human-readable
+// message.
 func readErrorParts(resp *http.Response) (code, message string) {
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -118,29 +119,29 @@ func signerHTTPErrorOp(resp *http.Response, op string) *APIError {
 	return &APIError{StatusCode: resp.StatusCode, Code: code, Message: message, Op: op}
 }
 
-// lockedForbiddenError classifies a 403 at endpoints that historically
-// reported the signer as locked. The wire code distinguishes a genuinely
-// locked signer from other forbidden conditions; pre-code signers send no
-// code and keep the legacy locked mapping.
+// lockedForbiddenError classifies a 403 at endpoints that report a locked
+// signer. Only the locked wire code maps to ErrSignerLocked; any other code,
+// including an empty one, is returned as an *APIError.
 func lockedForbiddenError(resp *http.Response) error {
 	apiErr := signerHTTPError(resp)
 	switch apiErr.Code {
-	case "", ErrCodeLocked:
+	case ErrCodeLocked:
 		return ErrSignerLocked
 	default:
 		return apiErr
 	}
 }
 
-// rejectedForbiddenError classifies a 403 at endpoints that historically
-// reported the request as rejected. A locked code maps to ErrSignerLocked;
-// forbidden (or no code, for pre-code signers) keeps the rejection sentinel.
+// rejectedForbiddenError classifies a 403 at endpoints that report a rejected
+// request. A locked code maps to ErrSignerLocked and a forbidden code to
+// ErrSigningRejected; any other code, including an empty one, is returned as
+// an *APIError.
 func rejectedForbiddenError(resp *http.Response) error {
 	apiErr := signerHTTPError(resp)
 	switch apiErr.Code {
 	case ErrCodeLocked:
 		return ErrSignerLocked
-	case "", ErrCodeForbidden:
+	case ErrCodeForbidden:
 		return ErrSigningRejected
 	default:
 		return apiErr
@@ -528,12 +529,10 @@ func (c *SignerClient) GetKeysResponseWithContext(ctx context.Context) (*KeysRes
 
 	if resp.StatusCode == http.StatusForbidden {
 		apiErr := signerHTTPError(resp)
-		switch apiErr.Code {
-		case "", ErrCodeLocked:
+		if apiErr.Code == ErrCodeLocked {
 			return &KeysResult{Locked: true}, nil
-		default:
-			return nil, apiErr
 		}
+		return nil, apiErr
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
 		return nil, ErrAuthentication

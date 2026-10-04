@@ -376,8 +376,8 @@ class TestListKeys:
                             "max_opcode_cost": 20000,
                         }
                     },
-                    "template_status": "unavailable",
-                    "template_warning": "template fingerprint unavailable",
+                    "template_provenance_status": "unavailable",
+                    "template_provenance_note": "template fingerprint unavailable",
                 },
             ],
         })
@@ -393,8 +393,6 @@ class TestListKeys:
             argument_bytes=1423,
             max_opcode_cost=20000,
         )
-        assert keys[1].template_status == "unavailable"
-        assert keys[1].template_warning == "template fingerprint unavailable"
         assert keys[1].template_provenance_status == "unavailable"
         assert keys[1].template_provenance_note == "template fingerprint unavailable"
 
@@ -662,9 +660,19 @@ class TestGenerateKey:
 
     def test_locked_error(self):
         client = make_client()
-        with patch.object(client.session, "post", return_value=mock_response(403)):
+        resp = mock_response(403, {"error": "signer is locked", "code": "locked"})
+        with patch.object(client.session, "post", return_value=resp):
             with pytest.raises(SignerUnavailableError):
                 client.generate_key("ed25519")
+
+    @pytest.mark.parametrize("body", [None, {"error": "forbidden"}])
+    def test_forbidden_without_code_is_generic_error(self, body):
+        client = make_client()
+        with patch.object(client.session, "post", return_value=mock_response(403, body)):
+            with pytest.raises(SignerError) as excinfo:
+                client.generate_key("ed25519")
+        assert type(excinfo.value) is SignerError
+        assert excinfo.value.code == ""
 
     def test_locked_code_is_locked(self):
         client = make_client()
@@ -2210,11 +2218,22 @@ class TestSigningErrors:
 
     def test_signing_rejected(self):
         client = make_client()
-        resp = mock_response(403, {"error": "Operator rejected"})
+        resp = mock_response(403, {"error": "Operator rejected", "code": "forbidden"})
         with patch.object(client.session, "post", return_value=resp), \
              patch("aplanesdk.signer.encode_transaction", return_value=("deadbeef", "SENDER_ADDR")):
             with pytest.raises(SigningRejectedError):
                 client.sign_transaction(self._make_mock_txn())
+
+    @pytest.mark.parametrize("body", [None, {"error": "Operator rejected"}])
+    def test_forbidden_without_code_is_generic_error(self, body):
+        client = make_client()
+        resp = mock_response(403, body)
+        with patch.object(client.session, "post", return_value=resp), \
+             patch("aplanesdk.signer.encode_transaction", return_value=("deadbeef", "SENDER_ADDR")):
+            with pytest.raises(SignerError) as exc_info:
+                client.sign_transaction(self._make_mock_txn())
+        assert type(exc_info.value) is SignerError
+        assert exc_info.value.code == ""
 
     def test_signer_unavailable(self):
         client = make_client()
@@ -2226,11 +2245,21 @@ class TestSigningErrors:
 
     def test_key_not_found(self):
         client = make_client()
-        resp = mock_response(400, {"error": "Key not found: INVALID_ADDRESS"})
+        resp = mock_response(400, {"error": "Key not found: INVALID_ADDRESS", "code": "not_found"})
         with patch.object(client.session, "post", return_value=resp), \
              patch("aplanesdk.signer.encode_transaction", return_value=("deadbeef", "SENDER_ADDR")):
             with pytest.raises(KeyNotFoundError):
                 client.sign_transaction(self._make_mock_txn())
+
+    def test_not_found_message_without_code_is_not_key_not_found(self):
+        client = make_client()
+        resp = mock_response(400, {"error": "Key not found: INVALID_ADDRESS"})
+        with patch.object(client.session, "post", return_value=resp), \
+             patch("aplanesdk.signer.encode_transaction", return_value=("deadbeef", "SENDER_ADDR")):
+            with pytest.raises(SignerError) as exc_info:
+                client.sign_transaction(self._make_mock_txn())
+        assert not isinstance(exc_info.value, KeyNotFoundError)
+        assert exc_info.value.code == ""
 
     def test_key_not_found_by_code_regardless_of_wording(self):
         client = make_client()
@@ -2692,7 +2721,6 @@ class TestPrepHelpers:
                 receiver=receiver,
                 amount=10_000,
                 fee=1000,
-                use_flat_fee=True,
             )
 
         assert prepared.auth_address == sender
@@ -2958,7 +2986,6 @@ class TestPrepHelpers:
                 foreign_apps=[8],
                 foreign_assets=[1001],
                 fee=1000,
-                use_flat_fee=True,
             )
 
         assert prepared.auth_address == sender
@@ -3110,14 +3137,12 @@ class TestPrepHelpers:
                         "receiver": receiver1,
                         "amount": 10_000,
                         "fee": 1000,
-                        "use_flat_fee": True,
                     },
                     {
                         "sender": sender,
                         "receiver": receiver2,
                         "amount": 10_000,
                         "fee": 1000,
-                        "use_flat_fee": True,
                     },
                 ])
 
@@ -3224,7 +3249,7 @@ class TestFromEnv:
         (tmp_path / "tokens").mkdir()
         (tmp_path / "tokens" / "qa.token").write_text("qa-token")
         (tmp_path / "endpoints.yaml").write_text(
-            "schema_version: 1\nendpoints:\n"
+            "schema_version: 2\nendpoints:\n"
             "  primary:\n    role: signer\n    url: https://signer.example.com/\n"
             "  qa:\n    role: cosigner\n    url: http://127.0.0.1:11271/\n"
         )
@@ -3237,7 +3262,7 @@ class TestFromEnv:
 
     def test_rejects_empty_token(self, tmp_path):
         (tmp_path / "endpoints.yaml").write_text(
-            "schema_version: 1\nendpoints:\n"
+            "schema_version: 2\nendpoints:\n"
             "  primary:\n    role: signer\n    url: https://signer.example.com\n"
         )
         token_path = tmp_path / "aplane.token"
@@ -3320,7 +3345,7 @@ class TestSignReturnFormat:
 class TestRequestTokenToFile:
     def test_creates_token_file_with_secure_permissions(self, tmp_path):
         (tmp_path / "endpoints.yaml").write_text(
-            "schema_version: 1\nendpoints:\n"
+            "schema_version: 2\nendpoints:\n"
             "  primary:\n    role: signer\n    url: ssh://signer.example.com\n"
             "  qa:\n    role: cosigner\n    url: ssh://cosigner.example.com:2222\n"
         )
@@ -3528,8 +3553,6 @@ class TestLoadClientEndpointRegistry:
     @pytest.mark.parametrize(
         "name",
         [
-            "valid_schema_version_null.yaml",
-            "valid_schema_version_zero.yaml",
             "valid_12_cosigner_endpoints.yaml",
             "valid_cosigner_zero_local_port.yaml",
         ],
@@ -3543,18 +3566,24 @@ class TestLoadClientEndpointRegistry:
         if name == "valid_cosigner_zero_local_port.yaml":
             assert registry.endpoints["cosigner"].local_port == 0
 
-    def test_discards_v1_published_cosigner_inventory(self, tmp_path):
-        self._fixture(tmp_path, "valid_v1_published_cosigners.yaml")
-        registry = load_client_endpoint_registry(str(tmp_path))
-        assert registry.schema_version == 2
-        endpoint = registry.endpoints["cosigner-old"]
-        assert endpoint.role == "cosigner"
-        assert endpoint.url == "https://cosigner.example.com"
-        assert not hasattr(endpoint, "published_cosigners")
+    @pytest.mark.parametrize(
+        "name,want",
+        [
+            ("invalid_schema_version_missing.yaml", "endpoints.yaml schema_version = 0, want 2"),
+            ("invalid_schema_version_zero.yaml", "endpoints.yaml schema_version = 0, want 2"),
+            ("invalid_schema_version_null.yaml", "endpoints.yaml schema_version = None, want 2"),
+            ("invalid_schema_version_one.yaml", "endpoints.yaml schema_version = 1, want 2"),
+            ("invalid_v1_published_cosigners.yaml", "endpoints.yaml schema_version = 1, want 2"),
+        ],
+    )
+    def test_requires_schema_version_2(self, tmp_path, name, want):
+        self._fixture(tmp_path, name)
+        with pytest.raises(SignerError, match=re.escape(want)):
+            load_client_endpoint_registry(str(tmp_path))
 
     def test_derives_default_and_alias_token_paths(self, tmp_path):
         (tmp_path / "endpoints.yaml").write_text(
-            "schema_version: 1\nendpoints:\n"
+            "schema_version: 2\nendpoints:\n"
             "  main:\n    role: signer\n    url: ssh://localhost\n"
             "  qa:\n    role: cosigner\n    url: http://127.0.0.1:11271\n"
         )
@@ -3602,19 +3631,19 @@ class TestApplyPrepFee:
         from aplanesdk.signer import _apply_prep_fee
 
         p = _FeeParams()
-        _apply_prep_fee(p, 5000, False)
+        _apply_prep_fee(p, 5000)
         assert p.fee == 5000 and p.flat_fee is True
 
     def test_explicit_zero_is_flat(self):
         from aplanesdk.signer import _apply_prep_fee
 
         p = _FeeParams()
-        _apply_prep_fee(p, 0, False)
+        _apply_prep_fee(p, 0)
         assert p.fee == 0 and p.flat_fee is True
 
     def test_none_keeps_suggested(self):
         from aplanesdk.signer import _apply_prep_fee
 
         p = _FeeParams()
-        _apply_prep_fee(p, None, False)
+        _apply_prep_fee(p, None)
         assert p.fee == 7 and p.flat_fee is False

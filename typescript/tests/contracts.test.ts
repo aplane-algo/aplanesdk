@@ -274,7 +274,7 @@ describe("signer API contract fixtures", () => {
     assert.equal(result.state, "canceled");
   });
 
-  it("maps optional /keys template warning fields", async () => {
+  it("maps optional /keys template provenance fields", async () => {
     mockFetch.mockResolvedValueOnce({
       status: 200,
       ok: true,
@@ -295,10 +295,34 @@ describe("signer API contract fixtures", () => {
     const client = new SignerClient("http://localhost:11270", "test-token");
     const keys = await client.listKeys(true);
 
-    assert.equal(keys[0].templateStatus, "conflict");
-    assert.equal(keys[0].templateWarning, "template fingerprint differs");
     assert.equal(keys[0].templateProvenanceStatus, "conflict");
     assert.equal(keys[0].templateProvenanceNote, "template fingerprint differs");
+  });
+
+  it("ignores retired /keys template aliases", async () => {
+    mockFetch.mockResolvedValueOnce({
+      status: 200,
+      ok: true,
+      json: async () => ({
+        count: 1,
+        keys: [
+          {
+            address: "ADDR1",
+            public_key_hex: "abcd",
+            key_type: "example.generic-policy.v1",
+            template_status: "conflict",
+            template_warning: "template fingerprint differs",
+          },
+        ],
+      }),
+    });
+
+    const client = new SignerClient("http://localhost:11270", "test-token");
+    const keys = await client.listKeys(true);
+
+    assert.equal(keys[0].templateProvenanceStatus, undefined);
+    assert.equal(keys[0].templateProvenanceNote, undefined);
+    assert.equal("templateStatus" in keys[0], false);
   });
 
   it("maps cosigner component and guarded key metadata", async () => {

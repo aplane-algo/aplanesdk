@@ -4,7 +4,6 @@
 package aplane
 
 import (
-	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -63,19 +62,6 @@ type SignRequest struct {
 type AppCallInfo struct {
 	Mode   string `json:"mode,omitempty"`
 	Method string `json:"method,omitempty"`
-}
-
-// SignResponse is the legacy single-transaction response shape.
-//
-// The /sign endpoint returns GroupSignResponse. This type is retained for
-// source compatibility with older client code.
-type SignResponse struct {
-	Approved        bool     `json:"approved"`
-	Signature       string   `json:"signature,omitempty"`
-	LsigBytecode    string   `json:"lsig_bytecode,omitempty"`
-	LsigArgsOrdered []string `json:"lsig_args_ordered,omitempty"`
-	SignedTxn       string   `json:"signed_txn,omitempty"`
-	Error           string   `json:"error,omitempty"`
 }
 
 // GroupSignRequest is the request payload for the /sign endpoint.
@@ -472,8 +458,8 @@ type GroupSignResponse struct {
 
 // ErrorResponse is the standard signer HTTP error body for non-2xx responses.
 // Code carries a stable machine-readable classification (see error code
-// constants in errors.go); branch on Code, never on Error message text. Code
-// is empty when the signer predates wire error codes.
+// constants in errors.go); branch on Code, never on Error message text. Every
+// apsigner error response sets Code.
 type ErrorResponse struct {
 	Error string `json:"error"`
 	Code  string `json:"code,omitempty"`
@@ -488,10 +474,6 @@ type PlanGroupResponse struct {
 	Mutations    *MutationReport `json:"mutations,omitempty"`    // Modifications that would be made by server
 	Error        string          `json:"error,omitempty"`
 }
-
-// GroupPlanResponse is kept as a compatibility alias for callers using the
-// older response name.
-type GroupPlanResponse = PlanGroupResponse
 
 // ProtocolVersion identifies a signer wire-protocol version.
 type ProtocolVersion struct {
@@ -537,10 +519,6 @@ type RuntimeArg struct {
 	MaxSize     int    `json:"max_size,omitempty"`
 }
 
-// RuntimeArgInfo is kept as a compatibility alias for callers using the
-// older runtime-argument name.
-type RuntimeArgInfo = RuntimeArg
-
 // SigningArg describes a key-file-owned signing argument returned from /keys.
 // It has the same shape as RuntimeArg but a different authority.
 type SigningArg = RuntimeArg
@@ -553,10 +531,6 @@ type InputMode struct {
 	ByteLength int    `json:"byte_length,omitempty"`
 	InputType  string `json:"input_type,omitempty"`
 }
-
-// InputModeInfo is kept as a compatibility alias for callers using the server
-// DTO name.
-type InputModeInfo = InputMode
 
 // CreationParam describes a parameter for key generation.
 type CreationParam struct {
@@ -685,8 +659,6 @@ type KeyInfo struct {
 	Parameters               map[string]string         `json:"parameters,omitempty"`
 	TemplateProvenanceStatus string                    `json:"template_provenance_status,omitempty"`
 	TemplateProvenanceNote   string                    `json:"template_provenance_note,omitempty"`
-	TemplateStatus           string                    `json:"template_status,omitempty"`  // Legacy alias for TemplateProvenanceStatus
-	TemplateWarning          string                    `json:"template_warning,omitempty"` // Legacy alias for TemplateProvenanceNote
 }
 
 // KeysResponse is the response from the /keys endpoint.
@@ -700,34 +672,6 @@ type KeysResponse struct {
 type KeysResult struct {
 	KeysResponse
 	Locked bool
-}
-
-// UnmarshalJSON accepts both current template_provenance_* fields and legacy
-// template_status/template_warning aliases.
-func (k *KeyInfo) UnmarshalJSON(data []byte) error {
-	type keyInfoAlias KeyInfo
-	var aux keyInfoAlias
-	if err := json.Unmarshal(data, &aux); err != nil {
-		return err
-	}
-	*k = KeyInfo(aux)
-	normalizeKeyInfoTemplateAliases(k)
-	return nil
-}
-
-func normalizeKeyInfoTemplateAliases(k *KeyInfo) {
-	if k.TemplateProvenanceStatus == "" {
-		k.TemplateProvenanceStatus = k.TemplateStatus
-	}
-	if k.TemplateStatus == "" {
-		k.TemplateStatus = k.TemplateProvenanceStatus
-	}
-	if k.TemplateProvenanceNote == "" {
-		k.TemplateProvenanceNote = k.TemplateWarning
-	}
-	if k.TemplateWarning == "" {
-		k.TemplateWarning = k.TemplateProvenanceNote
-	}
 }
 
 // KeyTypesResponse is the response from the /keytypes endpoint.

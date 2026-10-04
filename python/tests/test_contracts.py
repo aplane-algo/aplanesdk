@@ -289,7 +289,7 @@ def test_cancel_response_fixture_maps_state():
     assert result.state == "canceled"
 
 
-def test_list_keys_maps_template_warning_fields():
+def test_list_keys_maps_template_provenance_fields():
     client = make_client()
     resp = mock_response(
         200,
@@ -310,10 +310,34 @@ def test_list_keys_maps_template_warning_fields():
     with patch.object(client.session, "get", return_value=resp):
         keys = client.list_keys(refresh=True)
 
-    assert keys[0].template_status == "conflict"
-    assert keys[0].template_warning == "template fingerprint differs"
     assert keys[0].template_provenance_status == "conflict"
     assert keys[0].template_provenance_note == "template fingerprint differs"
+
+
+def test_list_keys_ignores_retired_template_aliases():
+    client = make_client()
+    resp = mock_response(
+        200,
+        {
+            "count": 1,
+            "keys": [
+                {
+                    "address": "ADDR1",
+                    "public_key_hex": "abcd",
+                    "key_type": "example.generic-policy.v1",
+                    "template_status": "conflict",
+                    "template_warning": "template fingerprint differs",
+                }
+            ],
+        },
+    )
+
+    with patch.object(client.session, "get", return_value=resp):
+        keys = client.list_keys(refresh=True)
+
+    assert keys[0].template_provenance_status == ""
+    assert keys[0].template_provenance_note == ""
+    assert not hasattr(keys[0], "template_status")
 
 
 def test_list_keys_maps_component_and_guarded_metadata():

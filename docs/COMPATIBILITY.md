@@ -33,6 +33,19 @@ error message. A key the node does not hold returns HTTP 400 with
 these responses without client API or signer wire-contract changes. Policy
 provisioning remains an operator workflow outside the SDKs.
 
+The SDKs read only the current signer wire and client file formats:
+
+- Error classification relies on the wire `code` that every apsigner error
+  response carries. A 403 maps to the locked error only for `code: "locked"`
+  and to the signing-rejected error only for `code: "forbidden"`, and an
+  error maps to key-not-found only for `code: "not_found"`. Any other code,
+  including an empty one, surfaces as the generic signer API error with its
+  status, code, and message. Message text is never inspected.
+- `/keys` template provenance is read only from `template_provenance_status`
+  and `template_provenance_note`; the `template_status` and
+  `template_warning` aliases are gone.
+- `endpoints.yaml` must declare `schema_version: 2`.
+
 Package source files retain placeholder versions. The publish workflow derives
 the released Python and TypeScript package versions from the requested `vX.Y.Z`
 tag, so the Git tag and package metadata in published artifacts remain the

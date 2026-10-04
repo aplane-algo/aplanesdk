@@ -221,7 +221,7 @@ func TestSignPreparedBoundedCosignerGroupDeclaresNativePQPrimary(t *testing.T) {
 				case "/sign":
 					record("sign")
 					if rejectSign {
-						http.Error(w, "rejected by signer policy", http.StatusForbidden)
+						writeCodedError(w, http.StatusForbidden, ErrCodeForbidden, "rejected by signer policy")
 						return
 					}
 					json.NewEncoder(w).Encode(GroupSignResponse{Signed: signedGroupFor(t, frozenGroup)})
@@ -343,8 +343,8 @@ func TestPreparedForeignPQSchemeRejectsContradictoryMetadata(t *testing.T) {
 		t.Fatalf("preparedForeignPQScheme() error = %v, want contradiction rejection", err)
 	}
 
-	// An older signer that does not report authorization_kind keeps the
-	// previous declaration rather than guessing.
+	// A key without authorization_kind declares no native-PQ scheme and
+	// keeps the previous declaration rather than guessing.
 	got, err := preparedForeignPQScheme(&KeyInfo{}, nil)
 	if err != nil || got != "" {
 		t.Fatalf("preparedForeignPQScheme() = %q, %v, want empty scheme and no error", got, err)

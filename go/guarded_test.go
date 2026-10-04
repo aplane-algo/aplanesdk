@@ -386,7 +386,7 @@ func TestSignGuardedGroupMixedPrimaryAndGuarded(t *testing.T) {
 				case "/sign":
 					record("sign")
 					if rejectSign {
-						http.Error(w, "rejected by signer policy", http.StatusForbidden)
+						writeCodedError(w, http.StatusForbidden, ErrCodeForbidden, "rejected by signer policy")
 						return
 					}
 					var req GroupSignRequest

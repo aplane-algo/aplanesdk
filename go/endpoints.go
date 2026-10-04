@@ -46,29 +46,6 @@ type ClientEndpointConfig struct {
 	TokenFile      string `yaml:"token_file,omitempty"`
 }
 
-type clientEndpointRegistryV1 struct {
-	SchemaVersion int                               `yaml:"schema_version"`
-	Default       string                            `yaml:"default,omitempty"`
-	Endpoints     map[string]clientEndpointConfigV1 `yaml:"endpoints,omitempty"`
-}
-
-type clientEndpointConfigV1 struct {
-	Role               string                                       `yaml:"role"`
-	URL                string                                       `yaml:"url"`
-	SignerPort         int                                          `yaml:"signer_port,omitempty"`
-	LocalPort          int                                          `yaml:"local_port,omitempty"`
-	IdentityFile       string                                       `yaml:"identity_file,omitempty"`
-	KnownHostsPath     string                                       `yaml:"known_hosts_path,omitempty"`
-	TokenFile          string                                       `yaml:"token_file,omitempty"`
-	PublishedCosigners map[string]clientEndpointPublishedCosignerV1 `yaml:"published_cosigners,omitempty"`
-}
-
-type clientEndpointPublishedCosignerV1 struct {
-	ComponentKey string `yaml:"component_key"`
-	KeyType      string `yaml:"key_type"`
-	LastSeenAt   string `yaml:"last_seen_at,omitempty"`
-}
-
 // LoadClientEndpointRegistry loads and normalizes dataDir/endpoints.yaml.
 func LoadClientEndpointRegistry(dataDir string) (*ClientEndpointRegistry, error) {
 	registry := &ClientEndpointRegistry{
@@ -93,29 +70,13 @@ func LoadClientEndpointRegistry(dataDir string) (*ClientEndpointRegistry, error)
 	if err := yaml.Unmarshal(data, &header); err != nil {
 		return nil, fmt.Errorf("failed to parse %s: %w", endpointsPath, err)
 	}
-	if header.SchemaVersion == 0 {
-		header.SchemaVersion = 1
+	if header.SchemaVersion != ClientEndpointSchemaVersion {
+		return nil, fmt.Errorf("%s schema_version = %d, want %d", ClientEndpointsFile, header.SchemaVersion, ClientEndpointSchemaVersion)
 	}
-	switch header.SchemaVersion {
-	case 1:
-		var legacy clientEndpointRegistryV1
-		decoder := yaml.NewDecoder(bytes.NewReader(data))
-		decoder.KnownFields(true)
-		if err := decoder.Decode(&legacy); err != nil {
-			return nil, fmt.Errorf("failed to parse %s: %w", endpointsPath, err)
-		}
-		registry.Default = legacy.Default
-		for alias, endpoint := range legacy.Endpoints {
-			registry.Endpoints[alias] = ClientEndpointConfig{Role: endpoint.Role, URL: endpoint.URL, SignerPort: endpoint.SignerPort, LocalPort: endpoint.LocalPort, IdentityFile: endpoint.IdentityFile, KnownHostsPath: endpoint.KnownHostsPath, TokenFile: endpoint.TokenFile}
-		}
-	case ClientEndpointSchemaVersion:
-		decoder := yaml.NewDecoder(bytes.NewReader(data))
-		decoder.KnownFields(true)
-		if err := decoder.Decode(registry); err != nil {
-			return nil, fmt.Errorf("failed to parse %s: %w", endpointsPath, err)
-		}
-	default:
-		return nil, fmt.Errorf("%s schema_version = %d, want 1 or %d", ClientEndpointsFile, header.SchemaVersion, ClientEndpointSchemaVersion)
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(registry); err != nil {
+		return nil, fmt.Errorf("failed to parse %s: %w", endpointsPath, err)
 	}
 	if registry.Endpoints == nil {
 		registry.Endpoints = map[string]ClientEndpointConfig{}
@@ -153,7 +114,7 @@ func validateClientEndpointRegistryScalarTypes(data []byte) error {
 		return nil
 	}
 
-	if err := requireYAMLScalarType(yamlMappingValue(root, "schema_version"), "schema_version", "!!int", "!!null"); err != nil {
+	if err := requireYAMLScalarType(yamlMappingValue(root, "schema_version"), "schema_version", "!!int"); err != nil {
 		return err
 	}
 	if err := requireYAMLScalarType(yamlMappingValue(root, "default"), "default", "!!str", "!!null"); err != nil {
@@ -181,21 +142,6 @@ func validateClientEndpointRegistryScalarTypes(data []byte) error {
 		for _, field := range []string{"signer_port", "local_port"} {
 			if err := requireYAMLScalarType(yamlMappingValue(endpoint, field), label+" "+field, "!!int", "!!null"); err != nil {
 				return err
-			}
-		}
-		published := yamlMappingValue(endpoint, "published_cosigners")
-		if published == nil || published.ShortTag() == "!!null" || published.Kind != yaml.MappingNode {
-			continue
-		}
-		for j := 0; j+1 < len(published.Content); j += 2 {
-			entry := published.Content[j+1]
-			if entry.Kind != yaml.MappingNode {
-				continue
-			}
-			for _, field := range []string{"component_key", "key_type", "last_seen_at"} {
-				if err := requireYAMLScalarType(yamlMappingValue(entry, field), "published cosigner "+field, "!!str", "!!null"); err != nil {
-					return err
-				}
 			}
 		}
 	}

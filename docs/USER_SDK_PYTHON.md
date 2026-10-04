@@ -298,8 +298,8 @@ process-local signal to refresh `list_keys(refresh=True)` only when the loaded
 keyset changes. Do not treat it as durable across apsigner restarts.
 
 The SDK also uses `approval_wait_seconds` to size `/sign` deadlines. If
-discovery fails or an older signer omits the field, signing falls back to 6
-minutes.
+discovery fails or the field is missing or out of range, signing falls back
+to 6 minutes.
 
 ### List Keys
 
@@ -319,8 +319,6 @@ Useful `KeyInfo` fields include:
 - `signing_args`
 - `template_provenance_status`
 - `template_provenance_note`
-- `template_status`
-- `template_warning`
 
 `logic_sig_resources` publishes independent program-byte, argument-byte, and
 maximum-opcode-cost demand by authorization path. Bounded keys may publish
@@ -332,8 +330,8 @@ or native Falcon-1024.
 
 `KeyInfo.authorization_kind` reports the same closed values for a key instance
 and is authoritative for choosing its transaction authorization envelope. It
-is empty for witness keys, which are not spending accounts, and empty against
-older signers that do not report it; never read an empty value as Ed25519.
+is empty for witness keys, which are not spending accounts, and whenever the
+signer does not report it; never read an empty value as Ed25519.
 Prefer it over `logic_sig_resources is not None`, because a native
 Falcon-1024 spending key publishes no LogicSig profile and is otherwise
 indistinguishable from an Ed25519 key. `sign_prepared_guarded_group` uses it
@@ -343,9 +341,6 @@ foreign slots.
 The Python SDK exposes bounded inventory and ordinary spend signing only. It
 does not expose `/sign/bounded-admin` or build and complete contract-admin
 rekeys; use the APlane `aprekey` workflow for those operations.
-
-`template_status` and `template_warning` are legacy aliases for
-`template_provenance_status` and `template_provenance_note`.
 
 If you need one cached entry by address:
 

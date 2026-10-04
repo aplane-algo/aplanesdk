@@ -140,7 +140,6 @@ function normalizeEndpoint(
   dataDir: string,
   alias: string,
   raw: unknown,
-  legacyV1: boolean,
 ): ClientEndpointConfig {
   requireMapping(raw, `endpoint "${alias}"`);
   requireKnownFields(raw, [
@@ -151,7 +150,6 @@ function normalizeEndpoint(
     "identity_file",
     "known_hosts_path",
     "token_file",
-    ...(legacyV1 ? ["published_cosigners"] : []),
   ], `endpoint "${alias}"`);
 
   const role = optionalString(raw.role, "role").trim();
@@ -258,30 +256,21 @@ export function loadClientEndpointRegistry(dataDir: string): ClientEndpointRegis
   }
   requireMapping(raw, CLIENT_ENDPOINTS_FILE);
   requireKnownFields(raw, ["schema_version", "default", "endpoints"], CLIENT_ENDPOINTS_FILE);
-  const rawSchemaVersion = raw.schema_version;
-  let schemaVersion = rawSchemaVersion;
-  if (schemaVersion === undefined || schemaVersion === null || schemaVersion === 0) {
-    schemaVersion = 1;
-  }
+  const schemaVersion = raw.schema_version;
   if (
-    typeof schemaVersion !== "number"
-    || !Number.isInteger(schemaVersion)
-    || (
-      typeof rawSchemaVersion === "number"
-      && schemaVersionSource !== ""
-      && !/^[+-]?\d+$/.test(schemaVersionSource)
-    )
-    || (schemaVersion !== 1 && schemaVersion !== CLIENT_ENDPOINT_SCHEMA_VERSION)
+    schemaVersion !== CLIENT_ENDPOINT_SCHEMA_VERSION
+    || (schemaVersionSource !== "" && !/^[+-]?\d+$/.test(schemaVersionSource))
   ) {
+    const shown = schemaVersion === undefined ? "0" : schemaVersionSource || String(schemaVersion);
     throw new SignerError(
-      `${CLIENT_ENDPOINTS_FILE} schema_version = ${String(schemaVersion)}, want 1 or ${CLIENT_ENDPOINT_SCHEMA_VERSION}`,
+      `${CLIENT_ENDPOINTS_FILE} schema_version = ${shown}, want ${CLIENT_ENDPOINT_SCHEMA_VERSION}`,
     );
   }
   const endpointsRaw = raw.endpoints ?? {};
   requireMapping(endpointsRaw, `${CLIENT_ENDPOINTS_FILE} endpoints`);
   for (const [alias, endpointRaw] of Object.entries(endpointsRaw)) {
     validateAlias(alias);
-    registry.endpoints[alias] = normalizeEndpoint(dataDir, alias, endpointRaw, schemaVersion === 1);
+    registry.endpoints[alias] = normalizeEndpoint(dataDir, alias, endpointRaw);
   }
 
   registry.default = optionalString(raw.default, "default").trim();

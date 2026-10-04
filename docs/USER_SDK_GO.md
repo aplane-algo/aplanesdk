@@ -246,8 +246,8 @@ loaded keyset changes. Do not treat it as a durable version across apsigner
 restarts.
 
 The SDK also uses `ApprovalWaitSeconds` to size `/sign` deadlines. If discovery
-fails or an older signer omits the field, signing falls back to a 6-minute
-deadline.
+fails or the field is missing or out of range, signing falls back to a
+6-minute deadline.
 
 ### List Keys
 
@@ -271,8 +271,6 @@ for _, key := range keys {
 - `SigningArgs`
 - `TemplateProvenanceStatus`
 - `TemplateProvenanceNote`
-- `TemplateStatus`
-- `TemplateWarning`
 
 `LogicSigResources` publishes independent program-byte, argument-byte, and
 maximum-opcode-cost demand by authorization path. Bounded keys may publish
@@ -284,8 +282,8 @@ Falcon-1024 also has a false compatibility boolean.
 
 `KeyInfo.AuthorizationKind` reports the same closed values for a key instance
 and is authoritative for choosing its transaction authorization envelope. It
-is empty for witness keys, which are not spending accounts, and empty against
-older signers that do not report it; never read an empty value as Ed25519.
+is empty for witness keys, which are not spending accounts, and whenever the
+signer does not report it; never read an empty value as Ed25519.
 Prefer it over `LogicSigResources != nil`, because a native Falcon-1024
 spending key publishes no LogicSig profile and is otherwise indistinguishable
 from an Ed25519 key. `SignPreparedGuardedGroup` uses it to declare
@@ -294,9 +292,6 @@ from an Ed25519 key. `SignPreparedGuardedGroup` uses it to declare
 The Go SDK exposes bounded inventory and ordinary spend signing only. It does
 not expose `/sign/bounded-admin` or build and complete contract-admin rekeys;
 use the APlane `aprekey` workflow for those operations.
-
-`TemplateStatus` and `TemplateWarning` are legacy aliases for
-`TemplateProvenanceStatus` and `TemplateProvenanceNote`.
 
 ### Get One Key
 
