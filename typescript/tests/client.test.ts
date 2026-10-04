@@ -306,8 +306,8 @@ describe("SignerClient", () => {
               spend: { program_bytes: 1612, argument_bytes: 1423, max_opcode_cost: 20000 },
             },
             is_generic_lsig: false,
-            template_status: "unavailable",
-            template_warning: "template fingerprint unavailable",
+            template_provenance_status: "unavailable",
+            template_provenance_note: "template fingerprint unavailable",
           },
         ],
       };
@@ -326,8 +326,6 @@ describe("SignerClient", () => {
       assert.equal(keys[0].keyType, "ed25519");
       assert.equal(keys[1].address, "ADDR2");
       assert.equal(keys[1].logicSigResources?.spend?.programBytes, 1612);
-      assert.equal(keys[1].templateStatus, "unavailable");
-      assert.equal(keys[1].templateWarning, "template fingerprint unavailable");
       assert.equal(keys[1].templateProvenanceStatus, "unavailable");
       assert.equal(keys[1].templateProvenanceNote, "template fingerprint unavailable");
     });
@@ -1163,11 +1161,25 @@ describe("SignerClient", () => {
       await assert.rejects(client.generateKey("ed25519"), AuthenticationError);
     });
 
-    it("throws on 403 (locked)", async () => {
-      mockFetch.mockResolvedValueOnce({ status: 403, ok: false });
-      const client = new SignerClient("http://localhost:11270", "test-token");
-      await assert.rejects(client.generateKey("ed25519"), SignerUnavailableError);
-    });
+    for (const [label, mock] of [
+      ["no body", { status: 403, ok: false }],
+      ["an uncoded body", {
+        status: 403,
+        ok: false,
+        json: async () => ({ error: "forbidden" }),
+      }],
+    ] as const) {
+      it(`treats 403 with ${label} as a generic error, not locked`, async () => {
+        mockFetch.mockResolvedValueOnce(mock);
+        const client = new SignerClient("http://localhost:11270", "test-token");
+        await assert.rejects(client.generateKey("ed25519"), (error: unknown) => {
+          assert.ok(error instanceof SignerError);
+          assert.ok(!(error instanceof SignerUnavailableError));
+          assert.equal(error.code, "");
+          return true;
+        });
+      });
+    }
 
     it("treats 403 with locked code as locked", async () => {
       mockFetch.mockResolvedValueOnce({
@@ -3023,6 +3035,26 @@ describe("SignerClient", () => {
       );
     });
 
+    it("treats sign 403 without a code as a generic error, not rejected", async () => {
+      queueStatusResponse();
+      mockFetch.mockResolvedValueOnce({
+        status: 403,
+        ok: false,
+        json: async () => ({ error: "Operator rejected" }),
+      });
+
+      const client = new SignerClient("http://localhost:11270", "test-token");
+      const mockTxn = createMockTxn() as Parameters<typeof client.signTransaction>[0];
+
+      await assert.rejects(client.signTransaction(mockTxn), (error: unknown) => {
+        assert.ok(error instanceof SignerError);
+        assert.ok(!(error instanceof SigningRejectedError));
+        assert.ok(!(error instanceof SignerUnavailableError));
+        assert.equal(error.code, "");
+        return true;
+      });
+    });
+
     it("throws SigningRejectedError on 403", async () => {
       queueStatusResponse();
       mockFetch.mockResolvedValueOnce({
@@ -3051,7 +3083,7 @@ describe("SignerClient", () => {
       await assert.rejects(client.signTransaction(mockTxn), SignerUnavailableError);
     });
 
-    it("throws KeyNotFoundError on 400 with 'not found'", async () => {
+    it("does not map an uncoded 'not found' message to KeyNotFoundError", async () => {
       queueStatusResponse();
       mockFetch.mockResolvedValueOnce({
         status: 400,
@@ -3063,7 +3095,12 @@ describe("SignerClient", () => {
       const client = new SignerClient("http://localhost:11270", "test-token");
       const mockTxn = createMockTxn() as Parameters<typeof client.signTransaction>[0];
 
-      await assert.rejects(client.signTransaction(mockTxn), KeyNotFoundError);
+      await assert.rejects(client.signTransaction(mockTxn), (error: unknown) => {
+        assert.ok(error instanceof SignerError);
+        assert.ok(!(error instanceof KeyNotFoundError));
+        assert.equal(error.code, "");
+        return true;
+      });
     });
 
     it("throws KeyNotFoundError on 400 with not_found code regardless of wording", async () => {
@@ -3641,8 +3678,6 @@ describe("loadClientEndpointRegistry", () => {
   }
 
   for (const fixture of [
-    "valid_schema_version_null.yaml",
-    "valid_schema_version_zero.yaml",
     "valid_12_cosigner_endpoints.yaml",
     "valid_cosigner_zero_local_port.yaml",
   ]) {
@@ -3663,31 +3698,32 @@ describe("loadClientEndpointRegistry", () => {
     });
   }
 
-  it("discards v1 published cosigner inventory", () => {
-    const tmpDir = fixtureDir("valid_v1_published_cosigners.yaml");
-    try {
-      const registry = loadClientEndpointRegistry(tmpDir);
-      assert.equal(registry.schemaVersion, 2);
-      assert.deepEqual(registry.endpoints["cosigner-old"], {
-        role: "cosigner",
-        url: "https://cosigner.example.com",
-        signerPort: 0,
-        localPort: 0,
-        identityFile: "",
-        knownHostsPath: "",
-        tokenFile: path.join(tmpDir, "tokens", "cosigner-old.token"),
-      });
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true });
-    }
-  });
+  for (const [fixture, message] of [
+    ["invalid_schema_version_missing.yaml", "endpoints.yaml schema_version = 0, want 2"],
+    ["invalid_schema_version_zero.yaml", "endpoints.yaml schema_version = 0, want 2"],
+    ["invalid_schema_version_null.yaml", "endpoints.yaml schema_version = null, want 2"],
+    ["invalid_schema_version_float.yaml", "endpoints.yaml schema_version = 2.0, want 2"],
+    ["invalid_schema_version_one.yaml", "endpoints.yaml schema_version = 1, want 2"],
+    ["invalid_v1_published_cosigners.yaml", "endpoints.yaml schema_version = 1, want 2"],
+  ]) {
+    it(`requires schema_version 2 (${fixture})`, () => {
+      const tmpDir = fixtureDir(fixture);
+      try {
+        assert.throws(() => loadClientEndpointRegistry(tmpDir), (error: unknown) =>
+          error instanceof Error && error.message.includes(message),
+        );
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true });
+      }
+    });
+  }
 
   it("derives the signer default and alias-based token paths", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-endpoints-"));
     try {
       fs.writeFileSync(
         path.join(tmpDir, "endpoints.yaml"),
-        "schema_version: 1\nendpoints:\n" +
+        "schema_version: 2\nendpoints:\n" +
         "  main:\n    role: signer\n    url: ssh://localhost\n" +
         "  qa:\n    role: cosigner\n    url: http://127.0.0.1:11271\n",
       );
@@ -3778,7 +3814,7 @@ describe("requestTokenToFile", () => {
     try {
       fs.writeFileSync(
         path.join(tmpDir, "endpoints.yaml"),
-        "schema_version: 1\nendpoints:\n" +
+        "schema_version: 2\nendpoints:\n" +
         "  primary:\n    role: signer\n    url: ssh://signer.example.com\n" +
         "  qa:\n    role: cosigner\n    url: ssh://cosigner.example.com:2222\n" +
         "    identity_file: .ssh/qa\n",
@@ -3797,7 +3833,7 @@ describe("requestTokenToFile", () => {
     try {
       fs.writeFileSync(
         path.join(tmpDir, "endpoints.yaml"),
-        "schema_version: 1\nendpoints:\n" +
+        "schema_version: 2\nendpoints:\n" +
         "  primary:\n    role: signer\n    url: https://signer.example.com\n",
       );
       await assert.rejects(
@@ -3996,7 +4032,7 @@ describe("fromEnv", () => {
       fs.mkdirSync(path.join(tmpDir, "tokens"));
       fs.writeFileSync(
         path.join(tmpDir, "endpoints.yaml"),
-        "schema_version: 1\nendpoints:\n" +
+        "schema_version: 2\nendpoints:\n" +
         "  primary:\n    role: signer\n    url: https://signer.example.com/\n" +
         "  qa:\n    role: cosigner\n    url: http://127.0.0.1:11271/\n",
       );
@@ -4024,7 +4060,7 @@ describe("fromEnv", () => {
     try {
       fs.writeFileSync(
         path.join(tmpDir, "endpoints.yaml"),
-        "schema_version: 1\nendpoints:\n" +
+        "schema_version: 2\nendpoints:\n" +
         "  primary:\n    role: signer\n    url: https://signer.example.com\n",
       );
       fs.writeFileSync(path.join(tmpDir, "aplane.token"), " \n\t");

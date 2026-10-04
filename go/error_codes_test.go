@@ -4,6 +4,7 @@
 package aplane
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -204,4 +205,78 @@ func TestValidateGroupSignResponse(t *testing.T) {
 			}
 		})
 	}
+}
+
+func requireUncodedAPIError(t *testing.T, err error, status int) {
+	t.Helper()
+	if errors.Is(err, ErrSignerLocked) || errors.Is(err, ErrSigningRejected) || errors.Is(err, ErrKeyNotFound) {
+		t.Fatalf("uncoded %d error misclassified as a sentinel: %v", status, err)
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected *APIError, got: %v", err)
+	}
+	if apiErr.Code != "" || apiErr.StatusCode != status {
+		t.Fatalf("APIError = %+v, want empty code with status %d", apiErr, status)
+	}
+}
+
+func TestForbiddenWithoutCodeIsGenericAPIError(t *testing.T) {
+	for _, body := range []string{"", "forbidden"} {
+		handler := func(w http.ResponseWriter, r *http.Request) {
+			if body == "" {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			writeCodedError(w, http.StatusForbidden, "", body)
+		}
+		t.Run("keys/"+body, func(t *testing.T) {
+			client, server := newTestClient(handler)
+			defer server.Close()
+			result, err := client.GetKeysResponseWithContext(context.Background())
+			if result != nil {
+				t.Fatalf("result = %+v, want nil", result)
+			}
+			requireUncodedAPIError(t, err, http.StatusForbidden)
+		})
+		t.Run("generate/"+body, func(t *testing.T) {
+			client, server := newTestClient(handler)
+			defer server.Close()
+			_, err := client.GenerateKey("ed25519", nil)
+			requireUncodedAPIError(t, err, http.StatusForbidden)
+		})
+		t.Run("sign/"+body, func(t *testing.T) {
+			client, server := newTestClient(handler)
+			defer server.Close()
+			_, err := client.SignTransaction(types.Transaction{Type: types.PaymentTx}, "ADDR", nil)
+			requireUncodedAPIError(t, err, http.StatusForbidden)
+		})
+		t.Run("components/"+body, func(t *testing.T) {
+			client, server := newTestClient(handler)
+			defer server.Close()
+			_, err := client.RequestComponents(ComponentRequest{
+				GroupBytesHex: []string{"5458aa"},
+				Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindCosigner}},
+			})
+			requireUncodedAPIError(t, err, http.StatusForbidden)
+		})
+	}
+}
+
+func TestNotFoundMessageWithoutCodeIsNotKeyNotFound(t *testing.T) {
+	uncoded := &APIError{StatusCode: http.StatusNotFound, Message: "key not found"}
+	if errors.Is(uncoded, ErrKeyNotFound) {
+		t.Fatal("empty-code not-found message must not map to ErrKeyNotFound")
+	}
+	coded := &APIError{StatusCode: http.StatusNotFound, Code: ErrCodeNotFound, Message: "key not found"}
+	if !errors.Is(coded, ErrKeyNotFound) {
+		t.Fatal("not_found code must map to ErrKeyNotFound")
+	}
+
+	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		writeCodedError(w, http.StatusNotFound, "", "key not found")
+	})
+	defer server.Close()
+	_, err := client.PlanGroup([]types.Transaction{{Type: types.PaymentTx}}, []string{"ADDR"}, nil, nil)
+	requireUncodedAPIError(t, err, http.StatusNotFound)
 }

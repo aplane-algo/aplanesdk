@@ -479,7 +479,7 @@ func TestGoSDKContractKeyAuthorizationKind(t *testing.T) {
 	}
 }
 
-func TestGoSDKMapsTemplateWarningFields(t *testing.T) {
+func TestGoSDKMapsTemplateProvenanceFields(t *testing.T) {
 	raw := []byte(`{
 		"count": 1,
 		"keys": [{
@@ -494,17 +494,34 @@ func TestGoSDKMapsTemplateWarningFields(t *testing.T) {
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		t.Fatalf("unmarshal keys response: %v", err)
 	}
-	if got := resp.Keys[0].TemplateStatus; got != "conflict" {
-		t.Fatalf("TemplateStatus = %q, want conflict", got)
-	}
-	if got := resp.Keys[0].TemplateWarning; got != "template fingerprint differs" {
-		t.Fatalf("TemplateWarning = %q, want template fingerprint differs", got)
-	}
 	if got := resp.Keys[0].TemplateProvenanceStatus; got != "conflict" {
 		t.Fatalf("TemplateProvenanceStatus = %q, want conflict", got)
 	}
 	if got := resp.Keys[0].TemplateProvenanceNote; got != "template fingerprint differs" {
 		t.Fatalf("TemplateProvenanceNote = %q, want template fingerprint differs", got)
+	}
+}
+
+func TestGoSDKIgnoresRetiredTemplateAliases(t *testing.T) {
+	raw := []byte(`{
+		"count": 1,
+		"keys": [{
+			"address": "ADDR1",
+			"public_key_hex": "abcd",
+			"key_type": "example.generic-policy.v1",
+			"template_status": "conflict",
+			"template_warning": "template fingerprint differs"
+		}]
+	}`)
+	var resp KeysResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal keys response: %v", err)
+	}
+	if got := resp.Keys[0].TemplateProvenanceStatus; got != "" {
+		t.Fatalf("TemplateProvenanceStatus = %q, want empty", got)
+	}
+	if got := resp.Keys[0].TemplateProvenanceNote; got != "" {
+		t.Fatalf("TemplateProvenanceNote = %q, want empty", got)
 	}
 }
 

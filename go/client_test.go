@@ -39,7 +39,7 @@ func TestFromEnv_UsesNamedDirectEndpointAndToken(t *testing.T) {
 	}
 	os.WriteFile(filepath.Join(dir, "tokens", "qa.token"), []byte("qa-token"), 0o600)
 	os.WriteFile(filepath.Join(dir, "endpoints.yaml"), []byte(`
-schema_version: 1
+schema_version: 2
 endpoints:
   primary:
     role: signer
@@ -64,7 +64,7 @@ endpoints:
 func TestFromEnv_ReportsResolvedMissingTokenPath(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "endpoints.yaml"), []byte(`
-schema_version: 1
+schema_version: 2
 endpoints:
   primary:
     role: signer
@@ -89,7 +89,7 @@ endpoints:
 func TestFromEnv_RejectsEmptyToken(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "endpoints.yaml"), []byte(`
-schema_version: 1
+schema_version: 2
 endpoints:
   primary:
     role: signer
@@ -657,7 +657,7 @@ func TestListKeys_AuthError(t *testing.T) {
 
 func TestListKeys_Locked(t *testing.T) {
 	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(403)
+		writeCodedError(w, 403, ErrCodeLocked, "signer is locked")
 	})
 	defer server.Close()
 
@@ -784,7 +784,7 @@ func TestGenerateKey_AuthError(t *testing.T) {
 
 func TestGenerateKey_Locked(t *testing.T) {
 	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(403)
+		writeCodedError(w, 403, ErrCodeLocked, "signer is locked")
 	})
 	defer server.Close()
 
@@ -923,7 +923,7 @@ func TestRequestComponentsRejectsUnrequestedTargetKind(t *testing.T) {
 
 func TestRequestComponentsRejected(t *testing.T) {
 	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(403)
+		writeCodedError(w, 403, ErrCodeForbidden, "rejected by signer policy")
 	})
 	defer server.Close()
 
@@ -1083,7 +1083,7 @@ func TestSign_AuthError(t *testing.T) {
 
 func TestSign_Rejected(t *testing.T) {
 	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(403)
+		writeCodedError(w, 403, ErrCodeForbidden, "rejected by signer policy")
 	})
 	defer server.Close()
 

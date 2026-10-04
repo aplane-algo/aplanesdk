@@ -4,7 +4,6 @@
 package aplane
 
 import (
-	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -472,8 +471,8 @@ type GroupSignResponse struct {
 
 // ErrorResponse is the standard signer HTTP error body for non-2xx responses.
 // Code carries a stable machine-readable classification (see error code
-// constants in errors.go); branch on Code, never on Error message text. Code
-// is empty when the signer predates wire error codes.
+// constants in errors.go); branch on Code, never on Error message text. Every
+// apsigner error response sets Code.
 type ErrorResponse struct {
 	Error string `json:"error"`
 	Code  string `json:"code,omitempty"`
@@ -685,8 +684,6 @@ type KeyInfo struct {
 	Parameters               map[string]string         `json:"parameters,omitempty"`
 	TemplateProvenanceStatus string                    `json:"template_provenance_status,omitempty"`
 	TemplateProvenanceNote   string                    `json:"template_provenance_note,omitempty"`
-	TemplateStatus           string                    `json:"template_status,omitempty"`  // Legacy alias for TemplateProvenanceStatus
-	TemplateWarning          string                    `json:"template_warning,omitempty"` // Legacy alias for TemplateProvenanceNote
 }
 
 // KeysResponse is the response from the /keys endpoint.
@@ -700,34 +697,6 @@ type KeysResponse struct {
 type KeysResult struct {
 	KeysResponse
 	Locked bool
-}
-
-// UnmarshalJSON accepts both current template_provenance_* fields and legacy
-// template_status/template_warning aliases.
-func (k *KeyInfo) UnmarshalJSON(data []byte) error {
-	type keyInfoAlias KeyInfo
-	var aux keyInfoAlias
-	if err := json.Unmarshal(data, &aux); err != nil {
-		return err
-	}
-	*k = KeyInfo(aux)
-	normalizeKeyInfoTemplateAliases(k)
-	return nil
-}
-
-func normalizeKeyInfoTemplateAliases(k *KeyInfo) {
-	if k.TemplateProvenanceStatus == "" {
-		k.TemplateProvenanceStatus = k.TemplateStatus
-	}
-	if k.TemplateStatus == "" {
-		k.TemplateStatus = k.TemplateProvenanceStatus
-	}
-	if k.TemplateProvenanceNote == "" {
-		k.TemplateProvenanceNote = k.TemplateWarning
-	}
-	if k.TemplateWarning == "" {
-		k.TemplateWarning = k.TemplateProvenanceNote
-	}
 }
 
 // KeyTypesResponse is the response from the /keytypes endpoint.

@@ -1580,8 +1580,10 @@ function requiredPreparedResources(
  * Foreign slots carry no auth address, so the signer budgets fees purely from
  * what the request declares; only authorizationKind distinguishes a native-PQ
  * key from an Ed25519 one, because neither publishes a LogicSig resource
- * profile. An absent authorizationKind means an older signer that does not
- * report it, in which case the slot keeps its previous declaration.
+ * profile. Any other authorizationKind, including an absent one (the key is
+ * not a spending account or the signer omitted the field), declares no
+ * native-PQ scheme, so the slot keeps its previous declaration rather than
+ * guessing.
  */
 function preparedForeignPQScheme(
   key: KeyInfo | undefined,
@@ -2976,8 +2978,6 @@ export class SignerClient {
 
       // Map snake_case API fields to camelCase TypeScript interface
       const raw = k as any;
-      const templateProvenanceStatus = raw.template_provenance_status || raw.template_status;
-      const templateProvenanceNote = raw.template_provenance_note || raw.template_warning;
       const keyInfo: KeyInfo = {
         address: k.address,
         publicKeyHex: raw.public_key_hex || "",
@@ -2992,10 +2992,8 @@ export class SignerClient {
         boundedAuthorization: mapBoundedAuthorization(raw.bounded_authorization),
         signingArgs,
         parameters: raw.parameters,
-        templateProvenanceStatus,
-        templateProvenanceNote,
-        templateStatus: templateProvenanceStatus,
-        templateWarning: templateProvenanceNote,
+        templateProvenanceStatus: raw.template_provenance_status || undefined,
+        templateProvenanceNote: raw.template_provenance_note || undefined,
       };
       keys.push(keyInfo);
       this.keyCache.set(keyInfo.address, keyInfo);
@@ -4515,7 +4513,8 @@ export class SignerClient {
 
   /**
    * Parse a non-2xx signer error response into its stable machine-readable
-   * code (empty on pre-code signers) and human-readable message.
+   * code (empty when the body is not a JSON error envelope) and
+   * human-readable message.
    */
   private async errorParts(
     response: Response,
@@ -4559,46 +4558,41 @@ export class SignerClient {
   }
 
   /**
-   * Classify a 400 at signing/planning endpoints. The wire code is
-   * authoritative: not_found maps to KeyNotFoundError. Pre-code signers send
-   * no code and keep the legacy message-text mapping.
+   * Classify a 400 at signing/planning endpoints. Only the not_found wire
+   * code maps to KeyNotFoundError; message text is never inspected.
    */
   private async badRequestError(response: Response): Promise<SignerError> {
     const { code, message } = await this.errorParts(response, "Bad request");
-    if (
-      code === ErrorCodes.NotFound ||
-      (code === "" && message.toLowerCase().includes("not found"))
-    ) {
+    if (code === ErrorCodes.NotFound) {
       return new KeyNotFoundError(message, code);
     }
     return new SignerError(`Bad request: ${message}`, code);
   }
 
   /**
-   * Classify a 403 at endpoints that historically reported the signer as
-   * locked. The wire code distinguishes a genuinely locked signer from other
-   * forbidden conditions; pre-code signers send no code and keep the legacy
-   * locked mapping.
+   * Classify a 403 at endpoints that report a locked signer. Only the locked
+   * wire code maps to the locked error; any other code, including an empty
+   * one, is a generic SignerError.
    */
   private async forbiddenLockedError(response: Response): Promise<SignerError> {
-    const { code, message } = await this.errorParts(response, "Signer is locked");
-    if (code === "" || code === ErrorCodes.Locked) {
+    const { code, message } = await this.errorParts(response, "Forbidden");
+    if (code === ErrorCodes.Locked) {
       return new SignerUnavailableError("Signer is locked", code);
     }
     return new SignerError(message, code);
   }
 
   /**
-   * Classify a 403 at endpoints that historically reported the request as
-   * rejected. A locked code maps to the locked error; forbidden (or no code,
-   * for pre-code signers) keeps the rejection error.
+   * Classify a 403 at endpoints that report a rejected request. A locked code
+   * maps to the locked error and a forbidden code to the rejection error; any
+   * other code, including an empty one, is a generic SignerError.
    */
   private async forbiddenRejectedError(response: Response, fallback: string): Promise<SignerError> {
     const { code, message } = await this.errorParts(response, fallback);
     if (code === ErrorCodes.Locked) {
       return new SignerUnavailableError("Signer is locked", code);
     }
-    if (code === "" || code === ErrorCodes.Forbidden) {
+    if (code === ErrorCodes.Forbidden) {
       return new SigningRejectedError(message, code);
     }
     return new SignerError(message, code);

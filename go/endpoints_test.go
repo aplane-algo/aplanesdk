@@ -75,6 +75,26 @@ func TestLoadClientEndpointRegistryRejectsSharedInvalidFixtures(t *testing.T) {
 	}
 }
 
+func TestLoadClientEndpointRegistryRequiresSchemaVersion2(t *testing.T) {
+	for _, tc := range []struct {
+		fixture string
+		want    string
+	}{
+		{"invalid_schema_version_missing.yaml", "endpoints.yaml schema_version = 0, want 2"},
+		{"invalid_schema_version_zero.yaml", "endpoints.yaml schema_version = 0, want 2"},
+		{"invalid_schema_version_one.yaml", "endpoints.yaml schema_version = 1, want 2"},
+		{"invalid_v1_published_cosigners.yaml", "endpoints.yaml schema_version = 1, want 2"},
+		{"invalid_schema_version_null.yaml", "schema_version must be !!int, got !!null"},
+	} {
+		t.Run(tc.fixture, func(t *testing.T) {
+			_, err := LoadClientEndpointRegistry(copyEndpointFixture(t, tc.fixture))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("LoadClientEndpointRegistry error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadClientEndpointRegistryRejectsSpecificEndpointRules(t *testing.T) {
 	for _, tc := range []struct {
 		fixture string
@@ -97,8 +117,6 @@ func TestLoadClientEndpointRegistryRejectsSpecificEndpointRules(t *testing.T) {
 
 func TestLoadClientEndpointRegistryAcceptsSharedEdgeFixtures(t *testing.T) {
 	for _, name := range []string{
-		"valid_schema_version_null.yaml",
-		"valid_schema_version_zero.yaml",
 		"valid_12_cosigner_endpoints.yaml",
 		"valid_cosigner_zero_local_port.yaml",
 	} {
@@ -120,24 +138,10 @@ func TestLoadClientEndpointRegistryAcceptsSharedEdgeFixtures(t *testing.T) {
 	}
 }
 
-func TestLoadClientEndpointRegistryDiscardsV1PublishedCosigners(t *testing.T) {
-	registry, err := LoadClientEndpointRegistry(copyEndpointFixture(t, "valid_v1_published_cosigners.yaml"))
-	if err != nil {
-		t.Fatalf("LoadClientEndpointRegistry: %v", err)
-	}
-	if registry.SchemaVersion != ClientEndpointSchemaVersion {
-		t.Fatalf("SchemaVersion = %d, want %d", registry.SchemaVersion, ClientEndpointSchemaVersion)
-	}
-	endpoint := registry.Endpoints["cosigner-old"]
-	if endpoint.Role != ClientEndpointRoleCosigner || endpoint.URL != "https://cosigner.example.com" {
-		t.Fatalf("endpoint = %#v", endpoint)
-	}
-}
-
 func TestLoadClientEndpointRegistryDerivesSignerDefaultAndTokenPaths(t *testing.T) {
 	dataDir := t.TempDir()
 	data := []byte(`
-schema_version: 1
+schema_version: 2
 endpoints:
   main:
     role: signer

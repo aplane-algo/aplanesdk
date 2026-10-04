@@ -73,6 +73,7 @@ DEFAULT_SSH_PORT = 1127
 DEFAULT_SIGNER_PORT = 11270
 DEFAULT_SSH_SETUP_TIMEOUT = 60.0
 CLIENT_ENDPOINTS_FILE = "endpoints.yaml"
+CLIENT_ENDPOINT_SCHEMA_VERSION = 2
 DEFAULT_CLIENT_ENDPOINT_NAME = "primary"
 HEALTH_TIMEOUT = 3
 STATUS_TIMEOUT = 5
@@ -127,7 +128,7 @@ def _resolve_data_dir(data_dir: Optional[str]) -> str:
 
 # Stable machine-readable error codes carried in ErrorResponse.code.
 # These mirror the signer wire contract (pkg/signerapi/error_codes.go in the
-# aplane repo). An empty code means the signer predates code support.
+# aplane repo). Every apsigner error response carries a non-empty code.
 ERR_CODE_BAD_REQUEST = "bad_request"
 ERR_CODE_UNAUTHORIZED = "unauthorized"
 ERR_CODE_FORBIDDEN = "forbidden"
@@ -146,8 +147,8 @@ class SignerError(Exception):
 
     ``code`` carries the stable machine-readable wire error code from the
     signer when one was provided (see ERR_CODE_* constants); branch on it
-    instead of matching message text. Empty when the signer predates wire
-    error codes or the error was raised client-side.
+    instead of matching message text. Empty when the error was raised
+    client-side or the response body was not a JSON error envelope.
     """
 
     def __init__(self, *args, code: str = ""):
@@ -345,8 +346,6 @@ class KeyInfo:
     parameters: Optional[Dict[str, str]] = None
     template_provenance_status: str = ""
     template_provenance_note: str = ""
-    template_status: str = ""  # Legacy alias for template_provenance_status
-    template_warning: str = ""  # Legacy alias for template_provenance_note
 
 
 @dataclass
@@ -375,7 +374,7 @@ class ClientEndpointConfig:
 class ClientEndpointRegistry:
     """Normalized client-local endpoint registry."""
 
-    schema_version: int = 2
+    schema_version: int = CLIENT_ENDPOINT_SCHEMA_VERSION
     default: str = ""
     endpoints: Dict[str, ClientEndpointConfig] = field(default_factory=dict)
 
@@ -732,7 +731,7 @@ class ErrorResponse:
 
     ``code`` carries a stable machine-readable classification (see the
     ERR_CODE_* constants); branch on ``code``, never on ``error`` message
-    text. Empty when the signer predates wire error codes.
+    text. Every apsigner error response sets it.
     """
 
     error: str
@@ -849,7 +848,7 @@ def _is_loopback_endpoint_host(host: str) -> bool:
 
 
 def _normalize_client_endpoint(
-    data_dir: str, alias: str, raw_value: Any, *, legacy_v1: bool
+    data_dir: str, alias: str, raw_value: Any
 ) -> ClientEndpointConfig:
     raw = _require_mapping(raw_value, f'endpoint "{alias}"')
     _require_known_fields(
@@ -862,7 +861,6 @@ def _normalize_client_endpoint(
             "identity_file",
             "known_hosts_path",
             "token_file",
-            *({"published_cosigners"} if legacy_v1 else set()),
         },
         f'endpoint "{alias}"',
     )
@@ -948,16 +946,17 @@ def load_client_endpoint_registry(data_dir: str) -> ClientEndpointRegistry:
         raise SignerError(f"failed to parse {endpoints_path}: {exc}") from exc
     raw = _require_mapping(raw_value, CLIENT_ENDPOINTS_FILE)
     _require_known_fields(raw, {"schema_version", "default", "endpoints"}, CLIENT_ENDPOINTS_FILE)
-    schema_version = raw.get("schema_version", 1)
-    if schema_version is None:
-        schema_version = 1
-    if isinstance(schema_version, bool) or not isinstance(schema_version, int):
-        raise SignerError(f"{CLIENT_ENDPOINTS_FILE} schema_version = {schema_version}, want 1")
-    if schema_version == 0:
-        schema_version = 1
-    if schema_version not in (1, 2):
-        raise SignerError(f"{CLIENT_ENDPOINTS_FILE} schema_version = {schema_version}, want 1 or 2")
-    registry.schema_version = 2
+    schema_version = raw.get("schema_version", 0)
+    if (
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+        or schema_version != CLIENT_ENDPOINT_SCHEMA_VERSION
+    ):
+        raise SignerError(
+            f"{CLIENT_ENDPOINTS_FILE} schema_version = {schema_version}, "
+            f"want {CLIENT_ENDPOINT_SCHEMA_VERSION}"
+        )
+    registry.schema_version = CLIENT_ENDPOINT_SCHEMA_VERSION
     endpoints_value = raw.get("endpoints")
     if endpoints_value is None:
         endpoints_value = {}
@@ -967,7 +966,7 @@ def load_client_endpoint_registry(data_dir: str) -> ClientEndpointRegistry:
             raise SignerError("endpoint aliases must be strings")
         _validate_endpoint_alias(raw_alias)
         registry.endpoints[raw_alias] = _normalize_client_endpoint(
-            data_dir, raw_alias, endpoint_raw, legacy_v1=schema_version == 1
+            data_dir, raw_alias, endpoint_raw
         )
 
     cosigner_count = sum(
@@ -1426,8 +1425,10 @@ def _prepared_foreign_pq_scheme(
     Foreign slots carry no auth address, so the signer budgets fees purely from
     what the request declares; only authorization_kind distinguishes a
     native-PQ key from an Ed25519 one, because neither publishes a LogicSig
-    resource profile. An empty authorization_kind means an older signer that
-    does not report it, in which case the slot keeps its previous declaration.
+    resource profile. Any other authorization_kind, including an empty one
+    (the key is not a spending account or the signer omitted the field),
+    declares no native-PQ scheme, so the slot keeps its previous declaration
+    rather than guessing.
     """
     if key is None or key.authorization_kind != AUTHORIZATION_KIND_NATIVE_PQ:
         return ""
@@ -2921,15 +2922,9 @@ class SignerClient:
                 is_spending_account=k.get("is_spending_account"),
                 signing_args=signing_args,
                 parameters=k.get("parameters"),
-                template_provenance_status=(
-                    k.get("template_provenance_status") or k.get("template_status", "")
-                ),
-                template_provenance_note=(
-                    k.get("template_provenance_note") or k.get("template_warning", "")
-                ),
+                template_provenance_status=k.get("template_provenance_status", ""),
+                template_provenance_note=k.get("template_provenance_note", ""),
             )
-            key_info.template_status = key_info.template_provenance_status
-            key_info.template_warning = key_info.template_provenance_note
             keys.append(key_info)
             self._key_cache[key_info.address] = key_info
 
@@ -3936,7 +3931,7 @@ class SignerClient:
         """Return (code, message) for a non-2xx signer response.
 
         ``code`` is the stable machine-readable wire error code, empty when
-        the signer predates code support.
+        the body is not a JSON error envelope.
         """
         data = self._safe_json(resp)
         error = data.get("error")
@@ -3956,37 +3951,36 @@ class SignerClient:
     def _bad_request_error(self, resp: requests.Response) -> SignerError:
         """Classify a 400 at signing/planning endpoints.
 
-        The wire code is authoritative: not_found maps to KeyNotFoundError.
-        Pre-code signers send no code and keep the legacy message-text
-        mapping.
+        Only the not_found wire code maps to KeyNotFoundError; message text is
+        never inspected.
         """
         code, message = self._error_parts(resp, "Bad request")
-        if code == ERR_CODE_NOT_FOUND or (code == "" and "not found" in message.lower()):
+        if code == ERR_CODE_NOT_FOUND:
             return KeyNotFoundError(message, code=code)
         return SignerError(f"Bad request: {message}", code=code)
 
     def _forbidden_locked_error(self, resp: requests.Response) -> SignerError:
-        """Classify a 403 at endpoints that historically reported locked.
+        """Classify a 403 at endpoints that report a locked signer.
 
-        The wire code distinguishes a genuinely locked signer from other
-        forbidden conditions; pre-code signers send no code and keep the
-        legacy locked mapping.
+        Only the locked wire code maps to the locked error; any other code,
+        including an empty one, is a generic SignerError.
         """
-        code, message = self._error_parts(resp, "Signer is locked")
-        if code in ("", ERR_CODE_LOCKED):
+        code, message = self._error_parts(resp, "Forbidden")
+        if code == ERR_CODE_LOCKED:
             return SignerUnavailableError("Signer is locked", code=code)
         return SignerError(message, code=code)
 
     def _forbidden_rejected_error(self, resp: requests.Response, fallback: str) -> SignerError:
-        """Classify a 403 at endpoints that historically reported rejection.
+        """Classify a 403 at endpoints that report a rejected request.
 
-        A locked code maps to the locked error; forbidden (or no code, for
-        pre-code signers) keeps the rejection error.
+        A locked code maps to the locked error and a forbidden code to the
+        rejection error; any other code, including an empty one, is a
+        generic SignerError.
         """
         code, message = self._error_parts(resp, fallback)
         if code == ERR_CODE_LOCKED:
             return SignerUnavailableError("Signer is locked", code=code)
-        if code in ("", ERR_CODE_FORBIDDEN):
+        if code == ERR_CODE_FORBIDDEN:
             return SigningRejectedError(message, code=code)
         return SignerError(message, code=code)
 

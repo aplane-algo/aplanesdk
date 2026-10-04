@@ -516,9 +516,10 @@ func selectedPreparedResources(key *KeyInfo, txn *types.Transaction) (*LogicSigR
 // declare for the given signer key. Foreign slots carry no auth address, so
 // the signer budgets fees purely from what the request declares; only
 // authorization_kind distinguishes a native-PQ key from an Ed25519 one,
-// because neither publishes a LogicSig resource profile. An empty
-// authorization_kind means an older signer that does not report it, in which
-// case the slot keeps its previous declaration.
+// because neither publishes a LogicSig resource profile. Any other
+// authorization_kind, including an empty one (the key is not a spending
+// account or the signer omitted the field), declares no native-PQ scheme, so
+// the slot keeps its previous declaration rather than guessing.
 func preparedForeignPQScheme(key *KeyInfo, resources *LogicSigResourceUsage) (string, error) {
 	if key == nil || key.AuthorizationKind != AuthorizationKindNativePQ {
 		return "", nil

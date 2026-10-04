@@ -182,7 +182,7 @@ export interface KeyInfo {
   isGenericLsig: boolean;
   /** True when this is a witness key, not a spending account */
   isWitnessKey?: boolean;
-  /** False for witness keys; absent when older signers do not report it */
+  /** False for witness keys; absent when the signer does not report it */
   isSpendingAccount?: boolean;
   /** Transaction-authorization capability and instance metadata */
   boundedAuthorization?: BoundedAuthorizationInfo;
@@ -194,10 +194,6 @@ export interface KeyInfo {
   templateProvenanceStatus?: string;
   /** Human-readable template provenance note */
   templateProvenanceNote?: string;
-  /** Legacy alias for templateProvenanceStatus */
-  templateStatus?: string;
-  /** Legacy alias for templateProvenanceNote */
-  templateWarning?: string;
 }
 
 /**
@@ -973,8 +969,8 @@ export interface SimulationResult {
  * Standard signer HTTP error body for non-2xx responses.
  *
  * `code` carries a stable machine-readable classification (see ErrorCodes);
- * branch on `code`, never on `error` message text. `code` is absent when the
- * signer predates wire error codes.
+ * branch on `code`, never on `error` message text. Every apsigner error
+ * response sets `code`.
  */
 export interface ErrorResponse {
   error: string;

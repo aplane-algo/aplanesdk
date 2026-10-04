@@ -35,10 +35,12 @@ For registries shared with APlane tooling, prefer paths relative to
 `APCLIENT_DATA` or absolute paths. SDK helpers expand `~`, while APlane
 currently treats it as a literal path segment. Use lowercase SSH hostnames so
 URL normalization and `known_hosts` lookup remain consistent across runtimes.
-Schema v2 contains connection profiles only. Loaders accept schema v1 as a
-bounded migration input, discard its retired `published_cosigners` inventory,
-and return the v2 runtime shape. Schema v2 rejects that field. Configure no
-more than 12 `cosigner` profiles; all SDK loaders reject larger registries.
+Schema v2 contains connection profiles only. Every loader requires
+`schema_version: 2` exactly and rejects a missing, null, zero, or `1` value
+(for example `endpoints.yaml schema_version = 1, want 2`); there is no v1
+adapter. Schema v2 rejects the retired `published_cosigners` inventory.
+Configure no more than 12 `cosigner` profiles; all SDK loaders reject larger
+registries.
 
 The former cosigner-reference synchronization client methods and wire types are
 removed. APlane now keeps generation trust inputs and transaction routing

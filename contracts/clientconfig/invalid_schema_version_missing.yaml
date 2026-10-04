@@ -1,6 +1,4 @@
-schema_version: 2
 endpoints:
   primary:
     role: signer
     url: ssh://signer.example.com
-    identity_file: [a, b]
