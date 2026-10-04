@@ -511,9 +511,9 @@ async function buildPreparedGuardedSignOptions(
 
 async function preparedCosignerFlowKinds(
   options: PreparedGuardedGroupOptions,
-): Promise<{ boundedCosigner: boolean; legacyGuarded: boolean }> {
+): Promise<{ boundedCosigner: boolean; cosigner1: boolean }> {
   let boundedCosigner = false;
-  let legacyGuarded = false;
+  let cosigner1 = false;
   for (let index = 0; index < options.preparedGroup.transactions.length; index++) {
     const item = options.preparedGroup.transactions[index];
     let key = item.signerKey;
@@ -521,9 +521,9 @@ async function preparedCosignerFlowKinds(
       key = await options.userClient.getKeyInfo(item.authAddress);
     }
     if (key?.signingFlow === SIGNING_FLOW_BOUNDED_COSIGNER1) boundedCosigner = true;
-    if (key?.signingFlow === SIGNING_FLOW_COSIGNER1) legacyGuarded = true;
+    if (key?.signingFlow === SIGNING_FLOW_COSIGNER1) cosigner1 = true;
   }
-  return { boundedCosigner, legacyGuarded };
+  return { boundedCosigner, cosigner1 };
 }
 
 function decodeCanonicalGroup(groupBytesHex: string[]): Transaction[] {
@@ -1091,7 +1091,7 @@ export async function signPreparedGuardedGroup(
 ): Promise<GuardedSignResult> {
   const flows = await preparedCosignerFlowKinds(options);
   if (flows.boundedCosigner) {
-    if (flows.legacyGuarded) {
+    if (flows.cosigner1) {
       throw new SignerError("cannot mix cosigner1 and bounded-cosigner1 targets in one group");
     }
     return signPreparedBoundedCosignerGroup(options);
@@ -2175,13 +2175,11 @@ function accountStatus(accountInfo: AccountInfoResult | Record<string, any>): st
   return String((accountInfo as Record<string, any>).status || "");
 }
 
-function applyPrepFee(params: Record<string, any>, fee?: number, useFlatFee?: boolean): void {
+function applyPrepFee(params: Record<string, any>, fee?: number): void {
   // No fee-per-byte mode: fee is always flat microAlgos, so a set fee can never
   // be silently reinterpreted as EstimateSize*fee. undefined means unset (keep
   // the suggested fee); an explicit number (including 0, used for fee pooling)
-  // is applied as a flat fee. useFlatFee is accepted for signature
-  // compatibility but no longer selects a per-byte fee.
-  void useFlatFee;
+  // is applied as a flat fee.
   if (fee === undefined) {
     return;
   }
@@ -3096,7 +3094,7 @@ export class SignerClient {
     }
 
     const suggestedParams = await algodClient.getTransactionParams().do();
-    applyPrepFee(suggestedParams, params.fee, params.useFlatFee);
+    applyPrepFee(suggestedParams, params.fee);
 
     const senderInfo = await algodClient.accountInformation(params.sender).do();
     const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
@@ -3152,7 +3150,7 @@ export class SignerClient {
     }
 
     const suggestedParams = await algodClient.getTransactionParams().do();
-    applyPrepFee(suggestedParams, params.fee, params.useFlatFee);
+    applyPrepFee(suggestedParams, params.fee);
 
     const senderInfo = await algodClient.accountInformation(params.sender).do();
     const receiverInfo = await algodClient.accountInformation(params.receiver).do();
@@ -3214,7 +3212,7 @@ export class SignerClient {
     }
 
     const suggestedParams = await algodClient.getTransactionParams().do();
-    applyPrepFee(suggestedParams, params.fee, params.useFlatFee);
+    applyPrepFee(suggestedParams, params.fee);
 
     const senderInfo = await algodClient.accountInformation(params.sender).do();
     const checks = asaOptInChecks(senderInfo, params.assetId, Number(suggestedParams.fee || 0));
@@ -3260,7 +3258,7 @@ export class SignerClient {
     }
 
     const suggestedParams = await algodClient.getTransactionParams().do();
-    applyPrepFee(suggestedParams, params.fee, params.useFlatFee);
+    applyPrepFee(suggestedParams, params.fee);
 
     const senderInfo = await algodClient.accountInformation(params.sender).do();
     const closeInfo = await algodClient.accountInformation(params.closeTo).do();
@@ -3305,7 +3303,7 @@ export class SignerClient {
     }
 
     const suggestedParams = await algodClient.getTransactionParams().do();
-    applyPrepFee(suggestedParams, params.fee, params.useFlatFee);
+    applyPrepFee(suggestedParams, params.fee);
 
     const senderInfo = await algodClient.accountInformation(params.sender).do();
     const checks = accountCloseChecks(senderInfo, Number(suggestedParams.fee || 0));
@@ -3345,7 +3343,7 @@ export class SignerClient {
     }
 
     const suggestedParams = await algodClient.getTransactionParams().do();
-    applyPrepFee(suggestedParams, params.fee, params.useFlatFee);
+    applyPrepFee(suggestedParams, params.fee);
 
     const senderInfo = await algodClient.accountInformation(params.sender).do();
     const targetInfo = params.rekeyTo === params.sender
@@ -3386,7 +3384,7 @@ export class SignerClient {
     validateKeyregParams(params);
 
     const suggestedParams = await algodClient.getTransactionParams().do();
-    applyPrepFee(suggestedParams, params.fee, params.useFlatFee);
+    applyPrepFee(suggestedParams, params.fee);
 
     const senderInfo = await algodClient.accountInformation(params.sender).do();
     const txn = algosdk.makeKeyRegistrationTxnWithSuggestedParamsFromObject({
@@ -3483,7 +3481,7 @@ export class SignerClient {
     }
 
     const suggestedParams = await algodClient.getTransactionParams().do();
-    applyPrepFee(suggestedParams, params.fee, params.useFlatFee);
+    applyPrepFee(suggestedParams, params.fee);
 
     const senderInfo = await algodClient.accountInformation(params.sender).do();
     const txn = algosdk.makeApplicationCallTxnFromObject({
@@ -3537,7 +3535,7 @@ export class SignerClient {
     }
 
     const suggestedParams = await algodClient.getTransactionParams().do();
-    applyPrepFee(suggestedParams, params.fee, params.useFlatFee);
+    applyPrepFee(suggestedParams, params.fee);
 
     const senderInfo = await algodClient.accountInformation(params.sender).do();
     const txn = algosdk.makeApplicationCreateTxnFromObject({

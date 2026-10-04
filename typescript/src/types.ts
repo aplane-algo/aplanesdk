@@ -747,7 +747,6 @@ export interface PaymentPrepParams {
   amount: number | bigint;
   note?: Uint8Array;
   fee?: number;
-  useFlatFee?: boolean;
 }
 
 /**
@@ -760,7 +759,6 @@ export interface AsaTransferPrepParams {
   amount: number | bigint;
   note?: Uint8Array;
   fee?: number;
-  useFlatFee?: boolean;
 }
 
 /**
@@ -771,7 +769,6 @@ export interface AsaOptInPrepParams {
   assetId: number | bigint;
   note?: Uint8Array;
   fee?: number;
-  useFlatFee?: boolean;
 }
 
 /**
@@ -783,7 +780,6 @@ export interface AsaOptOutPrepParams {
   closeTo: string;
   note?: Uint8Array;
   fee?: number;
-  useFlatFee?: boolean;
 }
 
 /**
@@ -794,7 +790,6 @@ export interface AccountClosePrepParams {
   closeTo: string;
   note?: Uint8Array;
   fee?: number;
-  useFlatFee?: boolean;
 }
 
 /**
@@ -805,7 +800,6 @@ export interface RekeyPrepParams {
   rekeyTo: string;
   note?: Uint8Array;
   fee?: number;
-  useFlatFee?: boolean;
 }
 
 /**
@@ -822,7 +816,6 @@ export interface KeyregPrepParams {
   nonParticipation?: boolean;
   note?: Uint8Array;
   fee?: number;
-  useFlatFee?: boolean;
 }
 
 /**
@@ -846,7 +839,6 @@ export interface AppCallPrepParams {
   extraPages?: number | bigint;
   note?: Uint8Array;
   fee?: number;
-  useFlatFee?: boolean;
 }
 
 /**
@@ -877,7 +869,6 @@ export interface AppDeployPrepParams {
   optIn?: boolean;
   note?: Uint8Array;
   fee?: number;
-  useFlatFee?: boolean;
 }
 
 /**

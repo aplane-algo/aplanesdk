@@ -482,7 +482,6 @@ describe("SignerClient", () => {
         receiver,
         amount: 10_000,
         fee: 1000,
-        useFlatFee: true,
       });
 
       assert.equal(prepared.authAddress, sender);
@@ -492,7 +491,7 @@ describe("SignerClient", () => {
       assert.equal(prepared.checks?.[0].name, "payment_balance");
     });
 
-    it("treats a set fee as flat microAlgos without useFlatFee", async () => {
+    it("treats a set fee as flat microAlgos", async () => {
       const sender = testAddress(1);
       const receiver = testAddress(2);
       const algod = mockAlgod({ [sender]: { amount: 2_000_000, minBalance: 100_000 } });
@@ -504,7 +503,7 @@ describe("SignerClient", () => {
         sender,
         receiver,
         amount: 10_000,
-        fee: 5000, // no useFlatFee: must still be a flat 5000, never EstimateSize*5000
+        fee: 5000, // must be a flat 5000, never EstimateSize*5000
       });
 
       assert.equal(String((prepared.transaction as any).fee), "5000");
@@ -808,7 +807,6 @@ describe("SignerClient", () => {
         foreignApps: [8],
         foreignAssets: [1001],
         fee: 1000,
-        useFlatFee: true,
       });
 
       const appCall = (prepared.transaction as any).applicationCall;
@@ -947,8 +945,8 @@ describe("SignerClient", () => {
       const client = new SignerClient("http://localhost:11270", "test-token");
       await assert.rejects(
         client.preparePaymentGroup(algod, [
-          { sender, receiver: receiver1, amount: 10_000, fee: 1000, useFlatFee: true },
-          { sender, receiver: receiver2, amount: 10_000, fee: 1000, useFlatFee: true },
+          { sender, receiver: receiver1, amount: 10_000, fee: 1000 },
+          { sender, receiver: receiver2, amount: 10_000, fee: 1000 },
         ]),
         /payment group insufficient funds/,
       );

@@ -64,19 +64,6 @@ type AppCallInfo struct {
 	Method string `json:"method,omitempty"`
 }
 
-// SignResponse is the legacy single-transaction response shape.
-//
-// The /sign endpoint returns GroupSignResponse. This type is retained for
-// source compatibility with older client code.
-type SignResponse struct {
-	Approved        bool     `json:"approved"`
-	Signature       string   `json:"signature,omitempty"`
-	LsigBytecode    string   `json:"lsig_bytecode,omitempty"`
-	LsigArgsOrdered []string `json:"lsig_args_ordered,omitempty"`
-	SignedTxn       string   `json:"signed_txn,omitempty"`
-	Error           string   `json:"error,omitempty"`
-}
-
 // GroupSignRequest is the request payload for the /sign endpoint.
 type GroupSignRequest struct {
 	RequestID string        `json:"request_id,omitempty"`
@@ -488,10 +475,6 @@ type PlanGroupResponse struct {
 	Error        string          `json:"error,omitempty"`
 }
 
-// GroupPlanResponse is kept as a compatibility alias for callers using the
-// older response name.
-type GroupPlanResponse = PlanGroupResponse
-
 // ProtocolVersion identifies a signer wire-protocol version.
 type ProtocolVersion struct {
 	Major int `json:"major"`
@@ -536,10 +519,6 @@ type RuntimeArg struct {
 	MaxSize     int    `json:"max_size,omitempty"`
 }
 
-// RuntimeArgInfo is kept as a compatibility alias for callers using the
-// older runtime-argument name.
-type RuntimeArgInfo = RuntimeArg
-
 // SigningArg describes a key-file-owned signing argument returned from /keys.
 // It has the same shape as RuntimeArg but a different authority.
 type SigningArg = RuntimeArg
@@ -552,10 +531,6 @@ type InputMode struct {
 	ByteLength int    `json:"byte_length,omitempty"`
 	InputType  string `json:"input_type,omitempty"`
 }
-
-// InputModeInfo is kept as a compatibility alias for callers using the server
-// DTO name.
-type InputModeInfo = InputMode
 
 // CreationParam describes a parameter for key generation.
 type CreationParam struct {

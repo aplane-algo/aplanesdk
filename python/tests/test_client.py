@@ -2721,7 +2721,6 @@ class TestPrepHelpers:
                 receiver=receiver,
                 amount=10_000,
                 fee=1000,
-                use_flat_fee=True,
             )
 
         assert prepared.auth_address == sender
@@ -2987,7 +2986,6 @@ class TestPrepHelpers:
                 foreign_apps=[8],
                 foreign_assets=[1001],
                 fee=1000,
-                use_flat_fee=True,
             )
 
         assert prepared.auth_address == sender
@@ -3139,14 +3137,12 @@ class TestPrepHelpers:
                         "receiver": receiver1,
                         "amount": 10_000,
                         "fee": 1000,
-                        "use_flat_fee": True,
                     },
                     {
                         "sender": sender,
                         "receiver": receiver2,
                         "amount": 10_000,
                         "fee": 1000,
-                        "use_flat_fee": True,
                     },
                 ])
 
@@ -3635,19 +3631,19 @@ class TestApplyPrepFee:
         from aplanesdk.signer import _apply_prep_fee
 
         p = _FeeParams()
-        _apply_prep_fee(p, 5000, False)
+        _apply_prep_fee(p, 5000)
         assert p.fee == 5000 and p.flat_fee is True
 
     def test_explicit_zero_is_flat(self):
         from aplanesdk.signer import _apply_prep_fee
 
         p = _FeeParams()
-        _apply_prep_fee(p, 0, False)
+        _apply_prep_fee(p, 0)
         assert p.fee == 0 and p.flat_fee is True
 
     def test_none_keeps_suggested(self):
         from aplanesdk.signer import _apply_prep_fee
 
         p = _FeeParams()
-        _apply_prep_fee(p, None, False)
+        _apply_prep_fee(p, None)
         assert p.fee == 7 and p.flat_fee is False

@@ -291,12 +291,12 @@ func SignPreparedGuardedGroup(opts PreparedGuardedGroupOptions) (*GuardedSignRes
 // SignPreparedGuardedGroupWithContext is the context-aware form of
 // SignPreparedGuardedGroup.
 func SignPreparedGuardedGroupWithContext(ctx context.Context, opts PreparedGuardedGroupOptions) (*GuardedSignResult, error) {
-	resolvedOpts, hasBoundedCosigner, hasLegacyGuarded, err := resolvePreparedCosignerFlowKinds(ctx, opts)
+	resolvedOpts, hasBoundedCosigner, hasCosigner1, err := resolvePreparedCosignerFlowKinds(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
 	if hasBoundedCosigner {
-		if hasLegacyGuarded {
+		if hasCosigner1 {
 			return nil, fmt.Errorf("cannot mix cosigner1 and bounded-cosigner1 targets in one group")
 		}
 		return signPreparedBoundedCosignerGroupWithContext(ctx, resolvedOpts)
@@ -311,7 +311,7 @@ func SignPreparedGuardedGroupWithContext(ctx context.Context, opts PreparedGuard
 func resolvePreparedCosignerFlowKinds(ctx context.Context, opts PreparedGuardedGroupOptions) (
 	resolved PreparedGuardedGroupOptions,
 	boundedCosigner bool,
-	legacyGuarded bool,
+	cosigner1 bool,
 	err error,
 ) {
 	if opts.UserClient == nil {
@@ -339,10 +339,10 @@ func resolvePreparedCosignerFlowKinds(ctx context.Context, opts PreparedGuardedG
 		case SigningFlowBoundedCosigner1:
 			boundedCosigner = true
 		case SigningFlowCosigner1:
-			legacyGuarded = true
+			cosigner1 = true
 		}
 	}
-	return resolved, boundedCosigner, legacyGuarded, nil
+	return resolved, boundedCosigner, cosigner1, nil
 }
 
 func buildPreparedGuardedSignOptions(ctx context.Context, opts PreparedGuardedGroupOptions) (GuardedSignOptions, error) {

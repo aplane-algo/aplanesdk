@@ -1811,13 +1811,11 @@ def _find_spendable_key(keys: List[KeyInfo], address: str) -> Optional[KeyInfo]:
     return None
 
 
-def _apply_prep_fee(params: Any, fee: Optional[int], use_flat_fee: bool) -> None:
+def _apply_prep_fee(params: Any, fee: Optional[int]) -> None:
     # No fee-per-byte mode: fee is always flat microAlgos, so a set fee can
     # never be silently reinterpreted as EstimateSize*fee. None means unset
     # (keep the suggested fee); an explicit int (including 0, used for fee
-    # pooling) is applied as a flat fee. use_flat_fee is accepted for signature
-    # compatibility but no longer selects a per-byte fee.
-    _ = use_flat_fee
+    # pooling) is applied as a flat fee.
     if fee is None:
         return
     params.fee = fee
@@ -3017,7 +3015,6 @@ class SignerClient:
         amount: int,
         note: Optional[bytes] = None,
         fee: Optional[int] = None,
-        use_flat_fee: bool = False,
     ) -> PreparedTransaction:
         """Build a prepared ALGO payment transaction."""
         if algod_client is None:
@@ -3028,7 +3025,7 @@ class SignerClient:
             raise ValueError("receiver is required")
 
         params = algod_client.suggested_params()
-        _apply_prep_fee(params, fee, use_flat_fee)
+        _apply_prep_fee(params, fee)
 
         sender_info = algod_client.account_info(sender)
         txn = transaction.PaymentTxn(
@@ -3072,7 +3069,6 @@ class SignerClient:
         amount: int,
         note: Optional[bytes] = None,
         fee: Optional[int] = None,
-        use_flat_fee: bool = False,
     ) -> PreparedTransaction:
         """Build a prepared ASA transfer transaction."""
         if algod_client is None:
@@ -3085,7 +3081,7 @@ class SignerClient:
             raise ValueError("asset_id is required")
 
         params = algod_client.suggested_params()
-        _apply_prep_fee(params, fee, use_flat_fee)
+        _apply_prep_fee(params, fee)
 
         sender_info = algod_client.account_info(sender)
         receiver_info = algod_client.account_info(receiver)
@@ -3135,7 +3131,6 @@ class SignerClient:
         asset_id: int,
         note: Optional[bytes] = None,
         fee: Optional[int] = None,
-        use_flat_fee: bool = False,
     ) -> PreparedTransaction:
         """Build a prepared ASA opt-in transaction."""
         if algod_client is None:
@@ -3146,7 +3141,7 @@ class SignerClient:
             raise ValueError("asset_id is required")
 
         params = algod_client.suggested_params()
-        _apply_prep_fee(params, fee, use_flat_fee)
+        _apply_prep_fee(params, fee)
 
         sender_info = algod_client.account_info(sender)
         checks = _asa_opt_in_checks(sender_info, asset_id, int(getattr(params, "fee", 0)))
@@ -3175,7 +3170,6 @@ class SignerClient:
         close_to: str,
         note: Optional[bytes] = None,
         fee: Optional[int] = None,
-        use_flat_fee: bool = False,
     ) -> PreparedTransaction:
         """Build a prepared ASA opt-out transaction."""
         if algod_client is None:
@@ -3190,7 +3184,7 @@ class SignerClient:
             raise ValueError("asset_id is required")
 
         params = algod_client.suggested_params()
-        _apply_prep_fee(params, fee, use_flat_fee)
+        _apply_prep_fee(params, fee)
 
         sender_info = algod_client.account_info(sender)
         close_info = algod_client.account_info(close_to)
@@ -3220,7 +3214,6 @@ class SignerClient:
         close_to: str,
         note: Optional[bytes] = None,
         fee: Optional[int] = None,
-        use_flat_fee: bool = False,
     ) -> PreparedTransaction:
         """Build a prepared account close transaction."""
         if algod_client is None:
@@ -3233,7 +3226,7 @@ class SignerClient:
             raise ValueError("close_to must differ from sender")
 
         params = algod_client.suggested_params()
-        _apply_prep_fee(params, fee, use_flat_fee)
+        _apply_prep_fee(params, fee)
 
         sender_info = algod_client.account_info(sender)
         checks = _account_close_checks(sender_info, int(getattr(params, "fee", 0)))
@@ -3261,7 +3254,6 @@ class SignerClient:
         rekey_to: str,
         note: Optional[bytes] = None,
         fee: Optional[int] = None,
-        use_flat_fee: bool = False,
     ) -> PreparedTransaction:
         """Build a prepared self-payment rekey transaction."""
         if algod_client is None:
@@ -3272,7 +3264,7 @@ class SignerClient:
             raise ValueError("rekey_to is required")
 
         params = algod_client.suggested_params()
-        _apply_prep_fee(params, fee, use_flat_fee)
+        _apply_prep_fee(params, fee)
 
         sender_info = algod_client.account_info(sender)
         target_info = {"address": rekey_to}
@@ -3309,7 +3301,6 @@ class SignerClient:
         nonpart: bool = False,
         note: Optional[bytes] = None,
         fee: Optional[int] = None,
-        use_flat_fee: bool = False,
     ) -> PreparedTransaction:
         """Build a prepared key registration transaction."""
         if algod_client is None:
@@ -3326,7 +3317,7 @@ class SignerClient:
         )
 
         params = algod_client.suggested_params()
-        _apply_prep_fee(params, fee, use_flat_fee)
+        _apply_prep_fee(params, fee)
 
         sender_info = algod_client.account_info(sender)
         txn = transaction.KeyregTxn(
@@ -3378,7 +3369,6 @@ class SignerClient:
         global_schema: Optional[transaction.StateSchema] = None,
         note: Optional[bytes] = None,
         fee: Optional[int] = None,
-        use_flat_fee: bool = False,
     ) -> PreparedTransaction:
         """Build a prepared raw app-call transaction."""
         return self._prepare_app_call(
@@ -3397,7 +3387,6 @@ class SignerClient:
             global_schema=global_schema,
             note=note,
             fee=fee,
-            use_flat_fee=use_flat_fee,
             app_call_info={"mode": "raw"},
         )
 
@@ -3420,7 +3409,6 @@ class SignerClient:
         global_schema: Optional[transaction.StateSchema] = None,
         note: Optional[bytes] = None,
         fee: Optional[int] = None,
-        use_flat_fee: bool = False,
     ) -> PreparedTransaction:
         """Build a prepared ABI method-call transaction."""
         if not method_signature:
@@ -3451,7 +3439,6 @@ class SignerClient:
             global_schema=global_schema,
             note=note,
             fee=fee,
-            use_flat_fee=use_flat_fee,
             app_call_info={"mode": "abi", "method": method.get_signature()},
         )
 
@@ -3473,7 +3460,6 @@ class SignerClient:
         global_schema: Optional[transaction.StateSchema],
         note: Optional[bytes],
         fee: Optional[int],
-        use_flat_fee: bool,
         app_call_info: Dict[str, str],
     ) -> PreparedTransaction:
         if algod_client is None:
@@ -3488,7 +3474,7 @@ class SignerClient:
             raise ValueError(f"invalid on_complete: {on_complete}")
 
         params = algod_client.suggested_params()
-        _apply_prep_fee(params, fee, use_flat_fee)
+        _apply_prep_fee(params, fee)
 
         sender_info = algod_client.account_info(sender)
         txn = transaction.ApplicationCallTxn(
@@ -3544,7 +3530,6 @@ class SignerClient:
         opt_in: bool = False,
         note: Optional[bytes] = None,
         fee: Optional[int] = None,
-        use_flat_fee: bool = False,
     ) -> PreparedTransaction:
         """Build a prepared application create transaction."""
         if algod_client is None:
@@ -3557,7 +3542,7 @@ class SignerClient:
             raise ValueError("clear_program is required")
 
         params = algod_client.suggested_params()
-        _apply_prep_fee(params, fee, use_flat_fee)
+        _apply_prep_fee(params, fee)
 
         sender_info = algod_client.account_info(sender)
         txn = transaction.ApplicationCreateTxn(
@@ -5026,7 +5011,7 @@ def _prepared_cosigner_flow_kinds(
     prepared_group: PreparedGroup,
 ) -> tuple:
     bounded_cosigner = False
-    legacy_guarded = False
+    cosigner1 = False
     for index, item in enumerate(prepared_group.transactions):
         key = item.signer_key
         if key is None and item.auth_address:
@@ -5041,8 +5026,8 @@ def _prepared_cosigner_flow_kinds(
         if key.signing_flow == SIGNING_FLOW_BOUNDED_COSIGNER1:
             bounded_cosigner = True
         elif key.signing_flow == SIGNING_FLOW_COSIGNER1:
-            legacy_guarded = True
-    return bounded_cosigner, legacy_guarded
+            cosigner1 = True
+    return bounded_cosigner, cosigner1
 
 
 def _decode_canonical_group(group_bytes_hex: List[str]) -> List[transaction.Transaction]:
@@ -5620,11 +5605,11 @@ def sign_prepared_guarded_group(
     The signer /plan endpoint owns canonical group sizing, dummy insertion,
     and authorization-fee pooling before component signatures are collected.
     """
-    has_bounded_cosigner, has_legacy_guarded = _prepared_cosigner_flow_kinds(
+    has_bounded_cosigner, has_cosigner1 = _prepared_cosigner_flow_kinds(
         user_client, prepared_group
     )
     if has_bounded_cosigner:
-        if has_legacy_guarded:
+        if has_cosigner1:
             raise ValueError("cannot mix cosigner1 and bounded-cosigner1 targets in one group")
         return sign_prepared_bounded_cosigner_group(
             user_client=user_client,
