@@ -130,7 +130,7 @@ The SDK reads:
 
 - `endpoints.yaml` for signer/cosigner URLs, ports, paths, and token files
 - the selected endpoint's token for HTTP authentication and SSH mutual proof
-- `.ssh/id_ed25519` for client SSH auth
+- `.ssh/id_ed25519` for client SSH auth. The Python SDK loads Ed25519 or ECDSA (P-256/384/521) key files; the signer refuses RSA and DSA keys, and hardware-backed `sk-` keys are not supported from a key file.
 - `.ssh/known_hosts` for SSH host key verification
 
 Example `endpoints.yaml`:

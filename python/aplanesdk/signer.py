@@ -74,6 +74,12 @@ DEFAULT_SIGNER_PORT = 11270
 DEFAULT_SSH_SETUP_TIMEOUT = 60.0
 CLIENT_ENDPOINTS_FILE = "endpoints.yaml"
 CLIENT_ENDPOINT_SCHEMA_VERSION = 2
+
+# Client SSH keys the signer accepts and this SDK can load from a file. The
+# signer also accepts hardware-backed sk- keys, which paramiko cannot use from
+# a key file. RSA and DSA keys are refused by the signer before signature
+# verification, so they are rejected here with a clear message instead.
+CLIENT_SSH_KEY_REQUIREMENT = "Ed25519 or ECDSA (P-256/384/521)"
 DEFAULT_CLIENT_ENDPOINT_NAME = "primary"
 HEALTH_TIMEOUT = 3
 STATUS_TIMEOUT = 5
@@ -1822,6 +1828,22 @@ def _apply_prep_fee(params: Any, fee: Optional[int]) -> None:
     params.flat_fee = True
 
 
+def _load_client_ssh_key(path: str) -> Any:
+    """Load an SSH client identity the signer accepts (Ed25519 or ECDSA)."""
+    errors = []
+    for key_class in (paramiko.Ed25519Key, paramiko.ECDSAKey):
+        try:
+            return key_class.from_private_key_file(path)
+        except paramiko.ssh_exception.PasswordRequiredException as e:
+            raise SignerError(f"SSH key {path} is encrypted; use an unencrypted key: {e}") from e
+        except (paramiko.ssh_exception.SSHException, ValueError) as e:
+            errors.append(e)
+    raise SignerError(
+        f"Failed to load SSH key {path}: not an {CLIENT_SSH_KEY_REQUIREMENT} private key; "
+        f"the signer does not accept other key types ({errors[-1]})"
+    )
+
+
 def _account_amount(account_info: Any) -> int:
     if isinstance(account_info, dict):
         return int(account_info.get("amount", 0))
@@ -2321,14 +2343,7 @@ class _SSHTunnel:
         if not self._known_hosts_path:
             raise SignerError("known_hosts path is required for SSH host key verification")
 
-        # Load key
-        try:
-            pkey = paramiko.Ed25519Key.from_private_key_file(self._ssh_pkey_path)
-        except paramiko.ssh_exception.SSHException:
-            try:
-                pkey = paramiko.RSAKey.from_private_key_file(self._ssh_pkey_path)
-            except paramiko.ssh_exception.SSHException as e:
-                raise SignerError(f"Failed to load SSH key: {e}")
+        pkey = _load_client_ssh_key(self._ssh_pkey_path)
 
         sock: Optional[socket.socket] = None
         transport: Optional[paramiko.Transport] = None
@@ -2408,6 +2423,11 @@ class _SSHTunnel:
                 ) from exc
             if isinstance(exc, SignerError):
                 raise
+            if isinstance(exc, paramiko.ssh_exception.AuthenticationException):
+                raise SignerError(
+                    f"SSH authentication failed: {exc} "
+                    f"(the signer accepts {CLIENT_SSH_KEY_REQUIREMENT} client keys)"
+                ) from exc
             if isinstance(exc, paramiko.ssh_exception.SSHException):
                 raise SignerError(f"SSH connection failed: {exc}") from exc
             raise
@@ -6041,15 +6061,7 @@ def request_token(
     if not os.path.exists(ssh_key_path):
         raise SignerError(f"SSH key not found: {ssh_key_path}")
 
-    # Load the private key
-    try:
-        pkey = paramiko.Ed25519Key.from_private_key_file(ssh_key_path)
-    except paramiko.ssh_exception.SSHException:
-        # Try RSA if Ed25519 fails
-        try:
-            pkey = paramiko.RSAKey.from_private_key_file(ssh_key_path)
-        except paramiko.ssh_exception.SSHException as e:
-            raise SignerError(f"Failed to load SSH key: {e}")
+    pkey = _load_client_ssh_key(ssh_key_path)
 
     # Set up host key policy
     known_hosts_path = os.path.expanduser(known_hosts_path)
@@ -6152,7 +6164,10 @@ def request_token(
             raise TokenProvisioningError(
                 f"SSH setup timed out after {setup_timeout:g} seconds"
             ) from e
-        raise TokenProvisioningError(f"SSH authentication failed: {e}")
+        raise TokenProvisioningError(
+            f"SSH authentication failed: {e} "
+            f"(the signer accepts {CLIENT_SSH_KEY_REQUIREMENT} client keys)"
+        )
     except paramiko.ssh_exception.SSHException as e:
         client.close()
         if setup_timed_out.is_set() or time.monotonic() >= deadline:

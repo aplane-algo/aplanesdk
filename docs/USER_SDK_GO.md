@@ -84,7 +84,7 @@ The SDK reads:
 - `config.yaml` for network and optional algod config
 - `endpoints.yaml` for signer/cosigner URLs, ports, paths, and token files
 - the selected endpoint's token for HTTP authentication and SSH mutual proof
-- `.ssh/id_ed25519` for client SSH auth
+- `.ssh/id_ed25519` for client SSH auth. The signer accepts Ed25519, ECDSA (P-256/384/521), or hardware-backed `sk-` Ed25519/ECDSA client keys; RSA and DSA keys fail authentication.
 - `.ssh/known_hosts` for SSH host key verification
 
 Example `endpoints.yaml`:

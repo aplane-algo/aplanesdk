@@ -10,12 +10,18 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 )
+
+// clientSSHKeyRequirement names the client SSH keys the signer accepts. It
+// refuses other key types (RSA, DSA, certificates) before verifying a
+// signature, so authentication with one fails.
+const clientSSHKeyRequirement = "Ed25519, ECDSA (P-256/384/521), or hardware-backed sk- Ed25519/ECDSA"
 
 const defaultSSHSetupTimeout = 60 * time.Second
 
@@ -165,6 +171,9 @@ func dialSSHHandshake(
 		}
 		if err == nil {
 			err = context.Canceled
+		}
+		if strings.Contains(err.Error(), "unable to authenticate") {
+			err = fmt.Errorf("%w (the signer accepts %s client keys)", err, clientSSHKeyRequirement)
 		}
 		return nil, err
 	}
