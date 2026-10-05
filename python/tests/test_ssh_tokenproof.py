@@ -186,8 +186,8 @@ def _start_stalled_peer():
 
 def test_ssh_setup_timeout_closes_stalled_peer(tmp_path):
     listener, accepted, peer_closed, thread = _start_stalled_peer()
-    key_path = tmp_path / "id_rsa"
-    paramiko.RSAKey.generate(1024).write_private_key_file(str(key_path))
+    key_path = tmp_path / "id_ecdsa"
+    paramiko.ECDSAKey.generate().write_private_key_file(str(key_path))
     tunnel = _SSHTunnel(
         ssh_host="127.0.0.1",
         ssh_port=listener.getsockname()[1],
@@ -212,8 +212,8 @@ def test_ssh_setup_timeout_closes_stalled_peer(tmp_path):
 
 def test_token_provisioning_setup_timeout_closes_stalled_peer(tmp_path):
     listener, accepted, peer_closed, thread = _start_stalled_peer()
-    key_path = tmp_path / "id_rsa"
-    paramiko.RSAKey.generate(1024).write_private_key_file(str(key_path))
+    key_path = tmp_path / "id_ecdsa"
+    paramiko.ECDSAKey.generate().write_private_key_file(str(key_path))
 
     try:
         with pytest.raises(TokenProvisioningError, match="SSH setup timed out"):
@@ -263,8 +263,8 @@ def test_token_provisioning_host_key_prompt_does_not_consume_setup_deadline(
     tmp_path, monkeypatch
 ):
     listener, done, thread = _start_key_exchange_peer()
-    key_path = tmp_path / "id_rsa"
-    paramiko.RSAKey.generate(1024).write_private_key_file(str(key_path))
+    key_path = tmp_path / "id_ecdsa"
+    paramiko.ECDSAKey.generate().write_private_key_file(str(key_path))
     setup_timeout = 0.5
 
     def slow_operator(_prompt):

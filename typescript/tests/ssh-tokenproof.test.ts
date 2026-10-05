@@ -21,6 +21,8 @@ import {
   encodeTokenProofTranscript,
   normalizeSSHSetupTimeout,
   parseTokenProofMessage,
+  CLIENT_SSH_KEY_REQUIREMENT,
+  sshConnectionFailedMessage,
 } from "../src/ssh-tokenproof.js";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -129,4 +131,14 @@ test("SSH setup timeout rejects values Node timers cannot represent", () => {
   for (const value of [MAX_SSH_SETUP_TIMEOUT_MS + 1, Number.MAX_SAFE_INTEGER]) {
     assert.throws(() => normalizeSSHSetupTimeout(value), /must not exceed/);
   }
+});
+
+test("SSH authentication failures name the key types the signer accepts", () => {
+  const authFailure = Object.assign(new Error("All configured authentication methods failed"), {
+    level: "client-authentication",
+  });
+  assert.ok(sshConnectionFailedMessage(authFailure).includes(CLIENT_SSH_KEY_REQUIREMENT));
+
+  const otherFailure = new Error("connect ECONNREFUSED");
+  assert.equal(sshConnectionFailedMessage(otherFailure), "SSH connection failed: connect ECONNREFUSED");
 });

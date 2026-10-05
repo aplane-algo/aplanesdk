@@ -90,6 +90,7 @@ import {
   SSH_TOKEN_PROOF_USERNAME,
   SSHTokenProofClient,
   normalizeSSHSetupTimeout,
+  sshConnectionFailedMessage,
 } from "./ssh-tokenproof.js";
 import {
   loadConfig,
@@ -1890,7 +1891,7 @@ class SSHTunnel {
       });
 
       this.sshClient.on("error", (err: Error) => {
-        const msg = hostKeyError || `SSH connection failed: ${err.message}`;
+        const msg = hostKeyError || sshConnectionFailedMessage(err);
         failSetup(new SignerUnavailableError(msg));
       });
 

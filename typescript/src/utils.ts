@@ -28,6 +28,7 @@ import {
 import {
   SSH_TOKEN_PROVISIONING_USERNAME,
   normalizeSSHSetupTimeout,
+  sshConnectionFailedMessage,
 } from "./ssh-tokenproof.js";
 
 // Re-export config utilities
@@ -359,7 +360,7 @@ export async function requestToken(
 
     client.on("error", (err: Error) => {
       cleanupSetup();
-      reject(new TokenProvisioningError(hostKeyError || `SSH connection failed: ${err.message}`));
+      reject(new TokenProvisioningError(hostKeyError || sshConnectionFailedMessage(err)));
     });
 
     // ssh2 reports a peer that disconnects mid-handshake with close alone and

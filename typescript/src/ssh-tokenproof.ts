@@ -220,3 +220,22 @@ export class SSHTokenProofClient {
     this.verified = false;
   }
 }
+
+/**
+ * Client SSH keys the signer accepts. The signer refuses other key types (RSA,
+ * DSA, certificates) before signature verification.
+ */
+export const CLIENT_SSH_KEY_REQUIREMENT =
+  "Ed25519, ECDSA (P-256/384/521), or hardware-backed sk- Ed25519/ECDSA";
+
+/**
+ * Formats an SSH connection error, naming the accepted key types when the
+ * failure is client authentication.
+ */
+export function sshConnectionFailedMessage(err: Error): string {
+  const message = `SSH connection failed: ${err.message}`;
+  if ((err as Error & { level?: string }).level === "client-authentication") {
+    return `${message} (the signer accepts ${CLIENT_SSH_KEY_REQUIREMENT} client keys)`;
+  }
+  return message;
+}
