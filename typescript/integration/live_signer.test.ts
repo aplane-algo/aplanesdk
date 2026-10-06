@@ -26,7 +26,6 @@ async function liveSignerClient(): Promise<SignerClient> {
       requiredSshEnv("APLANE_SDK_SSH_KEY_PATH"),
       {
         sshPort: requiredSshPort("APLANE_SDK_SSH_PORT"),
-        signerPort: requiredSshPort("APLANE_SDK_SIGNER_PORT"),
         knownHostsPath: requiredSshEnv("APLANE_SDK_KNOWN_HOSTS_PATH"),
       }
     );

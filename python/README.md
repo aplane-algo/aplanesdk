@@ -102,7 +102,6 @@ endpoints:
   primary:
     role: signer
     url: ssh://localhost:1127
-    signer_port: 11270
     identity_file: .ssh/id_ed25519
     known_hosts_path: .ssh/known_hosts
 ```
@@ -118,7 +117,6 @@ client = SignerClient.connect_ssh(
     ssh_key_path="~/aplane/apclient/.ssh/id_ed25519",
     known_hosts_path="~/aplane/apclient/.ssh/known_hosts",
     ssh_port=1127,                # default: 1127
-    signer_port=11270,            # default: 11270
     timeout=30,                   # optional explicit shorter request timeout
     ssh_setup_timeout=60,         # TCP dial + SSH authentication only
 )

@@ -38,7 +38,6 @@ func liveSignerClient(t *testing.T) *SignerClient {
 	if host := strings.TrimSpace(os.Getenv("APLANE_SDK_SSH_HOST")); host != "" {
 		client, err := ConnectSSH(host, token, liveRequiredEnv(t, "APLANE_SDK_SSH_KEY_PATH"), &SSHConnectOptions{
 			SSHPort:        liveRequiredPort(t, "APLANE_SDK_SSH_PORT"),
-			SignerPort:     liveRequiredPort(t, "APLANE_SDK_SIGNER_PORT"),
 			KnownHostsPath: liveRequiredEnv(t, "APLANE_SDK_KNOWN_HOSTS_PATH"),
 		})
 		if err != nil {

@@ -100,7 +100,6 @@ import {
   clientEndpointSshHostPort,
   resolveDataDir,
   expandPath,
-  DEFAULT_SIGNER_PORT,
   DEFAULT_SSH_PORT,
 } from "./config.js";
 
@@ -2692,7 +2691,6 @@ export class SignerClient {
     options: ConnectSshOptions = {}
   ): Promise<SignerClient> {
     const sshPort = options.sshPort ?? DEFAULT_SSH_PORT;
-    const signerPort = options.signerPort ?? DEFAULT_SIGNER_PORT;
     const localPort = options.localPort ?? 0;
     const timeout = options.timeout;
     const sshSetupTimeout = normalizeSSHSetupTimeout(options.sshSetupTimeout);
@@ -2718,8 +2716,10 @@ export class SignerClient {
         sshPort,
         token,
         privateKeyPath: expandedKeyPath,
+        // The server checks only that the destination is loopback and
+        // forwards to its own REST listener, so the port is nominal.
         remoteHost: "127.0.0.1",
-        remotePort: signerPort,
+        remotePort: 11270,
         localPort,
         knownHostsPath,
         trustOnFirstUse,
@@ -2745,7 +2745,7 @@ export class SignerClient {
     if (!healthy) {
       await client.close();
       throw new SignerUnavailableError(
-        `Connected via SSH but signer not responding on port ${signerPort}`
+        "Connected via SSH but signer not responding"
       );
     }
 
@@ -2793,8 +2793,6 @@ export class SignerClient {
       }
       return SignerClient.connectSsh(host, token, endpoint.identityFile, {
         sshPort,
-        signerPort: endpoint.signerPort,
-        localPort: endpoint.localPort,
         timeout,
         sshSetupTimeout: options.sshSetupTimeout,
         signal: options.signal,

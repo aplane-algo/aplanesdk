@@ -3616,8 +3616,6 @@ describe("loadClientEndpointRegistry", () => {
       const registry = loadClientEndpointRegistry(tmpDir);
       assert.equal(registry.default, "primary");
       assert.equal(registry.endpoints.primary.url, "ssh://signer.example.com:2222");
-      assert.equal(registry.endpoints.primary.signerPort, 11271);
-      assert.equal(registry.endpoints.primary.localPort, 18080);
       assert.equal(
         registry.endpoints.primary.identityFile,
         path.join(tmpDir, ".ssh", "primary"),
@@ -3659,7 +3657,8 @@ describe("loadClientEndpointRegistry", () => {
   for (const [fixture, message] of [
     ["invalid_self_signer.yaml", 'endpoint "primary": url "self" is not supported'],
     ["invalid_self_cosigner.yaml", 'endpoint "cosigner": url "self" is not supported'],
-    ["invalid_cosigner_local_port.yaml", 'endpoint "cosigner": local_port is not supported'],
+    ["invalid_retired_signer_port.yaml", "signer_port"],
+    ["invalid_retired_local_port.yaml", "local_port"],
     ["invalid_13_cosigner_endpoints.yaml", "configures 13 cosigner endpoints; maximum is 12"],
     ["invalid_v2_published_cosigners.yaml", "published_cosigners"],
   ]) {
@@ -3677,7 +3676,6 @@ describe("loadClientEndpointRegistry", () => {
 
   for (const fixture of [
     "valid_12_cosigner_endpoints.yaml",
-    "valid_cosigner_zero_local_port.yaml",
   ]) {
     it(`accepts ${fixture}`, () => {
       const tmpDir = fixtureDir(fixture);
@@ -3686,9 +3684,6 @@ describe("loadClientEndpointRegistry", () => {
         assert.equal(registry.schemaVersion, 2);
         if (fixture === "valid_12_cosigner_endpoints.yaml") {
           assert.equal(Object.keys(registry.endpoints).length, 12);
-        }
-        if (fixture === "valid_cosigner_zero_local_port.yaml") {
-          assert.equal(registry.endpoints.cosigner.localPort, 0);
         }
       } finally {
         fs.rmSync(tmpDir, { recursive: true });
@@ -4075,7 +4070,7 @@ describe("fromEnv", () => {
   for (const [fixture, message] of [
     ["invalid_self_signer.yaml", 'endpoint "primary": url "self" is not supported'],
     ["invalid_self_cosigner.yaml", 'endpoint "cosigner": url "self" is not supported'],
-    ["invalid_cosigner_local_port.yaml", 'endpoint "cosigner": local_port is not supported'],
+    ["invalid_retired_signer_port.yaml", "signer_port"],
   ]) {
     it(`rejects ${fixture} before token loading`, async () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-test-"));

@@ -183,7 +183,6 @@ func ConnectSSH(host, token, sshKeyPath string, opts *SSHConnectOptions) (*Signe
 // returned client's lifetime is independent of ctx.
 func ConnectSSHWithContext(ctx context.Context, host, token, sshKeyPath string, opts *SSHConnectOptions) (*SignerClient, error) {
 	sshPort := DefaultSSHPort
-	signerPort := DefaultSignerPort
 	timeout := DefaultTimeout
 	sshSetupTimeout := defaultSSHSetupTimeout
 	localPort := 0
@@ -193,9 +192,6 @@ func ConnectSSHWithContext(ctx context.Context, host, token, sshKeyPath string, 
 	if opts != nil {
 		if opts.SSHPort > 0 {
 			sshPort = opts.SSHPort
-		}
-		if opts.SignerPort > 0 {
-			signerPort = opts.SignerPort
 		}
 		if opts.Timeout > 0 {
 			timeout = opts.Timeout
@@ -214,7 +210,7 @@ func ConnectSSHWithContext(ctx context.Context, host, token, sshKeyPath string, 
 	trustOnFirstUse := opts != nil && opts.TrustOnFirstUse
 	knownHostsPath = ExpandPath(knownHostsPath)
 	tunnel := &sshTunnel{knownHostsPath: knownHostsPath, trustOnFirstUse: trustOnFirstUse}
-	resolvedLocalPort, err := tunnel.connect(ctx, host, sshPort, signerPort, localPort, token, ExpandPath(sshKeyPath), sshSetupTimeout)
+	resolvedLocalPort, err := tunnel.connect(ctx, host, sshPort, localPort, token, ExpandPath(sshKeyPath), sshSetupTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("failed to establish SSH tunnel: %w", err)
 	}
@@ -285,8 +281,6 @@ func FromEnvWithContext(ctx context.Context, opts *FromEnvOptions) (*SignerClien
 		}
 		sshOpts := &SSHConnectOptions{
 			SSHPort:         sshPort,
-			SignerPort:      endpoint.SignerPort,
-			LocalPort:       endpoint.LocalPort,
 			KnownHostsPath:  endpoint.KnownHostsPath,
 			TrustOnFirstUse: trustOnFirstUse,
 			SSHSetupTimeout: sshSetupTimeout,

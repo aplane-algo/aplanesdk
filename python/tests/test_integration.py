@@ -30,7 +30,6 @@ def _live_signer_client() -> SignerClient:
             token,
             _required_ssh_env("APLANE_SDK_SSH_KEY_PATH"),
             ssh_port=_required_ssh_port("APLANE_SDK_SSH_PORT"),
-            signer_port=_required_ssh_port("APLANE_SDK_SIGNER_PORT"),
             known_hosts_path=_required_ssh_env("APLANE_SDK_KNOWN_HOSTS_PATH"),
         )
         return client

@@ -39,8 +39,6 @@ type ClientEndpointRegistry struct {
 type ClientEndpointConfig struct {
 	Role           string `yaml:"role"`
 	URL            string `yaml:"url"`
-	SignerPort     int    `yaml:"signer_port,omitempty"`
-	LocalPort      int    `yaml:"local_port,omitempty"`
 	IdentityFile   string `yaml:"identity_file,omitempty"`
 	KnownHostsPath string `yaml:"known_hosts_path,omitempty"`
 	TokenFile      string `yaml:"token_file,omitempty"`
@@ -139,11 +137,6 @@ func validateClientEndpointRegistryScalarTypes(data []byte) error {
 				return err
 			}
 		}
-		for _, field := range []string{"signer_port", "local_port"} {
-			if err := requireYAMLScalarType(yamlMappingValue(endpoint, field), label+" "+field, "!!int", "!!null"); err != nil {
-				return err
-			}
-		}
 	}
 	return nil
 }
@@ -220,9 +213,6 @@ func normalizeClientEndpoint(dataDir, alias string, endpoint ClientEndpointConfi
 	}
 	endpoint.TokenFile = ResolvePath(endpoint.TokenFile, dataDir)
 	if strings.HasPrefix(endpoint.URL, "ssh://") {
-		if endpoint.SignerPort == 0 {
-			endpoint.SignerPort = DefaultSignerPort
-		}
 		if endpoint.IdentityFile == "" {
 			endpoint.IdentityFile = ".ssh/id_ed25519"
 		}
@@ -236,15 +226,6 @@ func normalizeClientEndpoint(dataDir, alias string, endpoint ClientEndpointConfi
 }
 
 func validateClientEndpointURL(alias string, endpoint ClientEndpointConfig) error {
-	if endpoint.SignerPort < 0 || endpoint.SignerPort > 65535 {
-		return fmt.Errorf("signer_port must be 1-65535 when set")
-	}
-	if endpoint.LocalPort < 0 || endpoint.LocalPort > 65535 {
-		return fmt.Errorf("local_port must be 1-65535 when set")
-	}
-	if endpoint.Role == ClientEndpointRoleCosigner && endpoint.LocalPort != 0 {
-		return fmt.Errorf("local_port is not supported for cosigner endpoints")
-	}
 	if endpoint.URL == "self" {
 		return fmt.Errorf("url %q is not supported; configure an explicit ssh://, https://, or loopback http:// endpoint", endpoint.URL)
 	}

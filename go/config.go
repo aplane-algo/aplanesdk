@@ -17,9 +17,8 @@ import (
 
 // Default ports matching apsigner defaults.
 const (
-	DefaultSignerPort = 11270
-	DefaultSSHPort    = 1127
-	DefaultTimeout    = 90 // seconds
+	DefaultSSHPort = 1127
+	DefaultTimeout = 90 // seconds
 )
 
 const maxNetworkIDLength = 64

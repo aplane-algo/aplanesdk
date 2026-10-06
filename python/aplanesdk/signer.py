@@ -17,7 +17,6 @@ Example endpoints.yaml:
       primary:
         role: signer
         url: ssh://signer.example.com:1127
-        signer_port: 11270
 
 Token Provisioning:
     from aplanesdk import request_token_to_file
@@ -70,7 +69,6 @@ from ._ssh_tokenproof import TokenProofClient
 
 # Default ports (match apshell/apsigner defaults)
 DEFAULT_SSH_PORT = 1127
-DEFAULT_SIGNER_PORT = 11270
 DEFAULT_SSH_SETUP_TIMEOUT = 60.0
 CLIENT_ENDPOINTS_FILE = "endpoints.yaml"
 CLIENT_ENDPOINT_SCHEMA_VERSION = 2
@@ -369,8 +367,6 @@ class ClientEndpointConfig:
 
     role: str
     url: str
-    signer_port: int = 0
-    local_port: int = 0
     identity_file: str = ""
     known_hosts_path: str = ""
     token_file: str = ""
@@ -813,14 +809,6 @@ def _require_known_fields(value: Dict[str, Any], allowed: set[str], label: str) 
         raise SignerError(f'{label} contains unknown field "{field}"')
 
 
-def _optional_integer(value: Any, field: str) -> int:
-    if value is None:
-        return 0
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise SignerError(f"{field} must be an integer")
-    return cast(int, value)
-
-
 def _optional_string(value: Any, field: str) -> str:
     if value is None:
         return ""
@@ -862,8 +850,6 @@ def _normalize_client_endpoint(
         {
             "role",
             "url",
-            "signer_port",
-            "local_port",
             "identity_file",
             "known_hosts_path",
             "token_file",
@@ -879,13 +865,6 @@ def _normalize_client_endpoint(
     if not endpoint_url:
         raise SignerError(f'endpoint "{alias}": url is required')
 
-    signer_port = _optional_integer(raw.get("signer_port"), "signer_port")
-    local_port = _optional_integer(raw.get("local_port"), "local_port")
-    for field, port in (("signer_port", signer_port), ("local_port", local_port)):
-        if port < 0 or port > 65535:
-            raise SignerError(f'endpoint "{alias}": {field} must be 1-65535 when set')
-    if role == "cosigner" and local_port != 0:
-        raise SignerError(f'endpoint "{alias}": local_port is not supported for cosigner endpoints')
     if endpoint_url == "self":
         raise SignerError(
             f'endpoint "{alias}": url "self" is not supported; configure an explicit '
@@ -919,7 +898,6 @@ def _normalize_client_endpoint(
     identity_file = _optional_string(raw.get("identity_file"), "identity_file")
     known_hosts_path = _optional_string(raw.get("known_hosts_path"), "known_hosts_path")
     if endpoint_url.startswith("ssh://"):
-        signer_port = signer_port or DEFAULT_SIGNER_PORT
         identity_file = identity_file or ".ssh/id_ed25519"
         known_hosts_path = known_hosts_path or ".ssh/known_hosts"
         identity_file = _resolve_path(identity_file, data_dir)
@@ -928,8 +906,6 @@ def _normalize_client_endpoint(
     return ClientEndpointConfig(
         role=role,
         url=endpoint_url,
-        signer_port=signer_port,
-        local_port=local_port,
         identity_file=identity_file,
         known_hosts_path=known_hosts_path,
         token_file=_resolve_path(token_file, data_dir),
@@ -2626,7 +2602,6 @@ class SignerClient:
         token: str,
         ssh_key_path: str,
         ssh_port: int = DEFAULT_SSH_PORT,
-        signer_port: int = DEFAULT_SIGNER_PORT,
         timeout: Optional[int] = None,
         known_hosts_path: str = "",
         trust_on_first_use: bool = False,
@@ -2645,10 +2620,12 @@ class SignerClient:
             token: Authentication token (proven during SSH auth and used by the HTTP API)
             ssh_key_path: Path to the APlane client SSH private key
             ssh_port: SSH port on remote (default: 1127)
-            signer_port: Signer REST port on remote (default: 11270)
             timeout: Optional explicit request timeout in seconds
             known_hosts_path: Path to known_hosts file for host key verification (required)
             trust_on_first_use: If true, auto-trust unknown host keys (default: false)
+            local_port: Local tunnel port (default: choose a free one). There is no
+                remote REST port argument: the signer's SSH server forwards every
+                channel to its own REST listener.
             ssh_setup_timeout: Maximum seconds for TCP connection and SSH authentication
 
         Returns:
@@ -2672,8 +2649,10 @@ class SignerClient:
                 ssh_port=ssh_port,
                 token=token,
                 ssh_pkey_path=ssh_key_path,
+                # The server checks only that the destination is loopback and
+                # forwards to its own REST listener, so the port is nominal.
                 remote_host="127.0.0.1",
-                remote_port=signer_port,
+                remote_port=11270,
                 local_port=local_port,
                 known_hosts_path=known_hosts_path,
                 trust_on_first_use=trust_on_first_use,
@@ -2693,7 +2672,7 @@ class SignerClient:
         if not client.health():
             client.close()
             raise SignerUnavailableError(
-                f"Connected via SSH but signer not responding on port {signer_port}"
+                "Connected via SSH but signer not responding"
             )
 
         return client
@@ -2755,11 +2734,9 @@ class SignerClient:
                 token=token,
                 ssh_key_path=selected.identity_file,
                 ssh_port=ssh_port,
-                signer_port=selected.signer_port,
                 timeout=timeout,
                 known_hosts_path=selected.known_hosts_path,
                 trust_on_first_use=trust_on_first_use,
-                local_port=selected.local_port,
                 ssh_setup_timeout=ssh_setup_timeout,
             )
         return cls(selected.url, token, timeout)

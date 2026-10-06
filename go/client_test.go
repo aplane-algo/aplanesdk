@@ -115,7 +115,7 @@ func TestFromEnvRejectsInvalidEndpointBeforeTokenLoading(t *testing.T) {
 	}{
 		{"invalid_self_signer.yaml", `endpoint "primary": url "self" is not supported`},
 		{"invalid_self_cosigner.yaml", `endpoint "cosigner": url "self" is not supported`},
-		{"invalid_cosigner_local_port.yaml", `endpoint "cosigner": local_port is not supported`},
+		{"invalid_retired_signer_port.yaml", "signer_port"},
 	} {
 		t.Run(tc.fixture, func(t *testing.T) {
 			_, err := FromEnv(&FromEnvOptions{DataDir: copyEndpointFixture(t, tc.fixture)})

@@ -737,12 +737,14 @@ type Config struct {
 	Algod           AlgodConfig    `yaml:"algod"`
 }
 
-// SSHConnectOptions contains options for SSH tunnel connections.
+// SSHConnectOptions contains options for SSH tunnel connections. There is no
+// remote REST port option: the signer's SSH server forwards every channel to
+// its own REST listener. LocalPort pins the local listener; 0 picks a free
+// port.
 type SSHConnectOptions struct {
-	SSHPort    int
-	SignerPort int
-	LocalPort  int
-	Timeout    int
+	SSHPort   int
+	LocalPort int
+	Timeout   int
 	// SSHSetupTimeout bounds TCP dialing and SSH authentication. It is
 	// independent of Timeout, which bounds HTTP requests after setup.
 	SSHSetupTimeout time.Duration

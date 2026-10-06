@@ -22,7 +22,6 @@ endpoints:
   primary:
     role: signer
     url: ssh://signer.example.com:1127
-    signer_port: 11270
     identity_file: .ssh/id_ed25519
     known_hosts_path: .ssh/known_hosts
 ```
@@ -56,12 +55,14 @@ alias. SSH URLs create a managed tunnel. HTTPS and loopback HTTP URLs connect
 directly. The shared registry rejects `url: self` for both signer and cosigner
 roles, including when the two processes run on one host. Replace it with an
 explicit client-reachable URL such as `ssh://host:1127` for each process, using
-its actual SSH port. For a cosigner SSH endpoint, set `signer_port` to that
-cosigner process's REST port behind SSH. Cosigner endpoint records also reject a
-nonzero `local_port`; remove that field from existing cosigner records. A
-signer endpoint may still use `local_port`, and the explicit SDK SSH connection
-APIs retain their local-port option. Correct older files manually; the SDK
-cannot infer the intended host and ports.
+its actual SSH port. An endpoint record names no port beyond the one in its
+URL. The former `signer_port` (the node's REST port behind SSH) and
+`local_port` keys are rejected as unknown fields: the node's SSH server
+forwards every channel to its own REST listener, so the client never chose the
+remote port, and the local tunnel port is chosen at connect time. Remove both
+keys from existing files. The explicit SSH connection APIs keep their
+local-port option and no longer take a signer-port option; `DefaultSignerPort`
+/ `DEFAULT_SIGNER_PORT` are gone.
 
 Python `request_token_to_file` and TypeScript `requestTokenToFile` also select
 an endpoint alias and require that endpoint to use `ssh://`. Their former

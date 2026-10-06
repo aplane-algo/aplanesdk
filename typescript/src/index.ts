@@ -15,7 +15,6 @@
  *       primary:
  *         role: signer
  *         url: ssh://signer.example.com:1127
- *         signer_port: 11270
  *
  * Usage:
  *     import { SignerClient, sendRawTransaction } from "aplanesdk";
@@ -182,4 +181,4 @@ export type {
 } from "./algokit.js";
 
 // Constants
-export { DEFAULT_SIGNER_PORT, DEFAULT_SSH_PORT } from "./config.js";
+export { DEFAULT_SSH_PORT } from "./config.js";
