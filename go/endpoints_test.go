@@ -36,9 +36,6 @@ func TestLoadClientEndpointRegistrySharedFixture(t *testing.T) {
 	if primary.URL != "ssh://signer.example.com:2222" {
 		t.Fatalf("URL = %q", primary.URL)
 	}
-	if primary.SignerPort != 11271 || primary.LocalPort != 18080 {
-		t.Fatalf("ports = signer %d local %d", primary.SignerPort, primary.LocalPort)
-	}
 	if primary.IdentityFile != filepath.Join(dataDir, ".ssh", "primary") {
 		t.Fatalf("IdentityFile = %q", primary.IdentityFile)
 	}
@@ -102,7 +99,6 @@ func TestLoadClientEndpointRegistryRejectsSpecificEndpointRules(t *testing.T) {
 	}{
 		{"invalid_self_signer.yaml", `endpoint "primary": url "self" is not supported`},
 		{"invalid_self_cosigner.yaml", `endpoint "cosigner": url "self" is not supported`},
-		{"invalid_cosigner_local_port.yaml", `endpoint "cosigner": local_port is not supported for cosigner endpoints`},
 		{"invalid_13_cosigner_endpoints.yaml", "configures 13 cosigner endpoints; maximum is 12"},
 		{"invalid_v2_published_cosigners.yaml", "published_cosigners"},
 	} {
@@ -118,7 +114,7 @@ func TestLoadClientEndpointRegistryRejectsSpecificEndpointRules(t *testing.T) {
 func TestLoadClientEndpointRegistryAcceptsSharedEdgeFixtures(t *testing.T) {
 	for _, name := range []string{
 		"valid_12_cosigner_endpoints.yaml",
-		"valid_cosigner_zero_local_port.yaml",
+		"valid_retired_port_fields.yaml",
 	} {
 		t.Run(name, func(t *testing.T) {
 			registry, err := LoadClientEndpointRegistry(copyEndpointFixture(t, name))
@@ -131,8 +127,14 @@ func TestLoadClientEndpointRegistryAcceptsSharedEdgeFixtures(t *testing.T) {
 			if name == "valid_12_cosigner_endpoints.yaml" && len(registry.Endpoints) != 12 {
 				t.Fatalf("endpoint count = %d, want 12", len(registry.Endpoints))
 			}
-			if name == "valid_cosigner_zero_local_port.yaml" && registry.Endpoints["cosigner"].LocalPort != 0 {
-				t.Fatalf("cosigner local_port = %d, want 0", registry.Endpoints["cosigner"].LocalPort)
+			if name == "valid_retired_port_fields.yaml" {
+				primary := registry.Endpoints["primary"]
+				if primary.URL != "ssh://signer.example.com:2222" || filepath.Base(primary.TokenFile) != "legacy.token" {
+					t.Fatalf("primary = %#v, want the retired keys ignored and the other fields kept", primary)
+				}
+				if _, ok := registry.Endpoints["cosigner"]; !ok {
+					t.Fatal("cosigner endpoint with a retired key was dropped")
+				}
 			}
 		})
 	}

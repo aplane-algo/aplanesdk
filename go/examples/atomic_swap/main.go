@@ -22,7 +22,6 @@ Example endpoints.yaml (SSH tunnel):
 	  primary:
 	    role: signer
 	    url: ssh://192.168.86.73:1127
-	    signer_port: 11270
 	    identity_file: .ssh/id_ed25519
 
 Important:

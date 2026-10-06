@@ -1,6 +1,0 @@
-schema_version: 2
-endpoints:
-  cosigner:
-    role: cosigner
-    url: ssh://cosigner.example.com
-    local_port: 18080

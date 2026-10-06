@@ -209,8 +209,6 @@ export interface ClientConfig {
 export interface ClientEndpointConfig {
   role: "signer" | "cosigner";
   url: string;
-  signerPort: number;
-  localPort: number;
   identityFile: string;
   knownHostsPath: string;
   tokenFile: string;
@@ -229,9 +227,11 @@ export interface ClientEndpointRegistry {
 export interface ConnectSshOptions {
   /** SSH port on remote (default: 1127) */
   sshPort?: number;
-  /** Signer REST port on remote (default: 11270) */
-  signerPort?: number;
-  /** Local tunnel port (default: choose automatically) */
+  /**
+   * Local tunnel port (default: choose automatically). There is no remote
+   * REST port option: the signer's SSH server forwards every channel to its
+   * own REST listener.
+   */
   localPort?: number;
   /** Optional explicit shorter request timeout in milliseconds */
   timeout?: number;

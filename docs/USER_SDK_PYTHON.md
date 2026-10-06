@@ -142,7 +142,6 @@ endpoints:
   primary:
     role: signer
     url: ssh://signer.example.com:1127
-    signer_port: 11270
     identity_file: .ssh/id_ed25519
     known_hosts_path: .ssh/known_hosts
 ```
@@ -225,7 +224,6 @@ with SignerClient.connect_ssh(
     ssh_key_path="~/aplane/apclient/.ssh/id_ed25519",
     known_hosts_path="~/aplane/apclient/.ssh/known_hosts",
     ssh_port=1127,
-    signer_port=11270,
     ssh_setup_timeout=60,
 ) as client:
     print(client.health())

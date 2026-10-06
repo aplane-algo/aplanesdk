@@ -148,7 +148,6 @@ endpoints:
   primary:
     role: signer
     url: ssh://signer.example.com:1127
-    signer_port: 11270
     identity_file: .ssh/id_ed25519
     known_hosts_path: .ssh/known_hosts
 ```
@@ -232,7 +231,6 @@ const client = await SignerClient.connectSsh(
   "~/aplane/apclient/.ssh/id_ed25519",
   {
     sshPort: 1127,
-    signerPort: 11270,
     sshSetupTimeout: 60_000,
     knownHostsPath: expandPath("~/aplane/apclient/.ssh/known_hosts"),
     trustOnFirstUse: false,

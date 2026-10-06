@@ -96,7 +96,6 @@ endpoints:
   primary:
     role: signer
     url: ssh://signer.example.com:1127
-    signer_port: 11270
     identity_file: .ssh/id_ed25519
     known_hosts_path: .ssh/known_hosts
 ```
@@ -173,7 +172,6 @@ client, err := aplane.ConnectSSH(
 	"~/aplane/apclient/.ssh/id_ed25519",
 	&aplane.SSHConnectOptions{
 		SSHPort:         1127,
-		SignerPort:      11270,
 		Timeout:         30, // optional explicit shorter request timeout
 		SSHSetupTimeout: 60 * time.Second,
 		KnownHostsPath:  "~/aplane/apclient/.ssh/known_hosts",

@@ -16,7 +16,10 @@ pin the rejection of a missing, null, zero, float, or `1` version; there is no
 v1 adapter.
 
 Endpoint records require an explicit `ssh://`, `https://`, or loopback
-`http://` URL; `self` is invalid for both roles. Cosigner records reject a
-nonzero `local_port`, while signer records may use it. The 12- and 13-cosigner
+`http://` URL; `self` is invalid for both roles. A record names no port
+beyond the one in its URL: the node's SSH server forwards every channel to
+its own REST listener, and the local tunnel port is chosen at connect time.
+The retired `signer_port` and `local_port` keys are accepted and ignored, as
+APlane ignores them (`valid_retired_port_fields.yaml`). The 12- and 13-cosigner
 fixtures use distinct URLs for readability; URL uniqueness is not a loader
 rule.

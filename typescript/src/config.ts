@@ -15,7 +15,13 @@ import { SignerError } from "./errors.js";
 
 /** Default ports (match apshell/apsigner defaults) */
 export const DEFAULT_SSH_PORT = 1127;
-export const DEFAULT_SIGNER_PORT = 11270;
+/**
+ * Endpoint keys earlier builds wrote and nothing reads: the node's SSH server
+ * forwards every channel to its own REST listener, and the local tunnel port
+ * is chosen at connect time. They are accepted and ignored, as APlane ignores
+ * them, so a registry written before they were retired keeps working.
+ */
+const RETIRED_ENDPOINT_FIELDS = ["signer_port", "local_port"] as const;
 export const CLIENT_ENDPOINTS_FILE = "endpoints.yaml";
 export const DEFAULT_CLIENT_ENDPOINT_NAME = "primary";
 export const CLIENT_ENDPOINT_SCHEMA_VERSION = 2;
@@ -100,14 +106,6 @@ function requireKnownFields(
   }
 }
 
-function optionalInteger(value: unknown, field: string): number {
-  if (value === undefined || value === null) return 0;
-  if (!Number.isInteger(value)) {
-    throw new SignerError(`${field} must be an integer`);
-  }
-  return value as number;
-}
-
 function optionalString(value: unknown, field: string): string {
   if (value === undefined || value === null) return "";
   if (typeof value !== "string") {
@@ -145,11 +143,10 @@ function normalizeEndpoint(
   requireKnownFields(raw, [
     "role",
     "url",
-    "signer_port",
-    "local_port",
     "identity_file",
     "known_hosts_path",
     "token_file",
+    ...RETIRED_ENDPOINT_FIELDS,
   ], `endpoint "${alias}"`);
 
   const role = optionalString(raw.role, "role").trim();
@@ -161,16 +158,6 @@ function normalizeEndpoint(
   const endpointUrl = optionalString(raw.url, "url").trim().replace(/\/+$/, "");
   if (!endpointUrl) {
     throw new SignerError(`endpoint "${alias}": url is required`);
-  }
-  const signerPort = optionalInteger(raw.signer_port, "signer_port");
-  const localPort = optionalInteger(raw.local_port, "local_port");
-  for (const [field, port] of [["signer_port", signerPort], ["local_port", localPort]] as const) {
-    if (port < 0 || port > 65535) {
-      throw new SignerError(`endpoint "${alias}": ${field} must be 1-65535 when set`);
-    }
-  }
-  if (role === "cosigner" && localPort !== 0) {
-    throw new SignerError(`endpoint "${alias}": local_port is not supported for cosigner endpoints`);
   }
   if (endpointUrl === "self") {
     throw new SignerError(
@@ -210,9 +197,7 @@ function normalizeEndpoint(
   }
   let identityFile = optionalString(raw.identity_file, "identity_file");
   let knownHostsPath = optionalString(raw.known_hosts_path, "known_hosts_path");
-  let normalizedSignerPort = signerPort;
   if (endpointUrl.startsWith("ssh://")) {
-    normalizedSignerPort ||= DEFAULT_SIGNER_PORT;
     identityFile ||= ".ssh/id_ed25519";
     knownHostsPath ||= ".ssh/known_hosts";
     identityFile = resolvePath(identityFile, dataDir);
@@ -222,8 +207,6 @@ function normalizeEndpoint(
   return {
     role,
     url: endpointUrl,
-    signerPort: normalizedSignerPort,
-    localPort,
     identityFile,
     knownHostsPath,
     tokenFile: resolvePath(tokenFile, dataDir),

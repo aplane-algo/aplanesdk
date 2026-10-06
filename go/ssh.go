@@ -42,7 +42,7 @@ type sshTunnel struct {
 func (t *sshTunnel) connect(
 	ctx context.Context,
 	host string,
-	sshPort, signerPort, localPort int,
+	sshPort, localPort int,
 	token, sshKeyPath string,
 	setupTimeout time.Duration,
 ) (int, error) {
@@ -105,7 +105,9 @@ func (t *sshTunnel) connect(
 	t.done = make(chan struct{})
 
 	boundPort := listener.Addr().(*net.TCPAddr).Port
-	remoteAddr := fmt.Sprintf("127.0.0.1:%d", signerPort)
+	// The server checks only that the channel destination is loopback and
+	// forwards to its own REST listener, so the port named here is nominal.
+	remoteAddr := "127.0.0.1:11270"
 
 	// Start accepting connections
 	t.wg.Add(1)

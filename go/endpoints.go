@@ -39,8 +39,6 @@ type ClientEndpointRegistry struct {
 type ClientEndpointConfig struct {
 	Role           string `yaml:"role"`
 	URL            string `yaml:"url"`
-	SignerPort     int    `yaml:"signer_port,omitempty"`
-	LocalPort      int    `yaml:"local_port,omitempty"`
 	IdentityFile   string `yaml:"identity_file,omitempty"`
 	KnownHostsPath string `yaml:"known_hosts_path,omitempty"`
 	TokenFile      string `yaml:"token_file,omitempty"`
@@ -60,6 +58,7 @@ func LoadClientEndpointRegistry(dataDir string) (*ClientEndpointRegistry, error)
 		}
 		return nil, fmt.Errorf("failed to read %s: %w", endpointsPath, err)
 	}
+	data = stripRetiredClientEndpointFields(data)
 	if err := validateClientEndpointRegistryScalarTypes(data); err != nil {
 		return nil, fmt.Errorf("failed to parse %s: %w", endpointsPath, err)
 	}
@@ -139,11 +138,6 @@ func validateClientEndpointRegistryScalarTypes(data []byte) error {
 				return err
 			}
 		}
-		for _, field := range []string{"signer_port", "local_port"} {
-			if err := requireYAMLScalarType(yamlMappingValue(endpoint, field), label+" "+field, "!!int", "!!null"); err != nil {
-				return err
-			}
-		}
 	}
 	return nil
 }
@@ -220,9 +214,6 @@ func normalizeClientEndpoint(dataDir, alias string, endpoint ClientEndpointConfi
 	}
 	endpoint.TokenFile = ResolvePath(endpoint.TokenFile, dataDir)
 	if strings.HasPrefix(endpoint.URL, "ssh://") {
-		if endpoint.SignerPort == 0 {
-			endpoint.SignerPort = DefaultSignerPort
-		}
 		if endpoint.IdentityFile == "" {
 			endpoint.IdentityFile = ".ssh/id_ed25519"
 		}
@@ -236,15 +227,6 @@ func normalizeClientEndpoint(dataDir, alias string, endpoint ClientEndpointConfi
 }
 
 func validateClientEndpointURL(alias string, endpoint ClientEndpointConfig) error {
-	if endpoint.SignerPort < 0 || endpoint.SignerPort > 65535 {
-		return fmt.Errorf("signer_port must be 1-65535 when set")
-	}
-	if endpoint.LocalPort < 0 || endpoint.LocalPort > 65535 {
-		return fmt.Errorf("local_port must be 1-65535 when set")
-	}
-	if endpoint.Role == ClientEndpointRoleCosigner && endpoint.LocalPort != 0 {
-		return fmt.Errorf("local_port is not supported for cosigner endpoints")
-	}
 	if endpoint.URL == "self" {
 		return fmt.Errorf("url %q is not supported; configure an explicit ssh://, https://, or loopback http:// endpoint", endpoint.URL)
 	}
@@ -353,4 +335,60 @@ func ClientEndpointSSHHostPort(endpoint ClientEndpointConfig) (string, int, erro
 		}
 	}
 	return parsed.Hostname(), port, nil
+}
+
+// retiredClientEndpointFields are endpoint keys earlier builds wrote and
+// nothing reads: the node's SSH server forwards every channel to its own REST
+// listener, and the local tunnel port is chosen at connect time. They are
+// ignored on load, as APlane ignores them, so a registry written before they
+// were retired keeps working.
+var retiredClientEndpointFields = []string{"signer_port", "local_port"}
+
+// stripRetiredClientEndpointFields removes retiredClientEndpointFields from
+// every endpoint entry on the YAML node tree, so every other value is
+// re-emitted exactly as written. Anything it cannot parse, and a document
+// with nothing to remove, is returned unchanged for the strict decoder.
+func stripRetiredClientEndpointFields(data []byte) []byte {
+	var document yaml.Node
+	if err := yaml.Unmarshal(data, &document); err != nil || len(document.Content) == 0 {
+		return data
+	}
+	endpoints := yamlMappingValue(document.Content[0], "endpoints")
+	if endpoints == nil || endpoints.Kind != yaml.MappingNode {
+		return data
+	}
+	changed := false
+	for i := 1; i < len(endpoints.Content); i += 2 {
+		entry := endpoints.Content[i]
+		if entry.Kind != yaml.MappingNode {
+			continue
+		}
+		kept := entry.Content[:0]
+		for j := 0; j+1 < len(entry.Content); j += 2 {
+			key, value := entry.Content[j], entry.Content[j+1]
+			if key.Kind == yaml.ScalarNode && isRetiredClientEndpointField(key.Value) {
+				changed = true
+				continue
+			}
+			kept = append(kept, key, value)
+		}
+		entry.Content = kept
+	}
+	if !changed {
+		return data
+	}
+	stripped, err := yaml.Marshal(&document)
+	if err != nil {
+		return data
+	}
+	return stripped
+}
+
+func isRetiredClientEndpointField(name string) bool {
+	for _, field := range retiredClientEndpointFields {
+		if name == field {
+			return true
+		}
+	}
+	return false
 }
