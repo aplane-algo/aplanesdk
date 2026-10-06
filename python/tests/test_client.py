@@ -3275,7 +3275,6 @@ class TestFromEnv:
         [
             ("invalid_self_signer.yaml", 'endpoint "primary": url "self" is not supported'),
             ("invalid_self_cosigner.yaml", 'endpoint "cosigner": url "self" is not supported'),
-            ("invalid_retired_signer_port.yaml", "signer_port"),
         ],
     )
     def test_rejects_invalid_endpoint_before_token_loading(self, tmp_path, fixture, want):
@@ -3538,8 +3537,6 @@ class TestLoadClientEndpointRegistry:
         [
             ("invalid_self_signer.yaml", 'endpoint "primary": url "self" is not supported'),
             ("invalid_self_cosigner.yaml", 'endpoint "cosigner": url "self" is not supported'),
-            ("invalid_retired_signer_port.yaml", "signer_port"),
-            ("invalid_retired_local_port.yaml", "local_port"),
             ("invalid_13_cosigner_endpoints.yaml", "configures 13 cosigner endpoints; maximum is 12"),
             ("invalid_v2_published_cosigners.yaml", "published_cosigners"),
         ],
@@ -3553,6 +3550,7 @@ class TestLoadClientEndpointRegistry:
         "name",
         [
             "valid_12_cosigner_endpoints.yaml",
+            "valid_retired_port_fields.yaml",
         ],
     )
     def test_accepts_shared_edge_fixtures(self, tmp_path, name):
@@ -3561,6 +3559,11 @@ class TestLoadClientEndpointRegistry:
         assert registry.schema_version == 2
         if name == "valid_12_cosigner_endpoints.yaml":
             assert len(registry.endpoints) == 12
+        if name == "valid_retired_port_fields.yaml":
+            primary = registry.endpoints["primary"]
+            assert primary.url == "ssh://signer.example.com:2222"
+            assert os.path.basename(primary.token_file) == "legacy.token"
+            assert "cosigner" in registry.endpoints
 
     @pytest.mark.parametrize(
         "name,want",

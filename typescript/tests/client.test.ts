@@ -3657,8 +3657,6 @@ describe("loadClientEndpointRegistry", () => {
   for (const [fixture, message] of [
     ["invalid_self_signer.yaml", 'endpoint "primary": url "self" is not supported'],
     ["invalid_self_cosigner.yaml", 'endpoint "cosigner": url "self" is not supported'],
-    ["invalid_retired_signer_port.yaml", "signer_port"],
-    ["invalid_retired_local_port.yaml", "local_port"],
     ["invalid_13_cosigner_endpoints.yaml", "configures 13 cosigner endpoints; maximum is 12"],
     ["invalid_v2_published_cosigners.yaml", "published_cosigners"],
   ]) {
@@ -3676,6 +3674,7 @@ describe("loadClientEndpointRegistry", () => {
 
   for (const fixture of [
     "valid_12_cosigner_endpoints.yaml",
+    "valid_retired_port_fields.yaml",
   ]) {
     it(`accepts ${fixture}`, () => {
       const tmpDir = fixtureDir(fixture);
@@ -3684,6 +3683,11 @@ describe("loadClientEndpointRegistry", () => {
         assert.equal(registry.schemaVersion, 2);
         if (fixture === "valid_12_cosigner_endpoints.yaml") {
           assert.equal(Object.keys(registry.endpoints).length, 12);
+        }
+        if (fixture === "valid_retired_port_fields.yaml") {
+          assert.equal(registry.endpoints.primary.url, "ssh://signer.example.com:2222");
+          assert.equal(path.basename(registry.endpoints.primary.tokenFile), "legacy.token");
+          assert.ok(registry.endpoints.cosigner);
         }
       } finally {
         fs.rmSync(tmpDir, { recursive: true });
@@ -4070,7 +4074,6 @@ describe("fromEnv", () => {
   for (const [fixture, message] of [
     ["invalid_self_signer.yaml", 'endpoint "primary": url "self" is not supported'],
     ["invalid_self_cosigner.yaml", 'endpoint "cosigner": url "self" is not supported'],
-    ["invalid_retired_signer_port.yaml", "signer_port"],
   ]) {
     it(`rejects ${fixture} before token loading`, async () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-test-"));

@@ -15,6 +15,13 @@ import { SignerError } from "./errors.js";
 
 /** Default ports (match apshell/apsigner defaults) */
 export const DEFAULT_SSH_PORT = 1127;
+/**
+ * Endpoint keys earlier builds wrote and nothing reads: the node's SSH server
+ * forwards every channel to its own REST listener, and the local tunnel port
+ * is chosen at connect time. They are accepted and ignored, as APlane ignores
+ * them, so a registry written before they were retired keeps working.
+ */
+const RETIRED_ENDPOINT_FIELDS = ["signer_port", "local_port"] as const;
 export const CLIENT_ENDPOINTS_FILE = "endpoints.yaml";
 export const DEFAULT_CLIENT_ENDPOINT_NAME = "primary";
 export const CLIENT_ENDPOINT_SCHEMA_VERSION = 2;
@@ -139,6 +146,7 @@ function normalizeEndpoint(
     "identity_file",
     "known_hosts_path",
     "token_file",
+    ...RETIRED_ENDPOINT_FIELDS,
   ], `endpoint "${alias}"`);
 
   const role = optionalString(raw.role, "role").trim();

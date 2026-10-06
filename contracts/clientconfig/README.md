@@ -19,7 +19,7 @@ Endpoint records require an explicit `ssh://`, `https://`, or loopback
 `http://` URL; `self` is invalid for both roles. A record names no port
 beyond the one in its URL: the node's SSH server forwards every channel to
 its own REST listener, and the local tunnel port is chosen at connect time.
-The retired `signer_port` and `local_port` keys are unknown fields
-(`invalid_retired_signer_port.yaml`, `invalid_retired_local_port.yaml`). The
-12- and 13-cosigner fixtures use distinct URLs for readability; URL
-uniqueness is not a loader rule.
+The retired `signer_port` and `local_port` keys are accepted and ignored, as
+APlane ignores them (`valid_retired_port_fields.yaml`). The 12- and 13-cosigner
+fixtures use distinct URLs for readability; URL uniqueness is not a loader
+rule.

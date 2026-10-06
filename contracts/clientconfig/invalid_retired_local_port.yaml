@@ -1,7 +1,0 @@
-schema_version: 2
-default: primary
-endpoints:
-  primary:
-    role: signer
-    url: ssh://signer.example.com
-    local_port: 18080

@@ -57,10 +57,11 @@ roles, including when the two processes run on one host. Replace it with an
 explicit client-reachable URL such as `ssh://host:1127` for each process, using
 its actual SSH port. An endpoint record names no port beyond the one in its
 URL. The former `signer_port` (the node's REST port behind SSH) and
-`local_port` keys are rejected as unknown fields: the node's SSH server
-forwards every channel to its own REST listener, so the client never chose the
-remote port, and the local tunnel port is chosen at connect time. Remove both
-keys from existing files. The explicit SSH connection APIs keep their
+`local_port` keys are accepted and ignored, as APlane ignores them: the node's
+SSH server forwards every channel to its own REST listener, so the client never
+chose the remote port, and the local tunnel port is chosen at connect time.
+Existing files keep working; the keys can be removed at leisure, and new files
+should omit them. The explicit SSH connection APIs keep their
 local-port option and no longer take a signer-port option; `DefaultSignerPort`
 / `DEFAULT_SIGNER_PORT` are gone.
 
