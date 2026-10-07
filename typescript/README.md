@@ -157,14 +157,16 @@ named endpoint.
 
 ## Authentication
 
-The client's SSH key is its credential. A new key is enrolled once, with the
-operator approving in `apadmin`; the call resolves to the enrolled key's
-fingerprint and stores nothing:
+The client's SSH key is its credential. A new key is enrolled once: the
+request is queued for the operator to approve later in `apadmin` (`pending:
+true`, the normal outcome) or the key is already enrolled, and nothing is
+stored on the client. Connect once the operator has approved:
 
 ```typescript
 import { requestEnrollmentFromEnv } from "aplanesdk";
 
-const fingerprint = await requestEnrollmentFromEnv({ label: "ci-runner" });
+const { fingerprint, pending } = await requestEnrollmentFromEnv({ label: "ci-runner" });
+if (pending) console.log(`key ${fingerprint} queued; have the operator approve it in apadmin`);
 ```
 
 `requestEnrollment(host, sshKeyPath, { knownHostsPath, label })` is the

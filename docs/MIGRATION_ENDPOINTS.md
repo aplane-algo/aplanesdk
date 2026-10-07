@@ -72,9 +72,12 @@ or token argument; `DefaultSignerPort` / `DEFAULT_SIGNER_PORT`,
 
 Token provisioning is replaced by enrollment. Go `RequestEnrollmentFromEnv`,
 Python `request_enrollment_from_env`, and TypeScript `requestEnrollmentFromEnv`
-select an endpoint alias and ask that node to enroll the endpoint's client key;
-the operator approves in `apadmin`, and the call returns the key's SHA256
-fingerprint. Nothing is stored on the client. The raw
+select an endpoint alias and ask that node to enroll the endpoint's client key.
+The node answers at once with a result carrying the key's SHA256 fingerprint
+and whether the request is pending: it is queued for the operator to approve
+later in `apadmin` (the normal outcome), or the key was already enrolled.
+Nothing waits for the operator and nothing is stored on the client; connect
+once the operator has approved. The raw
 `RequestEnrollment(host, ...)`, `request_enrollment(host, ...)`, and
 `requestEnrollment(host, ...)` functions take explicit application-owned key
 and host-trust paths; they do not fall back to the operating-system user's

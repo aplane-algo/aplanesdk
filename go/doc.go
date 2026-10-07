@@ -56,10 +56,14 @@ SDK has no implicit default):
 
 	client, err := aplane.FromEnv(nil)
 
-A key the signer has not enrolled fails with ErrNotEnrolled. Enroll it once,
-with the operator approving in apadmin:
+A key the signer has not enrolled fails with ErrNotEnrolled. Ask for
+enrollment once; the request is queued (Pending) for the operator to approve
+later in apadmin, and the client connects once that has happened:
 
-	fingerprint, err := aplane.RequestEnrollmentFromEnv(nil, "ci-runner")
+	result, err := aplane.RequestEnrollmentFromEnv(nil, "ci-runner")
+	if err == nil && result.Pending {
+		log.Printf("key %s queued; have the operator approve it in apadmin", result.Fingerprint)
+	}
 
 Caller-owned transport (the caller's own tunnel to the signer):
 

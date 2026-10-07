@@ -24,7 +24,7 @@ import {
   KeyNotFoundError,
   KeyDeletionError,
 } from "../src/errors.js";
-import { requestEnrollment, requestEnrollmentFromEnv } from "../src/utils.js";
+import { parseEnrollmentReply, requestEnrollment, requestEnrollmentFromEnv } from "../src/utils.js";
 import { bytesToHex, hexToBytes, concatenateSignedTxns, encodeTransaction, encodeLsigArgs } from "../src/encoding.js";
 import { assembleGroup } from "../src/utils.js";
 import {
@@ -3750,6 +3750,18 @@ describe("loadClientEndpointRegistry", () => {
 });
 
 describe("requestEnrollment", () => {
+  // The signer answers at once: queued for the operator (pending) or already
+  // enrolled. Either way the fingerprint must be the authenticating key's.
+  it("parses pending and enrolled replies for the authenticating key", () => {
+    const fp = "SHA256:abc";
+    assert.deepEqual(parseEnrollmentReply(`pending ${fp}`, fp), { fingerprint: fp, pending: true });
+    assert.deepEqual(parseEnrollmentReply(`enrolled ${fp}`, fp), { fingerprint: fp, pending: false });
+    assert.throws(() => parseEnrollmentReply("pending SHA256:other", fp), /this client authenticated with SHA256:abc/);
+    for (const reply of ["enrolled ", `ok ${fp}`, ""]) {
+      assert.throws(() => parseEnrollmentReply(reply, fp), /Unexpected enrollment response/);
+    }
+  });
+
   it("rejects missing known_hosts path locally", async () => {
     await assert.rejects(
       requestEnrollment("signer.example.com", "~/aplane/apclient/.ssh/id_ed25519"),

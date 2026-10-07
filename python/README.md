@@ -149,16 +149,19 @@ with SignerClient.connect_ssh(
 
 ## Authentication
 
-The client's SSH key is its credential. A new key is enrolled once, with the
-operator approving in `apadmin`; the call returns the enrolled key's
-fingerprint and stores nothing. `request_enrollment_from_env(endpoint="cosigner.qa",
-label="ci-runner")` selects a named endpoint; without an alias it selects the
-default signer:
+The client's SSH key is its credential. A new key is enrolled once: the
+request is queued for the operator to approve later in `apadmin`
+(`pending=True`, the normal outcome) or the key is already enrolled, and
+nothing is stored on the client. Connect once the operator has approved.
+`request_enrollment_from_env(endpoint="cosigner.qa", label="ci-runner")`
+selects a named endpoint; without an alias it selects the default signer:
 
 ```python
 from aplanesdk import request_enrollment_from_env
 
-fingerprint = request_enrollment_from_env(label="ci-runner")
+result = request_enrollment_from_env(label="ci-runner")
+if result.pending:
+    print(f"key {result.fingerprint} queued; have the operator approve it in apadmin")
 ```
 
 `request_enrollment(host, ssh_key_path, known_hosts_path=..., label=...)` is

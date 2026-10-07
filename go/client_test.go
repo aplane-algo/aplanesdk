@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -79,6 +80,36 @@ endpoints:
 	wantKey := filepath.Join(dir, ".ssh", "qa")
 	if err == nil || !strings.Contains(err.Error(), "SSH key not found at "+wantKey) {
 		t.Fatalf("RequestEnrollmentFromEnv error = %v, want missing key %q", err, wantKey)
+	}
+}
+
+// The signer answers an enrollment request at once: queued for the operator
+// (pending) or already enrolled. Either way the fingerprint must be the
+// authenticating key's.
+func TestParseEnrollmentReply(t *testing.T) {
+	const fp = "SHA256:abc"
+	for _, tc := range []struct {
+		reply   string
+		want    EnrollmentResult
+		wantErr string
+	}{
+		{reply: "pending " + fp, want: EnrollmentResult{Fingerprint: fp, Pending: true}},
+		{reply: "enrolled " + fp, want: EnrollmentResult{Fingerprint: fp}},
+		{reply: "pending SHA256:other", wantErr: "this client authenticated with " + fp},
+		{reply: "enrolled ", wantErr: "unexpected response"},
+		{reply: "ok " + fp, wantErr: "unexpected response"},
+		{reply: "", wantErr: "unexpected response"},
+	} {
+		got, err := parseEnrollmentReply(tc.reply, fp)
+		if tc.wantErr != "" {
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) || !errors.Is(err, ErrEnrollment) {
+				t.Fatalf("parseEnrollmentReply(%q) error = %v, want ErrEnrollment with %q", tc.reply, err, tc.wantErr)
+			}
+			continue
+		}
+		if err != nil || got != tc.want {
+			t.Fatalf("parseEnrollmentReply(%q) = %+v, %v; want %+v", tc.reply, got, err, tc.want)
+		}
 	}
 }
 

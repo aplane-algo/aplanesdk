@@ -164,13 +164,13 @@ path is:
 3. enroll that key at the signer
 4. connect with `SignerClient.fromEnv()`
 
-Enroll the key with the TypeScript helper:
+Ask for enrollment with the TypeScript helper:
 
 ```ts
 import { requestEnrollmentFromEnv } from "aplanesdk";
 
-const fingerprint = await requestEnrollmentFromEnv({ endpoint: "cosigner.qa", label: "ci-runner" });
-console.log(`Enrolled ${fingerprint}`);
+const { fingerprint, pending } = await requestEnrollmentFromEnv({ endpoint: "cosigner.qa", label: "ci-runner" });
+if (pending) console.log(`key ${fingerprint} queued; have the operator approve it in apadmin`);
 ```
 
 `requestEnrollmentFromEnv()`:
@@ -178,14 +178,17 @@ console.log(`Enrolled ${fingerprint}`);
 - uses the same data-dir resolution as `SignerClient.fromEnv()`
 - selects the default signer or named endpoint from `endpoints.yaml`
 - uses that endpoint's SSH host, port, key, and `known_hosts` path
-- opens a `request-enrollment` SSH session and waits for the operator
-- resolves to the enrolled key's SHA256 fingerprint; nothing is stored
+- opens a `request-enrollment` SSH session, which answers at once
+- resolves to an `EnrollmentResult`: `pending: true` when the request was
+  queued for the operator (the normal outcome), `false` when the key was
+  already enrolled; `fingerprint` is the key's SHA256 fingerprint. Nothing
+  is stored.
 
-Enrollment targets the signer's product store. An operator must approve the
-request in `apadmin`. The same enrollment can be done from `apshell` with
-`request-enrollment`. A key the signer has not enrolled (or has revoked) fails
-`fromEnv`/`connectSsh` with an `AuthenticationError` whose message says the
-key is not enrolled.
+Enrollment targets the signer's product store. The operator approves the
+request later in `apadmin`; connect after that. The same enrollment can be
+done from `apshell` with `request-enrollment`. A key the signer has not
+enrolled yet (or has revoked) fails `fromEnv`/`connectSsh` with a
+`SignerUnavailableError` whose message says the key is not enrolled.
 
 ## Connection Methods
 

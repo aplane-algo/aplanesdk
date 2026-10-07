@@ -6,9 +6,10 @@ APlane Python SDK - Transaction signing via apsigner
 
 Data directory: required via data_dir parameter or APCLIENT_DATA env var
 
-Enrollment (once per client key; the operator approves in apadmin):
+Enrollment (once per client key; the request is queued for the operator to
+approve later in apadmin, then connect):
     from aplanesdk import request_enrollment_from_env
-    request_enrollment_from_env(label="ci-runner")
+    result = request_enrollment_from_env(label="ci-runner")
 
 Usage:
     from aplanesdk import SignerClient, send_raw_transaction
@@ -36,6 +37,7 @@ from .signer import (
     # Enrollment
     request_enrollment,
     request_enrollment_from_env,
+    EnrollmentResult,
 
     # Utility
     load_config,
@@ -139,6 +141,7 @@ __all__ = [
     # Enrollment
     "request_enrollment",
     "request_enrollment_from_env",
+    "EnrollmentResult",
 
     # Utility
     "load_config",

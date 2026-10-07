@@ -115,23 +115,30 @@ the handshake with `aplane.ErrNotEnrolled`.
 ### Enrolling the Client Key
 
 A new client key must be enrolled once. `RequestEnrollment` opens a
-`request-enrollment` SSH session, waits for the operator to approve the key in
-`apadmin`, and returns the enrolled key's SHA256 fingerprint. Nothing is
-stored on the client afterwards:
+`request-enrollment` SSH session and returns at once with an
+`EnrollmentResult`: `Pending` is true when the request was queued for the
+operator to approve later in `apadmin` (the normal outcome), false when the
+key was already enrolled. `Fingerprint` is the key's SHA256 fingerprint, which
+the operator sees. Nothing is stored on the client; connect once the operator
+has approved (until then the handshake fails with `aplane.ErrNotEnrolled`):
 
 ```go
-fingerprint, err := aplane.RequestEnrollment(
+result, err := aplane.RequestEnrollment(
 	"signer.example.com",
 	"~/aplane/apclient/.ssh/id_ed25519",
 	"ci-runner", // optional display label shown to the operator
 	&aplane.EnrollmentOptions{KnownHostsPath: "~/aplane/apclient/.ssh/known_hosts"},
 )
+if err == nil && result.Pending {
+	fmt.Printf("key %s queued; have the operator approve it in apadmin\n", result.Fingerprint)
+}
 ```
 
 `RequestEnrollmentFromEnv` does the same for an endpoint selected from
-`endpoints.yaml` (the default signer, or `FromEnvOptions.Endpoint`). A rejected
-or failed request returns an error wrapping `aplane.ErrEnrollment`. The same
-enrollment can be done from `apshell` with `request-enrollment`.
+`endpoints.yaml` (the default signer, or `FromEnvOptions.Endpoint`). A refused
+request (for example, a full enrollment queue) returns an error wrapping
+`aplane.ErrEnrollment`. The same enrollment can be done from `apshell` with
+`request-enrollment`.
 
 ### Environment-Based Connection
 

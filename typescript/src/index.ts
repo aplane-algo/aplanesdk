@@ -23,8 +23,9 @@
  *     const signed = await client.signTransaction(txn);
  *     const txid = await sendRawTransaction(algodClient, signed);
  *
- * A new client key is enrolled once, with the operator approving in apadmin:
- *     await requestEnrollmentFromEnv({ label: "ci-runner" });
+ * A new client key is enrolled once. The request is queued for the operator
+ * to approve later in apadmin; connect after that:
+ *     const { fingerprint, pending } = await requestEnrollmentFromEnv({ label: "ci-runner" });
  *
  * @packageDocumentation
  */
@@ -183,6 +184,7 @@ export type {
 } from "./algokit.js";
 
 export type {
+  EnrollmentResult,
   RequestEnrollmentOptions,
   RequestEnrollmentFromEnvOptions,
 } from "./utils.js";

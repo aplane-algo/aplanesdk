@@ -17,10 +17,11 @@ Example endpoints.yaml:
         role: signer
         url: ssh://signer.example.com:1127
 
-Enrollment (once per client key; the operator approves in apadmin):
+Enrollment (once per client key; the request is queued for the operator to
+approve later in apadmin, then connect):
     from aplanesdk import request_enrollment_from_env
 
-    request_enrollment_from_env(label="ci-runner")  # reads APCLIENT_DATA
+    result = request_enrollment_from_env(label="ci-runner")  # reads APCLIENT_DATA
 
 Usage:
     from aplanesdk import SignerClient
@@ -382,6 +383,21 @@ class ClientEndpointConfig:
     url: str
     identity_file: str = ""
     known_hosts_path: str = ""
+
+
+@dataclass
+class EnrollmentResult:
+    """The signer's answer to an enrollment request.
+
+    ``fingerprint`` is the SHA256 fingerprint of the client key the request
+    was made with (it equals the key the client authenticated with).
+    ``pending`` is True when the request was queued for the operator to
+    approve later in apadmin (the normal outcome), False when the key was
+    already enrolled.
+    """
+
+    fingerprint: str
+    pending: bool
 
 
 @dataclass
@@ -5939,15 +5955,18 @@ def request_enrollment(
     label: str = "",
     auto_add_host: bool = False,
     setup_timeout: float = DEFAULT_SSH_SETUP_TIMEOUT,
-) -> str:
+) -> EnrollmentResult:
     """
     Ask the signer to enroll this client's SSH key, so the key can open API
     connections.
 
-    This opens a request-enrollment SSH session and blocks until an operator
-    approves or rejects the request in apadmin. Nothing is stored on the
-    client afterwards: the key is its credential. The key's fingerprint is
-    shown to the operator for verification.
+    This opens a request-enrollment SSH session, which answers at once: the
+    request is queued for the operator to approve later in apadmin
+    (``pending=True``, the normal outcome), or the key is already enrolled.
+    Nothing waits for the operator and nothing is stored on the client: the
+    key is its credential, and the client learns the outcome by connecting
+    after approval (an unenrolled key still fails the handshake). The key's
+    fingerprint is shown to the operator for verification.
 
     Args:
         host: Signer host (e.g., "signer.example.com" or "localhost")
@@ -5961,14 +5980,15 @@ def request_enrollment(
         setup_timeout: Maximum seconds for TCP connection and SSH authentication.
 
     Returns:
-        The enrolled key's SHA256 fingerprint
+        EnrollmentResult with the key's SHA256 fingerprint and whether
+        approval is pending
 
     Raises:
         SignerError: If the key cannot be loaded or the label is invalid
-        EnrollmentError: If enrollment fails (rejected, no operator, etc.)
+        EnrollmentError: If the signer refuses the request (queue full, etc.)
 
     Example:
-        fingerprint = request_enrollment(
+        result = request_enrollment(
             host="signer.example.com",
             ssh_key_path="~/aplane/apclient/.ssh/id_ed25519",
             known_hosts_path="~/aplane/apclient/.ssh/known_hosts",
@@ -6119,10 +6139,8 @@ def request_enrollment(
 
     command = f"{SSH_ENROLLMENT_COMMAND} {label}" if label else SSH_ENROLLMENT_COMMAND
     try:
-        # Run the enrollment command. This blocks until the operator
-        # approves or rejects; the exec timeout bounds only an unresponsive
-        # channel, not the operator.
-        stdin, stdout, stderr = client.exec_command(command)
+        # Run the enrollment command; the signer answers at once.
+        stdin, stdout, stderr = client.exec_command(command, timeout=300)
 
         # Wait for command to complete
         exit_status = stdout.channel.recv_exit_status()
@@ -6135,19 +6153,31 @@ def request_enrollment(
                 error_msg = error_msg[len("ERROR: "):]
             raise EnrollmentError(error_msg or "Enrollment rejected")
 
-        response = stdout.read().decode().strip()
-        if not response.startswith("enrolled ") or len(response) <= len("enrolled "):
-            raise EnrollmentError(f"Unexpected enrollment response: {response!r}")
-        fingerprint = response[len("enrolled "):]
-        if fingerprint != client_fingerprint:
-            raise EnrollmentError(
-                f"Signer enrolled {fingerprint}, but this client authenticated "
-                f"with {client_fingerprint}"
-            )
-        return fingerprint
+        return _parse_enrollment_reply(stdout.read().decode().strip(), client_fingerprint)
 
     finally:
         client.close()
+
+
+def _parse_enrollment_reply(reply: str, client_fingerprint: str) -> EnrollmentResult:
+    """Parse the signer's answer: ``pending <fingerprint>`` when the request
+    was queued for the operator, ``enrolled <fingerprint>`` when the key was
+    already enrolled. The fingerprint must be the key this client
+    authenticated with."""
+    if reply.startswith("pending "):
+        result = EnrollmentResult(fingerprint=reply[len("pending "):], pending=True)
+    elif reply.startswith("enrolled "):
+        result = EnrollmentResult(fingerprint=reply[len("enrolled "):], pending=False)
+    else:
+        raise EnrollmentError(f"Unexpected enrollment response: {reply!r}")
+    if not result.fingerprint:
+        raise EnrollmentError(f"Unexpected enrollment response: {reply!r}")
+    if result.fingerprint != client_fingerprint:
+        raise EnrollmentError(
+            f"Signer answered for {result.fingerprint}, but this client authenticated "
+            f"with {client_fingerprint}"
+        )
+    return result
 
 
 class _InteractiveHostKeyPolicy(paramiko.MissingHostKeyPolicy):
@@ -6207,11 +6237,11 @@ def request_enrollment_from_env(
     label: str = "",
     auto_add_host: bool = False,
     setup_timeout: float = DEFAULT_SSH_SETUP_TIMEOUT,
-) -> str:
+) -> EnrollmentResult:
     """
     Ask the endpoint selected from the data directory's endpoints.yaml (the
     default signer, or ``endpoint``) to enroll the client key configured for
-    it. Returns the enrolled key's fingerprint; nothing is stored.
+    it. See request_enrollment for the result; nothing is stored.
 
     Args:
         data_dir: Client data directory. Required unless APCLIENT_DATA env var is set.
@@ -6221,20 +6251,21 @@ def request_enrollment_from_env(
         setup_timeout: Maximum seconds for TCP connection and SSH authentication
 
     Returns:
-        The enrolled key's SHA256 fingerprint
+        EnrollmentResult with the key's SHA256 fingerprint and whether
+        approval is pending
 
     Raises:
         SignerError: If data dir not resolvable or SSH key not found
-        EnrollmentError: If enrollment fails
+        EnrollmentError: If the signer refuses the request
 
     Example:
         # Reads APCLIENT_DATA from environment
-        request_enrollment_from_env(label="ci-runner")
+        result = request_enrollment_from_env(label="ci-runner")
 
         # Or with explicit parameters
         request_enrollment_from_env(data_dir="/custom/path", endpoint="cosigner.qa")
 
-        # Now you can use SignerClient.from_env()
+        # Once the operator has approved in apadmin:
         client = SignerClient.from_env()
     """
     if not isinstance(auto_add_host, bool):
@@ -6256,10 +6287,8 @@ def request_enrollment_from_env(
         )
 
     print(f"Requesting enrollment at {host} (SSH port: {ssh_port})...")
-    print("This requires an operator (apadmin) to approve on the server.")
-    print("Waiting for operator approval...")
 
-    fingerprint = request_enrollment(
+    result = request_enrollment(
         host=host,
         ssh_key_path=ssh_key_path,
         ssh_port=ssh_port,
@@ -6269,5 +6298,8 @@ def request_enrollment_from_env(
         setup_timeout=setup_timeout,
     )
 
-    print(f"✓ Client key {fingerprint} enrolled at {host}")
-    return fingerprint
+    if result.pending:
+        print(f"✓ Client key {result.fingerprint} queued; have the operator approve it in apadmin")
+    else:
+        print(f"✓ Client key {result.fingerprint} is already enrolled at {host}")
+    return result

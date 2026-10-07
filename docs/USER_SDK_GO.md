@@ -114,22 +114,29 @@ path is:
 3. enroll that key at the signer
 4. connect with `aplane.FromEnv(...)`
 
-Enroll the key with the Go helper; the operator approves the request in
-`apadmin`, and the call returns the enrolled key's fingerprint:
+Ask for enrollment with the Go helper. The signer answers at once with an
+`EnrollmentResult`: `Pending` is true when the request was queued for the
+operator to approve later in `apadmin` (the normal outcome), false when the
+key was already enrolled; `Fingerprint` is the key's SHA256 fingerprint:
 
 ```go
-fingerprint, err := aplane.RequestEnrollmentFromEnv(
+result, err := aplane.RequestEnrollmentFromEnv(
 	&aplane.FromEnvOptions{Endpoint: "cosigner.qa"},
 	"ci-runner", // optional display label shown to the operator
 )
+if err == nil && result.Pending {
+	fmt.Printf("key %s queued; have the operator approve it in apadmin\n", result.Fingerprint)
+}
 ```
 
 `RequestEnrollmentFromEnv(...)` uses the same data-dir resolution as
 `FromEnv(...)`, selects the default signer or named endpoint, and uses that
-endpoint's SSH host, port, key, and `known_hosts` path. Nothing is stored on
-the client: the key is its credential. The same enrollment can be done from
-`apshell` with `request-enrollment`. A key the signer has not enrolled (or has
-revoked) fails `FromEnv`/`ConnectSSH` with `aplane.ErrNotEnrolled`.
+endpoint's SSH host, port, key, and `known_hosts` path. Nothing waits for the
+operator and nothing is stored on the client: the key is its credential, and
+you connect once the operator has approved. The same enrollment can be done
+from `apshell` with `request-enrollment`. A key the signer has not enrolled
+yet (or has revoked) fails `FromEnv`/`ConnectSSH` with
+`aplane.ErrNotEnrolled`.
 
 ## Connection Methods
 

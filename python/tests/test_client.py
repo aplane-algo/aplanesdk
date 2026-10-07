@@ -60,6 +60,8 @@ from aplanesdk.signer import (
     KEY_TYPE_WITNESS_FALCON1024,
     SIGNING_FLOW_COSIGNER1,
     SIGNING_FLOW_BOUNDED_COSIGNER1,
+    EnrollmentError,
+    EnrollmentResult,
     request_enrollment,
     request_enrollment_from_env,
     encode_transaction,
@@ -3340,15 +3342,16 @@ class TestRequestEnrollmentFromEnv:
         (ssh_dir / "id_ed25519").write_text("dummy-private-key")
 
         with patch(
-            "aplanesdk.signer.request_enrollment", return_value="SHA256:abc"
+            "aplanesdk.signer.request_enrollment",
+            return_value=EnrollmentResult(fingerprint="SHA256:abc", pending=True),
         ) as enroll:
-            fingerprint = request_enrollment_from_env(
+            result = request_enrollment_from_env(
                 data_dir=str(tmp_path),
                 endpoint="qa",
                 label="ci",
             )
 
-        assert fingerprint == "SHA256:abc"
+        assert result == EnrollmentResult(fingerprint="SHA256:abc", pending=True)
         assert enroll.call_args.kwargs["host"] == "cosigner.example.com"
         assert enroll.call_args.kwargs["ssh_port"] == 2222
         assert enroll.call_args.kwargs["label"] == "ci"
@@ -3590,6 +3593,20 @@ class TestLoadClientEndpointRegistry:
 
 
 class TestRequestEnrollment:
+    # The signer answers at once: queued for the operator (pending) or already
+    # enrolled. Either way the fingerprint must be the authenticating key's.
+    def test_parses_pending_and_enrolled_replies(self):
+        from aplanesdk.signer import _parse_enrollment_reply
+
+        fp = "SHA256:abc"
+        assert _parse_enrollment_reply(f"pending {fp}", fp) == EnrollmentResult(fp, True)
+        assert _parse_enrollment_reply(f"enrolled {fp}", fp) == EnrollmentResult(fp, False)
+        with pytest.raises(EnrollmentError, match="this client authenticated with SHA256:abc"):
+            _parse_enrollment_reply("pending SHA256:other", fp)
+        for reply in ("enrolled ", f"ok {fp}", ""):
+            with pytest.raises(EnrollmentError, match="Unexpected enrollment response"):
+                _parse_enrollment_reply(reply, fp)
+
     def test_requires_explicit_known_hosts_path(self):
         with pytest.raises(TypeError, match="known_hosts_path"):
             request_enrollment("signer.example.com", "/apclient/.ssh/id_ed25519")

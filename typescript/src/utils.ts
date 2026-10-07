@@ -285,22 +285,64 @@ export interface RequestEnrollmentOptions {
   signal?: AbortSignal;
 }
 
+/** The signer's answer to an enrollment request. */
+export interface EnrollmentResult {
+  /**
+   * SHA256 fingerprint of the client key the request was made with; it
+   * equals the key the client authenticated with.
+   */
+  fingerprint: string;
+  /**
+   * True when the request was queued for the operator to approve later in
+   * apadmin (the normal outcome); false when the key was already enrolled.
+   */
+  pending: boolean;
+}
+
+/**
+ * Parses the signer's answer: "pending <fingerprint>" when the request was
+ * queued for the operator, "enrolled <fingerprint>" when the key was already
+ * enrolled. The fingerprint must be the key this client authenticated with.
+ */
+export function parseEnrollmentReply(reply: string, clientFingerprint: string): EnrollmentResult {
+  let result: EnrollmentResult;
+  if (reply.startsWith("pending ")) {
+    result = { fingerprint: reply.slice("pending ".length), pending: true };
+  } else if (reply.startsWith("enrolled ")) {
+    result = { fingerprint: reply.slice("enrolled ".length), pending: false };
+  } else {
+    throw new EnrollmentError(`Unexpected enrollment response: ${JSON.stringify(reply)}`);
+  }
+  if (!result.fingerprint) {
+    throw new EnrollmentError(`Unexpected enrollment response: ${JSON.stringify(reply)}`);
+  }
+  if (result.fingerprint !== clientFingerprint) {
+    throw new EnrollmentError(
+      `Signer answered for ${result.fingerprint}, but this client authenticated with ${clientFingerprint}`
+    );
+  }
+  return result;
+}
+
 /**
  * Ask the signer to enroll this client's SSH key, so the key can open API
- * connections. The call blocks until an operator approves or rejects the
- * request in apadmin and resolves to the enrolled key's SHA256 fingerprint.
- * Nothing is stored on the client afterwards: the key is its credential.
+ * connections. The signer answers at once: the request is queued for the
+ * operator to approve later in apadmin (`pending: true`, the normal
+ * outcome), or the key is already enrolled. Nothing waits for the operator
+ * and nothing is stored on the client: the key is its credential, and the
+ * client learns the outcome by connecting after approval (an unenrolled key
+ * still fails the handshake).
  *
  * @param host - Signer host
  * @param sshKeyPath - Path to the client's SSH private key
  * @param options - sshPort, knownHostsPath, autoAddHost, label, setupTimeout, signal
- * @returns The enrolled key's fingerprint (SHA256:...)
+ * @returns The key's fingerprint (SHA256:...) and whether approval is pending
  */
 export async function requestEnrollment(
   host: string,
   sshKeyPath: string,
   options: RequestEnrollmentOptions = {}
-): Promise<string> {
+): Promise<EnrollmentResult> {
   const sshPort = options.sshPort ?? DEFAULT_SSH_PORT;
   const setupTimeout = normalizeSSHSetupTimeout(options.setupTimeout);
   const label = options.label ?? "";
@@ -383,19 +425,11 @@ export async function requestEnrollment(
               reject(new EnrollmentError(errorMsg));
               return;
             }
-            const response = stdout.trim();
-            if (!response.startsWith("enrolled ") || response.length <= "enrolled ".length) {
-              reject(new EnrollmentError(`Unexpected enrollment response: ${JSON.stringify(response)}`));
-              return;
+            try {
+              resolve(parseEnrollmentReply(stdout.trim(), clientFingerprint));
+            } catch (error) {
+              reject(error);
             }
-            const fingerprint = response.slice("enrolled ".length);
-            if (fingerprint !== clientFingerprint) {
-              reject(new EnrollmentError(
-                `Signer enrolled ${fingerprint}, but this client authenticated with ${clientFingerprint}`
-              ));
-              return;
-            }
-            resolve(fingerprint);
           });
         });
       });
@@ -473,11 +507,11 @@ export interface RequestEnrollmentFromEnvOptions {
 /**
  * Ask the endpoint selected from the data directory's endpoints.yaml (the
  * default signer, or `endpoint`) to enroll the client key configured for it.
- * Resolves to the enrolled key's fingerprint; nothing is stored.
+ * See requestEnrollment for the result; nothing is stored.
  */
 export async function requestEnrollmentFromEnv(
   options: RequestEnrollmentFromEnvOptions = {}
-): Promise<string> {
+): Promise<EnrollmentResult> {
   const rawOptions = options as Record<string, unknown>;
   for (const removed of ["host", "sshPort", "identity"]) {
     if (removed in rawOptions) {
