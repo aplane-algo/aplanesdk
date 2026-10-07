@@ -107,7 +107,9 @@ Optional variables:
 
 - `APLANE_SDK_SIGNER_URL`: the local end of a caller-owned SSH tunnel to the
   signer, used when `APLANE_SDK_SSH_HOST` is unset (a signer's loopback REST
-  port answers only `/health`)
+  port answers only `/health`). With `APLANE_SDK_SSH_HOST` set, neither this
+  nor `APSIGNER_DATA` is needed: the preflight checks the four SSH variables
+  and that the SSH listener accepts a connection, and the tests tunnel to it
 
 Each SDK runs the broad signer-facing lifecycle and AlgoKit adapter checks with
 an Ed25519 key. A second focused test generates a protocol-native
