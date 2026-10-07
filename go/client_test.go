@@ -32,83 +32,99 @@ func TestFromEnv_RequiresDefaultEndpoint(t *testing.T) {
 	}
 }
 
-func TestFromEnv_UsesNamedDirectEndpointAndToken(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, "tokens"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	os.WriteFile(filepath.Join(dir, "tokens", "qa.token"), []byte("qa-token"), 0o600)
-	os.WriteFile(filepath.Join(dir, "endpoints.yaml"), []byte(`
-schema_version: 2
-endpoints:
-  primary:
-    role: signer
-    url: https://signer.example.com/
-  qa:
-    role: cosigner
-    url: http://127.0.0.1:11271/
-`), 0o600)
-
-	client, err := FromEnv(&FromEnvOptions{DataDir: dir, Endpoint: "qa", Timeout: 7})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if client.baseURL != "http://127.0.0.1:11271" || client.token != "qa-token" {
-		t.Fatalf("client routing = %q token %q", client.baseURL, client.token)
-	}
-	if client.requestTimeout != 7*time.Second || !client.requestTimeoutSet {
-		t.Fatalf("timeout = %s set %v", client.requestTimeout, client.requestTimeoutSet)
-	}
-}
-
-func TestFromEnv_ReportsResolvedMissingTokenPath(t *testing.T) {
+// FromEnv selects the named endpoint and connects with its SSH identity; the
+// key is the only credential, so a missing identity file is the first
+// failure.
+func TestFromEnv_UsesNamedEndpointIdentity(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "endpoints.yaml"), []byte(`
 schema_version: 2
 endpoints:
   primary:
     role: signer
-    url: https://signer.example.com
+    url: ssh://signer.example.com/
   qa:
     role: cosigner
-    url: http://127.0.0.1:11271
+    url: ssh://127.0.0.1:1/
+    identity_file: keys/qa
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	_, err := FromEnv(&FromEnvOptions{DataDir: dir, Endpoint: "qa"})
-	wantPath := filepath.Join(dir, "tokens", "qa.token")
-	if err == nil || !strings.Contains(err.Error(), wantPath) {
-		t.Fatalf("FromEnv error = %v, want resolved token path %q", err, wantPath)
-	}
-	if !errors.Is(err, ErrTokenNotFound) {
-		t.Fatalf("FromEnv error = %v, want ErrTokenNotFound", err)
+	_, err := FromEnv(&FromEnvOptions{DataDir: dir, Endpoint: "qa", Timeout: 7})
+	wantKey := filepath.Join(dir, "keys", "qa")
+	if err == nil || !strings.Contains(err.Error(), "failed to read SSH key") || !strings.Contains(err.Error(), wantKey) {
+		t.Fatalf("FromEnv error = %v, want the qa identity %q to be read", err, wantKey)
 	}
 }
 
-func TestFromEnv_RejectsEmptyToken(t *testing.T) {
+// RequestEnrollmentFromEnv resolves the endpoint's identity before any
+// network activity and tells the caller how to create a missing key.
+func TestRequestEnrollmentFromEnv_RequiresIdentityFile(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "endpoints.yaml"), []byte(`
 schema_version: 2
 endpoints:
   primary:
     role: signer
-    url: https://signer.example.com
+    url: ssh://signer.example.com
+  qa:
+    role: cosigner
+    url: ssh://cosigner.example.com:2222
+    identity_file: .ssh/qa
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	tokenPath := filepath.Join(dir, "aplane.token")
-	if err := os.WriteFile(tokenPath, []byte(" \n\t"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 
-	_, err := FromEnv(&FromEnvOptions{DataDir: dir})
-	if err == nil || !strings.Contains(err.Error(), tokenPath) || !strings.Contains(err.Error(), "empty") {
-		t.Fatalf("FromEnv error = %v, want empty token error with path %q", err, tokenPath)
+	_, err := RequestEnrollmentFromEnv(&FromEnvOptions{DataDir: dir, Endpoint: "qa"}, "")
+	wantKey := filepath.Join(dir, ".ssh", "qa")
+	if err == nil || !strings.Contains(err.Error(), "SSH key not found at "+wantKey) {
+		t.Fatalf("RequestEnrollmentFromEnv error = %v, want missing key %q", err, wantKey)
 	}
 }
 
-func TestFromEnvRejectsInvalidEndpointBeforeTokenLoading(t *testing.T) {
+// The signer answers an enrollment request at once: queued for the operator
+// (pending) or already enrolled. Either way the fingerprint must be the
+// authenticating key's.
+func TestParseEnrollmentReply(t *testing.T) {
+	const fp = "SHA256:abc"
+	for _, tc := range []struct {
+		reply   string
+		want    EnrollmentResult
+		wantErr string
+	}{
+		{reply: "pending " + fp, want: EnrollmentResult{Fingerprint: fp, Pending: true}},
+		{reply: "enrolled " + fp, want: EnrollmentResult{Fingerprint: fp}},
+		{reply: "pending SHA256:other", wantErr: "this client authenticated with " + fp},
+		{reply: "enrolled ", wantErr: "unexpected response"},
+		{reply: "ok " + fp, wantErr: "unexpected response"},
+		{reply: "", wantErr: "unexpected response"},
+	} {
+		got, err := parseEnrollmentReply(tc.reply, fp)
+		if tc.wantErr != "" {
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) || !errors.Is(err, ErrEnrollment) {
+				t.Fatalf("parseEnrollmentReply(%q) error = %v, want ErrEnrollment with %q", tc.reply, err, tc.wantErr)
+			}
+			continue
+		}
+		if err != nil || got != tc.want {
+			t.Fatalf("parseEnrollmentReply(%q) = %+v, %v; want %+v", tc.reply, got, err, tc.want)
+		}
+	}
+}
+
+func TestRequestEnrollmentRejectsBadLabelsLocally(t *testing.T) {
+	for _, label := range []string{strings.Repeat("x", 65), "two\nlines", " padded", "tab\tbed"} {
+		if _, err := RequestEnrollment("signer.example.com", "/nonexistent/key", label, &EnrollmentOptions{KnownHostsPath: "/nonexistent/known_hosts"}); err == nil || !strings.Contains(err.Error(), "enrollment label") {
+			t.Fatalf("RequestEnrollment(label=%q) error = %v, want label rejection", label, err)
+		}
+	}
+	if _, err := RequestEnrollment("signer.example.com", "/nonexistent/key", "laptop", nil); err == nil || !strings.Contains(err.Error(), "known_hosts path is required") {
+		t.Fatalf("RequestEnrollment() error = %v, want known_hosts requirement", err)
+	}
+}
+
+func TestFromEnvRejectsInvalidEndpointBeforeConnecting(t *testing.T) {
 	for _, tc := range []struct {
 		fixture string
 		want    string
@@ -119,7 +135,7 @@ func TestFromEnvRejectsInvalidEndpointBeforeTokenLoading(t *testing.T) {
 		t.Run(tc.fixture, func(t *testing.T) {
 			_, err := FromEnv(&FromEnvOptions{DataDir: copyEndpointFixture(t, tc.fixture)})
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("FromEnv error = %v, want %q before token loading", err, tc.want)
+				t.Fatalf("FromEnv error = %v, want %q before connecting", err, tc.want)
 			}
 		})
 	}
@@ -208,7 +224,6 @@ func TestSignTransactionsList_ReturnsIndividualBase64(t *testing.T) {
 
 	client := &SignerClient{
 		baseURL: server.URL,
-		token:   "test",
 		client:  http.DefaultClient,
 	}
 
@@ -261,7 +276,7 @@ func TestSignTransactionsList_RejectsTruncatedResponse(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := &SignerClient{baseURL: server.URL, token: "test", client: http.DefaultClient}
+			client := &SignerClient{baseURL: server.URL, client: http.DefaultClient}
 			_, err := client.SignTransactionsList(
 				[]types.Transaction{{Type: types.PaymentTx}, {Type: types.PaymentTx}},
 				nil, nil,
@@ -287,7 +302,6 @@ func TestSignTransactions_ReturnsConcatenatedBase64(t *testing.T) {
 
 	client := &SignerClient{
 		baseURL: server.URL,
-		token:   "test",
 		client:  http.DefaultClient,
 	}
 
@@ -313,7 +327,7 @@ func TestSignTransactions_ReturnsConcatenatedBase64(t *testing.T) {
 }
 
 func TestSignTransactions_RejectsEmptySlice(t *testing.T) {
-	client := &SignerClient{baseURL: "http://example.invalid", token: "test", client: http.DefaultClient}
+	client := &SignerClient{baseURL: "http://example.invalid", client: http.DefaultClient}
 
 	_, err := client.SignTransactions(nil, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "requests array is empty") {
@@ -322,7 +336,7 @@ func TestSignTransactions_RejectsEmptySlice(t *testing.T) {
 }
 
 func TestSignTransactionsList_RejectsEmptySlice(t *testing.T) {
-	client := &SignerClient{baseURL: "http://example.invalid", token: "test", client: http.DefaultClient}
+	client := &SignerClient{baseURL: "http://example.invalid", client: http.DefaultClient}
 
 	_, err := client.SignTransactionsList(nil, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "requests array is empty") {
@@ -336,7 +350,6 @@ func newTestClient(handler http.HandlerFunc) (*SignerClient, *httptest.Server) {
 	server := httptest.NewServer(handler)
 	return &SignerClient{
 		baseURL: server.URL,
-		token:   "test-token",
 		client:  http.DefaultClient,
 	}, server
 }
@@ -359,7 +372,6 @@ func TestHealth_Reachable(t *testing.T) {
 func TestHealth_Unreachable(t *testing.T) {
 	client := &SignerClient{
 		baseURL: "http://localhost:1",
-		token:   "test",
 		client:  http.DefaultClient,
 	}
 	ok, err := client.Health()
@@ -374,7 +386,6 @@ func TestHealth_Unreachable(t *testing.T) {
 func TestHealth_NetworkError(t *testing.T) {
 	client := &SignerClient{
 		baseURL: "http://192.0.2.1:1", // unreachable TEST-NET address
-		token:   "test",
 		client:  &http.Client{Timeout: 100 * time.Millisecond},
 	}
 	ok, err := client.Health()
@@ -393,8 +404,9 @@ func TestGetStatus_Success(t *testing.T) {
 		if r.Method != http.MethodGet || r.URL.Path != "/status" {
 			t.Fatalf("request = %s %s, want GET /status", r.Method, r.URL.Path)
 		}
-		if got := r.Header.Get("Authorization"); got != "aplane test-token" {
-			t.Fatalf("Authorization = %q, want aplane test-token", got)
+		// The connection, not a header, carries the client's identity.
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Fatalf("Authorization = %q, want none", got)
 		}
 		json.NewEncoder(w).Encode(StatusResponse{
 			State:               "unlocked",
@@ -452,7 +464,7 @@ func TestGetStatus_AuthError(t *testing.T) {
 }
 
 func TestSignRequestTimeoutUsesApprovalWaitSlack(t *testing.T) {
-	client := NewSignerClientWithToken("http://example.invalid", "test")
+	client := NewSignerClient("http://example.invalid")
 	client.cacheApprovalWait(120)
 
 	if got := client.signRequestTimeout(); got != 150*time.Second {
@@ -461,7 +473,7 @@ func TestSignRequestTimeoutUsesApprovalWaitSlack(t *testing.T) {
 }
 
 func TestSignRequestTimeoutFallsBackForInvalidApprovalWait(t *testing.T) {
-	client := NewSignerClientWithToken("http://example.invalid", "test")
+	client := NewSignerClient("http://example.invalid")
 	client.cacheApprovalWait(int64((31 * time.Minute) / time.Second))
 
 	if got := client.signRequestTimeout(); got != defaultSignRequestTimeout {
@@ -842,8 +854,8 @@ func TestRequestComponentsPostsToComponentEndpoint(t *testing.T) {
 		if r.Method != http.MethodPost || r.URL.Path != "/sign/component" {
 			t.Fatalf("request = %s %s, want POST /sign/component", r.Method, r.URL.Path)
 		}
-		if got := r.Header.Get("Authorization"); got != "aplane test-token" {
-			t.Fatalf("Authorization = %q", got)
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Fatalf("Authorization = %q, want none", got)
 		}
 		var req ComponentRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -976,7 +988,7 @@ func TestRequestAssemblePostsToAssembleEndpoint(t *testing.T) {
 }
 
 func TestRequestAssembleRejectsMissingCoverage(t *testing.T) {
-	client := &SignerClient{baseURL: "http://example.invalid", token: "test", client: http.DefaultClient}
+	client := &SignerClient{baseURL: "http://example.invalid", client: http.DefaultClient}
 	_, err := client.RequestAssemble(AssemblyRequest{
 		GroupBytesHex: []string{"5458aa", "5458bb"},
 		Targets: []AssemblyTarget{{
@@ -1267,7 +1279,7 @@ func TestBuildSignRequestsWithOptions_InvalidPassthroughBase64(t *testing.T) {
 }
 
 func TestSignTransactionsWithOptions_RejectsForeignEntries(t *testing.T) {
-	client := &SignerClient{baseURL: "http://example.invalid", token: "test", client: http.DefaultClient}
+	client := &SignerClient{baseURL: "http://example.invalid", client: http.DefaultClient}
 	txn := types.Transaction{Type: types.PaymentTx}
 
 	_, err := client.SignTransactionsWithOptions(
@@ -1282,7 +1294,7 @@ func TestSignTransactionsWithOptions_RejectsForeignEntries(t *testing.T) {
 }
 
 func TestSignTransactionsListWithOptions_RejectsForeignEntries(t *testing.T) {
-	client := &SignerClient{baseURL: "http://example.invalid", token: "test", client: http.DefaultClient}
+	client := &SignerClient{baseURL: "http://example.invalid", client: http.DefaultClient}
 	txn := types.Transaction{Type: types.PaymentTx}
 
 	_, err := client.SignTransactionsListWithOptions(

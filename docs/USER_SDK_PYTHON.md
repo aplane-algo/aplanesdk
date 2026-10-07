@@ -11,8 +11,8 @@ existing APlane client install.
 
 The Python SDK is a user-facing integration surface for:
 
-- loading client config and token state from `APCLIENT_DATA`,
-- provisioning a token over the SSH `request-token` flow,
+- loading client config and the client SSH identity from `APCLIENT_DATA`,
+- enrolling the client SSH key at a signer over the `request-enrollment` flow,
 - connecting to `apsigner` over the standard SSH-backed product path,
 - listing signer keys and available key types,
 - planning and signing single transactions and groups,
@@ -28,9 +28,9 @@ Python, Go, and TypeScript SDK package versions will always match.
 - `pip`
 - an APlane signer you can reach over the standard SSH-backed client path
 - either:
-  - an existing client data directory with config, token, SSH key, and
+  - an existing client data directory with config, an enrolled SSH key, and
     `known_hosts`, or
-  - explicit signer host, token, SSH key, and `known_hosts` paths
+  - explicit signer host, enrolled SSH key, and `known_hosts` paths
 
 When you install `aplanesdk`, its runtime dependencies are installed with it,
 including `py-algorand-sdk`, `paramiko`, `requests`, and `pyyaml`.
@@ -120,7 +120,6 @@ Typical client layout (installer default: `~/aplane/apclient`):
 <data_dir>/
   config.yaml
   endpoints.yaml
-  aplane.token
   .ssh/
     id_ed25519
     known_hosts
@@ -128,9 +127,9 @@ Typical client layout (installer default: `~/aplane/apclient`):
 
 The SDK reads:
 
-- `endpoints.yaml` for signer/cosigner URLs, ports, paths, and token files
-- the selected endpoint's token for HTTP authentication and SSH mutual proof
-- `.ssh/id_ed25519` for client SSH auth. The Python SDK loads Ed25519 or ECDSA (P-256/384/521) key files; the signer refuses RSA and DSA keys, and hardware-backed `sk-` keys are not supported from a key file.
+- `endpoints.yaml` for signer/cosigner `ssh://` URLs and SSH paths
+- `.ssh/id_ed25519` for client SSH auth; the enrolled key is the client's only
+  credential, and the signer attributes every request on the tunnel to it. The Python SDK loads Ed25519 or ECDSA (P-256/384/521) key files; the signer refuses RSA and DSA keys, and hardware-backed `sk-` keys are not supported from a key file.
 - `.ssh/known_hosts` for SSH host key verification
 
 Example `endpoints.yaml`:
@@ -156,32 +155,34 @@ path is:
 
 1. install APlane and create or obtain an `apclient` data directory
 2. generate or provide the client SSH key under `.ssh/id_ed25519`
-3. provision a token
+3. enroll that key at the signer
 4. connect with `SignerClient.from_env()`
 
-Provision and save a token with the Python helper:
+Ask for enrollment with the Python helper:
 
 ```python
-from aplanesdk import request_token_to_file
+from aplanesdk import request_enrollment_from_env
 
-token_path = request_token_to_file(endpoint="cosigner.qa")
-print(f"Saved token to {token_path}")
+result = request_enrollment_from_env(endpoint="cosigner.qa", label="ci-runner")
+if result.pending:
+    print(f"key {result.fingerprint} queued; have the operator approve it in apadmin")
 ```
 
-`request_token_to_file()`:
+`request_enrollment_from_env()`:
 
 - uses the same data-dir resolution as `SignerClient.from_env()`
 - selects the default signer or named endpoint from `endpoints.yaml`
 - uses that endpoint's SSH host, port, key, and `known_hosts` path
-- requests a token over SSH as `request-token`
-- saves the token to that endpoint's `token_file` with mode `0600`
+- opens a `request-enrollment` SSH session, which answers at once
+- returns an `EnrollmentResult`: `pending=True` when the request was queued
+  for the operator (the normal outcome), `False` when the key was already
+  enrolled; `fingerprint` is the key's SHA256 fingerprint. Nothing is stored.
 
-Token provisioning targets the signer's product store. An operator must
-approve the request in `apadmin`.
-
-Alternatively, you can obtain the token by running `apshell` and executing
-the `request-token` command; `apshell` writes the approved token to
-`<data_dir>/aplane.token` using the same client data directory.
+Enrollment targets the signer's product store. The operator approves the
+request later in `apadmin`; connect after that. The same enrollment can be
+done from `apshell` with `request-enrollment`. A key the signer has not
+enrolled yet (or has revoked) fails `from_env`/`connect_ssh` with
+`AuthenticationError`.
 
 ## Connection Methods
 
@@ -202,7 +203,6 @@ This path:
 - resolves the client data dir,
 - validates `config.yaml` contains no obsolete routing,
 - loads and selects an endpoint from `endpoints.yaml`,
-- loads that endpoint's token,
 - resolves SSH paths relative to the client data dir,
 - establishes the SSH tunnel automatically,
 - verifies that the signer answers on the forwarded REST port.
@@ -210,8 +210,7 @@ This path:
 `SignerClient.from_env()` requires:
 
 - a default signer endpoint, or an explicit `endpoint=...` alias
-- that endpoint's token file
-- for SSH endpoints, a readable private key at `identity_file`
+- a readable, enrolled private key at that endpoint's `identity_file`
 
 ### Explicit SSH Connection
 
@@ -220,7 +219,6 @@ from aplanesdk import SignerClient
 
 with SignerClient.connect_ssh(
     host="signer.example.com",
-    token="your-token",
     ssh_key_path="~/aplane/apclient/.ssh/id_ed25519",
     known_hosts_path="~/aplane/apclient/.ssh/known_hosts",
     ssh_port=1127,
@@ -231,25 +229,26 @@ with SignerClient.connect_ssh(
 
 `ssh_setup_timeout` separately bounds TCP dialing and SSH authentication and
 defaults to 60 seconds. The deadline is cleared after authentication, so it
-does not shorten the established tunnel or an operator approval wait. Token
-provisioning exposes the same setup-only control as `setup_timeout`.
+does not shorten the established tunnel or an operator approval wait.
+Enrollment exposes the same setup-only control as `setup_timeout`.
 
 This is useful when:
 
 - you do not want to depend on `APCLIENT_DATA`
-- you manage the token out-of-band
+- you manage the SSH identity out-of-band
 - your app needs to choose the signer target dynamically
 
-The SSH username is the fixed non-secret value `aplane`. Authentication verifies the
-enrolled public key first, then performs a programmatic mutual proof of the
-token bound to that username, the accepted host key, and fresh client/server nonces. The
-server proves token possession before the client returns its proof, and the
-bearer token is never sent as SSH metadata.
+The SSH username is the fixed non-secret value `aplane`, and public-key
+authentication with the enrolled key is the only credential. The explicit form
+of enrollment is `request_enrollment(host, ssh_key_path,
+known_hosts_path=..., label=...)`.
 
-### Advanced: Caller-Managed HTTP
+### Advanced: Caller-Managed Tunnel
 
-The low-level constructor `SignerClient(base_url, token, timeout=...)` exists
-and can be used if you already own the HTTP transport path. The normal product
+The low-level constructor `SignerClient(base_url, timeout=...)` exists and can
+be used if you already own the SSH tunnel to the signer; the signer attributes
+the requests to the key that opened it, and a signer's loopback REST port
+answers only `/health`. The normal product
 and convenience flow remains the SSH-backed path shown above. An explicit
 timeout shorter than the signer approval wait will cancel queued/pending manual
 approval; SDK `/sign` calls include a `request_id` and send a best-effort
@@ -729,7 +728,7 @@ The SDK raises typed exceptions for the common signer-side failure cases:
 - `SignerUnavailableError`
 - `KeyNotFoundError`
 - `KeyDeletionError`
-- `TokenProvisioningError`
+- `EnrollmentError`
 - `TransactionRejectedError`
 - `LogicSigRejectedError`
 - `InsufficientFundsError`
@@ -748,7 +747,7 @@ from aplanesdk import (
 try:
     signed = client.sign_transaction(txn)
 except AuthenticationError:
-    print("Token invalid or missing")
+    print("Connection is not authenticated by an enrolled SSH key")
 except SigningRejectedError:
     print("Operator rejected the request")
 except SignerUnavailableError:

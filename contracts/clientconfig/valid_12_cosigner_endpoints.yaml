@@ -1,14 +1,14 @@
 schema_version: 2
 endpoints:
-  s01: {role: cosigner, url: https://s01.example.com}
-  s02: {role: cosigner, url: https://s02.example.com}
-  s03: {role: cosigner, url: https://s03.example.com}
-  s04: {role: cosigner, url: https://s04.example.com}
-  s05: {role: cosigner, url: https://s05.example.com}
-  s06: {role: cosigner, url: https://s06.example.com}
-  s07: {role: cosigner, url: https://s07.example.com}
-  s08: {role: cosigner, url: https://s08.example.com}
-  s09: {role: cosigner, url: https://s09.example.com}
-  s10: {role: cosigner, url: https://s10.example.com}
-  s11: {role: cosigner, url: https://s11.example.com}
-  s12: {role: cosigner, url: https://s12.example.com}
+  s01: {role: cosigner, url: ssh://s01.example.com}
+  s02: {role: cosigner, url: ssh://s02.example.com}
+  s03: {role: cosigner, url: ssh://s03.example.com}
+  s04: {role: cosigner, url: ssh://s04.example.com}
+  s05: {role: cosigner, url: ssh://s05.example.com}
+  s06: {role: cosigner, url: ssh://s06.example.com}
+  s07: {role: cosigner, url: ssh://s07.example.com}
+  s08: {role: cosigner, url: ssh://s08.example.com}
+  s09: {role: cosigner, url: ssh://s09.example.com}
+  s10: {role: cosigner, url: ssh://s10.example.com}
+  s11: {role: cosigner, url: ssh://s11.example.com}
+  s12: {role: cosigner, url: ssh://s12.example.com}

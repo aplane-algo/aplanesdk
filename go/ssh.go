@@ -25,6 +25,14 @@ const clientSSHKeyRequirement = "Ed25519, ECDSA (P-256/384/521), or hardware-bac
 
 const defaultSSHSetupTimeout = 60 * time.Second
 
+// SSH usernames the signer's SSH server recognizes: clientSSHUsername for
+// API connections authenticated by an enrolled key, enrollmentSSHUsername
+// for a request-enrollment session.
+const (
+	clientSSHUsername     = "aplane"
+	enrollmentSSHUsername = "request-enrollment"
+)
+
 // sshTunnel manages an SSH tunnel to the signer.
 type sshTunnel struct {
 	client          *ssh.Client
@@ -35,15 +43,15 @@ type sshTunnel struct {
 	trustOnFirstUse bool
 }
 
-// connect establishes an SSH tunnel to the signer.
-// The bearer token is proven through a host-key-bound challenge and is never
-// sent as the SSH username.
+// connect establishes an SSH tunnel to the signer. The client's enrolled
+// SSH key is its only credential; the server verifies it at the handshake
+// and hands every forwarded channel to its REST listener with that identity.
 // Returns the local port that forwards to the signer.
 func (t *sshTunnel) connect(
 	ctx context.Context,
 	host string,
 	sshPort, localPort int,
-	token, sshKeyPath string,
+	sshKeyPath string,
 	setupTimeout time.Duration,
 ) (int, error) {
 	// Load SSH private key
@@ -63,22 +71,10 @@ func (t *sshTunnel) connect(
 		return 0, fmt.Errorf("failed to set up host key verification: %w", err)
 	}
 
-	proof := newSSHTokenProofClient(token)
-	defer proof.clear()
-	verifiedHostKeyCallback := func(hostname string, remote net.Addr, key ssh.PublicKey) error {
-		if err := hostKeyCallback(hostname, remote, key); err != nil {
-			return err
-		}
-		return proof.captureHostKey(key)
-	}
-
 	config := &ssh.ClientConfig{
-		User: sshTokenProofUsername,
-		Auth: []ssh.AuthMethod{
-			ssh.PublicKeys(signer),
-			ssh.KeyboardInteractive(proof.challenge),
-		},
-		HostKeyCallback: verifiedHostKeyCallback,
+		User:            clientSSHUsername,
+		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
+		HostKeyCallback: hostKeyCallback,
 	}
 
 	// Bound TCP dialing and SSH authentication together. The setup context is
@@ -88,10 +84,6 @@ func (t *sshTunnel) connect(
 	client, err := dialSSHHandshake(ctx, "tcp", addr, config, setupTimeout)
 	if err != nil {
 		return 0, fmt.Errorf("failed to connect to SSH server: %w", err)
-	}
-	if !proof.serverVerified() {
-		_ = client.Close()
-		return 0, fmt.Errorf("SSH server accepted authentication without completing token proof")
 	}
 	t.client = client
 
@@ -175,7 +167,14 @@ func dialSSHHandshake(
 			err = context.Canceled
 		}
 		if strings.Contains(err.Error(), "unable to authenticate") {
-			err = fmt.Errorf("%w (the signer accepts %s client keys)", err, clientSSHKeyRequirement)
+			if config.User == clientSSHUsername {
+				// The key is of an accepted type or the server would have
+				// refused it before signature verification; with the client
+				// username, a refusal means the key is not enrolled.
+				err = fmt.Errorf("%w: %v (the signer accepts %s client keys; enroll this key with RequestEnrollment or apshell request-enrollment)", ErrNotEnrolled, err, clientSSHKeyRequirement)
+			} else {
+				err = fmt.Errorf("%w (the signer accepts %s client keys)", err, clientSSHKeyRequirement)
+			}
 		}
 		return nil, err
 	}

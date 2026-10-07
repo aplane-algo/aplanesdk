@@ -22,12 +22,9 @@ def _integration_enabled() -> bool:
 
 
 def _live_signer_client() -> SignerClient:
-    token = _live_signer_token()
-
     if host := os.environ.get("APLANE_SDK_SSH_HOST", "").strip():
         client = SignerClient.connect_ssh(
             host,
-            token,
             _required_ssh_env("APLANE_SDK_SSH_KEY_PATH"),
             ssh_port=_required_ssh_port("APLANE_SDK_SSH_PORT"),
             known_hosts_path=_required_ssh_env("APLANE_SDK_KNOWN_HOSTS_PATH"),
@@ -38,7 +35,9 @@ def _live_signer_client() -> SignerClient:
     if not base_url:
         port = _live_signer_port()
         base_url = f"http://127.0.0.1:{port}"
-    return SignerClient(base_url, token)
+    # A base URL names a caller-owned tunnel; the loopback REST port of a
+    # signer answers only /health.
+    return SignerClient(base_url)
 
 
 def _required_ssh_env(name: str) -> str:
@@ -70,32 +69,6 @@ def _live_signer_port() -> int:
     if port == 0:
         raise AssertionError("endpoint.signer_port not set in signer config")
     return port
-
-
-def _live_signer_token() -> str:
-    token = os.environ.get("APLANE_SDK_TOKEN", "").strip()
-    if token:
-        return token
-
-    candidates = [os.environ.get("APLANE_SDK_TOKEN_FILE", "")]
-    if client_data := os.environ.get("APCLIENT_DATA"):
-        candidates.append(str(Path(client_data) / "aplane.token"))
-    if signer_data := os.environ.get("APSIGNER_DATA"):
-        candidates.append(str(Path(signer_data) / "identities" / "default" / "aplane.token"))
-
-    for candidate in candidates:
-        if not candidate:
-            continue
-        path = Path(candidate)
-        if not path.exists():
-            continue
-        token = path.read_text(encoding="utf-8").strip()
-        if token:
-            return token
-
-    raise AssertionError(
-        "APLANE_SDK_TOKEN, APLANE_SDK_TOKEN_FILE, APCLIENT_DATA, or APSIGNER_DATA must provide a token"
-    )
 
 
 @pytest.mark.skipif(not _integration_enabled(), reason="set APLANE_SDK_INTEGRATION=1")

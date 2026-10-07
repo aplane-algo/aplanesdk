@@ -118,29 +118,6 @@ func LoadConfig(dataDir string) (*Config, error) {
 	return config, nil
 }
 
-// LoadToken loads the authentication token from the given path.
-func LoadToken(tokenPath string) (string, error) {
-	path := ExpandPath(tokenPath)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", fmt.Errorf("token file %s not found: %w", path, ErrTokenNotFound)
-		}
-		return "", err
-	}
-	token := strings.TrimSpace(string(data))
-	if token == "" {
-		return "", fmt.Errorf("token file %s is empty", path)
-	}
-	return token, nil
-}
-
-// LoadTokenFromDir loads the token from dataDir/aplane.token.
-func LoadTokenFromDir(dataDir string) (string, error) {
-	tokenPath := filepath.Join(dataDir, "aplane.token")
-	return LoadToken(tokenPath)
-}
-
 // ResolveDataDir returns the data directory from parameter > APCLIENT_DATA env var.
 // Returns an error when neither is set; the SDK has no implicit default.
 func ResolveDataDir(dataDir string) (string, error) {

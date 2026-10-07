@@ -60,8 +60,10 @@ from aplanesdk.signer import (
     KEY_TYPE_WITNESS_FALCON1024,
     SIGNING_FLOW_COSIGNER1,
     SIGNING_FLOW_BOUNDED_COSIGNER1,
-    request_token,
-    request_token_to_file,
+    EnrollmentError,
+    EnrollmentResult,
+    request_enrollment,
+    request_enrollment_from_env,
     encode_transaction,
     _validate_sign_request_id,
     _request_bounded_primary_passthrough,
@@ -140,9 +142,9 @@ def guarded_assembly_request(*, group_bytes_hex, request_id="", targets=None, pa
 assembly_response = AssemblyResponse
 
 
-def make_client(base_url="http://localhost:11270", token="test-token"):
+def make_client(base_url="http://localhost:11270"):
     """Create a SignerClient with no SSH tunnel."""
-    return SignerClient(base_url, token, timeout=10)
+    return SignerClient(base_url, timeout=10)
 
 
 def mock_response(status_code=200, json_data=None, text=""):
@@ -1574,7 +1576,7 @@ class TestSignGuardedGroup:
 
         user = make_client()
         user.get_key_info = MagicMock(
-            side_effect=AuthenticationError("Invalid or missing token")
+            side_effect=AuthenticationError("Not authenticated: connect through an enrolled SSH key")
         )
         with pytest.raises(AuthenticationError):
             sign_prepared_guarded_group(
@@ -2192,11 +2194,12 @@ class TestConfigAndConstruction:
 
     def test_constructor_requires_base_url(self):
         with pytest.raises(SignerError, match="base_url is required"):
-            SignerClient("", "token")
+            SignerClient("")
 
-    def test_constructor_requires_token(self):
-        with pytest.raises(SignerError, match="token is required"):
-            SignerClient("http://localhost:11270", "")
+    def test_constructor_sends_no_credential_header(self):
+        # The SSH connection carries the client's identity; no header does.
+        client = SignerClient("http://localhost:11270")
+        assert "Authorization" not in client.session.headers
 
 
 # ---------------------------------------------------------------------------
@@ -2279,13 +2282,13 @@ class TestSigningErrors:
             assert not isinstance(exc_info.value, KeyNotFoundError)
 
     def test_uses_discovered_approval_wait_plus_slack(self):
-        client = SignerClient("http://localhost:11270", "test-token")
+        client = SignerClient("http://localhost:11270")
         client._cache_approval_wait(120)
 
         assert client._sign_request_timeout() == 150
 
     def test_falls_back_for_invalid_approval_wait(self):
-        client = SignerClient("http://localhost:11270", "test-token")
+        client = SignerClient("http://localhost:11270")
         client._cache_approval_wait(31 * 60)
 
         assert client._sign_request_timeout() == 360
@@ -3245,30 +3248,16 @@ class TestFromEnv:
         with pytest.raises(SignerError, match="no default signer endpoint"):
             SignerClient.from_env(data_dir=str(tmp_path))
 
-    def test_uses_named_direct_endpoint_and_token(self, tmp_path):
-        (tmp_path / "tokens").mkdir()
-        (tmp_path / "tokens" / "qa.token").write_text("qa-token")
+    def test_connects_named_endpoint_with_its_own_identity(self, tmp_path):
         (tmp_path / "endpoints.yaml").write_text(
             "schema_version: 2\nendpoints:\n"
-            "  primary:\n    role: signer\n    url: https://signer.example.com/\n"
-            "  qa:\n    role: cosigner\n    url: http://127.0.0.1:11271/\n"
+            "  primary:\n    role: signer\n    url: ssh://signer.example.com/\n"
+            "  qa:\n    role: cosigner\n    url: ssh://127.0.0.1:1/\n    identity_file: keys/qa\n"
         )
-        client = SignerClient.from_env(
-            data_dir=str(tmp_path), endpoint="qa", timeout=7
-        )
-        assert client.base_url == "http://127.0.0.1:11271"
-        assert client.token == "qa-token"
-        assert client.timeout == 7
-
-    def test_rejects_empty_token(self, tmp_path):
-        (tmp_path / "endpoints.yaml").write_text(
-            "schema_version: 2\nendpoints:\n"
-            "  primary:\n    role: signer\n    url: https://signer.example.com\n"
-        )
-        token_path = tmp_path / "aplane.token"
-        token_path.write_text(" \n\t")
-        with pytest.raises(SignerError, match=rf"{token_path}.*empty"):
-            SignerClient.from_env(data_dir=str(tmp_path))
+        # The key is the only credential, so a missing identity file is the
+        # first failure.
+        with pytest.raises(SignerError, match=re.escape(f"SSH key not found at {tmp_path / 'keys' / 'qa'}")):
+            SignerClient.from_env(data_dir=str(tmp_path), endpoint="qa", timeout=7)
 
     @pytest.mark.parametrize(
         "fixture,want",
@@ -3277,7 +3266,7 @@ class TestFromEnv:
             ("invalid_self_cosigner.yaml", 'endpoint "cosigner": url "self" is not supported'),
         ],
     )
-    def test_rejects_invalid_endpoint_before_token_loading(self, tmp_path, fixture, want):
+    def test_rejects_invalid_endpoint_before_connecting(self, tmp_path, fixture, want):
         source = os.path.join("..", "contracts", "clientconfig", fixture)
         with open(source, "rb") as fixture_file:
             (tmp_path / "endpoints.yaml").write_bytes(fixture_file.read())
@@ -3341,8 +3330,8 @@ class TestSignReturnFormat:
                 )
 
 
-class TestRequestTokenToFile:
-    def test_creates_token_file_with_secure_permissions(self, tmp_path):
+class TestRequestEnrollmentFromEnv:
+    def test_enrolls_selected_endpoint_identity(self, tmp_path):
         (tmp_path / "endpoints.yaml").write_text(
             "schema_version: 2\nendpoints:\n"
             "  primary:\n    role: signer\n    url: ssh://signer.example.com\n"
@@ -3353,22 +3342,25 @@ class TestRequestTokenToFile:
         (ssh_dir / "id_ed25519").write_text("dummy-private-key")
 
         with patch(
-            "aplanesdk.signer.request_token", return_value="test-token"
-        ) as provision:
-            path = request_token_to_file(
+            "aplanesdk.signer.request_enrollment",
+            return_value=EnrollmentResult(fingerprint="SHA256:abc", pending=True),
+        ) as enroll:
+            result = request_enrollment_from_env(
                 data_dir=str(tmp_path),
                 endpoint="qa",
+                label="ci",
             )
 
-        assert os.path.exists(path)
-        assert (tmp_path / "tokens" / "qa.token").read_text() == "test-token"
-        assert provision.call_args.kwargs["host"] == "cosigner.example.com"
-        assert provision.call_args.kwargs["ssh_port"] == 2222
-        assert provision.call_args.kwargs["known_hosts_path"] == str(
+        assert result == EnrollmentResult(fingerprint="SHA256:abc", pending=True)
+        assert enroll.call_args.kwargs["host"] == "cosigner.example.com"
+        assert enroll.call_args.kwargs["ssh_port"] == 2222
+        assert enroll.call_args.kwargs["label"] == "ci"
+        assert enroll.call_args.kwargs["ssh_key_path"] == str(ssh_dir / "id_ed25519")
+        assert enroll.call_args.kwargs["known_hosts_path"] == str(
             tmp_path / ".ssh" / "known_hosts"
         )
-        mode = os.stat(path).st_mode & 0o777
-        assert mode == 0o600
+        # Nothing is stored on the client: the key is its credential.
+        assert sorted(p.name for p in tmp_path.iterdir()) == [".ssh", "endpoints.yaml"]
 
 
 class TestAssembleGroup:
@@ -3509,9 +3501,10 @@ class TestLoadClientEndpointRegistry:
         primary = registry.endpoints["primary"]
         assert primary.url == "ssh://signer.example.com:2222"
         assert primary.identity_file == str(tmp_path / ".ssh" / "primary")
-        assert primary.token_file == str(tmp_path / "aplane.token")
         cosigner = registry.endpoints["cosigner.qa"]
-        assert cosigner.token_file == str(tmp_path / "credentials" / "cosigner.token")
+        assert cosigner.url == "ssh://cosigner.example.com"
+        assert cosigner.identity_file == str(tmp_path / "credentials" / "cosigner")
+        assert cosigner.known_hosts_path == str(tmp_path / ".ssh" / "known_hosts")
 
     @pytest.mark.parametrize(
         "name",
@@ -3520,9 +3513,10 @@ class TestLoadClientEndpointRegistry:
             "invalid_identity_file_type.yaml",
             "invalid_multiple_signers.yaml",
             "invalid_remote_http.yaml",
+            "invalid_loopback_http.yaml",
+            "invalid_https.yaml",
             "invalid_schema_version_float.yaml",
             "invalid_ssh_port_zero.yaml",
-            "invalid_token_file_type.yaml",
             "invalid_unknown_field.yaml",
             "invalid_unknown_tag.yaml",
         ],
@@ -3562,7 +3556,7 @@ class TestLoadClientEndpointRegistry:
         if name == "valid_retired_port_fields.yaml":
             primary = registry.endpoints["primary"]
             assert primary.url == "ssh://signer.example.com:2222"
-            assert os.path.basename(primary.token_file) == "legacy.token"
+            assert primary.identity_file == str(tmp_path / ".ssh" / "id_ed25519")
             assert "cosigner" in registry.endpoints
 
     @pytest.mark.parametrize(
@@ -3580,30 +3574,46 @@ class TestLoadClientEndpointRegistry:
         with pytest.raises(SignerError, match=re.escape(want)):
             load_client_endpoint_registry(str(tmp_path))
 
-    def test_derives_default_and_alias_token_paths(self, tmp_path):
+    def test_derives_default_and_client_identity(self, tmp_path):
         (tmp_path / "endpoints.yaml").write_text(
             "schema_version: 2\nendpoints:\n"
             "  main:\n    role: signer\n    url: ssh://localhost\n"
-            "  qa:\n    role: cosigner\n    url: http://127.0.0.1:11271\n"
+            "  qa:\n    role: cosigner\n    url: ssh://127.0.0.1:2222\n"
         )
         registry = load_client_endpoint_registry(str(tmp_path))
         assert registry.default == "main"
         assert registry.endpoints is not None
-        assert registry.endpoints["main"].token_file == str(
-            tmp_path / "tokens" / "main.token"
-        )
+        for alias in ("main", "qa"):
+            assert registry.endpoints[alias].identity_file == str(tmp_path / ".ssh" / "id_ed25519")
+            assert registry.endpoints[alias].known_hosts_path == str(
+                tmp_path / ".ssh" / "known_hosts"
+            )
         assert resolve_client_endpoint(registry)[0] == "main"
         assert resolve_client_endpoint(registry, "qa")[1].role == "cosigner"
 
 
-class TestRequestToken:
-    def test_request_token_requires_explicit_known_hosts_path(self):
+class TestRequestEnrollment:
+    # The signer answers at once: queued for the operator (pending) or already
+    # enrolled. Either way the fingerprint must be the authenticating key's.
+    def test_parses_pending_and_enrolled_replies(self):
+        from aplanesdk.signer import _parse_enrollment_reply
+
+        fp = "SHA256:abc"
+        assert _parse_enrollment_reply(f"pending {fp}", fp) == EnrollmentResult(fp, True)
+        assert _parse_enrollment_reply(f"enrolled {fp}", fp) == EnrollmentResult(fp, False)
+        with pytest.raises(EnrollmentError, match="this client authenticated with SHA256:abc"):
+            _parse_enrollment_reply("pending SHA256:other", fp)
+        for reply in ("enrolled ", f"ok {fp}", ""):
+            with pytest.raises(EnrollmentError, match="Unexpected enrollment response"):
+                _parse_enrollment_reply(reply, fp)
+
+    def test_requires_explicit_known_hosts_path(self):
         with pytest.raises(TypeError, match="known_hosts_path"):
-            request_token("signer.example.com", "/apclient/.ssh/id_ed25519")
+            request_enrollment("signer.example.com", "/apclient/.ssh/id_ed25519")
 
     def test_auto_add_host_requires_bool(self):
         with pytest.raises(TypeError, match="auto_add_host must be a bool"):
-            request_token(
+            request_enrollment(
                 "signer.example.com",
                 "/apclient/.ssh/id_ed25519",
                 known_hosts_path="/apclient/.ssh/known_hosts",
@@ -3611,7 +3621,19 @@ class TestRequestToken:
             )
 
         with pytest.raises(TypeError, match="auto_add_host must be a bool"):
-            request_token_to_file(auto_add_host="false")  # type: ignore[arg-type]
+            request_enrollment_from_env(auto_add_host="false")  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        "label", ["x" * 65, "two\nlines", " padded", "tab\tbed"]
+    )
+    def test_rejects_bad_labels_before_any_network_activity(self, label):
+        with pytest.raises(SignerError, match="enrollment label"):
+            request_enrollment(
+                "signer.example.com",
+                "/nonexistent/key",
+                known_hosts_path="/nonexistent/known_hosts",
+                label=label,
+            )
 
 
 class _FeeParams:

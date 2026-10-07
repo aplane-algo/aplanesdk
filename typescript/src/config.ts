@@ -4,7 +4,6 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import * as net from "net";
 import { isScalar, parse as parseYaml, parseDocument } from "yaml";
 import type {
   ClientConfig,
@@ -17,11 +16,13 @@ import { SignerError } from "./errors.js";
 export const DEFAULT_SSH_PORT = 1127;
 /**
  * Endpoint keys earlier builds wrote and nothing reads: the node's SSH server
- * forwards every channel to its own REST listener, and the local tunnel port
- * is chosen at connect time. They are accepted and ignored, as APlane ignores
- * them, so a registry written before they were retired keeps working.
+ * forwards every channel to its own REST listener, the local tunnel port is
+ * chosen at connect time, and the client's enrolled SSH key is its only
+ * credential, so there is no token file. They are accepted and ignored, as
+ * APlane ignores them, so a registry written before they were retired keeps
+ * working.
  */
-const RETIRED_ENDPOINT_FIELDS = ["signer_port", "local_port"] as const;
+const RETIRED_ENDPOINT_FIELDS = ["signer_port", "local_port", "token_file"] as const;
 export const CLIENT_ENDPOINTS_FILE = "endpoints.yaml";
 export const DEFAULT_CLIENT_ENDPOINT_NAME = "primary";
 export const CLIENT_ENDPOINT_SCHEMA_VERSION = 2;
@@ -128,11 +129,6 @@ function validateAlias(alias: string): void {
   }
 }
 
-function isLoopbackHost(hostname: string): boolean {
-  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  if (host === "localhost" || host === "::1") return true;
-  return net.isIP(host) === 4 && host.startsWith("127.");
-}
 
 function normalizeEndpoint(
   dataDir: string,
@@ -145,7 +141,6 @@ function normalizeEndpoint(
     "url",
     "identity_file",
     "known_hosts_path",
-    "token_file",
     ...RETIRED_ENDPOINT_FIELDS,
   ], `endpoint "${alias}"`);
 
@@ -161,7 +156,7 @@ function normalizeEndpoint(
   }
   if (endpointUrl === "self") {
     throw new SignerError(
-      `endpoint "${alias}": url "self" is not supported; configure an explicit ssh://, https://, or loopback http:// endpoint`,
+      `endpoint "${alias}": url "self" is not supported; configure an explicit ssh://host[:port] endpoint`,
     );
   }
 
@@ -171,8 +166,13 @@ function normalizeEndpoint(
   } catch (error) {
     throw new SignerError(`endpoint "${alias}": invalid url: ${errorMessage(error)}`);
   }
-  if (!["ssh:", "https:", "http:"].includes(parsed.protocol)) {
-    throw new SignerError(`endpoint "${alias}": unsupported url scheme "${parsed.protocol.slice(0, -1)}"`);
+  // A node is reached only through its SSH server, which authenticates the
+  // client's enrolled key; there is no credential a raw HTTP endpoint could
+  // present.
+  if (parsed.protocol !== "ssh:") {
+    throw new SignerError(
+      `endpoint "${alias}": unsupported url scheme "${parsed.protocol.slice(0, -1)}"; a node is reached only through its SSH server (ssh://host[:port])`,
+    );
   }
   if (!parsed.hostname) {
     throw new SignerError(`endpoint "${alias}": url host is required`);
@@ -183,33 +183,15 @@ function normalizeEndpoint(
       throw new SignerError(`endpoint "${alias}": invalid url port "${parsed.port}"`);
     }
   }
-  if (parsed.protocol === "http:" && !isLoopbackHost(parsed.hostname)) {
-    throw new SignerError(
-      `raw http endpoints must be loopback; use ssh:// or https:// for remote endpoint "${alias}"`,
-    );
-  }
 
-  let tokenFile = optionalString(raw.token_file, "token_file");
-  if (!tokenFile) {
-    tokenFile = alias === DEFAULT_CLIENT_ENDPOINT_NAME
-      ? "aplane.token"
-      : path.join("tokens", `${alias}.token`);
-  }
-  let identityFile = optionalString(raw.identity_file, "identity_file");
-  let knownHostsPath = optionalString(raw.known_hosts_path, "known_hosts_path");
-  if (endpointUrl.startsWith("ssh://")) {
-    identityFile ||= ".ssh/id_ed25519";
-    knownHostsPath ||= ".ssh/known_hosts";
-    identityFile = resolvePath(identityFile, dataDir);
-    knownHostsPath = resolvePath(knownHostsPath, dataDir);
-  }
+  const identityFile = optionalString(raw.identity_file, "identity_file") || ".ssh/id_ed25519";
+  const knownHostsPath = optionalString(raw.known_hosts_path, "known_hosts_path") || ".ssh/known_hosts";
 
   return {
     role,
     url: endpointUrl,
-    identityFile,
-    knownHostsPath,
-    tokenFile: resolvePath(tokenFile, dataDir),
+    identityFile: resolvePath(identityFile, dataDir),
+    knownHostsPath: resolvePath(knownHostsPath, dataDir),
   };
 }
 
@@ -314,40 +296,6 @@ export function clientEndpointSshHostPort(
     host: parsed.hostname.replace(/^\[|\]$/g, ""),
     port: parsed.port ? Number(parsed.port) : DEFAULT_SSH_PORT,
   };
-}
-
-/**
- * Load authentication token from file.
- *
- * @param tokenPath - Path to aplane.token file
- * @returns Token string
- * @throws SignerError if file doesn't exist
- */
-export function loadToken(tokenPath: string): string {
-  const expandedPath = expandPath(tokenPath);
-
-  if (!fs.existsSync(expandedPath)) {
-    throw new SignerError(`No token found at ${expandedPath}`);
-  }
-
-  const token = fs.readFileSync(expandedPath, "utf-8").trim();
-  if (!token) {
-    throw new SignerError(`Token file ${expandedPath} is empty`);
-  }
-  return token;
-}
-
-/**
- * Load token from the default location in a data directory.
- *
- * @param dataDir - Data directory path (will be expanded)
- * @returns Token string
- * @throws SignerError if token file doesn't exist
- */
-export function loadTokenFromDir(dataDir: string): string {
-  const expandedDir = expandPath(dataDir);
-  const tokenPath = path.join(expandedDir, "aplane.token");
-  return loadToken(tokenPath);
 }
 
 /**

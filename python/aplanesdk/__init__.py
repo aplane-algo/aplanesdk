@@ -6,9 +6,10 @@ APlane Python SDK - Transaction signing via apsigner
 
 Data directory: required via data_dir parameter or APCLIENT_DATA env var
 
-Token provisioning:
-    from aplanesdk import request_token_to_file
-    request_token_to_file()  # operator must approve in apadmin
+Enrollment (once per client key; the request is queued for the operator to
+approve later in apadmin, then connect):
+    from aplanesdk import request_enrollment_from_env
+    result = request_enrollment_from_env(label="ci-runner")
 
 Usage:
     from aplanesdk import SignerClient, send_raw_transaction
@@ -33,12 +34,12 @@ from .signer import (
     simulate_guarded_group,
     simulate_prepared_guarded_group,
 
-    # Token provisioning
-    request_token,
-    request_token_to_file,
+    # Enrollment
+    request_enrollment,
+    request_enrollment_from_env,
+    EnrollmentResult,
 
     # Utility
-    load_token,
     load_config,
     load_client_endpoint_registry,
     resolve_client_endpoint,
@@ -61,7 +62,7 @@ from .signer import (
     SignerUnavailableError,
     KeyNotFoundError,
     KeyDeletionError,
-    TokenProvisioningError,
+    EnrollmentError,
     TransactionRejectedError,
     LogicSigRejectedError,
     InsufficientFundsError,
@@ -137,12 +138,12 @@ __all__ = [
     "simulate_guarded_group",
     "simulate_prepared_guarded_group",
 
-    # Token provisioning
-    "request_token",
-    "request_token_to_file",
+    # Enrollment
+    "request_enrollment",
+    "request_enrollment_from_env",
+    "EnrollmentResult",
 
     # Utility
-    "load_token",
     "load_config",
     "load_client_endpoint_registry",
     "resolve_client_endpoint",
@@ -165,7 +166,7 @@ __all__ = [
     "SignerUnavailableError",
     "KeyNotFoundError",
     "KeyDeletionError",
-    "TokenProvisioningError",
+    "EnrollmentError",
     "TransactionRejectedError",
     "LogicSigRejectedError",
     "InsufficientFundsError",

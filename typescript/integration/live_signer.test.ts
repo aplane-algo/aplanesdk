@@ -16,13 +16,10 @@ function integrationEnabled(): boolean {
 }
 
 async function liveSignerClient(): Promise<SignerClient> {
-  const token = liveSignerToken();
-
   const sshHost = (process.env.APLANE_SDK_SSH_HOST || "").trim();
   if (sshHost) {
     const client = await SignerClient.connectSsh(
       sshHost,
-      token,
       requiredSshEnv("APLANE_SDK_SSH_KEY_PATH"),
       {
         sshPort: requiredSshPort("APLANE_SDK_SSH_PORT"),
@@ -36,7 +33,9 @@ async function liveSignerClient(): Promise<SignerClient> {
   if (!baseUrl) {
     baseUrl = `http://127.0.0.1:${liveSignerPort()}`;
   }
-  return new SignerClient(baseUrl, token);
+  // A base URL names a caller-owned tunnel; the loopback REST port of a
+  // signer answers only /health.
+  return new SignerClient(baseUrl);
 }
 
 function requiredSshEnv(name: string): string {
@@ -69,37 +68,6 @@ function liveSignerPort(): number {
     throw new Error("endpoint.signer_port not set in signer config");
   }
   return config.endpoint.signer_port;
-}
-
-function liveSignerToken(): string {
-  const inlineToken = (process.env.APLANE_SDK_TOKEN || "").trim();
-  if (inlineToken) {
-    return inlineToken;
-  }
-
-  const candidates = [process.env.APLANE_SDK_TOKEN_FILE || ""];
-  if (process.env.APCLIENT_DATA) {
-    candidates.push(path.join(process.env.APCLIENT_DATA, "aplane.token"));
-  }
-  if (process.env.APSIGNER_DATA) {
-    candidates.push(
-      path.join(process.env.APSIGNER_DATA, "identities", "default", "aplane.token")
-    );
-  }
-
-  for (const candidate of candidates) {
-    if (!candidate || !fs.existsSync(candidate)) {
-      continue;
-    }
-    const token = fs.readFileSync(candidate, "utf-8").trim();
-    if (token) {
-      return token;
-    }
-  }
-
-  throw new Error(
-    "APLANE_SDK_TOKEN, APLANE_SDK_TOKEN_FILE, APCLIENT_DATA, or APSIGNER_DATA must provide a token"
-  );
 }
 
 test(

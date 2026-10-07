@@ -20,10 +20,11 @@ export class SignerError extends Error {
 }
 
 /**
- * Token invalid or missing (HTTP 401).
+ * The signer refused the request as unauthenticated (HTTP 401): the
+ * connection did not arrive through an enrolled SSH key.
  */
 export class AuthenticationError extends SignerError {
-  constructor(message: string = "Invalid or missing token", code: string = "") {
+  constructor(message: string = "Not authenticated: connect through an enrolled SSH key", code: string = "") {
     super(message, code);
     this.name = "AuthenticationError";
   }
@@ -70,12 +71,13 @@ export class KeyDeletionError extends SignerError {
 }
 
 /**
- * Token provisioning failed (rejected or no operator).
+ * Enrollment of the client key failed (rejected by the operator, no operator
+ * connected, or the signer could not record the key).
  */
-export class TokenProvisioningError extends SignerError {
-  constructor(message: string = "Token provisioning failed", code: string = "") {
+export class EnrollmentError extends SignerError {
+  constructor(message: string = "Enrollment failed", code: string = "") {
     super(message, code);
-    this.name = "TokenProvisioningError";
+    this.name = "EnrollmentError";
   }
 }
 

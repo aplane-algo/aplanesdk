@@ -6,10 +6,9 @@ APlane Python SDK - Transaction signing via apsigner
 
 Data directory (required via APCLIENT_DATA env var or data_dir parameter):
     <data_dir>/
-    ├── aplane.token         # API token (from request_token_to_file)
     ├── endpoints.yaml       # Signer and cosigner routing
     └── .ssh/
-        └── id_ed25519       # SSH key for authentication
+        └── id_ed25519       # SSH key: the client's credential
 
 Example endpoints.yaml:
     schema_version: 2
@@ -18,11 +17,11 @@ Example endpoints.yaml:
         role: signer
         url: ssh://signer.example.com:1127
 
-Token Provisioning:
-    from aplanesdk import request_token_to_file
+Enrollment (once per client key; the request is queued for the operator to
+approve later in apadmin, then connect):
+    from aplanesdk import request_enrollment_from_env
 
-    # Request token (operator must approve in apadmin)
-    request_token_to_file()  # reads APCLIENT_DATA from environment
+    result = request_enrollment_from_env(label="ci-runner")  # reads APCLIENT_DATA
 
 Usage:
     from aplanesdk import SignerClient
@@ -40,8 +39,8 @@ from __future__ import annotations
 
 import base64
 import copy
+import hashlib
 import json
-import ipaddress
 import math
 import os
 import re
@@ -59,21 +58,28 @@ from algosdk.v2client import models
 
 import paramiko
 
-from ._ssh_tokenproof import PROVISIONING_USERNAME as SSH_TOKEN_PROVISIONING_USERNAME
-from ._ssh_tokenproof import USERNAME as SSH_TOKEN_PROOF_USERNAME
-from ._ssh_tokenproof import TokenProofClient
-
 # -----------------------------------------------------------------------------
 # Constants
 # -----------------------------------------------------------------------------
 
 # Default ports (match apshell/apsigner defaults)
 DEFAULT_SSH_PORT = 1127
+# SSH usernames the signer's SSH server recognizes: SSH_USERNAME for API
+# connections authenticated by an enrolled key, SSH_ENROLLMENT_USERNAME for a
+# request-enrollment session.
+SSH_USERNAME = "aplane"
+SSH_ENROLLMENT_USERNAME = "request-enrollment"
+# The exec command a request-enrollment session runs, and the longest display
+# label the signer accepts with it.
+SSH_ENROLLMENT_COMMAND = "enroll"
+MAX_ENROLLMENT_LABEL_BYTES = 64
 # Endpoint keys earlier builds wrote and nothing reads: the node's SSH server
-# forwards every channel to its own REST listener, and the local tunnel port is
-# chosen at connect time. They are accepted and ignored, as APlane ignores them,
-# so a registry written before they were retired keeps working.
-_RETIRED_ENDPOINT_FIELDS = ("signer_port", "local_port")
+# forwards every channel to its own REST listener, the local tunnel port is
+# chosen at connect time, and the client's enrolled SSH key is its only
+# credential, so there is no token file. They are accepted and ignored, as
+# APlane ignores them, so a registry written before they were retired keeps
+# working.
+_RETIRED_ENDPOINT_FIELDS = ("signer_port", "local_port", "token_file")
 DEFAULT_SSH_SETUP_TIMEOUT = 60.0
 CLIENT_ENDPOINTS_FILE = "endpoints.yaml"
 CLIENT_ENDPOINT_SCHEMA_VERSION = 2
@@ -166,7 +172,8 @@ class SignerError(Exception):
 
 
 class AuthenticationError(SignerError):
-    """Token invalid or missing"""
+    """The signer refused the request as unauthenticated (HTTP 401): the
+    connection did not arrive through an enrolled SSH key."""
 
     pass
 
@@ -189,8 +196,9 @@ class KeyNotFoundError(SignerError):
     pass
 
 
-class TokenProvisioningError(SignerError):
-    """Token provisioning failed (rejected or no operator)"""
+class EnrollmentError(SignerError):
+    """Enrollment of the client key failed (rejected by the operator, no
+    operator connected, or the signer could not record the key)."""
 
     pass
 
@@ -368,13 +376,28 @@ class ClientConfig:
 
 @dataclass
 class ClientEndpointConfig:
-    """One signer or cosigner connection profile from endpoints.yaml."""
+    """One signer or cosigner connection profile from endpoints.yaml. The
+    client's SSH key (identity_file) is its credential; there is no token."""
 
     role: str
     url: str
     identity_file: str = ""
     known_hosts_path: str = ""
-    token_file: str = ""
+
+
+@dataclass
+class EnrollmentResult:
+    """The signer's answer to an enrollment request.
+
+    ``fingerprint`` is the SHA256 fingerprint of the client key the request
+    was made with (it equals the key the client authenticated with).
+    ``pending`` is True when the request was queued for the operator to
+    approve later in apadmin (the normal outcome), False when the key was
+    already enrolled.
+    """
+
+    fingerprint: str
+    pending: bool
 
 
 @dataclass
@@ -836,15 +859,6 @@ def _validate_endpoint_alias(alias: str) -> None:
         )
 
 
-def _is_loopback_endpoint_host(host: str) -> bool:
-    normalized = host.lower().strip("[]")
-    if normalized == "localhost":
-        return True
-    try:
-        return ipaddress.ip_address(normalized).is_loopback
-    except ValueError:
-        return False
-
 
 def _normalize_client_endpoint(
     data_dir: str, alias: str, raw_value: Any
@@ -857,7 +871,6 @@ def _normalize_client_endpoint(
             "url",
             "identity_file",
             "known_hosts_path",
-            "token_file",
             *_RETIRED_ENDPOINT_FIELDS,
         },
         f'endpoint "{alias}"',
@@ -874,7 +887,7 @@ def _normalize_client_endpoint(
     if endpoint_url == "self":
         raise SignerError(
             f'endpoint "{alias}": url "self" is not supported; configure an explicit '
-            "ssh://, https://, or loopback http:// endpoint"
+            "ssh://host[:port] endpoint"
         )
 
     try:
@@ -882,39 +895,29 @@ def _normalize_client_endpoint(
         parsed_port = parsed.port
     except ValueError as exc:
         raise SignerError(f'endpoint "{alias}": invalid url: {exc}') from exc
-    if parsed.scheme not in ("ssh", "https", "http"):
-        raise SignerError(f'endpoint "{alias}": unsupported url scheme "{parsed.scheme}"')
+    # A node is reached only through its SSH server, which authenticates the
+    # client's enrolled key; there is no credential a raw HTTP endpoint could
+    # present.
+    if parsed.scheme != "ssh":
+        raise SignerError(
+            f'endpoint "{alias}": unsupported url scheme "{parsed.scheme}"; '
+            "a node is reached only through its SSH server (ssh://host[:port])"
+        )
     if not parsed.hostname:
         raise SignerError(f'endpoint "{alias}": url host is required')
     if parsed_port is not None and not 1 <= parsed_port <= 65535:
         raise SignerError(f'endpoint "{alias}": invalid url port "{parsed_port}"')
-    if parsed.scheme == "http" and not _is_loopback_endpoint_host(parsed.hostname):
-        raise SignerError(
-            "raw http endpoints must be loopback; use ssh:// or https:// "
-            f'for remote endpoint "{alias}"'
-        )
 
-    token_file = _optional_string(raw.get("token_file"), "token_file")
-    if not token_file:
-        token_file = (
-            "aplane.token"
-            if alias == DEFAULT_CLIENT_ENDPOINT_NAME
-            else os.path.join("tokens", f"{alias}.token")
-        )
     identity_file = _optional_string(raw.get("identity_file"), "identity_file")
     known_hosts_path = _optional_string(raw.get("known_hosts_path"), "known_hosts_path")
-    if endpoint_url.startswith("ssh://"):
-        identity_file = identity_file or ".ssh/id_ed25519"
-        known_hosts_path = known_hosts_path or ".ssh/known_hosts"
-        identity_file = _resolve_path(identity_file, data_dir)
-        known_hosts_path = _resolve_path(known_hosts_path, data_dir)
+    identity_file = identity_file or ".ssh/id_ed25519"
+    known_hosts_path = known_hosts_path or ".ssh/known_hosts"
 
     return ClientEndpointConfig(
         role=role,
         url=endpoint_url,
-        identity_file=identity_file,
-        known_hosts_path=known_hosts_path,
-        token_file=_resolve_path(token_file, data_dir),
+        identity_file=_resolve_path(identity_file, data_dir),
+        known_hosts_path=_resolve_path(known_hosts_path, data_dir),
     )
 
 
@@ -2240,39 +2243,6 @@ def _find_free_port() -> int:
         return s.getsockname()[1]
 
 
-def _continue_keyboard_interactive_auth(
-    transport: paramiko.Transport,
-    username: str,
-    handler: Callable[[str, str, list[tuple[str, bool]]], list[str]],
-) -> list[str]:
-    """Continue partial auth without sending a second SSH service request."""
-    auth_handler = transport.auth_handler
-    if auth_handler is None:
-        raise paramiko.SSHException("SSH authentication handler is unavailable")
-
-    # Paramiko's public auth_interactive() creates a new AuthHandler, which
-    # sends another ssh-userauth service request. After partial success the SSH
-    # protocol requires the next USERAUTH_REQUEST on the existing service.
-    event = threading.Event()
-    with transport.lock:
-        transport.saved_exception = None
-        auth_handler.auth_event = event
-        auth_handler.auth_method = "keyboard-interactive"
-        auth_handler.username = username
-        auth_handler.interactive_handler = handler
-        auth_handler.submethods = ""
-
-        request = paramiko.Message()
-        request.add_byte(paramiko.common.cMSG_USERAUTH_REQUEST)
-        request.add_string(username)
-        request.add_string("ssh-connection")
-        request.add_string("keyboard-interactive")
-        request.add_string("")  # language tag
-        request.add_string("")  # submethods
-        transport._send_message(request)
-
-    return auth_handler.wait_for_response(event)
-
 
 class _SSHTunnel:
     """
@@ -2286,7 +2256,6 @@ class _SSHTunnel:
         self,
         ssh_host: str,
         ssh_port: int,
-        token: str,
         ssh_pkey_path: str,
         remote_host: str,
         remote_port: int,
@@ -2303,7 +2272,6 @@ class _SSHTunnel:
 
         self._ssh_host = ssh_host
         self._ssh_port = ssh_port
-        self._token = token
         self._ssh_pkey_path = ssh_pkey_path
         self._remote_host = remote_host
         self._remote_port = remote_port
@@ -2330,7 +2298,6 @@ class _SSHTunnel:
         sock: Optional[socket.socket] = None
         transport: Optional[paramiko.Transport] = None
         transport_socket_timeout: Optional[float] = None
-        proof: Optional[TokenProofClient] = None
         timeout_timer: Optional[threading.Timer] = None
         setup_timed_out = threading.Event()
         setup_lock = threading.Lock()
@@ -2369,19 +2336,12 @@ class _SSHTunnel:
             server_key = transport.get_remote_server_key()
             self._verify_host_key(server_key)
 
-            proof = TokenProofClient(self._token)
-            proof.capture_host_key(server_key.asbytes())
+            # The enrolled key is the only credential: public-key
+            # authentication under the fixed client username, nothing else.
             sock.settimeout(remaining_setup_time())
-            methods = transport.auth_publickey(SSH_TOKEN_PROOF_USERNAME, pkey)
-            if transport.is_authenticated() or "keyboard-interactive" not in methods:
-                raise SignerError(
-                    "SSH server did not require token proof after public-key authentication"
-                )
-            _continue_keyboard_interactive_auth(
-                transport, SSH_TOKEN_PROOF_USERNAME, proof.challenge
-            )
-            if not transport.is_authenticated() or not proof.server_verified:
-                raise SignerError("SSH token proof authentication did not complete")
+            transport.auth_publickey(SSH_USERNAME, pkey)
+            if not transport.is_authenticated():
+                raise SignerError("SSH public-key authentication did not complete")
             with setup_lock:
                 if setup_timed_out.is_set() or time.monotonic() >= deadline:
                     raise TimeoutError("SSH setup deadline exceeded")
@@ -2406,9 +2366,14 @@ class _SSHTunnel:
             if isinstance(exc, SignerError):
                 raise
             if isinstance(exc, paramiko.ssh_exception.AuthenticationException):
-                raise SignerError(
-                    f"SSH authentication failed: {exc} "
-                    f"(the signer accepts {CLIENT_SSH_KEY_REQUIREMENT} client keys)"
+                # The signer refuses unsupported key types before verifying a
+                # signature, so a refused supported key is one it has not
+                # enrolled (or has revoked).
+                raise AuthenticationError(
+                    f"SSH authentication failed: {exc}: the client's SSH key is not "
+                    f"enrolled at the signer, or was revoked (the signer accepts "
+                    f"{CLIENT_SSH_KEY_REQUIREMENT} client keys); enroll it with "
+                    "request_enrollment or apshell request-enrollment"
                 ) from exc
             if isinstance(exc, paramiko.ssh_exception.SSHException):
                 raise SignerError(f"SSH connection failed: {exc}") from exc
@@ -2416,8 +2381,6 @@ class _SSHTunnel:
         finally:
             if timeout_timer is not None:
                 timeout_timer.cancel()
-            if proof is not None:
-                proof.clear()
 
         self._transport = transport
 
@@ -2553,10 +2516,9 @@ class SignerClient:
         # From config (recommended)
         client = SignerClient.from_env()
 
-        # Explicit SSH tunnel
+        # Explicit SSH tunnel, authenticated by the enrolled client key
         client = SignerClient.connect_ssh(
             host="signer.example.com",
-            token="...",
             ssh_key_path="~/aplane/apclient/.ssh/id_ed25519",
             known_hosts_path="~/aplane/apclient/.ssh/known_hosts",
         )
@@ -2573,27 +2535,26 @@ class SignerClient:
     """
 
     def __init__(
-        self, base_url: str, token: str, timeout: Optional[int] = None, tunnel: Optional[Any] = None
+        self, base_url: str, timeout: Optional[int] = None, tunnel: Optional[Any] = None
     ):
         """
         Initialize signer client (use class methods instead).
 
+        base_url is the local end of an SSH tunnel to the signer, which
+        authenticates the tunnel by the client's enrolled key; the client
+        itself carries no credential.
+
         Args:
             base_url: Internal HTTP endpoint (set automatically by class methods)
-            token: Authentication token (from aplane.token)
             timeout: Optional explicit request timeout in seconds. If omitted,
                 endpoint-specific defaults are used.
             tunnel: SSH tunnel instance (managed internally)
         """
         if not base_url:
             raise SignerError("base_url is required")
-        if not token:
-            raise SignerError("token is required")
         self.base_url = base_url.rstrip("/")
-        self.token = token
         self.timeout = timeout if timeout and timeout > 0 else None
         self.session = requests.Session()
-        self.session.headers["Authorization"] = f"aplane {token}"
         self._tunnel = tunnel
         self._key_cache: Dict[str, KeyInfo] = {}  # Cache key info by address
         self._key_cache_revision: Optional[int] = None
@@ -2605,7 +2566,6 @@ class SignerClient:
     def connect_ssh(
         cls,
         host: str,
-        token: str,
         ssh_key_path: str,
         ssh_port: int = DEFAULT_SSH_PORT,
         timeout: Optional[int] = None,
@@ -2617,13 +2577,13 @@ class SignerClient:
         """
         Connect to remote apsigner via SSH tunnel.
 
-        Establishes an SSH tunnel to the remote host and forwards
-        the signer port to a local port. Uses public-key authentication plus a
-        host-key-bound token proof.
+        Establishes an SSH tunnel to the remote host and forwards the
+        signer's REST listener to a local port. The enrolled client key is the
+        only credential; a key the signer has not enrolled fails the handshake
+        with AuthenticationError (enroll it with request_enrollment first).
 
         Args:
             host: Remote host running apsigner
-            token: Authentication token (proven during SSH auth and used by the HTTP API)
             ssh_key_path: Path to the APlane client SSH private key
             ssh_port: SSH port on remote (default: 1127)
             timeout: Optional explicit request timeout in seconds
@@ -2653,7 +2613,6 @@ class SignerClient:
             tunnel = _SSHTunnel(
                 ssh_host=host,
                 ssh_port=ssh_port,
-                token=token,
                 ssh_pkey_path=ssh_key_path,
                 # The server checks only that the destination is loopback and
                 # forwards to its own REST listener, so the port is nominal.
@@ -2672,7 +2631,7 @@ class SignerClient:
 
         # Connect through tunnel
         base_url = f"http://127.0.0.1:{tunnel.local_bind_port}"
-        client = cls(base_url, token, timeout, tunnel=tunnel)
+        client = cls(base_url, timeout, tunnel=tunnel)
 
         # Verify connection
         if not client.health():
@@ -2697,8 +2656,7 @@ class SignerClient:
 
         Data directory contents:
             - endpoints.yaml: Signer and cosigner routing
-            - aplane.token or tokens/<alias>.token: Authentication token
-            - .ssh/id_ed25519: SSH key for authentication
+            - .ssh/id_ed25519: SSH key, the client's credential
 
         Args:
             data_dir: Client data directory. Required unless APCLIENT_DATA
@@ -2726,26 +2684,19 @@ class SignerClient:
         load_config(data_dir)
         registry = load_client_endpoint_registry(data_dir)
         _, selected = resolve_client_endpoint(registry, endpoint)
-        token_path = selected.token_file
-        if not os.path.exists(token_path):
-            raise SignerError(f"No token found at {token_path}")
-        token = load_token(token_path)
 
-        if selected.url.startswith("ssh://"):
-            host, ssh_port = client_endpoint_ssh_host_port(selected)
-            if not os.path.exists(selected.identity_file):
-                raise SignerError(f"SSH configured but key not found at {selected.identity_file}")
-            return cls.connect_ssh(
-                host=host,
-                token=token,
-                ssh_key_path=selected.identity_file,
-                ssh_port=ssh_port,
-                timeout=timeout,
-                known_hosts_path=selected.known_hosts_path,
-                trust_on_first_use=trust_on_first_use,
-                ssh_setup_timeout=ssh_setup_timeout,
-            )
-        return cls(selected.url, token, timeout)
+        host, ssh_port = client_endpoint_ssh_host_port(selected)
+        if not os.path.exists(selected.identity_file):
+            raise SignerError(f"SSH key not found at {selected.identity_file}")
+        return cls.connect_ssh(
+            host=host,
+            ssh_key_path=selected.identity_file,
+            ssh_port=ssh_port,
+            timeout=timeout,
+            known_hosts_path=selected.known_hosts_path,
+            trust_on_first_use=trust_on_first_use,
+            ssh_setup_timeout=ssh_setup_timeout,
+        )
 
     def close(self):
         """Close the client and any SSH tunnel."""
@@ -2793,7 +2744,7 @@ class SignerClient:
             raise SignerUnavailableError(f"Failed to connect: {e}")
 
         if resp.status_code == 401:
-            raise AuthenticationError("Invalid or missing token")
+            raise AuthenticationError("Not authenticated: connect through an enrolled SSH key")
 
         if resp.status_code == 503:
             raise SignerUnavailableError(self._error_message(resp, "Signer unavailable"))
@@ -2883,7 +2834,7 @@ class SignerClient:
             raise SignerUnavailableError(f"Failed to connect: {e}")
 
         if resp.status_code == 401:
-            raise AuthenticationError("Invalid or missing token")
+            raise AuthenticationError("Not authenticated: connect through an enrolled SSH key")
 
         if resp.status_code != 200:
             raise self._signer_http_error(resp, f"Failed to list keys: HTTP {resp.status_code}")
@@ -3714,7 +3665,7 @@ class SignerClient:
             raise SignerUnavailableError(f"Failed to connect: {e}")
 
         if resp.status_code == 401:
-            raise AuthenticationError("Invalid or missing token")
+            raise AuthenticationError("Not authenticated: connect through an enrolled SSH key")
 
         if resp.status_code != 200:
             raise self._signer_http_error(
@@ -3823,7 +3774,7 @@ class SignerClient:
             raise SignerUnavailableError(f"Failed to connect: {e}")
 
         if resp.status_code == 401:
-            raise AuthenticationError("Invalid or missing token")
+            raise AuthenticationError("Not authenticated: connect through an enrolled SSH key")
 
         if resp.status_code == 403:
             raise self._forbidden_locked_error(resp)
@@ -3873,7 +3824,7 @@ class SignerClient:
             raise SignerUnavailableError(f"Failed to connect: {e}")
 
         if resp.status_code == 401:
-            raise AuthenticationError("Invalid or missing token")
+            raise AuthenticationError("Not authenticated: connect through an enrolled SSH key")
 
         if resp.status_code == 403:
             raise self._forbidden_locked_error(resp)
@@ -3990,7 +3941,7 @@ class SignerClient:
             raise SignerUnavailableError(f"Failed to connect: {e}")
 
         if resp.status_code == 401:
-            raise AuthenticationError("Invalid or missing token")
+            raise AuthenticationError("Not authenticated: connect through an enrolled SSH key")
 
         if resp.status_code != 200:
             raise self._signer_http_error(resp, f"Sign cancel failed: HTTP {resp.status_code}")
@@ -4031,7 +3982,7 @@ class SignerClient:
                 self._best_effort_cancel_sign_request(request_body["request_id"])
             raise SignerUnavailableError(f"Failed to connect: {e}")
         if resp.status_code == 401:
-            raise AuthenticationError("Invalid or missing token")
+            raise AuthenticationError("Not authenticated: connect through an enrolled SSH key")
         if resp.status_code == 403:
             raise self._forbidden_rejected_error(resp, "Component signing request rejected")
         if resp.status_code == 503:
@@ -4096,7 +4047,7 @@ class SignerClient:
             raise SignerUnavailableError(f"Failed to connect: {e}")
 
         if resp.status_code == 401:
-            raise AuthenticationError("Invalid or missing token")
+            raise AuthenticationError("Not authenticated: connect through an enrolled SSH key")
 
         if resp.status_code == 403:
             raise self._forbidden_rejected_error(resp, "Assembly request rejected")
@@ -4344,7 +4295,7 @@ class SignerClient:
         # Handle errors
         # Note: Use _safe_json() to handle both JSON and plain text error responses
         if resp.status_code == 401:
-            raise AuthenticationError("Invalid or missing token")
+            raise AuthenticationError("Not authenticated: connect through an enrolled SSH key")
 
         if resp.status_code == 400:
             raise self._bad_request_error(resp)
@@ -4449,7 +4400,7 @@ class SignerClient:
             raise SignerUnavailableError(f"Failed to connect: {e}")
 
         if resp.status_code == 401:
-            raise AuthenticationError("Invalid or missing token")
+            raise AuthenticationError("Not authenticated: connect through an enrolled SSH key")
 
         if resp.status_code == 400:
             raise self._bad_request_error(resp)
@@ -5973,78 +5924,89 @@ def _parse_algod_error(e: Exception) -> Exception:
 # -----------------------------------------------------------------------------
 
 
-def load_token(path: str) -> str:
-    """
-    Load authentication token from file.
-
-    Args:
-        path: Path to aplane.token file
-
-    Returns:
-        Token string
-    """
-    with open(path, "r") as f:
-        token = f.read().strip()
-    if not token:
-        raise SignerError(f"Token file {path} is empty")
-    return token
+def _ssh_fingerprint_sha256(pkey: Any) -> str:
+    """SHA256 fingerprint of an SSH public key, as OpenSSH prints it."""
+    digest = base64.b64encode(hashlib.sha256(pkey.asbytes()).digest()).decode().rstrip("=")
+    return f"SHA256:{digest}"
 
 
-def request_token(
+def _validate_enrollment_label(label: str) -> None:
+    """Enforce the signer's label rules locally so a bad label fails before
+    any network activity: printable, single line, at most 64 bytes, no
+    leading or trailing whitespace."""
+    if not isinstance(label, str):
+        raise TypeError("label must be a str")
+    if label == "":
+        return
+    if len(label.encode("utf-8")) > MAX_ENROLLMENT_LABEL_BYTES:
+        raise SignerError(f"enrollment label must be at most {MAX_ENROLLMENT_LABEL_BYTES} bytes")
+    if label.strip() != label:
+        raise SignerError("enrollment label must not start or end with whitespace")
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in label):
+        raise SignerError("enrollment label must be printable and single-line")
+
+
+def request_enrollment(
     host: str,
     ssh_key_path: str,
     ssh_port: int = DEFAULT_SSH_PORT,
     *,
     known_hosts_path: str,
+    label: str = "",
     auto_add_host: bool = False,
     setup_timeout: float = DEFAULT_SSH_SETUP_TIMEOUT,
-) -> str:
+) -> EnrollmentResult:
     """
-    Request an API token from apsigner via SSH.
+    Ask the signer to enroll this client's SSH key, so the key can open API
+    connections.
 
-    This connects to the signer's SSH server and requests a token.
-    An operator (apadmin) must approve the request on the server side.
-
-    The SSH key fingerprint is shown to the operator for verification.
+    This opens a request-enrollment SSH session, which answers at once: the
+    request is queued for the operator to approve later in apadmin
+    (``pending=True``, the normal outcome), or the key is already enrolled.
+    Nothing waits for the operator and nothing is stored on the client: the
+    key is its credential, and the client learns the outcome by connecting
+    after approval (an unenrolled key still fails the handshake). The key's
+    fingerprint is shown to the operator for verification.
 
     Args:
         host: Signer host (e.g., "signer.example.com" or "localhost")
         ssh_key_path: Path to the APlane client SSH private key
         ssh_port: SSH port on remote (default: 1127)
         known_hosts_path: Path to the APlane client known_hosts file (required)
+        label: Optional display label shown to the operator (printable,
+            single line, at most 64 bytes)
         auto_add_host: If True, automatically trust unknown hosts (TOFU).
                        If False (default), prompt user for confirmation.
         setup_timeout: Maximum seconds for TCP connection and SSH authentication.
 
     Returns:
-        The provisioned token string
+        EnrollmentResult with the key's SHA256 fingerprint and whether
+        approval is pending
 
     Raises:
-        SignerError: If paramiko is not installed
-        TokenProvisioningError: If provisioning fails (rejected, no operator, etc.)
+        SignerError: If the key cannot be loaded or the label is invalid
+        EnrollmentError: If the signer refuses the request (queue full, etc.)
 
     Example:
-        # Request token interactively (prompts for host key confirmation)
-        token = request_token(
+        result = request_enrollment(
             host="signer.example.com",
             ssh_key_path="~/aplane/apclient/.ssh/id_ed25519",
             known_hosts_path="~/aplane/apclient/.ssh/known_hosts",
+            label="ci-runner",
         )
-
-        # Save to file
-        with open("~/aplane/apclient/aplane.token", "w") as f:
-            f.write(token)
     """
     if not isinstance(auto_add_host, bool):
         raise TypeError("auto_add_host must be a bool")
     if not known_hosts_path:
         raise SignerError("known_hosts_path is required for SSH host key verification")
+    _validate_enrollment_label(label)
 
     ssh_key_path = os.path.expanduser(ssh_key_path)
     if not os.path.exists(ssh_key_path):
         raise SignerError(f"SSH key not found: {ssh_key_path}")
 
     pkey = _load_client_ssh_key(ssh_key_path)
+    client_fingerprint = _ssh_fingerprint_sha256(pkey)
 
     # Set up host key policy
     known_hosts_path = os.path.expanduser(known_hosts_path)
@@ -6127,7 +6089,7 @@ def request_token(
         client.connect(
             hostname=host,
             port=ssh_port,
-            username=SSH_TOKEN_PROVISIONING_USERNAME,
+            username=SSH_ENROLLMENT_USERNAME,
             pkey=pkey,
             look_for_keys=False,
             allow_agent=False,
@@ -6144,20 +6106,22 @@ def request_token(
     except paramiko.ssh_exception.AuthenticationException as e:
         client.close()
         if setup_timed_out.is_set() or time.monotonic() >= deadline:
-            raise TokenProvisioningError(
+            raise EnrollmentError(
                 f"SSH setup timed out after {setup_timeout:g} seconds"
             ) from e
-        raise TokenProvisioningError(
+        # The enrollment username accepts any key of a supported type, so a
+        # refusal here is a key-type problem, not enrollment.
+        raise EnrollmentError(
             f"SSH authentication failed: {e} "
             f"(the signer accepts {CLIENT_SSH_KEY_REQUIREMENT} client keys)"
         )
     except paramiko.ssh_exception.SSHException as e:
         client.close()
         if setup_timed_out.is_set() or time.monotonic() >= deadline:
-            raise TokenProvisioningError(
+            raise EnrollmentError(
                 f"SSH setup timed out after {setup_timeout:g} seconds"
             ) from e
-        raise TokenProvisioningError(f"SSH connection failed: {e}")
+        raise EnrollmentError(f"SSH connection failed: {e}")
     except Exception as e:
         client.close()
         if (
@@ -6165,18 +6129,18 @@ def request_token(
             or isinstance(e, (TimeoutError, socket.timeout))
             or time.monotonic() >= deadline
         ):
-            raise TokenProvisioningError(
+            raise EnrollmentError(
                 f"SSH setup timed out after {setup_timeout:g} seconds"
             ) from e
-        raise TokenProvisioningError(f"Connection failed: {e}")
+        raise EnrollmentError(f"Connection failed: {e}")
     finally:
         if timeout_timer is not None:
             timeout_timer.cancel()
 
+    command = f"{SSH_ENROLLMENT_COMMAND} {label}" if label else SSH_ENROLLMENT_COMMAND
     try:
-        # Execute the provisioning command
-        # This blocks until operator approves or rejects
-        stdin, stdout, stderr = client.exec_command("provision", timeout=300)
+        # Run the enrollment command; the signer answers at once.
+        stdin, stdout, stderr = client.exec_command(command, timeout=300)
 
         # Wait for command to complete
         exit_status = stdout.channel.recv_exit_status()
@@ -6185,17 +6149,35 @@ def request_token(
             error_msg = stderr.read().decode().strip()
             if not error_msg:
                 error_msg = stdout.read().decode().strip()
-            raise TokenProvisioningError(error_msg or "Token provisioning rejected")
+            if error_msg.startswith("ERROR: "):
+                error_msg = error_msg[len("ERROR: "):]
+            raise EnrollmentError(error_msg or "Enrollment rejected")
 
-        # Read the token from stdout
-        token = stdout.read().decode().strip()
-        if not token:
-            raise TokenProvisioningError("Empty token received")
-
-        return token
+        return _parse_enrollment_reply(stdout.read().decode().strip(), client_fingerprint)
 
     finally:
         client.close()
+
+
+def _parse_enrollment_reply(reply: str, client_fingerprint: str) -> EnrollmentResult:
+    """Parse the signer's answer: ``pending <fingerprint>`` when the request
+    was queued for the operator, ``enrolled <fingerprint>`` when the key was
+    already enrolled. The fingerprint must be the key this client
+    authenticated with."""
+    if reply.startswith("pending "):
+        result = EnrollmentResult(fingerprint=reply[len("pending "):], pending=True)
+    elif reply.startswith("enrolled "):
+        result = EnrollmentResult(fingerprint=reply[len("enrolled "):], pending=False)
+    else:
+        raise EnrollmentError(f"Unexpected enrollment response: {reply!r}")
+    if not result.fingerprint:
+        raise EnrollmentError(f"Unexpected enrollment response: {reply!r}")
+    if result.fingerprint != client_fingerprint:
+        raise EnrollmentError(
+            f"Signer answered for {result.fingerprint}, but this client authenticated "
+            f"with {client_fingerprint}"
+        )
+    return result
 
 
 class _InteractiveHostKeyPolicy(paramiko.MissingHostKeyPolicy):
@@ -6228,7 +6210,7 @@ class _InteractiveHostKeyPolicy(paramiko.MissingHostKeyPolicy):
                 self._resume_deadline(remaining)
 
         if response not in ("y", "yes"):
-            raise TokenProvisioningError("Host key rejected by user")
+            raise EnrollmentError("Host key rejected by user")
 
         # Save to known_hosts
         try:
@@ -6248,40 +6230,42 @@ class _InteractiveHostKeyPolicy(paramiko.MissingHostKeyPolicy):
             print(f"Warning: Could not save host key: {e}")
 
 
-def request_token_to_file(
+def request_enrollment_from_env(
     data_dir: Optional[str] = None,
     endpoint: Optional[str] = None,
     *,
+    label: str = "",
     auto_add_host: bool = False,
     setup_timeout: float = DEFAULT_SSH_SETUP_TIMEOUT,
-) -> str:
+) -> EnrollmentResult:
     """
-    Request a token and save it to the data directory.
-
-    Convenience function that:
-    The selected endpoint supplies all SSH routing and the token destination.
+    Ask the endpoint selected from the data directory's endpoints.yaml (the
+    default signer, or ``endpoint``) to enroll the client key configured for
+    it. See request_enrollment for the result; nothing is stored.
 
     Args:
         data_dir: Client data directory. Required unless APCLIENT_DATA env var is set.
         endpoint: Endpoint alias (default: the registry's signer endpoint)
+        label: Optional display label shown to the operator
         auto_add_host: If True, automatically trust unknown hosts
         setup_timeout: Maximum seconds for TCP connection and SSH authentication
 
     Returns:
-        Path to the saved token file
+        EnrollmentResult with the key's SHA256 fingerprint and whether
+        approval is pending
 
     Raises:
         SignerError: If data dir not resolvable or SSH key not found
-        TokenProvisioningError: If provisioning fails
+        EnrollmentError: If the signer refuses the request
 
     Example:
         # Reads APCLIENT_DATA from environment
-        request_token_to_file()
+        result = request_enrollment_from_env(label="ci-runner")
 
         # Or with explicit parameters
-        request_token_to_file(data_dir="/custom/path", endpoint="cosigner.qa")
+        request_enrollment_from_env(data_dir="/custom/path", endpoint="cosigner.qa")
 
-        # Now you can use SignerClient.from_env()
+        # Once the operator has approved in apadmin:
         client = SignerClient.from_env()
     """
     if not isinstance(auto_add_host, bool):
@@ -6292,15 +6276,9 @@ def request_token_to_file(
     load_config(data_dir)
     registry = load_client_endpoint_registry(data_dir)
     _, selected = resolve_client_endpoint(registry, endpoint)
-    if not selected.url.startswith("ssh://"):
-        raise SignerError(
-            f'endpoint "{selected.url}" cannot provision tokens; '
-            "request_token_to_file requires ssh://"
-        )
     host, ssh_port = client_endpoint_ssh_host_port(selected)
     ssh_key_path = selected.identity_file
     known_hosts_path = selected.known_hosts_path
-    token_path = selected.token_file
 
     if not os.path.exists(ssh_key_path):
         raise SignerError(
@@ -6308,27 +6286,20 @@ def request_token_to_file(
             "Create one with: ssh-keygen -t ed25519 -f " + ssh_key_path
         )
 
-    print(f"Requesting token from {host} (SSH port: {ssh_port})...")
-    print("This requires an operator (apadmin) to approve on the server.")
-    print("Waiting for operator approval...")
+    print(f"Requesting enrollment at {host} (SSH port: {ssh_port})...")
 
-    token = request_token(
+    result = request_enrollment(
         host=host,
         ssh_key_path=ssh_key_path,
         ssh_port=ssh_port,
         known_hosts_path=known_hosts_path,
+        label=label,
         auto_add_host=auto_add_host,
         setup_timeout=setup_timeout,
     )
 
-    # Save token with secure permissions
-    token_dir = os.path.dirname(token_path)
-    if token_dir:
-        os.makedirs(token_dir, mode=0o700, exist_ok=True)
-    fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write(token)
-    os.chmod(token_path, 0o600)
-
-    print(f"✓ Token saved to {token_path}")
-    return token_path
+    if result.pending:
+        print(f"✓ Client key {result.fingerprint} queued; have the operator approve it in apadmin")
+    else:
+        print(f"✓ Client key {result.fingerprint} is already enrolled at {host}")
+    return result

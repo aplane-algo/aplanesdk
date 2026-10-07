@@ -39,7 +39,7 @@ from aplanesdk import SignerClient, send_raw_transaction
 from algosdk import transaction
 from algosdk.v2client import algod
 
-# Connect to signer (reads config.yaml and token from data dir)
+# Connect to signer (reads endpoints.yaml and the enrolled SSH key from data dir)
 client = SignerClient.from_env()
 
 # Build transaction with algosdk
@@ -88,9 +88,8 @@ Data directory structure (installer default: `~/aplane/apclient`):
 <data_dir>/
   config.yaml          # Non-routing client settings
   endpoints.yaml       # Signer and cosigner routing
-  aplane.token         # Authentication token
   .ssh/
-    id_ed25519         # SSH private key for authentication
+    id_ed25519         # SSH private key: the client's credential
     known_hosts        # Trusted server host keys
 ```
 
@@ -108,12 +107,11 @@ endpoints:
 
 ### Direct SSH Connection
 
-Connect explicitly via SSH tunnel with 2FA:
+Connect explicitly via SSH tunnel, authenticated by the enrolled client key:
 
 ```python
 client = SignerClient.connect_ssh(
     host="signer.example.com",
-    token="your-token",           # used for both SSH auth and HTTP API
     ssh_key_path="~/aplane/apclient/.ssh/id_ed25519",
     known_hosts_path="~/aplane/apclient/.ssh/known_hosts",
     ssh_port=1127,                # default: 1127
@@ -124,14 +122,12 @@ client = SignerClient.connect_ssh(
 
 SSH setup uses its own 60-second deadline, independent of HTTP request and
 operator approval timeouts. The deadline is cleared after authentication.
-`request_token()` and `request_token_to_file()` expose the same setup-only
-deadline as `setup_timeout`.
+`request_enrollment()` and `request_enrollment_from_env()` expose the same
+setup-only deadline as `setup_timeout`.
 
-**Note**: SSH verifies the enrolled public key, then performs a programmatic
-mutual proof of the token bound to the fixed username, accepted host key, and fresh nonces. The
-SSH uses the fixed non-secret username `aplane`; the bearer token is never sent
-as SSH metadata. Keys are enrolled via the `request-token`
-operator-approved flow.
+**Note**: SSH uses the fixed non-secret username `aplane` and public-key
+authentication only; the enrolled key is the client's only credential. Keys
+are enrolled via the `request-enrollment` operator-approved flow.
 
 The SSH tunnel is established automatically. Remember to close when done:
 
@@ -144,7 +140,6 @@ Or use as a context manager:
 ```python
 with SignerClient.connect_ssh(
     host="...",
-    token="...",
     ssh_key_path="~/aplane/apclient/.ssh/id_ed25519",
     known_hosts_path="~/aplane/apclient/.ssh/known_hosts",
 ) as client:
@@ -154,18 +149,24 @@ with SignerClient.connect_ssh(
 
 ## Authentication
 
-The recommended way to obtain a token is via the endpoint-based
-`request-token` flow. `request_token_to_file(endpoint="cosigner.qa")` selects a
-named endpoint; without an alias it selects the default signer. The selected
-endpoint determines the token destination.
-
-If your token was provisioned separately (e.g. copied by the operator), you can load it explicitly:
+The client's SSH key is its credential. A new key is enrolled once: the
+request is queued for the operator to approve later in `apadmin`
+(`pending=True`, the normal outcome) or the key is already enrolled, and
+nothing is stored on the client. Connect once the operator has approved.
+`request_enrollment_from_env(endpoint="cosigner.qa", label="ci-runner")`
+selects a named endpoint; without an alias it selects the default signer:
 
 ```python
-from aplanesdk import load_token
+from aplanesdk import request_enrollment_from_env
 
-token = load_token("/path/to/apclient/aplane.token")
+result = request_enrollment_from_env(label="ci-runner")
+if result.pending:
+    print(f"key {result.fingerprint} queued; have the operator approve it in apadmin")
 ```
+
+`request_enrollment(host, ssh_key_path, known_hosts_path=..., label=...)` is
+the explicit form. The same enrollment can be done from `apshell` with
+`request-enrollment`.
 
 ## API Reference
 
@@ -535,7 +536,7 @@ from aplanesdk import (
 try:
     signed = client.sign_transaction(txn)
 except AuthenticationError:
-    print("Invalid token")
+    print("Connection is not authenticated by an enrolled SSH key")
 except SigningRejectedError:
     print("Operator rejected the request")
 except SignerUnavailableError:
@@ -575,18 +576,14 @@ except TransactionRejectedError as e:
 
 ```python
 #!/usr/bin/env python3
-from aplanesdk import SignerClient, load_token, SignerError, send_raw_transaction
+from aplanesdk import SignerClient, SignerError, send_raw_transaction
 from algosdk import transaction
 from algosdk.v2client import algod
 
 def main():
-    # Load token
-    token = load_token("~/aplane/apclient/aplane.token")
-
-    # Connect via SSH (public key plus host-key-bound token proof)
+    # Connect via SSH, authenticated by the enrolled client key
     with SignerClient.connect_ssh(
         host="signer.example.com",
-        token=token,
         ssh_key_path="~/aplane/apclient/.ssh/id_ed25519",
         known_hosts_path="~/aplane/apclient/.ssh/known_hosts",
     ) as client:

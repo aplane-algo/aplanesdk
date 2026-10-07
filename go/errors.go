@@ -10,8 +10,21 @@ import (
 
 // Signing errors
 var (
-	// ErrAuthentication indicates invalid or missing token (HTTP 401).
-	ErrAuthentication = errors.New("authentication failed: invalid or missing token")
+	// ErrAuthentication indicates the signer refused the request as
+	// unauthenticated (HTTP 401): the connection did not arrive through an
+	// enrolled SSH key.
+	ErrAuthentication = errors.New("authentication failed: connect through an enrolled SSH key")
+
+	// ErrNotEnrolled indicates the signer refused the client's SSH key at the
+	// handshake: it is not enrolled there, or was revoked. Enroll it with
+	// RequestEnrollment (or apshell request-enrollment) and have the operator
+	// approve.
+	ErrNotEnrolled = errors.New("SSH key is not enrolled at the signer")
+
+	// ErrEnrollment indicates a request-enrollment session failed: the
+	// operator rejected it, no operator was connected, or the signer could not
+	// record the key.
+	ErrEnrollment = errors.New("enrollment failed")
 
 	// ErrSigningRejected indicates the operator rejected the request (HTTP 403).
 	ErrSigningRejected = errors.New("signing rejected by operator")
@@ -48,9 +61,6 @@ var (
 var (
 	// ErrConfigNotFound indicates config.yaml was not found.
 	ErrConfigNotFound = errors.New("config.yaml not found")
-
-	// ErrTokenNotFound indicates the resolved endpoint token file was not found.
-	ErrTokenNotFound = errors.New("token file not found")
 )
 
 // Stable machine-readable error codes carried in ErrorResponse.Code.

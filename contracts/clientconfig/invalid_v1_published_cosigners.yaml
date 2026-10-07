@@ -2,7 +2,7 @@ schema_version: 1
 endpoints:
   cosigner-old:
     role: cosigner
-    url: https://cosigner.example.com
+    url: ssh://cosigner.example.com
     published_cosigners:
       deadbeef:
         component_key: LEGACY

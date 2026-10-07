@@ -2,5 +2,4 @@ schema_version: 2
 endpoints:
   primary:
     role: signer
-    url: ssh://signer.example.com
-    token_file: 007
+    url: https://signer.example.com

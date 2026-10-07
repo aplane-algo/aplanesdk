@@ -83,7 +83,7 @@ func newPrepTestClients(t *testing.T, sender string, receiver string, senderAmou
 		server.Close()
 		t.Fatalf("algod.MakeClient() error = %v", err)
 	}
-	signer := NewSignerClientWithToken(server.URL, "token")
+	signer := NewSignerClient(server.URL)
 	return signer, algodClient, server.Close
 }
 
@@ -573,7 +573,7 @@ func TestPreparePaymentAppCallGroup(t *testing.T) {
 	sender := types.Address{}
 	paymentTxn := types.Transaction{Type: types.PaymentTx, Header: types.Header{Sender: sender}}
 	appTxn := types.Transaction{Type: types.ApplicationCallTx, Header: types.Header{Sender: sender}}
-	client := NewSignerClientWithToken("http://example.invalid", "token")
+	client := NewSignerClient("http://example.invalid")
 
 	group, err := client.PreparePaymentAppCallGroup(
 		PreparedTransaction{Transaction: &paymentTxn, AuthAddress: "PAY_AUTH"},

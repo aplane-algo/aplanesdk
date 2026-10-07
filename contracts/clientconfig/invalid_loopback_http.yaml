@@ -1,0 +1,5 @@
+schema_version: 2
+endpoints:
+  cosigner:
+    role: cosigner
+    url: http://127.0.0.1:11271

@@ -153,7 +153,7 @@ describe("signer API contract fixtures", () => {
   });
 
   it("encodes mixed group sign request wire fields", () => {
-    const client = new SignerClient("http://localhost:11270", "test-token");
+    const client = new SignerClient("http://localhost:11270");
     const signTxn = {
       sender: { toString: () => "SENDERADDR0000000000000000000000000000000000000000000" },
       toByte: () => new Uint8Array([1]),
@@ -188,7 +188,7 @@ describe("signer API contract fixtures", () => {
       json: async () => fixture("keys_response_generic.json"),
     });
 
-    const client = new SignerClient("http://localhost:11270", "test-token");
+    const client = new SignerClient("http://localhost:11270");
     const keys = await client.listKeys(true);
 
     assert.equal(keys.length, 3);
@@ -211,7 +211,7 @@ describe("signer API contract fixtures", () => {
       json: async () => fixture("keytypes_response_full.json"),
     });
 
-    const client = new SignerClient("http://localhost:11270", "test-token");
+    const client = new SignerClient("http://localhost:11270");
     const keyTypes = await client.listKeyTypes();
     const nativeFalcon = keyTypes[1];
     assert.equal(nativeFalcon.keyType, "falcon1024");
@@ -250,7 +250,7 @@ describe("signer API contract fixtures", () => {
       json: async () => fixture("status_response_ready.json"),
     });
 
-    const client = new SignerClient("http://localhost:11270", "test-token");
+    const client = new SignerClient("http://localhost:11270");
     const status = await client.getStatus();
 
     assert.equal(status.nodeRole, "signer");
@@ -292,7 +292,7 @@ describe("signer API contract fixtures", () => {
       }),
     });
 
-    const client = new SignerClient("http://localhost:11270", "test-token");
+    const client = new SignerClient("http://localhost:11270");
     const keys = await client.listKeys(true);
 
     assert.equal(keys[0].templateProvenanceStatus, "conflict");
@@ -317,7 +317,7 @@ describe("signer API contract fixtures", () => {
       }),
     });
 
-    const client = new SignerClient("http://localhost:11270", "test-token");
+    const client = new SignerClient("http://localhost:11270");
     const keys = await client.listKeys(true);
 
     assert.equal(keys[0].templateProvenanceStatus, undefined);
@@ -332,7 +332,7 @@ describe("signer API contract fixtures", () => {
       json: async () => fixture("keys_response_component.json"),
     });
 
-    const client = new SignerClient("http://localhost:11270", "test-token");
+    const client = new SignerClient("http://localhost:11270");
     const component = (await client.listKeys(true))[0];
     assert.equal(component.keyType, "aplane.witness-falcon1024.v1");
     assert.equal(component.isWitnessKey, true);
@@ -358,7 +358,7 @@ describe("signer API contract fixtures", () => {
       json: async () => fixture("keys_response_generic.json"),
     });
 
-    const client = new SignerClient("http://localhost:11270", "test-token");
+    const client = new SignerClient("http://localhost:11270");
     const nativePq = (await client.listKeys(true))[2];
     assert.equal(nativePq.keyType, "falcon1024");
     assert.equal(nativePq.authorizationKind, "native_pq");
@@ -374,7 +374,7 @@ describe("signer API contract fixtures", () => {
       json: async () => fixture("group_plan_response_mutated.json"),
     });
 
-    const client = new SignerClient("http://localhost:11270", "test-token");
+    const client = new SignerClient("http://localhost:11270");
     const fakeTxn = {
       sender: { toString: () => "SENDERADDR0000000000000000000000000000000000000000000" },
       toByte: () => new Uint8Array([1, 2, 3]),
@@ -401,7 +401,7 @@ describe("signer API contract fixtures", () => {
       json: async () => fixture("admin_generate_response_generic.json"),
     });
 
-    const client = new SignerClient("http://localhost:11270", "test-token");
+    const client = new SignerClient("http://localhost:11270");
     const generated = await client.generateKey("example.generic-policy.v1", {
       unlock_round: "123456",
     });
@@ -418,7 +418,7 @@ describe("signer API contract fixtures", () => {
       json: async () => fixture("admin_generate_response_component.json"),
     });
 
-    const client = new SignerClient("http://localhost:11270", "test-token");
+    const client = new SignerClient("http://localhost:11270");
     const generated = await client.generateKey("aplane.witness-falcon1024.v1");
 
     assert.equal(generated.address, "ROGAFDACF7ASC3EMZRWNKVM73NXHO4P6O4EB7ZXWER37SM63BMFQ");
@@ -455,7 +455,7 @@ describe("signer API contract fixtures", () => {
         json: async () => fixture("component_response.json"),
       });
 
-    const client = new SignerClient("http://localhost:11270", "test-token");
+    const client = new SignerClient("http://localhost:11270");
     const response = await client.requestComponents(fixture("component_request.json") as ComponentRequest);
     assert.equal(response.components[0].kind, "bounded-base");
   });
@@ -466,7 +466,7 @@ describe("signer API contract fixtures", () => {
       ok: true,
       json: async () => fixture("keys_response_bounded.json"),
     });
-    const client = new SignerClient("http://localhost:11270", "test-token");
+    const client = new SignerClient("http://localhost:11270");
     const keys = await client.listKeys(true);
     const key = keys[0];
     assert.equal(key.signingFlow, "bounded1");

@@ -6,8 +6,8 @@
  *
  * Data directory (required via APCLIENT_DATA env var or dataDir option):
  *     <data_dir>/
- *     ├── aplane.token         # API token
- *     └── endpoints.yaml       # Signer and cosigner routing
+ *     ├── endpoints.yaml       # Signer and cosigner routing
+ *     └── .ssh/id_ed25519      # SSH key: the client's credential
  *
  * Example endpoints.yaml:
  *     schema_version: 2
@@ -22,6 +22,10 @@
  *     const client = await SignerClient.fromEnv();
  *     const signed = await client.signTransaction(txn);
  *     const txid = await sendRawTransaction(algodClient, signed);
+ *
+ * A new client key is enrolled once. The request is queued for the operator
+ * to approve later in apadmin; connect after that:
+ *     const { fingerprint, pending } = await requestEnrollmentFromEnv({ label: "ci-runner" });
  *
  * @packageDocumentation
  */
@@ -57,9 +61,8 @@ export {
 export {
   sendRawTransaction,
   assembleGroup,
-  requestToken,
-  requestTokenToFile,
-  loadToken,
+  requestEnrollment,
+  requestEnrollmentFromEnv,
   loadConfig,
   loadClientEndpointRegistry,
   resolveClientEndpoint,
@@ -90,7 +93,7 @@ export {
   SignerUnavailableError,
   KeyNotFoundError,
   KeyDeletionError,
-  TokenProvisioningError,
+  EnrollmentError,
   TransactionRejectedError,
   LogicSigRejectedError,
   InsufficientFundsError,
@@ -180,5 +183,12 @@ export type {
   ApsignerAccountOptions,
 } from "./algokit.js";
 
+export type {
+  EnrollmentResult,
+  RequestEnrollmentOptions,
+  RequestEnrollmentFromEnvOptions,
+} from "./utils.js";
+
 // Constants
 export { DEFAULT_SSH_PORT } from "./config.js";
+export { CLIENT_SSH_KEY_REQUIREMENT, MAX_ENROLLMENT_LABEL_BYTES } from "./ssh.js";
