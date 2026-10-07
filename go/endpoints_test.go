@@ -39,15 +39,15 @@ func TestLoadClientEndpointRegistrySharedFixture(t *testing.T) {
 	if primary.IdentityFile != filepath.Join(dataDir, ".ssh", "primary") {
 		t.Fatalf("IdentityFile = %q", primary.IdentityFile)
 	}
-	if primary.TokenFile != filepath.Join(dataDir, "aplane.token") {
-		t.Fatalf("TokenFile = %q", primary.TokenFile)
-	}
 	cosigner := registry.Endpoints["cosigner.qa"]
-	if cosigner.URL != "https://cosigner.example.com" {
+	if cosigner.URL != "ssh://cosigner.example.com" {
 		t.Fatalf("cosigner URL = %q", cosigner.URL)
 	}
-	if cosigner.TokenFile != filepath.Join(dataDir, "credentials", "cosigner.token") {
-		t.Fatalf("cosigner TokenFile = %q", cosigner.TokenFile)
+	if cosigner.IdentityFile != filepath.Join(dataDir, "credentials", "cosigner") {
+		t.Fatalf("cosigner IdentityFile = %q", cosigner.IdentityFile)
+	}
+	if cosigner.KnownHostsPath != filepath.Join(dataDir, ".ssh", "known_hosts") {
+		t.Fatalf("cosigner KnownHostsPath = %q", cosigner.KnownHostsPath)
 	}
 }
 
@@ -57,9 +57,10 @@ func TestLoadClientEndpointRegistryRejectsSharedInvalidFixtures(t *testing.T) {
 		"invalid_identity_file_type.yaml",
 		"invalid_multiple_signers.yaml",
 		"invalid_remote_http.yaml",
+		"invalid_loopback_http.yaml",
+		"invalid_https.yaml",
 		"invalid_schema_version_float.yaml",
 		"invalid_ssh_port_zero.yaml",
-		"invalid_token_file_type.yaml",
 		"invalid_unknown_field.yaml",
 		"invalid_unknown_tag.yaml",
 	} {
@@ -117,7 +118,8 @@ func TestLoadClientEndpointRegistryAcceptsSharedEdgeFixtures(t *testing.T) {
 		"valid_retired_port_fields.yaml",
 	} {
 		t.Run(name, func(t *testing.T) {
-			registry, err := LoadClientEndpointRegistry(copyEndpointFixture(t, name))
+			dataDir := copyEndpointFixture(t, name)
+			registry, err := LoadClientEndpointRegistry(dataDir)
 			if err != nil {
 				t.Fatalf("LoadClientEndpointRegistry: %v", err)
 			}
@@ -129,7 +131,7 @@ func TestLoadClientEndpointRegistryAcceptsSharedEdgeFixtures(t *testing.T) {
 			}
 			if name == "valid_retired_port_fields.yaml" {
 				primary := registry.Endpoints["primary"]
-				if primary.URL != "ssh://signer.example.com:2222" || filepath.Base(primary.TokenFile) != "legacy.token" {
+				if primary.URL != "ssh://signer.example.com:2222" || primary.IdentityFile != filepath.Join(dataDir, ".ssh", "id_ed25519") {
 					t.Fatalf("primary = %#v, want the retired keys ignored and the other fields kept", primary)
 				}
 				if _, ok := registry.Endpoints["cosigner"]; !ok {
@@ -140,7 +142,7 @@ func TestLoadClientEndpointRegistryAcceptsSharedEdgeFixtures(t *testing.T) {
 	}
 }
 
-func TestLoadClientEndpointRegistryDerivesSignerDefaultAndTokenPaths(t *testing.T) {
+func TestLoadClientEndpointRegistryDerivesSignerDefaultAndIdentityPaths(t *testing.T) {
 	dataDir := t.TempDir()
 	data := []byte(`
 schema_version: 2
@@ -150,7 +152,7 @@ endpoints:
     url: ssh://localhost
   qa:
     role: cosigner
-    url: http://127.0.0.1:11271
+    url: ssh://127.0.0.1:2222
 `)
 	if err := os.WriteFile(filepath.Join(dataDir, ClientEndpointsFile), data, 0o600); err != nil {
 		t.Fatal(err)
@@ -162,11 +164,11 @@ endpoints:
 	if registry.Default != "main" {
 		t.Fatalf("Default = %q, want main", registry.Default)
 	}
-	if got := registry.Endpoints["main"].TokenFile; got != filepath.Join(dataDir, "tokens", "main.token") {
-		t.Fatalf("main token path = %q", got)
-	}
-	if got := registry.Endpoints["qa"].TokenFile; got != filepath.Join(dataDir, "tokens", "qa.token") {
-		t.Fatalf("qa token path = %q", got)
+	for _, alias := range []string{"main", "qa"} {
+		endpoint := registry.Endpoints[alias]
+		if endpoint.IdentityFile != filepath.Join(dataDir, ".ssh", "id_ed25519") || endpoint.KnownHostsPath != filepath.Join(dataDir, ".ssh", "known_hosts") {
+			t.Fatalf("%s identity = %#v, want the default client identity", alias, endpoint)
+		}
 	}
 }
 

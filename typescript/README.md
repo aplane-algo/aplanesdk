@@ -86,12 +86,12 @@ All SDK connections use the configured SSH-backed signer path. Direct local HTTP
 
 ### Remote Connection via SSH
 
-Connect to apsigner on a remote machine through an SSH tunnel with 2FA:
+Connect to apsigner on a remote machine through an SSH tunnel, authenticated
+by the enrolled client key:
 
 ```typescript
 const client = await SignerClient.connectSsh(
   "signer.example.com",
-  "your-token",              // used for both SSH auth and HTTP API
   "~/aplane/apclient/.ssh/id_ed25519",
   {
     sshPort: 1127,           // default: 1127
@@ -103,13 +103,12 @@ const client = await SignerClient.connectSsh(
 ```
 
 SSH setup uses its own 60-second deadline, independent of HTTP request and
-operator approval timeouts. Pass `signal` to cancel setup. Token provisioning
-offers the same controls as `setupTimeout` and `signal`.
+operator approval timeouts. Pass `signal` to cancel setup. Enrollment offers
+the same controls as `setupTimeout` and `signal`.
 
-**Note**: SSH verifies the enrolled public key, then performs a programmatic
-mutual proof of the token bound to the fixed username, accepted host key, and fresh nonces. The
-SSH uses the fixed non-secret username `aplane`; the bearer token is never sent
-as SSH metadata. Remember to close when done:
+**Note**: SSH uses the fixed non-secret username `aplane` and public-key
+authentication only; the enrolled key is the client's only credential. A key
+the signer has not enrolled fails the handshake. Remember to close when done:
 
 ```typescript
 await client.close();
@@ -135,9 +134,8 @@ Data directory structure (installer default: `~/aplane/apclient`):
 <data_dir>/
   config.yaml          # Non-routing client settings
   endpoints.yaml       # Signer and cosigner routing
-  aplane.token         # Authentication token
   .ssh/
-    id_ed25519         # SSH key
+    id_ed25519         # SSH key: the client's credential
     known_hosts        # Trusted signer host keys
 ```
 
@@ -159,17 +157,19 @@ named endpoint.
 
 ## Authentication
 
-The token is the contents of the `aplane.token` file from your apsigner data directory.
+The client's SSH key is its credential. A new key is enrolled once, with the
+operator approving in `apadmin`; the call resolves to the enrolled key's
+fingerprint and stores nothing:
 
 ```typescript
-import { loadToken } from "aplanesdk";
+import { requestEnrollmentFromEnv } from "aplanesdk";
 
-// Load from file
-const token = loadToken("~/aplane/apclient/aplane.token");
-
-// Or from environment
-const token = process.env.APSIGNER_TOKEN;
+const fingerprint = await requestEnrollmentFromEnv({ label: "ci-runner" });
 ```
+
+`requestEnrollment(host, sshKeyPath, { knownHostsPath, label })` is the
+explicit form. The same enrollment can be done from `apshell` with
+`request-enrollment`.
 
 ## API Reference
 
@@ -536,7 +536,7 @@ try {
   const signed = await client.signTransaction(txn);
 } catch (error) {
   if (error instanceof AuthenticationError) {
-    console.log("Invalid token");
+    console.log("Connection is not authenticated by an enrolled SSH key");
   } else if (error instanceof SigningRejectedError) {
     console.log("Operator rejected the request");
   } else if (error instanceof SignerUnavailableError) {
@@ -580,14 +580,11 @@ try {
 ## Example: Complete Workflow
 
 ```typescript
-import { SignerClient, loadToken, SignerError, sendRawTransaction } from "aplanesdk";
+import { SignerClient, SignerError, sendRawTransaction } from "aplanesdk";
 import algosdk from "algosdk";
 
 async function main() {
-  // Load token
-  const token = loadToken("~/aplane/apclient/aplane.token");
-
-  // Connect to local signer
+  // Connect to the signer with the enrolled client key
   const client = await SignerClient.fromEnv();
 
   // List keys

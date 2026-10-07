@@ -92,18 +92,22 @@ make integration-test
 ```
 
 The tests exercise `APCLIENT_DATA/endpoints.yaml` when the APlane fixture
-provides it. The main workflow also accepts explicit SDK-facing values:
+provides it. The client's enrolled SSH key is its only credential, so the
+main workflow takes the SSH host and the key and host trust to tunnel with:
 
 ```bash
-APLANE_SDK_SIGNER_URL=http://127.0.0.1:11270 \
-APLANE_SDK_TOKEN_FILE=/path/to/aplane.token \
+APLANE_SDK_SSH_HOST=localhost \
+APLANE_SDK_SSH_PORT=1127 \
+APLANE_SDK_SSH_KEY_PATH=~/aplane/apclient/.ssh/id_ed25519 \
+APLANE_SDK_KNOWN_HOSTS_PATH=~/aplane/apclient/.ssh/known_hosts \
 make integration-test
 ```
 
 Optional variables:
 
-- `APLANE_SDK_TOKEN`: inline token, preferred over token files
-- `APLANE_SDK_TOKEN_FILE`: token file path
+- `APLANE_SDK_SIGNER_URL`: the local end of a caller-owned SSH tunnel to the
+  signer, used when `APLANE_SDK_SSH_HOST` is unset (a signer's loopback REST
+  port answers only `/health`)
 
 Each SDK runs the broad signer-facing lifecycle and AlgoKit adapter checks with
 an Ed25519 key. A second focused test generates a protocol-native

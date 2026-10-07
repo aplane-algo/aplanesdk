@@ -69,7 +69,6 @@ func (c *SignerClient) RequestComponentsWithContext(ctx context.Context, reqBody
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "aplane "+c.token)
 	resp, err := c.client.Do(req)
 	close(done)
 	if err != nil {

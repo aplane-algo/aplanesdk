@@ -8,5 +8,5 @@ endpoints:
     known_hosts_path: .ssh/known_hosts
   cosigner.qa:
     role: cosigner
-    url: https://cosigner.example.com/
-    token_file: credentials/cosigner.token
+    url: ssh://cosigner.example.com/
+    identity_file: credentials/cosigner

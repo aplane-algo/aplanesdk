@@ -17,8 +17,9 @@ Run them from the APlane harness:
   APLANE_SDKS_REPO=~/aplanesdk make integration-test
 
 Or start apsigner yourself and set:
-  APLANE_SDK_SIGNER_URL=http://127.0.0.1:<port>
-  APLANE_SDK_TOKEN or APLANE_SDK_TOKEN_FILE
+  APLANE_SDK_SSH_HOST, APLANE_SDK_SSH_PORT, APLANE_SDK_SSH_KEY_PATH,
+  APLANE_SDK_KNOWN_HOSTS_PATH (the enrolled client key and host trust), or
+  APLANE_SDK_SIGNER_URL=http://127.0.0.1:<port> for a caller-owned tunnel
 EOF
     exit 1
   fi
@@ -62,25 +63,19 @@ PY
   signer_url="http://127.0.0.1:$port"
 fi
 
-token_source="${APLANE_SDK_TOKEN:-}"
-if [[ -z "$token_source" ]]; then
-  token_file="${APLANE_SDK_TOKEN_FILE:-}"
-  if [[ -z "$token_file" && -n "${APCLIENT_DATA:-}" ]]; then
-    token_file="$APCLIENT_DATA/aplane.token"
-  fi
-  if [[ -z "$token_file" && -n "${APSIGNER_DATA:-}" ]]; then
-    token_file="$APSIGNER_DATA/identities/default/aplane.token"
-  fi
-  if [[ -z "$token_file" || ! -s "$token_file" ]]; then
-    cat >&2 <<EOF
-SDK integration tests need an apsigner token.
-
-Set one of:
-  APLANE_SDK_TOKEN=<token>
-  APLANE_SDK_TOKEN_FILE=/path/to/aplane.token
-
-When using the APlane harness, APCLIENT_DATA/aplane.token is provided automatically.
-EOF
+# The client's enrolled SSH key is its only credential. An SSH host means the
+# tests tunnel with that key; otherwise the signer URL must be a caller-owned
+# tunnel, because the loopback REST port answers only /health.
+if [[ -n "${APLANE_SDK_SSH_HOST:-}" ]]; then
+  for name in APLANE_SDK_SSH_PORT APLANE_SDK_SSH_KEY_PATH APLANE_SDK_KNOWN_HOSTS_PATH; do
+    if [[ -z "${!name:-}" ]]; then
+      echo "$name must be set when APLANE_SDK_SSH_HOST is set." >&2
+      exit 1
+    fi
+  done
+  if [[ ! -r "$APLANE_SDK_SSH_KEY_PATH" ]]; then
+    echo "APLANE_SDK_SSH_KEY_PATH is not readable: $APLANE_SDK_SSH_KEY_PATH" >&2
+    echo "The key must be enrolled at the signer (apshell request-enrollment)." >&2
     exit 1
   fi
 fi

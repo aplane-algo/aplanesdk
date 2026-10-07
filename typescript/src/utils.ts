@@ -11,29 +11,30 @@ import {
 
 import * as fs from "fs";
 import * as path from "path";
+import { createHash } from "crypto";
 import {
   SignerError,
-  TokenProvisioningError,
+  EnrollmentError,
 } from "./errors.js";
 import {
   loadConfig,
   loadClientEndpointRegistry,
   resolveClientEndpoint,
   clientEndpointSshHostPort,
-  loadToken,
   resolveDataDir,
   expandPath,
   DEFAULT_SSH_PORT,
 } from "./config.js";
 import {
-  SSH_TOKEN_PROVISIONING_USERNAME,
+  SSH_ENROLLMENT_COMMAND,
+  SSH_ENROLLMENT_USERNAME,
   normalizeSSHSetupTimeout,
   sshConnectionFailedMessage,
-} from "./ssh-tokenproof.js";
+  validateEnrollmentLabel,
+} from "./ssh.js";
 
 // Re-export config utilities
 export {
-  loadToken,
   loadConfig,
   loadClientEndpointRegistry,
   resolveClientEndpoint,
@@ -268,34 +269,54 @@ export function assembleGroup(signedLists: string[][]): string {
   return combined.toString("base64");
 }
 
+/** Options for requestEnrollment. */
+export interface RequestEnrollmentOptions {
+  /** SSH port on the signer (default: 1127) */
+  sshPort?: number;
+  /** Path to the known_hosts file that pins the signer's host key (required) */
+  knownHostsPath?: string;
+  /** If true, trust and save an unknown host key (TOFU). Default: false */
+  autoAddHost?: boolean;
+  /** Optional display label shown to the operator (printable, single line, <= 64 bytes) */
+  label?: string;
+  /** TCP connection and SSH authentication timeout in milliseconds (default: 60000) */
+  setupTimeout?: number;
+  /** Optional cancellation signal; also abandons the wait for the operator */
+  signal?: AbortSignal;
+}
+
 /**
- * Request an API token from apsigner via SSH.
- *
- * Connects to the signer's SSH server and requests a token.
- * An operator (apadmin) must approve the request on the server side.
+ * Ask the signer to enroll this client's SSH key, so the key can open API
+ * connections. The call blocks until an operator approves or rejects the
+ * request in apadmin and resolves to the enrolled key's SHA256 fingerprint.
+ * Nothing is stored on the client afterwards: the key is its credential.
  *
  * @param host - Signer host
- * @param sshKeyPath - Path to SSH private key
- * @param options - Optional: sshPort, knownHostsPath, autoAddHost.
- * @returns The provisioned token string
+ * @param sshKeyPath - Path to the client's SSH private key
+ * @param options - sshPort, knownHostsPath, autoAddHost, label, setupTimeout, signal
+ * @returns The enrolled key's fingerprint (SHA256:...)
  */
-export async function requestToken(
+export async function requestEnrollment(
   host: string,
   sshKeyPath: string,
-  options: {
-    sshPort?: number;
-    knownHostsPath?: string;
-    autoAddHost?: boolean;
-    setupTimeout?: number;
-    signal?: AbortSignal;
-  } = {}
+  options: RequestEnrollmentOptions = {}
 ): Promise<string> {
   const sshPort = options.sshPort ?? DEFAULT_SSH_PORT;
   const setupTimeout = normalizeSSHSetupTimeout(options.setupTimeout);
+  const label = options.label ?? "";
+  try {
+    validateEnrollmentLabel(label);
+  } catch (error) {
+    throw new SignerError(error instanceof Error ? error.message : String(error));
+  }
   if (!options.knownHostsPath) {
     throw new SignerError("known_hosts path is required for SSH host key verification");
   }
-  const { Client } = await import("ssh2");
+  // ssh2 is CommonJS; under ESM interop only some of its exports are
+  // detected as named, so take utils from the default export when needed.
+  const ssh2 = await import("ssh2");
+  const Client = ssh2.Client;
+  const utils = ssh2.utils ?? (ssh2 as unknown as { default: typeof ssh2 }).default.utils;
   const expandedKeyPath = expandPath(sshKeyPath);
   const knownHostsPath = expandPath(options.knownHostsPath);
 
@@ -304,15 +325,29 @@ export async function requestToken(
   }
 
   const privateKey = fs.readFileSync(expandedKeyPath, "utf-8");
+  const parsedKey = utils.parseKey(privateKey);
+  if (parsedKey instanceof Error) {
+    throw new SignerError(`failed to parse SSH key ${expandedKeyPath}: ${parsedKey.message}`);
+  }
+  const clientFingerprint = sshFingerprintSHA256(parsedKey.getPublicSSH());
+  const command = label ? `${SSH_ENROLLMENT_COMMAND} ${label}` : SSH_ENROLLMENT_COMMAND;
+
   return new Promise((resolve, reject) => {
     const client = new Client();
     let hostKeyError = "";
-    let setupComplete = false;
+    let settled = false;
     const cleanupSetup = () => options.signal?.removeEventListener("abort", abortSetup);
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      cleanupSetup();
+      fn();
+    };
     const abortSetup = () => {
-      if (setupComplete) return;
-      client.destroy();
-      reject(new TokenProvisioningError("SSH setup canceled"));
+      finish(() => {
+        client.destroy();
+        reject(new EnrollmentError("SSH setup canceled"));
+      });
     };
     if (options.signal?.aborted) {
       abortSetup();
@@ -321,12 +356,10 @@ export async function requestToken(
     options.signal?.addEventListener("abort", abortSetup, { once: true });
 
     client.on("ready", () => {
-      setupComplete = true;
-      cleanupSetup();
-      client.exec("provision", (err: Error | undefined, channel: import("ssh2").ClientChannel) => {
+      client.exec(command, (err: Error | undefined, channel: import("ssh2").ClientChannel) => {
         if (err) {
           client.end();
-          reject(new TokenProvisioningError(`Failed to execute provision: ${err.message}`));
+          finish(() => reject(new EnrollmentError(`Failed to start enrollment: ${err.message}`)));
           return;
         }
 
@@ -343,40 +376,49 @@ export async function requestToken(
 
         channel.on("close", (code: number) => {
           client.end();
-          if (code !== 0) {
-            const errorMsg = stderr.trim() || stdout.trim() || "Token provisioning rejected";
-            reject(new TokenProvisioningError(errorMsg));
-            return;
-          }
-          const token = stdout.trim();
-          if (!token) {
-            reject(new TokenProvisioningError("Empty token received"));
-            return;
-          }
-          resolve(token);
+          finish(() => {
+            if (code !== 0) {
+              const errorMsg = (stderr.trim() || stdout.trim() || "Enrollment rejected")
+                .replace(/^ERROR: /, "");
+              reject(new EnrollmentError(errorMsg));
+              return;
+            }
+            const response = stdout.trim();
+            if (!response.startsWith("enrolled ") || response.length <= "enrolled ".length) {
+              reject(new EnrollmentError(`Unexpected enrollment response: ${JSON.stringify(response)}`));
+              return;
+            }
+            const fingerprint = response.slice("enrolled ".length);
+            if (fingerprint !== clientFingerprint) {
+              reject(new EnrollmentError(
+                `Signer enrolled ${fingerprint}, but this client authenticated with ${clientFingerprint}`
+              ));
+              return;
+            }
+            resolve(fingerprint);
+          });
         });
       });
     });
 
     client.on("error", (err: Error) => {
-      cleanupSetup();
-      reject(new TokenProvisioningError(hostKeyError || sshConnectionFailedMessage(err)));
+      finish(() => reject(new EnrollmentError(
+        hostKeyError || sshConnectionFailedMessage(err, SSH_ENROLLMENT_USERNAME)
+      )));
     });
 
     // ssh2 reports a peer that disconnects mid-handshake with close alone and
     // clears readyTimeout, so an unfinished setup must fail here.
     client.on("close", () => {
-      if (setupComplete) return;
-      cleanupSetup();
-      reject(new TokenProvisioningError(
+      finish(() => reject(new EnrollmentError(
         hostKeyError || "SSH connection closed before setup completed"
-      ));
+      )));
     });
 
     client.connect({
       host,
       port: sshPort,
-      username: SSH_TOKEN_PROVISIONING_USERNAME,
+      username: SSH_ENROLLMENT_USERNAME,
       privateKey,
       readyTimeout: setupTimeout,
       hostVerifier: (key: Buffer): boolean => {
@@ -406,29 +448,41 @@ export async function requestToken(
   });
 }
 
+/** SHA256 fingerprint of an SSH public key in wire format, as OpenSSH prints it. */
+function sshFingerprintSHA256(publicKeyWire: Buffer): string {
+  const digest = createHash("sha256").update(publicKeyWire).digest("base64");
+  return `SHA256:${digest.replace(/=+$/, "")}`;
+}
+
+/** Options for requestEnrollmentFromEnv. */
+export interface RequestEnrollmentFromEnvOptions {
+  /** Client data directory (default: APCLIENT_DATA) */
+  dataDir?: string;
+  /** Endpoint alias (default: the registry's signer endpoint) */
+  endpoint?: string;
+  /** If true, trust and save an unknown host key (TOFU). Default: false */
+  autoAddHost?: boolean;
+  /** Optional display label shown to the operator */
+  label?: string;
+  /** TCP connection and SSH authentication timeout in milliseconds (default: 60000) */
+  setupTimeout?: number;
+  /** Optional cancellation signal */
+  signal?: AbortSignal;
+}
+
 /**
- * Request a token and save it to the data directory.
- *
- * Convenience function that:
- * The selected endpoint supplies all SSH routing and the token destination.
- *
- * @param options - Optional dataDir, endpoint alias, and first-use trust.
- * @returns Path to the saved token file
+ * Ask the endpoint selected from the data directory's endpoints.yaml (the
+ * default signer, or `endpoint`) to enroll the client key configured for it.
+ * Resolves to the enrolled key's fingerprint; nothing is stored.
  */
-export async function requestTokenToFile(
-  options: {
-    dataDir?: string;
-    endpoint?: string;
-    autoAddHost?: boolean;
-    setupTimeout?: number;
-    signal?: AbortSignal;
-  } = {}
+export async function requestEnrollmentFromEnv(
+  options: RequestEnrollmentFromEnvOptions = {}
 ): Promise<string> {
   const rawOptions = options as Record<string, unknown>;
   for (const removed of ["host", "sshPort", "identity"]) {
     if (removed in rawOptions) {
       throw new SignerError(
-        `requestTokenToFile option "${removed}" was removed; configure and select an endpoints.yaml alias`,
+        `requestEnrollmentFromEnv option "${removed}" was removed; configure and select an endpoints.yaml alias`,
       );
     }
   }
@@ -436,11 +490,6 @@ export async function requestTokenToFile(
   loadConfig(dataDir);
   const registry = loadClientEndpointRegistry(dataDir);
   const { endpoint } = resolveClientEndpoint(registry, options.endpoint);
-  if (!endpoint.url.startsWith("ssh://")) {
-    throw new SignerError(
-      `endpoint "${endpoint.url}" cannot provision tokens; requestTokenToFile requires ssh://`,
-    );
-  }
   const { host, port: sshPort } = clientEndpointSshHostPort(endpoint);
   const sshKeyPath = endpoint.identityFile;
   const knownHostsPath = endpoint.knownHostsPath;
@@ -452,19 +501,12 @@ export async function requestTokenToFile(
     );
   }
 
-  const token = await requestToken(host, sshKeyPath, {
+  return requestEnrollment(host, sshKeyPath, {
     sshPort,
     knownHostsPath,
     autoAddHost: options.autoAddHost,
+    label: options.label,
     setupTimeout: options.setupTimeout,
     signal: options.signal,
   });
-
-  // Save token with secure permissions
-  const tokenPath = endpoint.tokenFile;
-  fs.mkdirSync(path.dirname(tokenPath), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(tokenPath, token, { mode: 0o600 });
-  fs.chmodSync(tokenPath, 0o600);
-
-  return tokenPath;
 }

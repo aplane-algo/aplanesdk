@@ -33,10 +33,8 @@ func liveSignerClient(t *testing.T) *SignerClient {
 		t.Skip("set APLANE_SDK_INTEGRATION=1 to run live signer integration tests")
 	}
 
-	token := liveSignerToken(t)
-
 	if host := strings.TrimSpace(os.Getenv("APLANE_SDK_SSH_HOST")); host != "" {
-		client, err := ConnectSSH(host, token, liveRequiredEnv(t, "APLANE_SDK_SSH_KEY_PATH"), &SSHConnectOptions{
+		client, err := ConnectSSH(host, liveRequiredEnv(t, "APLANE_SDK_SSH_KEY_PATH"), &SSHConnectOptions{
 			SSHPort:        liveRequiredPort(t, "APLANE_SDK_SSH_PORT"),
 			KnownHostsPath: liveRequiredEnv(t, "APLANE_SDK_KNOWN_HOSTS_PATH"),
 		})
@@ -51,7 +49,9 @@ func liveSignerClient(t *testing.T) *SignerClient {
 		port := liveSignerPort(t)
 		baseURL = fmt.Sprintf("http://127.0.0.1:%d", port)
 	}
-	return NewSignerClientWithToken(baseURL, token)
+	// A base URL names a caller-owned tunnel; the loopback REST port of a
+	// signer answers only /health.
+	return NewSignerClient(baseURL)
 }
 
 func liveRequiredEnv(t *testing.T, name string) string {
@@ -94,40 +94,6 @@ func liveSignerPort(t *testing.T) int {
 		t.Fatal("endpoint.signer_port not set in signer config")
 	}
 	return cfg.Endpoint.SignerPort
-}
-
-func liveSignerToken(t *testing.T) string {
-	t.Helper()
-
-	if token := strings.TrimSpace(os.Getenv("APLANE_SDK_TOKEN")); token != "" {
-		return token
-	}
-
-	candidates := []string{
-		os.Getenv("APLANE_SDK_TOKEN_FILE"),
-	}
-	if clientData := os.Getenv("APCLIENT_DATA"); clientData != "" {
-		candidates = append(candidates, filepath.Join(clientData, "aplane.token"))
-	}
-	if signerData := os.Getenv("APSIGNER_DATA"); signerData != "" {
-		candidates = append(candidates, filepath.Join(signerData, "identities", "default", "aplane.token"))
-	}
-
-	for _, candidate := range candidates {
-		if candidate == "" {
-			continue
-		}
-		data, err := os.ReadFile(candidate)
-		if err == nil {
-			token := strings.TrimSpace(string(data))
-			if token != "" {
-				return token
-			}
-		}
-	}
-
-	t.Fatal("APLANE_SDK_TOKEN, APLANE_SDK_TOKEN_FILE, APCLIENT_DATA, or APSIGNER_DATA must provide a token")
-	return ""
 }
 
 func TestIntegrationLiveSignerEd25519Workflow(t *testing.T) {

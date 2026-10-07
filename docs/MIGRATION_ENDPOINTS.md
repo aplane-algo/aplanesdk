@@ -26,9 +26,10 @@ endpoints:
     known_hosts_path: .ssh/known_hosts
 ```
 
-Relative paths resolve against `APCLIENT_DATA`. The alias `primary` defaults
-to `aplane.token`; every other alias defaults to `tokens/<alias>.token`.
-`token_file` may override either location.
+Relative paths resolve against `APCLIENT_DATA`. `identity_file` defaults to
+`.ssh/id_ed25519` and `known_hosts_path` to `.ssh/known_hosts`. The client's
+enrolled SSH key is its only credential: there is no token file, and the
+retired `token_file` key is accepted and ignored.
 
 For registries shared with APlane tooling, prefer paths relative to
 `APCLIENT_DATA` or absolute paths. SDK helpers expand `~`, while APlane
@@ -51,27 +52,35 @@ continue to choose or resolve their cosigner client explicitly; loading
 
 Go `FromEnv`, Python `SignerClient.from_env`, and TypeScript
 `SignerClient.fromEnv` select the default signer unless given an endpoint
-alias. SSH URLs create a managed tunnel. HTTPS and loopback HTTP URLs connect
-directly. The shared registry rejects `url: self` for both signer and cosigner
-roles, including when the two processes run on one host. Replace it with an
-explicit client-reachable URL such as `ssh://host:1127` for each process, using
-its actual SSH port. An endpoint record names no port beyond the one in its
-URL. The former `signer_port` (the node's REST port behind SSH) and
-`local_port` keys are accepted and ignored, as APlane ignores them: the node's
+alias. Every URL is `ssh://`: a node is reached only through its SSH server,
+which authenticates the client's enrolled key and hands the API channel to its
+REST listener with that identity. `https://` and `http://` URLs are rejected,
+as is `url: self` for both signer and cosigner roles, including when the two
+processes run on one host. Replace it with an explicit client-reachable URL
+such as `ssh://host:1127` for each process, using its actual SSH port. An
+endpoint record names no port beyond the one in its URL. The former
+`signer_port` (the node's REST port behind SSH), `local_port`, and
+`token_file` keys are accepted and ignored, as APlane ignores them: the node's
 SSH server forwards every channel to its own REST listener, so the client never
-chose the remote port, and the local tunnel port is chosen at connect time.
-Existing files keep working; the keys can be removed at leisure, and new files
-should omit them. The explicit SSH connection APIs keep their
-local-port option and no longer take a signer-port option; `DefaultSignerPort`
-/ `DEFAULT_SIGNER_PORT` are gone.
+chose the remote port, the local tunnel port is chosen at connect time, and
+the key is the credential. Existing files keep working; the keys can be
+removed at leisure, and new files should omit them. The explicit SSH
+connection APIs keep their local-port option and no longer take a signer-port
+or token argument; `DefaultSignerPort` / `DEFAULT_SIGNER_PORT`,
+`LoadToken`/`loadToken`/`load_token`, and `NewSignerClientWithToken` (now
+`NewSignerClient(baseURL)`) are gone.
 
-Python `request_token_to_file` and TypeScript `requestTokenToFile` also select
-an endpoint alias and require that endpoint to use `ssh://`. Their former
-`host` and `ssh_port`/`sshPort` overrides were removed. The raw
-`request_token(host, ...)` and `requestToken(host, ...)` functions remain for
-caller-owned, ad-hoc provisioning flows. They do not fall back to the
-operating-system user's personal SSH directory; callers must provide explicit
-application-owned key and host-trust paths.
+Token provisioning is replaced by enrollment. Go `RequestEnrollmentFromEnv`,
+Python `request_enrollment_from_env`, and TypeScript `requestEnrollmentFromEnv`
+select an endpoint alias and ask that node to enroll the endpoint's client key;
+the operator approves in `apadmin`, and the call returns the key's SHA256
+fingerprint. Nothing is stored on the client. The raw
+`RequestEnrollment(host, ...)`, `request_enrollment(host, ...)`, and
+`requestEnrollment(host, ...)` functions take explicit application-owned key
+and host-trust paths; they do not fall back to the operating-system user's
+personal SSH directory. The former `request_token*`/`requestToken*` helpers and
+`TokenProvisioningError` are gone (`EnrollmentError` / `aplane.ErrEnrollment`
+replace the latter).
 
 Trust-on-first-use is no longer persisted in routing configuration. Pass
 `trust_on_first_use=True`, `trustOnFirstUse: true`, or the Go

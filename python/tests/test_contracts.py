@@ -52,8 +52,8 @@ def fixture(name: str) -> dict:
         return json.load(f)
 
 
-def make_client(base_url="http://localhost:11270", token="test-token"):
-    return SignerClient(base_url, token, timeout=10)
+def make_client(base_url="http://localhost:11270"):
+    return SignerClient(base_url, timeout=10)
 
 
 def mock_response(status_code=200, json_data=None, text=""):

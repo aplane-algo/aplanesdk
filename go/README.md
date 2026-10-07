@@ -76,16 +76,19 @@ func main() {
 The Go SDK supports two connection styles:
 
 - managed signer connections through `ConnectSSH(...)` or `FromEnv(...)`
-- caller-owned transport via `NewSignerClientWithToken(...)`, optionally combined with `SetHTTPClient(...)`
+- caller-owned transport via `NewSignerClient(...)`, optionally combined with `SetHTTPClient(...)`
+
+The client's enrolled SSH key is its only credential. There is no API token:
+the signer authenticates the SSH connection and attributes every request on
+it to that key.
 
 ### Remote Connection via SSH
 
-Connect to apsigner on a remote machine through an SSH tunnel with 2FA:
+Connect to apsigner on a remote machine through an SSH tunnel:
 
 ```go
 client, err := aplane.ConnectSSH(
 	"signer.example.com",
-	"your-token",           // used for both SSH auth and HTTP API
 	"~/aplane/apclient/.ssh/id_ed25519",
 	&aplane.SSHConnectOptions{
 		SSHPort:         1127,   // default
@@ -105,10 +108,30 @@ Override it with `SSHSetupTimeout`; use `ConnectSSHWithContext` or
 `FromEnvWithContext` for caller cancellation. Established tunnels detach from
 the setup deadline and remain active until `Close`.
 
-**Note**: SSH verifies the enrolled public key, then performs a programmatic
-mutual proof of the token bound to the fixed username, accepted host key, and fresh nonces. The
-SSH uses the fixed non-secret username `aplane`; the bearer token is never sent
-as SSH metadata.
+**Note**: SSH uses the fixed non-secret username `aplane` and public-key
+authentication only. A key the signer has not enrolled (or has revoked) fails
+the handshake with `aplane.ErrNotEnrolled`.
+
+### Enrolling the Client Key
+
+A new client key must be enrolled once. `RequestEnrollment` opens a
+`request-enrollment` SSH session, waits for the operator to approve the key in
+`apadmin`, and returns the enrolled key's SHA256 fingerprint. Nothing is
+stored on the client afterwards:
+
+```go
+fingerprint, err := aplane.RequestEnrollment(
+	"signer.example.com",
+	"~/aplane/apclient/.ssh/id_ed25519",
+	"ci-runner", // optional display label shown to the operator
+	&aplane.EnrollmentOptions{KnownHostsPath: "~/aplane/apclient/.ssh/known_hosts"},
+)
+```
+
+`RequestEnrollmentFromEnv` does the same for an endpoint selected from
+`endpoints.yaml` (the default signer, or `FromEnvOptions.Endpoint`). A rejected
+or failed request returns an error wrapping `aplane.ErrEnrollment`. The same
+enrollment can be done from `apshell` with `request-enrollment`.
 
 ### Environment-Based Connection
 
@@ -129,9 +152,8 @@ Data directory structure (installer default: `~/aplane/apclient`):
 <data_dir>/
   config.yaml          # Network and algod settings
   endpoints.yaml       # Signer and cosigner routing
-  aplane.token         # Authentication token
   .ssh/
-    id_ed25519         # SSH key
+    id_ed25519         # SSH key: the client's credential
     known_hosts        # Trusted signer host keys
 ```
 
@@ -158,11 +180,13 @@ client, err := aplane.FromEnv(&aplane.FromEnvOptions{
 
 ### Caller-Owned Transport
 
-If your application already owns the tunnel or HTTP transport, build the signer
-client directly from a base URL and token:
+If your application already owns the SSH tunnel to the signer, build the
+signer client directly from its local base URL. The signer attributes the
+requests to the key that opened the tunnel; the loopback REST port of a
+signer answers only `/health`:
 
 ```go
-client := aplane.NewSignerClientWithToken("http://localhost:11270", token)
+client := aplane.NewSignerClient("http://localhost:11270")
 client.SetHTTPClient(&http.Client{Timeout: 30 * time.Second})
 defer client.Close()
 ```
@@ -469,7 +493,7 @@ import "errors"
 signed, err := client.SignTransaction(txn, "", nil)
 if err != nil {
 	if errors.Is(err, aplane.ErrAuthentication) {
-		log.Println("Invalid token")
+		log.Println("Connection is not authenticated by an enrolled SSH key")
 	} else if errors.Is(err, aplane.ErrSigningRejected) {
 		log.Println("Operator rejected")
 	} else if errors.Is(err, aplane.ErrSignerUnavailable) {

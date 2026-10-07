@@ -24,7 +24,6 @@ import (
 // SignerClient is the client for connecting to apsigner.
 type SignerClient struct {
 	baseURL               string
-	token                 string
 	client                *http.Client
 	sshTunnel             *sshTunnel
 	keyMu                 sync.RWMutex
@@ -63,12 +62,13 @@ func newSignRequestID() (string, error) {
 	return "sdk-" + hex.EncodeToString(random[:]), nil
 }
 
-// NewSignerClientWithToken creates a signer client for an already-known base URL.
-// This is useful when the caller owns the transport or tunnel lifecycle.
-func NewSignerClientWithToken(baseURL, token string) *SignerClient {
+// NewSignerClient creates a signer client for an already-known base URL. This
+// is useful when the caller owns the transport or tunnel lifecycle: the
+// signer authenticates the SSH connection the requests arrive through, so the
+// client itself carries no credential.
+func NewSignerClient(baseURL string) *SignerClient {
 	return &SignerClient{
 		baseURL:  baseURL,
-		token:    token,
 		client:   &http.Client{},
 		keyCache: nil,
 	}
@@ -173,15 +173,17 @@ func withDefaultTimeout(ctx context.Context, timeout time.Duration) (context.Con
 	return context.WithTimeout(ctx, timeout)
 }
 
-// ConnectSSH creates a client connected via SSH tunnel.
-func ConnectSSH(host, token, sshKeyPath string, opts *SSHConnectOptions) (*SignerClient, error) {
-	return ConnectSSHWithContext(context.Background(), host, token, sshKeyPath, opts)
+// ConnectSSH creates a client connected via SSH tunnel, authenticated by the
+// enrolled client key at sshKeyPath. A key the signer has not enrolled fails
+// with ErrNotEnrolled; enroll it with RequestEnrollment first.
+func ConnectSSH(host, sshKeyPath string, opts *SSHConnectOptions) (*SignerClient, error) {
+	return ConnectSSHWithContext(context.Background(), host, sshKeyPath, opts)
 }
 
 // ConnectSSHWithContext creates a client connected via SSH tunnel and allows
 // the caller to cancel TCP dialing or SSH authentication. Once connected, the
 // returned client's lifetime is independent of ctx.
-func ConnectSSHWithContext(ctx context.Context, host, token, sshKeyPath string, opts *SSHConnectOptions) (*SignerClient, error) {
+func ConnectSSHWithContext(ctx context.Context, host, sshKeyPath string, opts *SSHConnectOptions) (*SignerClient, error) {
 	sshPort := DefaultSSHPort
 	timeout := DefaultTimeout
 	sshSetupTimeout := defaultSSHSetupTimeout
@@ -210,14 +212,13 @@ func ConnectSSHWithContext(ctx context.Context, host, token, sshKeyPath string, 
 	trustOnFirstUse := opts != nil && opts.TrustOnFirstUse
 	knownHostsPath = ExpandPath(knownHostsPath)
 	tunnel := &sshTunnel{knownHostsPath: knownHostsPath, trustOnFirstUse: trustOnFirstUse}
-	resolvedLocalPort, err := tunnel.connect(ctx, host, sshPort, localPort, token, ExpandPath(sshKeyPath), sshSetupTimeout)
+	resolvedLocalPort, err := tunnel.connect(ctx, host, sshPort, localPort, ExpandPath(sshKeyPath), sshSetupTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("failed to establish SSH tunnel: %w", err)
 	}
 
 	return &SignerClient{
 		baseURL:           fmt.Sprintf("http://localhost:%d", resolvedLocalPort),
-		token:             token,
 		client:            &http.Client{},
 		sshTunnel:         tunnel,
 		requestTimeout:    time.Duration(timeout) * time.Second,
@@ -225,8 +226,8 @@ func ConnectSSHWithContext(ctx context.Context, host, token, sshKeyPath string, 
 	}, nil
 }
 
-// FromEnv creates a client from environment configuration.
-// Routing and token paths come from dataDir/endpoints.yaml. An empty endpoint
+// FromEnv creates a client from environment configuration. Routing and the
+// client SSH identity come from dataDir/endpoints.yaml. An empty endpoint
 // option selects the default signer.
 func FromEnv(opts *FromEnvOptions) (*SignerClient, error) {
 	return FromEnvWithContext(context.Background(), opts)
@@ -269,34 +270,21 @@ func FromEnvWithContext(ctx context.Context, opts *FromEnvOptions) (*SignerClien
 	if err != nil {
 		return nil, err
 	}
-	token, err := LoadToken(endpoint.TokenFile)
+
+	host, sshPort, err := ClientEndpointSSHHostPort(endpoint)
 	if err != nil {
 		return nil, err
 	}
-
-	if strings.HasPrefix(endpoint.URL, "ssh://") {
-		host, sshPort, err := ClientEndpointSSHHostPort(endpoint)
-		if err != nil {
-			return nil, err
-		}
-		sshOpts := &SSHConnectOptions{
-			SSHPort:         sshPort,
-			KnownHostsPath:  endpoint.KnownHostsPath,
-			TrustOnFirstUse: trustOnFirstUse,
-			SSHSetupTimeout: sshSetupTimeout,
-		}
-		if timeout > 0 {
-			sshOpts.Timeout = timeout
-		}
-		return ConnectSSHWithContext(ctx, host, token, endpoint.IdentityFile, sshOpts)
+	sshOpts := &SSHConnectOptions{
+		SSHPort:         sshPort,
+		KnownHostsPath:  endpoint.KnownHostsPath,
+		TrustOnFirstUse: trustOnFirstUse,
+		SSHSetupTimeout: sshSetupTimeout,
 	}
-
-	client := NewSignerClientWithToken(endpoint.URL, token)
 	if timeout > 0 {
-		client.requestTimeout = time.Duration(timeout) * time.Second
-		client.requestTimeoutSet = true
+		sshOpts.Timeout = timeout
 	}
-	return client, nil
+	return ConnectSSHWithContext(ctx, host, endpoint.IdentityFile, sshOpts)
 }
 
 // Close closes the client and any SSH tunnel.
@@ -339,7 +327,6 @@ func (c *SignerClient) GetStatusWithContext(ctx context.Context) (*StatusRespons
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
-	req.Header.Set("Authorization", "aplane "+c.token)
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -513,7 +500,6 @@ func (c *SignerClient) GetKeysResponseWithContext(ctx context.Context) (*KeysRes
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
-	req.Header.Set("Authorization", "aplane "+c.token)
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -567,7 +553,6 @@ func (c *SignerClient) ListKeyTypes() ([]KeyTypeInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "aplane "+c.token)
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -612,7 +597,6 @@ func (c *SignerClient) GenerateKey(keyType string, parameters map[string]string)
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "aplane "+c.token)
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -653,7 +637,6 @@ func (c *SignerClient) DeleteKey(address string) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "aplane "+c.token)
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -712,7 +695,6 @@ func (c *SignerClient) RequestAssembleWithContext(ctx context.Context, reqBody A
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "aplane "+c.token)
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -775,7 +757,6 @@ func (c *SignerClient) PlanRequestsWithContext(ctx context.Context, requests []S
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "aplane "+c.token)
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -1052,7 +1033,6 @@ func (c *SignerClient) SignGroupWithContext(ctx context.Context, groupReq GroupS
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "aplane "+c.token)
 
 	resp, err := c.client.Do(req)
 	close(done)
@@ -1137,7 +1117,6 @@ func (c *SignerClient) CancelSignRequestWithContext(ctx context.Context, request
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "aplane "+c.token)
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -1244,7 +1223,6 @@ func (c *SignerClient) signResponse(requests []SignRequest) (*GroupSignResponse,
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "aplane "+c.token)
 
 	resp, err := c.client.Do(req)
 	close(done)

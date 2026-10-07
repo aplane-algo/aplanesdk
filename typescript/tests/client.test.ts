@@ -24,13 +24,12 @@ import {
   KeyNotFoundError,
   KeyDeletionError,
 } from "../src/errors.js";
-import { requestToken, requestTokenToFile } from "../src/utils.js";
+import { requestEnrollment, requestEnrollmentFromEnv } from "../src/utils.js";
 import { bytesToHex, hexToBytes, concatenateSignedTxns, encodeTransaction, encodeLsigArgs } from "../src/encoding.js";
 import { assembleGroup } from "../src/utils.js";
 import {
   loadClientEndpointRegistry,
   loadConfig,
-  loadTokenFromDir,
   resolveClientEndpoint,
 } from "../src/config.js";
 import { preparedGroupToSignRequests } from "../src/prepared.js";
@@ -199,7 +198,7 @@ describe("SignerClient", () => {
         ok: true,
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const result = await client.health();
 
       assert.equal(result, true);
@@ -213,7 +212,7 @@ describe("SignerClient", () => {
         ok: false,
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const result = await client.health();
 
       assert.equal(result, false);
@@ -222,7 +221,7 @@ describe("SignerClient", () => {
     it("returns false on network error", async () => {
       mockFetch.mockRejectedValueOnce(new Error("Network error"));
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const result = await client.health();
 
       assert.equal(result, false);
@@ -245,7 +244,7 @@ describe("SignerClient", () => {
         }),
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const status = await client.getStatus();
 
       assert.equal(status.keysetRevision, 4);
@@ -268,7 +267,7 @@ describe("SignerClient", () => {
         }),
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const status = await client.getStatus();
 
       assert.equal(status.state, "locked");
@@ -282,7 +281,7 @@ describe("SignerClient", () => {
         ok: false,
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       await assert.rejects(client.getStatus(), AuthenticationError);
     });
   });
@@ -318,7 +317,7 @@ describe("SignerClient", () => {
         json: async () => mockKeys,
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const keys = await client.listKeys();
 
       assert.equal(keys.length, 2);
@@ -336,7 +335,7 @@ describe("SignerClient", () => {
         ok: false,
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       await assert.rejects(client.listKeys(), AuthenticationError);
     });
 
@@ -347,7 +346,7 @@ describe("SignerClient", () => {
         json: async () => ({ error: "inventory unavailable" }),
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       await assert.rejects(client.listKeys(true), /inventory unavailable/);
     });
 
@@ -369,7 +368,7 @@ describe("SignerClient", () => {
           json: async () => mockKeys,
         });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
 
       // First call fetches from server
       await client.listKeys();
@@ -402,7 +401,7 @@ describe("SignerClient", () => {
       queueStatusResponse(60, 2);
       mockFetch.mockResolvedValueOnce(keysResponse("ADDR2"));
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const first = await client.listKeysIfKeysetChanged();
       const second = await client.listKeysIfKeysetChanged();
       const third = await client.listKeysIfKeysetChanged();
@@ -420,7 +419,7 @@ describe("SignerClient", () => {
       queueStatusResponse(60, 1);
       mockFetch.mockResolvedValueOnce(keysResponse("SENDER"));
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const resolved = await client.resolveAuthAddress("SENDER", () => ({}));
 
       assert.equal(resolved.address, "SENDER");
@@ -433,7 +432,7 @@ describe("SignerClient", () => {
       queueStatusResponse(60, 1);
       mockFetch.mockResolvedValueOnce(keysResponse("AUTH"));
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const resolved = await client.resolveAuthAddress(
         "SENDER",
         () => ({ "auth-addr": "AUTH" }),
@@ -449,7 +448,7 @@ describe("SignerClient", () => {
       queueStatusResponse(60, 1);
       mockFetch.mockResolvedValueOnce(keysResponse("SENDER"));
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       await assert.rejects(
         client.resolveAuthAddress("SENDER", () => ({ "auth-addr": "AUTH" })),
         /not signable/,
@@ -476,7 +475,7 @@ describe("SignerClient", () => {
       queueStatusResponse(60, 1);
       mockFetch.mockResolvedValueOnce(keysResponse(sender));
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const prepared = await client.preparePayment(algod, {
         sender,
         receiver,
@@ -498,7 +497,7 @@ describe("SignerClient", () => {
       queueStatusResponse(60, 1);
       mockFetch.mockResolvedValueOnce(keysResponse(sender));
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const prepared = await client.preparePayment(algod, {
         sender,
         receiver,
@@ -516,7 +515,7 @@ describe("SignerClient", () => {
       queueStatusResponse(60, 1);
       mockFetch.mockResolvedValueOnce(keysResponse(sender));
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const prepared = await client.preparePayment(algod, {
         sender,
         receiver,
@@ -534,7 +533,7 @@ describe("SignerClient", () => {
         [sender]: { amount: 101_000, minBalance: 100_000 },
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       await assert.rejects(
         client.preparePayment(algod, { sender, receiver, amount: 10_000 }),
         /insufficient funds/,
@@ -552,7 +551,7 @@ describe("SignerClient", () => {
       queueStatusResponse(60, 1);
       mockFetch.mockResolvedValueOnce(keysResponse(sender));
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       await assert.rejects(
         client.preparePayment(algod, {
           sender,
@@ -582,7 +581,7 @@ describe("SignerClient", () => {
       queueStatusResponse(60, 1);
       mockFetch.mockResolvedValueOnce(keysResponse(sender));
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const prepared = await client.prepareAsaTransfer(algod, {
         sender,
         receiver,
@@ -613,7 +612,7 @@ describe("SignerClient", () => {
         },
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       await assert.rejects(
         client.prepareAsaTransfer(algod, {
           sender,
@@ -633,7 +632,7 @@ describe("SignerClient", () => {
       queueStatusResponse(60, 1);
       mockFetch.mockResolvedValueOnce(keysResponse(sender));
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const prepared = await client.prepareAsaOptIn(algod, {
         sender,
         assetId: 1001,
@@ -663,7 +662,7 @@ describe("SignerClient", () => {
       queueStatusResponse(60, 1);
       mockFetch.mockResolvedValueOnce(keysResponse(sender));
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const prepared = await client.prepareAsaOptOut(algod, {
         sender,
         assetId: 1001,
@@ -684,7 +683,7 @@ describe("SignerClient", () => {
       queueStatusResponse(60, 1);
       mockFetch.mockResolvedValueOnce(keysResponse(sender));
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const prepared = await client.prepareAccountClose(algod, {
         sender,
         closeTo,
@@ -705,7 +704,7 @@ describe("SignerClient", () => {
         },
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       await assert.rejects(
         client.prepareAccountClose(algod, { sender, closeTo }),
         /ASA holdings/,
@@ -722,7 +721,7 @@ describe("SignerClient", () => {
       queueStatusResponse(60, 1);
       mockFetch.mockResolvedValueOnce(keysResponse(sender));
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const prepared = await client.prepareRekey(algod, { sender, rekeyTo });
 
       assert.equal((prepared.transaction as any).rekeyTo.toString(), rekeyTo);
@@ -738,7 +737,7 @@ describe("SignerClient", () => {
         [rekeyTo]: { amount: 2_000_000, minBalance: 100_000, authAddr: other },
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       await assert.rejects(
         client.prepareRekey(algod, { sender, rekeyTo }),
         /rekey target is itself rekeyed/,
@@ -753,7 +752,7 @@ describe("SignerClient", () => {
       queueStatusResponse(60, 1);
       mockFetch.mockResolvedValueOnce(keysResponse(sender));
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const prepared = await client.prepareKeyreg(algod, {
         sender,
         nonParticipation: true,
@@ -773,7 +772,7 @@ describe("SignerClient", () => {
       queueStatusResponse(60, 1);
       mockFetch.mockResolvedValueOnce(keysResponse(sender));
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const prepared = await client.prepareKeyreg(algod, {
         sender,
         voteKey: key32,
@@ -797,7 +796,7 @@ describe("SignerClient", () => {
       queueStatusResponse(60, 1);
       mockFetch.mockResolvedValueOnce(keysResponse(sender));
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const prepared = await client.prepareAppCall(algod, {
         sender,
         appId: 7,
@@ -828,7 +827,7 @@ describe("SignerClient", () => {
       queueStatusResponse(60, 1);
       mockFetch.mockResolvedValueOnce(keysResponse(sender));
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const prepared = await client.prepareAbiAppCall(algod, {
         sender,
         appId: 7,
@@ -863,7 +862,7 @@ describe("SignerClient", () => {
       queueStatusResponse(60, 1);
       mockFetch.mockResolvedValueOnce(keysResponse(sender));
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const prepared = await client.prepareAppDeploy(algod, {
         sender,
         approvalProgram: new Uint8Array([1, 2]),
@@ -897,7 +896,7 @@ describe("SignerClient", () => {
       mockFetch.mockResolvedValueOnce(keysResponse(sender));
       queueStatusResponse(60, 1);
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const group = await client.prepareSweepGroup(algod, {
         asaTransfers: [{ sender, receiver, assetId: 1001, amount: 5 }],
         payments: [{ sender, receiver, amount: 10_000 }],
@@ -918,7 +917,7 @@ describe("SignerClient", () => {
       mockFetch.mockResolvedValueOnce(keysResponse(sender));
       queueStatusResponse(60, 1);
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const group = await client.preparePaymentGroup(algod, [
         { sender, receiver: receiver1, amount: 10_000 },
         { sender, receiver: receiver2, amount: 20_000 },
@@ -942,7 +941,7 @@ describe("SignerClient", () => {
       mockFetch.mockResolvedValueOnce(keysResponse(sender));
       queueStatusResponse(60, 1);
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       await assert.rejects(
         client.preparePaymentGroup(algod, [
           { sender, receiver: receiver1, amount: 10_000, fee: 1000 },
@@ -971,7 +970,7 @@ describe("SignerClient", () => {
       mockFetch.mockResolvedValueOnce(keysResponse(sender));
       queueStatusResponse(60, 1);
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const group = await client.prepareAsaTransferGroup(algod, [
         { sender, receiver, assetId: 1001, amount: 5 },
         { sender, receiver, assetId: 1001, amount: 7 },
@@ -1003,7 +1002,7 @@ describe("SignerClient", () => {
       mockFetch.mockResolvedValueOnce(keysResponse(sender));
       queueStatusResponse(60, 1);
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       await assert.rejects(
         client.prepareAsaTransferGroup(algod, [
           { sender, receiver, assetId: 1001, amount: 6 },
@@ -1038,7 +1037,7 @@ describe("SignerClient", () => {
         suggestedParams,
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const group = client.preparePaymentAppCallGroup(
         { transaction: paymentTxn, authAddress: "PAY_AUTH" },
         { transaction: appTxn, authAddress: "APP_AUTH", appCallInfo: { mode: "raw" } },
@@ -1088,7 +1087,7 @@ describe("SignerClient", () => {
         json: async () => mockKeyTypes,
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const types = await client.listKeyTypes();
 
       assert.equal(types.length, 2);
@@ -1106,7 +1105,7 @@ describe("SignerClient", () => {
 
     it("throws AuthenticationError on 401", async () => {
       mockFetch.mockResolvedValueOnce({ status: 401, ok: false });
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       await assert.rejects(client.listKeyTypes(), AuthenticationError);
     });
   });
@@ -1122,7 +1121,7 @@ describe("SignerClient", () => {
         }),
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const result = await client.generateKey("ed25519");
 
       assert.equal(result.address, "NEWADDR123");
@@ -1140,7 +1139,7 @@ describe("SignerClient", () => {
         }),
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const result = await client.generateKey("aplane.falcon1024.v1", { network: "testnet" });
 
       assert.equal(result.address, "NEWADDR456");
@@ -1155,7 +1154,7 @@ describe("SignerClient", () => {
 
     it("throws on 401", async () => {
       mockFetch.mockResolvedValueOnce({ status: 401, ok: false });
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       await assert.rejects(client.generateKey("ed25519"), AuthenticationError);
     });
 
@@ -1169,7 +1168,7 @@ describe("SignerClient", () => {
     ] as const) {
       it(`treats 403 with ${label} as a generic error, not locked`, async () => {
         mockFetch.mockResolvedValueOnce(mock);
-        const client = new SignerClient("http://localhost:11270", "test-token");
+        const client = new SignerClient("http://localhost:11270");
         await assert.rejects(client.generateKey("ed25519"), (error: unknown) => {
           assert.ok(error instanceof SignerError);
           assert.ok(!(error instanceof SignerUnavailableError));
@@ -1185,7 +1184,7 @@ describe("SignerClient", () => {
         ok: false,
         json: async () => ({ error: "signer is locked", code: "locked" }),
       });
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       await assert.rejects(client.generateKey("ed25519"), (err: unknown) => {
         assert.ok(err instanceof SignerUnavailableError);
         assert.equal(err.code, "locked");
@@ -1202,7 +1201,7 @@ describe("SignerClient", () => {
           code: "forbidden",
         }),
       });
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       await assert.rejects(client.generateKey("ed25519"), (err: unknown) => {
         assert.ok(err instanceof SignerError);
         assert.ok(!(err instanceof SignerUnavailableError));
@@ -1221,7 +1220,7 @@ describe("SignerClient", () => {
         json: async () => ({}),
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const result = await client.deleteKey("ADDR_TO_DELETE");
       assert.equal(result, undefined);
     });
@@ -1233,13 +1232,13 @@ describe("SignerClient", () => {
         json: async () => ({ error: "Key not found: MISSING" }),
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       await assert.rejects(client.deleteKey("MISSING"), KeyDeletionError);
     });
 
     it("throws on 401", async () => {
       mockFetch.mockResolvedValueOnce({ status: 401, ok: false });
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       await assert.rejects(client.deleteKey("ADDR"), AuthenticationError);
     });
   });
@@ -1262,7 +1261,7 @@ describe("SignerClient", () => {
         }),
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const result = await client.requestComponents({
         request_id: "sdk-generated",
         group_bytes_hex: ["5458aa"],
@@ -1272,7 +1271,8 @@ describe("SignerClient", () => {
       assert.equal(result.components[0].signature, "aabb");
       assert.equal(mockFetch.mock.calls[0][0], "http://localhost:11270/sign/component");
       assert.equal(mockFetch.mock.calls[0][1].method, "POST");
-      assert.equal(mockFetch.mock.calls[0][1].headers.Authorization, "aplane test-token");
+      // The SSH connection carries the client's identity; no header does.
+      assert.equal(mockFetch.mock.calls[0][1].headers.Authorization, undefined);
       const body = JSON.parse(mockFetch.mock.calls[0][1].body);
       assert.match(body.request_id, /^sdk-/);
       assert.equal(body.targets[0].kind, "cosigner");
@@ -1289,7 +1289,7 @@ describe("SignerClient", () => {
         json: async () => ({ error: message, code: "forbidden" }),
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       await assert.rejects(
         client.requestComponents({
           group_bytes_hex: ["5458aa"],
@@ -1313,7 +1313,7 @@ describe("SignerClient", () => {
         json: async () => ({ request_id: "sdk-test" }),
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       await assert.rejects(
         client.requestComponents({
           group_bytes_hex: ["5458aa"],
@@ -1338,7 +1338,7 @@ describe("SignerClient", () => {
         }),
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       await assert.rejects(
         client.requestComponents({
           request_id: "sdk-component",
@@ -1365,7 +1365,7 @@ describe("SignerClient", () => {
         }),
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       await assert.rejects(
         client.requestComponents({
           request_id: "sdk-component",
@@ -1386,7 +1386,7 @@ describe("SignerClient", () => {
         }),
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const result = await client.requestAssemble({
         group_bytes_hex: ["5458aa"],
         targets: [
@@ -1409,7 +1409,7 @@ describe("SignerClient", () => {
     });
 
     it("rejects guarded assembly requests with missing coverage before fetch", async () => {
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       await assert.rejects(
         client.requestAssemble({
           group_bytes_hex: ["5458aa", "5458bb"],
@@ -1460,7 +1460,7 @@ describe("SignerClient", () => {
         }),
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const component = await client.requestComponents({
         request_id: "bounded-base-id",
         group_bytes_hex: ["5458aa"],
@@ -1496,7 +1496,7 @@ describe("SignerClient", () => {
         json: async () => ({ success: true, state: "canceled" }),
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       await assert.rejects(
         client.requestComponents({
           request_id: "bounded-cancel-id",
@@ -1523,7 +1523,7 @@ describe("SignerClient", () => {
         text: async () => "key not found",
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       await assert.rejects(
         client.requestComponents({
           request_id: "bounded-not-found",
@@ -1535,7 +1535,7 @@ describe("SignerClient", () => {
     });
 
     it("rejects an incomplete bounded component partition before fetch", async () => {
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       await assert.rejects(
         client.requestComponents({
           request_id: "bounded-base-id",
@@ -1556,7 +1556,7 @@ describe("SignerClient", () => {
           throw new SyntaxError("bad json");
         },
       });
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       await assert.rejects(
         client.requestComponents({
           request_id: "bounded-base-id",
@@ -1587,7 +1587,7 @@ describe("SignerClient", () => {
           components: [component, component],
         }),
       });
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       await assert.rejects(
         client.requestComponents({
           request_id: "bounded-base-id",
@@ -1602,8 +1602,8 @@ describe("SignerClient", () => {
 
   describe("signGuardedGroup", () => {
     it("signs one guarded target", async () => {
-      const user = new SignerClient("http://localhost:11270", "test-token");
-      const cosigner = new SignerClient("http://cosigner:11270", "cosigner-token");
+      const user = new SignerClient("http://localhost:11270");
+      const cosigner = new SignerClient("http://cosigner:11270");
 
       (user as any).requestComponents = async (request: any) => {
         assert.equal(request.targets[0].kind, "user");
@@ -1647,8 +1647,8 @@ describe("SignerClient", () => {
     });
 
     it("batches targets for a shared cosigner key", async () => {
-      const user = new SignerClient("http://localhost:11270", "test-token");
-      const cosigner = new SignerClient("http://cosigner:11270", "cosigner-token");
+      const user = new SignerClient("http://localhost:11270");
+      const cosigner = new SignerClient("http://cosigner:11270");
       let cosignerCalls = 0;
 
       (user as any).requestComponents = async (request: any) => {
@@ -1694,8 +1694,8 @@ describe("SignerClient", () => {
     for (const rejectSign of [false, true]) {
     it(`handles mixed primary and guarded groups${rejectSign ? " (user-first when /sign rejects)" : " (user-first order)"}`, async () => {
       const events: string[] = [];
-      const user = new SignerClient("http://localhost:11270", "test-token");
-      const cosigner = new SignerClient("http://cosigner:11270", "cosigner-token");
+      const user = new SignerClient("http://localhost:11270");
+      const cosigner = new SignerClient("http://cosigner:11270");
 
       (user as any).requestComponents = async (request: any) => {
         events.push("user");
@@ -1798,7 +1798,7 @@ describe("SignerClient", () => {
     }
 
     it("rejects missing resources before component signing", async () => {
-      const user = new SignerClient("http://localhost:11270", "test-token");
+      const user = new SignerClient("http://localhost:11270");
       let componentCalls = 0;
       (user as any).requestComponents = async () => {
         componentCalls += 1;
@@ -1819,8 +1819,8 @@ describe("SignerClient", () => {
     it("handles prepared all-guarded groups using the signer plan", async () => {
       const guarded = testAddress(1);
       const receiver = testAddress(2);
-      const user = new SignerClient("http://localhost:11270", "test-token");
-      const cosigner = new SignerClient("http://cosigner:11270", "cosigner-token");
+      const user = new SignerClient("http://localhost:11270");
+      const cosigner = new SignerClient("http://cosigner:11270");
 
       (user as any).requestComponents = async (request: any) => {
         assert.equal(request.targets[0].auth_address, guarded);
@@ -1951,7 +1951,7 @@ describe("SignerClient", () => {
     it("plans repeated LogicSig addresses with per-slot args and app metadata", async () => {
       const guarded = testAddress(31);
       const receiver = testAddress(32);
-      const user = new SignerClient("http://localhost:11270", "test-token");
+      const user = new SignerClient("http://localhost:11270");
       const suggestedParams = {
         fee: 1000n,
         minFee: 1000n,
@@ -2019,8 +2019,8 @@ describe("SignerClient", () => {
     it("routes prepared bounded-cosigner groups through the user-first flow", async () => {
       const bounded = testAddress(11);
       const receiver = testAddress(12);
-      const user = new SignerClient("http://localhost:11270", "test-token");
-      const cosigner = new SignerClient("http://cosigner:11270", "cosigner-token");
+      const user = new SignerClient("http://localhost:11270");
+      const cosigner = new SignerClient("http://cosigner:11270");
       let plannedTransactions: string[] | undefined;
       let plannedMutations: any;
       let baseComponentCalls = 0;
@@ -2308,7 +2308,7 @@ describe("SignerClient", () => {
       ];
 
       for (const item of cases) {
-        const user = new SignerClient("http://localhost:11270", "test-token");
+        const user = new SignerClient("http://localhost:11270");
         const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
           sender: bounded,
           receiver: item.rekey ? bounded : receiver,
@@ -2382,7 +2382,7 @@ describe("SignerClient", () => {
     });
 
     it("rejects mixed cosigner1 and bounded-cosigner1 prepared groups", async () => {
-      const user = new SignerClient("http://localhost:11270", "test-token");
+      const user = new SignerClient("http://localhost:11270");
       await assert.rejects(
         signPreparedGuardedGroup({
           userClient: user,
@@ -2417,8 +2417,8 @@ describe("SignerClient", () => {
       const bounded = testAddress(21);
       const primary = testAddress(22);
       const receiver = testAddress(23);
-      const user = new SignerClient("http://localhost:11270", "test-token");
-      const cosigner = new SignerClient("http://cosigner:11270", "cosigner-token");
+      const user = new SignerClient("http://localhost:11270");
+      const cosigner = new SignerClient("http://cosigner:11270");
       const suggestedParams = {
         fee: 1000n,
         minFee: 1000n,
@@ -2577,8 +2577,8 @@ describe("SignerClient", () => {
       const bounded = testAddress(31);
       const nativePq = testAddress(32);
       const receiver = testAddress(33);
-      const user = new SignerClient("http://localhost:11270", "test-token");
-      const cosigner = new SignerClient("http://cosigner:11270", "cosigner-token");
+      const user = new SignerClient("http://localhost:11270");
+      const cosigner = new SignerClient("http://cosigner:11270");
       const suggestedParams = {
         fee: 1000n,
         minFee: 1000n,
@@ -2734,7 +2734,7 @@ describe("SignerClient", () => {
     it("rejects prepared groups whose keys require an unsupported signing flow", async () => {
       const guarded = testAddress(1);
       const receiver = testAddress(2);
-      const user = new SignerClient("http://localhost:11270", "test-token");
+      const user = new SignerClient("http://localhost:11270");
 
       const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
         sender: guarded,
@@ -2799,7 +2799,7 @@ describe("SignerClient", () => {
         }),
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const mockTxn = createMockTxn() as Parameters<typeof client.planGroup>[0][0];
       const result = await client.planGroup([mockTxn]);
 
@@ -2809,7 +2809,7 @@ describe("SignerClient", () => {
 
     it("throws AuthenticationError on 401", async () => {
       mockFetch.mockResolvedValueOnce({ status: 401, ok: false });
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const mockTxn = createMockTxn() as Parameters<typeof client.planGroup>[0][0];
       await assert.rejects(client.planGroup([mockTxn]), AuthenticationError);
     });
@@ -2820,7 +2820,7 @@ describe("SignerClient", () => {
         ok: true,
         json: async () => ({ error: "Internal error" }),
       });
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const mockTxn = createMockTxn() as Parameters<typeof client.planGroup>[0][0];
       await assert.rejects(client.planGroup([mockTxn]), SignerError);
     });
@@ -2830,7 +2830,7 @@ describe("SignerClient", () => {
     // NaN and so passes every relational range check, would otherwise be
     // dropped silently and the request would go out with no declaration.
     it("rejects non-canonical index keys instead of dropping the entry", async () => {
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const mockTxn = createMockTxn() as Parameters<typeof client.planGroup>[0][0];
       const resources = { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 };
 
@@ -2867,7 +2867,7 @@ describe("SignerClient", () => {
         ok: true,
         json: async () => ({ transactions: ["5458deadbeef", "5458cafebabe"] }),
       });
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const mockTxn = createMockTxn() as Parameters<typeof client.planGroup>[0][0];
 
       await client.planGroup([mockTxn, mockTxn], ["AUTH_ADDR", null], undefined, undefined, {
@@ -2887,7 +2887,7 @@ describe("SignerClient", () => {
     });
 
     it("carries LogicSig resources on passthrough entries", () => {
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const body = (client as any).buildSignRequestBody(
         [null],
         [null],
@@ -2907,7 +2907,7 @@ describe("SignerClient", () => {
     });
 
     it("rejects indexed LogicSig resources on sign-mode entries", () => {
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const mockTxn = createMockTxn() as Parameters<typeof client.signTransactions>[0][0];
       assert.throws(
         () => (client as any).buildSignRequestBody(
@@ -2923,7 +2923,7 @@ describe("SignerClient", () => {
     });
 
     it("rejects foreign entries before calling /sign", async () => {
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const mockTxn = createMockTxn() as Parameters<typeof client.signTransactions>[0][0];
 
       await assert.rejects(
@@ -2934,7 +2934,7 @@ describe("SignerClient", () => {
     });
 
     it("signTransactionsList rejects foreign entries before calling /sign", async () => {
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const mockTxn = createMockTxn() as Parameters<typeof client.signTransactionsList>[0][0];
       await assert.rejects(
         client.signTransactionsList([mockTxn, mockTxn], ["AUTH1", null]),
@@ -2960,7 +2960,7 @@ describe("SignerClient", () => {
         json: async () => ({ signed: ["aa"] }),
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       await assert.rejects(
         client.signRequests([
           { auth_address: "AUTH1", txn_bytes_hex: "5458aa" },
@@ -2978,7 +2978,7 @@ describe("SignerClient", () => {
         json: async () => ({ signed: ["aa", ""] }),
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       await assert.rejects(
         client.signRequests([
           { auth_address: "AUTH1", txn_bytes_hex: "5458aa" },
@@ -2996,7 +2996,7 @@ describe("SignerClient", () => {
         json: async () => ({ signed: ["aa", "", "dd"] }),
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const data = await client.signRequests([
         { auth_address: "AUTH1", txn_bytes_hex: "5458aa" },
         { txn_bytes_hex: "5458bb" },
@@ -3011,7 +3011,7 @@ describe("SignerClient", () => {
         ok: false,
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const mockTxn = createMockTxn() as Parameters<typeof client.signTransaction>[0];
 
       await assert.rejects(client.signTransaction(mockTxn), AuthenticationError);
@@ -3025,7 +3025,7 @@ describe("SignerClient", () => {
         json: async () => ({ error: "signer is locked", code: "locked" }),
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const lockedTxn = createMockTxn() as Parameters<typeof client.signTransaction>[0];
       await assert.rejects(
         client.signTransaction(lockedTxn, "A".repeat(58)),
@@ -3041,7 +3041,7 @@ describe("SignerClient", () => {
         json: async () => ({ error: "Operator rejected" }),
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const mockTxn = createMockTxn() as Parameters<typeof client.signTransaction>[0];
 
       await assert.rejects(client.signTransaction(mockTxn), (error: unknown) => {
@@ -3061,7 +3061,7 @@ describe("SignerClient", () => {
         json: async () => ({ error: "Operator rejected", code: "forbidden" }),
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const mockTxn = createMockTxn() as Parameters<typeof client.signTransaction>[0];
 
       await assert.rejects(client.signTransaction(mockTxn), SigningRejectedError);
@@ -3075,7 +3075,7 @@ describe("SignerClient", () => {
         json: async () => ({ error: "Signer locked" }),
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const mockTxn = createMockTxn() as Parameters<typeof client.signTransaction>[0];
 
       await assert.rejects(client.signTransaction(mockTxn), SignerUnavailableError);
@@ -3090,7 +3090,7 @@ describe("SignerClient", () => {
         text: async () => "Key not found: INVALID_ADDRESS",
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const mockTxn = createMockTxn() as Parameters<typeof client.signTransaction>[0];
 
       await assert.rejects(client.signTransaction(mockTxn), (error: unknown) => {
@@ -3110,7 +3110,7 @@ describe("SignerClient", () => {
         text: async () => "auth address unavailable",
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const mockTxn = createMockTxn() as Parameters<typeof client.signTransaction>[0];
 
       await assert.rejects(client.signTransaction(mockTxn), KeyNotFoundError);
@@ -3125,7 +3125,7 @@ describe("SignerClient", () => {
         text: async () => "group not found in request",
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const mockTxn = createMockTxn() as Parameters<typeof client.signTransaction>[0];
 
       await assert.rejects(
@@ -3145,7 +3145,7 @@ describe("SignerClient", () => {
         json: async () => ({ success: true, state: "canceled" }),
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token", 100);
+      const client = new SignerClient("http://localhost:11270", 100);
       const mockTxn = createMockTxn() as Parameters<typeof client.signTransaction>[0];
 
       await assert.rejects(client.signTransaction(mockTxn), SignerUnavailableError);
@@ -3169,7 +3169,7 @@ describe("SignerClient", () => {
         json: async () => ({ success: true, state: "canceled" }),
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token", 100);
+      const client = new SignerClient("http://localhost:11270", 100);
       const mockTxn = createMockTxn() as Parameters<typeof client.signTransaction>[0];
 
       await assert.rejects(
@@ -3223,7 +3223,7 @@ describe("SignerClient", () => {
       }) as typeof fetch;
 
       try {
-        const client = new SignerClient("http://localhost:11270", "test-token");
+        const client = new SignerClient("http://localhost:11270");
         const mockTxn = createMockTxn() as Parameters<typeof client.signTransaction>[0];
 
         await assert.rejects(
@@ -3254,7 +3254,7 @@ describe("SignerClient", () => {
         json: async () => ({ signed: ["deadbeef"] }),
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const mockTxn = createMockTxn() as Parameters<typeof client.signTransaction>[0];
 
       const signed = await client.signTransaction(mockTxn);
@@ -3267,7 +3267,7 @@ describe("SignerClient", () => {
     it("uses discovered approval wait plus slack for signing timeout", async () => {
       queueStatusResponse(120);
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       await client.getStatus();
 
       assert.equal((client as any).signRequestTimeout(), 150000);
@@ -3276,7 +3276,7 @@ describe("SignerClient", () => {
     it("falls back for invalid discovered approval wait", async () => {
       queueStatusResponse(31 * 60);
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       await client.getStatus();
 
       assert.equal((client as any).signRequestTimeout(), 360000);
@@ -3292,7 +3292,7 @@ describe("SignerClient", () => {
         json: async () => ({ signed: ["deadbeef"] }),
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const result = await client.signRequests(
         [
           {
@@ -3319,7 +3319,7 @@ describe("SignerClient", () => {
     });
 
     it("validates raw group request IDs", async () => {
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       await assert.rejects(
         client.signRequests([{ txn_bytes_hex: "545801" }], { requestId: "bad id" }),
         { message: /invalid character/ },
@@ -3327,7 +3327,7 @@ describe("SignerClient", () => {
     });
 
     it("rejects unsupported raw native-PQ schemes before fetch", async () => {
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const callsBefore = mockFetch.mock.calls.length;
       await assert.rejects(
         client.signRequests([{ txn_bytes_hex: "545801", pq_scheme: "f2" }]),
@@ -3374,7 +3374,7 @@ describe("SignerClient", () => {
     ];
     for (const testCase of invalidRawRequestCases) {
       it(`rejects raw ${testCase.name} before fetch`, async () => {
-        const client = new SignerClient("http://localhost:11270", "test-token");
+        const client = new SignerClient("http://localhost:11270");
         const callsBefore = mockFetch.mock.calls.length;
         await assert.rejects(client.signRequests(testCase.requests), testCase.error);
         assert.equal(mockFetch.mock.calls.length, callsBefore);
@@ -3429,7 +3429,7 @@ describe("SignerClient", () => {
         },
       } as any;
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const result = await client.simulatePreparedGroup(algodClient, {
         transactions: [{ transaction: txn, authAddress: testAddress(1) }],
       });
@@ -3450,7 +3450,7 @@ describe("SignerClient", () => {
     });
 
     it("requires algod before contacting the signer", async () => {
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       await assert.rejects(
         client.simulatePreparedGroup(null as any, { transactions: [] }),
         /algodClient is required/,
@@ -3475,7 +3475,7 @@ describe("SignerClient", () => {
         json: async () => ({ success: true, state: "not_found" }),
       });
 
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       const result = await client.cancelSignRequest("sdk-test");
 
       assert.equal(result.success, true);
@@ -3485,7 +3485,7 @@ describe("SignerClient", () => {
     });
 
     it("validates request id", async () => {
-      const client = new SignerClient("http://localhost:11270", "test-token");
+      const client = new SignerClient("http://localhost:11270");
       await assert.rejects(client.cancelSignRequest(""), { message: /request_id is required/ });
       await assert.rejects(client.cancelSignRequest("bad id"), { message: /invalid character/ });
     });
@@ -3620,13 +3620,14 @@ describe("loadClientEndpointRegistry", () => {
         registry.endpoints.primary.identityFile,
         path.join(tmpDir, ".ssh", "primary"),
       );
+      assert.equal(registry.endpoints["cosigner.qa"].url, "ssh://cosigner.example.com");
       assert.equal(
-        registry.endpoints.primary.tokenFile,
-        path.join(tmpDir, "aplane.token"),
+        registry.endpoints["cosigner.qa"].identityFile,
+        path.join(tmpDir, "credentials", "cosigner"),
       );
       assert.equal(
-        registry.endpoints["cosigner.qa"].tokenFile,
-        path.join(tmpDir, "credentials", "cosigner.token"),
+        registry.endpoints["cosigner.qa"].knownHostsPath,
+        path.join(tmpDir, ".ssh", "known_hosts"),
       );
     } finally {
       fs.rmSync(tmpDir, { recursive: true });
@@ -3638,9 +3639,10 @@ describe("loadClientEndpointRegistry", () => {
     "invalid_identity_file_type.yaml",
     "invalid_multiple_signers.yaml",
     "invalid_remote_http.yaml",
+    "invalid_loopback_http.yaml",
+    "invalid_https.yaml",
     "invalid_schema_version_float.yaml",
     "invalid_ssh_port_zero.yaml",
-    "invalid_token_file_type.yaml",
     "invalid_unknown_field.yaml",
     "invalid_unknown_tag.yaml",
   ]) {
@@ -3686,7 +3688,10 @@ describe("loadClientEndpointRegistry", () => {
         }
         if (fixture === "valid_retired_port_fields.yaml") {
           assert.equal(registry.endpoints.primary.url, "ssh://signer.example.com:2222");
-          assert.equal(path.basename(registry.endpoints.primary.tokenFile), "legacy.token");
+          assert.equal(
+            registry.endpoints.primary.identityFile,
+            path.join(tmpDir, ".ssh", "id_ed25519"),
+          );
           assert.ok(registry.endpoints.cosigner);
         }
       } finally {
@@ -3715,21 +3720,27 @@ describe("loadClientEndpointRegistry", () => {
     });
   }
 
-  it("derives the signer default and alias-based token paths", () => {
+  it("derives the signer default and the default client identity", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-endpoints-"));
     try {
       fs.writeFileSync(
         path.join(tmpDir, "endpoints.yaml"),
         "schema_version: 2\nendpoints:\n" +
         "  main:\n    role: signer\n    url: ssh://localhost\n" +
-        "  qa:\n    role: cosigner\n    url: http://127.0.0.1:11271\n",
+        "  qa:\n    role: cosigner\n    url: ssh://127.0.0.1:2222\n",
       );
       const registry = loadClientEndpointRegistry(tmpDir);
       assert.equal(registry.default, "main");
-      assert.equal(
-        registry.endpoints.main.tokenFile,
-        path.join(tmpDir, "tokens", "main.token"),
-      );
+      for (const alias of ["main", "qa"]) {
+        assert.equal(
+          registry.endpoints[alias].identityFile,
+          path.join(tmpDir, ".ssh", "id_ed25519"),
+        );
+        assert.equal(
+          registry.endpoints[alias].knownHostsPath,
+          path.join(tmpDir, ".ssh", "known_hosts"),
+        );
+      }
       assert.equal(resolveClientEndpoint(registry).alias, "main");
       assert.equal(resolveClientEndpoint(registry, "qa").endpoint.role, "cosigner");
     } finally {
@@ -3738,12 +3749,24 @@ describe("loadClientEndpointRegistry", () => {
   });
 });
 
-describe("requestToken", () => {
+describe("requestEnrollment", () => {
   it("rejects missing known_hosts path locally", async () => {
     await assert.rejects(
-      requestToken("signer.example.com", "~/aplane/apclient/.ssh/id_ed25519"),
+      requestEnrollment("signer.example.com", "~/aplane/apclient/.ssh/id_ed25519"),
       { message: /known_hosts path is required/ },
     );
+  });
+
+  it("rejects bad labels before any network activity", async () => {
+    for (const label of ["x".repeat(65), "two\nlines", " padded", "tab\tbed"]) {
+      await assert.rejects(
+        requestEnrollment("signer.example.com", "/nonexistent/key", {
+          knownHostsPath: "/nonexistent/known_hosts",
+          label,
+        }),
+        { message: /enrollment label/ },
+      );
+    }
   });
 
   it("closes a stalled SSH handshake at the setup deadline", async () => {
@@ -3767,7 +3790,7 @@ describe("requestToken", () => {
 
     try {
       await assert.rejects(
-        requestToken("127.0.0.1", keyPath, {
+        requestEnrollment("127.0.0.1", keyPath, {
           sshPort: address.port,
           knownHostsPath: path.join(tmpDir, "known_hosts"),
           setupTimeout: 50,
@@ -3787,7 +3810,7 @@ describe("requestToken", () => {
     await withEarlyClosingSSHPeer("aplane-token-early-close-", async (port, keyPath, knownHostsPath) => {
       await assert.rejects(
         settlesWithin(
-          requestToken("127.0.0.1", keyPath, { sshPort: port, knownHostsPath, setupTimeout: 60_000 }),
+          requestEnrollment("127.0.0.1", keyPath, { sshPort: port, knownHostsPath, setupTimeout: 60_000 }),
           2_000,
         ),
         /closed before setup completed/,
@@ -3796,12 +3819,12 @@ describe("requestToken", () => {
   });
 });
 
-describe("requestTokenToFile", () => {
+describe("requestEnrollmentFromEnv", () => {
   it("rejects removed host routing options at runtime", async () => {
     await assert.rejects(
-      requestTokenToFile({
+      requestEnrollmentFromEnv({
         host: "signer.example.com",
-      } as unknown as Parameters<typeof requestTokenToFile>[0]),
+      } as unknown as Parameters<typeof requestEnrollmentFromEnv>[0]),
       { message: /option "host" was removed/ },
     );
   });
@@ -3817,7 +3840,7 @@ describe("requestTokenToFile", () => {
         "    identity_file: .ssh/qa\n",
       );
       await assert.rejects(
-        requestTokenToFile({ dataDir: tmpDir, endpoint: "qa" }),
+        requestEnrollmentFromEnv({ dataDir: tmpDir, endpoint: "qa" }),
         { message: /SSH key not found at .*qa/ },
       );
     } finally {
@@ -3825,7 +3848,7 @@ describe("requestTokenToFile", () => {
     }
   });
 
-  it("rejects non-SSH enrollment endpoints", async () => {
+  it("rejects non-SSH endpoints at registry load", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-token-"));
     try {
       fs.writeFileSync(
@@ -3834,8 +3857,8 @@ describe("requestTokenToFile", () => {
         "  primary:\n    role: signer\n    url: https://signer.example.com\n",
       );
       await assert.rejects(
-        requestTokenToFile({ dataDir: tmpDir }),
-        { message: /requires ssh:\/\// },
+        requestEnrollmentFromEnv({ dataDir: tmpDir }),
+        { message: /unsupported url scheme "https"/ },
       );
     } finally {
       fs.rmSync(tmpDir, { recursive: true });
@@ -3861,7 +3884,7 @@ describe("buildSignRequests", () => {
       json: async () => ({ signed: ["deadbeef"] }),
     });
 
-    const client = new SignerClient("http://localhost:11270", "test-token");
+    const client = new SignerClient("http://localhost:11270");
     const mockTxn = createMockTxn() as Parameters<typeof client.signTransaction>[0];
     await client.signTransaction(mockTxn, "AUTH_ADDR");
 
@@ -3880,7 +3903,7 @@ describe("buildSignRequests", () => {
       json: async () => ({ signed: ["deadbeef"] }),
     });
 
-    const client = new SignerClient("http://localhost:11270", "test-token");
+    const client = new SignerClient("http://localhost:11270");
     const mockTxn = createMockTxn("MY_SENDER") as Parameters<typeof client.signTransaction>[0];
     await client.signTransaction(mockTxn);
 
@@ -3896,7 +3919,7 @@ describe("buildSignRequests", () => {
       json: async () => ({ signed: ["deadbeef"] }),
     });
 
-    const client = new SignerClient("http://localhost:11270", "test-token");
+    const client = new SignerClient("http://localhost:11270");
     const mockTxn = createMockTxn("LSIG_ADDR") as Parameters<typeof client.signTransaction>[0];
     await client.signTransaction(mockTxn, "LSIG_ADDR", {
       preimage: new Uint8Array([0x73, 0x65, 0x63, 0x72, 0x65, 0x74]),
@@ -4023,48 +4046,20 @@ describe("fromEnv", () => {
     }
   });
 
-  it("uses a named direct endpoint and its token", async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-test-"));
-    try {
-      fs.mkdirSync(path.join(tmpDir, "tokens"));
-      fs.writeFileSync(
-        path.join(tmpDir, "endpoints.yaml"),
-        "schema_version: 2\nendpoints:\n" +
-        "  primary:\n    role: signer\n    url: https://signer.example.com/\n" +
-        "  qa:\n    role: cosigner\n    url: http://127.0.0.1:11271/\n",
-      );
-      fs.writeFileSync(path.join(tmpDir, "tokens", "qa.token"), "qa-token");
-      const client = await SignerClient.fromEnv({
-        dataDir: tmpDir,
-        endpoint: "qa",
-        timeout: 7000,
-      });
-      assert.equal(
-        (client as unknown as { baseUrl: string }).baseUrl,
-        "http://127.0.0.1:11271",
-      );
-      assert.equal(
-        (client as unknown as { token: string }).token,
-        "qa-token",
-      );
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true });
-    }
-  });
-
-  it("rejects empty tokens", async () => {
+  it("connects a named endpoint with its own SSH identity", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-test-"));
     try {
       fs.writeFileSync(
         path.join(tmpDir, "endpoints.yaml"),
         "schema_version: 2\nendpoints:\n" +
-        "  primary:\n    role: signer\n    url: https://signer.example.com\n",
+        "  primary:\n    role: signer\n    url: ssh://signer.example.com/\n" +
+        "  qa:\n    role: cosigner\n    url: ssh://127.0.0.1:1/\n    identity_file: keys/qa\n",
       );
-      fs.writeFileSync(path.join(tmpDir, "aplane.token"), " \n\t");
-
+      // The key is the only credential, so a missing identity file is the
+      // first failure.
       await assert.rejects(
-        SignerClient.fromEnv({ dataDir: tmpDir }),
-        { message: /aplane\.token.*empty/ },
+        SignerClient.fromEnv({ dataDir: tmpDir, endpoint: "qa", timeout: 7000 }),
+        { message: new RegExp(`SSH key not found at .*${path.join("keys", "qa")}`) },
       );
     } finally {
       fs.rmSync(tmpDir, { recursive: true });
@@ -4075,7 +4070,7 @@ describe("fromEnv", () => {
     ["invalid_self_signer.yaml", 'endpoint "primary": url "self" is not supported'],
     ["invalid_self_cosigner.yaml", 'endpoint "cosigner": url "self" is not supported'],
   ]) {
-    it(`rejects ${fixture} before token loading`, async () => {
+    it(`rejects ${fixture} before connecting`, async () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-test-"));
       try {
         fs.copyFileSync(
@@ -4095,7 +4090,7 @@ describe("fromEnv", () => {
 describe("connectSsh", () => {
   it("rejects missing knownHostsPath at method entry", async () => {
     await assert.rejects(
-      SignerClient.connectSsh("example.com", "token", "~/aplane/apclient/.ssh/id_ed25519"),
+      SignerClient.connectSsh("example.com", "~/aplane/apclient/.ssh/id_ed25519"),
       { message: /known_hosts path is required/ },
     );
   });
@@ -4121,7 +4116,7 @@ describe("connectSsh", () => {
 
     try {
       await assert.rejects(
-        SignerClient.connectSsh("127.0.0.1", "token", keyPath, {
+        SignerClient.connectSsh("127.0.0.1", keyPath, {
           sshPort: address.port,
           knownHostsPath: path.join(tmpDir, "known_hosts"),
           sshSetupTimeout: 50,
@@ -4141,7 +4136,7 @@ describe("connectSsh", () => {
     await withEarlyClosingSSHPeer("aplane-ssh-early-close-", async (port, keyPath, knownHostsPath) => {
       await assert.rejects(
         settlesWithin(
-          SignerClient.connectSsh("127.0.0.1", "token", keyPath, {
+          SignerClient.connectSsh("127.0.0.1", keyPath, {
             sshPort: port,
             knownHostsPath,
             sshSetupTimeout: 60_000,
@@ -4174,7 +4169,7 @@ describe("connectSsh", () => {
     const controller = new AbortController();
 
     try {
-      const connecting = SignerClient.connectSsh("127.0.0.1", "token", keyPath, {
+      const connecting = SignerClient.connectSsh("127.0.0.1", keyPath, {
         sshPort: address.port,
         knownHostsPath: path.join(tmpDir, "known_hosts"),
         sshSetupTimeout: 1_000,
@@ -4213,7 +4208,7 @@ describe("sign return format", () => {
       json: async () => ({ signed: [hex1, hex2] }),
     });
 
-    const client = new SignerClient("http://localhost:11270", "test-token");
+    const client = new SignerClient("http://localhost:11270");
     const mockTxn = createMockTxn() as Parameters<typeof client.signTransactionsList>[0][0];
     const result = await client.signTransactionsList([mockTxn, mockTxn]);
 
@@ -4233,7 +4228,7 @@ describe("sign return format", () => {
       json: async () => ({ signed: [hex1, hex2] }),
     });
 
-    const client = new SignerClient("http://localhost:11270", "test-token");
+    const client = new SignerClient("http://localhost:11270");
     const mockTxn = createMockTxn() as Parameters<typeof client.signTransactions>[0][0];
     const result = await client.signTransactions([mockTxn, mockTxn]);
 
@@ -4243,20 +4238,20 @@ describe("sign return format", () => {
 
   it("signTransactions rejects empty transaction arrays locally", async () => {
     mockFetch.mockReset();
-    const client = new SignerClient("http://localhost:11270", "test-token");
+    const client = new SignerClient("http://localhost:11270");
     await assert.rejects(client.signTransactions([]), SignerError);
     assert.equal(mockFetch.mock.calls.length, 0);
   });
 
   it("signTransactionsList rejects empty transaction arrays locally", async () => {
     mockFetch.mockReset();
-    const client = new SignerClient("http://localhost:11270", "test-token");
+    const client = new SignerClient("http://localhost:11270");
     await assert.rejects(client.signTransactionsList([]), SignerError);
     assert.equal(mockFetch.mock.calls.length, 0);
   });
 
   it("planGroup uses SignerError for auth address length mismatch", async () => {
-    const client = new SignerClient("http://localhost:11270", "test-token");
+    const client = new SignerClient("http://localhost:11270");
     const mockTxn = createMockTxn() as Parameters<typeof client.planGroup>[0][0];
     await assert.rejects(client.planGroup([mockTxn], ["A", "B"]), SignerError);
   });

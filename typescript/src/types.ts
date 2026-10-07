@@ -205,13 +205,15 @@ export interface ClientConfig {
   theme: string;
 }
 
-/** One signer or cosigner connection profile from endpoints.yaml. */
+/**
+ * One signer or cosigner connection profile from endpoints.yaml. The client's
+ * SSH key (identityFile) is its credential; there is no token.
+ */
 export interface ClientEndpointConfig {
   role: "signer" | "cosigner";
   url: string;
   identityFile: string;
   knownHostsPath: string;
-  tokenFile: string;
 }
 
 /** Normalized client-local endpoint registry. */

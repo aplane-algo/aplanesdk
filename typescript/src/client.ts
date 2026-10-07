@@ -87,15 +87,13 @@ import {
 } from "./encoding.js";
 import { preparedGroupToSignRequests, preparedTransactionToSignRequest } from "./prepared.js";
 import {
-  SSH_TOKEN_PROOF_USERNAME,
-  SSHTokenProofClient,
+  SSH_USERNAME,
   normalizeSSHSetupTimeout,
   sshConnectionFailedMessage,
-} from "./ssh-tokenproof.js";
+} from "./ssh.js";
 import {
   loadConfig,
   loadClientEndpointRegistry,
-  loadToken,
   resolveClientEndpoint,
   clientEndpointSshHostPort,
   resolveDataDir,
@@ -1790,7 +1788,6 @@ class SSHTunnel {
   async connect(options: {
     host: string;
     sshPort: number;
-    token: string;
     privateKeyPath: string;
     remoteHost: string;
     remotePort: number;
@@ -1811,11 +1808,9 @@ class SSHTunnel {
 
     const privateKey = fs.readFileSync(options.privateKeyPath, "utf-8");
     this.localPort = options.localPort || await findFreePort();
-    const proof = new SSHTokenProofClient(options.token);
 
     // Track host key error for meaningful rejection messages
     let hostKeyError = "";
-    let authStage = 0;
 
     const connection = new Promise<void>((resolve, reject) => {
       this.sshClient = new Client();
@@ -1851,12 +1846,6 @@ class SSHTunnel {
       options.signal?.addEventListener("abort", abortSetup, { once: true });
 
       this.sshClient.on("ready", () => {
-        if (!proof.serverVerified) {
-          failSetup(new SignerUnavailableError(
-            "SSH server accepted authentication without completing token proof"
-          ));
-          return;
-        }
         // Create local server that forwards to remote via SSH
         this.server = net.createServer((localSocket) => {
           this.sshClient!.forwardOut(
@@ -1891,48 +1880,21 @@ class SSHTunnel {
 
       this.sshClient.on("error", (err: Error) => {
         const msg = hostKeyError || sshConnectionFailedMessage(err);
-        failSetup(new SignerUnavailableError(msg));
+        // A refused key under the client username is an authentication
+        // failure (the key is not enrolled), not an unavailable signer.
+        const notEnrolled = !hostKeyError &&
+          (err as Error & { level?: string }).level === "client-authentication";
+        failSetup(notEnrolled ? new AuthenticationError(msg) : new SignerUnavailableError(msg));
       });
 
+      // The enrolled key is the only credential: public-key authentication
+      // under the fixed client username, nothing else.
       this.sshClient.connect({
         host: options.host,
         port: options.sshPort,
-        username: SSH_TOKEN_PROOF_USERNAME,
+        username: SSH_USERNAME,
         privateKey: privateKey,
         readyTimeout: options.setupTimeout,
-        authHandler: (methodsLeft, partialSuccess, next) => {
-          if (authStage === 0 && (methodsLeft === null || methodsLeft === undefined)) {
-            authStage = 1;
-            next({
-              type: "publickey",
-              username: SSH_TOKEN_PROOF_USERNAME,
-              key: privateKey,
-            });
-            return;
-          }
-          if (
-            authStage === 1 &&
-            partialSuccess &&
-            methodsLeft.includes("keyboard-interactive")
-          ) {
-            authStage = 2;
-            next({
-              type: "keyboard-interactive",
-              username: SSH_TOKEN_PROOF_USERNAME,
-              prompt: (name, instructions, _lang, prompts, finish) => {
-                try {
-                  finish(proof.challenge(name, instructions, prompts));
-                } catch (error) {
-                  hostKeyError = error instanceof Error ? error.message : String(error);
-                  finish([]);
-                }
-              },
-            });
-            return;
-          }
-          hostKeyError = "SSH server did not require token proof after public-key authentication";
-          next(false as never);
-        },
         hostVerifier: (key: Buffer): boolean => {
           const storedKey = loadKnownHostKey(
             options.knownHostsPath, options.host, options.sshPort
@@ -1948,12 +1910,10 @@ class SSHTunnel {
             }
             // TOFU enabled — trust and save key
             saveHostKey(options.knownHostsPath, options.host, options.sshPort, key);
-            proof.captureHostKey(key);
             return true;
           }
 
           if (storedKey.equals(key)) {
-            proof.captureHostKey(key);
             return true; // Known host, key matches
           }
 
@@ -1966,11 +1926,7 @@ class SSHTunnel {
       });
     });
 
-    try {
-      await connection;
-    } finally {
-      proof.dispose();
-    }
+    await connection;
   }
 
   async close(): Promise<void> {
@@ -2578,10 +2534,9 @@ function uint64Value(value: bigint): number | bigint {
  *
  * Use static methods to create instances:
  * ```typescript
- * // SSH tunnel connection
+ * // SSH tunnel connection, authenticated by the enrolled client key
  * const client = await SignerClient.connectSsh(
  *   "signer.example.com",
- *   "your-token",
  *   "~/aplane/apclient/.ssh/id_ed25519",
  *   { knownHostsPath: "~/aplane/apclient/.ssh/known_hosts" }
  * );
@@ -2627,7 +2582,6 @@ function validateGroupSignResponse(requests: SignRequest[], signed: string[]): v
 
 export class SignerClient {
   private baseUrl: string;
-  private token: string;
   private explicitTimeout?: number;
   private keyCache: Map<string, KeyInfo> = new Map();
   private keyCacheRevision?: number;
@@ -2639,18 +2593,18 @@ export class SignerClient {
   /**
    * Create a SignerClient instance.
    *
-   * baseUrl is an internal HTTP endpoint. Prefer static methods
+   * baseUrl is an internal HTTP endpoint: the local end of an SSH tunnel to
+   * the signer, which authenticates the tunnel by the client's enrolled key.
+   * The client itself carries no credential. Prefer static methods
    * (connectSsh, fromEnv) so connection details come from explicit SSH
    * parameters or APCLIENT_DATA-derived config.
    */
   constructor(
     baseUrl: string,
-    token: string,
     timeout?: number,
     tunnel: SSHTunnel | null = null
   ) {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
-    this.token = token;
     this.explicitTimeout = timeout && timeout > 0 ? timeout : undefined;
     this.tunnel = tunnel;
   }
@@ -2658,12 +2612,12 @@ export class SignerClient {
   /**
    * Connect to remote apsigner via SSH tunnel.
    *
-   * Establishes an SSH tunnel to the remote host and forwards
-   * the signer port to a local port. Authentication uses an enrolled public
-   * key plus a mutual token proof bound to the accepted host key.
+   * Establishes an SSH tunnel to the remote host and forwards the signer's
+   * REST listener to a local port. The enrolled client key is the only
+   * credential; a key the signer has not enrolled fails the handshake
+   * (enroll it with requestEnrollment first).
    *
    * @param host - Remote host running apsigner
-   * @param token - Authentication token (used for both SSH and HTTP API)
    * @param sshKeyPath - Path to SSH private key (e.g., ~/aplane/apclient/.ssh/id_ed25519)
    * @param options - Connection options
    * @returns Promise<SignerClient> instance with active SSH tunnel
@@ -2672,7 +2626,6 @@ export class SignerClient {
    * ```typescript
    * const client = await SignerClient.connectSsh(
    *   "signer.example.com",
-   *   "your-token",
    *   "~/aplane/apclient/.ssh/id_ed25519",
    *   { knownHostsPath: "~/aplane/apclient/.ssh/known_hosts" }
    * );
@@ -2686,7 +2639,6 @@ export class SignerClient {
    */
   static async connectSsh(
     host: string,
-    token: string,
     sshKeyPath: string,
     options: ConnectSshOptions = {}
   ): Promise<SignerClient> {
@@ -2714,7 +2666,6 @@ export class SignerClient {
       await tunnel.connect({
         host,
         sshPort,
-        token,
         privateKeyPath: expandedKeyPath,
         // The server checks only that the destination is loopback and
         // forwards to its own REST listener, so the port is nominal.
@@ -2738,7 +2689,7 @@ export class SignerClient {
 
     // Connect through tunnel
     const baseUrl = `http://127.0.0.1:${tunnel.localPort}`;
-    const client = new SignerClient(baseUrl, token, timeout, tunnel);
+    const client = new SignerClient(baseUrl, timeout, tunnel);
 
     // Verify connection
     const healthy = await client.health();
@@ -2757,8 +2708,7 @@ export class SignerClient {
    *
    * Data directory contents:
    *   - endpoints.yaml: Signer and cosigner routing
-   *   - aplane.token or tokens/<alias>.token: Authentication token
-   *   - .ssh/id_ed25519: SSH key (if using SSH tunnel)
+   *   - .ssh/id_ed25519: SSH key, the client's credential
    *
    * The data directory is required: pass `options.dataDir` or set the
    * `APCLIENT_DATA` environment variable. Throws `SignerError` if neither is set.
@@ -2782,25 +2732,21 @@ export class SignerClient {
     loadConfig(dataDir);
     const registry = loadClientEndpointRegistry(dataDir);
     const { endpoint } = resolveClientEndpoint(registry, options.endpoint);
-    const token = loadToken(endpoint.tokenFile);
 
-    if (endpoint.url.startsWith("ssh://")) {
-      const { host, port: sshPort } = clientEndpointSshHostPort(endpoint);
-      if (!fs.existsSync(endpoint.identityFile)) {
-        throw new SignerError(
-          `SSH configured but key not found at ${endpoint.identityFile}`,
-        );
-      }
-      return SignerClient.connectSsh(host, token, endpoint.identityFile, {
-        sshPort,
-        timeout,
-        sshSetupTimeout: options.sshSetupTimeout,
-        signal: options.signal,
-        knownHostsPath: endpoint.knownHostsPath,
-        trustOnFirstUse: options.trustOnFirstUse ?? false,
-      });
+    const { host, port: sshPort } = clientEndpointSshHostPort(endpoint);
+    if (!fs.existsSync(endpoint.identityFile)) {
+      throw new SignerError(
+        `SSH key not found at ${endpoint.identityFile}`,
+      );
     }
-    return new SignerClient(endpoint.url, token, timeout);
+    return SignerClient.connectSsh(host, endpoint.identityFile, {
+      sshPort,
+      timeout,
+      sshSetupTimeout: options.sshSetupTimeout,
+      signal: options.signal,
+      knownHostsPath: endpoint.knownHostsPath,
+      trustOnFirstUse: options.trustOnFirstUse ?? false,
+    });
   }
 
   /**
@@ -4620,9 +4566,8 @@ export class SignerClient {
     }
 
     try {
-      const headers: Record<string, string> = {
-        Authorization: `aplane ${this.token}`,
-      };
+      // The SSH connection carries the client's identity; no header does.
+      const headers: Record<string, string> = {};
 
       if (options.body) {
         headers["Content-Type"] = "application/json";

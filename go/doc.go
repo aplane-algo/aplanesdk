@@ -39,11 +39,10 @@ Package aplane provides a Go client for signing Algorand transactions via apsign
 
 The SDK supports both managed SSH-backed connections and caller-owned transport.
 
-SSH tunnel connection:
+SSH tunnel connection, authenticated by the client's enrolled SSH key:
 
 	client, err := aplane.ConnectSSH(
 		"signer.example.com",
-		"your-token",
 		"~/aplane/apclient/.ssh/id_ed25519",
 		&aplane.SSHConnectOptions{
 			KnownHostsPath:  "~/aplane/apclient/.ssh/known_hosts",
@@ -51,15 +50,20 @@ SSH tunnel connection:
 		},
 	)
 
-From environment (reads endpoints.yaml and the selected endpoint token from
-APCLIENT_DATA or the data_dir passed via FromEnvOptions — the SDK has no
-implicit default):
+From environment (reads endpoints.yaml and the selected endpoint's SSH
+identity from APCLIENT_DATA or the data_dir passed via FromEnvOptions — the
+SDK has no implicit default):
 
 	client, err := aplane.FromEnv(nil)
 
-Caller-owned transport:
+A key the signer has not enrolled fails with ErrNotEnrolled. Enroll it once,
+with the operator approving in apadmin:
 
-	client := aplane.NewSignerClientWithToken("http://localhost:11270", token)
+	fingerprint, err := aplane.RequestEnrollmentFromEnv(nil, "ci-runner")
+
+Caller-owned transport (the caller's own tunnel to the signer):
+
+	client := aplane.NewSignerClient("http://localhost:11270")
 
 # Signing
 

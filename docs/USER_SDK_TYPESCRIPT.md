@@ -10,8 +10,8 @@ SSH-backed connection model as `apshell`.
 
 The TypeScript SDK is a user-facing integration surface for:
 
-- loading client config and token state from `APCLIENT_DATA`
-- provisioning a token over the SSH `request-token` flow
+- loading client config and the client SSH identity from `APCLIENT_DATA`
+- enrolling the client SSH key at a signer over the `request-enrollment` flow
 - connecting to `apsigner` over the standard SSH-backed product path
 - listing signer keys and available key types
 - planning and signing single transactions and groups
@@ -27,9 +27,9 @@ Go, Python, and TypeScript SDK package versions will always match.
 - npm, pnpm, or yarn
 - an APlane signer you can reach over the standard SSH-backed client path
 - either:
-  - an existing client data directory with config, token, SSH key, and
+  - an existing client data directory with config, an enrolled SSH key, and
     `known_hosts`, or
-  - explicit signer host, token, SSH key, and `known_hosts` paths
+  - explicit signer host, enrolled SSH key, and `known_hosts` paths
 
 The SDK expects:
 
@@ -126,7 +126,6 @@ Typical client layout (installer default: `~/aplane/apclient`):
 <data_dir>/
   config.yaml
   endpoints.yaml
-  aplane.token
   .ssh/
     id_ed25519
     known_hosts
@@ -134,9 +133,9 @@ Typical client layout (installer default: `~/aplane/apclient`):
 
 The SDK reads:
 
-- `endpoints.yaml` for signer/cosigner URLs, ports, paths, and token files
-- the selected endpoint's token for HTTP authentication and SSH mutual proof
-- `.ssh/id_ed25519` for client SSH auth. The signer accepts Ed25519, ECDSA (P-256/384/521), or hardware-backed `sk-` Ed25519/ECDSA client keys; RSA and DSA keys fail authentication.
+- `endpoints.yaml` for signer/cosigner `ssh://` URLs and SSH paths
+- `.ssh/id_ed25519` for client SSH auth; the enrolled key is the client's only
+  credential, and the signer attributes every request on the tunnel to it. The signer accepts Ed25519, ECDSA (P-256/384/521), or hardware-backed `sk-` Ed25519/ECDSA client keys; RSA and DSA keys fail authentication.
 - `.ssh/known_hosts` for SSH host key verification
 
 Example `endpoints.yaml`:
@@ -162,32 +161,31 @@ path is:
 
 1. install APlane and create or obtain an `apclient` data directory
 2. generate or provide the client SSH key under `.ssh/id_ed25519`
-3. provision a token
+3. enroll that key at the signer
 4. connect with `SignerClient.fromEnv()`
 
-Provision and save a token with the TypeScript helper:
+Enroll the key with the TypeScript helper:
 
 ```ts
-import { requestTokenToFile } from "aplanesdk";
+import { requestEnrollmentFromEnv } from "aplanesdk";
 
-const tokenPath = await requestTokenToFile({ endpoint: "cosigner.qa" });
-console.log(`Saved token to ${tokenPath}`);
+const fingerprint = await requestEnrollmentFromEnv({ endpoint: "cosigner.qa", label: "ci-runner" });
+console.log(`Enrolled ${fingerprint}`);
 ```
 
-`requestTokenToFile()`:
+`requestEnrollmentFromEnv()`:
 
 - uses the same data-dir resolution as `SignerClient.fromEnv()`
 - selects the default signer or named endpoint from `endpoints.yaml`
 - uses that endpoint's SSH host, port, key, and `known_hosts` path
-- requests a token over SSH as `request-token`
-- saves the token to that endpoint's `token_file`
+- opens a `request-enrollment` SSH session and waits for the operator
+- resolves to the enrolled key's SHA256 fingerprint; nothing is stored
 
-Token provisioning targets the signer's product store. An operator must
-approve the request in `apadmin`.
-
-Alternatively, you can obtain the token by running `apshell` and executing
-the `request-token` command; `apshell` writes the approved token to
-`<dataDir>/aplane.token` using the same client data directory.
+Enrollment targets the signer's product store. An operator must approve the
+request in `apadmin`. The same enrollment can be done from `apshell` with
+`request-enrollment`. A key the signer has not enrolled (or has revoked) fails
+`fromEnv`/`connectSsh` with an `AuthenticationError` whose message says the
+key is not enrolled.
 
 ## Connection Methods
 
@@ -209,7 +207,6 @@ This path:
 - resolves the client data dir
 - validates `config.yaml` contains no obsolete routing
 - loads and selects an endpoint from `endpoints.yaml`
-- loads that endpoint's token
 - resolves SSH paths relative to the client data dir
 - establishes the SSH tunnel automatically
 - verifies that the signer answers on the forwarded REST port
@@ -217,8 +214,7 @@ This path:
 `SignerClient.fromEnv()` requires:
 
 - a default signer endpoint, or an explicit `endpoint` alias
-- that endpoint's token file
-- for SSH endpoints, a readable private key at `identity_file`
+- a readable, enrolled private key at that endpoint's `identity_file`
 
 ### Explicit SSH Connection
 
@@ -227,7 +223,6 @@ import { SignerClient, expandPath } from "aplanesdk";
 
 const client = await SignerClient.connectSsh(
   "signer.example.com",
-  "your-token",
   "~/aplane/apclient/.ssh/id_ed25519",
   {
     sshPort: 1127,
@@ -247,24 +242,24 @@ try {
 `sshSetupTimeout` separately bounds TCP dialing and SSH authentication and
 defaults to 60 seconds. An optional `signal` cancels setup. Both controls detach
 after authentication and do not shorten the established tunnel or operator
-approval waits. Token provisioning exposes equivalent `setupTimeout` and
-`signal` options.
+approval waits. Enrollment exposes equivalent `setupTimeout` and `signal`
+options.
 
-The SSH username is the fixed non-secret value `aplane`. Authentication verifies the
-enrolled public key first, then performs a programmatic mutual proof of the
-token bound to that username, the accepted host key, and fresh client/server nonces. The
-server proves token possession before the client returns its proof, and the
-bearer token is never sent as SSH metadata.
+The SSH username is the fixed non-secret value `aplane`, and public-key
+authentication with the enrolled key is the only credential. The explicit form
+of enrollment is `requestEnrollment(host, sshKeyPath, { knownHostsPath, label })`.
 
 This is useful when:
 
 - you do not want to depend on `APCLIENT_DATA`
-- you manage the token out-of-band
+- you manage the SSH identity out-of-band
 - your app needs to choose the signer target dynamically
 
 Prefer the SSH-backed paths above. For advanced integrations that already own
-the HTTP transport path, the public `SignerClient(baseUrl, token, timeout)`
-constructor can be used directly. An explicit timeout shorter than the signer
+the SSH tunnel to the signer, the public `SignerClient(baseUrl, timeout)`
+constructor can be used directly; the signer attributes the requests to the
+key that opened the tunnel, and a signer's loopback REST port answers only
+`/health`. An explicit timeout shorter than the signer
 approval wait will cancel queued/pending manual approval; SDK `/sign` calls
 include a `request_id` and send a best-effort `/sign/cancel` when the HTTP
 request times out or disconnects.
@@ -692,7 +687,7 @@ Main SDK error classes:
 - `SignerUnavailableError`
 - `KeyNotFoundError`
 - `KeyDeletionError`
-- `TokenProvisioningError`
+- `EnrollmentError`
 
 Network submission helper errors:
 
@@ -716,7 +711,7 @@ try {
   console.log(txid);
 } catch (err) {
   if (err instanceof AuthenticationError) {
-    console.error("bad or missing token");
+    console.error("connection is not authenticated by an enrolled SSH key");
   } else if (err instanceof SignerUnavailableError) {
     console.error("signer unavailable or locked");
   } else if (err instanceof SigningRejectedError) {
@@ -729,16 +724,16 @@ try {
 
 ## Advanced Notes
 
-- `knownHostsPath` is required for explicit SSH connections and token
-  provisioning. When trust-on-first-use is enabled, that path is where the SDK
-  saves the newly trusted host key.
+- `knownHostsPath` is required for explicit SSH connections and enrollment.
+  When trust-on-first-use is enabled, that path is where the SDK saves the
+  newly trusted host key.
 - If optional dependencies are omitted and `ssh2` is unavailable, the SSH
-  connection and token provisioning paths will fail at runtime until `ssh2` is
+  connection and enrollment paths will fail at runtime until `ssh2` is
   installed.
 - `sendRawTransaction()` is optional. You can still call
   `algodClient.sendRawTransaction(...)` directly if you prefer raw algod errors.
 - The SDK exports both runtime helpers and lower-level utilities such as
-  `loadConfig`, `loadToken`, `resolveDataDir`, `encodeTransaction`, and
+  `loadConfig`, `resolveDataDir`, `encodeTransaction`, and
   `encodeLsigArgs`.
 
 ## Compatibility Notes

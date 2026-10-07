@@ -11,7 +11,8 @@ but it also supports a caller-owned transport mode for advanced integrations.
 
 The Go SDK is a user-facing integration surface for:
 
-- loading client config and token state from `APCLIENT_DATA`
+- loading client config and the client SSH identity from `APCLIENT_DATA`
+- enrolling the client SSH key at a signer (operator-approved)
 - connecting to `apsigner` over the standard SSH-backed product path
 - listing signer keys and available key types
 - planning and signing single transactions and groups
@@ -27,10 +28,10 @@ Go, Python, and TypeScript SDK package versions will always match.
 - Go `1.25` or newer for this module as currently declared
 - an APlane signer you can reach over the standard SSH-backed client path
 - either:
-  - an existing client data directory with config, token, SSH key, and
+  - an existing client data directory with config, an enrolled SSH key, and
     `known_hosts`, or
-  - explicit signer host, token, SSH key, and `known_hosts` paths, or
-  - a caller-owned tunnel / HTTP transport for the signer API
+  - explicit signer host, enrolled SSH key, and `known_hosts` paths, or
+  - a caller-owned SSH tunnel to the signer API
 
 The Go SDK depends on:
 
@@ -73,7 +74,6 @@ Typical client layout (installer default: `~/aplane/apclient`):
 <data_dir>/
   config.yaml
   endpoints.yaml
-  aplane.token
   .ssh/
     id_ed25519
     known_hosts
@@ -82,9 +82,9 @@ Typical client layout (installer default: `~/aplane/apclient`):
 The SDK reads:
 
 - `config.yaml` for network and optional algod config
-- `endpoints.yaml` for signer/cosigner URLs, ports, paths, and token files
-- the selected endpoint's token for HTTP authentication and SSH mutual proof
-- `.ssh/id_ed25519` for client SSH auth. The signer accepts Ed25519, ECDSA (P-256/384/521), or hardware-backed `sk-` Ed25519/ECDSA client keys; RSA and DSA keys fail authentication.
+- `endpoints.yaml` for signer/cosigner `ssh://` URLs and SSH paths
+- `.ssh/id_ed25519` for client SSH auth; the enrolled key is the client's only
+  credential, and the signer attributes every request on the tunnel to it. The signer accepts Ed25519, ECDSA (P-256/384/521), or hardware-backed `sk-` Ed25519/ECDSA client keys; RSA and DSA keys fail authentication.
 - `.ssh/known_hosts` for SSH host key verification
 
 Example `endpoints.yaml`:
@@ -111,18 +111,25 @@ path is:
 
 1. install APlane and create or obtain an `apclient` data directory
 2. generate or provide the client SSH key under `.ssh/id_ed25519`
-3. provision a token by using the normal product path (`apshell`, `apadmin`,
-   or another SDK helper)
+3. enroll that key at the signer
 4. connect with `aplane.FromEnv(...)`
 
-Unlike the Python and TypeScript SDKs, the Go SDK does **not** currently ship
-its own token-provisioning helper. The selected endpoint's token file must
-already exist, or you must provide the token directly to
-`ConnectSSH(...)` or `NewSignerClientWithToken(...)`.
+Enroll the key with the Go helper; the operator approves the request in
+`apadmin`, and the call returns the enrolled key's fingerprint:
 
-The simplest way to provision the token file is to run `apshell` and execute
-the `request-token` command; an operator approves the request in `apadmin`
-and `apshell` writes it to the endpoint's configured token file.
+```go
+fingerprint, err := aplane.RequestEnrollmentFromEnv(
+	&aplane.FromEnvOptions{Endpoint: "cosigner.qa"},
+	"ci-runner", // optional display label shown to the operator
+)
+```
+
+`RequestEnrollmentFromEnv(...)` uses the same data-dir resolution as
+`FromEnv(...)`, selects the default signer or named endpoint, and uses that
+endpoint's SSH host, port, key, and `known_hosts` path. Nothing is stored on
+the client: the key is its credential. The same enrollment can be done from
+`apshell` with `request-enrollment`. A key the signer has not enrolled (or has
+revoked) fails `FromEnv`/`ConnectSSH` with `aplane.ErrNotEnrolled`.
 
 ## Connection Methods
 
@@ -143,15 +150,13 @@ This path:
 - resolves the client data dir
 - validates `config.yaml` contains no obsolete routing
 - loads and selects an endpoint from `endpoints.yaml`
-- loads that endpoint's token
 - resolves SSH paths relative to the client data dir
 - establishes the SSH tunnel automatically
 
 `FromEnv(...)` requires:
 
 - a default signer endpoint, or an explicit endpoint alias
-- that endpoint's token file
-- for SSH endpoints, a readable private key at `identity_file`
+- a readable, enrolled private key at that endpoint's `identity_file`
 
 You can override the defaults:
 
@@ -168,7 +173,6 @@ client, err := aplane.FromEnv(&aplane.FromEnvOptions{
 ```go
 client, err := aplane.ConnectSSH(
 	"signer.example.com",
-	"your-token",
 	"~/aplane/apclient/.ssh/id_ed25519",
 	&aplane.SSHConnectOptions{
 		SSHPort:         1127,
@@ -190,25 +194,25 @@ shortening approval-bearing HTTP requests. Use `ConnectSSHWithContext` or
 `FromEnvWithContext` when the caller must cancel setup; a successful connection
 detaches from the setup context and remains active until `Close`.
 
-The SSH username is the fixed non-secret value `aplane`. Authentication verifies the
-enrolled public key first, then performs a programmatic mutual proof of the
-token bound to that username, the accepted host key, and fresh client/server nonces. The
-server proves token possession before the client returns its proof, and the
-bearer token is never sent as SSH metadata.
+The SSH username is the fixed non-secret value `aplane`, and public-key
+authentication with the enrolled key is the only credential. The explicit form
+of enrollment is `aplane.RequestEnrollment(host, keyPath, label,
+&aplane.EnrollmentOptions{KnownHostsPath: ...})`.
 
 This is useful when:
 
 - you do not want to depend on `APCLIENT_DATA`
-- you manage the token out-of-band
+- you manage the SSH identity out-of-band
 - your app needs to choose the signer target dynamically
 
 ### Caller-Owned Transport
 
 The Go SDK also supports a lower-level mode where your application already owns
-the tunnel or HTTP path to `apsigner`.
+the SSH tunnel to `apsigner`. The signer attributes the requests to the key
+that opened the tunnel; a signer's loopback REST port answers only `/health`.
 
 ```go
-client := aplane.NewSignerClientWithToken("http://127.0.0.1:11270", token)
+client := aplane.NewSignerClient("http://127.0.0.1:11270")
 client.SetHTTPClient(&http.Client{Timeout: 30 * time.Second})
 defer client.Close()
 ```
@@ -632,7 +636,8 @@ Main sentinel errors:
 - `aplane.ErrSignerLocked`
 - `aplane.ErrKeyNotFound`
 - `aplane.ErrKeyDeletion`
-- `aplane.ErrTokenNotFound`
+- `aplane.ErrNotEnrolled`
+- `aplane.ErrEnrollment`
 
 Transaction submission helpers in your own code may also choose to wrap:
 
@@ -648,7 +653,7 @@ signed, err := client.SignTransaction(txn, "", nil)
 if err != nil {
 	switch {
 	case errors.Is(err, aplane.ErrAuthentication):
-		return fmt.Errorf("bad or missing token: %w", err)
+		return fmt.Errorf("connection is not authenticated by an enrolled SSH key: %w", err)
 	case errors.Is(err, aplane.ErrSignerLocked):
 		return fmt.Errorf("signer is locked: %w", err)
 	case errors.Is(err, aplane.ErrSigningRejected):
@@ -663,7 +668,7 @@ if err != nil {
 
 - `LoadConfig(...)` also understands client-side `algod` configuration and can
   build an `algod` client with `Config.NewAlgodClient(...)`.
-- `LoadToken(...)`, `LoadTokenFromDir(...)`, `ResolveDataDir(...)`,
+- `ResolveDataDir(...)`,
   `ResolvePath(...)`, `Base64ToBytes(...)`, `BytesToBase64(...)`,
   `HexToBytes(...)`, and `BytesToHex(...)` are exported for integration code.
 - `SignRequestsWithContext(...)` and `PlanRequestsWithContext(...)` let you
