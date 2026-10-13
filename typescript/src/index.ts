@@ -147,6 +147,7 @@ export type {
   CancelSignRequest,
   CancelSignResponse,
   SignCancelState,
+  WireMutationReport,
   RotatingPrepareRequest,
   RotatingPrepareResponse,
   RotatingSignRequest,

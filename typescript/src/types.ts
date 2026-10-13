@@ -423,6 +423,23 @@ export interface RotatingPrepareRequest {
   txn_bytes_hex: string;
 }
 
+/**
+ * Mutation report as it appears on the wire (snake_case). The rotating
+ * payloads are raw wire shapes with no normalization step, unlike the
+ * camelCase MutationReport the client produces for ordinary signing.
+ */
+export interface WireMutationReport {
+  dummies_added?: number;
+  group_id_changed?: boolean;
+  fees_modified?: number[];
+  total_fees_delta?: number;
+  original_count?: number;
+  final_count?: number;
+  passthrough_count?: number;
+  foreign_count?: number;
+  reason?: string;
+}
+
 /** The exact unsigned group the signer will sign. */
 export interface RotatingPrepareResponse {
   account: string;
@@ -430,7 +447,7 @@ export interface RotatingPrepareResponse {
   target: number;
   rekey_to: string;
   transactions: string[];
-  mutations?: MutationReport;
+  mutations?: WireMutationReport;
 }
 
 /** Request payload for /sign/rotating/sign. */

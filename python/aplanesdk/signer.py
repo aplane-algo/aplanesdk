@@ -598,6 +598,50 @@ class AssemblyResponse:
 
 
 @dataclass
+class RotatingPrepareRequest:
+    """Request payload for /sign/rotating/prepare: one unsigned, ungrouped,
+    TX-prefixed transaction from a rotating account. The SDK carries the wire
+    shape only; it does not drive the rotating flow."""
+
+    account: str
+    txn_bytes_hex: str
+    request_id: str = ""
+
+
+@dataclass
+class RotatingPrepareResponse:
+    """The exact unsigned group the signer will sign. ``mutations`` is the
+    wire mutation report (snake_case keys), when present."""
+
+    account: str
+    stage: int
+    target: int
+    rekey_to: str
+    transactions: List[str]
+    mutations: Optional[Dict[str, Any]] = None
+
+
+@dataclass
+class RotatingSignRequest:
+    """Request payload for /sign/rotating/sign."""
+
+    account: str
+    transactions: List[str]
+    request_id: str = ""
+
+
+@dataclass
+class RotatingSignResponse:
+    """Response payload from /sign/rotating/sign."""
+
+    signed: List[str]
+    stage: int
+    target: int
+    txid: str
+    group_id: str
+
+
+@dataclass
 class GuardedPassthroughAuthorization:
     """Authorization shape used to budget a guarded passthrough slot."""
 
