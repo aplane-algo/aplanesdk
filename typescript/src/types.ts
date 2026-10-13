@@ -18,6 +18,13 @@ import { SignerError } from "./errors.js";
 export const SIGNING_FLOW_COSIGNER1 = "cosigner1";
 export const SIGNING_FLOW_BOUNDED1 = "bounded1";
 export const SIGNING_FLOW_BOUNDED_COSIGNER1 = "bounded-cosigner1";
+/**
+ * Rotating account choreography (/sign/rotating/prepare then
+ * /sign/rotating/sign), in which the signer rekeys the account to a fresh
+ * stage on every spend. This SDK does not implement it; keys labelled with
+ * it must be signed through apshell.
+ */
+export const SIGNING_FLOW_ROTATING1 = "rotating1";
 
 export const KEY_TYPE_WITNESS_FALCON1024 = "aplane.witness-falcon1024.v1";
 export const KEY_TYPE_GUARDED_FALCON1024_COSIGNER1024 =
@@ -401,6 +408,45 @@ export interface StatusResponse {
   approvalWaitSeconds?: number;
   /** Persistent signer health warnings intended for operator display */
   warnings?: string[];
+  /** Informational status lines that need no action, such as a rotating account's release still in flight */
+  notes?: string[];
+}
+
+/**
+ * Request payload for /sign/rotating/prepare: one unsigned, ungrouped,
+ * TX-prefixed transaction from a rotating account. The SDK carries the wire
+ * shape only; it does not drive the flow.
+ */
+export interface RotatingPrepareRequest {
+  request_id?: string;
+  account: string;
+  txn_bytes_hex: string;
+}
+
+/** The exact unsigned group the signer will sign. */
+export interface RotatingPrepareResponse {
+  account: string;
+  stage: number;
+  target: number;
+  rekey_to: string;
+  transactions: string[];
+  mutations?: MutationReport;
+}
+
+/** Request payload for /sign/rotating/sign. */
+export interface RotatingSignRequest {
+  request_id?: string;
+  account: string;
+  transactions: string[];
+}
+
+/** Response payload for /sign/rotating/sign. */
+export interface RotatingSignResponse {
+  signed: string[];
+  stage: number;
+  target: number;
+  txid: string;
+  group_id: string;
 }
 
 /**
@@ -986,6 +1032,12 @@ export const ErrorCodes = {
   CacheRefresh: "cache_refresh",
   BoundedAdminRequired: "bounded_admin_required",
   BoundedCosignerRequired: "bounded_cosigner_required",
+  /** A rotating account (rotating1) was sent to an ordinary signing endpoint. */
+  RotatingSigningRequired: "rotating_signing_required",
+  /** 409, temporary: the signer has not yet found the account's live stage. */
+  RotatingStageUnproven: "rotating_stage_unproven",
+  /** 409: the account's authorizer moved between prepare and sign; nothing was signed. */
+  RotatingStageChanged: "rotating_stage_changed",
   Internal: "internal",
 } as const;
 

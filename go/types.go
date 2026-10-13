@@ -186,6 +186,41 @@ type CancelSignResponse struct {
 	Error   string          `json:"error,omitempty"`
 }
 
+// RotatingPrepareRequest is the request payload for /sign/rotating/prepare:
+// one unsigned, ungrouped, TX-prefixed transaction from a rotating account.
+// The SDK carries the wire shape only; it does not drive the flow.
+type RotatingPrepareRequest struct {
+	RequestID   string `json:"request_id,omitempty"`
+	Account     string `json:"account"`
+	TxnBytesHex string `json:"txn_bytes_hex"`
+}
+
+// RotatingPrepareResponse is the exact unsigned group the signer will sign.
+type RotatingPrepareResponse struct {
+	Account      string          `json:"account"`
+	Stage        uint64          `json:"stage"`
+	Target       uint64          `json:"target"`
+	RekeyTo      string          `json:"rekey_to"`
+	Transactions []string        `json:"transactions"`
+	Mutations    *MutationReport `json:"mutations,omitempty"`
+}
+
+// RotatingSignRequest is the request payload for /sign/rotating/sign.
+type RotatingSignRequest struct {
+	RequestID    string   `json:"request_id,omitempty"`
+	Account      string   `json:"account"`
+	Transactions []string `json:"transactions"`
+}
+
+// RotatingSignResponse is the response payload for /sign/rotating/sign.
+type RotatingSignResponse struct {
+	Signed  []string `json:"signed"`
+	Stage   uint64   `json:"stage"`
+	Target  uint64   `json:"target"`
+	TxID    string   `json:"txid"`
+	GroupID string   `json:"group_id"`
+}
+
 // RequestMode describes the mutually exclusive mode selected by a SignRequest.
 type RequestMode string
 
@@ -506,6 +541,9 @@ type StatusResponse struct {
 	KeysetRevision      uint64          `json:"keyset_revision"`
 	ApprovalWaitSeconds int64           `json:"approval_wait_seconds,omitempty"`
 	Warnings            []string        `json:"warnings,omitempty"`
+	// Notes are informational status lines that need no action, such as a
+	// rotating account's release still in flight.
+	Notes []string `json:"notes,omitempty"`
 }
 
 // RuntimeArg describes a runtime argument for generic LogicSig keys.
@@ -583,6 +621,12 @@ const SigningFlowBounded1 = "bounded1"
 // user-signer bounded base release, cosigner component signing, and source-bound
 // bounded assembly.
 const SigningFlowBoundedCosigner1 = "bounded-cosigner1"
+
+// SigningFlowRotating1 names the rotating account choreography
+// (/sign/rotating/prepare then /sign/rotating/sign), in which the signer
+// rekeys the account to a fresh stage on every spend. This SDK does not
+// implement it; keys labelled with it must be signed through apshell.
+const SigningFlowRotating1 = "rotating1"
 
 type BoundedSignatureArgLayout struct {
 	Count    int   `json:"count"`

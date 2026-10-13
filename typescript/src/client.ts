@@ -2820,6 +2820,9 @@ export class SignerClient {
       warnings: Array.isArray(data.warnings)
         ? data.warnings.filter((warning): warning is string => typeof warning === "string")
         : undefined,
+      notes: Array.isArray(data.notes)
+        ? data.notes.filter((note): note is string => typeof note === "string")
+        : undefined,
     };
     this.cacheApprovalWait(status.approvalWaitSeconds);
     return status;
