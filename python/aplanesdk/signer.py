@@ -121,6 +121,11 @@ AUTHORIZATION_KIND_LOGIC_SIG = "logic_sig"
 SIGNING_FLOW_COSIGNER1 = "cosigner1"
 SIGNING_FLOW_BOUNDED1 = "bounded1"
 SIGNING_FLOW_BOUNDED_COSIGNER1 = "bounded-cosigner1"
+# Rotating account choreography (/sign/rotating/prepare then
+# /sign/rotating/sign), in which the signer rekeys the account to a fresh
+# stage on every spend. This SDK does not implement it; keys labelled with
+# it must be signed through apshell.
+SIGNING_FLOW_ROTATING1 = "rotating1"
 
 KEY_TYPE_WITNESS_FALCON1024 = "aplane.witness-falcon1024.v1"
 KEY_TYPE_GUARDED_FALCON1024_COSIGNER1024 = "aplane.falcon1024-cosigner1024.v1"
@@ -155,6 +160,12 @@ ERR_CODE_CACHE_REFRESH = "cache_refresh"
 ERR_CODE_INTERNAL = "internal"
 ERR_CODE_BOUNDED_ADMIN_REQUIRED = "bounded_admin_required"
 ERR_CODE_BOUNDED_COSIGNER_REQUIRED = "bounded_cosigner_required"
+# A rotating account (rotating1) was sent to an ordinary signing endpoint.
+ERR_CODE_ROTATING_SIGNING_REQUIRED = "rotating_signing_required"
+# 409, temporary: the signer has not yet found the account's live stage.
+ERR_CODE_ROTATING_STAGE_UNPROVEN = "rotating_stage_unproven"
+# 409: the account's authorizer moved between prepare and sign; nothing was signed.
+ERR_CODE_ROTATING_STAGE_CHANGED = "rotating_stage_changed"
 
 
 class SignerError(Exception):
@@ -483,6 +494,9 @@ class StatusResponse:
     approval_wait_seconds: int = 0
     node_role: str = ""
     warnings: List[str] = field(default_factory=list)
+    # Informational lines that need no action, such as a rotating account's
+    # release still in flight.
+    notes: List[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if isinstance(self.protocol_version, dict):
@@ -581,6 +595,50 @@ class AssemblyResponse:
 
     request_id: str
     signed_group: List[str]
+
+
+@dataclass
+class RotatingPrepareRequest:
+    """Request payload for /sign/rotating/prepare: one unsigned, ungrouped,
+    TX-prefixed transaction from a rotating account. The SDK carries the wire
+    shape only; it does not drive the rotating flow."""
+
+    account: str
+    txn_bytes_hex: str
+    request_id: str = ""
+
+
+@dataclass
+class RotatingPrepareResponse:
+    """The exact unsigned group the signer will sign. ``mutations`` is the
+    wire mutation report (snake_case keys), when present."""
+
+    account: str
+    stage: int
+    target: int
+    rekey_to: str
+    transactions: List[str]
+    mutations: Optional[Dict[str, Any]] = None
+
+
+@dataclass
+class RotatingSignRequest:
+    """Request payload for /sign/rotating/sign."""
+
+    account: str
+    transactions: List[str]
+    request_id: str = ""
+
+
+@dataclass
+class RotatingSignResponse:
+    """Response payload from /sign/rotating/sign."""
+
+    signed: List[str]
+    stage: int
+    target: int
+    txid: str
+    group_id: str
 
 
 @dataclass
@@ -2757,6 +2815,7 @@ class SignerClient:
 
         data = resp.json()
         raw_warnings = data.get("warnings")
+        raw_notes = data.get("notes")
         status = StatusResponse(
             node_role=data.get("node_role", ""),
             state=data.get("state", ""),
@@ -2770,6 +2829,11 @@ class SignerClient:
             warnings=(
                 [warning for warning in raw_warnings if isinstance(warning, str)]
                 if isinstance(raw_warnings, list)
+                else []
+            ),
+            notes=(
+                [note for note in raw_notes if isinstance(note, str)]
+                if isinstance(raw_notes, list)
                 else []
             ),
         )

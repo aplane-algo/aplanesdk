@@ -78,6 +78,16 @@ const (
 	ErrCodeInternal                = "internal"
 	ErrCodeBoundedAdminRequired    = "bounded_admin_required"
 	ErrCodeBoundedCosignerRequired = "bounded_cosigner_required"
+	// ErrCodeRotatingSigningRequired: a rotating account (signing_flow
+	// rotating1) was sent to an ordinary signing endpoint. The SDK does not
+	// implement the rotating flow.
+	ErrCodeRotatingSigningRequired = "rotating_signing_required"
+	// ErrCodeRotatingStageUnproven (409, temporary): the signer has not yet
+	// found the rotating account's live stage; a retry usually succeeds.
+	ErrCodeRotatingStageUnproven = "rotating_stage_unproven"
+	// ErrCodeRotatingStageChanged (409): the account's authorizer moved
+	// between prepare and sign; nothing was signed.
+	ErrCodeRotatingStageChanged = "rotating_stage_changed"
 )
 
 // APIError preserves the HTTP status, stable wire error code, and message of

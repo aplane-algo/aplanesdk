@@ -26,12 +26,19 @@ from aplanesdk.signer import (
     ERR_CODE_INTERNAL,
     ERR_CODE_BOUNDED_ADMIN_REQUIRED,
     ERR_CODE_BOUNDED_COSIGNER_REQUIRED,
+    ERR_CODE_ROTATING_SIGNING_REQUIRED,
+    ERR_CODE_ROTATING_STAGE_UNPROVEN,
+    ERR_CODE_ROTATING_STAGE_CHANGED,
     ERR_CODE_INVALID_PASSPHRASE,
     ERR_CODE_LOCKED,
     ERR_CODE_NOT_FOUND,
     ERR_CODE_UNAUTHORIZED,
     ERR_CODE_UNAVAILABLE,
     LogicSigResourceUsage,
+    RotatingPrepareRequest,
+    RotatingPrepareResponse,
+    RotatingSignRequest,
+    RotatingSignResponse,
     SignerClient,
     StatusResponse,
     _validate_component_request,
@@ -94,6 +101,9 @@ def sdk_error_codes() -> list[str]:
         ERR_CODE_INTERNAL,
         ERR_CODE_BOUNDED_ADMIN_REQUIRED,
         ERR_CODE_BOUNDED_COSIGNER_REQUIRED,
+        ERR_CODE_ROTATING_SIGNING_REQUIRED,
+        ERR_CODE_ROTATING_STAGE_UNPROVEN,
+        ERR_CODE_ROTATING_STAGE_CHANGED,
     ]
 
 
@@ -412,6 +422,22 @@ def test_generate_key_maps_component_response():
     assert generated.key_type == "aplane.witness-falcon1024.v1"
     assert generated.is_witness_key is True
     assert generated.is_spending_account is False
+
+
+def test_rotating_dtos_round_trip_fixtures():
+    prepare_req = RotatingPrepareRequest(**fixture("rotating_prepare_request.json"))
+    assert asdict(prepare_req) == fixture("rotating_prepare_request.json")
+    prepare_resp = RotatingPrepareResponse(**fixture("rotating_prepare_response.json"))
+    assert asdict(prepare_resp) == fixture("rotating_prepare_response.json")
+    assert prepare_resp.target == prepare_resp.stage + 1
+    assert prepare_resp.mutations is not None
+    assert prepare_resp.mutations["dummies_added"] == 1
+    sign_req = RotatingSignRequest(**fixture("rotating_sign_request.json"))
+    assert asdict(sign_req) == fixture("rotating_sign_request.json")
+    assert sign_req.transactions == prepare_resp.transactions
+    sign_resp = RotatingSignResponse(**fixture("rotating_sign_response.json"))
+    assert asdict(sign_resp) == fixture("rotating_sign_response.json")
+    assert sign_resp.target == sign_resp.stage + 1
 
 
 def test_cosigner_dtos_round_trip_fixtures():

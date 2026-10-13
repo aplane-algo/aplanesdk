@@ -15,6 +15,10 @@ import type {
   ComponentResponse,
   AssemblyRequest,
   AssemblyResponse,
+  RotatingPrepareRequest,
+  RotatingPrepareResponse,
+  RotatingSignRequest,
+  RotatingSignResponse,
 } from "../src/types.js";
 
 interface MockFetch {
@@ -440,6 +444,23 @@ describe("signer API contract fixtures", () => {
     const unifiedResp = fixture("assembly_response.json") as AssemblyResponse;
     assert.equal(unifiedResp.signed_group.length, 3);
 
+  });
+
+  it("round-trips rotating fixture DTOs as wire shapes", () => {
+    const prepareReq = fixture("rotating_prepare_request.json") as RotatingPrepareRequest;
+    assert.equal(prepareReq.txn_bytes_hex.length > 0, true);
+    const prepareResp = fixture("rotating_prepare_response.json") as RotatingPrepareResponse;
+    assert.equal(prepareResp.target, prepareResp.stage + 1);
+    assert.equal(prepareResp.transactions.length, 2);
+    assert.equal(prepareResp.mutations?.dummies_added, 1);
+    assert.equal(prepareResp.mutations?.group_id_changed, true);
+    assert.deepEqual(prepareResp.mutations?.fees_modified, [0]);
+    const signReq = fixture("rotating_sign_request.json") as RotatingSignRequest;
+    assert.deepEqual(signReq.transactions, prepareResp.transactions);
+    const signResp = fixture("rotating_sign_response.json") as RotatingSignResponse;
+    assert.equal(signResp.signed.length, 2);
+    assert.equal(signResp.target, signResp.stage + 1);
+    assert.equal(signResp.group_id.length > 0, true);
   });
 
   it("accepts the canonical component request through runtime validation", async () => {

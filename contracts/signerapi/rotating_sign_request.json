@@ -1,0 +1,8 @@
+{
+  "request_id": "rotating-sign-1",
+  "account": "ROTATINGADDR000000000000000000000000000000000000000000000",
+  "transactions": [
+    "545889a3666565cd03e8",
+    "54588aa3666565cd0000"
+  ]
+}

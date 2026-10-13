@@ -157,6 +157,11 @@ func TestGoSDKContractFixturesRoundTrip(t *testing.T) {
 		{"keys_response_component.json", assertSDKContractRoundTrip[KeysResponse]},
 		{"keys_response_guarded.json", assertSDKContractRoundTrip[KeysResponse]},
 		{"keys_response_bounded.json", assertSDKContractRoundTrip[KeysResponse]},
+		{"keys_response_rotating.json", assertSDKContractRoundTrip[KeysResponse]},
+		{"rotating_prepare_request.json", assertSDKContractRoundTrip[RotatingPrepareRequest]},
+		{"rotating_prepare_response.json", assertSDKContractRoundTrip[RotatingPrepareResponse]},
+		{"rotating_sign_request.json", assertSDKContractRoundTrip[RotatingSignRequest]},
+		{"rotating_sign_response.json", assertSDKContractRoundTrip[RotatingSignResponse]},
 		{"keytypes_response_full.json", assertSDKContractRoundTrip[KeyTypesResponse]},
 		{"keytypes_response_bounded.json", assertSDKContractRoundTrip[KeyTypesResponse]},
 		{"admin_generate_request_generic.json", assertSDKContractRoundTrip[generateRequest]},
@@ -590,6 +595,9 @@ func signerAPIErrorCodes(t *testing.T) []string {
 		ErrCodeInternal,
 		ErrCodeBoundedAdminRequired,
 		ErrCodeBoundedCosignerRequired,
+		ErrCodeRotatingSigningRequired,
+		ErrCodeRotatingStageUnproven,
+		ErrCodeRotatingStageChanged,
 	}
 }
 
