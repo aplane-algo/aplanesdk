@@ -96,7 +96,7 @@ func TestSign_ForbiddenCodeIsRejected(t *testing.T) {
 	}
 }
 
-func TestRequestComponents_CosignerKeyHasNoPolicyIsRejected(t *testing.T) {
+func TestRequestComponents_CosignerKeyOnDenyAllDefaultIsRejected(t *testing.T) {
 	witnessKeyID := strings.Repeat("A", 52)
 	calls := 0
 	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
@@ -105,7 +105,7 @@ func TestRequestComponents_CosignerKeyHasNoPolicyIsRejected(t *testing.T) {
 			t.Errorf("request = %s %s, want POST /sign/component", r.Method, r.URL.Path)
 		}
 		writeCodedError(w, http.StatusForbidden, ErrCodeForbidden,
-			"cosigner policy rejected request: [cosigner_policy:key_has_no_policy] cosigner key "+witnessKeyID+" has no policy")
+			"cosigner policy rejected request: txn 1: [transaction_type:pay] pay transactions are rejected by policy")
 	})
 	defer server.Close()
 

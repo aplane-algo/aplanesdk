@@ -1279,10 +1279,10 @@ describe("SignerClient", () => {
       assert.equal(body.targets[0].component_key, "COMPONENT");
     });
 
-    it("rejects a cosigner key without a policy", async () => {
+    it("rejects a cosigner key on the deny-all default", async () => {
       const witnessKeyId = "A".repeat(52);
-      const message = "cosigner policy rejected request: [cosigner_policy:key_has_no_policy] "
-        + `cosigner key ${witnessKeyId} has no policy`;
+      const message = "cosigner policy rejected request: txn 1: [transaction_type:pay] "
+        + "pay transactions are rejected by policy";
       mockFetch.mockResolvedValueOnce({
         status: 403,
         ok: false,

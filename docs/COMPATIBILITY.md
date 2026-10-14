@@ -16,22 +16,26 @@ The same release removes the obsolete client-side minimum-fee option from the
 prepared guarded APIs and requires `GuardedSignTarget` callers to provide the
 selected LogicSig resource declaration. Upgrade the signer and SDK together.
 
-APlane's v1 policy implementation uses `policy.json` on signer nodes and
-`policies/<WitnessKeyID>.json` on cosigner nodes, with a `.hmac` sidecar for
-each document in the active store generation. It does not read or migrate
-the former `policy.yaml` format. Operators must prepare and apply v1 JSON
-documents through `apadmin policy check` and `apadmin policy apply`; see the
+APlane's policy implementation stores one `aplane.policy.v1` document per
+file, each with a `.hmac` sidecar in the active store generation: a node
+default, `default.json`, plus `policies/<selector>.json` for every key given a
+policy of its own (the address on a signer node, the Witness Key ID on a
+cosigner node). A key with no file of its own follows the node default; a key
+with one is governed by that file alone. It does not read or migrate earlier
+layouts. Operators prepare and apply documents through `apadmin policy check`
+and `apadmin policy apply`; see the
 [APlane policy guide](https://github.com/aplane-algo/aplane/blob/main/docs/USER_POLICY.md)
 and [v1 format specification](https://github.com/aplane-algo/aplane/blob/main/docs/ARCH_POLICY_FORMAT.md).
 
-Each cosigner Witness Key ID requires its own policy; there is no node-wide
-fallback. A held key without a policy rejects `/sign/component` with HTTP 403,
-`code: "forbidden"`, and rule ID `cosigner_policy:key_has_no_policy` in the
-error message. A key the node does not hold returns HTTP 400 with
-`code: "bad_request"`. This applies to both `cosigner1` and
-`bounded-cosigner1` flows. The existing Go, Python, and TypeScript SDKs handle
-these responses without client API or signer wire-contract changes. Policy
-provisioning remains an operator workflow outside the SDKs.
+The shipped cosigner default rejects every transaction type, so a held
+cosigner key with no document of its own rejects `/sign/component` with HTTP
+403, `code: "forbidden"`, and a `transaction_type:<type>` rule ID in the error
+message until the operator applies a document for it. A key the node does not
+hold returns HTTP 400 with `code: "bad_request"`. This applies to both
+`cosigner1` and `bounded-cosigner1` flows. The existing Go, Python, and
+TypeScript SDKs handle these responses without client API or signer
+wire-contract changes. Policy provisioning remains an operator workflow outside
+the SDKs.
 
 The SDKs read only the current signer wire and client file formats:
 
