@@ -328,7 +328,7 @@ func (r GroupSignRequest) Validate() error {
 	}
 
 	if passthroughCount > 0 && foreignCount > 0 {
-		return fmt.Errorf("cannot mix passthrough and foreign transactions: passthrough requires pre-grouped, foreign requires server-computed group ID")
+		return fmt.Errorf("cannot mix passthrough and foreign transactions in one request")
 	}
 	if signCount == 0 && foreignCount > 0 {
 		return fmt.Errorf("no signable transactions: all entries are foreign. Build and submit this group locally instead of using apsigner")

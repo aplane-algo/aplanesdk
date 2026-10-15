@@ -735,7 +735,7 @@ export function validateSignRequests(requests: SignRequest[]): void {
   });
   if (passthroughCount > 0 && foreignCount > 0) {
     throw new SignerError(
-      "cannot mix passthrough and foreign transactions: passthrough requires pre-grouped, foreign requires server-computed group ID",
+      "cannot mix passthrough and foreign transactions in one request",
     );
   }
   if (signCount === 0 && foreignCount > 0) {

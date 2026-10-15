@@ -1399,10 +1399,7 @@ def _validate_sign_entries(sign_entries: List[Dict[str, Any]]) -> None:
         except ValueError as e:
             raise ValueError(f"transaction {index + 1}: {e}") from e
     if passthrough_count and foreign_count:
-        raise ValueError(
-            "cannot mix passthrough and foreign transactions: passthrough requires "
-            "pre-grouped, foreign requires server-computed group ID"
-        )
+        raise ValueError("cannot mix passthrough and foreign transactions in one request")
     if sign_count == 0 and foreign_count:
         raise ValueError(
             "no signable transactions: all entries are foreign. Build and submit "
