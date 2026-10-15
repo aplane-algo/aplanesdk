@@ -63,6 +63,7 @@ import {
   SIGNING_FLOW_COSIGNER1,
   SIGNING_FLOW_BOUNDED1,
   SIGNING_FLOW_BOUNDED_COSIGNER1,
+  SIGNING_FLOW_ROTATING1,
   PQ_SCHEME_FALCON1024,
   AUTHORIZATION_KIND_NATIVE_PQ,
   validateLogicSigResources,
@@ -2243,6 +2244,27 @@ function rekeyChecks(accountInfo: AccountInfoResult | Record<string, any>, rekey
   }];
 }
 
+// rekeyTargetFlowCheck refuses a rekey to a signer key whose signing flow
+// cannot authorize another account. A rotating account's address is its
+// stage 0 program, which authorizes only the account itself, and the signer
+// refuses that rekey; any flow this SDK does not know is refused too, so a
+// future flow fails closed here rather than at the signer.
+function rekeyTargetFlowCheck(rekeyTo: string, flow: string | undefined): void {
+  switch (flow ?? "") {
+    case "":
+    case SIGNING_FLOW_BOUNDED1:
+    case SIGNING_FLOW_COSIGNER1:
+    case SIGNING_FLOW_BOUNDED_COSIGNER1:
+      return;
+    case SIGNING_FLOW_ROTATING1:
+      throw new SignerError(`cannot rekey to ${rekeyTo}: it is a rotating account, whose address authorizes only itself`);
+    default:
+      throw new SignerError(
+        `cannot rekey to ${rekeyTo}: it uses signing flow "${flow}", which this SDK cannot use as another account's authorizer`,
+      );
+  }
+}
+
 function validateKeyregParams(params: KeyregPrepParams): void {
   if (params.nonParticipation) {
     return;
@@ -3308,6 +3330,12 @@ export class SignerClient {
     });
 
     const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
+    // Resolution just refreshed the inventory, so the cache answers for the
+    // target without another round trip.
+    const target = params.rekeyTo === params.sender ? undefined : this.keyCache.get(params.rekeyTo);
+    if (target) {
+      rekeyTargetFlowCheck(params.rekeyTo, target.signingFlow);
+    }
     return {
       transaction: txn,
       authAddress: resolved.authAddress,

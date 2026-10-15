@@ -728,6 +728,35 @@ describe("SignerClient", () => {
       assert.equal(prepared.checks?.[0].name, "rekey");
     });
 
+    for (const [flow, want] of [
+      ["rotating1", /rotating account/],
+      ["rotating2", /signing flow "rotating2"/],
+    ] as const) {
+      it(`refuses rekeys to a ${flow} signer key`, async () => {
+        const sender = testAddress(1);
+        const rekeyTo = testAddress(2);
+        const algod = mockAlgod({
+          [sender]: { amount: 2_000_000, minBalance: 100_000 },
+          [rekeyTo]: { amount: 2_000_000, minBalance: 100_000 },
+        });
+        queueStatusResponse(60, 1);
+        mockFetch.mockResolvedValueOnce({
+          status: 200,
+          ok: true,
+          json: async () => ({
+            count: 2,
+            keys: [
+              { address: sender, key_type: "ed25519" },
+              { address: rekeyTo, key_type: "test.rotating", signing_flow: flow },
+            ],
+          }),
+        });
+
+        const client = new SignerClient("http://localhost:11270");
+        await assert.rejects(client.prepareRekey(algod, { sender, rekeyTo }), want);
+      });
+    }
+
     it("rejects rekey chains", async () => {
       const sender = testAddress(1);
       const rekeyTo = testAddress(2);

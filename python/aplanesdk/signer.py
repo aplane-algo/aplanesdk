@@ -2056,6 +2056,27 @@ def _rekey_checks(target_info: Any, rekey_to: str) -> List[PreparedCheck]:
     ]
 
 
+def _rekey_target_flow_check(rekey_to: str, flow: str) -> None:
+    """Refuse a rekey to a signer key whose signing flow cannot authorize
+    another account.
+
+    A rotating account's address is its stage 0 program, which authorizes
+    only the account itself, and the signer refuses that rekey; any flow this
+    SDK does not know is refused too, so a future flow fails closed here
+    rather than at the signer.
+    """
+    if flow in ("", SIGNING_FLOW_BOUNDED1, SIGNING_FLOW_COSIGNER1, SIGNING_FLOW_BOUNDED_COSIGNER1):
+        return
+    if flow == SIGNING_FLOW_ROTATING1:
+        raise SignerError(
+            f"cannot rekey to {rekey_to}: it is a rotating account, whose address authorizes only itself"
+        )
+    raise SignerError(
+        f"cannot rekey to {rekey_to}: it uses signing flow {flow!r}, which this SDK cannot use as "
+        "another account's authorizer"
+    )
+
+
 def _validate_keyreg_params(
     *,
     nonpart: bool,
@@ -3295,6 +3316,11 @@ class SignerClient:
             rekey_to=rekey_to,
         )
         resolved = self.resolve_auth_address(sender, lambda _: sender_info)
+        # Resolution just refreshed the inventory, so the cache answers for
+        # the target without another round trip.
+        target = None if rekey_to == sender else self._key_cache.get(rekey_to)
+        if target is not None:
+            _rekey_target_flow_check(rekey_to, target.signing_flow)
         return PreparedTransaction(
             transaction=txn,
             auth_address=resolved.auth_address,
