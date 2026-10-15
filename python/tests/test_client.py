@@ -2911,6 +2911,29 @@ class TestPrepHelpers:
         assert prepared.transaction.rekey_to == rekey_to
         assert prepared.checks[0].name == "rekey"
 
+    @pytest.mark.parametrize("flow,want", [
+        ("rotating1", "rotating account"),
+        ("rotating2", "signing flow 'rotating2'"),
+    ])
+    def test_prepare_rekey_refuses_unroutable_signer_target(self, flow, want):
+        sender = sdk_test_address(1)
+        rekey_to = sdk_test_address(2)
+        algod = MockAlgod({
+            sender: {"amount": 2_000_000, "min-balance": 100_000},
+            rekey_to: {"amount": 2_000_000, "min-balance": 100_000},
+        })
+        client = make_client()
+        keys = mock_response(200, {
+            "count": 2,
+            "keys": [
+                {"address": sender, "key_type": "ed25519"},
+                {"address": rekey_to, "key_type": "test.rotating", "signing_flow": flow},
+            ],
+        })
+        with patch.object(client.session, "get", side_effect=[self._status(), keys]):
+            with pytest.raises(SignerError, match=want):
+                client.prepare_rekey(algod, sender=sender, rekey_to=rekey_to)
+
     def test_prepare_rekey_rejects_rekey_chain(self):
         sender = sdk_test_address(1)
         rekey_to = sdk_test_address(2)

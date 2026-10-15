@@ -486,6 +486,18 @@ func (c *SignerClient) PrepareRekey(ctx context.Context, algodClient *algod.Clie
 	if err != nil {
 		return nil, err
 	}
+	// Resolution just refreshed the inventory, so the cache answers for the
+	// target without another round trip.
+	if params.RekeyTo != params.Sender {
+		c.keyMu.RLock()
+		target, held := c.keyCache[params.RekeyTo]
+		c.keyMu.RUnlock()
+		if held {
+			if err := rekeyTargetFlowCheck(params.RekeyTo, target.SigningFlow); err != nil {
+				return nil, err
+			}
+		}
+	}
 
 	return &PreparedTransaction{
 		Transaction: &txn,
@@ -974,6 +986,22 @@ func rekeyChecks(target models.Account, rekeyTo string) ([]PreparedCheck, error)
 			"rekey_to": rekeyTo,
 		},
 	}}, nil
+}
+
+// rekeyTargetFlowCheck refuses a rekey to a signer key whose signing flow
+// cannot authorize another account. A rotating account's address is its
+// stage 0 program, which authorizes only the account itself, and the signer
+// refuses that rekey; any flow this SDK does not know is refused too, so a
+// future flow fails closed here rather than at the signer.
+func rekeyTargetFlowCheck(rekeyTo, flow string) error {
+	switch flow {
+	case "", SigningFlowBounded1, SigningFlowCosigner1, SigningFlowBoundedCosigner1:
+		return nil
+	case SigningFlowRotating1:
+		return fmt.Errorf("cannot rekey to %s: it is a rotating account, whose address authorizes only itself", rekeyTo)
+	default:
+		return fmt.Errorf("cannot rekey to %s: it uses signing flow %q, which this SDK cannot use as another account's authorizer", rekeyTo, flow)
+	}
 }
 
 func validateKeyRegParams(params KeyRegPrepParams) error {

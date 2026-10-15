@@ -24,7 +24,7 @@ func sdkTestAddress(seed byte) string {
 	return addr.String()
 }
 
-func newPrepTestClients(t *testing.T, sender string, receiver string, senderAmount uint64, assetAmount uint64, receiverOptedIn bool) (*SignerClient, *algod.Client, func()) {
+func newPrepTestClients(t *testing.T, sender string, receiver string, senderAmount uint64, assetAmount uint64, receiverOptedIn bool, extraKeys ...KeyInfo) (*SignerClient, *algod.Client, func()) {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -35,12 +35,13 @@ func newPrepTestClients(t *testing.T, sender string, receiver string, senderAmou
 				KeysetRevision:  1,
 			})
 		case r.URL.Path == "/keys":
+			keys := append([]KeyInfo{{
+				Address: sender,
+				KeyType: "ed25519",
+			}}, extraKeys...)
 			json.NewEncoder(w).Encode(KeysResponse{
-				Count: 1,
-				Keys: []KeyInfo{{
-					Address: sender,
-					KeyType: "ed25519",
-				}},
+				Count: len(keys),
+				Keys:  keys,
 			})
 		case r.URL.Path == "/v2/transactions/params":
 			json.NewEncoder(w).Encode(map[string]any{
@@ -261,6 +262,40 @@ func TestPrepareRekey(t *testing.T) {
 	}
 	if prepared.Checks[0].Name != "rekey" {
 		t.Fatalf("checks mismatch: %#v", prepared.Checks)
+	}
+}
+
+func TestPrepareRekeyRefusesUnroutableSignerTarget(t *testing.T) {
+	sender := sdkTestAddress(1)
+	rekeyTo := sdkTestAddress(2)
+	for _, tc := range []struct {
+		flow string
+		want string
+	}{
+		{SigningFlowRotating1, "rotating account"},
+		{"rotating2", `signing flow "rotating2"`},
+	} {
+		signer, algodClient, cleanup := newPrepTestClients(t, sender, rekeyTo, 2_000_000, 0, false,
+			KeyInfo{Address: rekeyTo, KeyType: "test.rotating", SigningFlow: tc.flow})
+		prepared, err := signer.PrepareRekey(context.Background(), algodClient, RekeyPrepParams{
+			Sender:  sender,
+			RekeyTo: rekeyTo,
+		})
+		cleanup()
+		if err == nil || prepared != nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("flow %q: prepared = %v, err = %v, want %q", tc.flow, prepared, err, tc.want)
+		}
+	}
+}
+
+func TestPrepareRekeyAllowsGuardedSignerTarget(t *testing.T) {
+	sender := sdkTestAddress(1)
+	rekeyTo := sdkTestAddress(2)
+	signer, algodClient, cleanup := newPrepTestClients(t, sender, rekeyTo, 2_000_000, 0, false,
+		KeyInfo{Address: rekeyTo, KeyType: "test.guarded", SigningFlow: SigningFlowCosigner1})
+	defer cleanup()
+	if _, err := signer.PrepareRekey(context.Background(), algodClient, RekeyPrepParams{Sender: sender, RekeyTo: rekeyTo}); err != nil {
+		t.Fatalf("PrepareRekey() error = %v", err)
 	}
 }
 
