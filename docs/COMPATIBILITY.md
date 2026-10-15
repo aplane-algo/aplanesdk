@@ -25,7 +25,7 @@ with one is governed by that file alone. It does not read or migrate earlier
 layouts. Operators prepare and apply documents through `apadmin policy check`
 and `apadmin policy apply`; see the
 [APlane policy guide](https://github.com/aplane-algo/aplane/blob/main/docs/USER_POLICY.md)
-and [v1 format specification](https://github.com/aplane-algo/aplane/blob/main/docs/ARCH_POLICY_FORMAT.md).
+and [v1 format specification](https://github.com/aplane-algo/aplane/blob/main/docs/ARCH_POLICY.md#the-boundary).
 
 The shipped cosigner default rejects every transaction type, so a held
 cosigner key with no document of its own rejects `/sign/component` with HTTP
