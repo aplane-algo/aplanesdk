@@ -12,6 +12,7 @@
     "internal",
     "bounded_admin_required",
     "bounded_cosigner_required",
+    "bounded_admin_target_rejected",
     "rotating_signing_required",
     "rotating_stage_unproven",
     "rotating_stage_changed"

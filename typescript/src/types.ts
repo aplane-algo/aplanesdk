@@ -1049,6 +1049,8 @@ export const ErrorCodes = {
   CacheRefresh: "cache_refresh",
   BoundedAdminRequired: "bounded_admin_required",
   BoundedCosignerRequired: "bounded_cosigner_required",
+  /** An admin-key bounded rekey named a target that is not a nonrotating signing credential the signer holds. */
+  BoundedAdminTargetRejected: "bounded_admin_target_rejected",
   /** A rotating account (rotating1) was sent to an ordinary signing endpoint. */
   RotatingSigningRequired: "rotating_signing_required",
   /** 409, temporary: the signer has not yet found the account's live stage. */

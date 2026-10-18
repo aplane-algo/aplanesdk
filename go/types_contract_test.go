@@ -595,6 +595,7 @@ func signerAPIErrorCodes(t *testing.T) []string {
 		ErrCodeInternal,
 		ErrCodeBoundedAdminRequired,
 		ErrCodeBoundedCosignerRequired,
+		ErrCodeBoundedAdminTargetRejected,
 		ErrCodeRotatingSigningRequired,
 		ErrCodeRotatingStageUnproven,
 		ErrCodeRotatingStageChanged,
