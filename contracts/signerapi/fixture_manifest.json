@@ -26,7 +26,6 @@
     "keys_response_generic.json",
     "keys_response_guarded.json",
     "keys_response_rotating.json",
-    "keys_response_rotating_wots.json",
     "keytypes_response_bounded.json",
     "keytypes_response_full.json",
     "rotating_prepare_request.json",
