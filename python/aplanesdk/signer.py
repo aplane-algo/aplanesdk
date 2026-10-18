@@ -160,6 +160,7 @@ ERR_CODE_CACHE_REFRESH = "cache_refresh"
 ERR_CODE_INTERNAL = "internal"
 ERR_CODE_BOUNDED_ADMIN_REQUIRED = "bounded_admin_required"
 ERR_CODE_BOUNDED_COSIGNER_REQUIRED = "bounded_cosigner_required"
+ERR_CODE_BOUNDED_ADMIN_TARGET_REJECTED = "bounded_admin_target_rejected"
 # A rotating account (rotating1) was sent to an ordinary signing endpoint.
 ERR_CODE_ROTATING_SIGNING_REQUIRED = "rotating_signing_required"
 # 409, temporary: the signer has not yet found the account's live stage.
