@@ -1,0 +1,8 @@
+{
+  "account": "ROTATINGADDR000000000000000000000000000000000000000000000",
+  "action": "start",
+  "stage": 10000,
+  "window": 64,
+  "max_stages": 4096,
+  "timeout_seconds": 300
+}

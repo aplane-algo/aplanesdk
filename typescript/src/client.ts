@@ -32,6 +32,7 @@ import type {
   GroupSignResponse,
   SimulationResult,
   StatusResponse,
+  RotatingAccountStatus,
   ResolvedAuthAddress,
   PreparedTransaction,
   PreparedGroup,
@@ -2844,6 +2845,12 @@ export class SignerClient {
         : undefined,
       notes: Array.isArray(data.notes)
         ? data.notes.filter((note): note is string => typeof note === "string")
+        : undefined,
+      rotating: Array.isArray(data.rotating)
+        ? (data.rotating.filter(
+            (entry): entry is RotatingAccountStatus =>
+              typeof entry === "object" && entry !== null && typeof (entry as RotatingAccountStatus).account === "string",
+          ) as RotatingAccountStatus[])
         : undefined,
     };
     this.cacheApprovalWait(status.approvalWaitSeconds);

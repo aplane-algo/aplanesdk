@@ -1,0 +1,43 @@
+{
+  "node_role": "signer",
+  "protocol_version": {
+    "major": 2,
+    "minor": 0
+  },
+  "build_version": "v0.43.0 (commit: fixture, built: 2026-01-01T00:00:00Z, linux/amd64)",
+  "state": "unlocked",
+  "signer_locked": false,
+  "ready_for_signing": true,
+  "key_count": 3,
+  "keyset_revision": 9,
+  "approval_wait_seconds": 60,
+  "notes": [
+    "rotating account ROTATINGADDR000000000000000000000000000000000000000000000: authorizer STAGEADDR00000000000000000000000000000000000000000000000000 is not a stage within the 5120 stages this signer has cached; the last automatic search stopped: allowance exhausted after 1024 stages; run `rotate recover` if the account was advanced elsewhere, or delete the key if it was exited"
+  ],
+  "rotating": [
+    {
+      "account": "ROTATINGADDR000000000000000000000000000000000000000000000",
+      "authorizer": "STAGEADDR00000000000000000000000000000000000000000000000000",
+      "round": 123456,
+      "classification": "unknown",
+      "cached_stages": 5120,
+      "recovery": {
+        "active": false,
+        "stopped": "allowance exhausted",
+        "stopped_kind": "automatic",
+        "stopped_grant_id": 1,
+        "allowance_spent": 1024,
+        "allowance_max": 1024,
+        "suppressed_authorizer": "STAGEADDR00000000000000000000000000000000000000000000000000"
+      }
+    },
+    {
+      "account": "ROTATINGADDR111111111111111111111111111111111111111111111",
+      "authorizer": "ROTATINGADDR111111111111111111111111111111111111111111111",
+      "round": 123456,
+      "classification": "stage",
+      "stage": 0,
+      "cached_stages": 4097
+    }
+  ]
+}

@@ -313,6 +313,14 @@ The SDK also uses `approvalWaitSeconds` to size `/sign` deadlines. If discovery
 fails or the field is missing or out of range, signing falls back to 6
 minutes.
 
+`warnings` and `notes` are operator-facing lines. `rotating` lists each
+rotating account's view from the signer's last background pass
+(`RotatingAccountStatus`, wire field names: observed authorizer,
+classification, cached stages and `recovery`); it is absent while locked or
+without rotating accounts. Stage recovery itself (`/admin/rotating/recover`)
+is an operator action run from apshell, so the SDK carries only its wire
+shapes (`RotatingRecoverRequest`, `RotatingRecoverResponse`).
+
 ### List Keys
 
 ```ts
