@@ -40,6 +40,8 @@ from aplanesdk.signer import (
     RotatingPrepareResponse,
     RotatingSignRequest,
     RotatingSignResponse,
+    RotatingRecoverRequest,
+    RotatingRecoverResponse,
     SignerClient,
     StatusResponse,
     _validate_component_request,
@@ -271,6 +273,28 @@ def test_list_key_types_maps_creation_and_runtime_metadata():
     assert generic_policy.runtime_args[0].label == "Preimage"
     assert generic_policy.runtime_args[0].required is True
     assert generic_policy.runtime_args[0].byte_length == 32
+
+
+def test_status_rotating_fixture_round_trips():
+    data = fixture("status_response_rotating.json")
+    status = StatusResponse(**data)
+    assert len(status.rotating) == 2
+    unresolved, live = status.rotating
+    assert unresolved.classification == "unknown"
+    assert unresolved.cached_stages == 5120
+    assert unresolved.recovery is not None
+    assert unresolved.recovery.stopped == "allowance exhausted"
+    assert unresolved.recovery.allowance_spent == 1024
+    assert live.classification == "stage"
+    assert live.stage == 0
+    assert live.recovery is None
+
+    recover_req = RotatingRecoverRequest(**fixture("rotating_recover_request.json"))
+    assert asdict(recover_req) == fixture("rotating_recover_request.json")
+    recover_resp = RotatingRecoverResponse(**fixture("rotating_recover_response.json"))
+    assert recover_resp.grant_id == 3
+    assert recover_resp.recovery.active is True
+    assert recover_resp.recovery.hint == 10000
 
 
 def test_status_fixture_maps_metadata():

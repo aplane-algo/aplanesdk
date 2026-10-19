@@ -173,6 +173,9 @@ func TestGoSDKContractFixturesRoundTrip(t *testing.T) {
 		{"error_response.json", assertSDKContractRoundTrip[ErrorResponse]},
 		{"health_response_ready.json", assertSDKContractRoundTrip[HealthResponse]},
 		{"status_response_ready.json", assertSDKContractRoundTrip[StatusResponse]},
+		{"status_response_rotating.json", assertSDKContractRoundTrip[StatusResponse]},
+		{"rotating_recover_request.json", assertSDKContractRoundTrip[RotatingRecoverRequest]},
+		{"rotating_recover_response.json", assertSDKContractRoundTrip[RotatingRecoverResponse]},
 	}
 
 	for _, tt := range tests {

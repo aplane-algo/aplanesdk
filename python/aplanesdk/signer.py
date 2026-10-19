@@ -482,6 +482,77 @@ class ProtocolVersion:
 
 
 @dataclass
+class RotatingRecoveryStatus:
+    """A rotating account's stage recovery: the active grant, why the last
+    one stopped, and the per-unlock automatic allowance. Wire shape only;
+    recovery is an operator action."""
+
+    active: bool = False
+    kind: str = ""
+    grant_id: int = 0
+    stages_charged: int = 0
+    max_stages: int = 0
+    active_seconds: int = 0
+    hint: Optional[int] = None
+    found_stage: Optional[int] = None
+    stopped: str = ""
+    stopped_kind: str = ""
+    stopped_grant_id: int = 0
+    stopped_stage: Optional[int] = None
+    allowance_spent: int = 0
+    allowance_max: int = 0
+    suppressed_authorizer: str = ""
+
+
+@dataclass
+class RotatingAccountStatus:
+    """One rotating account's view from the signer's last background pass
+    (/status ``rotating[]``). Classification is "stage", "held_key",
+    "unknown" or "unobserved"."""
+
+    account: str
+    classification: str = ""
+    authorizer: str = ""
+    round: int = 0
+    stage: Optional[int] = None
+    cached_stages: int = 0
+    recovery: Optional[RotatingRecoveryStatus] = None
+
+    def __post_init__(self) -> None:
+        if isinstance(self.recovery, dict):
+            self.recovery = RotatingRecoveryStatus(**self.recovery)
+
+
+@dataclass
+class RotatingRecoverRequest:
+    """Request payload for POST /admin/rotating/recover: start ("start",
+    with an optional stage hint, window, stage budget and timeout) or cancel
+    ("cancel") a bounded search for a rotating account's live stage. Wire
+    shape only."""
+
+    account: str
+    action: str
+    stage: Optional[int] = None
+    window: int = 0
+    max_stages: int = 0
+    timeout_seconds: int = 0
+
+
+@dataclass
+class RotatingRecoverResponse:
+    """Response payload for POST /admin/rotating/recover."""
+
+    account: str
+    action: str
+    recovery: RotatingRecoveryStatus
+    grant_id: int = 0
+
+    def __post_init__(self) -> None:
+        if isinstance(self.recovery, dict):
+            self.recovery = RotatingRecoveryStatus(**self.recovery)
+
+
+@dataclass
 class StatusResponse:
     """Authenticated signer status from /status"""
 
@@ -498,10 +569,16 @@ class StatusResponse:
     # Informational lines that need no action, such as a rotating account's
     # release still in flight.
     notes: List[str] = field(default_factory=list)
+    # Each rotating account's view from the signer's last background pass.
+    rotating: List[RotatingAccountStatus] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if isinstance(self.protocol_version, dict):
             self.protocol_version = ProtocolVersion(**self.protocol_version)
+        self.rotating = [
+            RotatingAccountStatus(**entry) if isinstance(entry, dict) else entry
+            for entry in self.rotating
+        ]
 
 
 @dataclass
@@ -2835,6 +2912,7 @@ class SignerClient:
         data = resp.json()
         raw_warnings = data.get("warnings")
         raw_notes = data.get("notes")
+        raw_rotating = data.get("rotating")
         status = StatusResponse(
             node_role=data.get("node_role", ""),
             state=data.get("state", ""),
@@ -2853,6 +2931,15 @@ class SignerClient:
             notes=(
                 [note for note in raw_notes if isinstance(note, str)]
                 if isinstance(raw_notes, list)
+                else []
+            ),
+            rotating=(
+                [
+                    entry
+                    for entry in raw_rotating
+                    if isinstance(entry, dict) and isinstance(entry.get("account"), str)
+                ]
+                if isinstance(raw_rotating, list)
                 else []
             ),
         )

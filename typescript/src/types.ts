@@ -410,6 +410,69 @@ export interface StatusResponse {
   warnings?: string[];
   /** Informational status lines that need no action, such as a rotating account's release still in flight */
   notes?: string[];
+  /** Each rotating account's view from the signer's last background pass, when reported */
+  rotating?: RotatingAccountStatus[];
+}
+
+/**
+ * One rotating account's view from the signer's last background pass
+ * (/status `rotating[]`). Wire shape only: classification is "stage",
+ * "held_key", "unknown" or "unobserved".
+ */
+export interface RotatingAccountStatus {
+  account: string;
+  authorizer?: string;
+  round?: number;
+  classification: string;
+  stage?: number;
+  cached_stages: number;
+  recovery?: RotatingRecoveryStatus;
+}
+
+/**
+ * A rotating account's stage recovery: the active grant, why the last one
+ * stopped, and the per-unlock automatic allowance. Wire shape only;
+ * recovery is an operator action.
+ */
+export interface RotatingRecoveryStatus {
+  active: boolean;
+  kind?: string;
+  grant_id?: number;
+  stages_charged?: number;
+  max_stages?: number;
+  active_seconds?: number;
+  hint?: number;
+  found_stage?: number;
+  stopped?: string;
+  stopped_kind?: string;
+  stopped_grant_id?: number;
+  stopped_stage?: number;
+  allowance_spent: number;
+  allowance_max: number;
+  suppressed_authorizer?: string;
+}
+
+/**
+ * Request payload for POST /admin/rotating/recover: start ("start", with an
+ * optional stage hint, window, stage budget and timeout) or cancel
+ * ("cancel") a bounded search for a rotating account's live stage. Wire
+ * shape only.
+ */
+export interface RotatingRecoverRequest {
+  account: string;
+  action: string;
+  stage?: number;
+  window?: number;
+  max_stages?: number;
+  timeout_seconds?: number;
+}
+
+/** Response payload for POST /admin/rotating/recover. */
+export interface RotatingRecoverResponse {
+  account: string;
+  action: string;
+  grant_id?: number;
+  recovery: RotatingRecoveryStatus;
 }
 
 /**

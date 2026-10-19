@@ -19,6 +19,8 @@ import type {
   RotatingPrepareResponse,
   RotatingSignRequest,
   RotatingSignResponse,
+  RotatingRecoverRequest,
+  RotatingRecoverResponse,
 } from "../src/types.js";
 
 interface MockFetch {
@@ -245,6 +247,28 @@ describe("signer API contract fixtures", () => {
     assert.equal(genericPolicy.runtimeArgs?.[0].label, "Preimage");
     assert.equal(genericPolicy.runtimeArgs?.[0].required, true);
     assert.equal(genericPolicy.runtimeArgs?.[0].byteLength, 32);
+  });
+
+  it("carries /status rotating entries through to StatusResponse", async () => {
+    mockFetch.mockResolvedValueOnce({
+      status: 200,
+      ok: true,
+      json: async () => fixture("status_response_rotating.json"),
+    });
+
+    const client = new SignerClient("http://localhost:11270");
+    const status = await client.getStatus();
+
+    assert.equal(status.rotating?.length, 2);
+    assert.equal(status.rotating?.[0].classification, "unknown");
+    assert.equal(status.rotating?.[0].recovery?.stopped, "allowance exhausted");
+    assert.equal(status.rotating?.[1].stage, 0);
+    const recoverReq = fixture("rotating_recover_request.json") as RotatingRecoverRequest;
+    assert.equal(recoverReq.action, "start");
+    assert.equal(recoverReq.stage, 10000);
+    const recoverResp = fixture("rotating_recover_response.json") as RotatingRecoverResponse;
+    assert.equal(recoverResp.grant_id, 3);
+    assert.equal(recoverResp.recovery.active, true);
   });
 
   it("maps /status wire fields to public StatusResponse fields", async () => {

@@ -221,6 +221,63 @@ type RotatingSignResponse struct {
 	GroupID string   `json:"group_id"`
 }
 
+// RotatingAccountStatus is one rotating account's view from the signer's
+// last background pass, carried on /status `rotating[]`. Classification is
+// "stage", "held_key", "unknown" or "unobserved".
+type RotatingAccountStatus struct {
+	Account        string                  `json:"account"`
+	Authorizer     string                  `json:"authorizer,omitempty"`
+	Round          uint64                  `json:"round,omitempty"`
+	Classification string                  `json:"classification"`
+	Stage          *uint64                 `json:"stage,omitempty"`
+	CachedStages   uint64                  `json:"cached_stages"`
+	Recovery       *RotatingRecoveryStatus `json:"recovery,omitempty"`
+}
+
+// RotatingRecoveryStatus reports a rotating account's stage recovery: the
+// active grant, why the last one stopped, and the per-unlock automatic
+// allowance. The SDK carries the wire shape only; recovery is an operator
+// action.
+type RotatingRecoveryStatus struct {
+	Active               bool    `json:"active"`
+	Kind                 string  `json:"kind,omitempty"`
+	GrantID              uint64  `json:"grant_id,omitempty"`
+	StagesCharged        uint64  `json:"stages_charged,omitempty"`
+	MaxStages            uint64  `json:"max_stages,omitempty"`
+	ActiveSeconds        int64   `json:"active_seconds,omitempty"`
+	Hint                 *uint64 `json:"hint,omitempty"`
+	FoundStage           *uint64 `json:"found_stage,omitempty"`
+	Stopped              string  `json:"stopped,omitempty"`
+	StoppedKind          string  `json:"stopped_kind,omitempty"`
+	StoppedGrantID       uint64  `json:"stopped_grant_id,omitempty"`
+	StoppedStage         *uint64 `json:"stopped_stage,omitempty"`
+	AllowanceSpent       uint64  `json:"allowance_spent"`
+	AllowanceMax         uint64  `json:"allowance_max"`
+	SuppressedAuthorizer string  `json:"suppressed_authorizer,omitempty"`
+}
+
+// RotatingRecoverRequest is the request payload for
+// POST /admin/rotating/recover: an operator's request to start ("start",
+// with an optional stage hint, window, stage budget and timeout) or cancel
+// ("cancel") a bounded search for a rotating account's live stage.
+type RotatingRecoverRequest struct {
+	Account        string  `json:"account"`
+	Action         string  `json:"action"`
+	Stage          *uint64 `json:"stage,omitempty"`
+	Window         uint64  `json:"window,omitempty"`
+	MaxStages      uint64  `json:"max_stages,omitempty"`
+	TimeoutSeconds int64   `json:"timeout_seconds,omitempty"`
+}
+
+// RotatingRecoverResponse is the response payload for
+// POST /admin/rotating/recover.
+type RotatingRecoverResponse struct {
+	Account  string                 `json:"account"`
+	Action   string                 `json:"action"`
+	GrantID  uint64                 `json:"grant_id,omitempty"`
+	Recovery RotatingRecoveryStatus `json:"recovery"`
+}
+
 // RequestMode describes the mutually exclusive mode selected by a SignRequest.
 type RequestMode string
 
@@ -544,6 +601,9 @@ type StatusResponse struct {
 	// Notes are informational status lines that need no action, such as a
 	// rotating account's release still in flight.
 	Notes []string `json:"notes,omitempty"`
+	// Rotating is each rotating account's view from the signer's last
+	// background pass. Absent while locked or without rotating accounts.
+	Rotating []RotatingAccountStatus `json:"rotating,omitempty"`
 }
 
 // RuntimeArg describes a runtime argument for generic LogicSig keys.
