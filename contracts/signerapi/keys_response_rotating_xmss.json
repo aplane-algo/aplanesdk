@@ -1,0 +1,19 @@
+{
+  "count": 1,
+  "keys": [
+    {
+      "address": "ROTATINGADDR000000000000000000000000000000000000000000000",
+      "public_key_hex": "",
+      "key_type": "aplane.rotating-xmss-triple.v1",
+      "authorization_kind": "logic_sig",
+      "signing_flow": "rotating1",
+      "logic_sig_resources": {
+        "default": {
+          "program_bytes": 2683,
+          "argument_bytes": 4179,
+          "max_opcode_cost": 175562
+        }
+      }
+    }
+  ]
+}
