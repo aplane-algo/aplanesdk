@@ -820,6 +820,7 @@ func (c *SignerClient) prepareAppCallWithInfo(ctx context.Context, algodClient *
 		params.GlobalSchema,
 		params.LocalSchema,
 		params.ExtraPages,
+		0, // rejectVersion: the default, as before the parameter existed
 		suggested,
 		sender,
 		params.Note,
