@@ -461,6 +461,8 @@ def test_rotating_dtos_round_trip_fixtures():
     sign_req = RotatingSignRequest(**fixture("rotating_sign_request.json"))
     assert asdict(sign_req) == fixture("rotating_sign_request.json")
     assert sign_req.transactions == prepare_resp.transactions
+    assert sign_req.app_call_info == {"mode": "abi", "method": "withdraw(uint64)void"}
+    assert RotatingSignRequest(account="A", transactions=[]).app_call_info is None
     sign_resp = RotatingSignResponse(**fixture("rotating_sign_response.json"))
     assert asdict(sign_resp) == fixture("rotating_sign_response.json")
     assert sign_resp.target == sign_resp.stage + 1

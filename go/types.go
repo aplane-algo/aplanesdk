@@ -206,10 +206,14 @@ type RotatingPrepareResponse struct {
 }
 
 // RotatingSignRequest is the request payload for /sign/rotating/sign.
+// AppCallInfo is optional app-call metadata for the approval prompt, as on
+// /sign. The signer checks it against the spend's bytes when rendering the
+// prompt and does not sign it.
 type RotatingSignRequest struct {
-	RequestID    string   `json:"request_id,omitempty"`
-	Account      string   `json:"account"`
-	Transactions []string `json:"transactions"`
+	RequestID    string       `json:"request_id,omitempty"`
+	Account      string       `json:"account"`
+	Transactions []string     `json:"transactions"`
+	AppCallInfo  *AppCallInfo `json:"app_call_info,omitempty"`
 }
 
 // RotatingSignResponse is the response payload for /sign/rotating/sign.

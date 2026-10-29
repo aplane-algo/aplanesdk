@@ -481,6 +481,7 @@ describe("signer API contract fixtures", () => {
     assert.deepEqual(prepareResp.mutations?.fees_modified, [0]);
     const signReq = fixture("rotating_sign_request.json") as RotatingSignRequest;
     assert.deepEqual(signReq.transactions, prepareResp.transactions);
+    assert.deepEqual(signReq.app_call_info, { mode: "abi", method: "withdraw(uint64)void" });
     const signResp = fixture("rotating_sign_response.json") as RotatingSignResponse;
     assert.equal(signResp.signed.length, 2);
     assert.equal(signResp.target, signResp.stage + 1);
