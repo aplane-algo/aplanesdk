@@ -701,11 +701,17 @@ class RotatingPrepareResponse:
 
 @dataclass
 class RotatingSignRequest:
-    """Request payload for /sign/rotating/sign."""
+    """Request payload for /sign/rotating/sign.
+
+    ``app_call_info`` is optional app-call metadata for the approval prompt,
+    as on /sign. The signer checks it against the spend's bytes when
+    rendering the prompt and does not sign it.
+    """
 
     account: str
     transactions: List[str]
     request_id: str = ""
+    app_call_info: Optional[Dict[str, str]] = None
 
 
 @dataclass

@@ -513,11 +513,16 @@ export interface RotatingPrepareResponse {
   mutations?: WireMutationReport;
 }
 
-/** Request payload for /sign/rotating/sign. */
+/**
+ * Request payload for /sign/rotating/sign. `app_call_info` is optional
+ * app-call metadata for the approval prompt, as on /sign; the signer checks
+ * it against the spend's bytes when rendering the prompt and does not sign it.
+ */
 export interface RotatingSignRequest {
   request_id?: string;
   account: string;
   transactions: string[];
+  app_call_info?: AppCallInfo;
 }
 
 /** Response payload for /sign/rotating/sign. */

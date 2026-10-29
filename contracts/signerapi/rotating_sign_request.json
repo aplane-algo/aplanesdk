@@ -4,5 +4,6 @@
   "transactions": [
     "545889a3666565cd03e8",
     "54588aa3666565cd0000"
-  ]
+  ],
+  "app_call_info": {"mode": "abi", "method": "withdraw(uint64)void"}
 }
