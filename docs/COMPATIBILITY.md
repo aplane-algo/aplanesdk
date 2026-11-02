@@ -37,6 +37,12 @@ TypeScript SDKs handle these responses without client API or signer
 wire-contract changes. Policy provisioning remains an operator workflow outside
 the SDKs.
 
+Enrollment connects over SSH as the username `enroll` (exec command
+`enroll [<label>]`). Earlier releases used the username
+`request-enrollment`; an SDK and a signer from different sides of that
+change cannot complete an enrollment, so upgrade them together. Keys already
+enrolled are unaffected.
+
 The SDKs read only the current signer wire and client file formats:
 
 - Error classification relies on the wire `code` that every apsigner error

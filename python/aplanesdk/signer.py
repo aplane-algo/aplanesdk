@@ -66,10 +66,10 @@ import paramiko
 DEFAULT_SSH_PORT = 1127
 # SSH usernames the signer's SSH server recognizes: SSH_USERNAME for API
 # connections authenticated by an enrolled key, SSH_ENROLLMENT_USERNAME for a
-# request-enrollment session.
+# enroll session.
 SSH_USERNAME = "aplane"
-SSH_ENROLLMENT_USERNAME = "request-enrollment"
-# The exec command a request-enrollment session runs, and the longest display
+SSH_ENROLLMENT_USERNAME = "enroll"
+# The exec command an enroll session runs, and the longest display
 # label the signer accepts with it.
 SSH_ENROLLMENT_COMMAND = "enroll"
 MAX_ENROLLMENT_LABEL_BYTES = 64
@@ -2533,7 +2533,7 @@ class _SSHTunnel:
                     f"SSH authentication failed: {exc}: the client's SSH key is not "
                     f"enrolled at the signer, or was revoked (the signer accepts "
                     f"{CLIENT_SSH_KEY_REQUIREMENT} client keys); enroll it with "
-                    "request_enrollment or apshell request-enrollment"
+                    "request_enrollment or apshell enroll"
                 ) from exc
             if isinstance(exc, paramiko.ssh_exception.SSHException):
                 raise SignerError(f"SSH connection failed: {exc}") from exc
@@ -6141,7 +6141,7 @@ def request_enrollment(
     Ask the signer to enroll this client's SSH key, so the key can open API
     connections.
 
-    This opens a request-enrollment SSH session, which answers at once: the
+    This opens an enroll SSH session, which answers at once: the
     request is queued for the operator to approve later in apadmin
     (``pending=True``, the normal outcome), or the key is already enrolled.
     Nothing waits for the operator and nothing is stored on the client: the

@@ -17,11 +17,11 @@ var (
 
 	// ErrNotEnrolled indicates the signer refused the client's SSH key at the
 	// handshake: it is not enrolled there, or was revoked. Enroll it with
-	// RequestEnrollment (or apshell request-enrollment) and have the operator
+	// RequestEnrollment (or apshell enroll) and have the operator
 	// approve.
 	ErrNotEnrolled = errors.New("SSH key is not enrolled at the signer")
 
-	// ErrEnrollment indicates a request-enrollment session failed: the
+	// ErrEnrollment indicates an enroll session failed: the
 	// operator rejected it, no operator was connected, or the signer could not
 	// record the key.
 	ErrEnrollment = errors.New("enrollment failed")

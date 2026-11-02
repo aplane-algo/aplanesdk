@@ -23,7 +23,7 @@ if [[ -n "${APLANE_SDK_SSH_HOST:-}" ]]; then
   fi
   if [[ ! -r "$APLANE_SDK_SSH_KEY_PATH" ]]; then
     echo "APLANE_SDK_SSH_KEY_PATH is not readable: $APLANE_SDK_SSH_KEY_PATH" >&2
-    echo "The key must be enrolled at the signer (apshell request-enrollment)." >&2
+    echo "The key must be enrolled at the signer (apshell enroll)." >&2
     exit 1
   fi
   if [[ ! -r "$APLANE_SDK_KNOWN_HOSTS_PATH" ]]; then

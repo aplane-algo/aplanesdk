@@ -27,10 +27,10 @@ const defaultSSHSetupTimeout = 60 * time.Second
 
 // SSH usernames the signer's SSH server recognizes: clientSSHUsername for
 // API connections authenticated by an enrolled key, enrollmentSSHUsername
-// for a request-enrollment session.
+// for an enroll session.
 const (
 	clientSSHUsername     = "aplane"
-	enrollmentSSHUsername = "request-enrollment"
+	enrollmentSSHUsername = "enroll"
 )
 
 // sshTunnel manages an SSH tunnel to the signer.
@@ -171,7 +171,7 @@ func dialSSHHandshake(
 				// The key is of an accepted type or the server would have
 				// refused it before signature verification; with the client
 				// username, a refusal means the key is not enrolled.
-				err = fmt.Errorf("%w: %v (the signer accepts %s client keys; enroll this key with RequestEnrollment or apshell request-enrollment)", ErrNotEnrolled, err, clientSSHKeyRequirement)
+				err = fmt.Errorf("%w: %v (the signer accepts %s client keys; enroll this key with RequestEnrollment or apshell enroll)", ErrNotEnrolled, err, clientSSHKeyRequirement)
 			} else {
 				err = fmt.Errorf("%w (the signer accepts %s client keys)", err, clientSSHKeyRequirement)
 			}

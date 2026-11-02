@@ -171,7 +171,7 @@ if (pending) console.log(`key ${fingerprint} queued; have the operator approve i
 
 `requestEnrollment(host, sshKeyPath, { knownHostsPath, label })` is the
 explicit form. The same enrollment can be done from `apshell` with
-`request-enrollment`.
+`enroll`.
 
 ## API Reference
 

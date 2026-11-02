@@ -17,7 +17,7 @@ import {
 
 test("SSH usernames match the signer's fixed usernames", () => {
   assert.equal(SSH_USERNAME, "aplane");
-  assert.equal(SSH_ENROLLMENT_USERNAME, "request-enrollment");
+  assert.equal(SSH_ENROLLMENT_USERNAME, "enroll");
 });
 
 test("SSH setup timeout rejects values Node timers cannot represent", () => {
