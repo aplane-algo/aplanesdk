@@ -281,7 +281,9 @@ def test_status_rotating_fixture_round_trips():
     assert len(status.rotating) == 2
     unresolved, live = status.rotating
     assert unresolved.classification == "unknown"
-    assert unresolved.cached_stages == 5120
+    assert unresolved.cached_entries == 5120
+    assert unresolved.preparation == "unresolved"
+    assert live.preparation == "ready"
     assert unresolved.recovery is not None
     assert unresolved.recovery.stopped == "allowance exhausted"
     assert unresolved.recovery.allowance_spent == 1024
@@ -484,6 +486,7 @@ def test_cosigner_dtos_round_trip_fixtures():
     assert aplanesdk.ComponentResponse is ComponentResponse
     assert aplanesdk.COMPONENT_TARGET_KIND_BOUNDED_BASE == "bounded-base"
 
+
 def test_bounded_inventory_projects_layer3_policy():
     client = make_client()
     with patch.object(
@@ -523,3 +526,37 @@ def test_bounded_inventory_projects_layer3_policy():
     assert corridor_type.signing_flow == "bounded-cosigner1"
     assert corridor_type.cosigner_component_key_type == "aplane.witness-falcon1024.v1"
     assert corridor_type.bounded_authorization.cosigner.required_on == ["spend"]
+
+
+def test_status_tolerates_fields_from_a_newer_signer():
+    status = StatusResponse(
+        state="unlocked",
+        signer_locked=False,
+        ready_for_signing=True,
+        key_count=1,
+        keyset_revision=1,
+        protocol_version={"major": 1, "minor": 2, "patch": 3},
+        rotating=[
+            {
+                "account": "ROTATINGADDR",
+                "classification": "unknown",
+                "cached_stages": 5120,
+                "future_field": True,
+                "recovery": {"active": False, "future_field": "x"},
+            }
+        ],
+    )
+    assert status.protocol_version is not None
+    assert status.protocol_version.minor == 2
+    (entry,) = status.rotating
+    assert entry.cached_entries == 0
+    assert entry.preparation == ""
+    assert entry.recovery is not None
+    assert entry.recovery.active is False
+
+    resp = RotatingRecoverResponse(
+        account="ROTATINGADDR",
+        action="start",
+        recovery={"active": True, "future_field": 1},
+    )
+    assert resp.recovery.active is True

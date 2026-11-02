@@ -425,7 +425,8 @@ export interface RotatingAccountStatus {
   round?: number;
   classification: string;
   stage?: number;
-  cached_stages: number;
+  cached_entries: number;
+  preparation: "locating" | "preparing_successor" | "ready" | "unresolved";
   recovery?: RotatingRecoveryStatus;
 }
 

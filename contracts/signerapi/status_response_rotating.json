@@ -20,7 +20,7 @@
       "authorizer": "STAGEADDR00000000000000000000000000000000000000000000000000",
       "round": 123456,
       "classification": "unknown",
-      "cached_stages": 5120,
+      "cached_entries": 5120,
       "recovery": {
         "active": false,
         "stopped": "allowance exhausted",
@@ -29,7 +29,8 @@
         "allowance_spent": 1024,
         "allowance_max": 1024,
         "suppressed_authorizer": "STAGEADDR00000000000000000000000000000000000000000000000000"
-      }
+      },
+      "preparation": "unresolved"
     },
     {
       "account": "ROTATINGADDR111111111111111111111111111111111111111111111",
@@ -37,7 +38,8 @@
       "round": 123456,
       "classification": "stage",
       "stage": 0,
-      "cached_stages": 4097
+      "cached_entries": 4097,
+      "preparation": "ready"
     }
   ]
 }
