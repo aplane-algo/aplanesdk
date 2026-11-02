@@ -49,7 +49,7 @@ import secrets
 import socket
 import threading
 import time
-from dataclasses import asdict, dataclass, field, is_dataclass
+from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from typing import Optional, Dict, List, Any, Callable, cast
 from urllib.parse import urlparse
 
@@ -473,6 +473,13 @@ class KeyTypeInfo:
     runtime_args: Optional[List[RuntimeArg]] = None
 
 
+def _declared_fields(cls: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep only the fields the dataclass declares, so a field added by a newer
+    signer does not make decoding fail."""
+    names = {f.name for f in fields(cls)}
+    return {key: value for key, value in data.items() if key in names}
+
+
 @dataclass
 class ProtocolVersion:
     """Signer wire-protocol version."""
@@ -516,12 +523,15 @@ class RotatingAccountStatus:
     round: int = 0
     stage: Optional[int] = None
     cached_entries: int = 0
-    preparation: str = "unresolved"
+    # Empty when the signer did not report readiness.
+    preparation: str = ""
     recovery: Optional[RotatingRecoveryStatus] = None
 
     def __post_init__(self) -> None:
         if isinstance(self.recovery, dict):
-            self.recovery = RotatingRecoveryStatus(**self.recovery)
+            self.recovery = RotatingRecoveryStatus(
+                **_declared_fields(RotatingRecoveryStatus, self.recovery)
+            )
 
 
 @dataclass
@@ -550,7 +560,9 @@ class RotatingRecoverResponse:
 
     def __post_init__(self) -> None:
         if isinstance(self.recovery, dict):
-            self.recovery = RotatingRecoveryStatus(**self.recovery)
+            self.recovery = RotatingRecoveryStatus(
+                **_declared_fields(RotatingRecoveryStatus, self.recovery)
+            )
 
 
 @dataclass
@@ -575,9 +587,15 @@ class StatusResponse:
 
     def __post_init__(self) -> None:
         if isinstance(self.protocol_version, dict):
-            self.protocol_version = ProtocolVersion(**self.protocol_version)
+            self.protocol_version = ProtocolVersion(
+                **_declared_fields(ProtocolVersion, self.protocol_version)
+            )
         self.rotating = [
-            RotatingAccountStatus(**entry) if isinstance(entry, dict) else entry
+            (
+                RotatingAccountStatus(**_declared_fields(RotatingAccountStatus, entry))
+                if isinstance(entry, dict)
+                else entry
+            )
             for entry in self.rotating
         ]
 

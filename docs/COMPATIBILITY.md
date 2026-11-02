@@ -59,4 +59,7 @@ Sparse rotating recovery requires the matching signer change: status uses
 `cached_entries` for the number of sparse records and `preparation` for readiness
 at the last observation (`locating`, `preparing_successor`, `ready`, or
 `unresolved`). Neither the observed stage nor the entry count measures complete
-rotation history. No legacy `cached_stages` field is provided.
+rotation history. No legacy `cached_stages` field is provided. The Python SDK
+ignores fields it does not declare inside `/status` rotating entries, their
+recovery state and `protocol_version`, and leaves `preparation` empty when the
+signer does not report it.
