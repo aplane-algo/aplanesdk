@@ -115,7 +115,7 @@ the handshake with `aplane.ErrNotEnrolled`.
 ### Enrolling the Client Key
 
 A new client key must be enrolled once. `RequestEnrollment` opens a
-`request-enrollment` SSH session and returns at once with an
+`enroll` SSH session and returns at once with an
 `EnrollmentResult`: `Pending` is true when the request was queued for the
 operator to approve later in `apadmin` (the normal outcome), false when the
 key was already enrolled. `Fingerprint` is the key's SHA256 fingerprint, which
@@ -138,7 +138,7 @@ if err == nil && result.Pending {
 `endpoints.yaml` (the default signer, or `FromEnvOptions.Endpoint`). A refused
 request (for example, a full enrollment queue) returns an error wrapping
 `aplane.ErrEnrollment`. The same enrollment can be done from `apshell` with
-`request-enrollment`.
+`enroll`.
 
 ### Environment-Based Connection
 

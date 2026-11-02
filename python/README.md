@@ -127,7 +127,7 @@ setup-only deadline as `setup_timeout`.
 
 **Note**: SSH uses the fixed non-secret username `aplane` and public-key
 authentication only; the enrolled key is the client's only credential. Keys
-are enrolled via the `request-enrollment` operator-approved flow.
+are enrolled via the `enroll` operator-approved flow.
 
 The SSH tunnel is established automatically. Remember to close when done:
 
@@ -166,7 +166,7 @@ if result.pending:
 
 `request_enrollment(host, ssh_key_path, known_hosts_path=..., label=...)` is
 the explicit form. The same enrollment can be done from `apshell` with
-`request-enrollment`.
+`enroll`.
 
 ## API Reference
 

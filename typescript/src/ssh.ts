@@ -4,16 +4,16 @@
 /**
  * SSH usernames the signer's SSH server recognizes: SSH_USERNAME for API
  * connections authenticated by an enrolled key, SSH_ENROLLMENT_USERNAME for
- * a request-enrollment session.
+ * an enroll session.
  */
 export const SSH_USERNAME = "aplane";
-export const SSH_ENROLLMENT_USERNAME = "request-enrollment";
+export const SSH_ENROLLMENT_USERNAME = "enroll";
 export const DEFAULT_SSH_SETUP_TIMEOUT_MS = 60_000;
 /** Largest delay Node timers represent exactly (2^31 - 1 ms). */
 export const MAX_SSH_SETUP_TIMEOUT_MS = 2_147_483_647;
 
 /**
- * The exec command a request-enrollment session runs, and the longest
+ * The exec command an enroll session runs, and the longest
  * display label the signer accepts with it.
  */
 export const SSH_ENROLLMENT_COMMAND = "enroll";
@@ -73,7 +73,7 @@ export function sshConnectionFailedMessage(err: Error, username: string = SSH_US
     if (username === SSH_USERNAME) {
       return `${message}: the client's SSH key is not enrolled at the signer, or was revoked ` +
         `(the signer accepts ${CLIENT_SSH_KEY_REQUIREMENT} client keys); ` +
-        "enroll it with requestEnrollment or apshell request-enrollment";
+        "enroll it with requestEnrollment or apshell enroll";
     }
     return `${message} (the signer accepts ${CLIENT_SSH_KEY_REQUIREMENT} client keys)`;
   }

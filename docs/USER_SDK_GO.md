@@ -134,7 +134,7 @@ if err == nil && result.Pending {
 endpoint's SSH host, port, key, and `known_hosts` path. Nothing waits for the
 operator and nothing is stored on the client: the key is its credential, and
 you connect once the operator has approved. The same enrollment can be done
-from `apshell` with `request-enrollment`. A key the signer has not enrolled
+from `apshell` with `enroll`. A key the signer has not enrolled
 yet (or has revoked) fails `FromEnv`/`ConnectSSH` with
 `aplane.ErrNotEnrolled`.
 

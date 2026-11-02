@@ -18,7 +18,7 @@ import (
 // its enrollment request; the signer refuses longer labels.
 const maxEnrollmentLabelBytes = 64
 
-// enrollmentCommand is the exec command a request-enrollment session runs.
+// enrollmentCommand is the exec command an enroll session runs.
 const enrollmentCommand = "enroll"
 
 // EnrollmentResult is the signer's answer to an enrollment request.

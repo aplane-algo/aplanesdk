@@ -12,7 +12,7 @@ existing APlane client install.
 The Python SDK is a user-facing integration surface for:
 
 - loading client config and the client SSH identity from `APCLIENT_DATA`,
-- enrolling the client SSH key at a signer over the `request-enrollment` flow,
+- enrolling the client SSH key at a signer over the `enroll` flow,
 - connecting to `apsigner` over the standard SSH-backed product path,
 - listing signer keys and available key types,
 - planning and signing single transactions and groups,
@@ -173,14 +173,14 @@ if result.pending:
 - uses the same data-dir resolution as `SignerClient.from_env()`
 - selects the default signer or named endpoint from `endpoints.yaml`
 - uses that endpoint's SSH host, port, key, and `known_hosts` path
-- opens a `request-enrollment` SSH session, which answers at once
+- opens an `enroll` SSH session, which answers at once
 - returns an `EnrollmentResult`: `pending=True` when the request was queued
   for the operator (the normal outcome), `False` when the key was already
   enrolled; `fingerprint` is the key's SHA256 fingerprint. Nothing is stored.
 
 Enrollment targets the signer's product store. The operator approves the
 request later in `apadmin`; connect after that. The same enrollment can be
-done from `apshell` with `request-enrollment`. A key the signer has not
+done from `apshell` with `enroll`. A key the signer has not
 enrolled yet (or has revoked) fails `from_env`/`connect_ssh` with
 `AuthenticationError`.
 

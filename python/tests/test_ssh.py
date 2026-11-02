@@ -23,7 +23,7 @@ from aplanesdk.signer import (
 
 def test_ssh_usernames_match_the_signer():
     assert SSH_USERNAME == "aplane"
-    assert SSH_ENROLLMENT_USERNAME == "request-enrollment"
+    assert SSH_ENROLLMENT_USERNAME == "enroll"
 
 
 def test_fingerprint_matches_openssh_format():
