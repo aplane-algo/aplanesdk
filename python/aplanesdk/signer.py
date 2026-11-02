@@ -515,7 +515,8 @@ class RotatingAccountStatus:
     authorizer: str = ""
     round: int = 0
     stage: Optional[int] = None
-    cached_stages: int = 0
+    cached_entries: int = 0
+    preparation: str = "unresolved"
     recovery: Optional[RotatingRecoveryStatus] = None
 
     def __post_init__(self) -> None:

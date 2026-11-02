@@ -54,3 +54,9 @@ Package source files retain placeholder versions. The publish workflow derives
 the released Python and TypeScript package versions from the requested `vX.Y.Z`
 tag, so the Git tag and package metadata in published artifacts remain the
 version authority.
+
+Sparse rotating recovery requires the matching signer change: status uses
+`cached_entries` for the number of sparse records and `preparation` for readiness
+at the last observation (`locating`, `preparing_successor`, `ready`, or
+`unresolved`). Neither the observed stage nor the entry count measures complete
+rotation history. No legacy `cached_stages` field is provided.

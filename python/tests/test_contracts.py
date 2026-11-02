@@ -281,7 +281,9 @@ def test_status_rotating_fixture_round_trips():
     assert len(status.rotating) == 2
     unresolved, live = status.rotating
     assert unresolved.classification == "unknown"
-    assert unresolved.cached_stages == 5120
+    assert unresolved.cached_entries == 5120
+    assert unresolved.preparation == "unresolved"
+    assert live.preparation == "ready"
     assert unresolved.recovery is not None
     assert unresolved.recovery.stopped == "allowance exhausted"
     assert unresolved.recovery.allowance_spent == 1024

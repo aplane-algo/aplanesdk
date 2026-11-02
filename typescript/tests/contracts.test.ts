@@ -261,6 +261,9 @@ describe("signer API contract fixtures", () => {
 
     assert.equal(status.rotating?.length, 2);
     assert.equal(status.rotating?.[0].classification, "unknown");
+    assert.equal(status.rotating?.[0].cached_entries, 5120);
+    assert.equal(status.rotating?.[0].preparation, "unresolved");
+    assert.equal(status.rotating?.[1].preparation, "ready");
     assert.equal(status.rotating?.[0].recovery?.stopped, "allowance exhausted");
     assert.equal(status.rotating?.[1].stage, 0);
     const recoverReq = fixture("rotating_recover_request.json") as RotatingRecoverRequest;

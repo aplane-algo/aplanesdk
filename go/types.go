@@ -234,7 +234,8 @@ type RotatingAccountStatus struct {
 	Round          uint64                  `json:"round,omitempty"`
 	Classification string                  `json:"classification"`
 	Stage          *uint64                 `json:"stage,omitempty"`
-	CachedStages   uint64                  `json:"cached_stages"`
+	Preparation    string                  `json:"preparation"`
+	CachedEntries  uint64                  `json:"cached_entries"`
 	Recovery       *RotatingRecoveryStatus `json:"recovery,omitempty"`
 }
 
