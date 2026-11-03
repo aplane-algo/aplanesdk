@@ -376,7 +376,8 @@ if err != nil {
 | Key Type | Description | Notes |
 |----------|-------------|-------|
 | `ed25519` | Native Algorand keys | Standard signing |
-| `aplane.falcon1024.v1` | Post-quantum LogicSig | Large signature (~3KB) |
+| `falcon1024` | Native post-quantum keys | Protocol-native Falcon-1024 signature (`PQsig`) |
+| `aplane.falcon1024.v1` | Post-quantum LogicSig | Library-visible; enable before generating. Signature in LogicSig.Args[0] |
 | `aplane.ed25519.v1` | Ed25519 DSA LogicSig | Library-visible plain DSA account |
 | `aplane.witness-falcon1024.v1` | Witness key | Cosigner-custodied policy signature key; not a spending account |
 | `aplane.falcon1024-cosigner1024.v1` | Guarded account | Requires user and cosigner component signatures |
@@ -386,6 +387,13 @@ if err != nil {
 | `aplane.falcon1024-timelock.v1` | Bounded timelock | Round-gated `bounded1` signing flow |
 | `aplane.falcon1024-allowlist-alock.v1` | Rekey-locked bounded allowlist | Ordinary spending uses `bounded1`; admin rekey is outside SDK scope |
 | `aplane.htlc.v1` | Hash-locked funds | Requires `preimage` arg |
+
+Only the protocol-native types, `ed25519` and `falcon1024`, are enabled by
+default. The operator must enable any other type on the node (`apadmin keytype
+enable <type>` or the apadmin KeyType Library) before key generation accepts
+it; until then generation fails with "key type ... is not enabled on this
+node". Enablement gates only creating keys: existing keys of a disabled type
+keep signing.
 
 ## Cosigner And Guarded Accounts
 
@@ -526,6 +534,27 @@ signed, err := client.SignTransaction(txn, "", nil)
 signedBytes, _ := aplane.Base64ToBytes(signed)
 txid, _ := algodClient.SendRawTransaction(signedBytes).Do(ctx)
 ```
+
+### Fee Impact
+
+| Key Type | Dummies Added | Signer's Charge |
+|----------|---------------|-----------------|
+| `ed25519` | 0 | 0 |
+| `falcon1024` (native) | 0 | 2,000 µAlgo native-PQ contribution |
+| `aplane.falcon1024.v1` (LogicSig) | 1 | 1,000 µAlgo (the dummy's base fee) |
+
+Figures assume a 1,000 µAlgo minimum fee. The LogicSig row is a program of
+about 1,800 bytes with a signature argument of at most 1,423 bytes: the
+argument exceeds the 1,000-byte per-transaction allowance, so the signer adds
+one dummy, and the two-transaction group's 2,000 free program bytes cover the
+program.
+
+Build transactions with ordinary suggested fees, plus whatever your own
+execution needs (for example, fee credit for an app's inner transactions). The
+signer adds its charge on top and never counts a fee surplus toward it, because
+it cannot tell a spare fee from one reserved for inner transactions, so
+prepaying the charge pays it twice. Pre-grouped groups are immutable: their
+fees must already include the charge, as `/plan` output does.
 
 ## License
 
