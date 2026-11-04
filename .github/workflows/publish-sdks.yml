@@ -162,6 +162,7 @@ jobs:
   publish-pypi:
     name: Publish Python SDK to PyPI
     if: ${{ inputs.publish_python }}
+    environment: publish
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -215,6 +216,7 @@ jobs:
   publish-npm:
     name: Publish TypeScript SDK to npm
     if: ${{ inputs.publish_npm }}
+    environment: publish
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
