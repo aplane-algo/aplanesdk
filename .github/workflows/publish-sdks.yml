@@ -250,7 +250,7 @@ jobs:
         run: npm run build
         working-directory: typescript
 
-      - name: Publish to npm
+      - name: Stage npm package for approval
         env:
           SDK_TAG: ${{ inputs.tag }}
         run: |
@@ -259,5 +259,5 @@ jobs:
             echo "aplanesdk@$VERSION already published; skipping"
             exit 0
           fi
-          npm publish --provenance --access public
+          npm stage publish --provenance --access public
         working-directory: typescript
