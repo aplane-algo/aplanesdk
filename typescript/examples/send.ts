@@ -45,7 +45,7 @@ async function main() {
 
     // Resolve auth address (handles rekeyed accounts)
     const acctInfo = await algodClient.accountInformation(SENDER).do();
-    const authAddr = acctInfo.authAddr || undefined;
+    const authAddr = acctInfo.authAddr?.toString();
 
     // Sign and submit (server handles fee pooling automatically)
     console.log(`Signing validation txn for ${SENDER.slice(0, 12)}...`);

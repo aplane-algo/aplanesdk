@@ -60,8 +60,8 @@ async function main() {
     const aliceInfo = await algodClient.accountInformation(ALICE).do();
     const bobInfo = await algodClient.accountInformation(BOB).do();
     const authAddresses = [
-      aliceInfo.authAddr || ALICE,
-      bobInfo.authAddr || BOB,
+      aliceInfo.authAddr?.toString() || ALICE,
+      bobInfo.authAddr?.toString() || BOB,
     ];
 
     // Sign the group (server handles grouping and dummies for Falcon)
