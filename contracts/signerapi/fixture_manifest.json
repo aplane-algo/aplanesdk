@@ -25,7 +25,6 @@
     "keys_response_component.json",
     "keys_response_generic.json",
     "keys_response_guarded.json",
-    "keys_response_rotating.json",
     "keys_response_rotating_wotsc.json",
     "keys_response_rotating_xmss.json",
     "keytypes_response_bounded.json",
