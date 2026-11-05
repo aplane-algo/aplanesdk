@@ -9,7 +9,7 @@ from aplanesdk.algokit import create_apsigner_account
 
 
 sender = os.environ["APLANE_ADDRESS"]
-algorand = AlgorandClient.testnet()
+algorand = AlgorandClient.default_localnet()
 
 with SignerClient.from_env() as signer:
     account_info = algorand.account.get_information(sender)

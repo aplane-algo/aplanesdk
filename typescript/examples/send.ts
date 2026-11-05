@@ -32,7 +32,7 @@ async function main() {
   const signer = await SignerClient.fromEnv();
 
   try {
-    const algodClient = new algosdk.Algodv2("", "https://testnet-api.4160.nodely.dev", "");
+    const algodClient = new algosdk.Algodv2("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "http://localhost", 4001);
 
     // Build 0-ALGO self-send (validation transaction)
     const params = await algodClient.getTransactionParams().do();
@@ -45,7 +45,7 @@ async function main() {
 
     // Resolve auth address (handles rekeyed accounts)
     const acctInfo = await algodClient.accountInformation(SENDER).do();
-    const authAddr = acctInfo.authAddr || undefined;
+    const authAddr = acctInfo.authAddr?.toString();
 
     // Sign and submit (server handles fee pooling automatically)
     console.log(`Signing validation txn for ${SENDER.slice(0, 12)}...`);

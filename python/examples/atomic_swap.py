@@ -39,7 +39,7 @@ SWAP_AMOUNT = 100000  # 0.1 ALGO in microAlgos
 def main():
     # Connect using config from $APCLIENT_DATA
     with SignerClient.from_env() as signer:
-        algod_client = algod.AlgodClient("", "https://testnet-api.4160.nodely.dev")
+        algod_client = algod.AlgodClient("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "http://localhost:4001")
         params = algod_client.suggested_params()
 
         # Build transactions (do NOT call assign_group_id)

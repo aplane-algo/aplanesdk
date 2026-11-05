@@ -33,7 +33,7 @@ SENDER = "ED255ACCOUNTEXAMPLE77777777777777777777777777777777777777777"
 def main():
     # Connect using config from $APCLIENT_DATA
     with SignerClient.from_env() as signer:
-        algod_client = algod.AlgodClient("", "https://testnet-api.4160.nodely.dev")
+        algod_client = algod.AlgodClient("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "http://localhost:4001")
 
         # Build 0-ALGO self-send (validation transaction)
         params = algod_client.suggested_params()

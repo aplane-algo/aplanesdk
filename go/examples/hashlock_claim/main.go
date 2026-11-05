@@ -59,7 +59,7 @@ func main() {
 	}
 	defer signer.Close()
 
-	algodClient, err := algod.MakeClient("https://testnet-api.4160.nodely.dev", "")
+	algodClient, err := algod.MakeClient("http://localhost:4001", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	if err != nil {
 		log.Fatalf("Failed to create algod client: %v", err)
 	}

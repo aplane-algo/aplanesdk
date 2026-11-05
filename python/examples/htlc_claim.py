@@ -44,7 +44,7 @@ PREIMAGE = b"my_secret_preimage_32_bytes_long"
 def main():
     # Connect using config from $APCLIENT_DATA
     with SignerClient.from_env() as signer:
-        algod_client = algod.AlgodClient("", "https://testnet-api.4160.nodely.dev")
+        algod_client = algod.AlgodClient("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "http://localhost:4001")
 
         # Discover required arguments for this LogicSig
         key_info = signer.get_key_info(HASHLOCK_ADDRESS)

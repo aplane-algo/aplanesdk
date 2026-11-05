@@ -28,14 +28,14 @@ from aplanesdk import SignerClient, send_raw_transaction
 # Transaction parameters (replace with your actual addresses)
 SENDER = "ED255ACCOUNTEXAMPLE77777777777777777777777777777777777777777"
 RECEIVER = "RECEIVEREXAMPLE777777777777777777777777777777777777777777"
-ASSET_ID = 10458941  # USDC on testnet (replace with your ASA ID)
+ASSET_ID = 10458941  # replace with an ASA that exists on your LocalNet
 AMOUNT = 1  # Amount in base units
 
 
 def main():
     # Connect using config from $APCLIENT_DATA
     with SignerClient.from_env() as signer:
-        algod_client = algod.AlgodClient("", "https://testnet-api.4160.nodely.dev")
+        algod_client = algod.AlgodClient("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "http://localhost:4001")
 
         # Build ASA transfer transaction
         params = algod_client.suggested_params()

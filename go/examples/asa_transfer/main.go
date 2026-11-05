@@ -40,7 +40,7 @@ import (
 const (
 	sender   = "ED255ACCOUNTEXAMPLE77777777777777777777777777777777777777777"
 	receiver = "RECEIVEREXAMPLE777777777777777777777777777777777777777777"
-	assetID  = 10458941 // USDC on testnet (replace with your ASA ID)
+	assetID  = 10458941 // replace with an ASA that exists on your LocalNet
 	amount   = 1        // Amount in base units
 )
 
@@ -52,7 +52,7 @@ func main() {
 	}
 	defer signer.Close()
 
-	algodClient, err := algod.MakeClient("https://testnet-api.4160.nodely.dev", "")
+	algodClient, err := algod.MakeClient("http://localhost:4001", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	if err != nil {
 		log.Fatalf("Failed to create algod client: %v", err)
 	}

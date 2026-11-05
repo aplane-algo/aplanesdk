@@ -26,7 +26,7 @@ import { SignerClient, sendRawTransaction } from "aplanesdk";
 // Transaction parameters (replace with your actual addresses)
 const SENDER = "ED255ACCOUNTEXAMPLE77777777777777777777777777777777777777777";
 const RECEIVER = "RECEIVEREXAMPLE777777777777777777777777777777777777777777";
-const ASSET_ID = 10458941; // USDC on testnet (replace with your ASA ID)
+const ASSET_ID = 10458941; // replace with an ASA that exists on your LocalNet
 const AMOUNT = 1; // Amount in base units
 
 async function main() {
@@ -34,7 +34,7 @@ async function main() {
   const signer = await SignerClient.fromEnv();
 
   try {
-    const algodClient = new algosdk.Algodv2("", "https://testnet-api.4160.nodely.dev", "");
+    const algodClient = new algosdk.Algodv2("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "http://localhost", 4001);
 
     // Build ASA transfer transaction
     const params = await algodClient.getTransactionParams().do();
@@ -48,7 +48,7 @@ async function main() {
 
     // Resolve auth address (handles rekeyed accounts)
     const acctInfo = await algodClient.accountInformation(SENDER).do();
-    const authAddr = acctInfo.authAddr || undefined;
+    const authAddr = acctInfo.authAddr?.toString();
 
     // Sign and submit (server handles fee pooling automatically)
     console.log(`Signing ASA transfer for ${SENDER.slice(0, 12)}...`);
