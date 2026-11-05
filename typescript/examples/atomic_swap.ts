@@ -38,7 +38,7 @@ async function main() {
   const signer = await SignerClient.fromEnv();
 
   try {
-    const algodClient = new algosdk.Algodv2("", "https://testnet-api.4160.nodely.dev", "");
+    const algodClient = new algosdk.Algodv2("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "http://localhost", 4001);
     const params = await algodClient.getTransactionParams().do();
 
     // Build transactions (do NOT call assignGroupID)

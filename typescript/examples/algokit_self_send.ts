@@ -5,7 +5,7 @@ import { SignerClient, createApsignerAccount } from "aplanesdk";
 const sender = process.env.APLANE_ADDRESS;
 if (!sender) throw new Error("APLANE_ADDRESS is required");
 
-const algorand = AlgorandClient.testNet();
+const algorand = AlgorandClient.defaultLocalNet();
 const signer = await SignerClient.fromEnv();
 
 try {
