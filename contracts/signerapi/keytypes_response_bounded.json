@@ -1,8 +1,8 @@
 {
   "key_types": [
     {
-      "key_type": "aplane.falcon1024-allowlist-alock.v1",
-      "family": "falcon1024-allowlist-alock",
+      "key_type": "aplane.falcon1024-allowlist-lock.v1",
+      "family": "falcon1024-allowlist-lock",
       "display_name": "Falcon-1024 Bounded Authorization Allowlist",
       "description": "Fixed allowlist with external Falcon contract administration",
       "authorization_kind": "logic_sig",

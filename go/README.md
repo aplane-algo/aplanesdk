@@ -385,7 +385,7 @@ if err != nil {
 | `aplane.falcon1024-allowlist.v1` | Bounded allowlist | Inline allowlist; `bounded1` signing flow |
 | `aplane.falcon1024-allowlist.v2` | Bounded allowlist | Merkle allowlist; `bounded1` signing flow |
 | `aplane.falcon1024-timelock.v1` | Bounded timelock | Round-gated `bounded1` signing flow |
-| `aplane.falcon1024-allowlist-alock.v1` | Rekey-locked bounded allowlist | Ordinary spending uses `bounded1`; admin rekey is outside SDK scope |
+| `aplane.falcon1024-allowlist-lock.v1` | Rekey-locked bounded allowlist | Ordinary spending uses `bounded1`; admin rekey is outside SDK scope |
 | `aplane.htlc.v1` | Hash-locked funds | Requires `preimage` arg |
 
 Only the protocol-native types, `ed25519` and `falcon1024`, are enabled by
