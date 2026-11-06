@@ -548,8 +548,20 @@ describe("signer API contract fixtures", () => {
     assert.equal(keyType.boundedAuthorization?.adminKeyId, undefined);
     const corridorType = keyTypes[1];
     assert.equal(corridorType.signingFlow, "bounded-cosigner1");
+    assert.equal(corridorType.perKeyContract, undefined);
     assert.equal(corridorType.cosignerComponentKeyType, "aplane.witness-falcon1024.v1");
     assert.deepEqual(corridorType.boundedAuthorization?.cosigner?.requiredOn, ["spend"]);
+
+    mockFetch.mockResolvedValueOnce({
+      status: 200,
+      ok: true,
+      json: async () => fixture("keytypes_response_per_key.json"),
+    });
+    const [perKeyType] = await client.listKeyTypes();
+    assert.equal(perKeyType.perKeyContract, true);
+    assert.equal(perKeyType.signingFlow, undefined);
+    assert.equal(perKeyType.boundedAuthorization, undefined);
+    assert.equal(perKeyType.cosignerComponentKeyType, "aplane.witness-falcon1024.v1");
   });
 
 });
