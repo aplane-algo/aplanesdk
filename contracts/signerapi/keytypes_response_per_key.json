@@ -1,0 +1,65 @@
+{
+  "key_types": [
+    {
+      "key_type": "aplane.bounded.v1",
+      "family": "aplane.falcon1024",
+      "display_name": "Bounded Account",
+      "description": "Falcon-1024 account limited to a fixed recipient list, chosen at generation.",
+      "authorization_kind": "logic_sig",
+      "requires_logicsig": true,
+      "mnemonic_word_count": 0,
+      "mnemonic_import": false,
+      "mnemonic_scheme": "",
+      "cosigner_component_key_type": "aplane.witness-falcon1024.v1",
+      "per_key_contract": true,
+      "creation_params": [
+        {
+          "name": "spend_effects",
+          "label": "Transfer Kinds",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "recipients",
+          "label": "Allowed Recipients",
+          "type": "address[]",
+          "required": true
+        },
+        {
+          "name": "rekey_authority",
+          "label": "Rekey Authority",
+          "type": "string",
+          "required": true,
+          "options": [
+            "spending_key",
+            "admin_key"
+          ]
+        },
+        {
+          "name": "list_encoding",
+          "label": "List Encoding",
+          "type": "string",
+          "required": false,
+          "options": [
+            "auto",
+            "inline",
+            "merkle"
+          ]
+        },
+        {
+          "name": "bounded_admin_public_key",
+          "label": "Contract Admin Public Key",
+          "type": "bytes",
+          "required": false
+        },
+        {
+          "name": "cosigner_public_key",
+          "label": "Cosigner Public Key",
+          "type": "bytes",
+          "required": false
+        }
+      ],
+      "runtime_args": []
+    }
+  ]
+}

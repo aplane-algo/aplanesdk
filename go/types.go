@@ -656,20 +656,23 @@ type CreationParam struct {
 
 // KeyTypeInfo describes an available key type on the signer.
 type KeyTypeInfo struct {
-	KeyType                  string                    `json:"key_type"`
-	Family                   string                    `json:"family"`
-	DisplayName              string                    `json:"display_name"`
-	Description              string                    `json:"description"`
-	AuthorizationKind        string                    `json:"authorization_kind,omitempty"`
-	RequiresLogicSig         bool                      `json:"requires_logicsig"`
-	MnemonicWordCount        int                       `json:"mnemonic_word_count"`
-	MnemonicImport           bool                      `json:"mnemonic_import"`
-	MnemonicScheme           string                    `json:"mnemonic_scheme"`
-	SigningFlow              string                    `json:"signing_flow,omitempty"`
-	CosignerComponentKeyType string                    `json:"cosigner_component_key_type,omitempty"`
-	BoundedAuthorization     *BoundedAuthorizationInfo `json:"bounded_authorization,omitempty"`
-	CreationParams           []CreationParam           `json:"creation_params"`
-	RuntimeArgs              []RuntimeArg              `json:"runtime_args"`
+	KeyType                  string `json:"key_type"`
+	Family                   string `json:"family"`
+	DisplayName              string `json:"display_name"`
+	Description              string `json:"description"`
+	AuthorizationKind        string `json:"authorization_kind,omitempty"`
+	RequiresLogicSig         bool   `json:"requires_logicsig"`
+	MnemonicWordCount        int    `json:"mnemonic_word_count"`
+	MnemonicImport           bool   `json:"mnemonic_import"`
+	MnemonicScheme           string `json:"mnemonic_scheme"`
+	SigningFlow              string `json:"signing_flow,omitempty"`
+	CosignerComponentKeyType string `json:"cosigner_component_key_type,omitempty"`
+	// PerKeyContract means each account selects its own contract at generation, so
+	// this type has no fixed signing flow or bounded profile. Route by GetKeys.
+	PerKeyContract       bool                      `json:"per_key_contract,omitempty"`
+	BoundedAuthorization *BoundedAuthorizationInfo `json:"bounded_authorization,omitempty"`
+	CreationParams       []CreationParam           `json:"creation_params"`
+	RuntimeArgs          []RuntimeArg              `json:"runtime_args"`
 }
 
 // SigningFlowCosigner1 names the cosigner co-signed component signing

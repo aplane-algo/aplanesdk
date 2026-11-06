@@ -29,6 +29,7 @@
     "keys_response_rotating_xmss.json",
     "keytypes_response_bounded.json",
     "keytypes_response_full.json",
+    "keytypes_response_per_key.json",
     "rotating_prepare_request.json",
     "rotating_prepare_response.json",
     "rotating_recover_request.json",

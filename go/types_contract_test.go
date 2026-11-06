@@ -165,6 +165,7 @@ func TestGoSDKContractFixturesRoundTrip(t *testing.T) {
 		{"rotating_sign_response.json", assertSDKContractRoundTrip[RotatingSignResponse]},
 		{"keytypes_response_full.json", assertSDKContractRoundTrip[KeyTypesResponse]},
 		{"keytypes_response_bounded.json", assertSDKContractRoundTrip[KeyTypesResponse]},
+		{"keytypes_response_per_key.json", assertSDKContractRoundTrip[KeyTypesResponse]},
 		{"admin_generate_request_generic.json", assertSDKContractRoundTrip[generateRequest]},
 		{"admin_generate_response_generic.json", assertSDKContractRoundTrip[GenerateResult]},
 		{"admin_generate_response_component.json", assertSDKContractRoundTrip[GenerateResult]},

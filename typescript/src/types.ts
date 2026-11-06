@@ -366,6 +366,8 @@ export interface KeyTypeInfo {
   signingFlow?: string;
   /** Cosigner component key type for signing flow "cosigner1" */
   cosignerComponentKeyType?: string;
+  /** Each account selects its own contract; route by /keys, not this type */
+  perKeyContract?: boolean;
   /** Definition-level transaction-authorization capability */
   boundedAuthorization?: BoundedAuthorizationInfo;
   /** Creation parameters */

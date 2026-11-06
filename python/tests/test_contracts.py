@@ -527,6 +527,17 @@ def test_bounded_inventory_projects_layer3_policy():
     assert corridor_type.cosigner_component_key_type == "aplane.witness-falcon1024.v1"
     assert corridor_type.bounded_authorization.cosigner.required_on == ["spend"]
 
+    with patch.object(
+        client.session,
+        "get",
+        return_value=mock_response(200, fixture("keytypes_response_per_key.json")),
+    ):
+        per_key_type = client.list_key_types()[0]
+    assert per_key_type.per_key_contract is True
+    assert per_key_type.signing_flow == ""
+    assert per_key_type.bounded_authorization is None
+    assert per_key_type.cosigner_component_key_type == "aplane.witness-falcon1024.v1"
+
 
 def test_status_tolerates_fields_from_a_newer_signer():
     status = StatusResponse(

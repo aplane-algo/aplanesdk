@@ -468,6 +468,7 @@ class KeyTypeInfo:
     mnemonic_scheme: str = ""
     signing_flow: str = ""  # Signing choreography label (e.g. "cosigner1"); empty = plain /sign
     cosigner_component_key_type: str = ""  # Cosigner component key type for signing flow "cosigner1"
+    per_key_contract: bool = False  # Each account selects its own contract; route by /keys
     bounded_authorization: Optional[BoundedAuthorizationInfo] = None
     creation_params: Optional[List[CreationParam]] = None
     runtime_args: Optional[List[RuntimeArg]] = None
@@ -3937,6 +3938,7 @@ class SignerClient:
                     mnemonic_scheme=kt.get("mnemonic_scheme", ""),
                     signing_flow=kt.get("signing_flow", ""),
                     cosigner_component_key_type=kt.get("cosigner_component_key_type", ""),
+                    per_key_contract=kt.get("per_key_contract", False),
                     bounded_authorization=_parse_bounded_authorization(
                         kt.get("bounded_authorization")
                     ),
