@@ -1,7 +1,7 @@
 {
   "key_types": [
     {
-      "key_type": "aplane.bounded.v1",
+      "key_type": "aplane.falcon1024-b.v1",
       "family": "aplane.falcon1024",
       "display_name": "Bounded Account",
       "description": "Falcon-1024 account limited to a fixed recipient list, chosen at generation.",
