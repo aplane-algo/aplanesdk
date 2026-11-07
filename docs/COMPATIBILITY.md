@@ -19,7 +19,7 @@ selected LogicSig resource declaration. Upgrade the signer and SDK together.
 APlane's policy implementation stores one `aplane.policy.v1` document per
 file, each with a `.hmac` sidecar in the active store generation: a node
 default, `default.json`, plus `policies/<selector>.json` for every key given a
-policy of its own (the address on a signer node, the Witness Key ID on a
+policy of its own (the address on a signer node, the Cosigner Key ID on a
 cosigner node). A key with no file of its own follows the node default; a key
 with one is governed by that file alone. It does not read or migrate earlier
 layouts. Operators prepare and apply documents through `apadmin policy check`

@@ -618,7 +618,7 @@ spending accounts, and must not be used as senders, receivers, auth addresses,
 or rekey targets.
 
 Before signing, an operator must apply a policy document for the selected
-cosigner Witness Key ID using `apadmin policy check` and `apadmin policy apply`.
+Cosigner Key ID using `apadmin policy check` and `apadmin policy apply`.
 The cosigner stores it as `policies/<WitnessKeyID>.json` with a `.hmac`
 sidecar in the active generation. A key with no document of its own follows
 the cosigner's node default, which as shipped rejects every transaction type,
