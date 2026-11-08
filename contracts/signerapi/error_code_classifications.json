@@ -11,6 +11,7 @@
     "cache_refresh": "cache_refresh",
     "internal": "internal",
     "bounded_cosigner_required": "request_error",
+    "bounded_rekey_target_not_listed": "request_error",
     "rotating_signing_required": "request_error",
     "rotating_stage_unproven": "temporary",
     "rotating_stage_changed": "request_error"

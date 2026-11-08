@@ -28,12 +28,14 @@ type LogicSigResourceUsage struct {
 	MaxOpcodeCost uint64 `json:"max_opcode_cost"`
 }
 
-// LogicSigResourceProfile publishes either a default path or the two closed
-// bounded paths for one stored LogicSig program.
+// LogicSigResourceProfile publishes either a default path or the three closed
+// bounded paths for one stored LogicSig program. A rekey on an account with a
+// rekey-to list takes ListedRekey.
 type LogicSigResourceProfile struct {
 	Default       *LogicSigResourceUsage `json:"default,omitempty"`
 	Spend         *LogicSigResourceUsage `json:"spend,omitempty"`
 	SpendingRekey *LogicSigResourceUsage `json:"spending_rekey,omitempty"`
+	ListedRekey   *LogicSigResourceUsage `json:"listed_rekey,omitempty"`
 }
 
 // The signer HTTP DTOs and validation semantics in this file intentionally
@@ -710,6 +712,15 @@ type BoundedDerivedArgInfo struct {
 type BoundedArgumentPathMask struct {
 	Spend         string `json:"spend"`
 	SpendingRekey string `json:"spending_rekey"`
+	ListedRekey   string `json:"listed_rekey"`
+}
+
+// BoundedRekeyListInfo says that a bounded account has a rekey-to list, and
+// commits to it. The entries are never published.
+type BoundedRekeyListInfo struct {
+	Contract string `json:"contract"`
+	Depth    int    `json:"depth"`
+	RootHex  string `json:"root,omitempty"`
 }
 
 type BoundedArgumentSlotInfo struct {
@@ -732,16 +743,19 @@ type BoundedCosignerAuthorizationInfo struct {
 }
 
 type BoundedAuthorizationInfo struct {
-	Contract               string                            `json:"contract"`
-	BaseSignatureArgLayout BoundedSignatureArgLayout         `json:"base_signature_arg_layout"`
-	SpendEffects           []string                          `json:"spend_effects"`
-	MaxFee                 uint64                            `json:"max_fee"`
-	Rekey                  string                            `json:"rekey"` // "refused" or "spending_key"
-	Cosigner               *BoundedCosignerAuthorizationInfo `json:"cosigner,omitempty"`
-	RuntimeArgs            []RuntimeArg                      `json:"runtime_args"`
-	DerivedArgs            []BoundedDerivedArgInfo           `json:"derived_args"`
-	ArgumentLayout         []BoundedArgumentSlotInfo         `json:"argument_layout"`
-	Layer3Policy           string                            `json:"layer3_policy"`
+	Contract               string                    `json:"contract"`
+	BaseSignatureArgLayout BoundedSignatureArgLayout `json:"base_signature_arg_layout"`
+	SpendEffects           []string                  `json:"spend_effects"`
+	MaxFee                 uint64                    `json:"max_fee"`
+	Rekey                  string                    `json:"rekey"` // "refused" or "spending_key"
+	// RekeyList, with Rekey "refused", is "only these": a rekey may go only to
+	// an address on the account's rekey-to list.
+	RekeyList      *BoundedRekeyListInfo             `json:"rekey_list,omitempty"`
+	Cosigner       *BoundedCosignerAuthorizationInfo `json:"cosigner,omitempty"`
+	RuntimeArgs    []RuntimeArg                      `json:"runtime_args"`
+	DerivedArgs    []BoundedDerivedArgInfo           `json:"derived_args"`
+	ArgumentLayout []BoundedArgumentSlotInfo         `json:"argument_layout"`
+	Layer3Policy   string                            `json:"layer3_policy"`
 }
 
 // KeyInfo represents a key returned from the /keys endpoint.

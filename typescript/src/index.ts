@@ -109,6 +109,7 @@ export type {
   BoundedSignatureArgLayout,
   BoundedDerivedArgInfo,
   BoundedArgumentPathMask,
+  BoundedRekeyListInfo,
   BoundedArgumentSlotInfo,
   BoundedCosignerAuthorizationInfo,
   BoundedAuthorizationInfo,

@@ -48,6 +48,7 @@ from aplanesdk.signer import (
     _normalize_guarded_passthrough_item,
     BoundedCosignerAuthorizationInfo,
     BoundedAuthorizationInfo,
+    BoundedRekeyListInfo,
     BoundedSignatureArgLayout,
     GuardedSignTarget,
     GuardedPrimarySignTarget,
@@ -204,6 +205,20 @@ def test_selected_prepared_resources_uses_bounded_authorization_path(
     assert selected.program_bytes == expected_program_bytes
     assert selected is not key.logic_sig_resources.spend
     assert selected is not key.logic_sig_resources.spending_rekey
+
+
+# A rekey on an "only these" account is sized from the listed path: the signer
+# checks the target against the account's list and adds the proof.
+def test_selected_prepared_resources_uses_the_listed_path_for_only_these():
+    key = bounded_resource_test_key("refused")
+    key.logic_sig_resources.listed_rekey = LogicSigResourceUsage(1001, 1583, 20003)
+    key.bounded_authorization.rekey_list = BoundedRekeyListInfo(contract="rekey_list1", depth=4)
+
+    listed = _selected_prepared_resources(key, MagicMock(rekey_to=sdk_test_address(2)))
+    assert listed == LogicSigResourceUsage(1001, 1583, 20003)
+    assert listed is not key.logic_sig_resources.listed_rekey
+    spend = _selected_prepared_resources(key, MagicMock(rekey_to=None))
+    assert spend == LogicSigResourceUsage(1001, 101, 10001)
 
 
 # Only spending_key authorizes a rekey; refused, a missing setting and any

@@ -762,3 +762,22 @@ func TestSignPreparedGuardedGroupRejectsUnsupportedSigningFlow(t *testing.T) {
 		t.Fatalf("SignPreparedGuardedGroup() error = %v, want unsupported signing flow rejection", err)
 	}
 }
+
+// A rekey on an "only these" account is sized from the listed path: the signer
+// checks the target against the account's list and adds the proof.
+func TestSelectedPreparedResourcesUsesTheListedPathForOnlyThese(t *testing.T) {
+	spend := &LogicSigResourceUsage{ProgramBytes: 1001, ArgumentBytes: 101, MaxOpcodeCost: 10001}
+	listed := &LogicSigResourceUsage{ProgramBytes: 1001, ArgumentBytes: 1583, MaxOpcodeCost: 20003}
+	key := boundedResourceTestKey(spend, spend, "refused")
+	key.LogicSigResources.ListedRekey = listed
+	key.BoundedAuthorization.RekeyList = &BoundedRekeyListInfo{Contract: "rekey_list1", Depth: 4}
+	var rekeyTo types.Address
+	rekeyTo[31] = 1
+	got, err := selectedPreparedResources(key, &types.Transaction{Header: types.Header{RekeyTo: rekeyTo}})
+	if err != nil || got == nil || *got != *listed {
+		t.Fatalf("selectedPreparedResources() = %+v, %v; want the listed path", got, err)
+	}
+	if got, err := selectedPreparedResources(key, &types.Transaction{}); err != nil || *got != *spend {
+		t.Fatalf("a spend on a list account = %+v, %v", got, err)
+	}
+}

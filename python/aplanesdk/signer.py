@@ -159,6 +159,9 @@ ERR_CODE_UNAVAILABLE = "unavailable"
 ERR_CODE_CACHE_REFRESH = "cache_refresh"
 ERR_CODE_INTERNAL = "internal"
 ERR_CODE_BOUNDED_COSIGNER_REQUIRED = "bounded_cosigner_required"
+# The account refuses every rekey but one to an address on its rekey-to list,
+# and the target is not on it.
+ERR_CODE_BOUNDED_REKEY_TARGET_NOT_LISTED = "bounded_rekey_target_not_listed"
 # A rotating account (rotating1) was sent to an ordinary signing endpoint.
 ERR_CODE_ROTATING_SIGNING_REQUIRED = "rotating_signing_required"
 # 409, temporary: the signer has not yet found the account's live stage.
@@ -286,6 +289,16 @@ class BoundedDerivedArgInfo:
 class BoundedArgumentPathMask:
     spend: str
     spending_rekey: str
+    listed_rekey: str = ""
+
+
+@dataclass
+class BoundedRekeyListInfo:
+    """A bounded account's rekey-to list. The entries are never published."""
+
+    contract: str
+    depth: int
+    root_hex: str = ""
 
 
 @dataclass
@@ -325,6 +338,8 @@ class LogicSigResourceProfile:
     default: Optional[LogicSigResourceUsage] = None
     spend: Optional[LogicSigResourceUsage] = None
     spending_rekey: Optional[LogicSigResourceUsage] = None
+    # A rekey on an account with a rekey-to list takes this path.
+    listed_rekey: Optional[LogicSigResourceUsage] = None
 
 
 @dataclass
@@ -339,6 +354,8 @@ class BoundedAuthorizationInfo:
     argument_layout: List[BoundedArgumentSlotInfo]
     layer3_policy: str
     cosigner: Optional[BoundedCosignerAuthorizationInfo] = None
+    # With rekey "refused": "only these", a rekey may go only to a listed address.
+    rekey_list: Optional[BoundedRekeyListInfo] = None
 
 
 @dataclass
@@ -1515,6 +1532,7 @@ def _parse_lsig_resource_profile(data: Any) -> Optional[LogicSigResourceProfile]
         default=_parse_lsig_resource_usage(data.get("default")),
         spend=_parse_lsig_resource_usage(data.get("spend")),
         spending_rekey=_parse_lsig_resource_usage(data.get("spending_rekey")),
+        listed_rekey=_parse_lsig_resource_usage(data.get("listed_rekey")),
     )
 
 
@@ -1526,7 +1544,11 @@ def _selected_prepared_resources(
     profile = key.logic_sig_resources
     selected = profile.spend or profile.default
     if key.bounded_authorization and txn is not None and txn.rekey_to is not None:
-        if key.bounded_authorization.rekey == "spending_key":
+        bounded = key.bounded_authorization
+        if bounded.rekey_list is not None and bounded.rekey == "refused":
+            # Only these addresses: the signer checks the target and adds the proof.
+            selected = profile.listed_rekey
+        elif bounded.rekey == "spending_key":
             selected = profile.spending_rekey
         else:
             raise ValueError("bounded rekey authorization metadata is unavailable")
@@ -1576,6 +1598,7 @@ def _parse_bounded_authorization(data: Any) -> Optional[BoundedAuthorizationInfo
     derived_args = data.get("derived_args") or []
     argument_layout = data.get("argument_layout") or []
     cosigner = data.get("cosigner")
+    rekey_list = data.get("rekey_list")
     return BoundedAuthorizationInfo(
         contract=data.get("contract", ""),
         base_signature_arg_layout=BoundedSignatureArgLayout(
@@ -1614,6 +1637,7 @@ def _parse_bounded_authorization(data: Any) -> Optional[BoundedAuthorizationInfo
                 paths=BoundedArgumentPathMask(
                     spend=(item.get("paths") or {}).get("spend", ""),
                     spending_rekey=(item.get("paths") or {}).get("spending_rekey", ""),
+                    listed_rekey=(item.get("paths") or {}).get("listed_rekey", ""),
                 ),
             )
             for item in argument_layout
@@ -1629,6 +1653,15 @@ def _parse_bounded_authorization(data: Any) -> Optional[BoundedAuthorizationInfo
                 required_on=list(cosigner.get("required_on") or []),
             )
             if isinstance(cosigner, dict)
+            else None
+        ),
+        rekey_list=(
+            BoundedRekeyListInfo(
+                contract=rekey_list.get("contract", ""),
+                depth=rekey_list.get("depth", 0),
+                root_hex=rekey_list.get("root", ""),
+            )
+            if isinstance(rekey_list, dict)
             else None
         ),
     )

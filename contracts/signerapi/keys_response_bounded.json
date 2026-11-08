@@ -17,6 +17,11 @@
           "program_bytes": 5169,
           "argument_bytes": 1423,
           "max_opcode_cost": 20000
+        },
+        "listed_rekey": {
+          "program_bytes": 5169,
+          "argument_bytes": 1423,
+          "max_opcode_cost": 20000
         }
       },
       "bounded_authorization": {
@@ -43,7 +48,8 @@
             "max_size": 1423,
             "paths": {
               "spend": "required",
-              "spending_rekey": "required"
+              "spending_rekey": "required",
+              "listed_rekey": "required"
             }
           }
         ],
@@ -69,6 +75,11 @@
           "max_opcode_cost": 20000
         },
         "spending_rekey": {
+          "program_bytes": 5308,
+          "argument_bytes": 1423,
+          "max_opcode_cost": 20000
+        },
+        "listed_rekey": {
           "program_bytes": 5308,
           "argument_bytes": 1423,
           "max_opcode_cost": 20000
@@ -115,7 +126,8 @@
             "max_size": 1423,
             "paths": {
               "spend": "required",
-              "spending_rekey": "required"
+              "spending_rekey": "required",
+              "listed_rekey": "required"
             }
           },
           {
@@ -125,7 +137,8 @@
             "max_size": 512,
             "paths": {
               "spend": "optional",
-              "spending_rekey": "forbidden"
+              "spending_rekey": "forbidden",
+              "listed_rekey": "forbidden"
             }
           },
           {
@@ -135,7 +148,8 @@
             "max_size": 1423,
             "paths": {
               "spend": "required",
-              "spending_rekey": "forbidden"
+              "spending_rekey": "forbidden",
+              "listed_rekey": "forbidden"
             }
           }
         ],
