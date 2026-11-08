@@ -394,7 +394,7 @@ client.close()
 | `aplane.ed25519.v1` | Ed25519 DSA LogicSig | Library-visible plain DSA account |
 | `aplane.witness-falcon1024.v1` | Witness key | Cosigner-custodied policy signature key; not a spending account |
 | `aplane.falcon1024-cosigner1024.v1` | Guarded account | Requires user and cosigner component signatures |
-| `aplane.falcon1024-b.v1` | General bounded account | `bounded2` contract; `bounded1` signing flow, or `bounded-cosigner1` when it embeds a cosigner |
+| `aplane.falcon1024-b.v1` | General bounded account | `bounded2` contract; `bounded1` signing flow, or `cosigned1` when it embeds a cosigner |
 | `aplane.htlc.v1` | Hash-locked funds | Requires `preimage` arg (check `signing_args`) |
 
 Only the protocol-native types, `ed25519` and `falcon1024`, are enabled by
@@ -480,7 +480,9 @@ not the same operation as server-side guarded assembly.
 ### Bounded Cosigner Accounts
 
 Corridor uses the bounded contract `bounded2` with the distinct
-`bounded-cosigner1` online signing flow. The contract identifies the LogicSig
+`cosigned1` online signing flow, which carries spends and rekeys. A rekey to
+an address on the account's rekey-to list needs no cosigner: the signer's base
+component names its `path`, and the helper skips the cosigner for it. The contract identifies the LogicSig
 rules; the flow identifies the user-first multi-endpoint choreography. The
 prepared helper detects that flow from signer inventory and routes it
 automatically:

@@ -66,7 +66,7 @@
       "public_key_hex": "ffeeddccbbaa99887766554433221100",
       "key_type": "aplane.falcon1024-b.v1",
       "authorization_kind": "logic_sig",
-      "signing_flow": "bounded-cosigner1",
+      "signing_flow": "cosigned1",
       "cosigner_component_key_type": "aplane.witness-falcon1024.v1",
       "logic_sig_resources": {
         "spend": {
@@ -81,7 +81,7 @@
         },
         "listed_rekey": {
           "program_bytes": 5308,
-          "argument_bytes": 1423,
+          "argument_bytes": 1583,
           "max_opcode_cost": 20000
         }
       },
@@ -109,6 +109,11 @@
             "spend"
           ]
         },
+        "rekey_list": {
+          "contract": "rekey_list1",
+          "depth": 4,
+          "root": "4d250f6c00000000000000000000000000000000000000000000000000000000"
+        },
         "runtime_args": [],
         "derived_args": [
           {
@@ -116,6 +121,12 @@
             "kind": "merkle_allowlist_proof",
             "parameter": "recipients",
             "max_size": 512
+          },
+          {
+            "name": "rekey_list_proof",
+            "kind": "rekey_list_proof",
+            "parameter": "rekey_to",
+            "max_size": 160
           }
         ],
         "argument_layout": [
@@ -143,6 +154,17 @@
           },
           {
             "index": 2,
+            "name": "rekey_list_proof",
+            "source": "derived",
+            "max_size": 160,
+            "paths": {
+              "spend": "forbidden",
+              "spending_rekey": "forbidden",
+              "listed_rekey": "required"
+            }
+          },
+          {
+            "index": 3,
             "name": "cosigner_signature",
             "source": "cosigner",
             "max_size": 1423,

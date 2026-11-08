@@ -116,6 +116,24 @@ type Component struct {
 	BaseSignatures  []string            `json:"base_signatures,omitempty"`
 	RuntimeArgs     map[string]string   `json:"runtime_args,omitempty"`
 	AssemblyReceipt string              `json:"assembly_receipt,omitempty"`
+	// Path is the path the signer classified a bounded-base target on: spend,
+	// spending_rekey or listed_rekey. A listed rekey takes no cosigner
+	// component. It routes the request only: assembly classifies again.
+	Path string `json:"path,omitempty"`
+}
+
+// Bounded-base component paths, the names argument path masks and resource
+// profiles use.
+const (
+	ComponentPathSpend         = "spend"
+	ComponentPathSpendingRekey = "spending_rekey"
+	ComponentPathListedRekey   = "listed_rekey"
+)
+
+// NeedsCosigner reports whether a bounded-base component's path takes a cosigner
+// component. A path this SDK does not name fails validation first.
+func (c Component) NeedsCosigner() bool {
+	return c.Path != ComponentPathListedRekey
 }
 
 type ComponentResponse struct {
@@ -152,7 +170,9 @@ type AssemblyTarget struct {
 	AssemblyReceipt     string            `json:"assembly_receipt,omitempty"`
 	BaseSourceRequestID string            `json:"base_source_request_id,omitempty"`
 
-	CosignerSignature       string `json:"cosigner_signature"`
+	// CosignerSignature is required on a guarded target and on every
+	// bounded-cosigner target except a listed rekey, which takes none.
+	CosignerSignature       string `json:"cosigner_signature,omitempty"`
 	CosignerSourceRequestID string `json:"cosigner_source_request_id,omitempty"`
 }
 
@@ -414,14 +434,20 @@ func (r AssemblyRequest) Validate() error {
 		if err := validateAssemblyIndex(target.TargetIndex, len(r.GroupBytesHex), covered); err != nil {
 			return fmt.Errorf("target %d: %w", i+1, err)
 		}
-		if target.AuthAddress == "" || target.CosignerSignature == "" {
-			return fmt.Errorf("target %d: auth_address and cosigner_signature are required", i+1)
+		if target.AuthAddress == "" {
+			return fmt.Errorf("target %d: auth_address is required", i+1)
+		}
+		if target.CosignerSignature == "" && target.CosignerSourceRequestID != "" {
+			return fmt.Errorf("target %d: cosigner_source_request_id needs a cosigner_signature", i+1)
 		}
 		if err := validateSignRequestID(target.CosignerSourceRequestID); err != nil {
 			return fmt.Errorf("target %d: cosigner_source_request_id: %w", i+1, err)
 		}
 		switch target.Kind {
 		case AssemblyTargetKindGuarded:
+			if target.CosignerSignature == "" {
+				return fmt.Errorf("target %d: cosigner_signature is required for guarded target", i+1)
+			}
 			if target.UserSignature == "" {
 				return fmt.Errorf("target %d: user_signature is required for guarded target", i+1)
 			}
@@ -686,10 +712,13 @@ const SigningFlowCosigner1 = "cosigner1"
 // SigningFlowBounded1 names the transaction-aware LogicSig choreography.
 const SigningFlowBounded1 = "bounded1"
 
-// SigningFlowBoundedCosigner1 names the combined bounded spend choreography:
-// user-signer bounded base release, cosigner component signing, and source-bound
-// bounded assembly.
-const SigningFlowBoundedCosigner1 = "bounded-cosigner1"
+// SigningFlowCosigned1 names the cosigned account choreography: user-signer base
+// release, cosigner component signing, and source-bound assembly. A target may
+// be a spend or a rekey. Each base component names the path the signer
+// classified; a listed rekey needs no cosigner component, so the SDK asks the
+// cosigner for every other target only. It replaces bounded-cosigner1, which
+// carried spends only.
+const SigningFlowCosigned1 = "cosigned1"
 
 // SigningFlowRotating1 names the rotating account choreography
 // (/sign/rotating/prepare then /sign/rotating/sign), in which the signer

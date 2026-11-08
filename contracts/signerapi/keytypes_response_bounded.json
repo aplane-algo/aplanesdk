@@ -59,13 +59,13 @@
       "key_type": "example.falcon1024-corridor.v1",
       "family": "corridor",
       "display_name": "Corridor",
-      "description": "Bounded Falcon-1024 account with cosigner authorization and a Merkle recipient allowlist.",
+      "description": "Bounded Falcon-1024 account with cosigner authorization, a Merkle recipient allowlist, and a rekey-to list.",
       "authorization_kind": "logic_sig",
       "requires_logicsig": true,
       "mnemonic_word_count": 0,
       "mnemonic_import": false,
       "mnemonic_scheme": "",
-      "signing_flow": "bounded-cosigner1",
+      "signing_flow": "cosigned1",
       "cosigner_component_key_type": "aplane.witness-falcon1024.v1",
       "bounded_authorization": {
         "contract": "bounded2",
@@ -89,6 +89,10 @@
             "spend"
           ]
         },
+        "rekey_list": {
+          "contract": "rekey_list1",
+          "depth": 4
+        },
         "runtime_args": [],
         "derived_args": [
           {
@@ -96,6 +100,12 @@
             "kind": "merkle_allowlist_proof",
             "parameter": "recipients",
             "max_size": 512
+          },
+          {
+            "name": "rekey_list_proof",
+            "kind": "rekey_list_proof",
+            "parameter": "rekey_to",
+            "max_size": 160
           }
         ],
         "argument_layout": [
@@ -123,6 +133,17 @@
           },
           {
             "index": 2,
+            "name": "rekey_list_proof",
+            "source": "derived",
+            "max_size": 160,
+            "paths": {
+              "spend": "forbidden",
+              "spending_rekey": "forbidden",
+              "listed_rekey": "required"
+            }
+          },
+          {
+            "index": 3,
             "name": "cosigner_signature",
             "source": "cosigner",
             "max_size": 1423,

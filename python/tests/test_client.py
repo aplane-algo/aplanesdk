@@ -55,11 +55,12 @@ from aplanesdk.signer import (
     PreparedTransaction,
     PreparedGroup,
     COMPONENT_TARGET_KIND_BOUNDED_BASE,
+    COMPONENT_PATH_LISTED_REKEY,
     ASSEMBLY_TARGET_KIND_BOUNDED_COSIGNER,
     KEY_TYPE_GUARDED_FALCON1024_COSIGNER1024,
     KEY_TYPE_WITNESS_FALCON1024,
     SIGNING_FLOW_COSIGNER1,
-    SIGNING_FLOW_BOUNDED_COSIGNER1,
+    SIGNING_FLOW_COSIGNED1,
     EnrollmentError,
     EnrollmentResult,
     request_enrollment,
@@ -942,6 +943,7 @@ class TestSpecializedLowLevelEndpoints:
                     "base_signatures": ["base-sig"],
                     "assembly_receipt": "receipt",
                     "signature_scheme": "aplane.falcon1024.v1",
+                    "path": "spend",
                 }],
             },
         )
@@ -1581,7 +1583,7 @@ class TestSignGuardedGroup:
                 ],
             })
 
-        with pytest.raises(ValueError, match="cannot mix cosigner1 and bounded-cosigner1"):
+        with pytest.raises(ValueError, match="cannot mix cosigner1 and cosigned1"):
             sign_prepared_guarded_group(
                 user_client=make_client(),
                 prepared_group=PreparedGroup([
@@ -1589,7 +1591,7 @@ class TestSignGuardedGroup:
                         signer_key=KeyInfo(
                             address="bounded",
                             key_type="bounded",
-                            signing_flow=SIGNING_FLOW_BOUNDED_COSIGNER1,
+                            signing_flow=SIGNING_FLOW_COSIGNED1,
                         )
                     ),
                     PreparedTransaction(
@@ -1661,6 +1663,85 @@ class TestSignGuardedGroup:
                 [{"target_index": 0, "auth_address": sender}],
             )
 
+    def test_prepared_cosigned_listed_rekey_skips_the_cosigner(self):
+        """A listed rekey takes no cosigner component: the base component names
+        the listed path, the cosigner sees nothing, and assembly carries no
+        cosigner signature."""
+        bounded = sdk_test_address(13)
+        target = sdk_test_address(14)
+        user = make_client()
+        cosigner = make_client("http://cosigner:11270")
+        user.request_components = MagicMock(return_value=ComponentResponse(
+            request_id="base-id",
+            components=[{
+                "target_index": 0, "kind": COMPONENT_TARGET_KIND_BOUNDED_BASE,
+                "auth_address": bounded, "base_signatures": ["base-sig"],
+                "assembly_receipt": "receipt", "signature_scheme": "aplane.falcon1024.v1",
+                "path": COMPONENT_PATH_LISTED_REKEY,
+            }],
+        ))
+        user.plan_requests = MagicMock(side_effect=lambda requests: {
+            "transactions": [requests[0]["txn_bytes_hex"]],
+        })
+        cosigner.request_components = MagicMock(
+            side_effect=AssertionError("the cosigner was asked about a listed rekey")
+        )
+        params = transaction.SuggestedParams(
+            1000, 1, 100, base64.b64encode(bytes(32)).decode(), "testnet-v1.0", flat_fee=True,
+        )
+        txn = transaction.PaymentTxn(bounded, params, bounded, 0, rekey_to=target)
+
+        def signed_txn_hex(signed_txn):
+            logic_sig = transaction.LogicSigAccount(bytes.fromhex("033120320312"))
+            encoded = algo_encoding.msgpack_encode(transaction.LogicSigTransaction(signed_txn, logic_sig))
+            return base64.b64decode(encoded).hex()
+
+        def listed_assemble(req):
+            assert req.targets[0].cosigner_signature == ""
+            assert req.targets[0].cosigner_source_request_id == ""
+            return AssemblyResponse(request_id="assembly-id", signed_group=[signed_txn_hex(txn)])
+
+        user.request_assemble = MagicMock(side_effect=listed_assemble)
+        key = KeyInfo(
+            address=bounded,
+            key_type="aplane.falcon1024-b.v1",
+            signing_flow=SIGNING_FLOW_COSIGNED1,
+            cosigner_component_key_type=KEY_TYPE_WITNESS_FALCON1024,
+            logic_sig_resources=LogicSigResourceProfile(
+                spend=LogicSigResourceUsage(5308, 3358, 20000),
+                spending_rekey=LogicSigResourceUsage(5308, 2846, 20000),
+                listed_rekey=LogicSigResourceUsage(5308, 1583, 20000),
+            ),
+            bounded_authorization=BoundedAuthorizationInfo(
+                contract="bounded2",
+                base_signature_arg_layout=BoundedSignatureArgLayout(count=1, max_sizes=[1280]),
+                spend_effects=["pay"],
+                max_fee=1000,
+                rekey="spending_key",
+                runtime_args=[],
+                derived_args=[],
+                argument_layout=[],
+                layer3_policy="merkle_allowlist",
+                cosigner=BoundedCosignerAuthorizationInfo(
+                    contract="cosigner1",
+                    component_key_type=KEY_TYPE_WITNESS_FALCON1024,
+                    public_key_hex="aabb",
+                ),
+                rekey_list=BoundedRekeyListInfo(contract="rekey_list1", depth=4),
+            ),
+        )
+        result = sign_prepared_guarded_group(
+            user_client=user,
+            cosigner_client=cosigner,
+            cosigner_component_key="COSIGNER_COMPONENT",
+            prepared_group=PreparedGroup([
+                PreparedTransaction(transaction=txn, auth_address=bounded, signer_key=key)
+            ]),
+        )
+        assert result.signed_group == [signed_txn_hex(txn)]
+        assert result.cosigner_component_responses == []
+        cosigner.request_components.assert_not_called()
+
     def test_prepared_bounded_cosigner_uses_user_first_flow(self):
         bounded = sdk_test_address(11)
         receiver = sdk_test_address(12)
@@ -1676,7 +1757,7 @@ class TestSignGuardedGroup:
                     "target_index": 0, "kind": COMPONENT_TARGET_KIND_BOUNDED_BASE,
                     "auth_address": bounded, "base_signatures": ["base-sig"],
                     "runtime_args": {"proof": "aabb"}, "assembly_receipt": "receipt",
-                    "signature_scheme": "aplane.falcon1024.v1",
+                    "signature_scheme": "aplane.falcon1024.v1", "path": "spend",
                 }],
             )
 
@@ -1732,7 +1813,7 @@ class TestSignGuardedGroup:
                     signer_key=KeyInfo(
                         address=bounded,
                         key_type="aplane.falcon1024-b.v1",
-                        signing_flow=SIGNING_FLOW_BOUNDED_COSIGNER1,
+                        signing_flow=SIGNING_FLOW_COSIGNED1,
                         cosigner_component_key_type=KEY_TYPE_WITNESS_FALCON1024,
                         logic_sig_resources=LogicSigResourceProfile(
                             spend=LogicSigResourceUsage(5308, 3358, 20000)
@@ -1841,7 +1922,7 @@ class TestSignGuardedGroup:
                     "target_index": 0, "kind": COMPONENT_TARGET_KIND_BOUNDED_BASE,
                     "auth_address": bounded, "base_signatures": ["base-sig"],
                     "assembly_receipt": "receipt",
-                    "signature_scheme": "aplane.falcon1024.v1",
+                    "signature_scheme": "aplane.falcon1024.v1", "path": "spend",
                 }],
             )
 
@@ -1898,7 +1979,7 @@ class TestSignGuardedGroup:
                             address=bounded,
                             key_type="aplane.falcon1024-b.v1",
                             authorization_kind=AUTHORIZATION_KIND_LOGIC_SIG,
-                            signing_flow=SIGNING_FLOW_BOUNDED_COSIGNER1,
+                            signing_flow=SIGNING_FLOW_COSIGNED1,
                             cosigner_component_key_type=KEY_TYPE_WITNESS_FALCON1024,
                             logic_sig_resources=LogicSigResourceProfile(
                                 spend=LogicSigResourceUsage(5308, 3358, 20000)

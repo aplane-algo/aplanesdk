@@ -297,7 +297,7 @@ func SignPreparedGuardedGroupWithContext(ctx context.Context, opts PreparedGuard
 	}
 	if hasBoundedCosigner {
 		if hasCosigner1 {
-			return nil, fmt.Errorf("cannot mix cosigner1 and bounded-cosigner1 targets in one group")
+			return nil, fmt.Errorf("cannot mix cosigner1 and cosigned1 targets in one group")
 		}
 		return signPreparedBoundedCosignerGroupWithContext(ctx, resolvedOpts)
 	}
@@ -336,7 +336,7 @@ func resolvePreparedCosignerFlowKinds(ctx context.Context, opts PreparedGuardedG
 			continue
 		}
 		switch key.SigningFlow {
-		case SigningFlowBoundedCosigner1:
+		case SigningFlowCosigned1:
 			boundedCosigner = true
 		case SigningFlowCosigner1:
 			cosigner1 = true
@@ -494,6 +494,8 @@ func selectedPreparedResources(key *KeyInfo, txn *types.Transaction) (*LogicSigR
 			// Only these addresses: the signer checks the target and adds the proof.
 			selected = profile.ListedRekey
 		case key.BoundedAuthorization.Rekey == "spending_key":
+			// With a list too (plus cosigned) the signer moves a listed target to
+			// the listed path, and its base component says so.
 			selected = profile.SpendingRekey
 		default:
 			return nil, fmt.Errorf("bounded rekey authorization metadata is unavailable")

@@ -537,7 +537,7 @@ describe("signer API contract fixtures", () => {
     });
     assert.equal(key.logicSigResources?.listedRekey?.argumentBytes, 1423);
     const corridor = keys[1];
-    assert.equal(corridor.signingFlow, "bounded-cosigner1");
+    assert.equal(corridor.signingFlow, "cosigned1");
     assert.equal(corridor.cosignerComponentKeyType, "aplane.witness-falcon1024.v1");
     assert.ok(corridor.boundedAuthorization?.cosigner?.publicKeyHex);
     assert.ok(corridor.boundedAuthorization?.cosigner?.componentKeyId);
@@ -556,7 +556,7 @@ describe("signer API contract fixtures", () => {
     assert.equal(keyType.boundedAuthorization?.contract, "bounded2");
     assert.equal(keyType.boundedAuthorization?.rekey, "refused");
     const corridorType = keyTypes[1];
-    assert.equal(corridorType.signingFlow, "bounded-cosigner1");
+    assert.equal(corridorType.signingFlow, "cosigned1");
     assert.equal(corridorType.perKeyContract, undefined);
     assert.equal(corridorType.cosignerComponentKeyType, "aplane.witness-falcon1024.v1");
     assert.deepEqual(corridorType.boundedAuthorization?.cosigner?.requiredOn, ["spend"]);
