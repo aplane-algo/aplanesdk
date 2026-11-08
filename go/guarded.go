@@ -489,14 +489,7 @@ func selectedPreparedResources(key *KeyInfo, txn *types.Transaction) (*LogicSigR
 		selected = profile.Spend
 	}
 	if key.BoundedAuthorization != nil && txn != nil && !txn.RekeyTo.IsZero() {
-		authorization := ""
-		for _, operation := range key.BoundedAuthorization.AdminOperations {
-			if operation.Kind == "rekey" {
-				authorization = operation.Authorization
-				break
-			}
-		}
-		switch authorization {
+		switch key.BoundedAuthorization.Rekey {
 		case "spending_key":
 			selected = profile.SpendingRekey
 		default:

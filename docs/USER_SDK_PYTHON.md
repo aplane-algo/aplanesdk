@@ -326,9 +326,10 @@ Useful `KeyInfo` fields include:
 - `template_provenance_note`
 
 `logic_sig_resources` publishes independent program-byte, argument-byte, and
-maximum-opcode-cost demand by authorization path. Bounded keys may publish
-different `spend` and `spending_rekey` profiles. They also publish an
-`admin_rekey` profile, which no rekey authorization selects.
+maximum-opcode-cost demand by authorization path. Non-bounded LogicSig keys
+publish a `default` profile. Bounded keys publish exactly two paths, `spend`
+and `spending_rekey`, which may differ: a rekey selects `spending_rekey` and
+every other transaction selects `spend`.
 
 `KeyTypeInfo.authorization_kind` distinguishes `ed25519`, `native_pq`, and
 `logic_sig`. A false `requires_logicsig` value may mean either native Ed25519
@@ -344,10 +345,10 @@ indistinguishable from an Ed25519 key. `sign_prepared_guarded_group` uses it
 to declare `pq_scheme` on native-PQ group positions that are planned as
 foreign slots.
 
-`bounded_authorization.admin_operations` lists a bounded account's rekey
-authority: a `rekey` operation with `spending_key` authorization lets the
-spending key rekey the account, and an empty list means the account refuses
-rekeys.
+`bounded_authorization.rekey` is a bounded account's rekey setting:
+`spending_key` lets the spending key rekey the account, and `refused` means the
+account refuses rekeys. The SDK fails a rekey on a bounded key unless the
+setting is `spending_key`. `bounded_authorization.contract` is `bounded2`.
 
 If you need one cached entry by address:
 
@@ -668,7 +669,7 @@ ordinary-position signing) before requesting cosigner components, so a cosigner
 never sees a group the user signer rejects.
 `assemble_group()` remains only the local multi-party concatenation helper.
 
-Corridor is a bounded cosigner account: its LogicSig contract is `bounded1`, and
+Corridor is a bounded cosigner account: its LogicSig contract is `bounded2`, and
 its online spend flow is `bounded-cosigner1`. These are separate compatibility
 dimensions. `sign_prepared_guarded_group()` discovers the flow from signer
 inventory and performs the user-first sequence:

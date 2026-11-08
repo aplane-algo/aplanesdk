@@ -1475,11 +1475,7 @@ function mapBoundedAuthorization(raw: any): BoundedAuthorizationInfo | undefined
     },
     spendEffects: raw.spend_effects || [],
     maxFee: raw.max_fee || 0,
-    adminOperations: (raw.admin_operations || []).map((operation: any) => ({
-      kind: operation.kind || "",
-      authorization: operation.authorization || "",
-      policyGate: operation.policy_gate || "",
-    })),
+    rekey: raw.rekey || "",
     cosigner: raw.cosigner
       ? {
           contract: raw.cosigner.contract || "",
@@ -1505,7 +1501,6 @@ function mapBoundedAuthorization(raw: any): BoundedAuthorizationInfo | undefined
       paths: {
         spend: slot.paths?.spend || "",
         spendingRekey: slot.paths?.spending_rekey || "",
-        adminRekey: slot.paths?.admin_rekey || "",
       },
     })),
     layer3Policy: raw.layer3_policy || "",
@@ -1538,7 +1533,6 @@ function mapLogicSigResourceProfile(raw: any): LogicSigResourceProfile | undefin
     default: mapLogicSigResourceUsage(raw.default),
     spend: mapLogicSigResourceUsage(raw.spend),
     spendingRekey: mapLogicSigResourceUsage(raw.spending_rekey),
-    adminRekey: mapLogicSigResourceUsage(raw.admin_rekey),
   };
 }
 
@@ -1550,10 +1544,7 @@ function selectedPreparedResources(
   if (!profile) return undefined;
   let selected = profile.spend || profile.default;
   if (key?.boundedAuthorization && txn?.rekeyTo !== undefined) {
-    const authorization = key.boundedAuthorization.adminOperations.find(
-      (operation) => operation.kind === "rekey",
-    )?.authorization;
-    if (authorization === "spending_key") {
+    if (key.boundedAuthorization.rekey === "spending_key") {
       selected = profile.spendingRekey;
     } else {
       throw new SignerError("bounded rekey authorization metadata is unavailable");

@@ -48,7 +48,6 @@ from aplanesdk.signer import (
     _normalize_guarded_passthrough_item,
     BoundedCosignerAuthorizationInfo,
     BoundedAuthorizationInfo,
-    BoundedAdminOperationInfo,
     BoundedSignatureArgLayout,
     GuardedSignTarget,
     GuardedPrimarySignTarget,
@@ -163,23 +162,20 @@ def sdk_test_address(seed: int) -> str:
     return algo_encoding.encode_address(bytes(raw))
 
 
-def bounded_resource_test_key(operations):
+def bounded_resource_test_key(rekey):
     return KeyInfo(
         address=sdk_test_address(1),
         key_type="aplane.falcon1024-b.v1",
         logic_sig_resources=LogicSigResourceProfile(
             spend=LogicSigResourceUsage(1001, 101, 10001),
             spending_rekey=LogicSigResourceUsage(2002, 202, 20002),
-            # The signer still publishes the vestigial admin_rekey path; no
-            # rekey authorization selects it.
-            admin_rekey=LogicSigResourceUsage(3003, 303, 30003),
         ),
         bounded_authorization=BoundedAuthorizationInfo(
-            contract="bounded1",
+            contract="bounded2",
             base_signature_arg_layout=BoundedSignatureArgLayout(1, [1423]),
             spend_effects=["pay"],
             max_fee=1000,
-            admin_operations=operations,
+            rekey=rekey,
             runtime_args=[],
             derived_args=[],
             argument_layout=[],
@@ -189,17 +185,17 @@ def bounded_resource_test_key(operations):
 
 
 @pytest.mark.parametrize(
-    ("rekey_to", "authorization", "expected_program_bytes"),
+    ("rekey_to", "rekey", "expected_program_bytes"),
     [
-        (None, "", 1001),
+        (None, "refused", 1001),
+        (None, "spending_key", 1001),
         (sdk_test_address(2), "spending_key", 2002),
     ],
 )
 def test_selected_prepared_resources_uses_bounded_authorization_path(
-    rekey_to, authorization, expected_program_bytes
+    rekey_to, rekey, expected_program_bytes
 ):
-    operations = [BoundedAdminOperationInfo("rekey", authorization, "none")] if rekey_to else []
-    key = bounded_resource_test_key(operations)
+    key = bounded_resource_test_key(rekey)
     txn = MagicMock(rekey_to=rekey_to)
 
     selected = _selected_prepared_resources(key, txn)
@@ -207,11 +203,14 @@ def test_selected_prepared_resources_uses_bounded_authorization_path(
     assert selected is not None
     assert selected.program_bytes == expected_program_bytes
     assert selected is not key.logic_sig_resources.spend
+    assert selected is not key.logic_sig_resources.spending_rekey
 
 
-def test_selected_prepared_resources_rejects_rekey_of_refused_bounded_account():
-    # A refused account publishes no rekey operation.
-    key = bounded_resource_test_key([])
+# Only spending_key authorizes a rekey; refused, a missing setting and any
+# other value (such as the removed admin_key authorization) fail.
+@pytest.mark.parametrize("rekey", ["refused", "", "admin_key"])
+def test_selected_prepared_resources_rejects_rekey_without_spending_key_authorization(rekey):
+    key = bounded_resource_test_key(rekey)
     txn = MagicMock(rekey_to=sdk_test_address(2))
 
     with pytest.raises(ValueError, match="bounded rekey authorization metadata is unavailable"):
@@ -1724,13 +1723,13 @@ class TestSignGuardedGroup:
                             spend=LogicSigResourceUsage(5308, 3358, 20000)
                         ),
                         bounded_authorization=BoundedAuthorizationInfo(
-                            contract="bounded1",
+                            contract="bounded2",
                             base_signature_arg_layout=BoundedSignatureArgLayout(
                                 count=1, max_sizes=[1280]
                             ),
                             spend_effects=["pay"],
                             max_fee=1000,
-                            admin_operations=[],
+                            rekey="refused",
                             runtime_args=[],
                             derived_args=[],
                             argument_layout=[],
@@ -1890,13 +1889,13 @@ class TestSignGuardedGroup:
                                 spend=LogicSigResourceUsage(5308, 3358, 20000)
                             ),
                             bounded_authorization=BoundedAuthorizationInfo(
-                                contract="bounded1",
+                                contract="bounded2",
                                 base_signature_arg_layout=BoundedSignatureArgLayout(
                                     count=1, max_sizes=[1280]
                                 ),
                                 spend_effects=["pay"],
                                 max_fee=1000,
-                                admin_operations=[],
+                                rekey="refused",
                                 runtime_args=[],
                                 derived_args=[],
                                 argument_layout=[],

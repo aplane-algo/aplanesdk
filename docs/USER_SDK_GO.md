@@ -290,9 +290,10 @@ for _, key := range keys {
 - `TemplateProvenanceNote`
 
 `LogicSigResources` publishes independent program-byte, argument-byte, and
-maximum-opcode-cost demand by authorization path. Bounded keys may publish
-different `Spend` and `SpendingRekey` profiles. They also publish an
-`AdminRekey` profile, which no rekey authorization selects.
+maximum-opcode-cost demand by authorization path. Non-bounded LogicSig keys
+publish a `Default` profile. Bounded keys publish exactly two paths, `Spend`
+and `SpendingRekey`, which may differ: a rekey selects `SpendingRekey` and
+every other transaction selects `Spend`.
 
 `KeyTypeInfo.AuthorizationKind` distinguishes `ed25519`, `native_pq`, and
 `logic_sig`. Do not infer Ed25519 from `RequiresLogicSig == false`: native
@@ -307,10 +308,10 @@ spending key publishes no LogicSig profile and is otherwise indistinguishable
 from an Ed25519 key. `SignPreparedGuardedGroup` uses it to declare
 `PQScheme` on native-PQ group positions that are planned as foreign slots.
 
-`BoundedAuthorization.AdminOperations` lists a bounded account's rekey
-authority: a `rekey` operation with `spending_key` authorization lets the
-spending key rekey the account, and an empty list means the account refuses
-rekeys.
+`BoundedAuthorization.Rekey` is a bounded account's rekey setting:
+`spending_key` lets the spending key rekey the account, and `refused` means the
+account refuses rekeys. The SDK fails a rekey on a bounded key unless the
+setting is `spending_key`. `BoundedAuthorization.Contract` is `bounded2`.
 
 ### Get One Key
 
@@ -561,7 +562,7 @@ ordinary-position signing) before requesting cosigner components, so a cosigner
 never sees a group the user signer rejects. `AssembleGroup`
 remains only the local multi-party concatenation helper.
 
-Corridor is a bounded cosigner account: its LogicSig contract is `bounded1`, and
+Corridor is a bounded cosigner account: its LogicSig contract is `bounded2`, and
 its online spend flow is `bounded-cosigner1`. These are separate compatibility
 dimensions. `SignPreparedGuardedGroup` discovers the flow from signer
 inventory and performs the user-first sequence:

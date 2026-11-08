@@ -28,13 +28,12 @@ type LogicSigResourceUsage struct {
 	MaxOpcodeCost uint64 `json:"max_opcode_cost"`
 }
 
-// LogicSigResourceProfile publishes either a default path or the three closed
+// LogicSigResourceProfile publishes either a default path or the two closed
 // bounded paths for one stored LogicSig program.
 type LogicSigResourceProfile struct {
 	Default       *LogicSigResourceUsage `json:"default,omitempty"`
 	Spend         *LogicSigResourceUsage `json:"spend,omitempty"`
 	SpendingRekey *LogicSigResourceUsage `json:"spending_rekey,omitempty"`
-	AdminRekey    *LogicSigResourceUsage `json:"admin_rekey,omitempty"`
 }
 
 // The signer HTTP DTOs and validation semantics in this file intentionally
@@ -701,12 +700,6 @@ type BoundedSignatureArgLayout struct {
 	MaxSizes []int `json:"max_sizes"`
 }
 
-type BoundedAdminOperationInfo struct {
-	Kind          string `json:"kind"`
-	Authorization string `json:"authorization"`
-	PolicyGate    string `json:"policy_gate"`
-}
-
 type BoundedDerivedArgInfo struct {
 	Name      string `json:"name"`
 	Kind      string `json:"kind"`
@@ -717,7 +710,6 @@ type BoundedDerivedArgInfo struct {
 type BoundedArgumentPathMask struct {
 	Spend         string `json:"spend"`
 	SpendingRekey string `json:"spending_rekey"`
-	AdminRekey    string `json:"admin_rekey"`
 }
 
 type BoundedArgumentSlotInfo struct {
@@ -744,7 +736,7 @@ type BoundedAuthorizationInfo struct {
 	BaseSignatureArgLayout BoundedSignatureArgLayout         `json:"base_signature_arg_layout"`
 	SpendEffects           []string                          `json:"spend_effects"`
 	MaxFee                 uint64                            `json:"max_fee"`
-	AdminOperations        []BoundedAdminOperationInfo       `json:"admin_operations"`
+	Rekey                  string                            `json:"rekey"` // "refused" or "spending_key"
 	Cosigner               *BoundedCosignerAuthorizationInfo `json:"cosigner,omitempty"`
 	RuntimeArgs            []RuntimeArg                      `json:"runtime_args"`
 	DerivedArgs            []BoundedDerivedArgInfo           `json:"derived_args"`

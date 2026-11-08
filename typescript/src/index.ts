@@ -107,7 +107,6 @@ export type {
   LogicSigResourceUsage,
   LogicSigResourceProfile,
   BoundedSignatureArgLayout,
-  BoundedAdminOperationInfo,
   BoundedDerivedArgInfo,
   BoundedArgumentPathMask,
   BoundedArgumentSlotInfo,

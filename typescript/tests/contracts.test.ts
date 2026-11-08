@@ -523,21 +523,25 @@ describe("signer API contract fixtures", () => {
     assert.equal(key.logicSigResources?.spend?.argumentBytes, 1423);
     assert.equal(key.boundedAuthorization?.layer3Policy, "fixed_allowlist");
     assert.deepEqual(key.boundedAuthorization?.spendEffects, ["pay", "axfer", "asset_opt_in"]);
-    // The account refuses rekeys: it publishes no admin operation.
-    assert.deepEqual(key.boundedAuthorization?.adminOperations, []);
+    assert.equal(key.boundedAuthorization?.contract, "bounded2");
+    assert.equal(key.boundedAuthorization?.rekey, "refused");
     assert.deepEqual(
       key.boundedAuthorization?.argumentLayout.map((slot) => slot.source),
       ["base_signature"],
     );
-    // The vestigial admin_rekey path is still on the wire.
-    assert.equal(key.logicSigResources?.adminRekey?.argumentBytes, 1423);
-    assert.equal(key.boundedAuthorization?.argumentLayout[0].paths.adminRekey, "required");
+    assert.equal(key.logicSigResources?.spendingRekey?.argumentBytes, 1423);
+    assert.deepEqual(key.boundedAuthorization?.argumentLayout[0].paths, {
+      spend: "required",
+      spendingRekey: "required",
+    });
     const corridor = keys[1];
     assert.equal(corridor.signingFlow, "bounded-cosigner1");
     assert.equal(corridor.cosignerComponentKeyType, "aplane.witness-falcon1024.v1");
     assert.ok(corridor.boundedAuthorization?.cosigner?.publicKeyHex);
     assert.ok(corridor.boundedAuthorization?.cosigner?.componentKeyId);
     assert.deepEqual(corridor.boundedAuthorization?.cosigner?.requiredOn, ["spend"]);
+    assert.equal(corridor.boundedAuthorization?.contract, "bounded2");
+    assert.equal(corridor.boundedAuthorization?.rekey, "refused");
 
     mockFetch.mockResolvedValueOnce({
       status: 200,
@@ -547,12 +551,14 @@ describe("signer API contract fixtures", () => {
     const keyTypes = await client.listKeyTypes();
     const keyType = keyTypes[0];
     assert.equal(keyType.boundedAuthorization?.layer3Policy, "fixed_allowlist");
-    assert.deepEqual(keyType.boundedAuthorization?.adminOperations, []);
+    assert.equal(keyType.boundedAuthorization?.contract, "bounded2");
+    assert.equal(keyType.boundedAuthorization?.rekey, "refused");
     const corridorType = keyTypes[1];
     assert.equal(corridorType.signingFlow, "bounded-cosigner1");
     assert.equal(corridorType.perKeyContract, undefined);
     assert.equal(corridorType.cosignerComponentKeyType, "aplane.witness-falcon1024.v1");
     assert.deepEqual(corridorType.boundedAuthorization?.cosigner?.requiredOn, ["spend"]);
+    assert.equal(corridorType.boundedAuthorization?.rekey, "refused");
 
     mockFetch.mockResolvedValueOnce({
       status: 200,

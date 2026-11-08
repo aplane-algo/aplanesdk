@@ -12,7 +12,7 @@
       "mnemonic_scheme": "",
       "signing_flow": "bounded1",
       "bounded_authorization": {
-        "contract": "bounded1",
+        "contract": "bounded2",
         "base_signature_arg_layout": {
           "count": 1,
           "max_sizes": [
@@ -25,7 +25,6 @@
           "asset_opt_in"
         ],
         "max_fee": 10000,
-        "admin_operations": [],
         "runtime_args": [],
         "derived_args": [],
         "argument_layout": [
@@ -36,12 +35,12 @@
             "max_size": 1423,
             "paths": {
               "spend": "required",
-              "spending_rekey": "required",
-              "admin_rekey": "required"
+              "spending_rekey": "required"
             }
           }
         ],
-        "layer3_policy": "fixed_allowlist"
+        "layer3_policy": "fixed_allowlist",
+        "rekey": "refused"
       },
       "creation_params": [
         {
@@ -68,7 +67,7 @@
       "signing_flow": "bounded-cosigner1",
       "cosigner_component_key_type": "aplane.witness-falcon1024.v1",
       "bounded_authorization": {
-        "contract": "bounded1",
+        "contract": "bounded2",
         "base_signature_arg_layout": {
           "count": 1,
           "max_sizes": [
@@ -81,7 +80,6 @@
           "asset_opt_in"
         ],
         "max_fee": 10000,
-        "admin_operations": [],
         "cosigner": {
           "contract": "cosigner1",
           "component_key_type": "aplane.witness-falcon1024.v1",
@@ -107,8 +105,7 @@
             "max_size": 1423,
             "paths": {
               "spend": "required",
-              "spending_rekey": "required",
-              "admin_rekey": "required"
+              "spending_rekey": "required"
             }
           },
           {
@@ -118,8 +115,7 @@
             "max_size": 512,
             "paths": {
               "spend": "optional",
-              "spending_rekey": "forbidden",
-              "admin_rekey": "forbidden"
+              "spending_rekey": "forbidden"
             }
           },
           {
@@ -129,12 +125,12 @@
             "max_size": 1423,
             "paths": {
               "spend": "required",
-              "spending_rekey": "forbidden",
-              "admin_rekey": "forbidden"
+              "spending_rekey": "forbidden"
             }
           }
         ],
-        "layer3_policy": "merkle_allowlist"
+        "layer3_policy": "merkle_allowlist",
+        "rekey": "refused"
       },
       "creation_params": [
         {

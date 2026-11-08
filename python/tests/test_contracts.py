@@ -20,6 +20,7 @@ from aplanesdk.signer import (
     ComponentResponse,
     AssemblyRequest,
     AssemblyResponse,
+    BoundedArgumentPathMask,
     ERR_CODE_BAD_REQUEST,
     ERR_CODE_CACHE_REFRESH,
     ERR_CODE_FORBIDDEN,
@@ -496,20 +497,23 @@ def test_bounded_inventory_projects_layer3_policy():
     assert key.logic_sig_resources.spend == LogicSigResourceUsage(5169, 1423, 20000)
     assert key.bounded_authorization.layer3_policy == "fixed_allowlist"
     assert key.bounded_authorization.spend_effects == ["pay", "axfer", "asset_opt_in"]
-    # The account refuses rekeys: it publishes no admin operation.
-    assert key.bounded_authorization.admin_operations == []
+    assert key.bounded_authorization.contract == "bounded2"
+    assert key.bounded_authorization.rekey == "refused"
     assert [slot.source for slot in key.bounded_authorization.argument_layout] == [
         "base_signature"
     ]
-    # The vestigial admin_rekey path is still on the wire.
-    assert key.logic_sig_resources.admin_rekey == LogicSigResourceUsage(5169, 1423, 20000)
-    assert key.bounded_authorization.argument_layout[0].paths.admin_rekey == "required"
+    assert key.logic_sig_resources.spending_rekey == LogicSigResourceUsage(5169, 1423, 20000)
+    assert key.bounded_authorization.argument_layout[0].paths == BoundedArgumentPathMask(
+        spend="required", spending_rekey="required"
+    )
     corridor = keys[1]
     assert corridor.signing_flow == "bounded-cosigner1"
     assert corridor.cosigner_component_key_type == "aplane.witness-falcon1024.v1"
     assert corridor.bounded_authorization.cosigner.public_key_hex
     assert corridor.bounded_authorization.cosigner.component_key_id
     assert corridor.bounded_authorization.cosigner.required_on == ["spend"]
+    assert corridor.bounded_authorization.contract == "bounded2"
+    assert corridor.bounded_authorization.rekey == "refused"
 
     with patch.object(
         client.session,
@@ -519,11 +523,13 @@ def test_bounded_inventory_projects_layer3_policy():
         key_types = client.list_key_types()
         key_type = key_types[0]
     assert key_type.bounded_authorization.layer3_policy == "fixed_allowlist"
-    assert key_type.bounded_authorization.admin_operations == []
+    assert key_type.bounded_authorization.contract == "bounded2"
+    assert key_type.bounded_authorization.rekey == "refused"
     corridor_type = key_types[1]
     assert corridor_type.signing_flow == "bounded-cosigner1"
     assert corridor_type.cosigner_component_key_type == "aplane.witness-falcon1024.v1"
     assert corridor_type.bounded_authorization.cosigner.required_on == ["spend"]
+    assert corridor_type.bounded_authorization.rekey == "refused"
 
     with patch.object(
         client.session,
