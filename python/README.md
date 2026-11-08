@@ -390,8 +390,8 @@ client.close()
 |----------|-------------|-------|
 | `ed25519` | Native Algorand keys | Standard signing |
 | `falcon1024` | Native post-quantum keys | Protocol-native Falcon-1024 signature (`PQsig`) |
-| `aplane.falcon1024.v1` | Post-quantum plain host | Library-visible; created with a cosigner (`plain1` contract, `cosigned1` signing flow) |
-| `aplane.ed25519.v1` | Ed25519 plain host | Library-visible; created with a cosigner, like `aplane.falcon1024.v1`; the spending key is classical |
+| `aplane.falcon1024.v1` | Post-quantum plain host | Library-visible; `plain1` contract, no host rules or fee ceiling; `cosigned1` signing flow with a cosigner, `bounded1` without one |
+| `aplane.ed25519.v1` | Ed25519 plain host | Library-visible, like `aplane.falcon1024.v1`; the spending key is classical |
 | `aplane.witness-falcon1024.v1` | Witness key | Cosigner-custodied policy signature key; not a spending account |
 | `aplane.falcon1024-b.v1` | General bounded account | `bounded2` contract; `bounded1` signing flow, or `cosigned1` when it embeds a cosigner |
 | `aplane.htlc.v1` | Hash-locked funds | Requires `preimage` arg (check `signing_args`) |
@@ -420,8 +420,8 @@ not the same operation as server-side assembly.
 
 ### Bounded Cosigner Accounts
 
-Corridor uses the bounded contract `bounded2` with the distinct
-`cosigned1` online signing flow, which carries spends and rekeys. A rekey to
+Corridor uses the bounded contract `bounded2`, and a cosigned plain host
+`plain1`, with the distinct `cosigned1` online signing flow, which carries spends and rekeys. A rekey to
 an address on the account's rekey-to list needs no cosigner: the signer's base
 component names its `path`, and the helper skips the cosigner for it. The contract identifies the LogicSig
 rules; the flow identifies the user-first multi-endpoint choreography. The
@@ -456,11 +456,11 @@ approval-bearing HTTP request times out or disconnects.
 cancellation handle.
 
 The signer planner owns fee selection, authorization-resource sizing, and any
-reported group mutations for both guarded flows.
+reported group mutations for the cosigned flow.
 
 Applications that own orchestration can call `request_components()` and
-`request_assemble()` directly. Cosigner authorization is spend-only in
-this contract.
+`request_assemble()` directly. The cosigner signs spends and
+cosigned rekeys, never a rekey to a listed address.
 
 ## Error Handling
 

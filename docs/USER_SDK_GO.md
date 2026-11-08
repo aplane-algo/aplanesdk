@@ -310,8 +310,13 @@ from an Ed25519 key. `SignPreparedGuardedGroup` uses it to declare
 
 `BoundedAuthorization.Rekey` is a bounded account's rekey setting:
 `spending_key` lets the spending key rekey the account, and `refused` means the
-account refuses rekeys. The SDK fails a rekey on a bounded key unless the
-setting is `spending_key`. `BoundedAuthorization.Contract` is `bounded2`.
+account refuses rekeys, except to an address on its rekey-to list when it has
+one. The SDK fails a rekey on a bounded key that has neither. `BoundedAuthorization.Contract`
+is `bounded2` on a bounded host, or `plain1` on a plain host such as
+`aplane.falcon1024.v1`, which has no host rules: every transaction that doesn't
+rekey is a spend, closes included. `BoundedAuthorization.MaxFee` is the bounded host's fee
+ceiling and is optional: a plain host has none, so it is `nil`. Never read
+its absence as zero.
 
 ### Get One Key
 
@@ -336,7 +341,10 @@ This is the easiest way to discover:
 - available key families
 - creation parameters for generated keys
 - runtime args required by generic LogicSigs
-- explicit mnemonic import support through `MnemonicImport`
+- explicit mnemonic import support through `MnemonicImport` (native types only)
+- per-key types through `PerKeyContract`, and whether one takes a boundary file
+  through `BoundarySchema`: `aplane.boundary.v1` on the general bounded type,
+  empty on a plain host, whose parameters are given directly
 
 ### Generate And Delete A Key
 
@@ -513,7 +521,8 @@ txid, err := algodClient.SendRawTransaction(combinedBytes).Do(ctx)
 Cosigned accounts (signing flow `cosigned1`) need component signatures from both
 the user signer and a cosigner signer. A cosigned account is a plain host such
 as `aplane.falcon1024.v1` created with a cosigner, or a bounded account with
-one, such as Corridor. Cosigner component selectors are public policy keys, not
+one, such as Corridor. Either kind without a cosigner advertises `bounded1` and
+signs through ordinary `/sign`. Cosigner component selectors are public policy keys, not
 Algorand spending accounts, and must not be used as senders, receivers, auth
 addresses, or rekey targets.
 
@@ -545,6 +554,10 @@ A cosigned account's LogicSig contract is `plain1` on a plain host, or
 spends and declared rekeys need the cosigner; a rekey to an address on its
 rekey-to list does not, and the signer's base component says which (`path`), so
 the helper asks the cosigner only for the targets that need it.
+It checks a planned fee against the account's ceiling only on `bounded2`: a
+`plain1` account has none. Before any request it refuses an account whose
+contract it doesn't know, a `bounded2` account without a ceiling, and a `plain1`
+account that advertises one.
 `SignPreparedGuardedGroup` discovers the flow from signer inventory and performs
 the user-first sequence:
 
