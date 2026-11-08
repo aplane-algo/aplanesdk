@@ -32,7 +32,7 @@
           "required": true,
           "options": [
             "spending_key",
-            "admin_key"
+            "refused"
           ]
         },
         {
@@ -45,12 +45,6 @@
             "inline",
             "merkle"
           ]
-        },
-        {
-          "name": "bounded_admin_public_key",
-          "label": "Contract Admin Public Key",
-          "type": "bytes",
-          "required": false
         },
         {
           "name": "cosigner_public_key",
