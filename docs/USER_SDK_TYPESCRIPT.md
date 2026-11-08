@@ -355,7 +355,7 @@ and is authoritative for choosing its transaction authorization envelope. It
 is absent for witness keys, which are not spending accounts, and whenever
 the signer does not report it; never read an absent value as Ed25519. Prefer it over checking `logicSigResources`, because a native
 Falcon-1024 spending key publishes no LogicSig profile and is otherwise
-indistinguishable from an Ed25519 key. `signPreparedGuardedGroup` uses it to
+indistinguishable from an Ed25519 key. `signPreparedCosignedGroup` uses it to
 declare `pq_scheme` on native-PQ group positions that are planned as foreign
 slots.
 
@@ -604,11 +604,11 @@ It checks a planned fee against the account's ceiling only on `bounded2`: a
 `plain1` account has none. Before any request it refuses an account whose
 contract it doesn't know, a `bounded2` account without a ceiling, and a `plain1`
 account that advertises one.
-`signPreparedGuardedGroup()` discovers the flow from signer inventory and
+`signPreparedCosignedGroup()` discovers the flow from signer inventory and
 performs the user-first sequence:
 
 ```ts
-const result = await signPreparedGuardedGroup({
+const result = await signPreparedCosignedGroup({
   userClient,
   cosignerResolver,
   preparedGroup,
@@ -649,7 +649,7 @@ if (simulation.failed) {
   // Inspect simulation.response for algod diagnostics.
 }
 
-const guarded = await simulatePreparedGuardedGroup(algodClient, guardedOptions);
+const cosigned = await simulatePreparedCosignedGroup(algodClient, cosignedOptions);
 ```
 
 `SimulationResult.signedGroup` contains fully executable signed transactions

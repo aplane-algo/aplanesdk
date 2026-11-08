@@ -170,9 +170,9 @@ type AssemblyTarget struct {
 }
 
 type AssemblyPassthroughItem struct {
-	TargetIndex   int                              `json:"target_index"`
-	SignedTxnHex  string                           `json:"signed_txn_hex"`
-	Authorization *GuardedPassthroughAuthorization `json:"-"`
+	TargetIndex   int                               `json:"target_index"`
+	SignedTxnHex  string                            `json:"signed_txn_hex"`
+	Authorization *CosignedPassthroughAuthorization `json:"-"`
 }
 
 type AssemblyResponse struct {
@@ -180,10 +180,10 @@ type AssemblyResponse struct {
 	SignedGroup []string `json:"signed_group"`
 }
 
-// GuardedPassthroughAuthorization declares the authorization shape used to
+// CosignedPassthroughAuthorization declares the authorization shape used to
 // budget an already-signed slot while another slot is signed. An empty value
 // explicitly declares ordinary Ed25519 authorization.
-type GuardedPassthroughAuthorization struct {
+type CosignedPassthroughAuthorization struct {
 	LogicSigResources *LogicSigResourceUsage
 	PQScheme          string
 }

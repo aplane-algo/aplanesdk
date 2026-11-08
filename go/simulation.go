@@ -26,10 +26,10 @@ type SimulationResult struct {
 	Failed       bool
 }
 
-// GuardedSimulationResult contains both the complete guarded signing result
+// CosignedSimulationResult contains both the complete cosigned signing result
 // and the client-side algod simulation result.
-type GuardedSimulationResult struct {
-	Signing    *GuardedSignResult
+type CosignedSimulationResult struct {
+	Signing    *CosignedSignResult
 	Simulation *SimulationResult
 }
 
@@ -108,25 +108,25 @@ func (c *SignerClient) simulateRequestsWithContext(
 	return simulateSignedGroupWithContext(ctx, algodClient, response.Signed, response.Mutations)
 }
 
-// SimulatePreparedGuardedGroup signs and simulates a prepared guarded group.
-func SimulatePreparedGuardedGroup(
+// SimulatePreparedCosignedGroup signs and simulates a prepared cosigned group.
+func SimulatePreparedCosignedGroup(
 	algodClient *algod.Client,
-	opts PreparedGuardedGroupOptions,
-) (*GuardedSimulationResult, error) {
-	return SimulatePreparedGuardedGroupWithContext(context.Background(), algodClient, opts)
+	opts PreparedCosignedGroupOptions,
+) (*CosignedSimulationResult, error) {
+	return SimulatePreparedCosignedGroupWithContext(context.Background(), algodClient, opts)
 }
 
-// SimulatePreparedGuardedGroupWithContext is the context-aware form of
-// SimulatePreparedGuardedGroup.
-func SimulatePreparedGuardedGroupWithContext(
+// SimulatePreparedCosignedGroupWithContext is the context-aware form of
+// SimulatePreparedCosignedGroup.
+func SimulatePreparedCosignedGroupWithContext(
 	ctx context.Context,
 	algodClient *algod.Client,
-	opts PreparedGuardedGroupOptions,
-) (*GuardedSimulationResult, error) {
+	opts PreparedCosignedGroupOptions,
+) (*CosignedSimulationResult, error) {
 	if algodClient == nil {
 		return nil, fmt.Errorf("algod client is required")
 	}
-	signing, err := SignPreparedGuardedGroupWithContext(ctx, opts)
+	signing, err := SignPreparedCosignedGroupWithContext(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +134,7 @@ func SimulatePreparedGuardedGroupWithContext(
 	if err != nil {
 		return nil, err
 	}
-	return &GuardedSimulationResult{Signing: signing, Simulation: simulation}, nil
+	return &CosignedSimulationResult{Signing: signing, Simulation: simulation}, nil
 }
 
 func simulateSignedGroupWithContext(

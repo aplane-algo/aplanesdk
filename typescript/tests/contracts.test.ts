@@ -356,7 +356,7 @@ describe("signer API contract fixtures", () => {
     assert.equal("templateStatus" in keys[0], false);
   });
 
-  it("maps cosigner component and guarded key metadata", async () => {
+  it("maps cosigner component and cosigned key metadata", async () => {
     mockFetch.mockResolvedValueOnce({
       status: 200,
       ok: true,

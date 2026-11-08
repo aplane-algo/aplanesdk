@@ -52,7 +52,7 @@ import type {
   AssemblyRequest,
   AssemblyTarget,
   AssemblyResponse,
-  GuardedPassthroughItem,
+  CosignedPassthroughItem,
   ErrorResponse,
   BoundedAuthorizationInfo,
   LogicSigResourceUsage,
@@ -114,7 +114,7 @@ const INVENTORY_TIMEOUT = 30000;
 const MUTATION_TIMEOUT = 60000;
 const GROUP_PLAN_TIMEOUT = 60000;
 const COMPONENT_SIGN_TIMEOUT = 120000;
-const GUARDED_ASSEMBLY_TIMEOUT = 120000;
+const COSIGNED_ASSEMBLY_TIMEOUT = 120000;
 const SIGN_CANCEL_TIMEOUT = 5000;
 const SIGN_APPROVAL_SLACK = 30000;
 const DEFAULT_SIGN_REQUEST_TIMEOUT = 360000;
@@ -124,14 +124,14 @@ const MAX_SIGN_REQUEST_ID_LENGTH = 128;
 const MAX_COMPONENT_GROUP_SIZE = 16;
 const APP_CALL_MAX_APP_ARGS = 16;
 const APP_CALL_METHOD_ARGS_TUPLE_THRESHOLD = APP_CALL_MAX_APP_ARGS - 2;
-const GUARDED_MAX_GROUP_SIZE = 16;
-const GUARDED_DUMMY_PROGRAM = new Uint8Array([0x03, 0x31, 0x20, 0x32, 0x03, 0x12]);
+const COSIGNED_MAX_GROUP_SIZE = 16;
+const COSIGNED_DUMMY_PROGRAM = new Uint8Array([0x03, 0x31, 0x20, 0x32, 0x03, 0x12]);
 
 // This must exactly mirror apsigner's canonical dummy lsigresource.Usage.
 // /plan and /sign must see the same declaration to keep fee planning idempotent.
-function guardedDummyLogicSigResources(): LogicSigResourceUsage {
+function cosignedDummyLogicSigResources(): LogicSigResourceUsage {
   return {
-    programBytes: GUARDED_DUMMY_PROGRAM.length,
+    programBytes: COSIGNED_DUMMY_PROGRAM.length,
     argumentBytes: 0,
     maxOpcodeCost: 1,
   };
@@ -196,9 +196,9 @@ function componentRequestForIndices(
 }
 
 async function resolveCosignerForTarget(
-  target: GuardedSignTarget,
-  options: Pick<PreparedGuardedGroupOptions, "cosignerClient" | "cosignerResolver" | "cosignerComponentKey">,
-): Promise<GuardedCosignerResolution> {
+  target: CosignedSignTarget,
+  options: Pick<PreparedCosignedGroupOptions, "cosignerClient" | "cosignerResolver" | "cosignerComponentKey">,
+): Promise<CosignedCosignerResolution> {
   if (options.cosignerResolver) {
     const resolved = await options.cosignerResolver(target);
     if (!resolved.client) {
@@ -239,26 +239,26 @@ function groupIDBytes(txn: Transaction): Uint8Array | undefined {
   return group;
 }
 
-function signGuardedDummies(dummies: Transaction[], startIndex: number): GuardedPassthroughItem[] {
+function signCosignedDummies(dummies: Transaction[], startIndex: number): CosignedPassthroughItem[] {
   if (dummies.length === 0) {
     return [];
   }
-  validateGuardedDummies(dummies);
-  const dummyAccount = new algosdk.LogicSigAccount(GUARDED_DUMMY_PROGRAM);
+  validateCosignedDummies(dummies);
+  const dummyAccount = new algosdk.LogicSigAccount(COSIGNED_DUMMY_PROGRAM);
   return dummies.map((txn, offset) => {
     const signed = algosdk.signLogicSigTransactionObject(txn, dummyAccount);
     return {
       target_index: startIndex + offset,
       signed_txn_hex: bytesToHex(signed.blob),
       authorization: {
-        logicSigResources: guardedDummyLogicSigResources(),
+        logicSigResources: cosignedDummyLogicSigResources(),
       },
     };
   });
 }
 
-function validateGuardedDummies(dummies: Transaction[]): void {
-  const dummyAddress = new algosdk.LogicSigAccount(GUARDED_DUMMY_PROGRAM).address().toString();
+function validateCosignedDummies(dummies: Transaction[]): void {
+  const dummyAddress = new algosdk.LogicSigAccount(COSIGNED_DUMMY_PROGRAM).address().toString();
   dummies.forEach((txn, index) => {
     const payment = txn.payment;
     if (
@@ -273,7 +273,7 @@ function validateGuardedDummies(dummies: Transaction[]): void {
       payment.closeRemainderTo !== undefined
     ) {
       throw new SignerError(
-        `signer-appended transaction ${index} is not a canonical guarded budget dummy`,
+        `signer-appended transaction ${index} is not a canonical cosigned budget dummy`,
       );
     }
   });
@@ -283,9 +283,9 @@ function decodeCanonicalGroup(groupBytesHex: string[]): Transaction[] {
   if (groupBytesHex.length === 0) {
     throw new SignerError("canonical group is empty");
   }
-  if (groupBytesHex.length > GUARDED_MAX_GROUP_SIZE) {
+  if (groupBytesHex.length > COSIGNED_MAX_GROUP_SIZE) {
     throw new SignerError(
-      `canonical group size ${groupBytesHex.length} exceeds max ${GUARDED_MAX_GROUP_SIZE}`,
+      `canonical group size ${groupBytesHex.length} exceeds max ${COSIGNED_MAX_GROUP_SIZE}`,
     );
   }
   const txns = groupBytesHex.map((encoded, index) => {
@@ -454,7 +454,7 @@ function validateBoundedComponentPlan(
       `does not match observed delta ${totalFeeDelta}`,
     );
   }
-  validateGuardedDummies(planned.slice(original.length));
+  validateCosignedDummies(planned.slice(original.length));
 }
 
 function validateBoundedTargetFees(
@@ -533,9 +533,9 @@ async function requestBoundedPrimaryPassthrough(
   originalCount: number,
   boundedIndices: Set<number>,
   targetResources: Map<number, LogicSigResourceUsage | undefined>,
-  primaryTargets: GuardedPrimarySignTarget[],
+  primaryTargets: CosignedPrimarySignTarget[],
   signal?: AbortSignal,
-): Promise<{ response?: GroupSignResponse; passthrough: GuardedPassthroughItem[] }> {
+): Promise<{ response?: GroupSignResponse; passthrough: CosignedPassthroughItem[] }> {
   if (primaryTargets.length === 0) {
     return { passthrough: [] };
   }
@@ -543,7 +543,7 @@ async function requestBoundedPrimaryPassthrough(
   const requests: SignRequest[] = groupBytesHex.map((txnHex, index) => {
     if (index >= originalCount) return {
       txn_bytes_hex: txnHex,
-      lsig_resources: wireLogicSigResources(guardedDummyLogicSigResources()),
+      lsig_resources: wireLogicSigResources(cosignedDummyLogicSigResources()),
     };
     if (boundedIndices.has(index)) {
       return {
@@ -566,7 +566,7 @@ async function requestBoundedPrimaryPassthrough(
     };
   });
   const response = await userClient.signRequests(requests, { signal });
-  const passthrough: GuardedPassthroughItem[] = [];
+  const passthrough: CosignedPassthroughItem[] = [];
   for (const index of Array.from(primaryByIndex.keys()).sort((a, b) => a - b)) {
     if (!response.signed?.[index]) {
       throw new SignerError(`primary signer returned no signed transaction for target ${index}`);
@@ -588,15 +588,15 @@ async function requestBoundedPrimaryPassthrough(
  * rekey takes none.
  */
 export async function signPreparedBoundedCosignerGroup(
-  options: PreparedGuardedGroupOptions,
-): Promise<GuardedSignResult> {
+  options: PreparedCosignedGroupOptions,
+): Promise<CosignedSignResult> {
   if (!options.userClient) throw new SignerError("userClient is required");
   const prepared = options.preparedGroup.transactions || [];
   if (prepared.length === 0) throw new SignerError("prepared group is empty");
 
   const requests: SignRequest[] = [];
-  const targets: GuardedSignTarget[] = [];
-  const primaryTargets: GuardedPrimarySignTarget[] = [];
+  const targets: CosignedSignTarget[] = [];
+  const primaryTargets: CosignedPrimarySignTarget[] = [];
   const targetResources = new Map<number, LogicSigResourceUsage | undefined>();
   const targetKeys = new Map<number, KeyInfo>();
   const targetMaxFees = new Map<number, number>();
@@ -640,7 +640,7 @@ export async function signPreparedBoundedCosignerGroup(
       }
       targets.push({
         targetIndex: index,
-        guardedAccount: item.authAddress,
+        cosignedAccount: item.authAddress,
         cosignerPublicKeyHex: boundedCosignerPublicKey(key),
         cosignerComponentKeyType: boundedCosignerComponentKeyType(key),
         logicSigResources: requiredResources,
@@ -720,7 +720,7 @@ export async function signPreparedBoundedCosignerGroup(
   for (const component of componentResponse.components) {
     const target = targetsByIndex.get(component.target_index);
     if (!target || component.kind !== "bounded-base" ||
-        component.auth_address !== target.guardedAccount) {
+        component.auth_address !== target.cosignedAccount) {
       throw new SignerError(`signer returned unexpected bounded component target ${component.target_index}`);
     }
     if (components.has(component.target_index)) {
@@ -793,7 +793,7 @@ export async function signPreparedBoundedCosignerGroup(
 
   const passthrough = [
     ...primary.passthrough,
-    ...signGuardedDummies(planned.slice(prepared.length), prepared.length),
+    ...signCosignedDummies(planned.slice(prepared.length), prepared.length),
   ];
   const assemblyTargets: AssemblyTarget[] = targets.map((target) => {
     const component = components.get(target.targetIndex);
@@ -843,24 +843,24 @@ export async function signPreparedBoundedCosignerGroup(
  * signer plans the group, its base components and the cosigner's components
  * are collected, and the signer assembles the result.
  */
-export async function signPreparedGuardedGroup(
-  options: PreparedGuardedGroupOptions,
-): Promise<GuardedSignResult> {
+export async function signPreparedCosignedGroup(
+  options: PreparedCosignedGroupOptions,
+): Promise<CosignedSignResult> {
   return signPreparedBoundedCosignerGroup(options);
 }
 
 /**
- * Prepare, sign, assemble, and simulate a guarded group through the caller's
+ * Prepare, sign, assemble, and simulate a cosigned group through the caller's
  * algod client.
  */
-export async function simulatePreparedGuardedGroup(
+export async function simulatePreparedCosignedGroup(
   algodClient: Algodv2,
-  options: PreparedGuardedGroupOptions,
-): Promise<GuardedSimulationResult> {
+  options: PreparedCosignedGroupOptions,
+): Promise<CosignedSimulationResult> {
   if (!algodClient) {
     throw new SignerError("algodClient is required");
   }
-  const signing = await signPreparedGuardedGroup(options);
+  const signing = await signPreparedCosignedGroup(options);
   return {
     signing,
     simulation: await simulateSignedGroup(algodClient, signing.signedGroup),
@@ -1565,9 +1565,9 @@ class SSHTunnel {
   }
 }
 
-export interface GuardedSignTarget {
+export interface CosignedSignTarget {
   targetIndex: number;
-  guardedAccount: string;
+  cosignedAccount: string;
   cosignerPublicKeyHex?: string;
   cosignerComponentKeyType?: string;
   cosignerComponentKey?: string;
@@ -1576,7 +1576,7 @@ export interface GuardedSignTarget {
   appCallInfo?: AppCallInfo;
 }
 
-export interface GuardedPrimarySignTarget {
+export interface CosignedPrimarySignTarget {
   targetIndex: number;
   authAddress: string;
   txnSender?: string;
@@ -1584,26 +1584,26 @@ export interface GuardedPrimarySignTarget {
   appCallInfo?: { mode?: string; method?: string };
 }
 
-export interface GuardedCosignerResolution {
+export interface CosignedCosignerResolution {
   client: SignerClient;
   componentKey?: string;
 }
 
-export type GuardedCosignerResolver = (
-  target: GuardedSignTarget
-) => GuardedCosignerResolution | Promise<GuardedCosignerResolution>;
+export type CosignedCosignerResolver = (
+  target: CosignedSignTarget
+) => CosignedCosignerResolution | Promise<CosignedCosignerResolution>;
 
-export interface PreparedGuardedGroupOptions {
+export interface PreparedCosignedGroupOptions {
   userClient: SignerClient;
   preparedGroup: PreparedGroup;
   cosignerClient?: SignerClient;
-  cosignerResolver?: GuardedCosignerResolver;
+  cosignerResolver?: CosignedCosignerResolver;
   cosignerComponentKey?: string;
   assemblyRequestId?: string;
   signal?: AbortSignal;
 }
 
-export interface GuardedSignResult {
+export interface CosignedSignResult {
   signedGroup: string[];
   cosignerComponentResponses: ComponentResponse[];
   primarySignResponse?: GroupSignResponse;
@@ -1611,8 +1611,8 @@ export interface GuardedSignResult {
   boundedAssemblyResponse?: AssemblyResponse;
 }
 
-export interface GuardedSimulationResult {
-  signing: GuardedSignResult;
+export interface CosignedSimulationResult {
+  signing: CosignedSignResult;
   simulation: SimulationResult;
 }
 
@@ -3567,7 +3567,7 @@ export class SignerClient {
     const response = await this.fetch("/sign/assemble", {
       method: "POST",
       body: JSON.stringify(requestBody),
-      timeout: this.timeoutFor(GUARDED_ASSEMBLY_TIMEOUT),
+      timeout: this.timeoutFor(COSIGNED_ASSEMBLY_TIMEOUT),
       signal: options?.signal,
     });
 

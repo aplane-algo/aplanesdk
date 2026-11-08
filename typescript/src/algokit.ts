@@ -206,7 +206,7 @@ export class ApsignerAlgoKitAccount implements ApsignerAccount {
     const mutations = response.mutations;
     if (mutations && (mutations.groupIdChanged || (mutations.dummiesAdded ?? 0) > 0)) {
       throw new SignerError(
-        "apsigner re-grouped these transactions (added LogicSig-budget dummy transactions or recomputed the group ID); AlgoKit assigns its own group ID and cannot use a re-grouped result. Sign large-LogicSig groups through the aplane SDK's group/guarded flow instead.",
+        "apsigner re-grouped these transactions (added LogicSig-budget dummy transactions or recomputed the group ID); AlgoKit assigns its own group ID and cannot use a re-grouped result. Sign large-LogicSig groups through the aplane SDK's group/cosigned flow instead.",
       );
     }
 

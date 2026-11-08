@@ -7,8 +7,8 @@ import algosdk from "algosdk";
 import {
   SignerClient,
   boundedFeeCeiling,
-  signPreparedGuardedGroup,
-  simulatePreparedGuardedGroup,
+  signPreparedCosignedGroup,
+  simulatePreparedCosignedGroup,
 } from "../src/client.js";
 import {
   KEY_TYPE_WITNESS_FALCON1024,
@@ -125,7 +125,7 @@ async function waitForSocketsToClose(sockets: Set<net.Socket>): Promise<void> {
   }
 }
 
-function guardedTestResources() {
+function cosignedTestResources() {
   return { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 };
 }
 
@@ -1404,7 +1404,7 @@ describe("SignerClient", () => {
       );
     });
 
-    it("posts guarded assembly requests to /sign/assemble", async () => {
+    it("posts cosigned assembly requests to /sign/assemble", async () => {
       mockFetch.mockResolvedValueOnce({
         status: 200,
         ok: true,
@@ -1632,9 +1632,9 @@ describe("SignerClient", () => {
 
   });
 
-  describe("signPreparedGuardedGroup", () => {
+  describe("signPreparedCosignedGroup", () => {
     it("plans repeated LogicSig addresses with per-slot args and app metadata", async () => {
-      const guarded = testAddress(31);
+      const cosigned = testAddress(31);
       const receiver = testAddress(32);
       const user = new SignerClient("http://localhost:11270");
       const suggestedParams = {
@@ -1647,7 +1647,7 @@ describe("SignerClient", () => {
         flatFee: true,
       };
       const signerKey = {
-        address: guarded,
+        address: cosigned,
         publicKeyHex: "",
         keyType: "aplane.falcon1024.v1",
         signingFlow: SIGNING_FLOW_COSIGNED1,
@@ -1688,24 +1688,24 @@ describe("SignerClient", () => {
       };
 
       await assert.rejects(
-        signPreparedGuardedGroup({
+        signPreparedCosignedGroup({
           userClient: user,
           preparedGroup: {
             transactions: [
               {
                 transaction: algosdk.makePaymentTxnWithSuggestedParamsFromObject({
-                  sender: guarded, receiver, amount: 1n, suggestedParams,
+                  sender: cosigned, receiver, amount: 1n, suggestedParams,
                 }),
-                authAddress: guarded,
+                authAddress: cosigned,
                 signerKey,
                 lsigArgs: { preimage: new TextEncoder().encode("alpha") },
                 appCallInfo: { mode: "raw", method: "first" },
               },
               {
                 transaction: algosdk.makePaymentTxnWithSuggestedParamsFromObject({
-                  sender: guarded, receiver, amount: 2n, suggestedParams,
+                  sender: cosigned, receiver, amount: 2n, suggestedParams,
                 }),
-                authAddress: guarded,
+                authAddress: cosigned,
                 signerKey,
                 lsigArgs: { preimage: new TextEncoder().encode("beta") },
                 appCallInfo: { mode: "abi", method: "second" },
@@ -1758,7 +1758,7 @@ describe("SignerClient", () => {
           signed_group: [bytesToHex(algosdk.encodeMsgpack(new algosdk.SignedTransaction({ txn, sig: signature })))],
         };
       };
-      const result = await signPreparedGuardedGroup({
+      const result = await signPreparedCosignedGroup({
         userClient: user,
         cosignerClient: cosigner,
         cosignerComponentKey: "COSIGNER_COMPONENT",
@@ -1954,7 +1954,7 @@ describe("SignerClient", () => {
         finalCount: 2,
       };
       await assert.rejects(
-        signPreparedGuardedGroup(options),
+        signPreparedCosignedGroup(options),
         /group ID does not match decoded transactions/,
       );
 
@@ -1975,7 +1975,7 @@ describe("SignerClient", () => {
       plannedTransactions = [encodeTransaction(changedPlanTxn)[0]];
       plannedMutations = undefined;
       await assert.rejects(
-        signPreparedGuardedGroup(options),
+        signPreparedCosignedGroup(options),
         /changed unreported fields/,
       );
 
@@ -2004,7 +2004,7 @@ describe("SignerClient", () => {
       };
       const callsBeforeInflatedFee = baseComponentCalls;
       await assert.rejects(
-        signPreparedGuardedGroup(options),
+        signPreparedCosignedGroup(options),
         /exceeds advertised max_fee/,
       );
       assert.equal(baseComponentCalls, callsBeforeInflatedFee);
@@ -2039,8 +2039,8 @@ describe("SignerClient", () => {
         finalCount: 2,
       };
       await assert.rejects(
-        signPreparedGuardedGroup(options),
-        /canonical guarded budget dummy/,
+        signPreparedCosignedGroup(options),
+        /canonical cosigned budget dummy/,
       );
       plannedTransactions = undefined;
       plannedMutations = undefined;
@@ -2060,12 +2060,12 @@ describe("SignerClient", () => {
         },
       });
       await assert.rejects(
-        signPreparedGuardedGroup(options),
+        signPreparedCosignedGroup(options),
         /does not match the submitted canonical bytes/,
       );
 
       assembledTxn = txn;
-      const result = await signPreparedGuardedGroup(options);
+      const result = await signPreparedCosignedGroup(options);
 
       assert.deepEqual(result.signedGroup, [signedTxnHex(txn)]);
       assert.ok(result.boundedComponentResponse);
@@ -2138,7 +2138,7 @@ describe("SignerClient", () => {
         });
 
         await assert.rejects(
-          signPreparedGuardedGroup({
+          signPreparedCosignedGroup({
             userClient: user,
             cosignerResolver: async (target) => {
               assert.deepEqual(target.logicSigResources, item.expected);
@@ -2197,7 +2197,7 @@ describe("SignerClient", () => {
         flatFee: true,
       };
       await assert.rejects(
-        signPreparedGuardedGroup({
+        signPreparedCosignedGroup({
           userClient: user,
           preparedGroup: {
             transactions: [
@@ -2372,11 +2372,11 @@ describe("SignerClient", () => {
         },
       };
       await assert.rejects(
-        signPreparedGuardedGroup(options),
+        signPreparedCosignedGroup(options),
         /primary passthrough 1 does not match/,
       );
       useWrongPrimary = false;
-      const result = await signPreparedGuardedGroup(options);
+      const result = await signPreparedCosignedGroup(options);
       assert.equal(result.signedGroup.length, 2);
     });
 
@@ -2480,7 +2480,7 @@ describe("SignerClient", () => {
         };
       };
 
-      const run = () => signPreparedGuardedGroup({
+      const run = () => signPreparedCosignedGroup({
         userClient: user,
         cosignerClient: cosigner,
         cosignerComponentKey: "COSIGNER_COMPONENT",
@@ -2547,12 +2547,12 @@ describe("SignerClient", () => {
     }
 
     it("rejects prepared groups whose keys require an unsupported signing flow", async () => {
-      const guarded = testAddress(1);
+      const cosigned = testAddress(1);
       const receiver = testAddress(2);
       const user = new SignerClient("http://localhost:11270");
 
       const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
-        sender: guarded,
+        sender: cosigned,
         receiver,
         amount: 1000n,
         suggestedParams: {
@@ -2567,17 +2567,17 @@ describe("SignerClient", () => {
       });
 
       await assert.rejects(
-        signPreparedGuardedGroup({
+        signPreparedCosignedGroup({
           userClient: user,
           preparedGroup: {
             transactions: [
               {
                 transaction: txn,
-                authAddress: guarded,
+                authAddress: cosigned,
                 signerKey: {
-                  address: guarded,
+                  address: cosigned,
                   publicKeyHex: "",
-                  keyType: "aplane.future-guarded.v1",
+                  keyType: "aplane.future-cosigned.v1",
                   signingFlow: "cosigner2",
                   logicSigResources: {
                     spend: { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 },
@@ -3273,9 +3273,9 @@ describe("SignerClient", () => {
       assert.equal(mockFetch.mock.calls.length, 0);
     });
 
-    it("requires algod before starting guarded signing", async () => {
+    it("requires algod before starting cosigned signing", async () => {
       await assert.rejects(
-        simulatePreparedGuardedGroup(null as any, {} as any),
+        simulatePreparedCosignedGroup(null as any, {} as any),
         /algodClient is required/,
       );
       assert.equal(mockFetch.mock.calls.length, 0);

@@ -141,10 +141,10 @@ func TestSimulatePreparedGroupRequiresAlgodBeforeSigner(t *testing.T) {
 	}
 }
 
-func TestSimulatePreparedGuardedGroupRequiresAlgodBeforeSigning(t *testing.T) {
-	_, err := SimulatePreparedGuardedGroup(nil, PreparedGuardedGroupOptions{})
+func TestSimulatePreparedCosignedGroupRequiresAlgodBeforeSigning(t *testing.T) {
+	_, err := SimulatePreparedCosignedGroup(nil, PreparedCosignedGroupOptions{})
 	if err == nil || !strings.Contains(err.Error(), "algod client is required") {
-		t.Fatalf("SimulatePreparedGuardedGroup() error = %v", err)
+		t.Fatalf("SimulatePreparedCosignedGroup() error = %v", err)
 	}
 }
 

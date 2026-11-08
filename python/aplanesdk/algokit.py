@@ -160,7 +160,7 @@ class ApsignerAccount:
                     "apsigner re-grouped these transactions (added LogicSig-budget "
                     "dummy transactions or recomputed the group ID); AlgoKit assigns "
                     "its own group ID and cannot use a re-grouped result. Sign "
-                    "large-LogicSig groups through the aplane SDK's group/guarded "
+                    "large-LogicSig groups through the aplane SDK's group/cosigned "
                     "flow instead."
                 )
 

@@ -46,7 +46,7 @@ const (
 	mutationTimeout           = 60 * time.Second
 	groupPlanTimeout          = 60 * time.Second
 	componentSignTimeout      = 2 * time.Minute
-	guardedAssemblyTimeout    = 2 * time.Minute
+	cosignedAssemblyTimeout   = 2 * time.Minute
 	signCancelTimeout         = 5 * time.Second
 	signApprovalSlack         = 30 * time.Second
 	defaultSignRequestTimeout = 6 * time.Minute
@@ -687,7 +687,7 @@ func (c *SignerClient) RequestAssembleWithContext(ctx context.Context, reqBody A
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	reqCtx, cancel := c.requestContext(ctx, guardedAssemblyTimeout)
+	reqCtx, cancel := c.requestContext(ctx, cosignedAssemblyTimeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(reqCtx, "POST", c.baseURL+"/sign/assemble", bytes.NewBuffer(jsonBody))

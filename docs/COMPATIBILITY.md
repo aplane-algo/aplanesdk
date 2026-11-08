@@ -57,6 +57,14 @@ The SDKs read only the current signer wire and client file formats:
   `cosigner1` is an unknown flow, so an SDK refuses such a key before sending
   anything; the string survives only as the cosigner contract label in
   `bounded_authorization.cosigner.contract`.
+- The prepared cosigned API is renamed, with no aliases: `SignPreparedGuardedGroup`
+  and `SimulatePreparedGuardedGroup` (and their context forms) are
+  `SignPreparedCosignedGroup` and `SimulatePreparedCosignedGroup`; Python's
+  `sign_prepared_guarded_group` and `simulate_prepared_guarded_group` are
+  `sign_prepared_cosigned_group` and `simulate_prepared_cosigned_group`;
+  TypeScript's `signPreparedGuardedGroup` and `simulatePreparedGuardedGroup` are
+  `signPreparedCosignedGroup` and `simulatePreparedCosignedGroup`; and every
+  `Guarded*` type is `Cosigned*`. No wire value changes.
 - Key types may carry `boundary_schema`, the boundary file grammar a per-key
   type's requests take; it is absent on a plain host.
 

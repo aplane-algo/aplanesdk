@@ -341,7 +341,7 @@ is empty for witness keys, which are not spending accounts, and whenever the
 signer does not report it; never read an empty value as Ed25519.
 Prefer it over `logic_sig_resources is not None`, because a native
 Falcon-1024 spending key publishes no LogicSig profile and is otherwise
-indistinguishable from an Ed25519 key. `sign_prepared_guarded_group` uses it
+indistinguishable from an Ed25519 key. `sign_prepared_cosigned_group` uses it
 to declare `pq_scheme` on native-PQ group positions that are planned as
 foreign slots.
 
@@ -664,11 +664,11 @@ It checks a planned fee against the account's ceiling only on `bounded2`: a
 `plain1` account has none. Before any request it refuses an account whose
 contract it doesn't know, a `bounded2` account without a ceiling, and a `plain1`
 account that advertises one.
-`sign_prepared_guarded_group()` discovers the flow from signer inventory and
+`sign_prepared_cosigned_group()` discovers the flow from signer inventory and
 performs the user-first sequence:
 
 ```python
-result = sign_prepared_guarded_group(
+result = sign_prepared_cosigned_group(
     user_client=user_client,
     cosigner_resolver=cosigner_resolver,
     prepared_group=prepared_group,
@@ -710,7 +710,7 @@ if simulation.failed:
     # Inspect simulation.response for algod diagnostics.
     pass
 
-guarded = simulate_prepared_guarded_group(algod_client, **guarded_options)
+cosigned = simulate_prepared_cosigned_group(algod_client, **cosigned_options)
 ```
 
 `SimulationResult.signed_group` contains fully executable signed transactions

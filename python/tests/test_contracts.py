@@ -377,7 +377,7 @@ def test_list_keys_ignores_retired_template_aliases():
     assert not hasattr(keys[0], "template_status")
 
 
-def test_list_keys_maps_component_and_guarded_metadata():
+def test_list_keys_maps_component_and_cosigned_metadata():
     client = make_client()
     with patch.object(
         client.session,
