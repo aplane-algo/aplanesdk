@@ -155,7 +155,7 @@ func TestGoSDKContractFixturesRoundTrip(t *testing.T) {
 		{"assembly_response.json", assertSDKContractRoundTrip[AssemblyResponse]},
 		{"keys_response_generic.json", assertSDKContractRoundTrip[KeysResponse]},
 		{"keys_response_component.json", assertSDKContractRoundTrip[KeysResponse]},
-		{"keys_response_guarded.json", assertSDKContractRoundTrip[KeysResponse]},
+		{"keys_response_plain_host.json", assertSDKContractRoundTrip[KeysResponse]},
 		{"keys_response_bounded.json", assertSDKContractRoundTrip[KeysResponse]},
 		{"keys_response_rotating_wotsc.json", assertSDKContractRoundTrip[KeysResponse]},
 		{"keys_response_rotating_xmss.json", assertSDKContractRoundTrip[KeysResponse]},
@@ -422,19 +422,25 @@ func TestGoSDKContractCosignerKeyMetadata(t *testing.T) {
 		t.Fatalf("witness AuthorizationKind = %q, want empty", got)
 	}
 
-	raw, err = os.ReadFile(sdkContractFixturePath(t, "keys_response_guarded.json"))
+	raw, err = os.ReadFile(sdkContractFixturePath(t, "keys_response_plain_host.json"))
 	if err != nil {
-		t.Fatalf("read guarded keys fixture: %v", err)
+		t.Fatalf("read plain host keys fixture: %v", err)
 	}
-	var guarded KeysResponse
-	if err := json.Unmarshal(raw, &guarded); err != nil {
-		t.Fatalf("unmarshal guarded keys fixture: %v", err)
+	var plain KeysResponse
+	if err := json.Unmarshal(raw, &plain); err != nil {
+		t.Fatalf("unmarshal plain host keys fixture: %v", err)
 	}
-	if got := guarded.Keys[0].Parameters["cosigner_public_key"]; got == "" {
-		t.Fatal("guarded key missing cosigner_public_key parameter")
+	key := plain.Keys[0]
+	if got := key.Parameters["cosigner_public_key"]; got == "" {
+		t.Fatal("plain host key missing cosigner_public_key parameter")
 	}
-	if got := guarded.Keys[0].AuthorizationKind; got != AuthorizationKindLogicSig {
-		t.Fatalf("guarded AuthorizationKind = %q, want %q", got, AuthorizationKindLogicSig)
+	if got := key.AuthorizationKind; got != AuthorizationKindLogicSig {
+		t.Fatalf("plain host AuthorizationKind = %q, want %q", got, AuthorizationKindLogicSig)
+	}
+	// A plain host has no fee ceiling: max_fee is absent, never zero.
+	if key.SigningFlow != SigningFlowCosigned1 || key.BoundedAuthorization == nil ||
+		key.BoundedAuthorization.Contract != BoundedContractPlain1 || key.BoundedAuthorization.MaxFee != nil {
+		t.Fatalf("plain host key = %+v", key)
 	}
 }
 

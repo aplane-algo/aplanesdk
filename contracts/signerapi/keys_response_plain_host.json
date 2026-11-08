@@ -1,0 +1,77 @@
+{
+  "count": 1,
+  "keys": [
+    {
+      "address": "PLAINHOSTADDR0000000000000000000000000000000000000000000",
+      "public_key_hex": "00112233445566778899aabbccddeeff",
+      "key_type": "aplane.falcon1024.v1",
+      "authorization_kind": "logic_sig",
+      "signing_flow": "cosigned1",
+      "cosigner_component_key_type": "aplane.witness-falcon1024.v1",
+      "logic_sig_resources": {
+        "spend": {
+          "program_bytes": 3700,
+          "argument_bytes": 2846,
+          "max_opcode_cost": 20000
+        },
+        "spending_rekey": {
+          "program_bytes": 3700,
+          "argument_bytes": 2846,
+          "max_opcode_cost": 20000
+        }
+      },
+      "bounded_authorization": {
+        "contract": "plain1",
+        "base_signature_arg_layout": {
+          "count": 1,
+          "max_sizes": [
+            1423
+          ]
+        },
+        "spend_effects": [],
+        "cosigner": {
+          "contract": "cosigner1",
+          "component_key_type": "aplane.witness-falcon1024.v1",
+          "public_key_hex": "11223344556677889900aabbccddeeff",
+          "component_key_id": "cosigner:falcon1024:EXAMPLE",
+          "signature_max_size": 1423,
+          "required_on": [
+            "spend",
+            "spending_rekey"
+          ]
+        },
+        "runtime_args": [],
+        "derived_args": [],
+        "argument_layout": [
+          {
+            "index": 0,
+            "name": "base_signature_0",
+            "source": "base_signature",
+            "max_size": 1423,
+            "paths": {
+              "spend": "required",
+              "spending_rekey": "required",
+              "listed_rekey": "required"
+            }
+          },
+          {
+            "index": 1,
+            "name": "cosigner_signature",
+            "source": "cosigner",
+            "max_size": 1423,
+            "paths": {
+              "spend": "required",
+              "spending_rekey": "required",
+              "listed_rekey": "forbidden"
+            }
+          }
+        ],
+        "layer3_policy": "none",
+        "rekey": "spending_key"
+      },
+      "parameters": {
+        "cosigner_public_key": "11223344556677889900aabbccddeeff"
+      }
+    }
+  ]
+}

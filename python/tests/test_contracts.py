@@ -392,12 +392,16 @@ def test_list_keys_maps_component_and_guarded_metadata():
     with patch.object(
         client.session,
         "get",
-        return_value=mock_response(200, fixture("keys_response_guarded.json")),
+        return_value=mock_response(200, fixture("keys_response_plain_host.json")),
     ):
-        guarded = client.list_keys(refresh=True)[0]
-    assert guarded.key_type == "aplane.falcon1024-cosigner1024.v1"
-    assert guarded.parameters is not None
-    assert guarded.parameters["cosigner_public_key"]
+        plain = client.list_keys(refresh=True)[0]
+    assert plain.key_type == "aplane.falcon1024.v1"
+    assert plain.parameters is not None
+    assert plain.parameters["cosigner_public_key"]
+    # A plain host has no fee ceiling: max_fee is absent, never zero.
+    assert plain.bounded_authorization is not None
+    assert plain.bounded_authorization.contract == "plain1"
+    assert plain.bounded_authorization.max_fee is None
 
 
 def test_plan_group_returns_wire_mutation_report():
@@ -477,7 +481,9 @@ def test_cosigner_dtos_round_trip_fixtures():
     assert unified_component_resp.components[0]["assembly_receipt"]
 
     unified_req = AssemblyRequest(**fixture("assembly_request_mixed.json"))
-    assert unified_req.targets[0]["kind"] == "guarded"
+    assert unified_req.targets[0]["kind"] == "bounded-cosigner"
+    # A listed rekey assembles without a cosigner signature.
+    assert "cosigner_signature" not in unified_req.targets[0]
     unified_resp = AssemblyResponse(**fixture("assembly_response.json"))
     assert len(unified_resp.signed_group) == 3
 
