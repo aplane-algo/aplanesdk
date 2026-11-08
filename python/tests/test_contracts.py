@@ -24,9 +24,7 @@ from aplanesdk.signer import (
     ERR_CODE_CACHE_REFRESH,
     ERR_CODE_FORBIDDEN,
     ERR_CODE_INTERNAL,
-    ERR_CODE_BOUNDED_ADMIN_REQUIRED,
     ERR_CODE_BOUNDED_COSIGNER_REQUIRED,
-    ERR_CODE_BOUNDED_ADMIN_TARGET_REJECTED,
     ERR_CODE_ROTATING_SIGNING_REQUIRED,
     ERR_CODE_ROTATING_STAGE_UNPROVEN,
     ERR_CODE_ROTATING_STAGE_CHANGED,
@@ -102,9 +100,7 @@ def sdk_error_codes() -> list[str]:
         ERR_CODE_UNAVAILABLE,
         ERR_CODE_CACHE_REFRESH,
         ERR_CODE_INTERNAL,
-        ERR_CODE_BOUNDED_ADMIN_REQUIRED,
         ERR_CODE_BOUNDED_COSIGNER_REQUIRED,
-        ERR_CODE_BOUNDED_ADMIN_TARGET_REJECTED,
         ERR_CODE_ROTATING_SIGNING_REQUIRED,
         ERR_CODE_ROTATING_STAGE_UNPROVEN,
         ERR_CODE_ROTATING_STAGE_CHANGED,
@@ -499,13 +495,15 @@ def test_bounded_inventory_projects_layer3_policy():
     assert key.signing_flow == "bounded1"
     assert key.logic_sig_resources.spend == LogicSigResourceUsage(5169, 1423, 20000)
     assert key.bounded_authorization.layer3_policy == "fixed_allowlist"
-    assert key.bounded_authorization.admin_key_id
-    assert key.bounded_authorization.program_binding == (
-        "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
-    )
     assert key.bounded_authorization.spend_effects == ["pay", "axfer", "asset_opt_in"]
-    assert key.bounded_authorization.admin_operations[0].policy_gate == "none"
-    assert key.bounded_authorization.argument_layout[1].source == "admin"
+    # The account refuses rekeys: it publishes no admin operation.
+    assert key.bounded_authorization.admin_operations == []
+    assert [slot.source for slot in key.bounded_authorization.argument_layout] == [
+        "base_signature"
+    ]
+    # The vestigial admin_rekey path is still on the wire.
+    assert key.logic_sig_resources.admin_rekey == LogicSigResourceUsage(5169, 1423, 20000)
+    assert key.bounded_authorization.argument_layout[0].paths.admin_rekey == "required"
     corridor = keys[1]
     assert corridor.signing_flow == "bounded-cosigner1"
     assert corridor.cosigner_component_key_type == "aplane.witness-falcon1024.v1"
@@ -521,7 +519,7 @@ def test_bounded_inventory_projects_layer3_policy():
         key_types = client.list_key_types()
         key_type = key_types[0]
     assert key_type.bounded_authorization.layer3_policy == "fixed_allowlist"
-    assert key_type.bounded_authorization.admin_key_id == ""
+    assert key_type.bounded_authorization.admin_operations == []
     corridor_type = key_types[1]
     assert corridor_type.signing_flow == "bounded-cosigner1"
     assert corridor_type.cosigner_component_key_type == "aplane.witness-falcon1024.v1"

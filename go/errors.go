@@ -76,11 +76,7 @@ const (
 	ErrCodeUnavailable             = "unavailable"
 	ErrCodeCacheRefresh            = "cache_refresh"
 	ErrCodeInternal                = "internal"
-	ErrCodeBoundedAdminRequired    = "bounded_admin_required"
 	ErrCodeBoundedCosignerRequired = "bounded_cosigner_required"
-	// ErrCodeBoundedAdminTargetRejected: an admin-key bounded rekey named a
-	// target that is not a nonrotating signing credential the signer holds.
-	ErrCodeBoundedAdminTargetRejected = "bounded_admin_target_rejected"
 	// ErrCodeRotatingSigningRequired: a rotating account (signing_flow
 	// rotating1) was sent to an ordinary signing endpoint. The SDK does not
 	// implement the rotating flow.

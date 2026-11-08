@@ -522,14 +522,16 @@ describe("signer API contract fixtures", () => {
     assert.equal(key.logicSigResources?.spend?.programBytes, 5169);
     assert.equal(key.logicSigResources?.spend?.argumentBytes, 1423);
     assert.equal(key.boundedAuthorization?.layer3Policy, "fixed_allowlist");
-    assert.ok(key.boundedAuthorization?.adminKeyId);
-    assert.equal(
-      key.boundedAuthorization?.programBinding,
-      "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
-    );
     assert.deepEqual(key.boundedAuthorization?.spendEffects, ["pay", "axfer", "asset_opt_in"]);
-    assert.equal(key.boundedAuthorization?.adminOperations[0].policyGate, "none");
-    assert.equal(key.boundedAuthorization?.argumentLayout[1].source, "admin");
+    // The account refuses rekeys: it publishes no admin operation.
+    assert.deepEqual(key.boundedAuthorization?.adminOperations, []);
+    assert.deepEqual(
+      key.boundedAuthorization?.argumentLayout.map((slot) => slot.source),
+      ["base_signature"],
+    );
+    // The vestigial admin_rekey path is still on the wire.
+    assert.equal(key.logicSigResources?.adminRekey?.argumentBytes, 1423);
+    assert.equal(key.boundedAuthorization?.argumentLayout[0].paths.adminRekey, "required");
     const corridor = keys[1];
     assert.equal(corridor.signingFlow, "bounded-cosigner1");
     assert.equal(corridor.cosignerComponentKeyType, "aplane.witness-falcon1024.v1");
@@ -545,7 +547,7 @@ describe("signer API contract fixtures", () => {
     const keyTypes = await client.listKeyTypes();
     const keyType = keyTypes[0];
     assert.equal(keyType.boundedAuthorization?.layer3Policy, "fixed_allowlist");
-    assert.equal(keyType.boundedAuthorization?.adminKeyId, undefined);
+    assert.deepEqual(keyType.boundedAuthorization?.adminOperations, []);
     const corridorType = keyTypes[1];
     assert.equal(corridorType.signingFlow, "bounded-cosigner1");
     assert.equal(corridorType.perKeyContract, undefined);

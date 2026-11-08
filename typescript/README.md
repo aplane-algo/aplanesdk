@@ -221,10 +221,6 @@ Returns list of `KeyInfo`:
 - `isGenericLsig`: True if no cryptographic signature needed
 - `signingArgs`: List of `SigningArg` for LogicSigs
 
-The SDK exposes bounded inventory and ordinary spend signing only. It does not
-build, partially sign, or complete contract-admin rekey transactions; use the
-APlane `aprekey` workflow for those operations.
-
 **Discovering required arguments for generic LogicSigs:**
 
 ```typescript
@@ -396,11 +392,10 @@ controller.abort();
 | `aplane.ed25519.v1` | Ed25519 DSA LogicSig | Library-visible plain DSA account |
 | `aplane.witness-falcon1024.v1` | Witness key | Cosigner-custodied policy signature key; not a spending account |
 | `aplane.falcon1024-cosigner1024.v1` | Guarded account | Requires user and cosigner component signatures |
-| `aplane.corridor.v1` | Bounded Corridor account | `bounded1` contract; `bounded-cosigner1` spend flow |
+| `aplane.falcon1024-b.v1` | General bounded account | `bounded1` contract; `bounded-cosigner1` spend flow when it embeds a cosigner |
 | `aplane.falcon1024-allowlist.v1` | Bounded allowlist | Inline allowlist; `bounded1` signing flow |
 | `aplane.falcon1024-allowlist.v2` | Bounded allowlist | Merkle allowlist; `bounded1` signing flow |
 | `aplane.falcon1024-timelock.v1` | Bounded timelock | Round-gated `bounded1` signing flow |
-| `aplane.falcon1024-allowlist-lock.v1` | Rekey-locked bounded allowlist | Ordinary spending uses `bounded1`; admin rekey is outside SDK scope |
 | `aplane.htlc.v1` | Hash-locked funds | Requires `preimage` arg (check `signingArgs`) |
 
 Only the protocol-native types, `ed25519` and `falcon1024`, are enabled by
@@ -515,8 +510,7 @@ reported group mutations for both guarded flows.
 
 Applications that own orchestration can call `requestComponents()` and
 `requestAssemble()` directly. Cosigner authorization is spend-only in this
-contract; bounded contract-admin rekeys remain an external `aprekey` ceremony
-and are not completed by the SDK.
+contract.
 
 ## Error Handling
 

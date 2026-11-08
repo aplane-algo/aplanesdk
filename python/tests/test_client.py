@@ -163,24 +163,15 @@ def sdk_test_address(seed: int) -> str:
     return algo_encoding.encode_address(bytes(raw))
 
 
-@pytest.mark.parametrize(
-    ("rekey_to", "authorization", "expected_program_bytes"),
-    [
-        (None, "", 1001),
-        (sdk_test_address(2), "spending_key", 2002),
-        (sdk_test_address(3), "admin_key", 3003),
-    ],
-)
-def test_selected_prepared_resources_uses_bounded_authorization_path(
-    rekey_to, authorization, expected_program_bytes
-):
-    operations = [BoundedAdminOperationInfo("rekey", authorization, "none")] if rekey_to else []
-    key = KeyInfo(
+def bounded_resource_test_key(operations):
+    return KeyInfo(
         address=sdk_test_address(1),
-        key_type="aplane.corridor.v1",
+        key_type="aplane.falcon1024-b.v1",
         logic_sig_resources=LogicSigResourceProfile(
             spend=LogicSigResourceUsage(1001, 101, 10001),
             spending_rekey=LogicSigResourceUsage(2002, 202, 20002),
+            # The signer still publishes the vestigial admin_rekey path; no
+            # rekey authorization selects it.
             admin_rekey=LogicSigResourceUsage(3003, 303, 30003),
         ),
         bounded_authorization=BoundedAuthorizationInfo(
@@ -195,6 +186,20 @@ def test_selected_prepared_resources_uses_bounded_authorization_path(
             layer3_policy="fixed_allowlist",
         ),
     )
+
+
+@pytest.mark.parametrize(
+    ("rekey_to", "authorization", "expected_program_bytes"),
+    [
+        (None, "", 1001),
+        (sdk_test_address(2), "spending_key", 2002),
+    ],
+)
+def test_selected_prepared_resources_uses_bounded_authorization_path(
+    rekey_to, authorization, expected_program_bytes
+):
+    operations = [BoundedAdminOperationInfo("rekey", authorization, "none")] if rekey_to else []
+    key = bounded_resource_test_key(operations)
     txn = MagicMock(rekey_to=rekey_to)
 
     selected = _selected_prepared_resources(key, txn)
@@ -202,6 +207,15 @@ def test_selected_prepared_resources_uses_bounded_authorization_path(
     assert selected is not None
     assert selected.program_bytes == expected_program_bytes
     assert selected is not key.logic_sig_resources.spend
+
+
+def test_selected_prepared_resources_rejects_rekey_of_refused_bounded_account():
+    # A refused account publishes no rekey operation.
+    key = bounded_resource_test_key([])
+    txn = MagicMock(rekey_to=sdk_test_address(2))
+
+    with pytest.raises(ValueError, match="bounded rekey authorization metadata is unavailable"):
+        _selected_prepared_resources(key, txn)
 
 
 def guarded_test_resources():
@@ -1703,7 +1717,7 @@ class TestSignGuardedGroup:
                     app_call_info={"mode": "raw"},
                     signer_key=KeyInfo(
                         address=bounded,
-                        key_type="aplane.corridor.v1",
+                        key_type="aplane.falcon1024-b.v1",
                         signing_flow=SIGNING_FLOW_BOUNDED_COSIGNER1,
                         cosigner_component_key_type=KEY_TYPE_WITNESS_FALCON1024,
                         logic_sig_resources=LogicSigResourceProfile(
@@ -1868,7 +1882,7 @@ class TestSignGuardedGroup:
                         auth_address=bounded,
                         signer_key=KeyInfo(
                             address=bounded,
-                            key_type="aplane.corridor.v1",
+                            key_type="aplane.falcon1024-b.v1",
                             authorization_kind=AUTHORIZATION_KIND_LOGIC_SIG,
                             signing_flow=SIGNING_FLOW_BOUNDED_COSIGNER1,
                             cosigner_component_key_type=KEY_TYPE_WITNESS_FALCON1024,

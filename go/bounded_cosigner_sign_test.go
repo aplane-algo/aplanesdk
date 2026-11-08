@@ -125,7 +125,7 @@ func TestSignPreparedBoundedCosignerGroupOneTarget(t *testing.T) {
 			Transaction: &txn, AuthAddress: bounded,
 			AppCallInfo: &AppCallInfo{Mode: "raw"},
 			SignerKey: &KeyInfo{
-				Address: bounded, KeyType: "aplane.corridor.v1",
+				Address: bounded, KeyType: "aplane.falcon1024-b.v1",
 				SigningFlow: SigningFlowBoundedCosigner1,
 				LogicSigResources: &LogicSigResourceProfile{
 					Spend: &LogicSigResourceUsage{ProgramBytes: 5308, ArgumentBytes: 3358, MaxOpcodeCost: 20000},
@@ -282,7 +282,7 @@ func TestSignPreparedBoundedCosignerGroupDeclaresNativePQPrimary(t *testing.T) {
 					PreparedTransaction{
 						Transaction: &corridorTxn, AuthAddress: bounded,
 						SignerKey: &KeyInfo{
-							Address: bounded, KeyType: "aplane.corridor.v1",
+							Address: bounded, KeyType: "aplane.falcon1024-b.v1",
 							AuthorizationKind: AuthorizationKindLogicSig,
 							SigningFlow:       SigningFlowBoundedCosigner1,
 							LogicSigResources: &LogicSigResourceProfile{
