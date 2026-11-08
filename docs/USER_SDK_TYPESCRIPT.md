@@ -554,12 +554,14 @@ Use `createTransaction.*` when APlane must own final signing and any
 APlane-managed group expansion. `algorand.send.*` owns the composer send path
 and signs inside that path.
 
-### Guarded Cosigner Signing
+### Cosigned Accounts
 
-Guarded accounts use component signatures from both the user signer and a
-cosigner signer. Cosigner component selectors are public policy keys, not Algorand
-spending accounts, and must not be used as senders, receivers, auth addresses,
-or rekey targets.
+Cosigned accounts (signing flow `cosigned1`) need component signatures from both
+the user signer and a cosigner signer. A cosigned account is a plain host such
+as `aplane.falcon1024.v1` created with a cosigner, or a bounded account with
+one, such as Corridor. Cosigner component selectors are public policy keys, not
+Algorand spending accounts, and must not be used as senders, receivers, auth
+addresses, or rekey targets.
 
 Before signing, an operator must apply a policy document for the selected
 cosigner Witness Key ID using `apadmin policy check` and `apadmin policy apply`.
@@ -572,51 +574,25 @@ This requirement also applies to bounded cosigner accounts such as Corridor.
 If the cosigner holds the key but it is still on the deny-all default,
 `/sign/component` returns HTTP 403 with `code: "forbidden"` and a
 `transaction_type:<type>` rule ID in the error message. `requestComponents()`
-throws `SigningRejectedError`, preserving the code and message, and the guarded
-signing helpers propagate that error. Apply the key's document before retrying.
+throws `SigningRejectedError`, preserving the code and message, and the cosigned
+signing helper propagates that error. Apply the key's document before retrying.
 See the [compatibility note](COMPATIBILITY.md) for policy format and provisioning details.
 
-Use explicit clients; the SDK does not parse or mutate endpoint enrollment
-files. The direct helper does not perform inventory discovery, so pass the
-reviewed spend-path resource profile returned by `listKeys()`:
+For manual orchestration, use `requestComponents()` on the user client with a
+bounded-base target and on the cosigner client, then `requestAssemble()` on the
+user client. Finish the user side (the base components and any ordinary-position
+signing) before requesting cosigner components, so a cosigner never sees a group
+the user signer rejects. `assembleGroup()` remains only the local multi-party
+concatenation helper.
 
-```ts
-const result = await signGuardedGroup({
-  userClient,
-  cosignerClient,
-  cosignerComponentKey: "COSIGNER_COMPONENT_SELECTOR",
-  groupBytesHex: ["5458..."],
-  guardedTargets: [
-    {
-      targetIndex: 0,
-      guardedAccount: "GUARDED_ACCOUNT_ADDRESS",
-      logicSigResources: reviewedSpendResources,
-    },
-  ],
-});
-const signedGroup = result.signedGroup;
-```
-
-If a direct guarded call combines `primaryTargets` with caller-supplied
-`passthrough`, each passthrough item must also carry a local-only
-`GuardedPassthroughAuthorization`. Use an empty object for Ed25519,
-`pqScheme: PQ_SCHEME_FALCON1024` for native Falcon, or
-`logicSigResources` for a LogicSig. This metadata is used only to plan the
-intermediate primary-signing request and is not sent to `/sign/assemble`.
-
-For manual orchestration, use `requestComponents()` on the user and cosigner
-clients, then `requestAssemble()` on the user client. Finish the user side (user components and any
-ordinary-position signing) before requesting cosigner components, so a cosigner
-never sees a group the user signer rejects. `assembleGroup()`
-remains only the local multi-party concatenation helper.
-
-Corridor is a cosigned bounded account: its LogicSig contract is `bounded2`, and
-its online signing flow is `cosigned1`. These are separate compatibility
-dimensions. A cosigned account's spends and declared rekeys need the cosigner;
-a rekey to an address on its rekey-to list does not, and the signer's base
-component says which (`path`), so the helper asks the cosigner only for the
-targets that need it. `signPreparedGuardedGroup()` discovers the flow from signer
-inventory and performs the user-first sequence:
+A cosigned account's LogicSig contract is `plain1` on a plain host, or
+`bounded2` on a bounded account such as Corridor, and its online signing flow is
+`cosigned1`. These are separate compatibility dimensions. A cosigned account's
+spends and declared rekeys need the cosigner; a rekey to an address on its
+rekey-to list does not, and the signer's base component says which (`path`), so
+the helper asks the cosigner only for the targets that need it.
+`signPreparedGuardedGroup()` discovers the flow from signer inventory and
+performs the user-first sequence:
 
 ```ts
 const result = await signPreparedGuardedGroup({
@@ -638,15 +614,13 @@ transaction against the frozen canonical bytes. Those two bounded methods are
 also public for applications that own the orchestration.
 
 The signer planner owns fee selection, authorization-resource sizing, and any
-reported group mutations for both guarded flows.
+reported group mutations for the cosigned flow.
 
-The v1 cosigner gate applies only to spends.
-
-User-role component signing runs the signer-domain approval gates and can
-block on a manual operator decision. The SDK automatically discovers the
-signer's `approval_wait_seconds` and sizes the request deadline accordingly,
-exactly like `/sign`; cosigner-role component requests stay on the short
-deterministic deadline.
+Base-component signing (the user signer's bounded-base request) runs the
+signer-domain approval gates and can block on a manual operator decision. The
+SDK automatically discovers the signer's `approval_wait_seconds` and sizes the
+request deadline accordingly, exactly like `/sign`; cosigner-role component
+requests stay on the short deterministic deadline.
 
 Full simulation uses ordinary executable signing and the caller's algod. The
 signer does not have a simulation endpoint and does not know whether the caller
@@ -662,7 +636,7 @@ if (simulation.failed) {
   // Inspect simulation.response for algod diagnostics.
 }
 
-const guarded = await simulateGuardedGroup(algodClient, guardedOptions);
+const guarded = await simulatePreparedGuardedGroup(algodClient, guardedOptions);
 ```
 
 `SimulationResult.signedGroup` contains fully executable signed transactions

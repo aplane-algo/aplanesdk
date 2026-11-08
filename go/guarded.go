@@ -69,28 +69,24 @@ type GuardedPrimarySignTarget struct {
 	AppCallInfo *AppCallInfo
 }
 
-// GuardedSignOptions configures SignGuardedGroup.
+// GuardedSignOptions configures the cosigner component request of a prepared
+// cosigned group: where the cosigner is, and the frozen group it signs over.
 type GuardedSignOptions struct {
 	UserClient           *SignerClient
 	CosignerClient       *SignerClient
 	CosignerResolver     GuardedCosignerResolver
 	CosignerComponentKey string
 	GroupBytesHex        []string
-	Targets              []GuardedSignTarget
 	PrimaryTargets       []GuardedPrimarySignTarget
-	Passthrough          []AssemblyPassthroughItem
 	DummyPositions       []int
-	AssemblyRequestID    string
 }
 
 // GuardedSignResult contains the final assembled group and intermediate
 // component-sign responses for audit and UI correlation.
 type GuardedSignResult struct {
 	SignedGroup                []string
-	UserComponentResponses     []*ComponentResponse
 	CosignerComponentResponses []*ComponentResponse
 	PrimarySignResponse        *GroupSignResponse
-	AssemblyResponse           *AssemblyResponse
 	BoundedComponentResponse   *ComponentResponse
 	BoundedAssemblyResponse    *AssemblyResponse
 }
@@ -113,128 +109,6 @@ type guardedComponentSignature struct {
 type cosignerSignGroupKey struct {
 	client       *SignerClient
 	componentKey string
-}
-
-// SignGuardedGroup signs and assembles a guarded group using explicit signer
-// clients.
-func SignGuardedGroup(opts GuardedSignOptions) (*GuardedSignResult, error) {
-	return SignGuardedGroupWithContext(context.Background(), opts)
-}
-
-// SignGuardedGroupWithContext signs and assembles a guarded group using
-// explicit signer clients.
-func SignGuardedGroupWithContext(ctx context.Context, opts GuardedSignOptions) (*GuardedSignResult, error) {
-	if opts.UserClient == nil {
-		return nil, fmt.Errorf("user client is required")
-	}
-	if len(opts.Targets) == 0 {
-		return nil, fmt.Errorf("at least one guarded target is required")
-	}
-	if err := validateComponentGroupBytes(opts.GroupBytesHex); err != nil {
-		return nil, err
-	}
-
-	targets := append([]GuardedSignTarget(nil), opts.Targets...)
-	sort.Slice(targets, func(i, j int) bool {
-		return targets[i].TargetIndex < targets[j].TargetIndex
-	})
-
-	guardedByIndex := make(map[int]GuardedSignTarget, len(targets))
-	appCallInfoByIndex := make(map[int]*AppCallInfo, len(targets)+len(opts.PrimaryTargets))
-	for _, target := range opts.PrimaryTargets {
-		appCallInfoByIndex[target.TargetIndex] = target.AppCallInfo
-	}
-	userGroups := make(map[string][]int)
-	for i := range targets {
-		target := &targets[i]
-		if target.TargetIndex < 0 || target.TargetIndex >= len(opts.GroupBytesHex) {
-			return nil, fmt.Errorf("guarded target %d out of range", target.TargetIndex)
-		}
-		if _, ok := guardedByIndex[target.TargetIndex]; ok {
-			return nil, fmt.Errorf("duplicate guarded target index %d", target.TargetIndex)
-		}
-		if target.GuardedAccount == "" {
-			return nil, fmt.Errorf("guarded target %d missing guarded account", target.TargetIndex)
-		}
-		if target.LogicSigResources == nil {
-			return nil, fmt.Errorf("guarded target %d missing LogicSig resources", target.TargetIndex)
-		}
-		if err := target.LogicSigResources.validate(); err != nil {
-			return nil, fmt.Errorf("guarded target %d has invalid LogicSig resources: %w", target.TargetIndex, err)
-		}
-		guardedByIndex[target.TargetIndex] = *target
-		appCallInfoByIndex[target.TargetIndex] = target.AppCallInfo
-		userGroups[target.GuardedAccount] = append(userGroups[target.GuardedAccount], target.TargetIndex)
-	}
-
-	result := &GuardedSignResult{}
-	userSignatures, err := requestUserComponentSignatures(ctx, opts.UserClient, opts.GroupBytesHex, opts.DummyPositions, userGroups, appCallInfoByIndex, result)
-	if err != nil {
-		return nil, err
-	}
-	passthrough := append([]AssemblyPassthroughItem(nil), opts.Passthrough...)
-	if len(opts.PrimaryTargets) > 0 {
-		primary, err := requestPrimaryGuardedPassthrough(
-			ctx,
-			opts.UserClient,
-			opts.GroupBytesHex,
-			guardedByIndex,
-			opts.PrimaryTargets,
-			opts.Passthrough,
-		)
-		if err != nil {
-			return nil, err
-		}
-		result.PrimarySignResponse = primary.response
-		passthrough = append(passthrough, primary.passthrough...)
-	}
-	// The user side is complete, including ordinary primary positions. Only
-	// now may the SDK disclose the frozen group to the cosigner endpoint.
-	cosignerSignatures, err := requestCosignerComponentSignatures(ctx, opts, targets, result)
-	if err != nil {
-		return nil, err
-	}
-
-	assemblyTargets := make([]AssemblyTarget, 0, len(targets))
-	for _, target := range targets {
-		userSig, ok := userSignatures[target.TargetIndex]
-		if !ok {
-			return nil, fmt.Errorf("missing user component signature for target %d", target.TargetIndex)
-		}
-		cosignerSig, ok := cosignerSignatures[target.TargetIndex]
-		if !ok {
-			return nil, fmt.Errorf("missing cosigner component signature for target %d", target.TargetIndex)
-		}
-		assemblyTargets = append(assemblyTargets, AssemblyTarget{
-			TargetIndex:             target.TargetIndex,
-			Kind:                    AssemblyTargetKindGuarded,
-			AuthAddress:             target.GuardedAccount,
-			UserSignature:           userSig.signature,
-			UserSourceRequestID:     userSig.requestID,
-			CosignerSignature:       cosignerSig.signature,
-			CosignerSourceRequestID: cosignerSig.requestID,
-			GuardedRuntimeArgs:      append([]string(nil), target.RuntimeArgs...),
-		})
-	}
-	assemblyPassthrough := make([]AssemblyPassthroughItem, 0, len(passthrough))
-	for _, item := range passthrough {
-		assemblyPassthrough = append(assemblyPassthrough, AssemblyPassthroughItem(item))
-	}
-	assemblyResp, err := opts.UserClient.RequestAssembleWithContext(ctx, AssemblyRequest{
-		RequestID:     opts.AssemblyRequestID,
-		GroupBytesHex: opts.GroupBytesHex,
-		Targets:       assemblyTargets,
-		Passthrough:   assemblyPassthrough,
-	})
-	if err != nil {
-		return nil, err
-	}
-	if err := verifyAssembledGroup(opts.GroupBytesHex, assemblyResp.SignedGroup); err != nil {
-		return nil, err
-	}
-	result.AssemblyResponse = assemblyResp
-	result.SignedGroup = append([]string(nil), assemblyResp.SignedGroup...)
-	return result, nil
 }
 
 // verifyAssembledGroup cross-checks the assembler's signed group against the
@@ -291,192 +165,7 @@ func SignPreparedGuardedGroup(opts PreparedGuardedGroupOptions) (*GuardedSignRes
 // SignPreparedGuardedGroupWithContext is the context-aware form of
 // SignPreparedGuardedGroup.
 func SignPreparedGuardedGroupWithContext(ctx context.Context, opts PreparedGuardedGroupOptions) (*GuardedSignResult, error) {
-	resolvedOpts, hasBoundedCosigner, hasCosigner1, err := resolvePreparedCosignerFlowKinds(ctx, opts)
-	if err != nil {
-		return nil, err
-	}
-	if hasBoundedCosigner {
-		if hasCosigner1 {
-			return nil, fmt.Errorf("cannot mix cosigner1 and cosigned1 targets in one group")
-		}
-		return signPreparedBoundedCosignerGroupWithContext(ctx, resolvedOpts)
-	}
-	signOpts, err := buildPreparedGuardedSignOptions(ctx, resolvedOpts)
-	if err != nil {
-		return nil, err
-	}
-	return SignGuardedGroupWithContext(ctx, signOpts)
-}
-
-func resolvePreparedCosignerFlowKinds(ctx context.Context, opts PreparedGuardedGroupOptions) (
-	resolved PreparedGuardedGroupOptions,
-	boundedCosigner bool,
-	cosigner1 bool,
-	err error,
-) {
-	if opts.UserClient == nil {
-		return opts, false, false, fmt.Errorf("user client is required")
-	}
-	resolved = opts
-	resolved.PreparedGroup.Transactions = append(
-		[]PreparedTransaction(nil),
-		opts.PreparedGroup.Transactions...,
-	)
-	for i := range resolved.PreparedGroup.Transactions {
-		item := &resolved.PreparedGroup.Transactions[i]
-		key := item.SignerKey
-		if key == nil && item.AuthAddress != "" {
-			key, err = opts.UserClient.getKeyInfoWithContext(ctx, item.AuthAddress)
-			if err != nil {
-				return opts, false, false, fmt.Errorf("prepared transaction %d: resolve signer key: %w", i, err)
-			}
-			item.SignerKey = key
-		}
-		if key == nil {
-			continue
-		}
-		switch key.SigningFlow {
-		case SigningFlowCosigned1:
-			boundedCosigner = true
-		case SigningFlowCosigner1:
-			cosigner1 = true
-		}
-	}
-	return resolved, boundedCosigner, cosigner1, nil
-}
-
-func buildPreparedGuardedSignOptions(ctx context.Context, opts PreparedGuardedGroupOptions) (GuardedSignOptions, error) {
-	if opts.UserClient == nil {
-		return GuardedSignOptions{}, fmt.Errorf("user client is required")
-	}
-	prepared := opts.PreparedGroup.Transactions
-	if len(prepared) == 0 {
-		return GuardedSignOptions{}, fmt.Errorf("prepared group is empty")
-	}
-
-	txns := make([]types.Transaction, len(prepared))
-	targets := make([]GuardedSignTarget, 0, len(prepared))
-	primaryTargets := make([]GuardedPrimarySignTarget, 0, len(prepared))
-	planRequests := make([]SignRequest, len(prepared))
-
-	for i, item := range prepared {
-		if item.SignedTransactionBase64 != "" {
-			return GuardedSignOptions{}, fmt.Errorf("prepared transaction %d: passthrough entries are not supported in prepared guarded groups", i)
-		}
-		if item.Transaction == nil {
-			return GuardedSignOptions{}, fmt.Errorf("prepared transaction %d: transaction is required", i)
-		}
-		txns[i] = *item.Transaction
-
-		key := item.SignerKey
-		if key == nil && item.AuthAddress != "" {
-			var err error
-			key, err = opts.UserClient.getKeyInfoWithContext(ctx, item.AuthAddress)
-			if err != nil {
-				return GuardedSignOptions{}, fmt.Errorf("prepared transaction %d: resolve signer key: %w", i, err)
-			}
-		}
-		if key == nil {
-			return GuardedSignOptions{}, fmt.Errorf("prepared transaction %d: signer key metadata is required", i)
-		}
-
-		if item.AuthAddress == "" {
-			return GuardedSignOptions{}, fmt.Errorf("prepared transaction %d: auth address is required", i)
-		}
-		planRequest, err := item.SignRequest()
-		if err != nil {
-			return GuardedSignOptions{}, fmt.Errorf("prepared transaction %d: %w", i, err)
-		}
-		planRequests[i] = planRequest
-
-		if key.SigningFlow != "" {
-			if key.SigningFlow == SigningFlowBounded1 {
-				if item.AuthAddress == "" {
-					return GuardedSignOptions{}, fmt.Errorf("prepared transaction %d: primary auth address is required", i)
-				}
-				primaryTargets = append(primaryTargets, GuardedPrimarySignTarget{
-					TargetIndex: i,
-					AuthAddress: item.AuthAddress,
-					TxnSender:   item.TxnSender,
-					LsigArgs:    encodeGuardedLsigArgs(item.LsigArgs),
-					AppCallInfo: item.AppCallInfo,
-				})
-				continue
-			}
-			if key.SigningFlow != SigningFlowCosigner1 {
-				return GuardedSignOptions{}, fmt.Errorf("prepared transaction %d: signer key requires signing flow %q, which this SDK does not support; upgrade the SDK", i, key.SigningFlow)
-			}
-			if item.AuthAddress == "" {
-				return GuardedSignOptions{}, fmt.Errorf("prepared transaction %d: guarded auth address is required", i)
-			}
-			resources, err := selectedPreparedResources(key, item.Transaction)
-			if err != nil {
-				return GuardedSignOptions{}, fmt.Errorf("prepared transaction %d: %w", i, err)
-			}
-			if resources == nil {
-				return GuardedSignOptions{}, fmt.Errorf("prepared transaction %d: guarded LogicSig resources are unavailable", i)
-			}
-			targets = append(targets, GuardedSignTarget{
-				TargetIndex:              i,
-				GuardedAccount:           item.AuthAddress,
-				CosignerPublicKeyHex:     guardedCosignerPublicKey(key),
-				CosignerComponentKeyType: key.CosignerComponentKeyType,
-				LogicSigResources:        resources,
-				AppCallInfo:              item.AppCallInfo,
-			})
-			continue
-		}
-
-		if item.AuthAddress == "" {
-			return GuardedSignOptions{}, fmt.Errorf("prepared transaction %d: primary auth address is required", i)
-		}
-		primaryTargets = append(primaryTargets, GuardedPrimarySignTarget{
-			TargetIndex: i,
-			AuthAddress: item.AuthAddress,
-			TxnSender:   item.TxnSender,
-			LsigArgs:    encodeGuardedLsigArgs(item.LsigArgs),
-			AppCallInfo: item.AppCallInfo,
-		})
-	}
-
-	if len(targets) == 0 {
-		return GuardedSignOptions{}, fmt.Errorf("prepared group has no guarded targets")
-	}
-
-	plan, err := opts.UserClient.PlanRequestsWithContext(ctx, planRequests)
-	if err != nil {
-		return GuardedSignOptions{}, fmt.Errorf("guarded group planning failed: %w", err)
-	}
-	allTxns, err := decodeCanonicalGroup(plan.Transactions)
-	if err != nil {
-		return GuardedSignOptions{}, fmt.Errorf("signer returned invalid guarded group plan: %w", err)
-	}
-	if err := validateBoundedComponentPlan(txns, allTxns, plan.Mutations); err != nil {
-		return GuardedSignOptions{}, fmt.Errorf("invalid guarded group plan: %w", err)
-	}
-
-	dummyPassthrough, err := signGuardedDummies(allTxns[len(txns):], len(txns))
-	if err != nil {
-		return GuardedSignOptions{}, err
-	}
-
-	groupBytesHex := make([]string, len(allTxns))
-	for i, txn := range allTxns {
-		groupBytesHex[i] = hex.EncodeToString(encodeTxn(txn))
-	}
-
-	return GuardedSignOptions{
-		UserClient:           opts.UserClient,
-		CosignerClient:       opts.CosignerClient,
-		CosignerResolver:     opts.CosignerResolver,
-		CosignerComponentKey: opts.CosignerComponentKey,
-		GroupBytesHex:        groupBytesHex,
-		Targets:              targets,
-		PrimaryTargets:       primaryTargets,
-		Passthrough:          dummyPassthrough,
-		DummyPositions:       contiguousIndices(len(txns), len(allTxns)),
-		AssemblyRequestID:    opts.AssemblyRequestID,
-	}, nil
+	return signPreparedBoundedCosignerGroupWithContext(ctx, opts)
 }
 
 func selectedPreparedResources(key *KeyInfo, txn *types.Transaction) (*LogicSigResourceUsage, error) {
@@ -524,13 +213,6 @@ func preparedForeignPQScheme(key *KeyInfo, resources *LogicSigResourceUsage) (st
 		return "", fmt.Errorf("native-PQ signer key must not declare LogicSig resources")
 	}
 	return PQSchemeFalcon1024, nil
-}
-
-func guardedCosignerPublicKey(key *KeyInfo) string {
-	if key == nil || key.Parameters == nil {
-		return ""
-	}
-	return key.Parameters["cosigner_public_key"]
 }
 
 func encodeGuardedLsigArgs(args LsigArgs) map[string]string {
@@ -585,32 +267,6 @@ func validateGuardedDummies(dummies []types.Transaction) error {
 	return nil
 }
 
-func requestUserComponentSignatures(ctx context.Context, client *SignerClient, groupBytesHex []string, dummyPositions []int, userGroups map[string][]int, appCallInfo map[int]*AppCallInfo, result *GuardedSignResult) (map[int]guardedComponentSignature, error) {
-	accounts := make([]string, 0, len(userGroups))
-	for account := range userGroups {
-		accounts = append(accounts, account)
-	}
-	sort.Strings(accounts)
-
-	signatures := make(map[int]guardedComponentSignature)
-	for _, account := range accounts {
-		indices := append([]int(nil), userGroups[account]...)
-		sort.Ints(indices)
-		resp, err := client.RequestComponentsWithContext(ctx, componentRequestForIndices(groupBytesHex, indices, dummyPositions, ComponentTargetKindUser, account, appCallInfo))
-		if err != nil {
-			return nil, err
-		}
-		result.UserComponentResponses = append(result.UserComponentResponses, resp)
-		for _, component := range resp.Components {
-			signatures[component.TargetIndex] = guardedComponentSignature{
-				signature: component.Signature,
-				requestID: resp.RequestID,
-			}
-		}
-	}
-	return signatures, nil
-}
-
 func requestCosignerComponentSignatures(ctx context.Context, opts GuardedSignOptions, targets []GuardedSignTarget, result *GuardedSignResult) (map[int]guardedComponentSignature, error) {
 	groups := make(map[cosignerSignGroupKey][]int)
 	appCallInfo := make(map[int]*AppCallInfo, len(targets)+len(opts.PrimaryTargets))
@@ -632,7 +288,7 @@ func requestCosignerComponentSignatures(ctx context.Context, opts GuardedSignOpt
 	signatures := make(map[int]guardedComponentSignature)
 	for group, indices := range groups {
 		sort.Ints(indices)
-		resp, err := group.client.RequestComponentsWithContext(ctx, componentRequestForIndices(opts.GroupBytesHex, indices, opts.DummyPositions, ComponentTargetKindCosigner, group.componentKey, appCallInfo))
+		resp, err := group.client.RequestComponentsWithContext(ctx, componentRequestForIndices(opts.GroupBytesHex, indices, opts.DummyPositions, group.componentKey, appCallInfo))
 		if err != nil {
 			return nil, err
 		}
@@ -647,17 +303,14 @@ func requestCosignerComponentSignatures(ctx context.Context, opts GuardedSignOpt
 	return signatures, nil
 }
 
-func componentRequestForIndices(groupBytesHex []string, indices, dummyPositions []int, kind ComponentTargetKind, key string, appCallInfo map[int]*AppCallInfo) ComponentRequest {
+// componentRequestForIndices is the cosigner component request for the frozen
+// group's targets at indices, under one Witness Key ID.
+func componentRequestForIndices(groupBytesHex []string, indices, dummyPositions []int, componentKey string, appCallInfo map[int]*AppCallInfo) ComponentRequest {
 	targetSet := make(map[int]bool, len(indices))
 	request := ComponentRequest{GroupBytesHex: groupBytesHex}
 	for _, index := range indices {
 		targetSet[index] = true
-		target := ComponentTarget{TargetIndex: index, Kind: kind}
-		if kind == ComponentTargetKindUser {
-			target.AuthAddress = key
-		} else {
-			target.ComponentKey = key
-		}
+		target := ComponentTarget{TargetIndex: index, Kind: ComponentTargetKindCosigner, ComponentKey: componentKey}
 		target.AppCallInfo = appCallInfo[index]
 		request.Targets = append(request.Targets, target)
 	}
@@ -697,108 +350,4 @@ func resolveGuardedCosigner(ctx context.Context, opts GuardedSignOptions, target
 type primaryGuardedPassthrough struct {
 	response    *GroupSignResponse
 	passthrough []AssemblyPassthroughItem
-}
-
-func requestPrimaryGuardedPassthrough(
-	ctx context.Context,
-	client *SignerClient,
-	groupBytesHex []string,
-	guardedByIndex map[int]GuardedSignTarget,
-	targets []GuardedPrimarySignTarget,
-	passthrough []AssemblyPassthroughItem,
-) (*primaryGuardedPassthrough, error) {
-	primaryByIndex := make(map[int]GuardedPrimarySignTarget, len(targets))
-	for _, target := range targets {
-		if target.TargetIndex < 0 || target.TargetIndex >= len(groupBytesHex) {
-			return nil, fmt.Errorf("primary target %d out of range", target.TargetIndex)
-		}
-		if _, guarded := guardedByIndex[target.TargetIndex]; guarded {
-			return nil, fmt.Errorf("primary target %d overlaps guarded target", target.TargetIndex)
-		}
-		if _, ok := primaryByIndex[target.TargetIndex]; ok {
-			return nil, fmt.Errorf("duplicate primary target index %d", target.TargetIndex)
-		}
-		if target.AuthAddress == "" {
-			return nil, fmt.Errorf("primary target %d missing auth address", target.TargetIndex)
-		}
-		primaryByIndex[target.TargetIndex] = target
-	}
-	passthroughByIndex := make(map[int]AssemblyPassthroughItem, len(passthrough))
-	for _, item := range passthrough {
-		if item.TargetIndex < 0 || item.TargetIndex >= len(groupBytesHex) {
-			return nil, fmt.Errorf("passthrough target %d out of range", item.TargetIndex)
-		}
-		if _, ok := passthroughByIndex[item.TargetIndex]; ok {
-			return nil, fmt.Errorf("duplicate passthrough target index %d", item.TargetIndex)
-		}
-		if _, ok := primaryByIndex[item.TargetIndex]; ok {
-			return nil, fmt.Errorf("passthrough target %d overlaps primary target", item.TargetIndex)
-		}
-		if _, ok := guardedByIndex[item.TargetIndex]; ok {
-			return nil, fmt.Errorf("passthrough target %d overlaps guarded target", item.TargetIndex)
-		}
-		if item.Authorization == nil {
-			return nil, fmt.Errorf("passthrough target %d missing planning authorization", item.TargetIndex)
-		}
-		if item.Authorization.PQScheme != "" && item.Authorization.LogicSigResources != nil {
-			return nil, fmt.Errorf("passthrough target %d cannot specify both PQ scheme and LogicSig resources", item.TargetIndex)
-		}
-		if item.Authorization.PQScheme != "" && item.Authorization.PQScheme != PQSchemeFalcon1024 {
-			return nil, fmt.Errorf("passthrough target %d has unsupported PQ scheme %q", item.TargetIndex, item.Authorization.PQScheme)
-		}
-		if item.Authorization.LogicSigResources != nil {
-			if err := item.Authorization.LogicSigResources.validate(); err != nil {
-				return nil, fmt.Errorf("passthrough target %d has invalid LogicSig resources: %w", item.TargetIndex, err)
-			}
-		}
-		passthroughByIndex[item.TargetIndex] = item
-	}
-
-	requests := make([]SignRequest, len(groupBytesHex))
-	for i, txnHex := range groupBytesHex {
-		if target, ok := primaryByIndex[i]; ok {
-			requests[i] = SignRequest{
-				AuthAddress: target.AuthAddress,
-				TxnSender:   target.TxnSender,
-				TxnBytesHex: txnHex,
-				LsigArgs:    target.LsigArgs,
-				AppCallInfo: target.AppCallInfo,
-			}
-		} else if guarded, ok := guardedByIndex[i]; ok {
-			requests[i] = SignRequest{TxnBytesHex: txnHex, LsigResources: guarded.LogicSigResources}
-		} else if item, ok := passthroughByIndex[i]; ok {
-			requests[i] = SignRequest{
-				TxnBytesHex:   txnHex,
-				LsigResources: item.Authorization.LogicSigResources,
-				PQScheme:      item.Authorization.PQScheme,
-			}
-		} else {
-			return nil, fmt.Errorf("group position %d has no guarded, primary, or passthrough target", i)
-		}
-	}
-
-	response, err := client.SignGroupWithContext(ctx, GroupSignRequest{Requests: requests})
-	if err != nil {
-		return nil, err
-	}
-	primaryPassthrough := make([]AssemblyPassthroughItem, 0, len(primaryByIndex))
-	for index := range primaryByIndex {
-		if index >= len(response.Signed) || response.Signed[index] == "" {
-			return nil, fmt.Errorf("primary signer returned no signed transaction for target %d", index)
-		}
-		// The primary signer's output is forwarded to assembly as passthrough;
-		// verify it signed the transaction we requested (not a substituted one)
-		// before trusting its bytes.
-		if err := signedTxnMatchesCanonical("primary passthrough", index, response.Signed[index], groupBytesHex[index]); err != nil {
-			return nil, err
-		}
-		primaryPassthrough = append(primaryPassthrough, AssemblyPassthroughItem{
-			TargetIndex:  index,
-			SignedTxnHex: response.Signed[index],
-		})
-	}
-	sort.Slice(primaryPassthrough, func(i, j int) bool {
-		return primaryPassthrough[i].TargetIndex < primaryPassthrough[j].TargetIndex
-	})
-	return &primaryGuardedPassthrough{response: response, passthrough: primaryPassthrough}, nil
 }

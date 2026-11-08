@@ -388,10 +388,9 @@ controller.abort();
 |----------|-------------|-------|
 | `ed25519` | Native Algorand keys | Standard signing |
 | `falcon1024` | Native post-quantum keys | Protocol-native Falcon-1024 signature (`PQsig`) |
-| `aplane.falcon1024.v1` | Post-quantum LogicSig | Library-visible; enable before generating. Signature in LogicSig.Args[0] |
-| `aplane.ed25519.v1` | Ed25519 DSA LogicSig | Library-visible plain DSA account |
+| `aplane.falcon1024.v1` | Post-quantum plain host | Library-visible; created with a cosigner (`plain1` contract, `cosigned1` signing flow) |
+| `aplane.ed25519.v1` | Ed25519 plain host | Library-visible; created with a cosigner, like `aplane.falcon1024.v1`; the spending key is classical |
 | `aplane.witness-falcon1024.v1` | Witness key | Cosigner-custodied policy signature key; not a spending account |
-| `aplane.falcon1024-cosigner1024.v1` | Guarded account | Requires user and cosigner component signatures |
 | `aplane.falcon1024-b.v1` | General bounded account | `bounded2` contract; `bounded1` signing flow, or `cosigned1` when it embeds a cosigner |
 | `aplane.htlc.v1` | Hash-locked funds | Requires `preimage` arg (check `signingArgs`) |
 
@@ -404,68 +403,18 @@ keep signing.
 
 The server assembles the complete signed transaction - the SDK returns a base64 string ready for submission.
 
-## Cosigner And Guarded Accounts
+## Cosigner And Cosigned Accounts
 
 Witness keys enrolled as cosigners are public policy-signature selectors, not Algorand
 spending accounts. Do not use them as senders, receivers, auth addresses, or
-rekey targets. Guarded account keys must be signed through the guarded flow.
+rekey targets. A cosigned account (signing flow `cosigned1`) embeds the cosigner
+public key and is assembled through `/sign/assemble`; ordinary `/sign` is not
+sufficient for its slots. Sign it with `signPreparedGuardedGroup`, below. `requestComponents` and `requestAssemble` are
+the low-level calls that helper makes, for applications that own the
+orchestration.
 
-Low-level endpoint wrappers are available:
-
-```typescript
-const userPart = await userClient.requestComponents({
-  group_bytes_hex: ["5458..."],
-  targets: [{
-    target_index: 0,
-    kind: "user",
-    auth_address: "GUARDED_ACCOUNT_ADDRESS",
-  }],
-});
-
-const cosignerPart = await cosignerClient.requestComponents({
-  group_bytes_hex: ["5458..."],
-  targets: [{
-    target_index: 0,
-    kind: "cosigner",
-    component_key: "COSIGNER_COMPONENT_SELECTOR",
-  }],
-});
-
-const assembled = await userClient.requestAssemble({
-  group_bytes_hex: ["5458..."],
-  targets: [{
-    target_index: 0,
-    kind: "guarded",
-    auth_address: "GUARDED_ACCOUNT_ADDRESS",
-    user_signature: userPart.components[0].signature!,
-    cosigner_signature: cosignerPart.components[0].signature!,
-  }],
-});
-```
-
-For the common explicit two-client flow, use `signGuardedGroup`. The direct
-helper does not perform inventory discovery, so pass the reviewed spend-path
-resource profile returned by `listKeys()`:
-
-```typescript
-const result = await signGuardedGroup({
-  userClient,
-  cosignerClient,
-  cosignerComponentKey: "COSIGNER_COMPONENT_SELECTOR",
-  groupBytesHex: ["5458..."],
-  guardedTargets: [
-    {
-      targetIndex: 0,
-      guardedAccount: "GUARDED_ACCOUNT_ADDRESS",
-      logicSigResources: reviewedSpendResources,
-    },
-  ],
-});
-const signedGroup = result.signedGroup;
-```
-
-`assembleGroup()` remains the local multi-party concatenation helper; it is not
-the same operation as server-side guarded assembly.
+`assembleGroup()` remains the local multi-party concatenation helper; it is
+not the same operation as server-side assembly.
 
 ### Bounded Cosigner Accounts
 

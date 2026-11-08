@@ -61,7 +61,6 @@ import type {
 } from "./types.js";
 import {
   ErrorCodes,
-  SIGNING_FLOW_COSIGNER1,
   SIGNING_FLOW_BOUNDED1,
   SIGNING_FLOW_COSIGNED1,
   BOUNDED_CONTRACT_BOUNDED2,
@@ -175,25 +174,19 @@ function componentSignaturesByIndex(response: ComponentResponse): ComponentSigna
 function componentRequestForIndices(
   groupBytesHex: string[],
   indices: number[],
-  kind: "user" | "cosigner",
-  key: string,
+  componentKey: string,
   dummyPositions: number[] = [],
   appCallInfo: Map<number, AppCallInfo | undefined> = new Map(),
 ): ComponentRequest {
   const targetSet = new Set(indices);
   return {
     group_bytes_hex: [...groupBytesHex],
-    targets: indices.map((targetIndex) => kind === "user" ? {
+    targets: indices.map((targetIndex) => ({
       target_index: targetIndex,
-      kind,
-      auth_address: key,
+      kind: "cosigner" as const,
+      component_key: componentKey,
       app_call_info: appCallInfo.get(targetIndex),
-    } : {
-      target_index: targetIndex,
-      kind,
-      component_key: key,
-      app_call_info: appCallInfo.get(targetIndex),
-    }),
+    })),
     contextual_positions: groupBytesHex.slice(0, groupBytesHex.length - dummyPositions.length).flatMap((_, index) =>
       targetSet.has(index) ? [] : [{ target_index: index, app_call_info: appCallInfo.get(index) }]),
     dummy_positions: dummyPositions.length > 0
@@ -204,7 +197,7 @@ function componentRequestForIndices(
 
 async function resolveCosignerForTarget(
   target: GuardedSignTarget,
-  options: GuardedSignOptions,
+  options: Pick<PreparedGuardedGroupOptions, "cosignerClient" | "cosignerResolver" | "cosignerComponentKey">,
 ): Promise<GuardedCosignerResolution> {
   if (options.cosignerResolver) {
     const resolved = await options.cosignerResolver(target);
@@ -220,121 +213,6 @@ async function resolveCosignerForTarget(
     client: options.cosignerClient,
     componentKey: target.cosignerComponentKey || options.cosignerComponentKey || "",
   };
-}
-
-async function requestPrimaryGuardedPassthrough(
-  userClient: SignerClient,
-  groupBytesHex: string[],
-  guardedByIndex: Map<number, GuardedSignTarget>,
-  primaryTargets: GuardedPrimarySignTarget[],
-  passthrough: GuardedPassthroughItem[],
-  signal?: AbortSignal,
-): Promise<{ response: GroupSignResponse; passthrough: GuardedPassthroughItem[] }> {
-  const primaryByIndex = new Map<number, GuardedPrimarySignTarget>();
-  for (const target of primaryTargets) {
-    if (!Number.isInteger(target.targetIndex) || target.targetIndex < 0 || target.targetIndex >= groupBytesHex.length) {
-      throw new SignerError(`primary target ${target.targetIndex} out of range`);
-    }
-    if (guardedByIndex.has(target.targetIndex)) {
-      throw new SignerError(`primary target ${target.targetIndex} overlaps guarded target`);
-    }
-    if (primaryByIndex.has(target.targetIndex)) {
-      throw new SignerError(`duplicate primary target index ${target.targetIndex}`);
-    }
-    if (!target.authAddress) {
-      throw new SignerError(`primary target ${target.targetIndex} missing authAddress`);
-    }
-    primaryByIndex.set(target.targetIndex, target);
-  }
-
-  const passthroughByIndex = new Map<number, GuardedPassthroughItem>();
-  for (const item of passthrough) {
-    if (!Number.isInteger(item.target_index) || item.target_index < 0 || item.target_index >= groupBytesHex.length) {
-      throw new SignerError(`passthrough target ${item.target_index} out of range`);
-    }
-    if (passthroughByIndex.has(item.target_index)) {
-      throw new SignerError(`duplicate passthrough target index ${item.target_index}`);
-    }
-    if (primaryByIndex.has(item.target_index)) {
-      throw new SignerError(`passthrough target ${item.target_index} overlaps primary target`);
-    }
-    if (guardedByIndex.has(item.target_index)) {
-      throw new SignerError(`passthrough target ${item.target_index} overlaps guarded target`);
-    }
-    if (!item.authorization) {
-      throw new SignerError(`passthrough target ${item.target_index} missing planning authorization`);
-    }
-    if (item.authorization.pqScheme && item.authorization.logicSigResources) {
-      throw new SignerError(
-        `passthrough target ${item.target_index} cannot specify both pqScheme and logicSigResources`,
-      );
-    }
-    if (item.authorization.pqScheme && item.authorization.pqScheme !== PQ_SCHEME_FALCON1024) {
-      throw new SignerError(
-        `passthrough target ${item.target_index} has unsupported pqScheme ${JSON.stringify(item.authorization.pqScheme)}`,
-      );
-    }
-    if (item.authorization.logicSigResources) {
-      validateLogicSigResources(
-        item.authorization.logicSigResources,
-        `passthrough target ${item.target_index}`,
-      );
-    }
-    passthroughByIndex.set(item.target_index, item);
-  }
-
-  const requests: SignRequest[] = groupBytesHex.map((txnHex, index) => {
-    const target = primaryByIndex.get(index);
-    if (!target) {
-      const guarded = guardedByIndex.get(index);
-      if (guarded) {
-        return {
-          txn_bytes_hex: txnHex,
-          lsig_resources: wireLogicSigResources(guarded.logicSigResources),
-        };
-      }
-      const passthroughItem = passthroughByIndex.get(index);
-      if (!passthroughItem) {
-        throw new SignerError(
-          `group position ${index} has no guarded, primary, or passthrough target`,
-        );
-      }
-      return {
-        txn_bytes_hex: txnHex,
-        lsig_resources: wireLogicSigResources(
-          passthroughItem.authorization?.logicSigResources,
-        ),
-        pq_scheme: passthroughItem.authorization?.pqScheme,
-      };
-    }
-    const request: SignRequest = {
-      txn_bytes_hex: txnHex,
-      auth_address: target.authAddress,
-    };
-    if (target.txnSender) {
-      request.txn_sender = target.txnSender;
-    }
-    if (target.lsigArgs) {
-      request.lsig_args = target.lsigArgs;
-    }
-    if (target.appCallInfo) {
-      request.app_call_info = target.appCallInfo;
-    }
-    return request;
-  });
-
-  const response = await userClient.signRequests(requests, { signal });
-  const primaryPassthrough: GuardedPassthroughItem[] = [];
-  for (const index of Array.from(primaryByIndex.keys()).sort((a, b) => a - b)) {
-    if (!response.signed || !response.signed[index]) {
-      throw new SignerError(`primary signer returned no signed transaction for target ${index}`);
-    }
-    primaryPassthrough.push({
-      target_index: index,
-      signed_txn_hex: response.signed[index],
-    });
-  }
-  return { response, passthrough: primaryPassthrough };
 }
 
 function cloneTransaction(txn: Transaction): Transaction {
@@ -399,137 +277,6 @@ function validateGuardedDummies(dummies: Transaction[]): void {
       );
     }
   });
-}
-
-async function buildPreparedGuardedSignOptions(
-  options: PreparedGuardedGroupOptions,
-): Promise<GuardedSignOptions> {
-  if (!options.userClient) {
-    throw new SignerError("userClient is required");
-  }
-  const prepared = options.preparedGroup.transactions || [];
-  if (prepared.length === 0) {
-    throw new SignerError("prepared group is empty");
-  }
-
-  const txns: Transaction[] = [];
-  const guardedTargets: GuardedSignTarget[] = [];
-  const primaryTargets: GuardedPrimarySignTarget[] = [];
-  const planRequests: SignRequest[] = [];
-
-  for (let index = 0; index < prepared.length; index++) {
-    const item = prepared[index];
-    if (item.signedTransactionBase64) {
-      throw new SignerError(
-        `prepared transaction ${index}: passthrough entries are not supported in prepared guarded groups`
-      );
-    }
-    if (!item.transaction) {
-      throw new SignerError(`prepared transaction ${index}: transaction is required`);
-    }
-    txns.push(cloneTransaction(item.transaction));
-
-    let key = item.signerKey;
-    if (!key && item.authAddress) {
-      key = await options.userClient.getKeyInfo(item.authAddress);
-    }
-    if (!key) {
-      throw new SignerError(`prepared transaction ${index}: signer key metadata is required`);
-    }
-
-    if (!item.authAddress) {
-      throw new SignerError(`prepared transaction ${index}: auth address is required`);
-    }
-    planRequests.push(preparedTransactionToSignRequest(item));
-
-    if (key.signingFlow) {
-      if (key.signingFlow === SIGNING_FLOW_BOUNDED1) {
-        if (!item.authAddress) {
-          throw new SignerError(`prepared transaction ${index}: primary auth address is required`);
-        }
-        primaryTargets.push({
-          targetIndex: index,
-          authAddress: item.authAddress,
-          txnSender: item.txnSender,
-          lsigArgs: item.lsigArgs ? encodeLsigArgs(item.lsigArgs) : undefined,
-          appCallInfo: item.appCallInfo,
-        });
-        continue;
-      }
-      if (key.signingFlow !== SIGNING_FLOW_COSIGNER1) {
-        throw new SignerError(
-          `prepared transaction ${index}: signer key requires signing flow "${key.signingFlow}", which this SDK does not support; upgrade the SDK`,
-        );
-      }
-      if (!item.authAddress) {
-        throw new SignerError(`prepared transaction ${index}: guarded auth address is required`);
-      }
-      const resources = requiredPreparedResources(
-        key,
-        item.transaction,
-        `prepared transaction ${index}: guarded`,
-      );
-      guardedTargets.push({
-        targetIndex: index,
-        guardedAccount: item.authAddress,
-        cosignerPublicKeyHex: key.parameters?.cosigner_public_key || "",
-        cosignerComponentKeyType: key.cosignerComponentKeyType || "",
-        logicSigResources: resources,
-        appCallInfo: item.appCallInfo,
-      });
-      continue;
-    }
-
-    if (!item.authAddress) {
-      throw new SignerError(`prepared transaction ${index}: primary auth address is required`);
-    }
-    primaryTargets.push({
-      targetIndex: index,
-      authAddress: item.authAddress,
-      txnSender: item.txnSender,
-      lsigArgs: item.lsigArgs ? encodeLsigArgs(item.lsigArgs) : undefined,
-      appCallInfo: item.appCallInfo,
-    });
-  }
-
-  if (guardedTargets.length === 0) {
-    throw new SignerError("prepared group has no guarded targets");
-  }
-
-  const plan = await options.userClient.planRequests(planRequests);
-  const allTxns = decodeCanonicalGroup(plan.transactions || []);
-  validateBoundedComponentPlan(txns, allTxns, plan.mutations);
-
-  return {
-    userClient: options.userClient,
-    cosignerClient: options.cosignerClient,
-    cosignerResolver: options.cosignerResolver,
-    cosignerComponentKey: options.cosignerComponentKey,
-    groupBytesHex: allTxns.map((txn) => encodeTransaction(txn)[0]),
-    guardedTargets,
-    primaryTargets,
-    passthrough: signGuardedDummies(allTxns.slice(txns.length), txns.length),
-    dummyPositions: Array.from({ length: allTxns.length - txns.length }, (_, offset) => txns.length + offset),
-    assemblyRequestId: options.assemblyRequestId,
-    signal: options.signal,
-  };
-}
-
-async function preparedCosignerFlowKinds(
-  options: PreparedGuardedGroupOptions,
-): Promise<{ boundedCosigner: boolean; cosigner1: boolean }> {
-  let boundedCosigner = false;
-  let cosigner1 = false;
-  for (let index = 0; index < options.preparedGroup.transactions.length; index++) {
-    const item = options.preparedGroup.transactions[index];
-    let key = item.signerKey;
-    if (!key && item.authAddress) {
-      key = await options.userClient.getKeyInfo(item.authAddress);
-    }
-    if (key?.signingFlow === SIGNING_FLOW_COSIGNED1) boundedCosigner = true;
-    if (key?.signingFlow === SIGNING_FLOW_COSIGNER1) cosigner1 = true;
-  }
-  return { boundedCosigner, cosigner1 };
 }
 
 function decodeCanonicalGroup(groupBytesHex: string[]): Transaction[] {
@@ -901,9 +648,6 @@ export async function signPreparedBoundedCosignerGroup(
       });
       continue;
     }
-    if (key.signingFlow === SIGNING_FLOW_COSIGNER1) {
-      throw new SignerError("cannot mix cosigner1 and cosigned1 targets in one group");
-    }
     if (key.signingFlow && key.signingFlow !== SIGNING_FLOW_BOUNDED1) {
       throw new SignerError(
         `prepared transaction ${index}: signer key requires signing flow "${key.signingFlow}", which this SDK does not support; upgrade the SDK`,
@@ -1010,20 +754,11 @@ export async function signPreparedBoundedCosignerGroup(
   // The user side is complete, including ordinary primary positions. Only
   // now may the SDK disclose the frozen group to the cosigner endpoint, and
   // only for the targets that need it: a listed rekey takes no cosigner.
-  const cosignerOptions: GuardedSignOptions = {
-    userClient: options.userClient,
-    cosignerClient: options.cosignerClient,
-    cosignerResolver: options.cosignerResolver,
-    cosignerComponentKey: options.cosignerComponentKey,
-    groupBytesHex: frozenGroup,
-    guardedTargets: targets,
-    signal: options.signal,
-  };
   const cosignerGroups: Array<{ client: SignerClient; componentKey: string; indices: number[] }> = [];
   for (const target of targets) {
     const component = components.get(target.targetIndex);
     if (component && !componentNeedsCosigner(component)) continue;
-    const resolved = await resolveCosignerForTarget(target, cosignerOptions);
+    const resolved = await resolveCosignerForTarget(target, options);
     let group = cosignerGroups.find(
       (candidate) => candidate.client === resolved.client &&
         candidate.componentKey === (resolved.componentKey || ""),
@@ -1044,7 +779,6 @@ export async function signPreparedBoundedCosignerGroup(
       componentRequestForIndices(
         frozenGroup,
         group.indices.sort((a, b) => a - b),
-        "cosigner",
         group.componentKey,
         frozenGroup.slice(prepared.length).map((_, offset) => prepared.length + offset),
         appCallInfo,
@@ -1097,50 +831,22 @@ export async function signPreparedBoundedCosignerGroup(
   );
   return {
     signedGroup: [...assemblyResponse.signed_group],
-    userComponentResponses: [],
     cosignerComponentResponses,
     primarySignResponse: primary.response,
-    assemblyResponse,
     boundedComponentResponse: componentResponse,
     boundedAssemblyResponse: assemblyResponse,
   };
 }
 
 /**
- * Sign and assemble a guarded group using explicit signer clients.
- *
- * The helper expects canonical TX-prefixed group bytes. Planning and endpoint
- * discovery stay caller-owned.
+ * Sign and assemble a prepared group with one or more cosigned accounts: the
+ * signer plans the group, its base components and the cosigner's components
+ * are collected, and the signer assembles the result.
  */
 export async function signPreparedGuardedGroup(
   options: PreparedGuardedGroupOptions,
 ): Promise<GuardedSignResult> {
-  const flows = await preparedCosignerFlowKinds(options);
-  if (flows.boundedCosigner) {
-    if (flows.cosigner1) {
-      throw new SignerError("cannot mix cosigner1 and cosigned1 targets in one group");
-    }
-    return signPreparedBoundedCosignerGroup(options);
-  }
-  return signGuardedGroup(await buildPreparedGuardedSignOptions(options));
-}
-
-/**
- * Sign and assemble a guarded group through the ordinary approval flow, then
- * send the exact executable group to the caller-provided algod.
- */
-export async function simulateGuardedGroup(
-  algodClient: Algodv2,
-  options: GuardedSignOptions,
-): Promise<GuardedSimulationResult> {
-  if (!algodClient) {
-    throw new SignerError("algodClient is required");
-  }
-  const signing = await signGuardedGroup(options);
-  return {
-    signing,
-    simulation: await simulateSignedGroup(algodClient, signing.signedGroup),
-  };
+  return signPreparedBoundedCosignerGroup(options);
 }
 
 /**
@@ -1221,153 +927,6 @@ async function simulateSignedGroup(
   };
 }
 
-export async function signGuardedGroup(options: GuardedSignOptions): Promise<GuardedSignResult> {
-  if (!options.userClient) {
-    throw new SignerError("userClient is required");
-  }
-  if (!options.guardedTargets || options.guardedTargets.length === 0) {
-    throw new SignerError("at least one guarded target is required");
-  }
-  validateComponentGroupBytes(options.groupBytesHex);
-
-  const targets = [...options.guardedTargets].sort((a, b) => a.targetIndex - b.targetIndex);
-  const appCallInfo = new Map<number, AppCallInfo | undefined>();
-  for (const target of options.primaryTargets || []) {
-    appCallInfo.set(target.targetIndex, target.appCallInfo);
-  }
-  for (const target of targets) {
-    appCallInfo.set(target.targetIndex, target.appCallInfo);
-  }
-  const guardedIndices = new Set<number>();
-  const userGroups = new Map<string, number[]>();
-  for (const target of targets) {
-    if (!Number.isInteger(target.targetIndex) || target.targetIndex < 0 || target.targetIndex >= options.groupBytesHex.length) {
-      throw new SignerError(`guarded target ${target.targetIndex} out of range`);
-    }
-    if (guardedIndices.has(target.targetIndex)) {
-      throw new SignerError(`duplicate guarded target index ${target.targetIndex}`);
-    }
-    if (!target.guardedAccount) {
-      throw new SignerError(`guarded target ${target.targetIndex} missing guardedAccount`);
-    }
-    requireLogicSigResources(target.logicSigResources, `guarded target ${target.targetIndex}`);
-    guardedIndices.add(target.targetIndex);
-    const indices = userGroups.get(target.guardedAccount) || [];
-    indices.push(target.targetIndex);
-    userGroups.set(target.guardedAccount, indices);
-  }
-
-  const userComponentResponses: ComponentResponse[] = [];
-  const userSignatures: ComponentSignatureByIndex = new Map();
-  for (const guardedAccount of Array.from(userGroups.keys()).sort()) {
-    const response = await options.userClient.requestComponents(
-      componentRequestForIndices(
-        options.groupBytesHex,
-        (userGroups.get(guardedAccount) || []).sort((a, b) => a - b),
-        "user",
-        guardedAccount,
-        options.dummyPositions,
-        appCallInfo,
-      ),
-      { signal: options.signal },
-    );
-    userComponentResponses.push(response);
-    for (const [index, signature] of componentSignaturesByIndex(response)) {
-      userSignatures.set(index, signature);
-    }
-  }
-
-  let primarySignResponse: GroupSignResponse | undefined;
-  const passthrough = [...(options.passthrough || [])];
-  if (options.primaryTargets && options.primaryTargets.length > 0) {
-    const primary = await requestPrimaryGuardedPassthrough(
-      options.userClient,
-      options.groupBytesHex,
-      new Map(targets.map((target) => [target.targetIndex, target])),
-      options.primaryTargets,
-      options.passthrough || [],
-      options.signal,
-    );
-    primarySignResponse = primary.response;
-    passthrough.push(...primary.passthrough);
-  }
-
-  // The user side is complete, including ordinary primary positions. Only
-  // now may the SDK disclose the frozen group to the cosigner endpoint.
-  const cosignerGroups: Array<{
-    client: SignerClient;
-    componentKey: string;
-    indices: number[];
-  }> = [];
-  for (const target of targets) {
-    const resolved = await resolveCosignerForTarget(target, options);
-    let group = cosignerGroups.find(
-      (item) => item.client === resolved.client && item.componentKey === (resolved.componentKey || "")
-    );
-    if (!group) {
-      group = { client: resolved.client, componentKey: resolved.componentKey || "", indices: [] };
-      cosignerGroups.push(group);
-    }
-    group.indices.push(target.targetIndex);
-  }
-
-  const cosignerComponentResponses: ComponentResponse[] = [];
-  const cosignerSignatures: ComponentSignatureByIndex = new Map();
-  for (const group of cosignerGroups) {
-    const response = await group.client.requestComponents(
-      componentRequestForIndices(
-        options.groupBytesHex,
-        group.indices.sort((a, b) => a - b),
-        "cosigner",
-        group.componentKey,
-        options.dummyPositions,
-        appCallInfo,
-      ),
-      { signal: options.signal },
-    );
-    cosignerComponentResponses.push(response);
-    for (const [index, signature] of componentSignaturesByIndex(response)) {
-      cosignerSignatures.set(index, signature);
-    }
-  }
-
-  const assemblyTargets = targets.map((target) => {
-    const userSignature = userSignatures.get(target.targetIndex);
-    const cosignerSignature = cosignerSignatures.get(target.targetIndex);
-    if (!userSignature) {
-      throw new SignerError(`missing user component signature for target ${target.targetIndex}`);
-    }
-    if (!cosignerSignature) {
-      throw new SignerError(`missing cosigner component signature for target ${target.targetIndex}`);
-    }
-    return {
-      target_index: target.targetIndex,
-      kind: "guarded" as const,
-      auth_address: target.guardedAccount,
-      user_signature: userSignature.signature,
-      user_source_request_id: userSignature.requestId,
-      cosigner_signature: cosignerSignature.signature,
-      cosigner_source_request_id: cosignerSignature.requestId,
-      guarded_runtime_args: target.runtimeArgs,
-    };
-  });
-
-  const assemblyResponse = await options.userClient.requestAssemble({
-    request_id: options.assemblyRequestId,
-    group_bytes_hex: options.groupBytesHex,
-    targets: assemblyTargets,
-    passthrough,
-  }, { signal: options.signal });
-
-  return {
-    signedGroup: assemblyResponse.signed_group,
-    userComponentResponses,
-    cosignerComponentResponses,
-    primarySignResponse,
-    assemblyResponse,
-  };
-}
-
 function validateComponentGroupBytes(items: string[]): void {
   if (!items || items.length === 0) {
     throw new SignerError("group_bytes_hex is empty");
@@ -1390,14 +949,7 @@ function validateComponentRequest(request: ComponentRequest): void {
   const kind = targets[0].kind;
   targets.forEach((target, index) => {
     if (target.kind !== kind) throw new SignerError("mixed component target kinds are not supported");
-    if (kind === "user") {
-      if (!target.auth_address || target.component_key || target.lsig_args) {
-        throw new SignerError(`target ${index + 1}: user target requires only auth_address`);
-      }
-      if (index > 0 && target.auth_address !== targets[0].auth_address) {
-        throw new SignerError("user targets must share one auth_address");
-      }
-    } else if (kind === "cosigner") {
+    if (kind === "cosigner") {
       if (target.auth_address || target.lsig_args) {
         throw new SignerError(`target ${index + 1}: cosigner target forbids auth_address and lsig_args`);
       }
@@ -1465,7 +1017,7 @@ function validateComponentResponse(response: ComponentResponse, request?: Compon
       throw new SignerError(`component ${index + 1} target_index is outside the frozen group`);
     }
     seen.add(component.target_index);
-    if (component.kind === "user" || component.kind === "cosigner") {
+    if (component.kind === "cosigner") {
       if (!component.signature || !component.signature_scheme || component.base_signatures?.length || component.assembly_receipt || component.path) {
         throw new SignerError(`component ${index + 1} has invalid signature material`);
       }
@@ -1641,14 +1193,6 @@ function componentPathResources(
   return { ...selected };
 }
 
-function requiredPreparedResources(
-  key: KeyInfo | undefined,
-  txn: Transaction | undefined,
-  label: string,
-): LogicSigResourceUsage {
-  return requireLogicSigResources(selectedPreparedResources(key, txn), label);
-}
-
 /**
  * Native-PQ scheme a foreign slot must declare for the given signer key.
  *
@@ -1734,23 +1278,9 @@ function validateAssemblyRequest(request: AssemblyRequest): void {
     if (!target.cosigner_signature && target.cosigner_source_request_id) {
       throw new SignerError(`target ${item}: cosigner_source_request_id needs a cosigner_signature`);
     }
-    if (target.kind === "guarded") {
-      if (!target.cosigner_signature) {
-        throw new SignerError(`target ${item}: cosigner_signature is required for guarded target`);
-      }
-      if (!target.user_signature) {
-        throw new SignerError(`target ${item}: user_signature is required for guarded target`);
-      }
-      if (target.base_signatures?.length || target.bounded_runtime_args || target.assembly_receipt || target.base_source_request_id) {
-        throw new SignerError(`target ${item}: bounded authorization material is forbidden for guarded target`);
-      }
-      validateSignRequestId(target.user_source_request_id || "");
-    } else if (target.kind === "bounded-cosigner") {
+    if (target.kind === "bounded-cosigner") {
       if (!target.base_signatures?.length || !target.assembly_receipt) {
         throw new SignerError(`target ${item}: base_signatures and assembly_receipt are required for bounded-cosigner target`);
-      }
-      if (target.user_signature || target.user_source_request_id || target.guarded_runtime_args?.length) {
-        throw new SignerError(`target ${item}: guarded authorization material is forbidden for bounded-cosigner target`);
       }
       validateSignRequestId(target.base_source_request_id || "");
     } else {
@@ -2063,20 +1593,6 @@ export type GuardedCosignerResolver = (
   target: GuardedSignTarget
 ) => GuardedCosignerResolution | Promise<GuardedCosignerResolution>;
 
-export interface GuardedSignOptions {
-  userClient: SignerClient;
-  cosignerClient?: SignerClient;
-  cosignerResolver?: GuardedCosignerResolver;
-  cosignerComponentKey?: string;
-  groupBytesHex: string[];
-  guardedTargets: GuardedSignTarget[];
-  primaryTargets?: GuardedPrimarySignTarget[];
-  passthrough?: GuardedPassthroughItem[];
-  dummyPositions?: number[];
-  assemblyRequestId?: string;
-  signal?: AbortSignal;
-}
-
 export interface PreparedGuardedGroupOptions {
   userClient: SignerClient;
   preparedGroup: PreparedGroup;
@@ -2089,10 +1605,8 @@ export interface PreparedGuardedGroupOptions {
 
 export interface GuardedSignResult {
   signedGroup: string[];
-  userComponentResponses: ComponentResponse[];
   cosignerComponentResponses: ComponentResponse[];
   primarySignResponse?: GroupSignResponse;
-  assemblyResponse: AssemblyResponse;
   boundedComponentResponse?: ComponentResponse;
   boundedAssemblyResponse?: AssemblyResponse;
 }
@@ -2335,7 +1849,6 @@ function rekeyTargetFlowCheck(rekeyTo: string, flow: string | undefined): void {
   switch (flow ?? "") {
     case "":
     case SIGNING_FLOW_BOUNDED1:
-    case SIGNING_FLOW_COSIGNER1:
     case SIGNING_FLOW_COSIGNED1:
       return;
     case SIGNING_FLOW_ROTATING1:

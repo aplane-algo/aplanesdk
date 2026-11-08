@@ -27,13 +27,6 @@ func (r ComponentRequest) Validate() error {
 			return fmt.Errorf("mixed component target kinds are not supported")
 		}
 		switch target.Kind {
-		case ComponentTargetKindUser:
-			if target.AuthAddress == "" || target.ComponentKey != "" || len(target.LsigArgs) != 0 {
-				return fmt.Errorf("target %d: user target requires only auth_address", i+1)
-			}
-			if i > 0 && target.AuthAddress != r.Targets[0].AuthAddress {
-				return fmt.Errorf("user targets must share one auth_address")
-			}
 		case ComponentTargetKindCosigner:
 			if target.AuthAddress != "" || len(target.LsigArgs) != 0 {
 				return fmt.Errorf("target %d: cosigner target forbids auth_address and lsig_args", i+1)
@@ -96,7 +89,7 @@ func (r ComponentResponse) Validate() error {
 		}
 		seen[component.TargetIndex] = true
 		switch component.Kind {
-		case ComponentTargetKindUser, ComponentTargetKindCosigner:
+		case ComponentTargetKindCosigner:
 			if component.Signature == "" || component.SignatureScheme == "" || len(component.BaseSignatures) != 0 || component.AssemblyReceipt != "" || component.Path != "" {
 				return fmt.Errorf("component %d has invalid signature material", i+1)
 			}

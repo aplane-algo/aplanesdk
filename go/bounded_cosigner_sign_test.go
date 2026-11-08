@@ -146,7 +146,7 @@ func TestSignPreparedBoundedCosignerGroupOneTarget(t *testing.T) {
 		t.Fatalf("SignPreparedGuardedGroup() error = %v", err)
 	}
 	if len(result.SignedGroup) != 1 || result.BoundedComponentResponse == nil ||
-		result.BoundedAssemblyResponse == nil || result.AssemblyResponse != nil {
+		result.BoundedAssemblyResponse == nil {
 		t.Fatalf("result = %+v", result)
 	}
 	componentCalls = 0
@@ -467,13 +467,9 @@ func TestUnifiedAssemblyRejectsMalformedSourceRequestIDs(t *testing.T) {
 		target AssemblyTarget
 		want   string
 	}{
-		{name: "guarded user", target: AssemblyTarget{
-			TargetIndex: 0, Kind: AssemblyTargetKindGuarded, AuthAddress: "GUARDED",
-			UserSignature: "user", UserSourceRequestID: "bad id", CosignerSignature: "cosigner",
-		}, want: "user_source_request_id"},
-		{name: "guarded cosigner", target: AssemblyTarget{
-			TargetIndex: 0, Kind: AssemblyTargetKindGuarded, AuthAddress: "GUARDED",
-			UserSignature: "user", CosignerSignature: "cosigner", CosignerSourceRequestID: "bad id",
+		{name: "cosigner", target: AssemblyTarget{
+			TargetIndex: 0, Kind: AssemblyTargetKindBoundedCosigner, AuthAddress: "BOUNDED",
+			BaseSignatures: []string{"base"}, AssemblyReceipt: "receipt", CosignerSignature: "cosigner", CosignerSourceRequestID: "bad id",
 		}, want: "cosigner_source_request_id"},
 		{name: "bounded base", target: AssemblyTarget{
 			TargetIndex: 0, Kind: AssemblyTargetKindBoundedCosigner, AuthAddress: "BOUNDED",
@@ -752,19 +748,6 @@ func TestDecodeCanonicalGroupRejectsNoncanonicalBytes(t *testing.T) {
 	_, err = decodeCanonicalGroup([]string{hex.EncodeToString(raw)})
 	if err == nil || !strings.Contains(err.Error(), "bytes are not canonical") {
 		t.Fatalf("decode noncanonical transaction error = %v", err)
-	}
-}
-
-func TestPreparedBoundedCosignerRejectsMixedFlow(t *testing.T) {
-	_, err := SignPreparedGuardedGroup(PreparedGuardedGroupOptions{
-		UserClient: &SignerClient{},
-		PreparedGroup: NewPreparedGroup(
-			PreparedTransaction{SignerKey: &KeyInfo{SigningFlow: SigningFlowCosigned1}},
-			PreparedTransaction{SignerKey: &KeyInfo{SigningFlow: SigningFlowCosigner1}},
-		),
-	})
-	if err == nil || !strings.Contains(err.Error(), "cannot mix cosigner1 and cosigned1") {
-		t.Fatalf("SignPreparedGuardedGroup() error = %v, want mixed-flow rejection", err)
 	}
 }
 

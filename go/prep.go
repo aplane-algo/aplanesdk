@@ -996,7 +996,7 @@ func rekeyChecks(target models.Account, rekeyTo string) ([]PreparedCheck, error)
 // future flow fails closed here rather than at the signer.
 func rekeyTargetFlowCheck(rekeyTo, flow string) error {
 	switch flow {
-	case "", SigningFlowBounded1, SigningFlowCosigner1, SigningFlowCosigned1:
+	case "", SigningFlowBounded1, SigningFlowCosigned1:
 		return nil
 	case SigningFlowRotating1:
 		return fmt.Errorf("cannot rekey to %s: it is a rotating account, whose address authorizes only itself", rekeyTo)

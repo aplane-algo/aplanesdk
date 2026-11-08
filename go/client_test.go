@@ -914,8 +914,9 @@ func TestRequestComponentsRejectsUnrequestedTargetKind(t *testing.T) {
 		json.NewEncoder(w).Encode(ComponentResponse{
 			RequestID: req.RequestID,
 			Components: []Component{{
-				TargetIndex: 0, Kind: ComponentTargetKindUser,
-				Signature: "aabb", SignatureScheme: KeyTypeWitnessFalcon1024,
+				TargetIndex: 0, Kind: ComponentTargetKindBoundedBase, AuthAddress: "BOUNDED",
+				BaseSignatures: []string{"aabb"}, AssemblyReceipt: "ccdd", SignatureScheme: KeyTypeWitnessFalcon1024,
+				Path: ComponentPathSpend,
 			}},
 		})
 	})
@@ -959,7 +960,7 @@ func TestRequestAssemblePostsToAssembleEndpoint(t *testing.T) {
 		if req.RequestID == "" {
 			t.Fatal("request_id was not populated")
 		}
-		if len(req.Targets) != 1 || req.Targets[0].Kind != AssemblyTargetKindGuarded || req.Targets[0].AuthAddress != "GUARDED" {
+		if len(req.Targets) != 1 || req.Targets[0].Kind != AssemblyTargetKindBoundedCosigner || req.Targets[0].AuthAddress != "BOUNDED" {
 			t.Fatalf("assembly targets = %+v", req.Targets)
 		}
 		json.NewEncoder(w).Encode(AssemblyResponse{
@@ -973,9 +974,10 @@ func TestRequestAssemblePostsToAssembleEndpoint(t *testing.T) {
 		GroupBytesHex: []string{"5458aa"},
 		Targets: []AssemblyTarget{{
 			TargetIndex:       0,
-			Kind:              AssemblyTargetKindGuarded,
-			AuthAddress:       "GUARDED",
-			UserSignature:     "aabb",
+			Kind:              AssemblyTargetKindBoundedCosigner,
+			AuthAddress:       "BOUNDED",
+			BaseSignatures:    []string{"aabb"},
+			AssemblyReceipt:   "eeff",
 			CosignerSignature: "bbcc",
 		}},
 	})
@@ -993,9 +995,10 @@ func TestRequestAssembleRejectsMissingCoverage(t *testing.T) {
 		GroupBytesHex: []string{"5458aa", "5458bb"},
 		Targets: []AssemblyTarget{{
 			TargetIndex:       0,
-			Kind:              AssemblyTargetKindGuarded,
-			AuthAddress:       "GUARDED",
-			UserSignature:     "aabb",
+			Kind:              AssemblyTargetKindBoundedCosigner,
+			AuthAddress:       "BOUNDED",
+			BaseSignatures:    []string{"aabb"},
+			AssemblyReceipt:   "eeff",
 			CosignerSignature: "bbcc",
 		}},
 	})
@@ -1014,9 +1017,10 @@ func TestRequestAssembleUnavailable(t *testing.T) {
 		GroupBytesHex: []string{"5458aa"},
 		Targets: []AssemblyTarget{{
 			TargetIndex:       0,
-			Kind:              AssemblyTargetKindGuarded,
-			AuthAddress:       "GUARDED",
-			UserSignature:     "aabb",
+			Kind:              AssemblyTargetKindBoundedCosigner,
+			AuthAddress:       "BOUNDED",
+			BaseSignatures:    []string{"aabb"},
+			AssemblyReceipt:   "eeff",
 			CosignerSignature: "bbcc",
 		}},
 	})

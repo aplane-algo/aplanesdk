@@ -613,12 +613,14 @@ combined = assemble_group([alice_signed_list, bob_signed_list])
 
 Each slot must have exactly one non-empty signed entry across the input lists.
 
-### Guarded Cosigner Signing
+### Cosigned Accounts
 
-Guarded accounts use component signatures from both the user signer and a
-cosigner signer. Cosigner component selectors are public policy keys, not Algorand
-spending accounts, and must not be used as senders, receivers, auth addresses,
-or rekey targets.
+Cosigned accounts (signing flow `cosigned1`) need component signatures from both
+the user signer and a cosigner signer. A cosigned account is a plain host such
+as `aplane.falcon1024.v1` created with a cosigner, or a bounded account with
+one, such as Corridor. Cosigner component selectors are public policy keys, not
+Algorand spending accounts, and must not be used as senders, receivers, auth
+addresses, or rekey targets.
 
 Before signing, an operator must apply a policy document for the selected
 cosigner Witness Key ID using `apadmin policy check` and `apadmin policy apply`.
@@ -631,51 +633,25 @@ This requirement also applies to bounded cosigner accounts such as Corridor.
 If the cosigner holds the key but it is still on the deny-all default,
 `/sign/component` returns HTTP 403 with `code: "forbidden"` and a
 `transaction_type:<type>` rule ID in the error message. `request_components()`
-raises `SigningRejectedError`, preserving the code and message, and the guarded
-signing helpers propagate that error. Apply the key's document before retrying.
+raises `SigningRejectedError`, preserving the code and message, and the cosigned
+signing helper propagates that error. Apply the key's document before retrying.
 See the [compatibility note](COMPATIBILITY.md) for policy format and provisioning details.
 
-Use explicit clients; the SDK does not parse or mutate endpoint enrollment
-files. The direct helper does not perform inventory discovery, so pass the
-reviewed spend-path resource profile returned by `list_keys()`:
+For manual orchestration, use `request_components()` on the user client with a
+bounded-base target and on the cosigner client, then `request_assemble()` on the
+user client. Finish the user side (the base components and any ordinary-position
+signing) before requesting cosigner components, so a cosigner never sees a group
+the user signer rejects. `assemble_group()` remains only the local multi-party
+concatenation helper.
 
-```python
-result = sign_guarded_group(
-    user_client=user_client,
-    cosigner_client=cosigner_client,
-    cosigner_component_key="COSIGNER_COMPONENT_SELECTOR",
-    group_bytes_hex=["5458..."],
-    guarded_targets=[
-        GuardedSignTarget(
-            target_index=0,
-            guarded_account="GUARDED_ACCOUNT_ADDRESS",
-            logic_sig_resources=reviewed_spend_resources,
-        ),
-    ],
-)
-signed_group = result.signed_group
-```
-
-If a direct guarded call combines `primary_targets` with caller-supplied
-`passthrough`, each passthrough item must also carry a local-only
-`GuardedPassthroughAuthorization`. Use an empty value for Ed25519,
-`pq_scheme=PQ_SCHEME_FALCON1024` for native Falcon, or
-`logic_sig_resources` for a LogicSig. This metadata is used only to plan the
-intermediate primary-signing request and is not sent to `/sign/assemble`.
-
-For manual orchestration, use `request_components()` on the user and
-cosigner clients, then `request_assemble()` on the user client. Finish the user side (user components and any
-ordinary-position signing) before requesting cosigner components, so a cosigner
-never sees a group the user signer rejects.
-`assemble_group()` remains only the local multi-party concatenation helper.
-
-Corridor is a cosigned bounded account: its LogicSig contract is `bounded2`, and
-its online signing flow is `cosigned1`. These are separate compatibility
-dimensions. A cosigned account's spends and declared rekeys need the cosigner;
-a rekey to an address on its rekey-to list does not, and the signer's base
-component says which (`path`), so the helper asks the cosigner only for the
-targets that need it. `sign_prepared_guarded_group()` discovers the flow from signer
-inventory and performs the user-first sequence:
+A cosigned account's LogicSig contract is `plain1` on a plain host, or
+`bounded2` on a bounded account such as Corridor, and its online signing flow is
+`cosigned1`. These are separate compatibility dimensions. A cosigned account's
+spends and declared rekeys need the cosigner; a rekey to an address on its
+rekey-to list does not, and the signer's base component says which (`path`), so
+the helper asks the cosigner only for the targets that need it.
+`sign_prepared_guarded_group()` discovers the flow from signer inventory and
+performs the user-first sequence:
 
 ```python
 result = sign_prepared_guarded_group(
@@ -698,15 +674,13 @@ transaction against the frozen canonical bytes. Those two bounded methods are
 also public for applications that own the orchestration.
 
 The signer planner owns fee selection, authorization-resource sizing, and any
-reported group mutations for both guarded flows.
+reported group mutations for the cosigned flow.
 
-The v1 cosigner gate applies only to spends.
-
-User-role component signing runs the signer-domain approval gates and can
-block on a manual operator decision. The SDK automatically discovers the
-signer's `approval_wait_seconds` and sizes the request deadline accordingly,
-exactly like `/sign`; cosigner-role component requests stay on the short
-deterministic deadline.
+Base-component signing (the user signer's bounded-base request) runs the
+signer-domain approval gates and can block on a manual operator decision. The
+SDK automatically discovers the signer's `approval_wait_seconds` and sizes the
+request deadline accordingly, exactly like `/sign`; cosigner-role component
+requests stay on the short deterministic deadline.
 
 Full simulation uses ordinary executable signing and the caller's algod. The
 signer does not have a simulation endpoint and does not know whether the caller
@@ -722,7 +696,7 @@ if simulation.failed:
     # Inspect simulation.response for algod diagnostics.
     pass
 
-guarded = simulate_guarded_group(algod_client, **guarded_options)
+guarded = simulate_prepared_guarded_group(algod_client, **guarded_options)
 ```
 
 `SimulationResult.signed_group` contains fully executable signed transactions

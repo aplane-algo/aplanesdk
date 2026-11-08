@@ -390,10 +390,9 @@ client.close()
 |----------|-------------|-------|
 | `ed25519` | Native Algorand keys | Standard signing |
 | `falcon1024` | Native post-quantum keys | Protocol-native Falcon-1024 signature (`PQsig`) |
-| `aplane.falcon1024.v1` | Post-quantum LogicSig | Library-visible; enable before generating. Signature in LogicSig.Args[0] |
-| `aplane.ed25519.v1` | Ed25519 DSA LogicSig | Library-visible plain DSA account |
+| `aplane.falcon1024.v1` | Post-quantum plain host | Library-visible; created with a cosigner (`plain1` contract, `cosigned1` signing flow) |
+| `aplane.ed25519.v1` | Ed25519 plain host | Library-visible; created with a cosigner, like `aplane.falcon1024.v1`; the spending key is classical |
 | `aplane.witness-falcon1024.v1` | Witness key | Cosigner-custodied policy signature key; not a spending account |
-| `aplane.falcon1024-cosigner1024.v1` | Guarded account | Requires user and cosigner component signatures |
 | `aplane.falcon1024-b.v1` | General bounded account | `bounded2` contract; `bounded1` signing flow, or `cosigned1` when it embeds a cosigner |
 | `aplane.htlc.v1` | Hash-locked funds | Requires `preimage` arg (check `signing_args`) |
 
@@ -406,76 +405,18 @@ keep signing.
 
 The server assembles the complete signed transaction - the SDK returns a base64 string ready for submission.
 
-## Cosigner And Guarded Accounts
+## Cosigner And Cosigned Accounts
 
 Witness keys enrolled as cosigners are public policy-signature selectors, not Algorand
 spending accounts. Do not use them as senders, receivers, auth addresses, or
-rekey targets. Guarded account keys must be signed through the guarded flow.
-
-Low-level endpoint wrappers are available:
-
-```python
-from aplanesdk import (
-    AssemblyRequest,
-    AssemblyTarget,
-    ComponentRequest,
-    COMPONENT_TARGET_KIND_COSIGNER,
-    COMPONENT_TARGET_KIND_USER,
-)
-
-user_part = user_client.request_components(ComponentRequest(
-    group_bytes_hex=["5458..."],
-    targets=[{
-        "target_index": 0,
-        "kind": COMPONENT_TARGET_KIND_USER,
-        "auth_address": "GUARDED_ACCOUNT_ADDRESS",
-    }],
-))
-
-cosigner_part = cosigner_client.request_components(ComponentRequest(
-    group_bytes_hex=["5458..."],
-    targets=[{
-        "target_index": 0,
-        "kind": COMPONENT_TARGET_KIND_COSIGNER,
-        "component_key": "COSIGNER_COMPONENT_SELECTOR",
-    }],
-))
-
-assembled = user_client.request_assemble(AssemblyRequest(
-    group_bytes_hex=["5458..."],
-    targets=[AssemblyTarget(
-        target_index=0,
-        kind=ASSEMBLY_TARGET_KIND_GUARDED,
-        auth_address="GUARDED_ACCOUNT_ADDRESS",
-        user_signature=user_part.components[0]["signature"],
-        cosigner_signature=cosigner_part.components[0]["signature"],
-    )],
-))
-```
-
-For the common explicit two-client flow, use `sign_guarded_group`. The direct
-helper does not perform inventory discovery, so pass the reviewed spend-path
-resource profile returned by `list_keys()`:
-
-```python
-result = sign_guarded_group(
-    user_client=user_client,
-    cosigner_client=cosigner_client,
-    cosigner_component_key="COSIGNER_COMPONENT_SELECTOR",
-    group_bytes_hex=["5458..."],
-    guarded_targets=[
-        GuardedSignTarget(
-            target_index=0,
-            guarded_account="GUARDED_ACCOUNT_ADDRESS",
-            logic_sig_resources=reviewed_spend_resources,
-        ),
-    ],
-)
-signed_group = result.signed_group
-```
+rekey targets. A cosigned account (signing flow `cosigned1`) embeds the cosigner
+public key and is assembled through `/sign/assemble`; ordinary `/sign` is not
+sufficient for its slots. Sign it with `sign_prepared_guarded_group`, below. `request_components` and `request_assemble` are
+the low-level calls that helper makes, for applications that own the
+orchestration.
 
 `assemble_group()` remains the local multi-party concatenation helper; it is
-not the same operation as server-side guarded assembly.
+not the same operation as server-side assembly.
 
 ### Bounded Cosigner Accounts
 

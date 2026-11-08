@@ -16,8 +16,7 @@ const (
 	AuthorizationKindNativePQ = "native_pq"
 	AuthorizationKindLogicSig = "logic_sig"
 
-	KeyTypeWitnessFalcon1024             = "aplane.witness-falcon1024.v1"
-	KeyTypeGuardedFalcon1024Cosigner1024 = "aplane.falcon1024-cosigner1024.v1"
+	KeyTypeWitnessFalcon1024 = "aplane.witness-falcon1024.v1"
 )
 
 // LogicSigResourceUsage is one selected authorization path's independent
@@ -74,7 +73,6 @@ type GroupSignRequest struct {
 type ComponentTargetKind string
 
 const (
-	ComponentTargetKindUser        ComponentTargetKind = "user"
 	ComponentTargetKindCosigner    ComponentTargetKind = "cosigner"
 	ComponentTargetKindBoundedBase ComponentTargetKind = "bounded-base"
 )
@@ -144,7 +142,6 @@ type ComponentResponse struct {
 type AssemblyTargetKind string
 
 const (
-	AssemblyTargetKindGuarded         AssemblyTargetKind = "guarded"
 	AssemblyTargetKindBoundedCosigner AssemblyTargetKind = "bounded-cosigner"
 )
 
@@ -161,17 +158,13 @@ type AssemblyTarget struct {
 	Kind        AssemblyTargetKind `json:"kind"`
 	AuthAddress string             `json:"auth_address"`
 
-	UserSignature       string   `json:"user_signature,omitempty"`
-	UserSourceRequestID string   `json:"user_source_request_id,omitempty"`
-	GuardedRuntimeArgs  []string `json:"guarded_runtime_args,omitempty"`
-
 	BaseSignatures      []string          `json:"base_signatures,omitempty"`
 	BoundedRuntimeArgs  map[string]string `json:"bounded_runtime_args,omitempty"`
 	AssemblyReceipt     string            `json:"assembly_receipt,omitempty"`
 	BaseSourceRequestID string            `json:"base_source_request_id,omitempty"`
 
-	// CosignerSignature is required on a guarded target and on every
-	// bounded-cosigner target except a listed rekey, which takes none.
+	// CosignerSignature is required on every bounded-cosigner target except a
+	// listed rekey, which takes none.
 	CosignerSignature       string `json:"cosigner_signature,omitempty"`
 	CosignerSourceRequestID string `json:"cosigner_source_request_id,omitempty"`
 }
@@ -444,25 +437,9 @@ func (r AssemblyRequest) Validate() error {
 			return fmt.Errorf("target %d: cosigner_source_request_id: %w", i+1, err)
 		}
 		switch target.Kind {
-		case AssemblyTargetKindGuarded:
-			if target.CosignerSignature == "" {
-				return fmt.Errorf("target %d: cosigner_signature is required for guarded target", i+1)
-			}
-			if target.UserSignature == "" {
-				return fmt.Errorf("target %d: user_signature is required for guarded target", i+1)
-			}
-			if len(target.BaseSignatures) != 0 || len(target.BoundedRuntimeArgs) != 0 || target.AssemblyReceipt != "" || target.BaseSourceRequestID != "" {
-				return fmt.Errorf("target %d: bounded authorization material is forbidden for guarded target", i+1)
-			}
-			if err := validateSignRequestID(target.UserSourceRequestID); err != nil {
-				return fmt.Errorf("target %d: user_source_request_id: %w", i+1, err)
-			}
 		case AssemblyTargetKindBoundedCosigner:
 			if len(target.BaseSignatures) == 0 || target.AssemblyReceipt == "" {
 				return fmt.Errorf("target %d: base_signatures and assembly_receipt are required for bounded-cosigner target", i+1)
-			}
-			if target.UserSignature != "" || target.UserSourceRequestID != "" || len(target.GuardedRuntimeArgs) != 0 {
-				return fmt.Errorf("target %d: guarded authorization material is forbidden for bounded-cosigner target", i+1)
 			}
 			if err := validateSignRequestID(target.BaseSourceRequestID); err != nil {
 				return fmt.Errorf("target %d: base_source_request_id: %w", i+1, err)
@@ -705,13 +682,6 @@ type KeyTypeInfo struct {
 	CreationParams       []CreationParam           `json:"creation_params"`
 	RuntimeArgs          []RuntimeArg              `json:"runtime_args"`
 }
-
-// SigningFlowCosigner1 names the cosigner co-signed component signing
-// choreography (one user plus one cosigner component signature per target,
-// assembled via /sign/assemble). Signer inventory labels guarded keys with
-// this flow; clients route on the label and must fail fast on flow labels
-// they do not implement. An empty signing_flow means the ordinary /sign path.
-const SigningFlowCosigner1 = "cosigner1"
 
 // SigningFlowBounded1 names the transaction-aware LogicSig choreography.
 const SigningFlowBounded1 = "bounded1"

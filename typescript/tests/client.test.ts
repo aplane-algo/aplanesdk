@@ -7,14 +7,11 @@ import algosdk from "algosdk";
 import {
   SignerClient,
   boundedFeeCeiling,
-  signGuardedGroup,
   signPreparedGuardedGroup,
-  simulateGuardedGroup,
+  simulatePreparedGuardedGroup,
 } from "../src/client.js";
 import {
-  KEY_TYPE_GUARDED_FALCON1024_COSIGNER1024,
   KEY_TYPE_WITNESS_FALCON1024,
-  SIGNING_FLOW_COSIGNER1,
   SIGNING_FLOW_COSIGNED1,
   type BoundedAuthorizationInfo,
 } from "../src/types.js";
@@ -1423,9 +1420,10 @@ describe("SignerClient", () => {
         targets: [
           {
             target_index: 0,
-            kind: "guarded",
-            auth_address: "GUARDED",
-            user_signature: "aabb",
+            kind: "bounded-cosigner",
+            auth_address: "BOUNDED",
+            base_signatures: ["aabb"],
+            assembly_receipt: "eeff",
             cosigner_signature: "bbcc",
           },
         ],
@@ -1435,11 +1433,11 @@ describe("SignerClient", () => {
       assert.equal(mockFetch.mock.calls[0][0], "http://localhost:11270/sign/assemble");
       const body = JSON.parse(mockFetch.mock.calls[0][1].body);
       assert.match(body.request_id, /^sdk-/);
-      assert.equal(body.targets[0].kind, "guarded");
-      assert.equal(body.targets[0].auth_address, "GUARDED");
+      assert.equal(body.targets[0].kind, "bounded-cosigner");
+      assert.equal(body.targets[0].auth_address, "BOUNDED");
     });
 
-    it("rejects guarded assembly requests with missing coverage before fetch", async () => {
+    it("rejects cosigned assembly requests with missing coverage before fetch", async () => {
       const client = new SignerClient("http://localhost:11270");
       await assert.rejects(
         client.requestAssemble({
@@ -1447,9 +1445,10 @@ describe("SignerClient", () => {
           targets: [
             {
               target_index: 0,
-              kind: "guarded",
-              auth_address: "GUARDED",
-              user_signature: "aabb",
+              kind: "bounded-cosigner",
+              auth_address: "BOUNDED",
+              base_signatures: ["aabb"],
+              assembly_receipt: "eeff",
               cosigner_signature: "bbcc",
             },
           ],
@@ -1633,354 +1632,7 @@ describe("SignerClient", () => {
 
   });
 
-  describe("signGuardedGroup", () => {
-    it("signs one guarded target", async () => {
-      const user = new SignerClient("http://localhost:11270");
-      const cosigner = new SignerClient("http://cosigner:11270");
-
-      (user as any).requestComponents = async (request: any) => {
-        assert.equal(request.targets[0].kind, "user");
-        assert.equal(request.targets[0].auth_address, "GUARDED");
-        return {
-          request_id: "user-id",
-          components: [
-            { target_index: 0, kind: "user", signature: "user-sig", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
-          ],
-        };
-      };
-      (cosigner as any).requestComponents = async (request: any) => {
-        assert.equal(request.targets[0].kind, "cosigner");
-        assert.equal(request.targets[0].component_key, "COSIGNER_COMPONENT");
-        return {
-          request_id: "cosigner-id",
-          components: [
-            { target_index: 0, kind: "cosigner", signature: "cosigner-sig", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
-          ],
-        };
-      };
-      (user as any).requestAssemble = async (request: any) => {
-        assert.equal(request.targets[0].user_signature, "user-sig");
-        assert.equal(request.targets[0].cosigner_signature, "cosigner-sig");
-        return { request_id: "assembly-id", signed_group: ["signed-guarded"] };
-      };
-
-      const result = await signGuardedGroup({
-        userClient: user,
-        cosignerClient: cosigner,
-        cosignerComponentKey: "COSIGNER_COMPONENT",
-        groupBytesHex: ["5458aa"],
-        guardedTargets: [{
-          targetIndex: 0,
-          guardedAccount: "GUARDED",
-          logicSigResources: guardedTestResources(),
-        }],
-      });
-
-      assert.deepEqual(result.signedGroup, ["signed-guarded"]);
-    });
-
-    it("batches targets for a shared cosigner key", async () => {
-      const user = new SignerClient("http://localhost:11270");
-      const cosigner = new SignerClient("http://cosigner:11270");
-      let cosignerCalls = 0;
-
-      (user as any).requestComponents = async (request: any) => {
-        assert.deepEqual(request.targets.map((target: any) => target.target_index), [0, 1]);
-        return {
-          request_id: "user-id",
-          components: [
-            { target_index: 0, kind: "user", signature: "user-0", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
-            { target_index: 1, kind: "user", signature: "user-1", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
-          ],
-        };
-      };
-      (cosigner as any).requestComponents = async (request: any) => {
-        cosignerCalls += 1;
-        assert.deepEqual(request.targets.map((target: any) => target.target_index), [0, 1]);
-        return {
-          request_id: "cosigner-id",
-          components: [
-            { target_index: 0, kind: "cosigner", signature: "cosigner-0", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
-            { target_index: 1, kind: "cosigner", signature: "cosigner-1", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
-          ],
-        };
-      };
-      (user as any).requestAssemble = async () => ({
-        request_id: "assembly-id",
-        signed_group: ["signed-0", "signed-1"],
-      });
-
-      await signGuardedGroup({
-        userClient: user,
-        cosignerClient: cosigner,
-        cosignerComponentKey: "COSIGNER_COMPONENT",
-        groupBytesHex: ["5458aa", "5458bb"],
-        guardedTargets: [
-          { targetIndex: 0, guardedAccount: "GUARDED", logicSigResources: guardedTestResources() },
-          { targetIndex: 1, guardedAccount: "GUARDED", logicSigResources: guardedTestResources() },
-        ],
-      });
-
-      assert.equal(cosignerCalls, 1);
-    });
-
-    for (const rejectSign of [false, true]) {
-    it(`handles mixed primary and guarded groups${rejectSign ? " (user-first when /sign rejects)" : " (user-first order)"}`, async () => {
-      const events: string[] = [];
-      const user = new SignerClient("http://localhost:11270");
-      const cosigner = new SignerClient("http://cosigner:11270");
-
-      (user as any).requestComponents = async (request: any) => {
-        events.push("user");
-        assert.deepEqual(
-          request.contextual_positions.find((item: any) => item.target_index === 0).app_call_info,
-          { mode: "abi", method: "primary()void" },
-        );
-        return {
-          request_id: "user-id",
-          components: [
-            { target_index: 1, kind: "cosigner", signature: "user-sig", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
-          ],
-        };
-      };
-      (cosigner as any).requestComponents = async (request: any) => {
-        events.push("cosigner");
-        assert.deepEqual(
-          request.contextual_positions.find((item: any) => item.target_index === 0).app_call_info,
-          { mode: "abi", method: "primary()void" },
-        );
-        return {
-          request_id: "cosigner-id",
-          components: [
-            { target_index: 1, kind: "cosigner", signature: "cosigner-sig", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
-          ],
-        };
-      };
-      (user as any).signRequests = async (requests: any[]) => {
-        events.push("sign");
-        if (rejectSign) {
-          throw new SignerError("rejected by signer policy");
-        }
-        assert.equal(requests[0].auth_address, "AUTH");
-        assert.equal(requests[1].auth_address, undefined);
-        assert.deepEqual(requests[1].lsig_resources, {
-          program_bytes: 1612,
-          argument_bytes: 1423,
-          max_opcode_cost: 20000,
-        });
-        assert.deepEqual(requests[2].lsig_resources, {
-          program_bytes: 5000,
-          argument_bytes: 1200,
-          max_opcode_cost: 30000,
-        });
-        return { signed: ["primary-signed", "", ""] };
-      };
-      (user as any).requestAssemble = async (request: any) => {
-        events.push("assemble");
-        assert.deepEqual(
-          request.passthrough.map((item: any) => item.target_index).sort(),
-          [0, 2],
-        );
-        assert.equal(
-          request.passthrough.find((item: any) => item.target_index === 0).signed_txn_hex,
-          "primary-signed",
-        );
-        return {
-          request_id: "assembly-id",
-          signed_group: ["primary-signed", "guarded-signed", "counterparty-signed"],
-        };
-      };
-
-      const run = () => signGuardedGroup({
-        userClient: user,
-        cosignerClient: cosigner,
-        cosignerComponentKey: "COSIGNER_COMPONENT",
-        groupBytesHex: ["5458aa", "5458bb", "5458cc"],
-        primaryTargets: [{
-          targetIndex: 0,
-          authAddress: "AUTH",
-          appCallInfo: { mode: "abi", method: "primary()void" },
-        }],
-        guardedTargets: [{
-          targetIndex: 1,
-          guardedAccount: "GUARDED",
-          logicSigResources: guardedTestResources(),
-        }],
-        passthrough: [{
-          target_index: 2,
-          signed_txn_hex: "counterparty-signed",
-          authorization: {
-            logicSigResources: {
-              programBytes: 5000,
-              argumentBytes: 1200,
-              maxOpcodeCost: 30000,
-            },
-          },
-        }],
-      });
-      if (rejectSign) {
-        await assert.rejects(run(), /rejected by signer policy/);
-        assert.deepEqual(events, ["user", "sign"]);
-        return;
-      }
-      const result = await run();
-      assert.equal(result.signedGroup[1], "guarded-signed");
-      assert.deepEqual(events, ["user", "sign", "cosigner", "assemble"]);
-      assert.ok(result.primarySignResponse);
-    });
-    }
-
-    it("rejects missing resources before component signing", async () => {
-      const user = new SignerClient("http://localhost:11270");
-      let componentCalls = 0;
-      (user as any).requestComponents = async () => {
-        componentCalls += 1;
-        throw new Error("unexpected component request");
-      };
-
-      await assert.rejects(
-        signGuardedGroup({
-          userClient: user,
-          groupBytesHex: ["5458aa"],
-          guardedTargets: [{ targetIndex: 0, guardedAccount: "GUARDED" }] as any,
-        }),
-        /LogicSig resources are unavailable/,
-      );
-      assert.equal(componentCalls, 0);
-    });
-
-    it("handles prepared all-guarded groups using the signer plan", async () => {
-      const guarded = testAddress(1);
-      const receiver = testAddress(2);
-      const user = new SignerClient("http://localhost:11270");
-      const cosigner = new SignerClient("http://cosigner:11270");
-
-      (user as any).requestComponents = async (request: any) => {
-        assert.equal(request.targets[0].auth_address, guarded);
-        assert.deepEqual(request.targets[0].app_call_info, { mode: "raw" });
-        assert.equal(request.group_bytes_hex.length, 4);
-        assert.deepEqual(request.targets.map((target: any) => target.target_index), [0]);
-        assert.deepEqual(request.contextual_positions, []);
-        assert.deepEqual(request.dummy_positions, [
-          { target_index: 1 }, { target_index: 2 }, { target_index: 3 },
-        ]);
-        return {
-          request_id: "user-id",
-          components: [
-            { target_index: 0, kind: "user", signature: "user-sig", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
-          ],
-        };
-      };
-      (cosigner as any).requestComponents = async (request: any) => {
-        assert.equal(request.targets[0].component_key, "COSIGNER_COMPONENT");
-        assert.deepEqual(request.targets[0].app_call_info, { mode: "raw" });
-        assert.equal(request.group_bytes_hex.length, 4);
-        assert.deepEqual(request.targets.map((target: any) => target.target_index), [0]);
-        assert.deepEqual(request.contextual_positions, []);
-        assert.deepEqual(request.dummy_positions, [
-          { target_index: 1 }, { target_index: 2 }, { target_index: 3 },
-        ]);
-        return {
-          request_id: "cosigner-id",
-          components: [
-            { target_index: 0, kind: "cosigner", signature: "cosigner-sig", signature_scheme: KEY_TYPE_WITNESS_FALCON1024 },
-          ],
-        };
-      };
-      (user as any).signRequests = async () => {
-        throw new Error("all-guarded path must not call /sign");
-      };
-      (user as any).planRequests = async (requests: any[]) => {
-        const txns = requests.map((request) =>
-          algosdk.decodeUnsignedTransaction(hexToBytes(request.txn_bytes_hex).slice(2)),
-        );
-        const dummyAccount = new algosdk.LogicSigAccount(
-          new Uint8Array([0x03, 0x31, 0x20, 0x32, 0x03, 0x12]),
-        );
-        const dummyAddress = dummyAccount.address().toString();
-        const dummies = Array.from({ length: 3 }, (_, index) => {
-          const dummy = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
-            sender: dummyAddress,
-            receiver: dummyAddress,
-            amount: 0n,
-            note: new Uint8Array([index]),
-            suggestedParams: {
-              fee: 0n,
-              minFee: 1000n,
-              firstValid: 1n,
-              lastValid: 100n,
-              genesisHash: new Uint8Array(32),
-              genesisID: "testnet-v1",
-              flatFee: true,
-            },
-          });
-          (dummy as any).fee = 0n;
-          return dummy;
-        });
-        const planned = [...txns.map((txn) => algosdk.decodeUnsignedTransaction(txn.toByte())), ...dummies];
-        algosdk.assignGroupID(planned);
-        return {
-          transactions: planned.map((txn) => encodeTransaction(txn)[0]),
-          mutations: { dummiesAdded: 3, originalCount: 1, finalCount: 4, groupIdChanged: true },
-        };
-      };
-      (user as any).requestAssemble = async (request: any) => {
-        assert.equal(request.group_bytes_hex.length, 4);
-        assert.equal(request.passthrough.length, 3);
-        assert.deepEqual(request.passthrough.map((item: any) => item.target_index), [1, 2, 3]);
-        assert.ok(request.passthrough.every((item: any) => item.signed_txn_hex));
-        return {
-          request_id: "assembly-id",
-          signed_group: ["guarded-signed", "dummy-1", "dummy-2", "dummy-3"],
-        };
-      };
-
-      const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
-        sender: guarded,
-        receiver,
-        amount: 1000n,
-        suggestedParams: {
-          fee: 1000n,
-          minFee: 1000n,
-          firstValid: 1n,
-          lastValid: 100n,
-          genesisHash: new Uint8Array(32),
-          genesisID: "testnet-v1",
-          flatFee: true,
-        },
-      });
-
-      const result = await signPreparedGuardedGroup({
-        userClient: user,
-        cosignerClient: cosigner,
-        cosignerComponentKey: "COSIGNER_COMPONENT",
-        preparedGroup: {
-          transactions: [
-            {
-              transaction: txn,
-              authAddress: guarded,
-              appCallInfo: { mode: "raw" },
-              signerKey: {
-                address: guarded,
-                publicKeyHex: "",
-                keyType: KEY_TYPE_GUARDED_FALCON1024_COSIGNER1024,
-                signingFlow: SIGNING_FLOW_COSIGNER1,
-                cosignerComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
-                logicSigResources: {
-                  spend: { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 },
-                },
-                isGenericLsig: false,
-                parameters: { cosigner_public_key: "aabbcc" },
-              },
-            },
-          ],
-        },
-      });
-
-      assert.equal(result.signedGroup.length, 4);
-      assert.equal(result.primarySignResponse, undefined);
-    });
-
+  describe("signPreparedGuardedGroup", () => {
     it("plans repeated LogicSig addresses with per-slot args and app metadata", async () => {
       const guarded = testAddress(31);
       const receiver = testAddress(32);
@@ -1997,14 +1649,30 @@ describe("SignerClient", () => {
       const signerKey = {
         address: guarded,
         publicKeyHex: "",
-        keyType: KEY_TYPE_GUARDED_FALCON1024_COSIGNER1024,
-        signingFlow: SIGNING_FLOW_COSIGNER1,
+        keyType: "aplane.falcon1024.v1",
+        signingFlow: SIGNING_FLOW_COSIGNED1,
         cosignerComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
         logicSigResources: {
           spend: { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 },
         },
         isGenericLsig: false,
-        parameters: { cosigner_public_key: "aabbcc" },
+        boundedAuthorization: {
+          contract: "plain1",
+          baseSignatureArgLayout: { count: 1, maxSizes: [1280] },
+          spendEffects: [],
+          rekey: "refused",
+          runtimeArgs: [],
+          derivedArgs: [],
+          argumentLayout: [],
+          layer3Policy: "none",
+          cosigner: {
+            contract: "cosigner1",
+            componentKeyType: KEY_TYPE_WITNESS_FALCON1024,
+            publicKeyHex: "aabbcc",
+            signatureMaxSize: 1423,
+            requiredOn: ["spend"],
+          },
+        },
       };
       (user as any).planRequests = async (requests: any[]) => {
         assert.equal(requests.length, 2);
@@ -2400,7 +2068,6 @@ describe("SignerClient", () => {
       const result = await signPreparedGuardedGroup(options);
 
       assert.deepEqual(result.signedGroup, [signedTxnHex(txn)]);
-      assert.deepEqual(result.assemblyResponse, result.boundedAssemblyResponse);
       assert.ok(result.boundedComponentResponse);
       assert.ok(result.boundedAssemblyResponse);
     });
@@ -2517,36 +2184,46 @@ describe("SignerClient", () => {
       }
     });
 
-    it("rejects mixed cosigner1 and cosigned1 prepared groups", async () => {
+    it("refuses cosigner1 as an unknown signing flow before any request", async () => {
+      const account = testAddress(41);
       const user = new SignerClient("http://localhost:11270");
+      const suggestedParams = {
+        fee: 1000n,
+        minFee: 1000n,
+        firstValid: 1n,
+        lastValid: 100n,
+        genesisHash: new Uint8Array(32),
+        genesisID: "testnet-v1",
+        flatFee: true,
+      };
       await assert.rejects(
         signPreparedGuardedGroup({
           userClient: user,
           preparedGroup: {
             transactions: [
               {
+                transaction: algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+                  sender: account, receiver: testAddress(42), amount: 1n, suggestedParams,
+                }),
+                authAddress: account,
                 signerKey: {
-                  address: "bounded",
+                  address: account,
                   publicKeyHex: "",
-                  keyType: "bounded",
-                  signingFlow: SIGNING_FLOW_COSIGNED1,
-                  isGenericLsig: false,
-                },
-              },
-              {
-                signerKey: {
-                  address: "guarded",
-                  publicKeyHex: "",
-                  keyType: "guarded",
-                  signingFlow: SIGNING_FLOW_COSIGNER1,
+                  keyType: "aplane.falcon1024-cosigner1024.v1",
+                  signingFlow: "cosigner1",
+                  cosignerComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
+                  logicSigResources: {
+                    spend: { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 },
+                  },
                   isGenericLsig: false,
                 },
               },
             ],
           },
         }),
-        /cannot mix cosigner1 and cosigned1/,
+        /signing flow "cosigner1", which this SDK does not support/,
       );
+      assert.equal(mockFetch.mock.calls.length, 0);
     });
 
     it("verifies bounded primary passthrough transaction identity", async () => {
@@ -3598,7 +3275,7 @@ describe("SignerClient", () => {
 
     it("requires algod before starting guarded signing", async () => {
       await assert.rejects(
-        simulateGuardedGroup(null as any, {} as any),
+        simulatePreparedGuardedGroup(null as any, {} as any),
         /algodClient is required/,
       );
       assert.equal(mockFetch.mock.calls.length, 0);

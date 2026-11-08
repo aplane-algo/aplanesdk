@@ -99,8 +99,6 @@ func signPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts Prepa
 				LogicSigResources:        resources,
 				AppCallInfo:              item.AppCallInfo,
 			})
-		case SigningFlowCosigner1:
-			return nil, fmt.Errorf("cannot mix cosigner1 and cosigned1 targets in one group")
 		default:
 			if key.SigningFlow != "" && key.SigningFlow != SigningFlowBounded1 {
 				return nil, fmt.Errorf("prepared transaction %d: signer key requires signing flow %q, which this SDK does not support; upgrade the SDK", i, key.SigningFlow)
@@ -554,7 +552,10 @@ func boundedCosignerPublicKey(key *KeyInfo) string {
 		key.BoundedAuthorization.Cosigner.PublicKeyHex != "" {
 		return key.BoundedAuthorization.Cosigner.PublicKeyHex
 	}
-	return guardedCosignerPublicKey(key)
+	if key == nil || key.Parameters == nil {
+		return ""
+	}
+	return key.Parameters["cosigner_public_key"]
 }
 
 func boundedCosignerComponentKeyType(key *KeyInfo) string {

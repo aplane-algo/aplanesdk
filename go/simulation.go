@@ -108,33 +108,6 @@ func (c *SignerClient) simulateRequestsWithContext(
 	return simulateSignedGroupWithContext(ctx, algodClient, response.Signed, response.Mutations)
 }
 
-// SimulateGuardedGroup performs the complete guarded signing and approval flow
-// before routing the assembled executable group to the caller's algod.
-func SimulateGuardedGroup(algodClient *algod.Client, opts GuardedSignOptions) (*GuardedSimulationResult, error) {
-	return SimulateGuardedGroupWithContext(context.Background(), algodClient, opts)
-}
-
-// SimulateGuardedGroupWithContext is the context-aware form of
-// SimulateGuardedGroup.
-func SimulateGuardedGroupWithContext(
-	ctx context.Context,
-	algodClient *algod.Client,
-	opts GuardedSignOptions,
-) (*GuardedSimulationResult, error) {
-	if algodClient == nil {
-		return nil, fmt.Errorf("algod client is required")
-	}
-	signing, err := SignGuardedGroupWithContext(ctx, opts)
-	if err != nil {
-		return nil, err
-	}
-	simulation, err := simulateSignedGroupWithContext(ctx, algodClient, signing.SignedGroup, nil)
-	if err != nil {
-		return nil, err
-	}
-	return &GuardedSimulationResult{Signing: signing, Simulation: simulation}, nil
-}
-
 // SimulatePreparedGuardedGroup signs and simulates a prepared guarded group.
 func SimulatePreparedGuardedGroup(
 	algodClient *algod.Client,

@@ -288,11 +288,11 @@ func TestPrepareRekeyRefusesUnroutableSignerTarget(t *testing.T) {
 	}
 }
 
-func TestPrepareRekeyAllowsGuardedSignerTarget(t *testing.T) {
+func TestPrepareRekeyAllowsCosignedSignerTarget(t *testing.T) {
 	sender := sdkTestAddress(1)
 	rekeyTo := sdkTestAddress(2)
 	signer, algodClient, cleanup := newPrepTestClients(t, sender, rekeyTo, 2_000_000, 0, false,
-		KeyInfo{Address: rekeyTo, KeyType: "test.guarded", SigningFlow: SigningFlowCosigner1})
+		KeyInfo{Address: rekeyTo, KeyType: "aplane.falcon1024.v1", SigningFlow: SigningFlowCosigned1})
 	defer cleanup()
 	if _, err := signer.PrepareRekey(context.Background(), algodClient, RekeyPrepParams{Sender: sender, RekeyTo: rekeyTo}); err != nil {
 		t.Fatalf("PrepareRekey() error = %v", err)
