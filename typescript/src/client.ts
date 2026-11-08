@@ -64,6 +64,8 @@ import {
   SIGNING_FLOW_COSIGNER1,
   SIGNING_FLOW_BOUNDED1,
   SIGNING_FLOW_COSIGNED1,
+  BOUNDED_CONTRACT_BOUNDED2,
+  BOUNDED_CONTRACT_PLAIN1,
   SIGNING_FLOW_ROTATING1,
   COMPONENT_PATH_SPEND,
   COMPONENT_PATH_SPENDING_REKEY,
@@ -885,7 +887,10 @@ export async function signPreparedBoundedCosignerGroup(
           `prepared transaction ${index}: bounded authorization metadata is required`,
         );
       }
-      targetMaxFees.set(index, key.boundedAuthorization.maxFee);
+      const ceiling = boundedFeeCeiling(key.boundedAuthorization);
+      if (ceiling !== undefined) {
+        targetMaxFees.set(index, ceiling);
+      }
       targets.push({
         targetIndex: index,
         guardedAccount: item.authAddress,
@@ -1490,6 +1495,31 @@ function mapRuntimeArg(raw: any): RuntimeArg {
   };
 }
 
+/**
+ * An account's on-chain fee ceiling: a bounded host must advertise one, a plain
+ * host never has one, and a contract this SDK doesn't know fails closed.
+ */
+export function boundedFeeCeiling(info: BoundedAuthorizationInfo): number | undefined {
+  switch (info.contract) {
+    case BOUNDED_CONTRACT_BOUNDED2:
+      if (info.maxFee === undefined) {
+        throw new SignerError(`bounded authorization ${info.contract} has no max_fee`);
+      }
+      return info.maxFee;
+    case BOUNDED_CONTRACT_PLAIN1:
+      if (info.maxFee !== undefined) {
+        throw new SignerError(
+          `bounded authorization ${info.contract} has a max_fee, which a plain host never has`,
+        );
+      }
+      return undefined;
+    default:
+      throw new SignerError(
+        `bounded authorization contract "${info.contract}" is not supported by this SDK; upgrade it`,
+      );
+  }
+}
+
 function mapBoundedAuthorization(raw: any): BoundedAuthorizationInfo | undefined {
   if (!raw) return undefined;
   return {
@@ -1499,7 +1529,8 @@ function mapBoundedAuthorization(raw: any): BoundedAuthorizationInfo | undefined
       maxSizes: raw.base_signature_arg_layout?.max_sizes || [],
     },
     spendEffects: raw.spend_effects || [],
-    maxFee: raw.max_fee || 0,
+    // Absent on a plain host: never turned into a zero ceiling.
+    maxFee: raw.max_fee ?? undefined,
     rekey: raw.rekey || "",
     rekeyList: raw.rekey_list
       ? {
@@ -3815,6 +3846,7 @@ export class SignerClient {
         signingFlow: kt.signing_flow || undefined,
         cosignerComponentKeyType: kt.cosigner_component_key_type || undefined,
         perKeyContract: kt.per_key_contract || undefined,
+        boundarySchema: kt.boundary_schema || undefined,
         boundedAuthorization: mapBoundedAuthorization(kt.bounded_authorization),
         creationParams,
         runtimeArgs,

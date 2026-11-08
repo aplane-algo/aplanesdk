@@ -133,7 +133,7 @@ func TestSignPreparedBoundedCosignerGroupOneTarget(t *testing.T) {
 				},
 				CosignerComponentKeyType: KeyTypeWitnessFalcon1024,
 				BoundedAuthorization: &BoundedAuthorizationInfo{
-					MaxFee: 1000,
+					Contract: BoundedContractBounded2, MaxFee: new(uint64(1000)),
 					Cosigner: &BoundedCosignerAuthorizationInfo{
 						ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: "aabb",
 					},
@@ -150,7 +150,7 @@ func TestSignPreparedBoundedCosignerGroupOneTarget(t *testing.T) {
 		t.Fatalf("result = %+v", result)
 	}
 	componentCalls = 0
-	options.PreparedGroup.Transactions[0].SignerKey.BoundedAuthorization.MaxFee = 999
+	options.PreparedGroup.Transactions[0].SignerKey.BoundedAuthorization.MaxFee = new(uint64(999))
 	if _, err := SignPreparedGuardedGroup(options); err == nil ||
 		!strings.Contains(err.Error(), "exceeds advertised max_fee") {
 		t.Fatalf("SignPreparedGuardedGroup() error = %v, want max_fee rejection", err)
@@ -231,7 +231,7 @@ func TestSignPreparedBoundedCosignerGroupSkipsTheCosignerOnAListedRekey(t *testi
 		},
 		CosignerComponentKeyType: KeyTypeWitnessFalcon1024,
 		BoundedAuthorization: &BoundedAuthorizationInfo{
-			MaxFee: 1000, Rekey: "spending_key",
+			Contract: BoundedContractBounded2, MaxFee: new(uint64(1000)), Rekey: "spending_key",
 			RekeyList: &BoundedRekeyListInfo{Contract: "rekey_list1", Depth: 4},
 			Cosigner:  &BoundedCosignerAuthorizationInfo{ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: "aabb"},
 		},
@@ -387,7 +387,7 @@ func TestSignPreparedBoundedCosignerGroupDeclaresNativePQPrimary(t *testing.T) {
 							},
 							CosignerComponentKeyType: KeyTypeWitnessFalcon1024,
 							BoundedAuthorization: &BoundedAuthorizationInfo{
-								MaxFee: 1000,
+								Contract: BoundedContractBounded2, MaxFee: new(uint64(1000)),
 								Cosigner: &BoundedCosignerAuthorizationInfo{
 									ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: "aabb",
 								},
@@ -901,4 +901,35 @@ func TestValidateBoundedComponentPlan(t *testing.T) {
 			t.Fatalf("error = %v, want max_fee rejection", err)
 		}
 	})
+}
+
+// A plain host has no fee ceiling; a bounded host must advertise one; a contract
+// this SDK doesn't know fails closed.
+func TestBoundedFeeCeilingFollowsTheContract(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		info    BoundedAuthorizationInfo
+		ceiling uint64
+		has     bool
+		err     string
+	}{
+		{"bounded host", BoundedAuthorizationInfo{Contract: BoundedContractBounded2, MaxFee: new(uint64(10_000))}, 10_000, true, ""},
+		{"bounded host without a ceiling", BoundedAuthorizationInfo{Contract: BoundedContractBounded2}, 0, false, "has no max_fee"},
+		{"plain host", BoundedAuthorizationInfo{Contract: BoundedContractPlain1}, 0, false, ""},
+		{"plain host with a ceiling", BoundedAuthorizationInfo{Contract: BoundedContractPlain1, MaxFee: new(uint64(0))}, 0, false, "never has"},
+		{"unknown contract", BoundedAuthorizationInfo{Contract: "bounded3", MaxFee: new(uint64(1))}, 0, false, "not supported"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ceiling, has, err := boundedFeeCeiling(&tc.info)
+			if tc.err != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.err) {
+					t.Fatalf("boundedFeeCeiling() error = %v, want %q", err, tc.err)
+				}
+				return
+			}
+			if err != nil || ceiling != tc.ceiling || has != tc.has {
+				t.Fatalf("boundedFeeCeiling() = %d, %v, %v", ceiling, has, err)
+			}
+		})
+	}
 }

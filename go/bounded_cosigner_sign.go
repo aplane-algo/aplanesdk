@@ -84,7 +84,13 @@ func signPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts Prepa
 			if key.BoundedAuthorization == nil {
 				return nil, fmt.Errorf("prepared transaction %d: bounded authorization metadata is required", i)
 			}
-			targetMaxFees[i] = key.BoundedAuthorization.MaxFee
+			maxFee, hasCeiling, err := boundedFeeCeiling(key.BoundedAuthorization)
+			if err != nil {
+				return nil, fmt.Errorf("prepared transaction %d: %w", i, err)
+			}
+			if hasCeiling {
+				targetMaxFees[i] = maxFee
+			}
 			targets = append(targets, GuardedSignTarget{
 				TargetIndex:              i,
 				GuardedAccount:           item.AuthAddress,
@@ -503,6 +509,32 @@ func validateBoundedComponentPlan(original, planned []types.Transaction, mutatio
 		return err
 	}
 	return nil
+}
+
+// Bounded authorization contracts this SDK signs for.
+const (
+	BoundedContractBounded2 = "bounded2"
+	BoundedContractPlain1   = "plain1"
+)
+
+// boundedFeeCeiling returns an account's on-chain fee ceiling. A bounded host
+// has one; a plain host has none. A contract this SDK doesn't know, or a
+// bounded host without its ceiling, fails closed.
+func boundedFeeCeiling(info *BoundedAuthorizationInfo) (uint64, bool, error) {
+	switch info.Contract {
+	case BoundedContractBounded2:
+		if info.MaxFee == nil {
+			return 0, false, fmt.Errorf("bounded authorization %s has no max_fee", info.Contract)
+		}
+		return *info.MaxFee, true, nil
+	case BoundedContractPlain1:
+		if info.MaxFee != nil {
+			return 0, false, fmt.Errorf("bounded authorization %s has a max_fee, which a plain host never has", info.Contract)
+		}
+		return 0, false, nil
+	default:
+		return 0, false, fmt.Errorf("bounded authorization contract %q is not supported by this SDK; upgrade it", info.Contract)
+	}
 }
 
 func validateBoundedTargetFees(planned []types.Transaction, maxFees map[int]uint64) error {

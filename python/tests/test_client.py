@@ -3800,3 +3800,49 @@ class TestApplyPrepFee:
         p = _FeeParams()
         _apply_prep_fee(p, None)
         assert p.fee == 7 and p.flat_fee is False
+
+
+def _bounded_info(contract, max_fee):
+    from aplanesdk.signer import BoundedAuthorizationInfo, BoundedSignatureArgLayout
+
+    return BoundedAuthorizationInfo(
+        contract=contract,
+        base_signature_arg_layout=BoundedSignatureArgLayout(1, [1280]),
+        spend_effects=[],
+        max_fee=max_fee,
+        rekey="refused",
+        runtime_args=[],
+        derived_args=[],
+        argument_layout=[],
+        layer3_policy="none",
+    )
+
+
+@pytest.mark.parametrize(
+    ("contract", "max_fee", "ceiling", "error"),
+    [
+        ("bounded2", 10_000, 10_000, None),
+        ("bounded2", None, None, "has no max_fee"),
+        ("plain1", None, None, None),
+        ("plain1", 0, None, "never has"),
+        ("bounded3", 1, None, "not supported"),
+    ],
+)
+def test_bounded_fee_ceiling_follows_the_contract(contract, max_fee, ceiling, error):
+    from aplanesdk.signer import _bounded_fee_ceiling
+
+    info = _bounded_info(contract, max_fee)
+    if error:
+        with pytest.raises(SignerError, match=error):
+            _bounded_fee_ceiling(info)
+    else:
+        assert _bounded_fee_ceiling(info) == ceiling
+
+
+def test_bounded_authorization_parses_an_absent_fee_ceiling():
+    from aplanesdk.signer import _parse_bounded_authorization
+
+    info = _parse_bounded_authorization({"contract": "plain1", "rekey": "refused", "layer3_policy": "none"})
+    assert info is not None and info.max_fee is None
+    with pytest.raises(SignerError, match="non-negative integer"):
+        _parse_bounded_authorization({"contract": "bounded2", "max_fee": -1})

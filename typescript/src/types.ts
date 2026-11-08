@@ -23,6 +23,11 @@ export const SIGNING_FLOW_BOUNDED1 = "bounded1";
  * cosigner component. It replaces bounded-cosigner1, which carried spends only.
  */
 export const SIGNING_FLOW_COSIGNED1 = "cosigned1";
+
+/** A bounded host's contract: it has a fee ceiling. */
+export const BOUNDED_CONTRACT_BOUNDED2 = "bounded2";
+/** A plain host's contract: it has no fee ceiling. */
+export const BOUNDED_CONTRACT_PLAIN1 = "plain1";
 /**
  * Rotating account choreography (/sign/rotating/prepare then
  * /sign/rotating/sign), in which the signer rekeys the account to a fresh
@@ -159,7 +164,8 @@ export interface BoundedAuthorizationInfo {
   contract: string;
   baseSignatureArgLayout: BoundedSignatureArgLayout;
   spendEffects: string[];
-  maxFee: number;
+  /** A bounded host's fee ceiling; absent on a plain host, which has none. */
+  maxFee?: number;
   /** "refused" or "spending_key" */
   rekey: string;
   /** With rekey "refused": "only these", a rekey may go only to a listed address. */
@@ -376,6 +382,11 @@ export interface KeyTypeInfo {
   cosignerComponentKeyType?: string;
   /** Each account selects its own contract; route by /keys, not this type */
   perKeyContract?: boolean;
+  /**
+   * The boundary file grammar a per-key type's requests take ("aplane.boundary.v1");
+   * absent for one that takes none, such as a plain host.
+   */
+  boundarySchema?: string;
   /** Definition-level transaction-authorization capability */
   boundedAuthorization?: BoundedAuthorizationInfo;
   /** Creation parameters */

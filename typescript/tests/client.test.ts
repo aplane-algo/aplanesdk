@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import algosdk from "algosdk";
 import {
   SignerClient,
+  boundedFeeCeiling,
   signGuardedGroup,
   signPreparedGuardedGroup,
   simulateGuardedGroup,
@@ -15,6 +16,7 @@ import {
   KEY_TYPE_WITNESS_FALCON1024,
   SIGNING_FLOW_COSIGNER1,
   SIGNING_FLOW_COSIGNED1,
+  type BoundedAuthorizationInfo,
 } from "../src/types.js";
 import {
   AuthenticationError,
@@ -4438,5 +4440,27 @@ describe("assembleGroup", () => {
 
   it("throws on slot with multiple signers", () => {
     assert.throws(() => assembleGroup([["a", "b"], ["c", "d"]]), { message: /slot 0: multiple signers/ });
+  });
+});
+
+describe("boundedFeeCeiling", () => {
+  const info = (contract: string, maxFee?: number): BoundedAuthorizationInfo => ({
+    contract,
+    baseSignatureArgLayout: { count: 1, maxSizes: [1280] },
+    spendEffects: [],
+    maxFee,
+    rekey: "refused",
+    runtimeArgs: [],
+    derivedArgs: [],
+    argumentLayout: [],
+    layer3Policy: "none",
+  });
+
+  it("follows the contract", () => {
+    assert.equal(boundedFeeCeiling(info("bounded2", 10_000)), 10_000);
+    assert.equal(boundedFeeCeiling(info("plain1")), undefined);
+    assert.throws(() => boundedFeeCeiling(info("bounded2")), /has no max_fee/);
+    assert.throws(() => boundedFeeCeiling(info("plain1", 0)), /never has/);
+    assert.throws(() => boundedFeeCeiling(info("bounded3", 1)), /not supported/);
   });
 });

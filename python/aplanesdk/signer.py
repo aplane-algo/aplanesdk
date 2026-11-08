@@ -124,6 +124,11 @@ SIGNING_FLOW_BOUNDED1 = "bounded1"
 # base component names the path the signer classified. A listed rekey takes no
 # cosigner component. It replaces bounded-cosigner1, which carried spends only.
 SIGNING_FLOW_COSIGNED1 = "cosigned1"
+
+# Bounded authorization contracts this SDK signs for: a bounded host, with a
+# fee ceiling, and a plain host, which has none.
+BOUNDED_CONTRACT_BOUNDED2 = "bounded2"
+BOUNDED_CONTRACT_PLAIN1 = "plain1"
 # Rotating account choreography (/sign/rotating/prepare then
 # /sign/rotating/sign), in which the signer rekeys the account to a fresh
 # stage on every spend. This SDK does not implement it; keys labelled with
@@ -350,7 +355,7 @@ class BoundedAuthorizationInfo:
     contract: str
     base_signature_arg_layout: BoundedSignatureArgLayout
     spend_effects: List[str]
-    max_fee: int
+    max_fee: Optional[int]  # None on a plain host, which has no fee ceiling
     rekey: str  # "refused" or "spending_key"
     runtime_args: List[RuntimeArg]
     derived_args: List[BoundedDerivedArgInfo]
@@ -476,6 +481,9 @@ class KeyTypeInfo:
     signing_flow: str = ""  # Signing choreography label (e.g. "cosigner1"); empty = plain /sign
     cosigner_component_key_type: str = ""  # Cosigner component key type for signing flow "cosigner1"
     per_key_contract: bool = False  # Each account selects its own contract; route by /keys
+    # The boundary file grammar a per-key type's requests take ("aplane.boundary.v1"),
+    # or "" for one that takes none, such as a plain host.
+    boundary_schema: str = ""
     bounded_authorization: Optional[BoundedAuthorizationInfo] = None
     creation_params: Optional[List[CreationParam]] = None
     runtime_args: Optional[List[RuntimeArg]] = None
@@ -1623,10 +1631,12 @@ def _prepared_foreign_pq_scheme(
 def _parse_bounded_authorization(data: Any) -> Optional[BoundedAuthorizationInfo]:
     if not isinstance(data, dict):
         return None
-    if "max_fee" not in data:
-        raise SignerError("invalid bounded_authorization: max_fee is required")
-    max_fee = data["max_fee"]
-    if isinstance(max_fee, bool) or not isinstance(max_fee, int) or max_fee < 0:
+    # A plain host has no fee ceiling, so max_fee may be absent; signing checks
+    # that the contract agrees (_bounded_fee_ceiling).
+    max_fee = data.get("max_fee")
+    if max_fee is not None and (
+        isinstance(max_fee, bool) or not isinstance(max_fee, int) or max_fee < 0
+    ):
         raise SignerError("invalid bounded_authorization: max_fee must be a non-negative integer")
     layout = data.get("base_signature_arg_layout") or {}
     runtime_args = data.get("runtime_args") or []
@@ -3979,6 +3989,7 @@ class SignerClient:
                     signing_flow=kt.get("signing_flow", ""),
                     cosigner_component_key_type=kt.get("cosigner_component_key_type", ""),
                     per_key_contract=kt.get("per_key_contract", False),
+                    boundary_schema=kt.get("boundary_schema", ""),
                     bounded_authorization=_parse_bounded_authorization(
                         kt.get("bounded_authorization")
                     ),
@@ -5398,6 +5409,27 @@ def _validate_bounded_component_plan(
     _validate_guarded_dummies(planned[len(original) :])
 
 
+def _bounded_fee_ceiling(info: BoundedAuthorizationInfo) -> Optional[int]:
+    """Return an account's on-chain fee ceiling, or None for a plain host.
+
+    A bounded host must advertise one; a plain host never has one; a contract
+    this SDK does not know fails closed.
+    """
+    if info.contract == BOUNDED_CONTRACT_BOUNDED2:
+        if info.max_fee is None:
+            raise SignerError(f"bounded authorization {info.contract} has no max_fee")
+        return info.max_fee
+    if info.contract == BOUNDED_CONTRACT_PLAIN1:
+        if info.max_fee is not None:
+            raise SignerError(
+                f"bounded authorization {info.contract} has a max_fee, which a plain host never has"
+            )
+        return None
+    raise SignerError(
+        f"bounded authorization contract {info.contract!r} is not supported by this SDK; upgrade it"
+    )
+
+
 def _validate_bounded_target_fees(
     planned: List[transaction.Transaction],
     max_fees: Dict[int, int],
@@ -5588,7 +5620,9 @@ def sign_prepared_bounded_cosigner_group(
                 raise ValueError(
                     f"prepared transaction {index}: bounded authorization " "metadata is required"
                 )
-            target_max_fees[index] = key.bounded_authorization.max_fee
+            ceiling = _bounded_fee_ceiling(key.bounded_authorization)
+            if ceiling is not None:
+                target_max_fees[index] = ceiling
             targets.append(
                 {
                     "target_index": index,

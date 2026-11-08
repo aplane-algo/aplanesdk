@@ -696,7 +696,11 @@ type KeyTypeInfo struct {
 	CosignerComponentKeyType string `json:"cosigner_component_key_type,omitempty"`
 	// PerKeyContract means each account selects its own contract at generation, so
 	// this type has no fixed signing flow or bounded profile. Route by GetKeys.
-	PerKeyContract       bool                      `json:"per_key_contract,omitempty"`
+	PerKeyContract bool `json:"per_key_contract,omitempty"`
+	// BoundarySchema names the boundary file grammar a per-key type's requests
+	// take ("aplane.boundary.v1"), and is empty for one that takes none, such as
+	// a plain host.
+	BoundarySchema       string                    `json:"boundary_schema,omitempty"`
 	BoundedAuthorization *BoundedAuthorizationInfo `json:"bounded_authorization,omitempty"`
 	CreationParams       []CreationParam           `json:"creation_params"`
 	RuntimeArgs          []RuntimeArg              `json:"runtime_args"`
@@ -775,8 +779,10 @@ type BoundedAuthorizationInfo struct {
 	Contract               string                    `json:"contract"`
 	BaseSignatureArgLayout BoundedSignatureArgLayout `json:"base_signature_arg_layout"`
 	SpendEffects           []string                  `json:"spend_effects"`
-	MaxFee                 uint64                    `json:"max_fee"`
-	Rekey                  string                    `json:"rekey"` // "refused" or "spending_key"
+	// MaxFee is a bounded host's fee ceiling. A plain host (contract
+	// "plain1") has none, and the field is absent.
+	MaxFee *uint64 `json:"max_fee,omitempty"`
+	Rekey  string  `json:"rekey"` // "refused" or "spending_key"
 	// RekeyList, with Rekey "refused", is "only these": a rekey may go only to
 	// an address on the account's rekey-to list.
 	RekeyList      *BoundedRekeyListInfo             `json:"rekey_list,omitempty"`
