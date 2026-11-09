@@ -2502,6 +2502,44 @@ describe("SignerClient", () => {
       }
     });
 
+    it("names the position of a held primary that carries a size hint", async () => {
+      const account = testAddress(41);
+      await assert.rejects(
+        signPreparedCosignedGroup({
+          userClient: new SignerClient("http://localhost:11270"),
+          preparedGroup: {
+            transactions: [
+              {
+                transaction: algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+                  sender: account,
+                  receiver: testAddress(42),
+                  amount: 1n,
+                  suggestedParams: {
+                    fee: 1000n,
+                    minFee: 1000n,
+                    firstValid: 1n,
+                    lastValid: 100n,
+                    genesisHash: new Uint8Array(32),
+                    genesisID: "testnet-v1",
+                    flatFee: true,
+                  },
+                }),
+                authAddress: account,
+                pqScheme: "f1",
+                signerKey: {
+                  address: account,
+                  publicKeyHex: "",
+                  keyType: "falcon1024",
+                  isGenericLsig: false,
+                },
+              },
+            ],
+          },
+        }),
+        /prepared transaction 0: pqScheme is allowed only for foreign transactions/,
+      );
+    });
+
     it("refuses cosigner1 as an unknown signing flow before any request", async () => {
       const account = testAddress(41);
       const user = new SignerClient("http://localhost:11270");
@@ -2698,13 +2736,13 @@ describe("SignerClient", () => {
       assert.equal(result.signedGroup.length, 2);
     });
 
-    // A native-PQ primary slot is contextual to /sign/component,
-    // so the signer budgets its fee purely from the declared pq_scheme.
-    // Omitting it freezes an under-funded canonical group that the later /sign
-    // identity check cannot detect, because the shortfall is already inside
-    // the canonical bytes.
+    // A non-cosigned position the signer holds is sent as the signer's own:
+    // in sign mode on /plan, and as a contextual position with auth_address
+    // on /sign/component. The signer sizes it and can charge it; no hint is
+    // sent. Here the plan puts the group's authorization charge on the held
+    // primary, which the SDK must accept and sign.
     for (const rejectSign of [false, true]) {
-    it(`declares pq_scheme for a native-PQ primary slot in bounded-cosigner groups${rejectSign ? " (user-first when /sign rejects)" : " (user-first order)"}`, async () => {
+    it(`sends a held native-PQ primary slot as the signer's own in bounded-cosigner groups${rejectSign ? " (user-first when /sign rejects)" : " (user-first order)"}`, async () => {
       const events: string[] = [];
       const bounded = testAddress(31);
       const nativePq = testAddress(32);
@@ -2740,6 +2778,9 @@ describe("SignerClient", () => {
         const planned = requests.map((entry: any) =>
           algosdk.decodeUnsignedTransaction(hexToBytes(entry.txn_bytes_hex).slice(2))
         );
+        // The bounded target stays at its 1000 fee ceiling; the held primary
+        // carries the charge.
+        planned[1].fee += 2000n;
         algosdk.assignGroupID(planned);
         plannedGroup = planned;
         return {
@@ -2747,8 +2788,8 @@ describe("SignerClient", () => {
           mutations: {
             dummiesAdded: 0,
             groupIdChanged: true,
-            feesModified: [],
-            totalFeesDelta: 0,
+            feesModified: [1],
+            totalFeesDelta: 2000,
             originalCount: planned.length,
             finalCount: planned.length,
           },
@@ -2756,8 +2797,16 @@ describe("SignerClient", () => {
       };
       (user as any).requestComponents = async (request: any) => {
         events.push("base");
+        assert.deepEqual(
+          request.group_bytes_hex,
+          plannedGroup.map((item) => encodeTransaction(item)[0]),
+        );
         assert.equal(request.targets.length, 1);
         assert.equal(request.contextual_positions.length, 1);
+        // The held position names its account and carries no size hint.
+        assert.equal(request.contextual_positions[0].auth_address, nativePq);
+        assert.equal(request.contextual_positions[0].pq_scheme, undefined);
+        assert.equal(request.contextual_positions[0].lsig_resources, undefined);
         return {
           request_id: "base-id",
           components: [{
@@ -2857,10 +2906,11 @@ describe("SignerClient", () => {
         return;
       }
       await run();
-      assert.equal(primaryRequest.pq_scheme, "f1");
       assert.deepEqual(events, ["base", "sign", "cosigner", "assemble"]);
+      // Sign mode on /plan, with no size hint.
+      assert.equal(primaryRequest.auth_address, nativePq);
+      assert.equal(primaryRequest.pq_scheme, undefined);
       assert.equal(primaryRequest.lsig_resources, undefined);
-      assert.equal(primaryRequest.auth_address, undefined);
     });
     }
 

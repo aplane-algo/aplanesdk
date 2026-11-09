@@ -347,9 +347,11 @@ and is authoritative for choosing its transaction authorization envelope. It
 is absent for witness keys, which are not spending accounts, and whenever
 the signer does not report it; never read an absent value as Ed25519. Prefer it over checking `logicSigResources`, because a native
 Falcon-1024 spending key publishes no LogicSig profile and is otherwise
-indistinguishable from an Ed25519 key. `signPreparedCosignedGroup` uses it to
-declare `pq_scheme` on native-PQ group positions that are planned as foreign
-slots.
+indistinguishable from an Ed25519 key. `signPreparedCosignedGroup` sends no
+size hint for a position the signer holds: it names the position's
+`authAddress`, and the signer sizes the position from its own records and can
+put the group's authorization charge on it. Setting `pqScheme` or
+`lsigResources` on such a position is an error.
 
 `boundedAuthorization.rekey` is a bounded account's rekey setting:
 `spending_key` lets the spending key rekey the account, and `refused` means the

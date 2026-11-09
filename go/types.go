@@ -94,8 +94,15 @@ type ComponentTarget struct {
 	AppCallInfo  *AppCallInfo        `json:"app_call_info,omitempty"`
 }
 
+// ComponentContextPosition is an original position a component request doesn't
+// sign. With AuthAddress it is one of the signer's own accounts, which the
+// signer sizes from its records; LsigArgs carries what a bounded account needs
+// to be classified. Without AuthAddress it is another party's position, sized
+// from the LsigResources or PQScheme hint.
 type ComponentContextPosition struct {
 	TargetIndex   int                    `json:"target_index"`
+	AuthAddress   string                 `json:"auth_address,omitempty"`
+	LsigArgs      map[string]string      `json:"lsig_args,omitempty"`
 	LsigResources *LogicSigResourceUsage `json:"lsig_resources,omitempty"`
 	PQScheme      string                 `json:"pq_scheme,omitempty"`
 	AppCallInfo   *AppCallInfo           `json:"app_call_info,omitempty"`
