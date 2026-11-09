@@ -83,8 +83,8 @@ func TestSelectedPreparedResourcesRejectsRekeyWithoutSpendingKeyAuthorization(t 
 	}
 }
 
-func createGuardedDummies(firstTxn types.Transaction, count int) ([]types.Transaction, error) {
-	dummyAcct := crypto.LogicSigAccount{Lsig: types.LogicSig{Logic: guardedDummyProgram}}
+func createCosignedDummies(firstTxn types.Transaction, count int) ([]types.Transaction, error) {
+	dummyAcct := crypto.LogicSigAccount{Lsig: types.LogicSig{Logic: cosignedDummyProgram}}
 	dummyAddr, err := dummyAcct.Address()
 	if err != nil {
 		return nil, err
@@ -134,7 +134,7 @@ func signedTxnHexFor(t *testing.T, canonicalHex string) string {
 	return hex.EncodeToString(msgpack.Encode(types.SignedTxn{Txn: txn}))
 }
 
-func TestSignPreparedGuardedGroupRejectsUnsupportedSigningFlow(t *testing.T) {
+func TestSignPreparedCosignedGroupRejectsUnsupportedSigningFlow(t *testing.T) {
 	var genesisHash types.Digest
 	sp := types.SuggestedParams{
 		Fee:             types.MicroAlgos(1000),
@@ -144,21 +144,21 @@ func TestSignPreparedGuardedGroupRejectsUnsupportedSigningFlow(t *testing.T) {
 		GenesisHash:     genesisHash[:],
 		FlatFee:         true,
 	}
-	guarded := sdkTestAddress(1)
+	cosigned := sdkTestAddress(1)
 	receiver := sdkTestAddress(2)
-	txn, err := transaction.MakePaymentTxn(guarded, receiver, 1000, nil, "", sp)
+	txn, err := transaction.MakePaymentTxn(cosigned, receiver, 1000, nil, "", sp)
 	if err != nil {
 		t.Fatalf("MakePaymentTxn() error = %v", err)
 	}
 
-	_, err = SignPreparedGuardedGroup(PreparedGuardedGroupOptions{
+	_, err = SignPreparedCosignedGroup(PreparedCosignedGroupOptions{
 		UserClient: &SignerClient{},
 		PreparedGroup: NewPreparedGroup(PreparedTransaction{
 			Transaction: &txn,
-			AuthAddress: guarded,
+			AuthAddress: cosigned,
 			SignerKey: &KeyInfo{
-				Address:     guarded,
-				KeyType:     "aplane.future-guarded.v1",
+				Address:     cosigned,
+				KeyType:     "aplane.future-cosigned.v1",
 				SigningFlow: "cosigner2",
 				LogicSigResources: &LogicSigResourceProfile{
 					Spend: &LogicSigResourceUsage{ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000},
@@ -167,13 +167,13 @@ func TestSignPreparedGuardedGroupRejectsUnsupportedSigningFlow(t *testing.T) {
 		}),
 	})
 	if err == nil || !strings.Contains(err.Error(), `signing flow "cosigner2"`) {
-		t.Fatalf("SignPreparedGuardedGroup() error = %v, want unsupported signing flow rejection", err)
+		t.Fatalf("SignPreparedCosignedGroup() error = %v, want unsupported signing flow rejection", err)
 	}
 }
 
 // cosigner1, the retired dedicated cosigned flow, is an unknown flow like any
 // other: the prepared flow refuses the key before it sends any request.
-func TestSignPreparedGuardedGroupRefusesCosigner1AsUnknown(t *testing.T) {
+func TestSignPreparedCosignedGroupRefusesCosigner1AsUnknown(t *testing.T) {
 	var genesisHash types.Digest
 	sp := types.SuggestedParams{
 		Fee: types.MicroAlgos(1000), FirstRoundValid: 1, LastRoundValid: 100,
@@ -190,7 +190,7 @@ func TestSignPreparedGuardedGroupRefusesCosigner1AsUnknown(t *testing.T) {
 		http.Error(w, "unexpected request", http.StatusInternalServerError)
 	})
 	defer server.Close()
-	_, err = SignPreparedGuardedGroup(PreparedGuardedGroupOptions{
+	_, err = SignPreparedCosignedGroup(PreparedCosignedGroupOptions{
 		UserClient: client,
 		PreparedGroup: NewPreparedGroup(PreparedTransaction{
 			Transaction: &txn,
@@ -205,7 +205,7 @@ func TestSignPreparedGuardedGroupRefusesCosigner1AsUnknown(t *testing.T) {
 		}),
 	})
 	if err == nil || !strings.Contains(err.Error(), `signing flow "cosigner1", which this SDK does not support`) {
-		t.Fatalf("SignPreparedGuardedGroup() error = %v, want cosigner1 refused as an unknown flow", err)
+		t.Fatalf("SignPreparedCosignedGroup() error = %v, want cosigner1 refused as an unknown flow", err)
 	}
 	if requests != 0 {
 		t.Fatalf("sent %d request(s) before refusing the flow", requests)

@@ -393,7 +393,7 @@ keys. They are not Algorand spending accounts and must not be used as senders,
 receivers, auth addresses, or rekey targets. A cosigned account (signing flow
 `cosigned1`) embeds the cosigner public key and is assembled through
 `/sign/assemble`; ordinary `/sign` is not sufficient for its slots. Sign it with
-`SignPreparedGuardedGroup`, below. `RequestComponents` and `RequestAssemble` are
+`SignPreparedCosignedGroup`, below. `RequestComponents` and `RequestAssemble` are
 the low-level calls that helper makes, for applications that own the
 orchestration.
 
@@ -411,7 +411,7 @@ prepared helper detects that flow from signer inventory and routes it
 automatically:
 
 ```go
-result, err := aplane.SignPreparedGuardedGroup(aplane.PreparedGuardedGroupOptions{
+result, err := aplane.SignPreparedCosignedGroup(aplane.PreparedCosignedGroupOptions{
 	UserClient:     userClient,
 	CosignerResolver: cosignerResolver,
 	PreparedGroup:  preparedGroup,

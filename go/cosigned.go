@@ -15,31 +15,31 @@ import (
 	"github.com/algorand/go-algorand-sdk/v2/types"
 )
 
-var guardedDummyProgram = []byte{0x03, 0x31, 0x20, 0x32, 0x03, 0x12}
+var cosignedDummyProgram = []byte{0x03, 0x31, 0x20, 0x32, 0x03, 0x12}
 
-// guardedDummyLogicSigResources must exactly mirror apsigner's canonical
+// cosignedDummyLogicSigResources must exactly mirror apsigner's canonical
 // dummy lsigresource.Usage. /plan and /sign must see the same declaration to
-// keep fee planning idempotent across guarded assembly.
-func guardedDummyLogicSigResources() *LogicSigResourceUsage {
+// keep fee planning idempotent across cosigned assembly.
+func cosignedDummyLogicSigResources() *LogicSigResourceUsage {
 	return &LogicSigResourceUsage{
-		ProgramBytes:  uint64(len(guardedDummyProgram)),
+		ProgramBytes:  uint64(len(cosignedDummyProgram)),
 		MaxOpcodeCost: 1,
 	}
 }
 
-// GuardedCosignerResolver resolves a guarded target to the cosigner client that
+// CosignedCosignerResolver resolves a cosigned target to the cosigner client that
 // should provide the cosigner component signature.
-type GuardedCosignerResolver interface {
+type CosignedCosignerResolver interface {
 	ResolveCosigner(ctx context.Context, cosignerPublicKeyHex string, componentKeyType string) (*SignerClient, string, error)
 }
 
-// StaticCosignerResolver routes every guarded target to one cosigner client.
+// StaticCosignerResolver routes every cosigned target to one cosigner client.
 type StaticCosignerResolver struct {
 	Client       *SignerClient
 	ComponentKey string
 }
 
-// ResolveCosigner implements GuardedCosignerResolver.
+// ResolveCosigner implements CosignedCosignerResolver.
 func (r StaticCosignerResolver) ResolveCosigner(ctx context.Context, cosignerPublicKeyHex string, componentKeyType string) (*SignerClient, string, error) {
 	if r.Client == nil {
 		return nil, "", fmt.Errorf("cosigner client is required")
@@ -47,10 +47,10 @@ func (r StaticCosignerResolver) ResolveCosigner(ctx context.Context, cosignerPub
 	return r.Client, r.ComponentKey, nil
 }
 
-// GuardedSignTarget describes one guarded-account group position.
-type GuardedSignTarget struct {
+// CosignedSignTarget describes one cosigned-account group position.
+type CosignedSignTarget struct {
 	TargetIndex              int
-	GuardedAccount           string
+	CosignedAccount          string
 	CosignerPublicKeyHex     string
 	CosignerComponentKeyType string
 	CosignerComponentKey     string
@@ -59,9 +59,9 @@ type GuardedSignTarget struct {
 	AppCallInfo              *AppCallInfo
 }
 
-// GuardedPrimarySignTarget describes one non-guarded group position that the
-// primary/user signer should sign before guarded assembly.
-type GuardedPrimarySignTarget struct {
+// CosignedPrimarySignTarget describes one non-cosigned group position that the
+// primary/user signer should sign before cosigned assembly.
+type CosignedPrimarySignTarget struct {
 	TargetIndex int
 	AuthAddress string
 	TxnSender   string
@@ -69,21 +69,21 @@ type GuardedPrimarySignTarget struct {
 	AppCallInfo *AppCallInfo
 }
 
-// GuardedSignOptions configures the cosigner component request of a prepared
+// CosignedSignOptions configures the cosigner component request of a prepared
 // cosigned group: where the cosigner is, and the frozen group it signs over.
-type GuardedSignOptions struct {
+type CosignedSignOptions struct {
 	UserClient           *SignerClient
 	CosignerClient       *SignerClient
-	CosignerResolver     GuardedCosignerResolver
+	CosignerResolver     CosignedCosignerResolver
 	CosignerComponentKey string
 	GroupBytesHex        []string
-	PrimaryTargets       []GuardedPrimarySignTarget
+	PrimaryTargets       []CosignedPrimarySignTarget
 	DummyPositions       []int
 }
 
-// GuardedSignResult contains the final assembled group and intermediate
+// CosignedSignResult contains the final assembled group and intermediate
 // component-sign responses for audit and UI correlation.
-type GuardedSignResult struct {
+type CosignedSignResult struct {
 	SignedGroup                []string
 	CosignerComponentResponses []*ComponentResponse
 	PrimarySignResponse        *GroupSignResponse
@@ -91,17 +91,17 @@ type GuardedSignResult struct {
 	BoundedAssemblyResponse    *AssemblyResponse
 }
 
-// PreparedGuardedGroupOptions configures SignPreparedGuardedGroup.
-type PreparedGuardedGroupOptions struct {
+// PreparedCosignedGroupOptions configures SignPreparedCosignedGroup.
+type PreparedCosignedGroupOptions struct {
 	UserClient           *SignerClient
 	CosignerClient       *SignerClient
-	CosignerResolver     GuardedCosignerResolver
+	CosignerResolver     CosignedCosignerResolver
 	CosignerComponentKey string
 	PreparedGroup        PreparedGroup
 	AssemblyRequestID    string
 }
 
-type guardedComponentSignature struct {
+type cosignedComponentSignature struct {
 	signature string
 	requestID string
 }
@@ -154,17 +154,17 @@ func signedTxnMatchesCanonical(label string, index int, signedHex, canonicalHex 
 	return nil
 }
 
-// SignPreparedGuardedGroup canonicalizes a prepared group locally, classifies
-// guarded and primary slots, then signs and assembles it through component
+// SignPreparedCosignedGroup canonicalizes a prepared group locally, classifies
+// cosigned and primary slots, then signs and assembles it through component
 // signing endpoints. The signer /plan endpoint owns canonical group sizing and
 // fee mutation before component signatures are collected.
-func SignPreparedGuardedGroup(opts PreparedGuardedGroupOptions) (*GuardedSignResult, error) {
-	return SignPreparedGuardedGroupWithContext(context.Background(), opts)
+func SignPreparedCosignedGroup(opts PreparedCosignedGroupOptions) (*CosignedSignResult, error) {
+	return SignPreparedCosignedGroupWithContext(context.Background(), opts)
 }
 
-// SignPreparedGuardedGroupWithContext is the context-aware form of
-// SignPreparedGuardedGroup.
-func SignPreparedGuardedGroupWithContext(ctx context.Context, opts PreparedGuardedGroupOptions) (*GuardedSignResult, error) {
+// SignPreparedCosignedGroupWithContext is the context-aware form of
+// SignPreparedCosignedGroup.
+func SignPreparedCosignedGroupWithContext(ctx context.Context, opts PreparedCosignedGroupOptions) (*CosignedSignResult, error) {
 	return signPreparedBoundedCosignerGroupWithContext(ctx, opts)
 }
 
@@ -215,7 +215,7 @@ func preparedForeignPQScheme(key *KeyInfo, resources *LogicSigResourceUsage) (st
 	return PQSchemeFalcon1024, nil
 }
 
-func encodeGuardedLsigArgs(args LsigArgs) map[string]string {
+func encodeCosignedLsigArgs(args LsigArgs) map[string]string {
 	if len(args) == 0 {
 		return nil
 	}
@@ -226,14 +226,14 @@ func encodeGuardedLsigArgs(args LsigArgs) map[string]string {
 	return out
 }
 
-func signGuardedDummies(dummies []types.Transaction, startIndex int) ([]AssemblyPassthroughItem, error) {
+func signCosignedDummies(dummies []types.Transaction, startIndex int) ([]AssemblyPassthroughItem, error) {
 	if len(dummies) == 0 {
 		return nil, nil
 	}
-	if err := validateGuardedDummies(dummies); err != nil {
+	if err := validateCosignedDummies(dummies); err != nil {
 		return nil, err
 	}
-	logicSig := types.LogicSig{Logic: guardedDummyProgram}
+	logicSig := types.LogicSig{Logic: cosignedDummyProgram}
 	passthrough := make([]AssemblyPassthroughItem, len(dummies))
 	for i, txn := range dummies {
 		_, signedBytes, err := crypto.SignLogicSigTransaction(logicSig, txn)
@@ -243,16 +243,16 @@ func signGuardedDummies(dummies []types.Transaction, startIndex int) ([]Assembly
 		passthrough[i] = AssemblyPassthroughItem{
 			TargetIndex:  startIndex + i,
 			SignedTxnHex: hex.EncodeToString(signedBytes),
-			Authorization: &GuardedPassthroughAuthorization{
-				LogicSigResources: guardedDummyLogicSigResources(),
+			Authorization: &CosignedPassthroughAuthorization{
+				LogicSigResources: cosignedDummyLogicSigResources(),
 			},
 		}
 	}
 	return passthrough, nil
 }
 
-func validateGuardedDummies(dummies []types.Transaction) error {
-	dummyAcct := crypto.LogicSigAccount{Lsig: types.LogicSig{Logic: guardedDummyProgram}}
+func validateCosignedDummies(dummies []types.Transaction) error {
+	dummyAcct := crypto.LogicSigAccount{Lsig: types.LogicSig{Logic: cosignedDummyProgram}}
 	dummyAddr, err := dummyAcct.Address()
 	if err != nil {
 		return fmt.Errorf("failed to compute dummy address: %w", err)
@@ -261,13 +261,13 @@ func validateGuardedDummies(dummies []types.Transaction) error {
 		if txn.Type != types.PaymentTx || txn.Sender != dummyAddr || txn.Receiver != dummyAddr ||
 			txn.Amount != 0 || txn.Fee != 0 || len(txn.Note) != 1 || txn.Note[0] != byte(i) ||
 			!txn.RekeyTo.IsZero() || !txn.CloseRemainderTo.IsZero() {
-			return fmt.Errorf("signer-appended transaction %d is not a canonical guarded budget dummy", i)
+			return fmt.Errorf("signer-appended transaction %d is not a canonical cosigned budget dummy", i)
 		}
 	}
 	return nil
 }
 
-func requestCosignerComponentSignatures(ctx context.Context, opts GuardedSignOptions, targets []GuardedSignTarget, result *GuardedSignResult) (map[int]guardedComponentSignature, error) {
+func requestCosignerComponentSignatures(ctx context.Context, opts CosignedSignOptions, targets []CosignedSignTarget, result *CosignedSignResult) (map[int]cosignedComponentSignature, error) {
 	groups := make(map[cosignerSignGroupKey][]int)
 	appCallInfo := make(map[int]*AppCallInfo, len(targets)+len(opts.PrimaryTargets))
 	for _, target := range opts.PrimaryTargets {
@@ -275,7 +275,7 @@ func requestCosignerComponentSignatures(ctx context.Context, opts GuardedSignOpt
 	}
 	for _, target := range targets {
 		appCallInfo[target.TargetIndex] = target.AppCallInfo
-		client, componentKey, err := resolveGuardedCosigner(ctx, opts, target)
+		client, componentKey, err := resolveCosignedCosigner(ctx, opts, target)
 		if err != nil {
 			return nil, err
 		}
@@ -285,7 +285,7 @@ func requestCosignerComponentSignatures(ctx context.Context, opts GuardedSignOpt
 		)
 	}
 
-	signatures := make(map[int]guardedComponentSignature)
+	signatures := make(map[int]cosignedComponentSignature)
 	for group, indices := range groups {
 		sort.Ints(indices)
 		resp, err := group.client.RequestComponentsWithContext(ctx, componentRequestForIndices(opts.GroupBytesHex, indices, opts.DummyPositions, group.componentKey, appCallInfo))
@@ -294,7 +294,7 @@ func requestCosignerComponentSignatures(ctx context.Context, opts GuardedSignOpt
 		}
 		result.CosignerComponentResponses = append(result.CosignerComponentResponses, resp)
 		for _, component := range resp.Components {
-			signatures[component.TargetIndex] = guardedComponentSignature{
+			signatures[component.TargetIndex] = cosignedComponentSignature{
 				signature: component.Signature,
 				requestID: resp.RequestID,
 			}
@@ -333,7 +333,7 @@ func contiguousIndices(start, end int) []int {
 	return indices
 }
 
-func resolveGuardedCosigner(ctx context.Context, opts GuardedSignOptions, target GuardedSignTarget) (*SignerClient, string, error) {
+func resolveCosignedCosigner(ctx context.Context, opts CosignedSignOptions, target CosignedSignTarget) (*SignerClient, string, error) {
 	if opts.CosignerResolver != nil {
 		return opts.CosignerResolver.ResolveCosigner(ctx, target.CosignerPublicKeyHex, target.CosignerComponentKeyType)
 	}
@@ -347,7 +347,7 @@ func resolveGuardedCosigner(ctx context.Context, opts GuardedSignOptions, target
 	return opts.CosignerClient, componentKey, nil
 }
 
-type primaryGuardedPassthrough struct {
+type primaryCosignedPassthrough struct {
 	response    *GroupSignResponse
 	passthrough []AssemblyPassthroughItem
 }

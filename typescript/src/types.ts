@@ -199,7 +199,7 @@ export interface KeyInfo {
   boundedAuthorization?: BoundedAuthorizationInfo;
   /** Key-file-owned signing arguments for LogicSigs */
   signingArgs?: SigningArg[];
-  /** Non-secret key parameters such as guarded-account cosigner_public_key */
+  /** Non-secret key parameters such as cosigned-account cosigner_public_key */
   parameters?: Record<string, string>;
   /** Template provenance status, when the signer reports one */
   templateProvenanceStatus?: string;
@@ -682,7 +682,7 @@ export interface AssemblyRequest {
   request_id?: string;
   group_bytes_hex: string[];
   targets?: AssemblyTarget[];
-  passthrough?: GuardedPassthroughItem[];
+  passthrough?: CosignedPassthroughItem[];
 }
 
 export interface AssemblyResponse {
@@ -691,17 +691,17 @@ export interface AssemblyResponse {
 }
 
 /**
- * Already-signed group position preserved during guarded assembly.
+ * Already-signed group position preserved during cosigned assembly.
  */
-export interface GuardedPassthroughItem {
+export interface CosignedPassthroughItem {
   target_index: number;
   signed_txn_hex: string;
   /** Local-only authorization declaration used when another slot is signed. */
-  authorization?: GuardedPassthroughAuthorization;
+  authorization?: CosignedPassthroughAuthorization;
 }
 
-/** Authorization shape used to budget a guarded passthrough slot. */
-export interface GuardedPassthroughAuthorization {
+/** Authorization shape used to budget a cosigned passthrough slot. */
+export interface CosignedPassthroughAuthorization {
   /** Omit both fields to explicitly declare ordinary Ed25519 authorization. */
   logicSigResources?: LogicSigResourceUsage;
   pqScheme?: string;

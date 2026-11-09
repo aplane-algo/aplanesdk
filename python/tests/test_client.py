@@ -28,8 +28,8 @@ from aplanesdk.signer import (
     KeyNotFoundError,
     KeyDeletionError,
     assemble_group,
-    sign_prepared_guarded_group,
-    simulate_prepared_guarded_group,
+    sign_prepared_cosigned_group,
+    simulate_prepared_cosigned_group,
     load_config,
     load_client_endpoint_registry,
     resolve_client_endpoint,
@@ -60,7 +60,7 @@ from aplanesdk.signer import (
     encode_transaction,
     _validate_sign_request_id,
     _request_bounded_primary_passthrough,
-    _sign_guarded_dummies,
+    _sign_cosigned_dummies,
     _validate_bounded_component_request,
     _validate_bounded_component_response,
     _validate_bounded_component_plan,
@@ -115,7 +115,7 @@ def cosigned_assembly_target(*, target_index, account, cosigner_signature):
     )
 
 
-def guarded_assembly_request(*, group_bytes_hex, request_id="", targets=None, passthrough=None):
+def cosigned_assembly_request(*, group_bytes_hex, request_id="", targets=None, passthrough=None):
     return AssemblyRequest(
         group_bytes_hex=group_bytes_hex,
         request_id=request_id,
@@ -217,7 +217,7 @@ def test_selected_prepared_resources_rejects_rekey_without_spending_key_authoriz
         _selected_prepared_resources(key, txn)
 
 
-def guarded_test_resources():
+def cosigned_test_resources():
     return LogicSigResourceUsage(
         program_bytes=1612,
         argument_bytes=1423,
@@ -225,7 +225,7 @@ def guarded_test_resources():
     )
 
 
-def create_guarded_dummies(first_txn, count):
+def create_cosigned_dummies(first_txn, count):
     dummy_account = transaction.LogicSigAccount(bytes.fromhex("033120320312"))
     dummy_address = dummy_account.address()
     params = transaction.SuggestedParams(
@@ -876,7 +876,7 @@ class TestSpecializedLowLevelEndpoints:
         })
 
         with patch.object(client.session, "post", return_value=resp) as mock_post:
-            result = client.request_assemble(guarded_assembly_request(
+            result = client.request_assemble(cosigned_assembly_request(
                 request_id="sdk-assembly",
                 group_bytes_hex=["5458aa"],
                 targets=[
@@ -899,7 +899,7 @@ class TestSpecializedLowLevelEndpoints:
         client = make_client()
         with patch.object(client.session, "post") as mock_post:
             with pytest.raises(ValueError, match="not covered"):
-                client.request_assemble(guarded_assembly_request(
+                client.request_assemble(cosigned_assembly_request(
                     group_bytes_hex=["5458aa", "5458bb"],
                     targets=[
                         cosigned_assembly_target(
@@ -1049,9 +1049,9 @@ def record_call_order(events, **mocks):
         mock.side_effect = side_effect
 
 
-class TestSignPreparedGuardedGroup:
+class TestSignPreparedCosignedGroup:
     def test_prepared_plan_preserves_per_slot_args_for_repeated_auth_address(self):
-        guarded = sdk_test_address(31)
+        cosigned = sdk_test_address(31)
         receiver = sdk_test_address(32)
         user = make_client()
         params = transaction.SuggestedParams(
@@ -1063,7 +1063,7 @@ class TestSignPreparedGuardedGroup:
             flat_fee=True,
         )
         signer_key = KeyInfo(
-            address=guarded,
+            address=cosigned,
             key_type="aplane.falcon1024.v1",
             signing_flow=SIGNING_FLOW_COSIGNED1,
             cosigner_component_key_type=KEY_TYPE_WITNESS_FALCON1024,
@@ -1105,15 +1105,15 @@ class TestSignPreparedGuardedGroup:
         user.plan_requests = MagicMock(side_effect=assert_per_slot_requests)
         prepared = PreparedGroup([
             PreparedTransaction(
-                transaction=transaction.PaymentTxn(guarded, params, receiver, 1),
-                auth_address=guarded,
+                transaction=transaction.PaymentTxn(cosigned, params, receiver, 1),
+                auth_address=cosigned,
                 signer_key=signer_key,
                 lsig_args={"preimage": b"alpha"},
                 app_call_info={"mode": "raw", "method": "first"},
             ),
             PreparedTransaction(
-                transaction=transaction.PaymentTxn(guarded, params, receiver, 2),
-                auth_address=guarded,
+                transaction=transaction.PaymentTxn(cosigned, params, receiver, 2),
+                auth_address=cosigned,
                 signer_key=signer_key,
                 lsig_args={"preimage": b"beta"},
                 app_call_info={"mode": "abi", "method": "second"},
@@ -1121,7 +1121,7 @@ class TestSignPreparedGuardedGroup:
         ])
 
         with pytest.raises(RuntimeError, match="stop after per-slot plan assertion"):
-            sign_prepared_guarded_group(user_client=user, prepared_group=prepared)
+            sign_prepared_cosigned_group(user_client=user, prepared_group=prepared)
 
     def test_bounded_component_plan_rejects_unreported_changes_and_bad_dummies(self):
         sender = sdk_test_address(21)
@@ -1137,7 +1137,7 @@ class TestSignPreparedGuardedGroup:
         original = transaction.PaymentTxn(sender, params, receiver, 1000)
         planned_original = transaction.PaymentTxn(sender, params, receiver, 1000)
         planned_original.fee += 1000
-        dummy = create_guarded_dummies(original, 1)[0]
+        dummy = create_cosigned_dummies(original, 1)[0]
         planned = [planned_original, dummy]
         transaction.assign_group_id(planned)
         mutations = {
@@ -1158,10 +1158,10 @@ class TestSignPreparedGuardedGroup:
 
         changed = copy.deepcopy(planned)
         changed[1].amt = 1
-        with pytest.raises(SignerError, match="canonical guarded budget dummy"):
+        with pytest.raises(SignerError, match="canonical cosigned budget dummy"):
             _validate_bounded_component_plan([original], changed, mutations)
-        with pytest.raises(SignerError, match="canonical guarded budget dummy"):
-            _sign_guarded_dummies(changed[1:], 1)
+        with pytest.raises(SignerError, match="canonical cosigned budget dummy"):
+            _sign_cosigned_dummies(changed[1:], 1)
 
         grouped = copy.deepcopy(original)
         grouped.group = bytes([0x31]) * 32
@@ -1265,7 +1265,7 @@ class TestSignPreparedGuardedGroup:
             1000, 1, 100, base64.b64encode(bytes(32)).decode(), "testnet-v1.0", flat_fee=True
         )
         with pytest.raises(AuthenticationError):
-            sign_prepared_guarded_group(
+            sign_prepared_cosigned_group(
                 user_client=user,
                 prepared_group=PreparedGroup([
                     PreparedTransaction(
@@ -1391,7 +1391,7 @@ class TestSignPreparedGuardedGroup:
                 rekey_list=BoundedRekeyListInfo(contract="rekey_list1", depth=4),
             ),
         )
-        result = sign_prepared_guarded_group(
+        result = sign_prepared_cosigned_group(
             user_client=user,
             cosigner_client=cosigner,
             cosigner_component_key="COSIGNER_COMPONENT",
@@ -1507,7 +1507,7 @@ class TestSignPreparedGuardedGroup:
         with pytest.raises(
             SignerError, match="does not match the submitted canonical bytes"
         ):
-            sign_prepared_guarded_group(
+            sign_prepared_cosigned_group(
                 user_client=user,
                 cosigner_client=cosigner,
                 cosigner_component_key="COSIGNER_COMPONENT",
@@ -1515,7 +1515,7 @@ class TestSignPreparedGuardedGroup:
             )
 
         assembled_txn[0] = txn
-        result = sign_prepared_guarded_group(
+        result = sign_prepared_cosigned_group(
             user_client=user,
             cosigner_client=cosigner,
             cosigner_component_key="COSIGNER_COMPONENT",
@@ -1534,7 +1534,7 @@ class TestSignPreparedGuardedGroup:
         user.request_components.reset_mock()
         prepared_group.transactions[0].signer_key.bounded_authorization.max_fee = 999
         with pytest.raises(SignerError, match="exceeds advertised max_fee"):
-            sign_prepared_guarded_group(
+            sign_prepared_cosigned_group(
                 user_client=user,
                 cosigner_client=cosigner,
                 cosigner_component_key="COSIGNER_COMPONENT",
@@ -1627,7 +1627,7 @@ class TestSignPreparedGuardedGroup:
         )
 
         def run():
-            return sign_prepared_guarded_group(
+            return sign_prepared_cosigned_group(
                 user_client=user,
                 cosigner_client=cosigner,
                 cosigner_component_key="COSIGNER_COMPONENT",
@@ -1703,7 +1703,7 @@ class TestSignPreparedGuardedGroup:
         assert _prepared_foreign_pq_scheme(plain, None, "slot 0") == ""
 
     def test_prepared_group_rejects_unsupported_signing_flow(self):
-        guarded = sdk_test_address(1)
+        cosigned = sdk_test_address(1)
         receiver = sdk_test_address(2)
         user = MagicMock()
 
@@ -1715,17 +1715,17 @@ class TestSignPreparedGuardedGroup:
             "testnet-v1.0",
             flat_fee=True,
         )
-        txn = transaction.PaymentTxn(guarded, params, receiver, 1000)
+        txn = transaction.PaymentTxn(cosigned, params, receiver, 1000)
         with pytest.raises(ValueError, match="signing flow 'cosigner2'"):
-            sign_prepared_guarded_group(
+            sign_prepared_cosigned_group(
                 user_client=user,
                 prepared_group=PreparedGroup([
                     PreparedTransaction(
                         transaction=txn,
-                        auth_address=guarded,
+                        auth_address=cosigned,
                         signer_key=KeyInfo(
-                            address=guarded,
-                            key_type="aplane.future-guarded.v1",
+                            address=cosigned,
+                            key_type="aplane.future-cosigned.v1",
                             signing_flow="cosigner2",
                             logic_sig_resources=LogicSigResourceProfile(
                                 spend=LogicSigResourceUsage(1612, 1423, 20000)
@@ -1752,7 +1752,7 @@ class TestSignPreparedGuardedGroup:
             user.session, "get"
         ) as mock_get:
             with pytest.raises(ValueError, match="signing flow 'cosigner1', which this SDK does not support"):
-                sign_prepared_guarded_group(
+                sign_prepared_cosigned_group(
                     user_client=user,
                     prepared_group=PreparedGroup([
                         PreparedTransaction(
@@ -1883,9 +1883,9 @@ class TestClientSideSignedSimulation:
                 client.simulate_prepared_group(None, PreparedGroup([]))
         mock_post.assert_not_called()
 
-    def test_guarded_requires_algod_before_signing(self):
+    def test_cosigned_requires_algod_before_signing(self):
         with pytest.raises(ValueError, match="algod_client is required"):
-            simulate_prepared_guarded_group(None)
+            simulate_prepared_cosigned_group(None)
 
 
 class TestConfigAndConstruction:

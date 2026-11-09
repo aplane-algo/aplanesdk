@@ -96,7 +96,7 @@ INVENTORY_TIMEOUT = 30
 MUTATION_TIMEOUT = 60
 GROUP_PLAN_TIMEOUT = 60
 COMPONENT_SIGN_TIMEOUT = 120
-GUARDED_ASSEMBLY_TIMEOUT = 120
+COSIGNED_ASSEMBLY_TIMEOUT = 120
 SIGN_CANCEL_TIMEOUT = 5
 SIGN_APPROVAL_SLACK = 30
 DEFAULT_SIGN_REQUEST_TIMEOUT = 360
@@ -106,7 +106,7 @@ MAX_SIGN_REQUEST_ID_LENGTH = 128
 MAX_COMPONENT_GROUP_SIZE = 16
 APP_CALL_MAX_APP_ARGS = 16
 APP_CALL_METHOD_ARGS_TUPLE_THRESHOLD = APP_CALL_MAX_APP_ARGS - 2
-GUARDED_DUMMY_PROGRAM = bytes.fromhex("033120320312")
+COSIGNED_DUMMY_PROGRAM = bytes.fromhex("033120320312")
 PQ_SCHEME_FALCON1024 = "f1"
 
 AUTHORIZATION_KIND_ED25519 = "ed25519"
@@ -115,7 +115,7 @@ AUTHORIZATION_KIND_LOGIC_SIG = "logic_sig"
 
 # Signing choreography label for the cosigner co-signed component flow (one
 # user plus one cosigner component signature per target, assembled via
-# /sign/assemble). Signer inventory labels guarded keys with this flow;
+# /sign/assemble). Signer inventory labels cosigned keys with this flow;
 # clients route on the label and must fail fast on flow labels they do not
 # implement. An empty signing_flow means the ordinary /sign path.
 SIGNING_FLOW_BOUNDED1 = "bounded1"
@@ -705,7 +705,7 @@ class AssemblyRequest:
     group_bytes_hex: List[str]
     request_id: str = ""
     targets: Optional[List[AssemblyTarget]] = None
-    passthrough: Optional[List["GuardedPassthroughItem"]] = None
+    passthrough: Optional[List["CosignedPassthroughItem"]] = None
 
 
 @dataclass
@@ -767,25 +767,25 @@ class RotatingSignResponse:
 
 
 @dataclass
-class GuardedPassthroughAuthorization:
-    """Authorization shape used to budget a guarded passthrough slot."""
+class CosignedPassthroughAuthorization:
+    """Authorization shape used to budget a cosigned passthrough slot."""
 
     logic_sig_resources: Optional[LogicSigResourceUsage] = None
     pq_scheme: str = ""
 
 
 @dataclass
-class GuardedPassthroughItem:
+class CosignedPassthroughItem:
     """Already-signed group position for /sign/assemble."""
 
     target_index: int
     signed_txn_hex: str
-    authorization: Optional[GuardedPassthroughAuthorization] = None
+    authorization: Optional[CosignedPassthroughAuthorization] = None
 
 
 @dataclass
-class GuardedSignResult:
-    """Result from sign_prepared_guarded_group"""
+class CosignedSignResult:
+    """Result from sign_prepared_cosigned_group"""
 
     signed_group: List[str]
     cosigner_component_responses: List[ComponentResponse]
@@ -795,10 +795,10 @@ class GuardedSignResult:
 
 
 @dataclass
-class GuardedSimulationResult:
-    """Complete guarded signing result and client-side simulation result."""
+class CosignedSimulationResult:
+    """Complete cosigned signing result and client-side simulation result."""
 
-    signing: GuardedSignResult
+    signing: CosignedSignResult
     simulation: SimulationResult
 
 
@@ -1368,45 +1368,45 @@ def _require_lsig_resources(resources: Any, label: str) -> LogicSigResourceUsage
     return normalized
 
 
-def _guarded_dummy_lsig_resources() -> LogicSigResourceUsage:
+def _cosigned_dummy_lsig_resources() -> LogicSigResourceUsage:
     """Return apsigner's canonical dummy LogicSig resource declaration.
 
     /plan and /sign must see these exact values to keep fee planning
-    idempotent across the guarded assembly choreography.
+    idempotent across the cosigned assembly choreography.
     """
     return LogicSigResourceUsage(
-        program_bytes=len(GUARDED_DUMMY_PROGRAM),
+        program_bytes=len(COSIGNED_DUMMY_PROGRAM),
         argument_bytes=0,
         max_opcode_cost=1,
     )
 
 
-def _normalize_guarded_passthrough_authorization(
+def _normalize_cosigned_passthrough_authorization(
     authorization: Any,
-) -> Optional[GuardedPassthroughAuthorization]:
+) -> Optional[CosignedPassthroughAuthorization]:
     """Return a fully typed authorization built from a dict or an instance.
 
-    A caller may construct GuardedPassthroughAuthorization directly and still
+    A caller may construct CosignedPassthroughAuthorization directly and still
     set logic_sig_resources to a plain dict. Normalizing both shapes here keeps
     every downstream consumer working on LogicSigResourceUsage, so invalid
     input raises ValueError instead of AttributeError at the point of use.
     """
     if authorization is None:
         return None
-    if isinstance(authorization, GuardedPassthroughAuthorization):
+    if isinstance(authorization, CosignedPassthroughAuthorization):
         resources = authorization.logic_sig_resources
         pq_scheme = authorization.pq_scheme
     elif isinstance(authorization, dict):
         expected = {"logic_sig_resources", "pq_scheme"}
         if not set(authorization).issubset(expected):
-            raise ValueError("guarded passthrough authorization has unknown fields")
+            raise ValueError("cosigned passthrough authorization has unknown fields")
         resources = authorization.get("logic_sig_resources")
         pq_scheme = authorization.get("pq_scheme", "")
     else:
-        raise ValueError("guarded passthrough authorization must be an object")
-    return GuardedPassthroughAuthorization(
+        raise ValueError("cosigned passthrough authorization must be an object")
+    return CosignedPassthroughAuthorization(
         logic_sig_resources=(
-            _require_lsig_resources(resources, "guarded passthrough authorization")
+            _require_lsig_resources(resources, "cosigned passthrough authorization")
             if resources is not None
             else None
         ),
@@ -4209,7 +4209,7 @@ class SignerClient:
             resp = self.session.post(
                 f"{self.base_url}/sign/assemble",
                 json=request_body,
-                timeout=self._timeout_for(GUARDED_ASSEMBLY_TIMEOUT),
+                timeout=self._timeout_for(COSIGNED_ASSEMBLY_TIMEOUT),
             )
         except requests.RequestException as e:
             raise SignerUnavailableError(f"Failed to connect: {e}")
@@ -4822,30 +4822,30 @@ def _component_request_for_indices(
     )
 
 
-def _sign_guarded_dummies(
+def _sign_cosigned_dummies(
     dummies: List[transaction.Transaction],
     start_index: int,
-) -> List[GuardedPassthroughItem]:
-    _validate_guarded_dummies(dummies)
-    dummy_account = transaction.LogicSigAccount(GUARDED_DUMMY_PROGRAM)
+) -> List[CosignedPassthroughItem]:
+    _validate_cosigned_dummies(dummies)
+    dummy_account = transaction.LogicSigAccount(COSIGNED_DUMMY_PROGRAM)
     passthrough = []
     for offset, txn in enumerate(dummies):
         signed = transaction.LogicSigTransaction(txn, dummy_account)
         signed_hex = base64.b64decode(encoding.msgpack_encode(signed)).hex()
         passthrough.append(
-            GuardedPassthroughItem(
+            CosignedPassthroughItem(
                 target_index=start_index + offset,
                 signed_txn_hex=signed_hex,
-                authorization=GuardedPassthroughAuthorization(
-                    logic_sig_resources=_guarded_dummy_lsig_resources()
+                authorization=CosignedPassthroughAuthorization(
+                    logic_sig_resources=_cosigned_dummy_lsig_resources()
                 ),
             )
         )
     return passthrough
 
 
-def _validate_guarded_dummies(dummies: List[transaction.Transaction]) -> None:
-    dummy_address = transaction.LogicSigAccount(GUARDED_DUMMY_PROGRAM).address()
+def _validate_cosigned_dummies(dummies: List[transaction.Transaction]) -> None:
+    dummy_address = transaction.LogicSigAccount(COSIGNED_DUMMY_PROGRAM).address()
     for index, txn in enumerate(dummies):
         if (
             not isinstance(txn, transaction.PaymentTxn)
@@ -4858,11 +4858,11 @@ def _validate_guarded_dummies(dummies: List[transaction.Transaction]) -> None:
             or txn.close_remainder_to is not None
         ):
             raise SignerError(
-                f"signer-appended transaction {index} is not a canonical " "guarded budget dummy"
+                f"signer-appended transaction {index} is not a canonical " "cosigned budget dummy"
             )
 
 
-def _encode_guarded_lsig_args(args: Optional[Dict[str, bytes]]) -> Optional[Dict[str, str]]:
+def _encode_cosigned_lsig_args(args: Optional[Dict[str, bytes]]) -> Optional[Dict[str, str]]:
     if not args:
         return None
     return {name: value.hex() for name, value in args.items()}
@@ -5058,7 +5058,7 @@ def _validate_bounded_component_plan(
                 f"bounded mutation total_fees_delta {reported_delta} does not "
                 f"match observed delta {total_fee_delta}"
             )
-    _validate_guarded_dummies(planned[len(original) :])
+    _validate_cosigned_dummies(planned[len(original) :])
 
 
 def _bounded_fee_ceiling(info: BoundedAuthorizationInfo) -> Optional[int]:
@@ -5171,7 +5171,7 @@ def _request_bounded_primary_passthrough(
                 {
                     "txn_bytes_hex": txn_hex,
                     "lsig_resources": _wire_lsig_resources(
-                        _guarded_dummy_lsig_resources()
+                        _cosigned_dummy_lsig_resources()
                     ),
                 }
             )
@@ -5210,7 +5210,7 @@ def _request_bounded_primary_passthrough(
             group_bytes_hex[index],
         )
         passthrough.append(
-            GuardedPassthroughItem(
+            CosignedPassthroughItem(
                 target_index=index,
                 signed_txn_hex=response.signed[index],
             )
@@ -5226,7 +5226,7 @@ def sign_prepared_bounded_cosigner_group(
     cosigner_resolver: Optional[Any] = None,
     cosigner_component_key: str = "",
     assembly_request_id: str = "",
-) -> GuardedSignResult:
+) -> CosignedSignResult:
     """Sign a prepared cosigned1 group using the user-first flow.
 
     The cosigner is asked only for targets whose base component needs it: a
@@ -5278,7 +5278,7 @@ def sign_prepared_bounded_cosigner_group(
             targets.append(
                 {
                     "target_index": index,
-                    "guarded_account": item.auth_address,
+                    "cosigned_account": item.auth_address,
                     "cosigner_public_key_hex": _bounded_cosigner_public_key(key),
                     "cosigner_component_key_type": _bounded_cosigner_component_key_type(key),
                     "logic_sig_resources": resources,
@@ -5315,7 +5315,7 @@ def sign_prepared_bounded_cosigner_group(
                 "target_index": index,
                 "auth_address": item.auth_address,
                 "txn_sender": item.txn_sender,
-                "lsig_args": _encode_guarded_lsig_args(item.lsig_args),
+                "lsig_args": _encode_cosigned_lsig_args(item.lsig_args),
                 "app_call_info": item.app_call_info,
             }
         )
@@ -5375,7 +5375,7 @@ def sign_prepared_bounded_cosigner_group(
     for component in component_response.components:
         target = target_by_index.get(component["target_index"])
         if (target is None or component.get("kind") != COMPONENT_TARGET_KIND_BOUNDED_BASE
-                or component.get("auth_address") != target["guarded_account"]):
+                or component.get("auth_address") != target["cosigned_account"]):
             raise SignerError(
                 f"signer returned unexpected bounded component target " f"{component['target_index']}"
             )
@@ -5443,7 +5443,7 @@ def sign_prepared_bounded_cosigner_group(
         cosigner_component_responses.append(response)
         cosigner_signatures.update(_component_signatures_by_index(response))
 
-    passthrough.extend(_sign_guarded_dummies(planned[len(prepared) :], len(prepared)))
+    passthrough.extend(_sign_cosigned_dummies(planned[len(prepared) :], len(prepared)))
     assembly_targets: List[AssemblyTarget] = []
     for target in targets:
         index = target["target_index"]
@@ -5476,7 +5476,7 @@ def sign_prepared_bounded_cosigner_group(
         )
     )
     _verify_bounded_assembled_group(frozen_group, assembly_response.signed_group)
-    return GuardedSignResult(
+    return CosignedSignResult(
         signed_group=list(assembly_response.signed_group),
         cosigner_component_responses=cosigner_component_responses,
         primary_sign_response=primary_response,
@@ -5485,7 +5485,7 @@ def sign_prepared_bounded_cosigner_group(
     )
 
 
-def sign_prepared_guarded_group(
+def sign_prepared_cosigned_group(
     *,
     user_client: SignerClient,
     prepared_group: PreparedGroup,
@@ -5493,10 +5493,10 @@ def sign_prepared_guarded_group(
     cosigner_resolver: Optional[Any] = None,
     cosigner_component_key: str = "",
     assembly_request_id: str = "",
-) -> GuardedSignResult:
+) -> CosignedSignResult:
     """
-    Canonicalize a prepared group locally, classify guarded and primary slots,
-    then sign and assemble it through guarded component endpoints.
+    Canonicalize a prepared group locally, classify cosigned and primary slots,
+    then sign and assemble it through cosigned component endpoints.
 
     The signer /plan endpoint owns canonical group sizing, dummy insertion,
     and authorization-fee pooling before component signatures are collected.
@@ -5511,15 +5511,15 @@ def sign_prepared_guarded_group(
     )
 
 
-def simulate_prepared_guarded_group(
+def simulate_prepared_cosigned_group(
     algod_client: Any,
     **sign_options: Any,
-) -> GuardedSimulationResult:
-    """Prepare and sign a guarded group, then simulate through client algod."""
+) -> CosignedSimulationResult:
+    """Prepare and sign a cosigned group, then simulate through client algod."""
     if algod_client is None:
         raise ValueError("algod_client is required")
-    signing = sign_prepared_guarded_group(**sign_options)
-    return GuardedSimulationResult(
+    signing = sign_prepared_cosigned_group(**sign_options)
+    return CosignedSimulationResult(
         signing=signing,
         simulation=_simulate_signed_group(algod_client, signing.signed_group),
     )

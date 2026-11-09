@@ -305,7 +305,7 @@ is empty for witness keys, which are not spending accounts, and whenever the
 signer does not report it; never read an empty value as Ed25519.
 Prefer it over `LogicSigResources != nil`, because a native Falcon-1024
 spending key publishes no LogicSig profile and is otherwise indistinguishable
-from an Ed25519 key. `SignPreparedGuardedGroup` uses it to declare
+from an Ed25519 key. `SignPreparedCosignedGroup` uses it to declare
 `PQScheme` on native-PQ group positions that are planned as foreign slots.
 
 `BoundedAuthorization.Rekey` is a bounded account's rekey setting:
@@ -558,11 +558,11 @@ It checks a planned fee against the account's ceiling only on `bounded2`: a
 `plain1` account has none. Before any request it refuses an account whose
 contract it doesn't know, a `bounded2` account without a ceiling, and a `plain1`
 account that advertises one.
-`SignPreparedGuardedGroup` discovers the flow from signer inventory and performs
+`SignPreparedCosignedGroup` discovers the flow from signer inventory and performs
 the user-first sequence:
 
 ```go
-result, err := aplane.SignPreparedGuardedGroup(aplane.PreparedGuardedGroupOptions{
+result, err := aplane.SignPreparedCosignedGroup(aplane.PreparedCosignedGroupOptions{
 	UserClient:     userClient,
 	CosignerResolver: cosignerResolver,
 	PreparedGroup:  preparedGroup,
@@ -607,7 +607,7 @@ if simulation.Failed {
 	// Inspect simulation.Response for algod diagnostics.
 }
 
-guarded, err := aplane.SimulatePreparedGuardedGroup(algodClient, guardedOptions)
+cosigned, err := aplane.SimulatePreparedCosignedGroup(algodClient, cosignedOptions)
 ```
 
 `SimulationResult.SignedGroup` contains fully executable signed transactions

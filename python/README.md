@@ -411,7 +411,7 @@ Witness keys enrolled as cosigners are public policy-signature selectors, not Al
 spending accounts. Do not use them as senders, receivers, auth addresses, or
 rekey targets. A cosigned account (signing flow `cosigned1`) embeds the cosigner
 public key and is assembled through `/sign/assemble`; ordinary `/sign` is not
-sufficient for its slots. Sign it with `sign_prepared_guarded_group`, below. `request_components` and `request_assemble` are
+sufficient for its slots. Sign it with `sign_prepared_cosigned_group`, below. `request_components` and `request_assemble` are
 the low-level calls that helper makes, for applications that own the
 orchestration.
 
@@ -429,7 +429,7 @@ prepared helper detects that flow from signer inventory and routes it
 automatically:
 
 ```python
-result = sign_prepared_guarded_group(
+result = sign_prepared_cosigned_group(
     user_client=user_client,
     cosigner_resolver=cosigner_resolver,
     prepared_group=prepared_group,

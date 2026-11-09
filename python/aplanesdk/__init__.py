@@ -28,9 +28,9 @@ from .signer import (
     # Submission helpers
     send_raw_transaction,
     assemble_group,
-    sign_prepared_guarded_group,
+    sign_prepared_cosigned_group,
     sign_prepared_bounded_cosigner_group,
-    simulate_prepared_guarded_group,
+    simulate_prepared_cosigned_group,
 
     # Enrollment
     request_enrollment,
@@ -107,10 +107,10 @@ from .signer import (
     AssemblyTarget,
     AssemblyResponse,
     ASSEMBLY_TARGET_KIND_BOUNDED_COSIGNER,
-    GuardedPassthroughAuthorization,
-    GuardedPassthroughItem,
-    GuardedSignResult,
-    GuardedSimulationResult,
+    CosignedPassthroughAuthorization,
+    CosignedPassthroughItem,
+    CosignedSignResult,
+    CosignedSimulationResult,
     PreparedCheck,
     PreparedTransaction,
     PreparedGroup,
@@ -140,9 +140,9 @@ __all__ = [
     # Submission helpers
     "send_raw_transaction",
     "assemble_group",
-    "sign_prepared_guarded_group",
+    "sign_prepared_cosigned_group",
     "sign_prepared_bounded_cosigner_group",
-    "simulate_prepared_guarded_group",
+    "simulate_prepared_cosigned_group",
 
     # Enrollment
     "request_enrollment",
@@ -219,10 +219,10 @@ __all__ = [
     "AssemblyTarget",
     "AssemblyResponse",
     "ASSEMBLY_TARGET_KIND_BOUNDED_COSIGNER",
-    "GuardedPassthroughAuthorization",
-    "GuardedPassthroughItem",
-    "GuardedSignResult",
-    "GuardedSimulationResult",
+    "CosignedPassthroughAuthorization",
+    "CosignedPassthroughItem",
+    "CosignedSignResult",
+    "CosignedSimulationResult",
     "PreparedCheck",
     "PreparedTransaction",
     "PreparedGroup",

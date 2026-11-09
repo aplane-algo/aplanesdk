@@ -33,20 +33,20 @@
 // Main client
 export {
   SignerClient,
-  signPreparedGuardedGroup,
+  signPreparedCosignedGroup,
   signPreparedBoundedCosignerGroup,
-  simulatePreparedGuardedGroup,
+  simulatePreparedCosignedGroup,
 } from "./client.js";
 export { ErrorCodes } from "./types.js";
 export type { ErrorCode } from "./types.js";
 export type {
-  GuardedSignTarget,
-  GuardedPrimarySignTarget,
-  GuardedCosignerResolution,
-  GuardedCosignerResolver,
-  GuardedSignResult,
-  GuardedSimulationResult,
-  PreparedGuardedGroupOptions,
+  CosignedSignTarget,
+  CosignedPrimarySignTarget,
+  CosignedCosignerResolution,
+  CosignedCosignerResolver,
+  CosignedSignResult,
+  CosignedSimulationResult,
+  PreparedCosignedGroupOptions,
 } from "./client.js";
 export {
   ApsignerAlgoKitAccount,
@@ -162,8 +162,8 @@ export type {
   AssemblyRequest,
   AssemblyTarget,
   AssemblyResponse,
-  GuardedPassthroughItem,
-  GuardedPassthroughAuthorization,
+  CosignedPassthroughItem,
+  CosignedPassthroughAuthorization,
   ComponentContextPosition,
   ComponentDummyPosition,
   ComponentPath,

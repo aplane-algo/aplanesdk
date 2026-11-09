@@ -171,7 +171,7 @@
         {
           "name": "cosigner",
           "label": "Witness Key ID",
-          "description": "Imported Witness Key ID to embed in the guarded account",
+          "description": "Imported Witness Key ID to embed in the cosigned account",
           "type": "select",
           "required": true,
           "options": [

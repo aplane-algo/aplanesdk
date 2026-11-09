@@ -119,7 +119,7 @@ func TestSignPreparedBoundedCosignerGroupOneTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MakePaymentTxn() error = %v", err)
 	}
-	options := PreparedGuardedGroupOptions{
+	options := PreparedCosignedGroupOptions{
 		UserClient: userClient, CosignerClient: cosignerClient,
 		CosignerComponentKey: "COSIGNER_COMPONENT",
 		PreparedGroup: NewPreparedGroup(PreparedTransaction{
@@ -141,9 +141,9 @@ func TestSignPreparedBoundedCosignerGroupOneTarget(t *testing.T) {
 			},
 		}),
 	}
-	result, err := SignPreparedGuardedGroup(options)
+	result, err := SignPreparedCosignedGroup(options)
 	if err != nil {
-		t.Fatalf("SignPreparedGuardedGroup() error = %v", err)
+		t.Fatalf("SignPreparedCosignedGroup() error = %v", err)
 	}
 	if len(result.SignedGroup) != 1 || result.BoundedComponentResponse == nil ||
 		result.BoundedAssemblyResponse == nil {
@@ -151,9 +151,9 @@ func TestSignPreparedBoundedCosignerGroupOneTarget(t *testing.T) {
 	}
 	componentCalls = 0
 	options.PreparedGroup.Transactions[0].SignerKey.BoundedAuthorization.MaxFee = new(uint64(999))
-	if _, err := SignPreparedGuardedGroup(options); err == nil ||
+	if _, err := SignPreparedCosignedGroup(options); err == nil ||
 		!strings.Contains(err.Error(), "exceeds advertised max_fee") {
-		t.Fatalf("SignPreparedGuardedGroup() error = %v, want max_fee rejection", err)
+		t.Fatalf("SignPreparedCosignedGroup() error = %v, want max_fee rejection", err)
 	}
 	if componentCalls != 0 {
 		t.Fatalf("component calls = %d, want none before max_fee rejection", componentCalls)
@@ -236,12 +236,12 @@ func TestSignPreparedBoundedCosignerGroupSkipsTheCosignerOnAListedRekey(t *testi
 			Cosigner:  &BoundedCosignerAuthorizationInfo{ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: "aabb"},
 		},
 	}
-	result, err := SignPreparedGuardedGroup(PreparedGuardedGroupOptions{
+	result, err := SignPreparedCosignedGroup(PreparedCosignedGroupOptions{
 		UserClient: userClient, CosignerClient: cosignerClient, CosignerComponentKey: "COSIGNER_COMPONENT",
 		PreparedGroup: NewPreparedGroup(PreparedTransaction{Transaction: &txn, AuthAddress: bounded, SignerKey: key}),
 	})
 	if err != nil {
-		t.Fatalf("SignPreparedGuardedGroup() error = %v", err)
+		t.Fatalf("SignPreparedCosignedGroup() error = %v", err)
 	}
 	if len(result.SignedGroup) != 1 || len(result.CosignerComponentResponses) != 0 {
 		t.Fatalf("result = %+v, want a signed group and no cosigner response", result)
@@ -372,7 +372,7 @@ func TestSignPreparedBoundedCosignerGroupDeclaresNativePQPrimary(t *testing.T) {
 			corridorTxn.Group = groupID
 			nativeTxn.Group = groupID
 
-			_, err = SignPreparedGuardedGroup(PreparedGuardedGroupOptions{
+			_, err = SignPreparedCosignedGroup(PreparedCosignedGroupOptions{
 				UserClient: userClient, CosignerClient: cosignerClient,
 				CosignerComponentKey: "COSIGNER_COMPONENT",
 				PreparedGroup: NewPreparedGroup(
@@ -413,7 +413,7 @@ func TestSignPreparedBoundedCosignerGroupDeclaresNativePQPrimary(t *testing.T) {
 				return
 			}
 			if err != nil {
-				t.Fatalf("SignPreparedGuardedGroup() error = %v", err)
+				t.Fatalf("SignPreparedCosignedGroup() error = %v", err)
 			}
 			if got := eventSnapshot(); got != "base,sign,cosigner,assemble" {
 				t.Fatalf("calls = %s, want %s", got, "base,sign,cosigner,assemble")
@@ -786,15 +786,15 @@ func TestRequestBoundedPrimaryPassthroughVerifiesTransactionIdentity(t *testing.
 	})
 	defer server.Close()
 
-	args := func() (*primaryGuardedPassthrough, error) {
+	args := func() (*primaryCosignedPassthrough, error) {
 		return requestBoundedPrimaryPassthrough(
 			context.Background(),
 			client,
 			[]string{canonical},
 			1,
-			map[int]GuardedSignTarget{},
+			map[int]CosignedSignTarget{},
 			map[int]*LogicSigResourceUsage{},
-			[]GuardedPrimarySignTarget{{TargetIndex: 0, AuthAddress: sender}},
+			[]CosignedPrimarySignTarget{{TargetIndex: 0, AuthAddress: sender}},
 		)
 	}
 	if _, err := args(); err != nil {
@@ -821,7 +821,7 @@ func TestValidateBoundedComponentPlan(t *testing.T) {
 	plannedOriginal := original
 	plannedOriginal.Fee += 1000
 	plannedOriginal.Group = types.Digest{0x44}
-	dummies, err := createGuardedDummies(original, 1)
+	dummies, err := createCosignedDummies(original, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -859,12 +859,12 @@ func TestValidateBoundedComponentPlan(t *testing.T) {
 		badPlanned := append([]types.Transaction(nil), planned...)
 		badPlanned[1].Amount = 1
 		if err := validateBoundedComponentPlan([]types.Transaction{original}, badPlanned, mutations); err == nil ||
-			!strings.Contains(err.Error(), "canonical guarded budget dummy") {
+			!strings.Contains(err.Error(), "canonical cosigned budget dummy") {
 			t.Fatalf("error = %v, want dummy-shape rejection", err)
 		}
-		if _, err := signGuardedDummies(badPlanned[1:], 1); err == nil ||
-			!strings.Contains(err.Error(), "canonical guarded budget dummy") {
-			t.Fatalf("signGuardedDummies() error = %v, want dummy-shape rejection", err)
+		if _, err := signCosignedDummies(badPlanned[1:], 1); err == nil ||
+			!strings.Contains(err.Error(), "canonical cosigned budget dummy") {
+			t.Fatalf("signCosignedDummies() error = %v, want dummy-shape rejection", err)
 		}
 	})
 	t.Run("gratuitous existing group change", func(t *testing.T) {

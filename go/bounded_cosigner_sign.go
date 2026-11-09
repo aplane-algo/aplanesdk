@@ -16,19 +16,19 @@ import (
 )
 
 // SignPreparedBoundedCosignerGroup signs a prepared group containing one or more
-// cosigned1 targets. Most callers can use SignPreparedGuardedGroup,
+// cosigned1 targets. Most callers can use SignPreparedCosignedGroup,
 // which dispatches to this choreography from signer inventory metadata.
-func SignPreparedBoundedCosignerGroup(opts PreparedGuardedGroupOptions) (*GuardedSignResult, error) {
+func SignPreparedBoundedCosignerGroup(opts PreparedCosignedGroupOptions) (*CosignedSignResult, error) {
 	return SignPreparedBoundedCosignerGroupWithContext(context.Background(), opts)
 }
 
 // SignPreparedBoundedCosignerGroupWithContext is the context-aware form of
 // SignPreparedBoundedCosignerGroup.
-func SignPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts PreparedGuardedGroupOptions) (*GuardedSignResult, error) {
+func SignPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts PreparedCosignedGroupOptions) (*CosignedSignResult, error) {
 	return signPreparedBoundedCosignerGroupWithContext(ctx, opts)
 }
 
-func signPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts PreparedGuardedGroupOptions) (*GuardedSignResult, error) {
+func signPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts PreparedCosignedGroupOptions) (*CosignedSignResult, error) {
 	if opts.UserClient == nil {
 		return nil, fmt.Errorf("user client is required")
 	}
@@ -38,8 +38,8 @@ func signPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts Prepa
 	}
 
 	requests := make([]SignRequest, len(prepared))
-	targets := make([]GuardedSignTarget, 0, len(prepared))
-	primaryTargets := make([]GuardedPrimarySignTarget, 0, len(prepared))
+	targets := make([]CosignedSignTarget, 0, len(prepared))
+	primaryTargets := make([]CosignedPrimarySignTarget, 0, len(prepared))
 	targetResources := make(map[int]*LogicSigResourceUsage)
 	targetKeys := make(map[int]*KeyInfo)
 	targetMaxFees := make(map[int]uint64)
@@ -91,9 +91,9 @@ func signPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts Prepa
 			if hasCeiling {
 				targetMaxFees[i] = maxFee
 			}
-			targets = append(targets, GuardedSignTarget{
+			targets = append(targets, CosignedSignTarget{
 				TargetIndex:              i,
-				GuardedAccount:           item.AuthAddress,
+				CosignedAccount:          item.AuthAddress,
 				CosignerPublicKeyHex:     boundedCosignerPublicKey(key),
 				CosignerComponentKeyType: boundedCosignerComponentKeyType(key),
 				LogicSigResources:        resources,
@@ -120,11 +120,11 @@ func signPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts Prepa
 			if item.AuthAddress == "" {
 				return nil, fmt.Errorf("prepared transaction %d: primary auth address is required", i)
 			}
-			primaryTargets = append(primaryTargets, GuardedPrimarySignTarget{
+			primaryTargets = append(primaryTargets, CosignedPrimarySignTarget{
 				TargetIndex: i,
 				AuthAddress: item.AuthAddress,
 				TxnSender:   item.TxnSender,
-				LsigArgs:    encodeGuardedLsigArgs(item.LsigArgs),
+				LsigArgs:    encodeCosignedLsigArgs(item.LsigArgs),
 				AppCallInfo: item.AppCallInfo,
 			})
 		}
@@ -171,13 +171,13 @@ func signPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts Prepa
 		return nil, fmt.Errorf("bounded base component signing failed: %w", err)
 	}
 	components := make(map[int]Component, len(componentResp.Components))
-	targetsByIndex := make(map[int]GuardedSignTarget, len(targets))
+	targetsByIndex := make(map[int]CosignedSignTarget, len(targets))
 	for _, target := range targets {
 		targetsByIndex[target.TargetIndex] = target
 	}
 	for _, component := range componentResp.Components {
 		target, ok := targetsByIndex[component.TargetIndex]
-		if !ok || component.Kind != ComponentTargetKindBoundedBase || component.AuthAddress != target.GuardedAccount {
+		if !ok || component.Kind != ComponentTargetKindBoundedBase || component.AuthAddress != target.CosignedAccount {
 			return nil, fmt.Errorf("signer returned unexpected bounded component target %d", component.TargetIndex)
 		}
 		if _, duplicate := components[component.TargetIndex]; duplicate {
@@ -199,7 +199,7 @@ func signPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts Prepa
 		targetResources[target.TargetIndex] = resources
 	}
 
-	result := &GuardedSignResult{BoundedComponentResponse: componentResp}
+	result := &CosignedSignResult{BoundedComponentResponse: componentResp}
 	primary, err := requestBoundedPrimaryPassthrough(
 		ctx, opts.UserClient, planResp.Transactions, len(prepared),
 		targetsByIndex, targetResources, primaryTargets,
@@ -213,7 +213,7 @@ func signPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts Prepa
 
 	// The user side is complete, including ordinary primary positions. Only
 	// now may the SDK disclose the frozen group to the cosigner endpoint.
-	cosignerOpts := GuardedSignOptions{
+	cosignerOpts := CosignedSignOptions{
 		UserClient:           opts.UserClient,
 		CosignerClient:       opts.CosignerClient,
 		CosignerResolver:     opts.CosignerResolver,
@@ -224,13 +224,13 @@ func signPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts Prepa
 	}
 	// A listed rekey takes no cosigner component, so the cosigner sees only
 	// the targets that need it, and none at all when no target does.
-	cosigned := make([]GuardedSignTarget, 0, len(targets))
+	cosigned := make([]CosignedSignTarget, 0, len(targets))
 	for _, target := range targets {
 		if components[target.TargetIndex].NeedsCosigner() {
 			cosigned = append(cosigned, target)
 		}
 	}
-	cosignerSignatures := map[int]guardedComponentSignature{}
+	cosignerSignatures := map[int]cosignedComponentSignature{}
 	if len(cosigned) > 0 {
 		cosignerSignatures, err = requestCosignerComponentSignatures(ctx, cosignerOpts, cosigned, result)
 		if err != nil {
@@ -241,7 +241,7 @@ func signPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts Prepa
 	if primary != nil {
 		passthrough = append(passthrough, primary.passthrough...)
 	}
-	dummies, err := signGuardedDummies(planned[len(prepared):], len(prepared))
+	dummies, err := signCosignedDummies(planned[len(prepared):], len(prepared))
 	if err != nil {
 		return nil, err
 	}
@@ -253,7 +253,7 @@ func signPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts Prepa
 		assemblyTarget := AssemblyTarget{
 			TargetIndex:         target.TargetIndex,
 			Kind:                AssemblyTargetKindBoundedCosigner,
-			AuthAddress:         target.GuardedAccount,
+			AuthAddress:         target.CosignedAccount,
 			BaseSignatures:      append([]string(nil), component.BaseSignatures...),
 			BoundedRuntimeArgs:  cloneStringMap(component.RuntimeArgs),
 			AssemblyReceipt:     component.AssemblyReceipt,
@@ -317,14 +317,14 @@ func requestBoundedPrimaryPassthrough(
 	client *SignerClient,
 	groupBytesHex []string,
 	originalCount int,
-	targets map[int]GuardedSignTarget,
+	targets map[int]CosignedSignTarget,
 	targetResources map[int]*LogicSigResourceUsage,
-	primaryTargets []GuardedPrimarySignTarget,
-) (*primaryGuardedPassthrough, error) {
+	primaryTargets []CosignedPrimarySignTarget,
+) (*primaryCosignedPassthrough, error) {
 	if len(primaryTargets) == 0 {
 		return nil, nil
 	}
-	primaryByIndex := make(map[int]GuardedPrimarySignTarget, len(primaryTargets))
+	primaryByIndex := make(map[int]CosignedPrimarySignTarget, len(primaryTargets))
 	for _, target := range primaryTargets {
 		if target.TargetIndex < 0 || target.TargetIndex >= originalCount {
 			return nil, fmt.Errorf("primary target %d out of range", target.TargetIndex)
@@ -339,9 +339,9 @@ func requestBoundedPrimaryPassthrough(
 		switch {
 		case i >= originalCount:
 			requests[i] = SignRequest{
-				TxnBytesHex: txnHex, LsigResources: guardedDummyLogicSigResources(),
+				TxnBytesHex: txnHex, LsigResources: cosignedDummyLogicSigResources(),
 			}
-		case targets[i].GuardedAccount != "":
+		case targets[i].CosignedAccount != "":
 			requests[i] = SignRequest{TxnBytesHex: txnHex, LsigResources: targetResources[i]}
 		default:
 			target, ok := primaryByIndex[i]
@@ -376,7 +376,7 @@ func requestBoundedPrimaryPassthrough(
 	sort.Slice(passthrough, func(i, j int) bool {
 		return passthrough[i].TargetIndex < passthrough[j].TargetIndex
 	})
-	return &primaryGuardedPassthrough{response: response, passthrough: passthrough}, nil
+	return &primaryCosignedPassthrough{response: response, passthrough: passthrough}, nil
 }
 
 func decodeCanonicalGroup(groupHex []string) ([]types.Transaction, error) {
@@ -503,7 +503,7 @@ func validateBoundedComponentPlan(original, planned []types.Transaction, mutatio
 	if mutations != nil && uint64(mutations.TotalFeesDelta) != totalFeeDelta {
 		return fmt.Errorf("bounded mutation total_fees_delta %d does not match observed delta %d", mutations.TotalFeesDelta, totalFeeDelta)
 	}
-	if err := validateGuardedDummies(planned[len(original):]); err != nil {
+	if err := validateCosignedDummies(planned[len(original):]); err != nil {
 		return err
 	}
 	return nil
