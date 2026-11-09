@@ -255,13 +255,11 @@ func TestSignPreparedCosignedGroupSkipsTheCosignerOnAListedRekey(t *testing.T) {
 	}
 }
 
-// A native-PQ primary slot is contextual to /sign/component, so
-// the signer budgets its fee purely from the declared pq_scheme. Omitting it
-// freezes an under-funded canonical group that the later /sign identity check
-// cannot detect, because the shortfall is already inside the canonical bytes.
 // A non-cosigned position the signer holds is sent as the signer's own: in
 // sign mode on /plan, and as a contextual position with auth_address on
 // /sign/component. The signer sizes it and can charge it; no hint is sent.
+// Here the plan puts the group's authorization charge on the held primary,
+// which the SDK must accept and sign.
 func TestSignPreparedCosignedGroupSendsAHeldPrimaryAsTheSignersOwn(t *testing.T) {
 	for _, rejectSign := range []bool{false, true} {
 		t.Run(fmt.Sprintf("rejectSign=%v", rejectSign), func(t *testing.T) {
@@ -295,8 +293,27 @@ func TestSignPreparedCosignedGroupSendsAHeldPrimaryAsTheSignersOwn(t *testing.T)
 						t.Fatalf("decode plan request: %v", err)
 					}
 					primaryRequest = req.Requests[1]
-					frozenGroup = []string{req.Requests[0].TxnBytesHex, req.Requests[1].TxnBytesHex}
-					json.NewEncoder(w).Encode(PlanGroupResponse{Transactions: frozenGroup})
+					planned, err := decodeCanonicalGroup([]string{req.Requests[0].TxnBytesHex, req.Requests[1].TxnBytesHex})
+					if err != nil {
+						t.Fatalf("decode planned group: %v", err)
+					}
+					// The bounded target stays at its 1000 fee ceiling; the
+					// held primary carries the charge.
+					planned[1].Fee += 2000
+					planned[0].Group, planned[1].Group = types.Digest{}, types.Digest{}
+					groupID, err := algocrypto.ComputeGroupID(planned)
+					if err != nil {
+						t.Fatalf("ComputeGroupID() error = %v", err)
+					}
+					planned[0].Group, planned[1].Group = groupID, groupID
+					frozenGroup = []string{hex.EncodeToString(encodeTxn(planned[0])), hex.EncodeToString(encodeTxn(planned[1]))}
+					json.NewEncoder(w).Encode(PlanGroupResponse{
+						Transactions: frozenGroup,
+						Mutations: &MutationReport{
+							GroupIDChanged: true, FeesModified: []int{1}, TotalFeesDelta: 2000,
+							OriginalCount: 2, FinalCount: 2,
+						},
+					})
 				case "/sign/component":
 					record("base")
 					var req ComponentRequest
@@ -305,6 +322,9 @@ func TestSignPreparedCosignedGroupSendsAHeldPrimaryAsTheSignersOwn(t *testing.T)
 					}
 					if len(req.Targets) != 1 || len(req.ContextualPositions) != 1 {
 						t.Fatalf("bounded component partition = %+v", req)
+					}
+					if got := strings.Join(req.GroupBytesHex, ","); got != strings.Join(frozenGroup, ",") {
+						t.Fatalf("component group = %s, want the planned group with the primary's charge", got)
 					}
 					if position := req.ContextualPositions[0]; position.AuthAddress != nativePQ || position.PQScheme != "" || position.LsigResources != nil {
 						t.Fatalf("contextual position = %+v, want auth_address %s and no hint", position, nativePQ)
@@ -432,6 +452,25 @@ func TestSignPreparedCosignedGroupSendsAHeldPrimaryAsTheSignersOwn(t *testing.T)
 				t.Fatalf("primary slot carries a size hint: %+v", primaryRequest)
 			}
 		})
+	}
+}
+
+// The signer sizes its own position from its records, so a contextual position
+// with auth_address takes no size hint. The message matches the other SDKs.
+func TestComponentRequestRejectsASizeHintOnTheSignersOwnPosition(t *testing.T) {
+	for name, position := range map[string]ComponentContextPosition{
+		"pq_scheme":      {TargetIndex: 1, AuthAddress: "PRIMARY", PQScheme: PQSchemeFalcon1024},
+		"lsig_resources": {TargetIndex: 1, AuthAddress: "PRIMARY", LsigResources: &LogicSigResourceUsage{ProgramBytes: 1, MaxOpcodeCost: 1}},
+	} {
+		req := ComponentRequest{
+			GroupBytesHex:       []string{"5458aa", "5458bb"},
+			Targets:             []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindBoundedBase, AuthAddress: "BOUNDED"}},
+			ContextualPositions: []ComponentContextPosition{position},
+		}
+		want := "contextual position 1: lsig_resources and pq_scheme are allowed only without auth_address"
+		if err := req.Validate(); err == nil || err.Error() != want {
+			t.Fatalf("%s: Validate() error = %v, want %q", name, err, want)
+		}
 	}
 }
 

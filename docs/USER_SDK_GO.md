@@ -305,8 +305,11 @@ is empty for witness keys, which are not spending accounts, and whenever the
 signer does not report it; never read an empty value as Ed25519.
 Prefer it over `LogicSigResources != nil`, because a native Falcon-1024
 spending key publishes no LogicSig profile and is otherwise indistinguishable
-from an Ed25519 key. `SignPreparedCosignedGroup` uses it to declare
-`PQScheme` on native-PQ group positions that are planned as foreign slots.
+from an Ed25519 key. `SignPreparedCosignedGroup` sends no size hint for a
+position the signer holds: it names the position's `AuthAddress`, and the
+signer sizes the position from its own records and can put the group's
+authorization charge on it. Setting `PQScheme` or `LsigResources` on such a
+position is an error.
 
 `BoundedAuthorization.Rekey` is a bounded account's rekey setting:
 `spending_key` lets the spending key rekey the account, and `refused` means the

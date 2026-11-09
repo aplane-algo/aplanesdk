@@ -1674,12 +1674,12 @@ class TestSignPreparedCosignedGroup:
         user.request_components.assert_not_called()
 
     @pytest.mark.parametrize("reject_sign", [False, True])
-    def test_prepared_bounded_cosigner_declares_native_pq_primary(self, reject_sign):
-        """A native-PQ primary slot is declared foreign to
-        /sign/component request, so the signer budgets its fee purely from the
-        declared pq_scheme. Omitting it freezes an under-funded canonical group
-        that the later /sign identity check cannot detect, because the
-        shortfall is already inside the canonical bytes.
+    def test_prepared_bounded_cosigner_sends_held_primary_as_signers_own(self, reject_sign):
+        """A non-cosigned position the signer holds is sent as the signer's
+        own: in sign mode on /plan, and as a contextual position with
+        auth_address on /sign/component. The signer sizes it and can charge
+        it; no hint is sent. Here the plan puts the group's authorization
+        charge on the held primary, which the SDK must accept and sign.
         """
         bounded = sdk_test_address(41)
         native_pq = sdk_test_address(42)
@@ -1699,12 +1699,20 @@ class TestSignPreparedCosignedGroup:
         bounded_txn = transaction.PaymentTxn(bounded, params, receiver, 1000)
         native_txn = transaction.PaymentTxn(native_pq, params, receiver, 2000)
         transaction.assign_group_id([bounded_txn, native_txn])
+        # The bounded target stays at its 1000 fee ceiling; the held primary
+        # carries the charge.
+        planned_bounded = copy.deepcopy(bounded_txn)
+        planned_native = copy.deepcopy(native_txn)
+        planned_native.fee += 2000
+        planned_bounded.group = planned_native.group = None
+        transaction.assign_group_id([planned_bounded, planned_native])
         planned_hex = [
-            encode_transaction(bounded_txn)[0],
-            encode_transaction(native_txn)[0],
+            encode_transaction(planned_bounded)[0],
+            encode_transaction(planned_native)[0],
         ]
 
         def bounded_component(req):
+            assert req.group_bytes_hex == planned_hex
             assert len(req.targets) == 1
             assert len(req.contextual_positions) == 1
             # The held position names its account and carries no size hint.
@@ -1732,6 +1740,14 @@ class TestSignPreparedCosignedGroup:
         user.plan_requests = MagicMock(side_effect=lambda requests: (
             captured.update(primary=requests[1]) or {
                 "transactions": planned_hex,
+                "mutations": {
+                    "group_id_changed": True,
+                    "fees_modified": [1],
+                    "total_fees_delta": 2000,
+                    "dummies_added": 0,
+                    "original_count": 2,
+                    "final_count": 2,
+                },
             }
         ))
         cosigner.request_components = MagicMock(return_value=component_response(
@@ -1741,7 +1757,7 @@ class TestSignPreparedCosignedGroup:
             )],
         ))
         user.sign_requests = MagicMock(return_value=GroupSignResponse(
-            signed=["", signed_txn_hex(native_txn)]
+            signed=["", signed_txn_hex(planned_native)]
         ))
         if reject_sign:
             user.sign_requests = MagicMock(
@@ -1749,7 +1765,7 @@ class TestSignPreparedCosignedGroup:
             )
         user.request_assemble = MagicMock(return_value=AssemblyResponse(
             request_id="assembly-id",
-            signed_group=[signed_txn_hex(bounded_txn), signed_txn_hex(native_txn)],
+            signed_group=[signed_txn_hex(planned_bounded), signed_txn_hex(planned_native)],
         ))
 
         events = []
@@ -1854,6 +1870,34 @@ class TestSignPreparedCosignedGroup:
                                 spend=LogicSigResourceUsage(1612, 1423, 20000)
                             ),
                         ),
+                    )
+                ]),
+            )
+
+    def test_prepared_group_names_the_position_of_a_bad_primary(self):
+        """A held primary takes no size hint; the error names its index."""
+        account = sdk_test_address(1)
+        params = transaction.SuggestedParams(
+            1000,
+            1,
+            100,
+            base64.b64encode(bytes(32)).decode(),
+            "testnet-v1.0",
+            flat_fee=True,
+        )
+        txn = transaction.PaymentTxn(account, params, sdk_test_address(2), 1000)
+        with pytest.raises(
+            ValueError,
+            match="prepared transaction 0: pq_scheme is allowed only for foreign transactions",
+        ):
+            sign_prepared_cosigned_group(
+                user_client=MagicMock(),
+                prepared_group=PreparedGroup([
+                    PreparedTransaction(
+                        transaction=txn,
+                        auth_address=account,
+                        pq_scheme="f1",
+                        signer_key=KeyInfo(address=account, key_type="falcon1024"),
                     )
                 ]),
             )

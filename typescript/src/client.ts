@@ -632,16 +632,15 @@ export async function signPreparedCosignedGroup(
     if (!key) {
       throw new SignerError(`prepared transaction ${index}: signer key metadata is required`);
     }
-    const resources = selectedPreparedResources(key, item.transaction);
     if (key.signingFlow === SIGNING_FLOW_COSIGNED1) {
       if (!item.authAddress) {
         throw new SignerError(`prepared transaction ${index}: bounded auth address is required`);
       }
       const requiredResources = requireLogicSigResources(
-        resources,
+        selectedPreparedResources(key, item.transaction),
         `prepared transaction ${index}: bounded`,
       );
-      requests.push(preparedTransactionToSignRequest(item));
+      requests.push(preparedSignRequest(item, index));
       targetResources.set(index, requiredResources);
       targetKeys.set(index, key);
       if (!key.boundedAuthorization) {
@@ -677,7 +676,7 @@ export async function signPreparedCosignedGroup(
     // in both and can put the group's authorization charge on it. Sent as
     // foreign with a size hint, it was immutable, and the cosigned targets
     // paid its charge.
-    requests.push(preparedTransactionToSignRequest(item));
+    requests.push(preparedSignRequest(item, index));
     primaryTargets.push({
       targetIndex: index,
       authAddress: item.authAddress,
@@ -988,8 +987,15 @@ function validateComponentRequest(request: ComponentRequest): void {
     covered.add(position.target_index);
   });
   contextual.forEach((position, index) => {
-    // With auth_address the position is the signer's own, which the signer
-    // sizes from its records: it takes no hint.
+    // auth_address marks one of the signer's own accounts. Only a
+    // bounded-base request sizes the group, so only it takes the field.
+    const hasLsigArgs = position.lsig_args !== undefined && Object.keys(position.lsig_args).length > 0;
+    if ((position.auth_address || hasLsigArgs) && kind !== "bounded-base") {
+      throw new SignerError(
+        `contextual position ${index + 1}: auth_address and lsig_args are allowed only on a bounded-base request`,
+      );
+    }
+    // The signer sizes its own account from its records: it takes no hint.
     if (position.auth_address && (position.lsig_resources || position.pq_scheme)) {
       throw new SignerError(
         `contextual position ${index + 1}: lsig_resources and pq_scheme are allowed only without auth_address`,
@@ -1210,6 +1216,21 @@ function componentPathResources(
     throw new SignerError(`${label}: signer key publishes no LogicSig resources for path ${JSON.stringify(path)}`);
   }
   return { ...selected };
+}
+
+/** A prepared slot's SignRequest entry, with its index on any error. */
+function preparedSignRequest(
+  item: PreparedTransaction,
+  index: number,
+): ReturnType<typeof preparedTransactionToSignRequest> {
+  try {
+    return preparedTransactionToSignRequest(item);
+  } catch (error) {
+    if (error instanceof SignerError) {
+      throw new SignerError(`prepared transaction ${index}: ${error.message}`);
+    }
+    throw error;
+  }
 }
 
 /**

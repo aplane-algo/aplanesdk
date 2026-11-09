@@ -54,14 +54,14 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 		}
 		appCallInfo[i] = item.AppCallInfo
 
-		resources, err := selectedPreparedResources(key, item.Transaction)
-		if err != nil {
-			return nil, fmt.Errorf("prepared transaction %d: %w", i, err)
-		}
 		switch key.SigningFlow {
 		case SigningFlowCosigned1:
 			if item.AuthAddress == "" {
 				return nil, fmt.Errorf("prepared transaction %d: bounded auth address is required", i)
+			}
+			resources, err := selectedPreparedResources(key, item.Transaction)
+			if err != nil {
+				return nil, fmt.Errorf("prepared transaction %d: %w", i, err)
 			}
 			if resources == nil {
 				return nil, fmt.Errorf("prepared transaction %d: bounded LogicSig resources are unavailable", i)

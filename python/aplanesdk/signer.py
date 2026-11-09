@@ -1543,6 +1543,14 @@ def _component_path_resources(
     return LogicSigResourceUsage(**vars(selected))
 
 
+def _prepared_sign_request(item: "PreparedTransaction", index: int) -> Dict[str, Any]:
+    """A prepared slot's SignRequest entry, with its index on any error."""
+    try:
+        return item.to_sign_request()
+    except ValueError as e:
+        raise ValueError(f"prepared transaction {index}: {e}") from e
+
+
 def _parse_bounded_authorization(data: Any) -> Optional[BoundedAuthorizationInfo]:
     if not isinstance(data, dict):
         return None
@@ -1759,6 +1767,15 @@ def _validate_component_request(data: Dict[str, Any]) -> None:
                 raise ValueError(f"target {index}: bounded-base target requires auth_address and forbids component_key")
         else:
             raise ValueError(f"target {index}: unsupported component kind {kind!r}")
+    # auth_address marks one of the signer's own accounts. Only a bounded-base
+    # request sizes the group, so only it takes the field.
+    if kind != COMPONENT_TARGET_KIND_BOUNDED_BASE:
+        for index, position in enumerate(context, start=1):
+            if position.get("auth_address") or position.get("lsig_args"):
+                raise ValueError(
+                    f"contextual position {index}: auth_address and lsig_args "
+                    "are allowed only on a bounded-base request"
+                )
     probe = {
         "request_id": data.get("request_id", ""),
         "group_bytes_hex": group,
@@ -5261,15 +5278,14 @@ def sign_prepared_cosigned_group(
             key = user_client.get_key_info(item.auth_address)
         if key is None:
             raise ValueError(f"prepared transaction {index}: signer key metadata is required")
-        resources = _selected_prepared_resources(key, item.transaction)
         if key.signing_flow == SIGNING_FLOW_COSIGNED1:
             if not item.auth_address:
                 raise ValueError(f"prepared transaction {index}: bounded auth address is required")
             resources = _require_lsig_resources(
-                resources,
+                _selected_prepared_resources(key, item.transaction),
                 f"prepared transaction {index}: bounded",
             )
-            requests_data.append(item.to_sign_request())
+            requests_data.append(_prepared_sign_request(item, index))
             target_resources[index] = resources
             target_keys[index] = key
             if key.bounded_authorization is None:
@@ -5303,7 +5319,7 @@ def sign_prepared_cosigned_group(
         # in both and can put the group's authorization charge on it. Sent as
         # foreign with a size hint, it was immutable, and the cosigned targets
         # paid its charge.
-        requests_data.append(item.to_sign_request())
+        requests_data.append(_prepared_sign_request(item, index))
         primary_targets.append(
             {
                 "target_index": index,
