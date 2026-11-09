@@ -719,11 +719,12 @@ export async function signPreparedCosignedGroup(
         lsig_args: request.lsig_args,
         app_call_info: request.app_call_info,
       }] : []),
+      // The user signer's approval shows the other positions' app calls.
       contextual_positions: requests.flatMap((request, index) => targetIndices.has(index) ? [] : [{
         target_index: index,
         lsig_resources: request.lsig_resources,
         pq_scheme: request.pq_scheme,
-        app_call_info: request.app_call_info,
+        app_call_info: prepared[index].appCallInfo,
       }]),
       dummy_positions: frozenGroup.slice(prepared.length).map((_, offset) => ({
         target_index: prepared.length + offset,

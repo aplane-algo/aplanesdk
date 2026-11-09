@@ -1510,6 +1510,12 @@ class TestSignPreparedCosignedGroup:
                 for position in cosigner_request.contextual_positions
             } == {0: {"mode": "listed"}, 3: {"mode": "primary"}}
 
+            # The user signer's approval shows the primary slot's app call.
+            base_request = user.request_components.call_args.args[0]
+            assert [
+                (position["target_index"], position.get("app_call_info"))
+                for position in base_request.contextual_positions
+            ] == [(3, {"mode": "primary"})]
             primary_requests = user.sign_requests.call_args.args[0]
             assert len(primary_requests) == 4
             for index, argument_bytes in {0: 1583, 1: 3358, 2: 3358}.items():

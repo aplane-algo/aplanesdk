@@ -961,6 +961,10 @@ func TestSignPreparedCosignedGroupMixedPaths(t *testing.T) {
 					if len(req.Targets) != 3 || len(req.ContextualPositions) != 1 || req.ContextualPositions[0].TargetIndex != 3 {
 						t.Fatalf("bounded component partition = %+v", req)
 					}
+					// The user signer's approval shows the primary slot's app call.
+					if info := req.ContextualPositions[0].AppCallInfo; info == nil || info.Mode != "primary" {
+						t.Fatalf("bounded component contextual app call info = %+v, want the primary slot's", info)
+					}
 					base := func(index int, account, path string) Component {
 						return Component{
 							TargetIndex: index, Kind: ComponentTargetKindBoundedBase, AuthAddress: account,

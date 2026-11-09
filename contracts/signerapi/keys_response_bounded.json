@@ -57,8 +57,7 @@
         "rekey": "refused"
       },
       "parameters": {
-        "recipients": "ADDR1,ADDR2",
-        "spend_effects": "pay,axfer,asset_opt_in"
+        "recipients": "ADDR1,ADDR2"
       }
     },
     {

@@ -1881,10 +1881,14 @@ describe("SignerClient", () => {
         (user as any).planRequests = async (requests: any[]) => ({
           transactions: requests.map((request) => request.txn_bytes_hex),
         });
-        (user as any).requestComponents = async () => ({
-          request_id: "base-id",
-          components: [base(0, listed, "listed_rekey"), base(1, spendA, "spend"), base(2, spendB, "spend")],
-        });
+        let baseRequest: any;
+        (user as any).requestComponents = async (request: any) => {
+          baseRequest = request;
+          return {
+            request_id: "base-id",
+            components: [base(0, listed, "listed_rekey"), base(1, spendA, "spend"), base(2, spendB, "spend")],
+          };
+        };
         (user as any).signRequests = async (requests: any[]) => {
           primaryRequests = requests;
           return { signed: signedGroup };
@@ -1928,6 +1932,11 @@ describe("SignerClient", () => {
         }
         const result = await sign();
 
+        // The user signer's approval shows the primary slot's app call.
+        assert.deepEqual(
+          baseRequest.contextual_positions.map((position: any) => [position.target_index, position.app_call_info]),
+          [[3, { mode: "primary" }]],
+        );
         assert.equal(cosignerRequests.length, 1);
         const cosignerRequest = cosignerRequests[0];
         assert.deepEqual(cosignerRequest.targets.map((target: any) => target.target_index), [1, 2]);

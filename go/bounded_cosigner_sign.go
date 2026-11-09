@@ -152,7 +152,8 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 		if targetSet[i] {
 			componentReq.Targets = append(componentReq.Targets, ComponentTarget{TargetIndex: i, Kind: ComponentTargetKindBoundedBase, AuthAddress: request.AuthAddress, LsigArgs: request.LsigArgs, AppCallInfo: request.AppCallInfo})
 		} else {
-			componentReq.ContextualPositions = append(componentReq.ContextualPositions, ComponentContextPosition{TargetIndex: i, LsigResources: request.LsigResources, PQScheme: request.PQScheme, AppCallInfo: request.AppCallInfo})
+			// The user signer's approval shows the other positions' app calls.
+			componentReq.ContextualPositions = append(componentReq.ContextualPositions, ComponentContextPosition{TargetIndex: i, LsigResources: request.LsigResources, PQScheme: request.PQScheme, AppCallInfo: appCallInfo[i]})
 		}
 	}
 	for i := len(prepared); i < len(planResp.Transactions); i++ {
