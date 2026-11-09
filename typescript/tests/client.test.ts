@@ -1769,7 +1769,7 @@ describe("SignerClient", () => {
             signerKey: {
               address: bounded,
               publicKeyHex: "",
-              keyType: "aplane.falcon1024-b.v1",
+              keyType: "aplane.falcon1024.v1",
               signingFlow: SIGNING_FLOW_COSIGNED1,
               cosignerComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
               logicSigResources: {
@@ -1895,7 +1895,7 @@ describe("SignerClient", () => {
             signerKey: {
               address: bounded,
               publicKeyHex: "",
-              keyType: "aplane.falcon1024-b.v1",
+              keyType: "aplane.falcon1024.v1",
               signingFlow: SIGNING_FLOW_COSIGNED1,
               cosignerComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
               logicSigResources: {
@@ -2151,7 +2151,7 @@ describe("SignerClient", () => {
                 signerKey: {
                   address: bounded,
                   publicKeyHex: "",
-                  keyType: "aplane.falcon1024-b.v1",
+                  keyType: "aplane.falcon1024.v1",
                   signingFlow: SIGNING_FLOW_COSIGNED1,
                   cosignerComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
                   logicSigResources: profiles,
@@ -2331,7 +2331,7 @@ describe("SignerClient", () => {
               signerKey: {
                 address: bounded,
                 publicKeyHex: "",
-                keyType: "aplane.falcon1024-b.v1",
+                keyType: "aplane.falcon1024.v1",
                 signingFlow: SIGNING_FLOW_COSIGNED1,
                 cosignerComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
                 logicSigResources: {
@@ -2492,7 +2492,7 @@ describe("SignerClient", () => {
               signerKey: {
                 address: bounded,
                 publicKeyHex: "",
-                keyType: "aplane.falcon1024-b.v1",
+                keyType: "aplane.falcon1024.v1",
                 authorizationKind: "logic_sig",
                 signingFlow: SIGNING_FLOW_COSIGNED1,
                 cosignerComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,

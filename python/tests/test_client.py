@@ -151,7 +151,7 @@ def sdk_test_address(seed: int) -> str:
 def bounded_resource_test_key(rekey):
     return KeyInfo(
         address=sdk_test_address(1),
-        key_type="aplane.falcon1024-b.v1",
+        key_type="aplane.falcon1024.v1",
         logic_sig_resources=LogicSigResourceProfile(
             spend=LogicSigResourceUsage(1001, 101, 10001),
             spending_rekey=LogicSigResourceUsage(2002, 202, 20002),
@@ -1365,7 +1365,7 @@ class TestSignPreparedCosignedGroup:
         user.request_assemble = MagicMock(side_effect=listed_assemble)
         key = KeyInfo(
             address=bounded,
-            key_type="aplane.falcon1024-b.v1",
+            key_type="aplane.falcon1024.v1",
             signing_flow=SIGNING_FLOW_COSIGNED1,
             cosigner_component_key_type=KEY_TYPE_WITNESS_FALCON1024,
             logic_sig_resources=LogicSigResourceProfile(
@@ -1473,7 +1473,7 @@ class TestSignPreparedCosignedGroup:
                     app_call_info={"mode": "raw"},
                     signer_key=KeyInfo(
                         address=bounded,
-                        key_type="aplane.falcon1024-b.v1",
+                        key_type="aplane.falcon1024.v1",
                         signing_flow=SIGNING_FLOW_COSIGNED1,
                         cosigner_component_key_type=KEY_TYPE_WITNESS_FALCON1024,
                         logic_sig_resources=LogicSigResourceProfile(
@@ -1637,7 +1637,7 @@ class TestSignPreparedCosignedGroup:
                         auth_address=bounded,
                         signer_key=KeyInfo(
                             address=bounded,
-                            key_type="aplane.falcon1024-b.v1",
+                            key_type="aplane.falcon1024.v1",
                             authorization_kind=AUTHORIZATION_KIND_LOGIC_SIG,
                             signing_flow=SIGNING_FLOW_COSIGNED1,
                             cosigner_component_key_type=KEY_TYPE_WITNESS_FALCON1024,

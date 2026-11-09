@@ -4,7 +4,7 @@
     {
       "address": "BOUNDEDADDR000000000000000000000000000000000000000000000",
       "public_key_hex": "00112233445566778899aabbccddeeff",
-      "key_type": "aplane.falcon1024-b.v1",
+      "key_type": "aplane.falcon1024.v1",
       "authorization_kind": "logic_sig",
       "signing_flow": "bounded1",
       "logic_sig_resources": {
@@ -64,7 +64,7 @@
     {
       "address": "CORRIDORADDR00000000000000000000000000000000000000000000",
       "public_key_hex": "ffeeddccbbaa99887766554433221100",
-      "key_type": "aplane.falcon1024-b.v1",
+      "key_type": "aplane.falcon1024.v1",
       "authorization_kind": "logic_sig",
       "signing_flow": "cosigned1",
       "cosigner_component_key_type": "aplane.witness-falcon1024.v1",

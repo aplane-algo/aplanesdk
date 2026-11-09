@@ -65,6 +65,11 @@ The SDKs read only the current signer wire and client file formats:
   TypeScript's `signPreparedGuardedGroup` and `simulatePreparedGuardedGroup` are
   `signPreparedCosignedGroup` and `simulatePreparedCosignedGroup`; and every
   `Guarded*` type is `Cosigned*`. No wire value changes.
+- Bounded accounts are plain hosts: `aplane.falcon1024-b.v1` is retired, and a bounded
+  account in `/keys` is `aplane.falcon1024.v1` or `aplane.ed25519.v1` with
+  `bounded_authorization.contract` `bounded2`. The SDKs route on the contract and the
+  signing flow, never the key type name, so no code changes; an Ed25519 bounded account
+  may now have a cosigner and signs through `cosigned1` like a Falcon one.
 - Key types may carry `boundary_schema`, the boundary file grammar a per-key
   type's requests take; it is absent on a plain host.
 
