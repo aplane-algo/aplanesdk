@@ -112,6 +112,7 @@ func prepParityBuilders(t *testing.T) map[string]func() PreparedGroup {
 		t.Fatalf("set rekey target: %v", err)
 	}
 	keyreg := must(transaction.MakeKeyRegTxnWithStateProofKey(sender, []byte("keyreg"), prepSuggestedParams(), "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo=", "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws=", "", 1, 100, 10, false))
+	keyregOffline := must(transaction.MakeKeyRegTxnWithStateProofKey(sender, []byte("keyreg-offline"), prepSuggestedParams(), "", "", "", 0, 0, 0, false))
 	rawApp := prepAppCallTxn(t, sender, appAccount, [][]byte{[]byte("raw")}, []byte("rawapp"))
 	abiApp := prepAppCallTxn(t, sender, appAccount, [][]byte{{0x01, 0x02, 0x03, 0x04}, {0, 0, 0, 0, 0, 0, 0, 42}}, []byte("abiapp"))
 	appDeploy := prepAppDeployTxn(t, sender)
@@ -144,6 +145,9 @@ func prepParityBuilders(t *testing.T) map[string]func() PreparedGroup {
 		},
 		"keyreg_online": func() PreparedGroup {
 			return NewPreparedGroup(signed(keyreg))
+		},
+		"keyreg_offline": func() PreparedGroup {
+			return NewPreparedGroup(signed(keyregOffline))
 		},
 		"raw_app_call_info": func() PreparedGroup {
 			return NewPreparedGroup(signed(rawApp, func(p *PreparedTransaction) {

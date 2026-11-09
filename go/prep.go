@@ -76,18 +76,44 @@ type RekeyPrepParams struct {
 	UseFlatFee bool
 }
 
+// KeyRegMode is the participation state a key registration puts the account in.
+type KeyRegMode string
+
+const (
+	// KeyRegOnline registers participation keys, taking the account online.
+	KeyRegOnline KeyRegMode = "online"
+	// KeyRegOffline takes the account offline. It can register keys again
+	// later.
+	KeyRegOffline KeyRegMode = "offline"
+)
+
+// incentiveEligibilityFee is the protocol's minimum keyreg fee (2 ALGO) for an
+// account to become eligible for consensus incentives.
+const incentiveEligibilityFee = 2_000_000
+
 // KeyRegPrepParams describes a key registration transaction intent.
+//
+// Mode is required. An online registration needs the participation keys, vote
+// rounds and key dilution; an offline one takes none of them. A
+// nonparticipating registration, which can never be undone, isn't offered, and
+// apsigner refuses one.
 type KeyRegPrepParams struct {
 	Sender          string
+	Mode            KeyRegMode
 	VoteKey         string
 	SelectionKey    string
 	StateProofKey   string
 	VoteFirst       uint64
 	VoteLast        uint64
 	VoteKeyDilution uint64
-	Note            []byte
-	Fee             uint64
-	UseFlatFee      bool
+	// IncentiveEligible asks for consensus incentive eligibility, on an online
+	// registration only. Unless the account is already eligible, the fee is
+	// raised to the 2 ALGO the protocol requires; an explicit lower Fee is
+	// refused. An eligible account stays eligible and pays no extra fee.
+	IncentiveEligible bool
+	Note              []byte
+	Fee               uint64
+	UseFlatFee        bool
 }
 
 // AppCallPrepParams describes a raw application-call transaction intent.
@@ -529,6 +555,8 @@ func (c *SignerClient) PrepareKeyReg(ctx context.Context, algodClient *algod.Cli
 		return nil, fmt.Errorf("failed to get sender account info: %w", err)
 	}
 
+	// An offline registration is a keyless one: validateKeyRegParams has
+	// refused any participation field on it.
 	txn, err := transaction.MakeKeyRegTxnWithStateProofKey(
 		params.Sender,
 		params.Note,
@@ -544,6 +572,13 @@ func (c *SignerClient) PrepareKeyReg(ctx context.Context, algodClient *algod.Cli
 	if err != nil {
 		return nil, fmt.Errorf("failed to create keyreg transaction: %w", err)
 	}
+	chargeIncentiveFee := params.IncentiveEligible && !senderAcct.IncentiveEligible
+	if chargeIncentiveFee && uint64(txn.Fee) < incentiveEligibilityFee {
+		if params.UseFlatFee || params.Fee != 0 {
+			return nil, fmt.Errorf("incentive eligibility needs a keyreg fee of at least %d microAlgos, but fee is set to %d", incentiveEligibilityFee, params.Fee)
+		}
+		txn.Fee = incentiveEligibilityFee
+	}
 
 	resolved, err := c.ResolveAuthAddress(ctx, params.Sender, func(context.Context, string) (string, error) {
 		return senderAcct.AuthAddr, nil
@@ -557,13 +592,10 @@ func (c *SignerClient) PrepareKeyReg(ctx context.Context, algodClient *algod.Cli
 		AuthAddress: resolved.AuthAddress,
 		SignerKey:   &resolved.KeyInfo,
 		Checks: []PreparedCheck{{
-			Name:   "keyreg",
-			Status: "ok",
-			Data: map[string]any{
-				"vote_first":        params.VoteFirst,
-				"vote_last":         params.VoteLast,
-				"vote_key_dilution": params.VoteKeyDilution,
-			},
+			Name:    "keyreg",
+			Status:  "ok",
+			Message: keyRegCheckMessage(params, chargeIncentiveFee),
+			Data:    keyRegCheckData(params, chargeIncentiveFee),
 		}},
 	}, nil
 }
@@ -1004,6 +1036,33 @@ func rekeyTargetFlowCheck(rekeyTo, flow string) error {
 }
 
 func validateKeyRegParams(params KeyRegPrepParams) error {
+	switch params.Mode {
+	case KeyRegOnline:
+	case KeyRegOffline:
+		if params.IncentiveEligible {
+			return fmt.Errorf("incentive eligibility needs an online keyreg")
+		}
+		for _, field := range []struct {
+			name string
+			set  bool
+		}{
+			{"vote_key", params.VoteKey != ""},
+			{"selection_key", params.SelectionKey != ""},
+			{"state_proof_key", params.StateProofKey != ""},
+			{"vote_first", params.VoteFirst != 0},
+			{"vote_last", params.VoteLast != 0},
+			{"vote_key_dilution", params.VoteKeyDilution != 0},
+		} {
+			if field.set {
+				return fmt.Errorf("an offline keyreg takes no participation keys or vote rounds, but %s is set", field.name)
+			}
+		}
+		return nil
+	case "":
+		return fmt.Errorf("mode is required: %q or %q", KeyRegOnline, KeyRegOffline)
+	default:
+		return fmt.Errorf("mode %q is not %q or %q", params.Mode, KeyRegOnline, KeyRegOffline)
+	}
 	if params.VoteKey == "" {
 		return fmt.Errorf("vote_key is required")
 	}
@@ -1023,6 +1082,31 @@ func validateKeyRegParams(params KeyRegPrepParams) error {
 		return fmt.Errorf("vote_key_dilution is required")
 	}
 	return nil
+}
+
+func keyRegCheckData(params KeyRegPrepParams, chargedIncentiveFee bool) map[string]any {
+	if params.Mode == KeyRegOffline {
+		return map[string]any{"mode": string(params.Mode)}
+	}
+	return map[string]any{
+		"mode":                  string(params.Mode),
+		"vote_first":            params.VoteFirst,
+		"vote_last":             params.VoteLast,
+		"vote_key_dilution":     params.VoteKeyDilution,
+		"incentive_eligible":    params.IncentiveEligible,
+		"incentive_fee_charged": chargedIncentiveFee,
+	}
+}
+
+func keyRegCheckMessage(params KeyRegPrepParams, chargedIncentiveFee bool) string {
+	switch {
+	case chargedIncentiveFee:
+		return "the 2 ALGO incentive eligibility fee is included"
+	case params.IncentiveEligible:
+		return "the account is already incentive eligible and stays eligible, so no 2 ALGO fee is added"
+	default:
+		return ""
+	}
 }
 
 func appCallChecks(params AppCallPrepParams, info *AppCallInfo) []PreparedCheck {

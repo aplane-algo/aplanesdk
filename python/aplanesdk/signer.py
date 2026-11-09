@@ -2068,14 +2068,43 @@ def _rekey_target_flow_check(rekey_to: str, flow: str) -> None:
     )
 
 
+# The protocol's minimum keyreg fee (2 ALGO) for an account to become eligible
+# for consensus incentives.
+_INCENTIVE_ELIGIBILITY_FEE = 2_000_000
+
+
 def _validate_keyreg_params(
     *,
+    mode: str,
     votekey: Optional[str],
     selkey: Optional[str],
     votefst: Optional[int],
     votelst: Optional[int],
     votekd: Optional[int],
+    sprfkey: Optional[str],
+    incentive_eligible: bool,
 ) -> None:
+    if not mode:
+        raise ValueError('mode is required: "online" or "offline"')
+    if mode == "offline":
+        if incentive_eligible:
+            raise ValueError("incentive eligibility needs an online keyreg")
+        for name, value in (
+            ("votekey", votekey),
+            ("selkey", selkey),
+            ("sprfkey", sprfkey),
+            ("votefst", votefst),
+            ("votelst", votelst),
+            ("votekd", votekd),
+        ):
+            if value is not None:
+                raise ValueError(
+                    "an offline keyreg takes no participation keys or vote rounds, "
+                    f"but {name} is set"
+                )
+        return
+    if mode != "online":
+        raise ValueError(f'mode {mode!r} is not "online" or "offline"')
     if not votekey:
         raise ValueError("votekey is required")
     if not selkey:
@@ -2088,6 +2117,17 @@ def _validate_keyreg_params(
         raise ValueError("votelst must be greater than or equal to votefst")
     if not votekd:
         raise ValueError("votekd is required")
+
+
+def _account_incentive_eligible(account_info: Any) -> bool:
+    if isinstance(account_info, dict):
+        return bool(
+            account_info.get("incentive-eligible") or account_info.get("incentive_eligible")
+        )
+    return bool(
+        getattr(account_info, "incentive_eligible", None)
+        or getattr(account_info, "incentiveEligible", False)
+    )
 
 
 def _validate_payment_group(transactions: List[PreparedTransaction]) -> PreparedCheck:
@@ -3330,59 +3370,98 @@ class SignerClient:
         algod_client: Any,
         *,
         sender: str,
+        mode: str,
         votekey: Optional[str] = None,
         selkey: Optional[str] = None,
         votefst: Optional[int] = None,
         votelst: Optional[int] = None,
         votekd: Optional[int] = None,
         sprfkey: Optional[str] = None,
+        incentive_eligible: bool = False,
         note: Optional[bytes] = None,
         fee: Optional[int] = None,
     ) -> PreparedTransaction:
-        """Build a prepared key registration transaction."""
+        """Build a prepared key registration transaction.
+
+        ``mode`` is required. An ``"online"`` registration needs the
+        participation keys, vote rounds and key dilution; an ``"offline"`` one
+        takes none of them and takes the account offline, which can register
+        keys again later. A nonparticipating registration, which can never be
+        undone, isn't offered, and apsigner refuses one.
+
+        ``incentive_eligible`` asks for consensus incentive eligibility, on an
+        online registration only. Unless the account is already eligible, the
+        fee is raised to the 2 ALGO the protocol requires; an explicit lower
+        ``fee`` is refused. An eligible account stays eligible and pays no
+        extra fee.
+        """
         if algod_client is None:
             raise ValueError("algod_client is required")
         if not sender:
             raise ValueError("sender is required")
         _validate_keyreg_params(
-            votekey=votekey,
-            selkey=selkey,
-            votefst=votefst,
-            votelst=votelst,
-            votekd=votekd,
-        )
-
-        params = algod_client.suggested_params()
-        _apply_prep_fee(params, fee)
-
-        sender_info = algod_client.account_info(sender)
-        txn = transaction.KeyregTxn(
-            sender=sender,
-            sp=params,
+            mode=mode,
             votekey=votekey,
             selkey=selkey,
             votefst=votefst,
             votelst=votelst,
             votekd=votekd,
             sprfkey=sprfkey,
-            note=note,
+            incentive_eligible=incentive_eligible,
         )
+
+        params = algod_client.suggested_params()
+        _apply_prep_fee(params, fee)
+
+        sender_info = algod_client.account_info(sender)
+        txn: transaction.KeyregTxn
+        if mode == "offline":
+            # A keyless registration; nonpart is never set.
+            txn = transaction.KeyregOfflineTxn(sender=sender, sp=params, note=note)
+        else:
+            txn = transaction.KeyregTxn(
+                sender=sender,
+                sp=params,
+                votekey=votekey,
+                selkey=selkey,
+                votefst=votefst,
+                votelst=votelst,
+                votekd=votekd,
+                sprfkey=sprfkey,
+                note=note,
+            )
+        charge_incentive_fee = incentive_eligible and not _account_incentive_eligible(sender_info)
+        if charge_incentive_fee and txn.fee < _INCENTIVE_ELIGIBILITY_FEE:
+            if fee is not None:
+                raise SignerError(
+                    "incentive eligibility needs a keyreg fee of at least "
+                    f"{_INCENTIVE_ELIGIBILITY_FEE} microAlgos, but fee is set to {fee}"
+                )
+            txn.fee = _INCENTIVE_ELIGIBILITY_FEE
+
+        message = ""
+        if charge_incentive_fee:
+            message = "the 2 ALGO incentive eligibility fee is included"
+        elif incentive_eligible:
+            message = (
+                "the account is already incentive eligible and stays eligible, "
+                "so no 2 ALGO fee is added"
+            )
+        data: Dict[str, Any] = {"mode": mode}
+        if mode == "online":
+            data.update(
+                vote_first=votefst or 0,
+                vote_last=votelst or 0,
+                vote_key_dilution=votekd or 0,
+                incentive_eligible=incentive_eligible,
+                incentive_fee_charged=charge_incentive_fee,
+            )
         resolved = self.resolve_auth_address(sender, lambda _: sender_info)
         return PreparedTransaction(
             transaction=txn,
             auth_address=resolved.auth_address,
             signer_key=resolved.key_info,
-            checks=[
-                PreparedCheck(
-                    name="keyreg",
-                    status="ok",
-                    data={
-                        "vote_first": votefst or 0,
-                        "vote_last": votelst or 0,
-                        "vote_key_dilution": votekd or 0,
-                    },
-                )
-            ],
+            checks=[PreparedCheck(name="keyreg", status="ok", message=message, data=data)],
         )
 
     def prepare_app_call(

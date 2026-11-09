@@ -83,6 +83,11 @@ def build_groups(addresses: dict) -> dict[str, PreparedGroup]:
         votekd=10,
         note=b"keyreg",
     )
+    keyreg_offline = transaction.KeyregOfflineTxn(
+        sender,
+        suggested_params(),
+        note=b"keyreg-offline",
+    )
     raw_app = transaction.ApplicationCallTxn(
         sender,
         suggested_params(),
@@ -161,6 +166,7 @@ def build_groups(addresses: dict) -> dict[str, PreparedGroup]:
         "account_close": PreparedGroup([signed(close)]),
         "rekey": PreparedGroup([signed(rekey)]),
         "keyreg_online": PreparedGroup([signed(keyreg)]),
+        "keyreg_offline": PreparedGroup([signed(keyreg_offline)]),
         "raw_app_call_info": PreparedGroup([signed(raw_app, app_call_info={"mode": "raw"})]),
         "abi_app_call_info": PreparedGroup(
             [

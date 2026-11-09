@@ -108,6 +108,11 @@ function buildGroups(addresses: Record<string, string>): Record<string, Prepared
     note: bytes("keyreg"),
     suggestedParams: suggestedParams(),
   });
+  const keyregOffline = algosdk.makeKeyRegistrationTxnWithSuggestedParamsFromObject({
+    sender,
+    note: bytes("keyreg-offline"),
+    suggestedParams: suggestedParams(),
+  });
   const rawApp = algosdk.makeApplicationCallTxnFromObject({
     sender,
     appIndex: 7n,
@@ -185,6 +190,7 @@ function buildGroups(addresses: Record<string, string>): Record<string, Prepared
     account_close: { transactions: [signed(close)] },
     rekey: { transactions: [signed(rekey)] },
     keyreg_online: { transactions: [signed(keyreg)] },
+    keyreg_offline: { transactions: [signed(keyregOffline)] },
     raw_app_call_info: {
       transactions: [signed(rawApp, { appCallInfo: { mode: "raw" } })],
     },
