@@ -718,6 +718,13 @@ export interface CosignedPassthroughAuthorization {
 /** Authorization-budget context for a non-target original position. */
 export interface ComponentContextPosition {
   target_index: number;
+  /**
+   * Set for one of the signer's own accounts: the signer sizes the position
+   * from its records and takes no hint. Unset for another party's position.
+   */
+  auth_address?: string;
+  /** What a bounded account needs to be classified; only with auth_address. */
+  lsig_args?: SignRequest["lsig_args"];
   lsig_resources?: SignRequest["lsig_resources"];
   pq_scheme?: string;
   app_call_info?: AppCallInfo;

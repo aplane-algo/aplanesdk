@@ -95,23 +95,20 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 			if key.SigningFlow != "" && key.SigningFlow != SigningFlowBounded1 {
 				return nil, fmt.Errorf("prepared transaction %d: signer key requires signing flow %q, which this SDK does not support; upgrade the SDK", i, key.SigningFlow)
 			}
-			// This slot is contextual to /sign/component, so the
-			// signer cannot infer its authorization envelope from the key. A
-			// native-PQ key publishes no LogicSig profile, so without an
-			// explicit pq_scheme the signer budgets it as an Ed25519 slot and
-			// freezes an under-funded canonical group.
-			pqScheme, err := preparedForeignPQScheme(key, resources)
-			if err != nil {
-				return nil, fmt.Errorf("prepared transaction %d: %w", i, err)
-			}
-			requests[i] = SignRequest{
-				TxnBytesHex:   hex.EncodeToString(encodeTxn(*item.Transaction)),
-				LsigResources: resources,
-				PQScheme:      pqScheme,
-			}
+			// The signer holds this position's key, so it is sent as the
+			// signer's own: in sign mode on /plan, and as a contextual
+			// position with auth_address on /sign/component. The signer sizes
+			// it from its records in both and can put the group's
+			// authorization charge on it. Sent as foreign with a size hint,
+			// it was immutable, and the cosigned targets paid its charge.
 			if item.AuthAddress == "" {
 				return nil, fmt.Errorf("prepared transaction %d: primary auth address is required", i)
 			}
+			req, err := item.SignRequest()
+			if err != nil {
+				return nil, fmt.Errorf("prepared transaction %d: %w", i, err)
+			}
+			requests[i] = req
 			primaryTargets = append(primaryTargets, cosignedPrimarySignTarget{
 				TargetIndex: i,
 				AuthAddress: item.AuthAddress,
@@ -153,7 +150,7 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 			componentReq.Targets = append(componentReq.Targets, ComponentTarget{TargetIndex: i, Kind: ComponentTargetKindBoundedBase, AuthAddress: request.AuthAddress, LsigArgs: request.LsigArgs, AppCallInfo: request.AppCallInfo})
 		} else {
 			// The user signer's approval shows the other positions' app calls.
-			componentReq.ContextualPositions = append(componentReq.ContextualPositions, ComponentContextPosition{TargetIndex: i, LsigResources: request.LsigResources, PQScheme: request.PQScheme, AppCallInfo: appCallInfo[i]})
+			componentReq.ContextualPositions = append(componentReq.ContextualPositions, ComponentContextPosition{TargetIndex: i, AuthAddress: request.AuthAddress, LsigArgs: request.LsigArgs, AppCallInfo: appCallInfo[i]})
 		}
 	}
 	for i := len(prepared); i < len(planResp.Transactions); i++ {

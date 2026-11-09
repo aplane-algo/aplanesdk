@@ -1543,28 +1543,6 @@ def _component_path_resources(
     return LogicSigResourceUsage(**vars(selected))
 
 
-def _prepared_foreign_pq_scheme(
-    key: Optional[KeyInfo],
-    resources: Optional[LogicSigResourceUsage],
-    label: str,
-) -> str:
-    """Native-PQ scheme a foreign slot must declare for the given signer key.
-
-    Foreign slots carry no auth address, so the signer budgets fees purely from
-    what the request declares; only authorization_kind distinguishes a
-    native-PQ key from an Ed25519 one, because neither publishes a LogicSig
-    resource profile. Any other authorization_kind, including an empty one
-    (the key is not a spending account or the signer omitted the field),
-    declares no native-PQ scheme, so the slot keeps its previous declaration
-    rather than guessing.
-    """
-    if key is None or key.authorization_kind != AUTHORIZATION_KIND_NATIVE_PQ:
-        return ""
-    if resources is not None:
-        raise ValueError(f"{label}: native-PQ signer key must not declare LogicSig resources")
-    return PQ_SCHEME_FALCON1024
-
-
 def _parse_bounded_authorization(data: Any) -> Optional[BoundedAuthorizationInfo]:
     if not isinstance(data, dict):
         return None
@@ -1724,6 +1702,15 @@ def _validate_bounded_component_request(data: Dict[str, Any]) -> None:
         covered.add(target_index)
         resources = position.get("lsig_resources")
         pq_scheme = position.get("pq_scheme", "")
+        # With auth_address the position is the signer's own, which the signer
+        # sizes from its records: it takes no hint.
+        if position.get("auth_address") and (resources is not None or pq_scheme):
+            raise ValueError(
+                f"contextual position {index}: lsig_resources and pq_scheme "
+                "are allowed only without auth_address"
+            )
+        if not position.get("auth_address") and position.get("lsig_args"):
+            raise ValueError(f"contextual position {index}: lsig_args requires auth_address")
         if resources is not None and pq_scheme:
             raise ValueError(
                 f"contextual position {index} cannot specify both lsig_resources and pq_scheme"
@@ -5310,23 +5297,13 @@ def sign_prepared_cosigned_group(
             )
         if not item.auth_address:
             raise ValueError(f"prepared transaction {index}: primary auth address is required")
-        txn_hex, _ = encode_transaction(item.transaction)
-        request = {"txn_bytes_hex": txn_hex}
-        if item.app_call_info:
-            request["app_call_info"] = item.app_call_info
-        if resources:
-            request["lsig_resources"] = _wire_lsig_resources(resources)
-        # This slot is contextual to /sign/component, so the
-        # signer cannot infer its authorization envelope from the key. A
-        # native-PQ key publishes no LogicSig profile, so without an explicit
-        # pq_scheme the signer budgets it as an Ed25519 slot and freezes an
-        # under-funded canonical group.
-        pq_scheme = _prepared_foreign_pq_scheme(
-            key, resources, f"prepared transaction {index}"
-        )
-        if pq_scheme:
-            request["pq_scheme"] = pq_scheme
-        requests_data.append(request)
+        # The signer holds this position's key, so it is sent as the signer's
+        # own: in sign mode on /plan, and as a contextual position with
+        # auth_address on /sign/component. The signer sizes it from its records
+        # in both and can put the group's authorization charge on it. Sent as
+        # foreign with a size hint, it was immutable, and the cosigned targets
+        # paid its charge.
+        requests_data.append(item.to_sign_request())
         primary_targets.append(
             {
                 "target_index": index,
@@ -5370,11 +5347,11 @@ def sign_prepared_cosigned_group(
         else:
             position = {
                 "target_index": index,
-                "lsig_resources": request.get("lsig_resources"),
+                "auth_address": request["auth_address"],
                 "app_call_info": request.get("app_call_info"),
             }
-            if request.get("pq_scheme"):
-                position["pq_scheme"] = request["pq_scheme"]
+            if request.get("lsig_args"):
+                position["lsig_args"] = request["lsig_args"]
             contextual_positions.append(position)
     component_response = user_client.request_components(
         ComponentRequest(

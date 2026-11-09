@@ -20,7 +20,6 @@ from aplanesdk.signer import (
     AUTHORIZATION_KIND_LOGIC_SIG,
     AUTHORIZATION_KIND_NATIVE_PQ,
     PQ_SCHEME_FALCON1024,
-    _prepared_foreign_pq_scheme,
     AuthenticationError,
     SigningRejectedError,
     SignerUnavailableError,
@@ -1708,6 +1707,10 @@ class TestSignPreparedCosignedGroup:
         def bounded_component(req):
             assert len(req.targets) == 1
             assert len(req.contextual_positions) == 1
+            # The held position names its account and carries no size hint.
+            position = req.contextual_positions[0]
+            assert position["auth_address"] == native_pq
+            assert "pq_scheme" not in position and "lsig_resources" not in position
             return ComponentResponse(
                 request_id="base-id",
                 components=[{
@@ -1816,23 +1819,11 @@ class TestSignPreparedCosignedGroup:
         run()
         assert events == ["base", "sign", "cosigner", "assemble"]
 
-        assert captured["primary"]["pq_scheme"] == PQ_SCHEME_FALCON1024
+        # A held position is sent as the signer's own: sign mode on /plan,
+        # with no size hint.
+        assert captured["primary"]["auth_address"] == native_pq
+        assert "pq_scheme" not in captured["primary"]
         assert "lsig_resources" not in captured["primary"]
-        assert "auth_address" not in captured["primary"]
-
-    def test_prepared_foreign_pq_scheme_rejects_contradictory_metadata(self):
-        key = KeyInfo(
-            address=sdk_test_address(44),
-            key_type="falcon1024",
-            authorization_kind=AUTHORIZATION_KIND_NATIVE_PQ,
-        )
-        with pytest.raises(ValueError, match="must not declare LogicSig resources"):
-            _prepared_foreign_pq_scheme(key, LogicSigResourceUsage(512, 32, 20000), "slot 0")
-
-        # An older signer that does not report authorization_kind keeps the
-        # previous declaration rather than guessing.
-        plain = KeyInfo(address=sdk_test_address(45), key_type="ed25519")
-        assert _prepared_foreign_pq_scheme(plain, None, "slot 0") == ""
 
     def test_prepared_group_rejects_unsupported_signing_flow(self):
         cosigned = sdk_test_address(1)

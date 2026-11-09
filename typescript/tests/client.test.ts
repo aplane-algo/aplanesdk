@@ -2704,7 +2704,7 @@ describe("SignerClient", () => {
     // identity check cannot detect, because the shortfall is already inside
     // the canonical bytes.
     for (const rejectSign of [false, true]) {
-    it(`declares pq_scheme for a native-PQ primary slot in bounded-cosigner groups${rejectSign ? " (user-first when /sign rejects)" : " (user-first order)"}`, async () => {
+    it(`sends a held native-PQ primary slot as the signer's own in bounded-cosigner groups${rejectSign ? " (user-first when /sign rejects)" : " (user-first order)"}`, async () => {
       const events: string[] = [];
       const bounded = testAddress(31);
       const nativePq = testAddress(32);
@@ -2758,6 +2758,10 @@ describe("SignerClient", () => {
         events.push("base");
         assert.equal(request.targets.length, 1);
         assert.equal(request.contextual_positions.length, 1);
+        // The held position names its account and carries no size hint.
+        assert.equal(request.contextual_positions[0].auth_address, nativePq);
+        assert.equal(request.contextual_positions[0].pq_scheme, undefined);
+        assert.equal(request.contextual_positions[0].lsig_resources, undefined);
         return {
           request_id: "base-id",
           components: [{
@@ -2857,10 +2861,11 @@ describe("SignerClient", () => {
         return;
       }
       await run();
-      assert.equal(primaryRequest.pq_scheme, "f1");
       assert.deepEqual(events, ["base", "sign", "cosigner", "assemble"]);
+      // Sign mode on /plan, with no size hint.
+      assert.equal(primaryRequest.auth_address, nativePq);
+      assert.equal(primaryRequest.pq_scheme, undefined);
       assert.equal(primaryRequest.lsig_resources, undefined);
-      assert.equal(primaryRequest.auth_address, undefined);
     });
     }
 

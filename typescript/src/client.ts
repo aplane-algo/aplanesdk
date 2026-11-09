@@ -71,7 +71,6 @@ import {
   COMPONENT_PATH_LISTED_REKEY,
   componentNeedsCosigner,
   PQ_SCHEME_FALCON1024,
-  AUTHORIZATION_KIND_NATIVE_PQ,
   validateLogicSigResources,
   validateSignRequests,
   wireLogicSigResources,
@@ -672,16 +671,13 @@ export async function signPreparedCosignedGroup(
     if (!item.authAddress) {
       throw new SignerError(`prepared transaction ${index}: primary auth address is required`);
     }
-    // This slot is contextual to /sign/component, so the signer
-    // cannot infer its authorization envelope from the key. A native-PQ key
-    // publishes no LogicSig profile, so without an explicit pq_scheme the
-    // signer budgets it as an Ed25519 slot and freezes an under-funded
-    // canonical group.
-    requests.push({
-      txn_bytes_hex: encodeTransaction(item.transaction)[0],
-      lsig_resources: wireLogicSigResources(resources),
-      pq_scheme: preparedForeignPQScheme(key, resources, `prepared transaction ${index}`),
-    });
+    // The signer holds this position's key, so it is sent as the signer's
+    // own: in sign mode on /plan, and as a contextual position with
+    // auth_address on /sign/component. The signer sizes it from its records
+    // in both and can put the group's authorization charge on it. Sent as
+    // foreign with a size hint, it was immutable, and the cosigned targets
+    // paid its charge.
+    requests.push(preparedTransactionToSignRequest(item));
     primaryTargets.push({
       targetIndex: index,
       authAddress: item.authAddress,
@@ -722,8 +718,8 @@ export async function signPreparedCosignedGroup(
       // The user signer's approval shows the other positions' app calls.
       contextual_positions: requests.flatMap((request, index) => targetIndices.has(index) ? [] : [{
         target_index: index,
-        lsig_resources: request.lsig_resources,
-        pq_scheme: request.pq_scheme,
+        auth_address: request.auth_address,
+        lsig_args: request.lsig_args,
         app_call_info: prepared[index].appCallInfo,
       }]),
       dummy_positions: frozenGroup.slice(prepared.length).map((_, offset) => ({
@@ -992,6 +988,16 @@ function validateComponentRequest(request: ComponentRequest): void {
     covered.add(position.target_index);
   });
   contextual.forEach((position, index) => {
+    // With auth_address the position is the signer's own, which the signer
+    // sizes from its records: it takes no hint.
+    if (position.auth_address && (position.lsig_resources || position.pq_scheme)) {
+      throw new SignerError(
+        `contextual position ${index + 1}: lsig_resources and pq_scheme are allowed only without auth_address`,
+      );
+    }
+    if (!position.auth_address && position.lsig_args && Object.keys(position.lsig_args).length > 0) {
+      throw new SignerError(`contextual position ${index + 1}: lsig_args requires auth_address`);
+    }
     if (position.lsig_resources && position.pq_scheme) {
       throw new SignerError(`contextual position ${index + 1} cannot specify both lsig_resources and pq_scheme`);
     }
@@ -1204,29 +1210,6 @@ function componentPathResources(
     throw new SignerError(`${label}: signer key publishes no LogicSig resources for path ${JSON.stringify(path)}`);
   }
   return { ...selected };
-}
-
-/**
- * Native-PQ scheme a foreign slot must declare for the given signer key.
- *
- * Foreign slots carry no auth address, so the signer budgets fees purely from
- * what the request declares; only authorizationKind distinguishes a native-PQ
- * key from an Ed25519 one, because neither publishes a LogicSig resource
- * profile. Any other authorizationKind, including an absent one (the key is
- * not a spending account or the signer omitted the field), declares no
- * native-PQ scheme, so the slot keeps its previous declaration rather than
- * guessing.
- */
-function preparedForeignPQScheme(
-  key: KeyInfo | undefined,
-  resources: LogicSigResourceUsage | undefined,
-  label: string,
-): string | undefined {
-  if (key?.authorizationKind !== AUTHORIZATION_KIND_NATIVE_PQ) return undefined;
-  if (resources) {
-    throw new SignerError(`${label}: native-PQ signer key must not declare LogicSig resources`);
-  }
-  return PQ_SCHEME_FALCON1024;
 }
 
 /**

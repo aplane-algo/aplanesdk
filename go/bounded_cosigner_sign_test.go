@@ -259,7 +259,10 @@ func TestSignPreparedCosignedGroupSkipsTheCosignerOnAListedRekey(t *testing.T) {
 // the signer budgets its fee purely from the declared pq_scheme. Omitting it
 // freezes an under-funded canonical group that the later /sign identity check
 // cannot detect, because the shortfall is already inside the canonical bytes.
-func TestSignPreparedCosignedGroupDeclaresNativePQPrimary(t *testing.T) {
+// A non-cosigned position the signer holds is sent as the signer's own: in
+// sign mode on /plan, and as a contextual position with auth_address on
+// /sign/component. The signer sizes it and can charge it; no hint is sent.
+func TestSignPreparedCosignedGroupSendsAHeldPrimaryAsTheSignersOwn(t *testing.T) {
 	for _, rejectSign := range []bool{false, true} {
 		t.Run(fmt.Sprintf("rejectSign=%v", rejectSign), func(t *testing.T) {
 			var eventsMu sync.Mutex
@@ -302,6 +305,9 @@ func TestSignPreparedCosignedGroupDeclaresNativePQPrimary(t *testing.T) {
 					}
 					if len(req.Targets) != 1 || len(req.ContextualPositions) != 1 {
 						t.Fatalf("bounded component partition = %+v", req)
+					}
+					if position := req.ContextualPositions[0]; position.AuthAddress != nativePQ || position.PQScheme != "" || position.LsigResources != nil {
+						t.Fatalf("contextual position = %+v, want auth_address %s and no hint", position, nativePQ)
 					}
 					json.NewEncoder(w).Encode(ComponentResponse{
 						RequestID: req.RequestID,
@@ -419,32 +425,13 @@ func TestSignPreparedCosignedGroupDeclaresNativePQPrimary(t *testing.T) {
 				t.Fatalf("calls = %s, want %s", got, "base,sign,cosigner,assemble")
 			}
 
-			if primaryRequest.PQScheme != PQSchemeFalcon1024 {
-				t.Fatalf("primary slot PQScheme = %q, want %q", primaryRequest.PQScheme, PQSchemeFalcon1024)
+			if primaryRequest.AuthAddress != nativePQ {
+				t.Fatalf("primary slot AuthAddress = %q, want %s (sign mode)", primaryRequest.AuthAddress, nativePQ)
 			}
-			if primaryRequest.LsigResources != nil {
-				t.Fatalf("primary slot LsigResources = %+v, want nil", primaryRequest.LsigResources)
-			}
-			if primaryRequest.AuthAddress != "" {
-				t.Fatalf("primary slot AuthAddress = %q, want empty (foreign mode)", primaryRequest.AuthAddress)
+			if primaryRequest.PQScheme != "" || primaryRequest.LsigResources != nil {
+				t.Fatalf("primary slot carries a size hint: %+v", primaryRequest)
 			}
 		})
-	}
-}
-
-func TestPreparedForeignPQSchemeRejectsContradictoryMetadata(t *testing.T) {
-	key := &KeyInfo{AuthorizationKind: AuthorizationKindNativePQ}
-	resources := &LogicSigResourceUsage{ProgramBytes: 512, ArgumentBytes: 32, MaxOpcodeCost: 20000}
-	if _, err := preparedForeignPQScheme(key, resources); err == nil ||
-		!strings.Contains(err.Error(), "must not declare LogicSig resources") {
-		t.Fatalf("preparedForeignPQScheme() error = %v, want contradiction rejection", err)
-	}
-
-	// A key without authorization_kind declares no native-PQ scheme and
-	// keeps the previous declaration rather than guessing.
-	got, err := preparedForeignPQScheme(&KeyInfo{}, nil)
-	if err != nil || got != "" {
-		t.Fatalf("preparedForeignPQScheme() = %q, %v, want empty scheme and no error", got, err)
 	}
 }
 

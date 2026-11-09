@@ -47,9 +47,12 @@ func (r ComponentRequest) Validate() error {
 			return fmt.Errorf("contextual position %d has invalid, duplicate, or overlapping target_index", i+1)
 		}
 		covered[position.TargetIndex] = true
-		probe := SignRequest{TxnBytesHex: "frozen", LsigResources: position.LsigResources, PQScheme: position.PQScheme}
+		probe := SignRequest{TxnBytesHex: "frozen", AuthAddress: position.AuthAddress, LsigArgs: position.LsigArgs, LsigResources: position.LsigResources, PQScheme: position.PQScheme}
 		if err := probe.Validate(); err != nil {
 			return fmt.Errorf("contextual position %d: %w", i+1, err)
+		}
+		if position.AuthAddress == "" && len(position.LsigArgs) != 0 {
+			return fmt.Errorf("contextual position %d: lsig_args requires auth_address", i+1)
 		}
 	}
 	for index, ok := range covered {
