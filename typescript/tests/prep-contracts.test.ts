@@ -100,7 +100,11 @@ function buildGroups(addresses: Record<string, string>): Record<string, Prepared
   });
   const keyreg = algosdk.makeKeyRegistrationTxnWithSuggestedParamsFromObject({
     sender,
-    nonParticipation: true,
+    voteKey: new Uint8Array(32).fill(0x0a),
+    selectionKey: new Uint8Array(32).fill(0x0b),
+    voteFirst: 1,
+    voteLast: 100,
+    voteKeyDilution: 10,
     note: bytes("keyreg"),
     suggestedParams: suggestedParams(),
   });
@@ -180,7 +184,7 @@ function buildGroups(addresses: Record<string, string>): Record<string, Prepared
     asa_opt_out: { transactions: [signed(optOut)] },
     account_close: { transactions: [signed(close)] },
     rekey: { transactions: [signed(rekey)] },
-    keyreg_nonparticipation: { transactions: [signed(keyreg)] },
+    keyreg_online: { transactions: [signed(keyreg)] },
     raw_app_call_info: {
       transactions: [signed(rawApp, { appCallInfo: { mode: "raw" } })],
     },

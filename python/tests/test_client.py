@@ -2780,24 +2780,16 @@ class TestPrepHelpers:
         with pytest.raises(SignerError, match="rekey target is itself rekeyed"):
             client.prepare_rekey(algod, sender=sender, rekey_to=rekey_to)
 
-    def test_prepare_keyreg_nonparticipation(self):
+    def test_prepare_keyreg_requires_participation_keys(self):
+        # A keyless keyreg was only ever a nonparticipating one, which apsigner
+        # refuses and which can't be undone, so the SDK no longer builds it.
         sender = sdk_test_address(1)
         algod = MockAlgod({
             sender: {"amount": 2_000_000, "min-balance": 100_000},
         })
         client = make_client()
-        with patch.object(client.session, "get", side_effect=[
-            self._status(),
-            self._keys(sender),
-        ]):
-            prepared = client.prepare_keyreg(
-                algod,
-                sender=sender,
-                nonpart=True,
-            )
-
-        assert prepared.transaction.nonpart is True
-        assert prepared.checks[0].name == "keyreg"
+        with pytest.raises(ValueError, match="votekey is required"):
+            client.prepare_keyreg(algod, sender=sender)
 
     def test_prepare_keyreg_online(self):
         sender = sdk_test_address(1)

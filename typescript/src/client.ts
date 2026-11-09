@@ -1863,7 +1863,7 @@ function rekeyTargetFlowCheck(rekeyTo: string, flow: string | undefined): void {
     case SIGNING_FLOW_COSIGNED1:
       return;
     case SIGNING_FLOW_ROTATING1:
-      throw new SignerError(`cannot rekey to ${rekeyTo}: it is a rotating account, whose address authorizes only itself`);
+      throw new SignerError(`cannot rekey to ${rekeyTo}: it is a rotating account, and its address is a one-time stage key; an account rekeyed to it would be stuck on that stage, and every signature would reuse that key`);
     default:
       throw new SignerError(
         `cannot rekey to ${rekeyTo}: it uses signing flow "${flow}", which this SDK cannot use as another account's authorizer`,
@@ -1872,9 +1872,6 @@ function rekeyTargetFlowCheck(rekeyTo: string, flow: string | undefined): void {
 }
 
 function validateKeyregParams(params: KeyregPrepParams): void {
-  if (params.nonParticipation) {
-    return;
-  }
   if (!params.voteKey) {
     throw new SignerError("voteKey is required");
   }
@@ -2983,7 +2980,6 @@ export class SignerClient {
       voteFirst: params.voteFirst,
       voteLast: params.voteLast,
       voteKeyDilution: params.voteKeyDilution,
-      nonParticipation: params.nonParticipation,
       note: params.note,
       suggestedParams,
     });
@@ -2997,7 +2993,6 @@ export class SignerClient {
         name: "keyreg",
         status: "ok",
         data: {
-          nonParticipation: Boolean(params.nonParticipation),
           voteFirst: params.voteFirst || 0,
           voteLast: params.voteLast || 0,
           voteKeyDilution: params.voteKeyDilution || 0,

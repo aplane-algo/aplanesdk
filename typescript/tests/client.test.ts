@@ -772,22 +772,16 @@ describe("SignerClient", () => {
       );
     });
 
-    it("prepares keyreg nonparticipation", async () => {
+    // A keyless keyreg was only ever a nonparticipating one, which apsigner
+    // refuses and which can't be undone, so the SDK no longer builds it.
+    it("requires participation keys for keyreg", async () => {
       const sender = testAddress(1);
       const algod = mockAlgod({
         [sender]: { amount: 2_000_000, minBalance: 100_000 },
       });
-      queueStatusResponse(60, 1);
-      mockFetch.mockResolvedValueOnce(keysResponse(sender));
 
       const client = new SignerClient("http://localhost:11270");
-      const prepared = await client.prepareKeyreg(algod, {
-        sender,
-        nonParticipation: true,
-      });
-
-      assert.equal((prepared.transaction as any).keyreg.nonParticipation, true);
-      assert.equal(prepared.checks?.[0].name, "keyreg");
+      await assert.rejects(client.prepareKeyreg(algod, { sender }), /voteKey is required/);
     });
 
     it("prepares online keyreg", async () => {

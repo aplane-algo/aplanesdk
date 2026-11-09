@@ -987,7 +987,6 @@ export interface KeyregPrepParams {
   voteFirst?: number | bigint;
   voteLast?: number | bigint;
   voteKeyDilution?: number | bigint;
-  nonParticipation?: boolean;
   note?: Uint8Array;
   fee?: number;
 }

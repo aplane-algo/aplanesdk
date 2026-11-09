@@ -2058,7 +2058,9 @@ def _rekey_target_flow_check(rekey_to: str, flow: str) -> None:
         return
     if flow == SIGNING_FLOW_ROTATING1:
         raise SignerError(
-            f"cannot rekey to {rekey_to}: it is a rotating account, whose address authorizes only itself"
+            f"cannot rekey to {rekey_to}: it is a rotating account, and its address is a "
+            "one-time stage key; an account rekeyed to it would be stuck on that stage, "
+            "and every signature would reuse that key"
         )
     raise SignerError(
         f"cannot rekey to {rekey_to}: it uses signing flow {flow!r}, which this SDK cannot use as "
@@ -2068,15 +2070,12 @@ def _rekey_target_flow_check(rekey_to: str, flow: str) -> None:
 
 def _validate_keyreg_params(
     *,
-    nonpart: bool,
     votekey: Optional[str],
     selkey: Optional[str],
     votefst: Optional[int],
     votelst: Optional[int],
     votekd: Optional[int],
 ) -> None:
-    if nonpart:
-        return
     if not votekey:
         raise ValueError("votekey is required")
     if not selkey:
@@ -3337,7 +3336,6 @@ class SignerClient:
         votelst: Optional[int] = None,
         votekd: Optional[int] = None,
         sprfkey: Optional[str] = None,
-        nonpart: bool = False,
         note: Optional[bytes] = None,
         fee: Optional[int] = None,
     ) -> PreparedTransaction:
@@ -3347,7 +3345,6 @@ class SignerClient:
         if not sender:
             raise ValueError("sender is required")
         _validate_keyreg_params(
-            nonpart=nonpart,
             votekey=votekey,
             selkey=selkey,
             votefst=votefst,
@@ -3368,7 +3365,6 @@ class SignerClient:
             votelst=votelst,
             votekd=votekd,
             sprfkey=sprfkey,
-            nonpart=nonpart,
             note=note,
         )
         resolved = self.resolve_auth_address(sender, lambda _: sender_info)
@@ -3381,7 +3377,6 @@ class SignerClient:
                     name="keyreg",
                     status="ok",
                     data={
-                        "nonparticipation": nonpart,
                         "vote_first": votefst or 0,
                         "vote_last": votelst or 0,
                         "vote_key_dilution": votekd or 0,

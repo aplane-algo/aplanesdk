@@ -299,27 +299,17 @@ func TestPrepareRekeyAllowsCosignedSignerTarget(t *testing.T) {
 	}
 }
 
-func TestPrepareKeyRegNonparticipation(t *testing.T) {
+// A keyless keyreg was only ever a nonparticipating one, which apsigner
+// refuses and which can't be undone, so the SDK no longer builds it.
+func TestPrepareKeyRegRequiresParticipationKeys(t *testing.T) {
 	sender := sdkTestAddress(1)
 	receiver := sdkTestAddress(2)
 	signer, algodClient, cleanup := newPrepTestClients(t, sender, receiver, 2_000_000, 0, false)
 	defer cleanup()
 
-	prepared, err := signer.PrepareKeyReg(context.Background(), algodClient, KeyRegPrepParams{
-		Sender:           sender,
-		Nonparticipation: true,
-	})
-	if err != nil {
-		t.Fatalf("PrepareKeyReg() error = %v", err)
-	}
-	if prepared.Transaction == nil || prepared.Transaction.Type != types.KeyRegistrationTx {
-		t.Fatalf("keyreg transaction mismatch: %#v", prepared.Transaction)
-	}
-	if !prepared.Transaction.Nonparticipation {
-		t.Fatal("Nonparticipation = false, want true")
-	}
-	if prepared.Checks[0].Name != "keyreg" {
-		t.Fatalf("checks mismatch: %#v", prepared.Checks)
+	prepared, err := signer.PrepareKeyReg(context.Background(), algodClient, KeyRegPrepParams{Sender: sender})
+	if err == nil || prepared != nil || !strings.Contains(err.Error(), "vote_key is required") {
+		t.Fatalf("PrepareKeyReg(no keys) = %v, %v; want the vote_key refusal", prepared, err)
 	}
 }
 

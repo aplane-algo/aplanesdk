@@ -73,9 +73,14 @@ def build_groups(addresses: dict) -> dict[str, PreparedGroup]:
         rekey_to=rekey_to,
         note=b"rekey",
     )
-    keyreg = transaction.KeyregNonparticipatingTxn(
+    keyreg = transaction.KeyregOnlineTxn(
         sender,
         suggested_params(),
+        votekey="CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo=",
+        selkey="CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws=",
+        votefst=1,
+        votelst=100,
+        votekd=10,
         note=b"keyreg",
     )
     raw_app = transaction.ApplicationCallTxn(
@@ -155,7 +160,7 @@ def build_groups(addresses: dict) -> dict[str, PreparedGroup]:
         "asa_opt_out": PreparedGroup([signed(opt_out)]),
         "account_close": PreparedGroup([signed(close)]),
         "rekey": PreparedGroup([signed(rekey)]),
-        "keyreg_nonparticipation": PreparedGroup([signed(keyreg)]),
+        "keyreg_online": PreparedGroup([signed(keyreg)]),
         "raw_app_call_info": PreparedGroup([signed(raw_app, app_call_info={"mode": "raw"})]),
         "abi_app_call_info": PreparedGroup(
             [

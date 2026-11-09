@@ -78,17 +78,16 @@ type RekeyPrepParams struct {
 
 // KeyRegPrepParams describes a key registration transaction intent.
 type KeyRegPrepParams struct {
-	Sender           string
-	VoteKey          string
-	SelectionKey     string
-	StateProofKey    string
-	VoteFirst        uint64
-	VoteLast         uint64
-	VoteKeyDilution  uint64
-	Nonparticipation bool
-	Note             []byte
-	Fee              uint64
-	UseFlatFee       bool
+	Sender          string
+	VoteKey         string
+	SelectionKey    string
+	StateProofKey   string
+	VoteFirst       uint64
+	VoteLast        uint64
+	VoteKeyDilution uint64
+	Note            []byte
+	Fee             uint64
+	UseFlatFee      bool
 }
 
 // AppCallPrepParams describes a raw application-call transaction intent.
@@ -540,7 +539,7 @@ func (c *SignerClient) PrepareKeyReg(ctx context.Context, algodClient *algod.Cli
 		params.VoteFirst,
 		params.VoteLast,
 		params.VoteKeyDilution,
-		params.Nonparticipation,
+		false, // nonparticipation: apsigner refuses it, and it can't be undone
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create keyreg transaction: %w", err)
@@ -561,7 +560,6 @@ func (c *SignerClient) PrepareKeyReg(ctx context.Context, algodClient *algod.Cli
 			Name:   "keyreg",
 			Status: "ok",
 			Data: map[string]any{
-				"nonparticipation":  params.Nonparticipation,
 				"vote_first":        params.VoteFirst,
 				"vote_last":         params.VoteLast,
 				"vote_key_dilution": params.VoteKeyDilution,
@@ -999,16 +997,13 @@ func rekeyTargetFlowCheck(rekeyTo, flow string) error {
 	case "", SigningFlowBounded1, SigningFlowCosigned1:
 		return nil
 	case SigningFlowRotating1:
-		return fmt.Errorf("cannot rekey to %s: it is a rotating account, whose address authorizes only itself", rekeyTo)
+		return fmt.Errorf("cannot rekey to %s: it is a rotating account, and its address is a one-time stage key; an account rekeyed to it would be stuck on that stage, and every signature would reuse that key", rekeyTo)
 	default:
 		return fmt.Errorf("cannot rekey to %s: it uses signing flow %q, which this SDK cannot use as another account's authorizer", rekeyTo, flow)
 	}
 }
 
 func validateKeyRegParams(params KeyRegPrepParams) error {
-	if params.Nonparticipation {
-		return nil
-	}
 	if params.VoteKey == "" {
 		return fmt.Errorf("vote_key is required")
 	}
