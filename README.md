@@ -111,9 +111,9 @@ Optional variables:
   nor `APSIGNER_DATA` is needed: the preflight checks the four SSH variables
   and that the SSH listener accepts a connection, and the tests tunnel to it
 
-Each SDK runs the broad signer-facing lifecycle and AlgoKit adapter checks with
-an Ed25519 key. A second focused test generates a protocol-native
-`falcon1024` key, signs a 0-ALGO self-payment, verifies that the returned
+Each SDK runs the broad signer-facing lifecycle checks with an Ed25519 key. A
+second focused test generates a protocol-native `falcon1024` key, signs a
+0-ALGO self-payment, verifies that the returned
 envelope contains a non-empty `f1` PQ signature, and deletes the key. Health,
 status, endpoint routing, and key inventory checks therefore run once rather
 than being duplicated for both authorization types.

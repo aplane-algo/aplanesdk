@@ -56,14 +56,6 @@ Install a specific published version:
 npm install aplanesdk@<version> algosdk
 ```
 
-Install the current AlgoKit Utils TypeScript v10 beta in the same project when
-using the optional AlgoKit adapter example/client helpers. The adapter is
-tested against 10.0.0-beta.4:
-
-```bash
-npm install "@algorandfoundation/algokit-utils@^10.0.0-beta.4"
-```
-
 If your install omits optional dependencies or the runtime cannot resolve
 `ssh2`, add it explicitly:
 
@@ -498,70 +490,6 @@ const combined = assembleGroup([aliceSigned, bobSigned]);
 The high-level final-signing helpers reject foreign slots for `/sign`; foreign
 slots are accepted by `planGroup()` only.
 
-### AlgoKit Utils Adapter
-
-The TypeScript SDK exposes an optional adapter for AlgoKit Utils TypeScript
-v10 beta transaction signing. It is tested against 10.0.0-beta.4.
-
-The minimal repository example is `typescript/examples/algokit_self_send.ts`.
-From a checkout with dependencies installed and the SDK built:
-
-```bash
-cd ~/aplanesdk/typescript
-npm install
-npm install --no-save "@algorandfoundation/algokit-utils@^10.0.0-beta.4"
-npm run build
-export APCLIENT_DATA=~/aplane/apclient
-export APLANE_ADDRESS=SENDER_ADDRESS
-node --import tsx examples/algokit_self_send.ts
-```
-
-The core flow is:
-
-1. Build the transaction with `algorand.createTransaction.*`.
-2. Sign it with `createApsignerAccount(...).signer`.
-3. Submit the returned signed blobs with `algorand.client.algod.sendRawTransaction(...)`.
-
-```ts
-import { AlgorandClient, microAlgo } from "@algorandfoundation/algokit-utils";
-import { SignerClient, createApsignerAccount } from "aplanesdk";
-
-const sender = "SENDER_ADDRESS";
-const algorand = AlgorandClient.testNet();
-const signer = await SignerClient.fromEnv();
-
-const info = await algorand.account.getInformation(sender);
-const account = createApsignerAccount({
-  client: signer,
-  address: sender,
-  authAddress: info.authAddr?.toString() ?? sender,
-});
-const txn = await algorand.createTransaction.payment({
-  sender,
-  signer: account,
-  receiver: sender,
-  amount: microAlgo(0),
-  validityWindow: 1000,
-});
-const signed = await account.signer([txn], [0]);
-const txId = (await algorand.client.algod.sendRawTransaction(signed)).txId;
-```
-
-You can also register the account with AlgoKit for call sites that resolve
-signers from the client:
-
-```ts
-algorand.setSignerFromAccount(account);
-```
-
-The adapter connects AlgoKit clients to APlane's transaction signing functions
-and presents the AlgoKit `addr` plus `signer(txnGroup, indexesToSign)` account
-shape.
-
-Use `createTransaction.*` when APlane must own final signing and any
-APlane-managed group expansion. `algorand.send.*` owns the composer send path
-and signs inside that path.
-
 ### Cosigned Accounts
 
 Cosigned accounts (signing flow `cosigned1`) need component signatures from both
@@ -667,8 +595,9 @@ never trigger another signing request automatically.
   signed group.
 - `signTransactionsList()` returns per-slot base64 strings; it also rejects
   foreign slots for `/sign`.
-- `signRequests()` accepts one or more raw `/sign` request entries and returns the raw
-  `/sign` response.
+- `signRequests()` accepts one or more raw `/sign` request entries and returns the
+  `/sign` response, with its mutation report in the typed camelCase
+  `MutationReport` form.
 - `planGroup()` returns unsigned `TX`-prefixed hex transactions plus a mutation
   report.
 - `simulatePreparedGroup()` performs ordinary signing, then uses the

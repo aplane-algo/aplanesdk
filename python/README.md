@@ -18,13 +18,6 @@ pip install aplanesdk
 
 The published package is `aplanesdk` on PyPI.
 
-For the optional AlgoKit adapter, install the current AlgoKit Utils Python v5
-beta in the same environment. The adapter is tested against 5.0.0b5:
-
-```bash
-pip install --pre 'algokit-utils==5.0.0b5'
-```
-
 Or install from source:
 
 ```bash
@@ -290,68 +283,12 @@ response = client.sign_requests(
 )
 ```
 
-### AlgoKit Utils Adapter
-
-For AlgoKit Utils Python v5 transaction composers, use the adapter
-account. It connects AlgoKit clients to APlane's transaction signing functions
-and presents the `addr` + `signer(txn_group, indexes_to_sign)` shape.
-
-The minimal repository example is `examples/algokit_self_send.py`. From a
-checkout, run it as a module so it imports the local SDK source:
-
-```bash
-cd ~/aplanesdk/python
-export APCLIENT_DATA=~/aplane/apclient
-export APLANE_ADDRESS=SENDER_ADDRESS
-python -m examples.algokit_self_send
-```
-
-The example builds a transaction with AlgoKit, signs it through the APlane
-adapter, then submits the signed blobs with AlgoKit's algod client:
-
-```python
-from algokit_utils import AlgoAmount, AlgorandClient, PaymentParams
-from aplanesdk import SignerClient
-from aplanesdk.algokit import create_apsigner_account
-
-sender = "SENDER_ADDRESS"
-algorand = AlgorandClient.testnet()
-
-with SignerClient.from_env() as signer:
-    auth = algorand.client.algod.account_information(sender).auth_addr or sender
-    account = create_apsigner_account(signer, sender, auth_address=auth)
-    txn = algorand.create_transaction.payment(
-        PaymentParams(
-            sender=sender,
-            signer=account,
-            receiver=sender,
-            amount=AlgoAmount(micro_algo=0),
-            validity_window=1000,
-        )
-    )
-    signed = account.signer([txn], [0])
-    tx_id = algorand.client.algod.send_raw_transaction(signed).tx_id
-```
-
-Use `create_transaction.*` when APlane must own final signing and any
-APlane-managed group expansion. `algorand.send.*` owns the composer send path
-and signs inside that path.
-
-The Python AlgoKit signer is synchronous. `ApsignerAccount` tracks one active
-signing request at a time; overlapping calls on the same account raise
-`RuntimeError`. Use separate account objects for concurrent signing. For
-asyncio applications, run the AlgoKit call site in a worker thread, for example
-with `asyncio.to_thread(...)`. If an application needs to own request IDs, pass
-`new_request_id`, a callable that returns a fresh ID for each sign call.
-
 Signing calls discover `/status.approval_wait_seconds` and use that value
 plus 30 seconds of slack for the request timeout. If discovery fails or an older
 signer omits the field, signing falls back to 6 minutes. An explicit shorter
 timeout still wins; SDK `/sign` calls include a `request_id` and send a
 best-effort `/sign/cancel` when the HTTP request times out or disconnects.
 High-level signing methods accept an optional keyword-only `request_id`.
-AlgoKit adapter callers can call `account.cancel()` from another thread to
-cancel the in-flight adapter request.
 
 #### `cancel_sign_request(request_id) -> CancelSignResponse`
 
@@ -368,12 +305,6 @@ request_id = "wallet-ui-approval-123"
 signed = client.sign_transaction(txn, request_id=request_id)
 # elsewhere, if the user aborts while approval is pending:
 client.cancel_sign_request(request_id)
-```
-
-For AlgoKit adapter signing, call `cancel()` on the account:
-
-```python
-account.cancel()
 ```
 
 #### `close()`

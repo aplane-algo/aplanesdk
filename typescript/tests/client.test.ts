@@ -3266,6 +3266,37 @@ describe("SignerClient", () => {
   });
 
   describe("signRequests", () => {
+    // Audit finding 24: the wire report is snake_case, and callers read the
+    // typed camelCase fields.
+    it("returns the mutation report in its typed camelCase form", async () => {
+      queueStatusResponse();
+      mockFetch.mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: async () => ({
+          signed: ["deadbeef"],
+          mutations: {
+            dummies_added: 1,
+            group_id_changed: true,
+            fees_modified: [0],
+            total_fees_delta: 2000,
+            original_count: 1,
+            final_count: 2,
+          },
+        }),
+      });
+
+      const client = new SignerClient("http://localhost:11270");
+      const result = await client.signRequests([{ txn_bytes_hex: "545801", auth_address: "AUTH" }]);
+
+      assert.equal(result.mutations?.dummiesAdded, 1);
+      assert.equal(result.mutations?.groupIdChanged, true);
+      assert.deepEqual(result.mutations?.feesModified, [0]);
+      assert.equal(result.mutations?.totalFeesDelta, 2000);
+      assert.equal(result.mutations?.originalCount, 1);
+      assert.equal(result.mutations?.finalCount, 2);
+    });
+
     it("sends raw signing requests and returns raw response", async () => {
       queueStatusResponse();
       mockFetch.mockResolvedValueOnce({

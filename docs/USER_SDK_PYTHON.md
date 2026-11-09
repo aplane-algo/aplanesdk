@@ -61,13 +61,6 @@ Install a specific published version:
 python -m pip install 'aplanesdk==<version>'
 ```
 
-Install the current AlgoKit Utils Python v5 beta in the same environment when
-using the optional AlgoKit adapter. The adapter is tested against 5.0.0b5:
-
-```bash
-python -m pip install --pre 'algokit-utils==5.0.0b5'
-```
-
 Verify that the package imports and reports the installed version:
 
 ```bash
@@ -479,75 +472,6 @@ Use `plan_group()` when you need:
 - dry-run visibility into dummy insertion and fee changes
 - unsigned post-mutation transactions for simulation
 - a first pass for multi-party coordination
-
-### AlgoKit Utils Adapter
-
-The Python SDK exposes an optional adapter for AlgoKit Utils Python v5 beta
-transaction signing. It is tested against 5.0.0b5.
-
-The minimal repository example is `python/examples/algokit_self_send.py`. From
-a checkout, run it as a module so Python imports the local SDK source instead
-of any installed `aplanesdk` package:
-
-```bash
-cd ~/aplanesdk/python
-export APCLIENT_DATA=~/aplane/apclient
-export APLANE_ADDRESS=SENDER_ADDRESS
-python -m examples.algokit_self_send
-```
-
-The core flow is:
-
-1. Build the transaction with `algorand.create_transaction.*`.
-2. Sign it with `create_apsigner_account(...).signer`.
-3. Submit the returned signed blobs with `algorand.client.algod.send_raw_transaction(...)`.
-
-```python
-from algokit_utils import AlgoAmount, AlgorandClient, PaymentParams
-from aplanesdk import SignerClient
-from aplanesdk.algokit import create_apsigner_account
-
-sender = "SENDER_ADDRESS"
-algorand = AlgorandClient.testnet()
-
-with SignerClient.from_env() as signer:
-    auth = algorand.client.algod.account_information(sender).auth_addr or sender
-    account = create_apsigner_account(signer, sender, auth_address=auth)
-    txn = algorand.create_transaction.payment(
-        PaymentParams(
-            sender=sender,
-            signer=account,
-            receiver=sender,
-            amount=AlgoAmount(micro_algo=0),
-            validity_window=1000,
-        )
-    )
-    signed = account.signer([txn], [0])
-    tx_id = algorand.client.algod.send_raw_transaction(signed).tx_id
-```
-
-You can also register the account with AlgoKit for call sites that resolve
-signers from the client:
-
-```python
-algorand.set_signer_from_account(account)
-```
-
-The adapter connects AlgoKit clients to APlane's transaction signing functions
-and presents the AlgoKit `addr` plus `signer(txn_group, indexes_to_sign)`
-account shape.
-
-Use `create_transaction.*` when APlane must own final signing and any
-APlane-managed group expansion. `algorand.send.*` owns the composer send path
-and signs inside that path.
-
-The Python AlgoKit signer callback is synchronous. `ApsignerAccount` exposes
-`cancel()` as the cancellation side channel and rejects overlapping sign calls
-on the same account with `RuntimeError`. Use separate account objects for
-concurrent signing. In asyncio applications, wrap the AlgoKit call site with
-`asyncio.to_thread(...)` so the event loop is not blocked while the operator
-approves the request. If an application needs to own request IDs, pass
-`new_request_id`, a callable that returns a fresh ID for each sign call.
 
 ## Transaction Semantics
 
