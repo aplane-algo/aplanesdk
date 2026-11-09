@@ -562,9 +562,12 @@ ordinary-position signing) before requesting cosigner components, so a cosigner
 never sees a group the user signer rejects. `AssembleGroup`
 remains only the local multi-party concatenation helper.
 
-Corridor is a bounded cosigner account: its LogicSig contract is `bounded2`, and
-its online spend flow is `bounded-cosigner1`. These are separate compatibility
-dimensions. `SignPreparedGuardedGroup` discovers the flow from signer
+Corridor is a cosigned bounded account: its LogicSig contract is `bounded2`, and
+its online signing flow is `cosigned1`. These are separate compatibility
+dimensions. A cosigned account's spends and declared rekeys need the cosigner;
+a rekey to an address on its rekey-to list does not, and the signer's base
+component says which (`path`), so the helper asks the cosigner only for the
+targets that need it. `SignPreparedGuardedGroup` discovers the flow from signer
 inventory and performs the user-first sequence:
 
 ```go

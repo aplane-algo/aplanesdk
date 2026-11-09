@@ -32,7 +32,7 @@ cosigner key with no document of its own rejects `/sign/component` with HTTP
 403, `code: "forbidden"`, and a `transaction_type:<type>` rule ID in the error
 message until the operator applies a document for it. A key the node does not
 hold returns HTTP 400 with `code: "bad_request"`. This applies to both
-`cosigner1` and `bounded-cosigner1` flows. The existing Go, Python, and
+`cosigner1` and `cosigned1` flows. The existing Go, Python, and
 TypeScript SDKs handle these responses without client API or signer
 wire-contract changes. Policy provisioning remains an operator workflow outside
 the SDKs.

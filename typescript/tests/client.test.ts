@@ -14,7 +14,7 @@ import {
   KEY_TYPE_GUARDED_FALCON1024_COSIGNER1024,
   KEY_TYPE_WITNESS_FALCON1024,
   SIGNING_FLOW_COSIGNER1,
-  SIGNING_FLOW_BOUNDED_COSIGNER1,
+  SIGNING_FLOW_COSIGNED1,
 } from "../src/types.js";
 import {
   AuthenticationError,
@@ -1472,6 +1472,7 @@ describe("SignerClient", () => {
             base_signatures: ["base-sig"],
             assembly_receipt: "receipt",
             signature_scheme: "aplane.falcon1024.v1",
+            path: "spend",
           }],
           mutations: {
             dummies_added: 1,
@@ -1606,6 +1607,7 @@ describe("SignerClient", () => {
         base_signatures: ["base"],
         assembly_receipt: "receipt",
         signature_scheme: "aplane.falcon1024.v1",
+        path: "spend",
       };
       mockFetch.mockResolvedValueOnce({
         status: 200,
@@ -2045,6 +2047,94 @@ describe("SignerClient", () => {
       );
     });
 
+    it("skips the cosigner for a listed rekey on a cosigned account", async () => {
+      const bounded = testAddress(13);
+      const target = testAddress(14);
+      const user = new SignerClient("http://localhost:11270");
+      const cosigner = new SignerClient("http://cosigner:11270");
+      (user as any).planRequests = async (requests: any[]) => ({ transactions: [requests[0].txn_bytes_hex] });
+      (user as any).requestComponents = async () => ({
+        request_id: "base-id",
+        components: [{
+          target_index: 0,
+          kind: "bounded-base",
+          auth_address: bounded,
+          base_signatures: ["base-sig"],
+          assembly_receipt: "receipt",
+          signature_scheme: "aplane.falcon1024.v1",
+          path: "listed_rekey",
+        }],
+      });
+      (cosigner as any).requestComponents = async () => {
+        throw new Error("the cosigner was asked about a listed rekey");
+      };
+      const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+        sender: bounded,
+        receiver: bounded,
+        amount: 0n,
+        rekeyTo: target,
+        suggestedParams: {
+          fee: 1000n, minFee: 1000n, firstValid: 1n, lastValid: 100n,
+          genesisHash: new Uint8Array(32), genesisID: "testnet-v1", flatFee: true,
+        },
+      });
+      (user as any).requestAssemble = async (request: any) => {
+        assert.equal(request.targets[0].cosigner_signature, undefined);
+        assert.equal(request.targets[0].cosigner_source_request_id, undefined);
+        const signature = new Uint8Array(64);
+        signature[63] = 1;
+        return {
+          request_id: "assembly-id",
+          signed_group: [bytesToHex(algosdk.encodeMsgpack(new algosdk.SignedTransaction({ txn, sig: signature })))],
+        };
+      };
+      const result = await signPreparedGuardedGroup({
+        userClient: user,
+        cosignerClient: cosigner,
+        cosignerComponentKey: "COSIGNER_COMPONENT",
+        preparedGroup: {
+          transactions: [{
+            transaction: txn,
+            authAddress: bounded,
+            signerKey: {
+              address: bounded,
+              publicKeyHex: "",
+              keyType: "aplane.falcon1024-b.v1",
+              signingFlow: SIGNING_FLOW_COSIGNED1,
+              cosignerComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
+              logicSigResources: {
+                spend: { programBytes: 5308, argumentBytes: 3358, maxOpcodeCost: 20000 },
+                spendingRekey: { programBytes: 5308, argumentBytes: 2846, maxOpcodeCost: 20000 },
+                listedRekey: { programBytes: 5308, argumentBytes: 1583, maxOpcodeCost: 20000 },
+              },
+              isGenericLsig: false,
+              boundedAuthorization: {
+                contract: "bounded2",
+                baseSignatureArgLayout: { count: 1, maxSizes: [1280] },
+                spendEffects: ["pay"],
+                maxFee: 1000,
+                rekey: "spending_key",
+                rekeyList: { contract: "rekey_list1", depth: 4 },
+                cosigner: {
+                  contract: "cosigner1",
+                  componentKeyType: KEY_TYPE_WITNESS_FALCON1024,
+                  publicKeyHex: "aabb",
+                  signatureMaxSize: 1280,
+                  requiredOn: ["spend", "spending_rekey"],
+                },
+                runtimeArgs: [],
+                derivedArgs: [],
+                argumentLayout: [],
+                layer3Policy: "merkle_allowlist",
+              },
+            },
+          }],
+        },
+      } as any);
+      assert.equal(result.signedGroup.length, 1);
+      assert.deepEqual(result.cosignerComponentResponses, []);
+    });
+
     it("routes prepared bounded-cosigner groups through the user-first flow", async () => {
       const bounded = testAddress(11);
       const receiver = testAddress(12);
@@ -2071,6 +2161,7 @@ describe("SignerClient", () => {
             runtime_args: { proof: "aabb" },
             assembly_receipt: "receipt",
             signature_scheme: "aplane.falcon1024.v1",
+            path: "spend",
           }],
           mutations: plannedMutations,
         };
@@ -2135,7 +2226,7 @@ describe("SignerClient", () => {
               address: bounded,
               publicKeyHex: "",
               keyType: "aplane.falcon1024-b.v1",
-              signingFlow: SIGNING_FLOW_BOUNDED_COSIGNER1,
+              signingFlow: SIGNING_FLOW_COSIGNED1,
               cosignerComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
               logicSigResources: {
                 spend: { programBytes: 5308, argumentBytes: 3358, maxOpcodeCost: 20000 },
@@ -2373,6 +2464,7 @@ describe("SignerClient", () => {
             base_signatures: ["base-sig"],
             assembly_receipt: "receipt",
             signature_scheme: "aplane.falcon1024.v1",
+            path: "spend",
           }],
         });
 
@@ -2391,7 +2483,7 @@ describe("SignerClient", () => {
                   address: bounded,
                   publicKeyHex: "",
                   keyType: "aplane.falcon1024-b.v1",
-                  signingFlow: SIGNING_FLOW_BOUNDED_COSIGNER1,
+                  signingFlow: SIGNING_FLOW_COSIGNED1,
                   cosignerComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
                   logicSigResources: profiles,
                   isGenericLsig: false,
@@ -2423,7 +2515,7 @@ describe("SignerClient", () => {
       }
     });
 
-    it("rejects mixed cosigner1 and bounded-cosigner1 prepared groups", async () => {
+    it("rejects mixed cosigner1 and cosigned1 prepared groups", async () => {
       const user = new SignerClient("http://localhost:11270");
       await assert.rejects(
         signPreparedGuardedGroup({
@@ -2435,7 +2527,7 @@ describe("SignerClient", () => {
                   address: "bounded",
                   publicKeyHex: "",
                   keyType: "bounded",
-                  signingFlow: SIGNING_FLOW_BOUNDED_COSIGNER1,
+                  signingFlow: SIGNING_FLOW_COSIGNED1,
                   isGenericLsig: false,
                 },
               },
@@ -2451,7 +2543,7 @@ describe("SignerClient", () => {
             ],
           },
         }),
-        /cannot mix cosigner1 and bounded-cosigner1/,
+        /cannot mix cosigner1 and cosigned1/,
       );
     });
 
@@ -2523,6 +2615,7 @@ describe("SignerClient", () => {
             base_signatures: ["base-sig"],
             assembly_receipt: "receipt",
             signature_scheme: "aplane.falcon1024.v1",
+            path: "spend",
           }],
         });
       (cosigner as any).requestComponents = async () => ({
@@ -2560,7 +2653,7 @@ describe("SignerClient", () => {
                 address: bounded,
                 publicKeyHex: "",
                 keyType: "aplane.falcon1024-b.v1",
-                signingFlow: SIGNING_FLOW_BOUNDED_COSIGNER1,
+                signingFlow: SIGNING_FLOW_COSIGNED1,
                 cosignerComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
                 logicSigResources: {
                   spend: { programBytes: 5308, argumentBytes: 3358, maxOpcodeCost: 20000 },
@@ -2677,6 +2770,7 @@ describe("SignerClient", () => {
             base_signatures: ["base-sig"],
             assembly_receipt: "receipt",
             signature_scheme: "aplane.falcon1024.v1",
+            path: "spend",
           }],
         };
       };
@@ -2721,7 +2815,7 @@ describe("SignerClient", () => {
                 publicKeyHex: "",
                 keyType: "aplane.falcon1024-b.v1",
                 authorizationKind: "logic_sig",
-                signingFlow: SIGNING_FLOW_BOUNDED_COSIGNER1,
+                signingFlow: SIGNING_FLOW_COSIGNED1,
                 cosignerComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
                 isGenericLsig: false,
                 logicSigResources: {

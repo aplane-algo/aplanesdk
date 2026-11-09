@@ -120,7 +120,10 @@ AUTHORIZATION_KIND_LOGIC_SIG = "logic_sig"
 # implement. An empty signing_flow means the ordinary /sign path.
 SIGNING_FLOW_COSIGNER1 = "cosigner1"
 SIGNING_FLOW_BOUNDED1 = "bounded1"
-SIGNING_FLOW_BOUNDED_COSIGNER1 = "bounded-cosigner1"
+# The cosigned account choreography: a target may be a spend or a rekey, and each
+# base component names the path the signer classified. A listed rekey takes no
+# cosigner component. It replaces bounded-cosigner1, which carried spends only.
+SIGNING_FLOW_COSIGNED1 = "cosigned1"
 # Rotating account choreography (/sign/rotating/prepare then
 # /sign/rotating/sign), in which the signer rekeys the account to a fresh
 # stage on every spend. This SDK does not implement it; keys labelled with
@@ -638,6 +641,17 @@ class SimulationResult:
 COMPONENT_TARGET_KIND_USER = "user"
 COMPONENT_TARGET_KIND_COSIGNER = "cosigner"
 COMPONENT_TARGET_KIND_BOUNDED_BASE = "bounded-base"
+# Bounded-base component paths: the path the signer classified a target on. A
+# listed rekey takes no cosigner component; every other path does.
+COMPONENT_PATH_SPEND = "spend"
+COMPONENT_PATH_SPENDING_REKEY = "spending_rekey"
+COMPONENT_PATH_LISTED_REKEY = "listed_rekey"
+COMPONENT_PATHS = (COMPONENT_PATH_SPEND, COMPONENT_PATH_SPENDING_REKEY, COMPONENT_PATH_LISTED_REKEY)
+
+
+def component_needs_cosigner(component: Dict[str, Any]) -> bool:
+    """Whether a bounded-base component's path takes a cosigner component."""
+    return component.get("path") != COMPONENT_PATH_LISTED_REKEY
 
 
 @dataclass
@@ -670,7 +684,9 @@ class AssemblyTarget:
     target_index: int
     kind: str
     auth_address: str
-    cosigner_signature: str
+    # Required on a guarded target and on every bounded-cosigner target except
+    # a listed rekey, which takes none.
+    cosigner_signature: str = ""
     user_signature: str = ""
     user_source_request_id: str = ""
     guarded_runtime_args: Optional[List[str]] = None
@@ -1549,10 +1565,29 @@ def _selected_prepared_resources(
             # Only these addresses: the signer checks the target and adds the proof.
             selected = profile.listed_rekey
         elif bounded.rekey == "spending_key":
+            # With a list too (plus cosigned) the signer moves a listed target to
+            # the listed path, and its base component says so.
             selected = profile.spending_rekey
         else:
             raise ValueError("bounded rekey authorization metadata is unavailable")
     return LogicSigResourceUsage(**vars(selected)) if selected else None
+
+
+def _component_path_resources(
+    key: Optional[KeyInfo], path: str, label: str
+) -> LogicSigResourceUsage:
+    """The key's LogicSig resources for the path a base component named."""
+    profile = key.logic_sig_resources if key else None
+    selected = None
+    if profile is not None:
+        selected = {
+            COMPONENT_PATH_SPEND: profile.spend,
+            COMPONENT_PATH_SPENDING_REKEY: profile.spending_rekey,
+            COMPONENT_PATH_LISTED_REKEY: profile.listed_rekey,
+        }.get(path)
+    if selected is None:
+        raise SignerError(f"{label}: signer key publishes no LogicSig resources for path {path!r}")
+    return LogicSigResourceUsage(**vars(selected))
 
 
 def _required_prepared_resources(
@@ -1698,10 +1733,14 @@ def _validate_assembly_request(data: Dict[str, Any]) -> None:
     covered = set()
     for i, target in enumerate(targets, start=1):
         _validate_assembly_index(target.get("target_index"), len(group_bytes_hex), covered)
-        if not target.get("auth_address") or not target.get("cosigner_signature"):
-            raise ValueError(f"target {i}: auth_address and cosigner_signature are required")
+        if not target.get("auth_address"):
+            raise ValueError(f"target {i}: auth_address is required")
+        if not target.get("cosigner_signature") and target.get("cosigner_source_request_id"):
+            raise ValueError(f"target {i}: cosigner_source_request_id needs a cosigner_signature")
         kind = target.get("kind")
         if kind == ASSEMBLY_TARGET_KIND_GUARDED:
+            if not target.get("cosigner_signature"):
+                raise ValueError(f"target {i}: cosigner_signature is required for guarded target")
             if not target.get("user_signature"):
                 raise ValueError(f"target {i}: user_signature is required for guarded target")
             if (target.get("base_signatures") or target.get("bounded_runtime_args")
@@ -1871,13 +1910,16 @@ def _validate_component_response(
         kind = component.get("kind")
         if kind in (COMPONENT_TARGET_KIND_USER, COMPONENT_TARGET_KIND_COSIGNER):
             if (not component.get("signature") or not component.get("signature_scheme")
-                    or component.get("base_signatures") or component.get("assembly_receipt")):
+                    or component.get("base_signatures") or component.get("assembly_receipt")
+                    or component.get("path")):
                 raise ValueError(f"component {index} has invalid signature material")
         elif kind == COMPONENT_TARGET_KIND_BOUNDED_BASE:
             if (not component.get("auth_address") or not component.get("base_signatures")
                     or not component.get("assembly_receipt")
                     or not component.get("signature_scheme") or component.get("signature")):
                 raise ValueError(f"component {index} has invalid bounded-base material")
+            if component.get("path") not in COMPONENT_PATHS:
+                raise ValueError(f"component {index} has unknown bounded path {component.get('path')!r}")
         else:
             raise ValueError(f"component {index} has unsupported kind")
 
@@ -2167,7 +2209,7 @@ def _rekey_target_flow_check(rekey_to: str, flow: str) -> None:
     SDK does not know is refused too, so a future flow fails closed here
     rather than at the signer.
     """
-    if flow in ("", SIGNING_FLOW_BOUNDED1, SIGNING_FLOW_COSIGNER1, SIGNING_FLOW_BOUNDED_COSIGNER1):
+    if flow in ("", SIGNING_FLOW_BOUNDED1, SIGNING_FLOW_COSIGNER1, SIGNING_FLOW_COSIGNED1):
         return
     if flow == SIGNING_FLOW_ROTATING1:
         raise SignerError(
@@ -5177,7 +5219,7 @@ def _prepared_cosigner_flow_kinds(
                 raise SignerError(f"prepared transaction {index}: resolve signer key: {e}") from e
         if key is None:
             continue
-        if key.signing_flow == SIGNING_FLOW_BOUNDED_COSIGNER1:
+        if key.signing_flow == SIGNING_FLOW_COSIGNED1:
             bounded_cosigner = True
         elif key.signing_flow == SIGNING_FLOW_COSIGNER1:
             cosigner1 = True
@@ -5501,7 +5543,11 @@ def sign_prepared_bounded_cosigner_group(
     cosigner_component_key: str = "",
     assembly_request_id: str = "",
 ) -> GuardedSignResult:
-    """Sign a prepared bounded-cosigner1 group using the user-first flow."""
+    """Sign a prepared cosigned1 group using the user-first flow.
+
+    The cosigner is asked only for targets whose base component needs it: a
+    listed rekey takes none, and assembles without a cosigner signature.
+    """
     if user_client is None:
         raise SignerError("user_client is required")
     prepared = prepared_group.transactions
@@ -5512,6 +5558,7 @@ def sign_prepared_bounded_cosigner_group(
     targets: List[Dict[str, Any]] = []
     primary_targets: List[Dict[str, Any]] = []
     target_resources: Dict[int, Optional[LogicSigResourceUsage]] = {}
+    target_keys: Dict[int, KeyInfo] = {}
     target_max_fees: Dict[int, int] = {}
     for index, item in enumerate(prepared):
         if item.signed_transaction_base64:
@@ -5527,7 +5574,7 @@ def sign_prepared_bounded_cosigner_group(
         if key is None:
             raise ValueError(f"prepared transaction {index}: signer key metadata is required")
         resources = _selected_prepared_resources(key, item.transaction)
-        if key.signing_flow == SIGNING_FLOW_BOUNDED_COSIGNER1:
+        if key.signing_flow == SIGNING_FLOW_COSIGNED1:
             if not item.auth_address:
                 raise ValueError(f"prepared transaction {index}: bounded auth address is required")
             resources = _require_lsig_resources(
@@ -5536,6 +5583,7 @@ def sign_prepared_bounded_cosigner_group(
             )
             requests_data.append(item.to_sign_request())
             target_resources[index] = resources
+            target_keys[index] = key
             if key.bounded_authorization is None:
                 raise ValueError(
                     f"prepared transaction {index}: bounded authorization " "metadata is required"
@@ -5553,7 +5601,7 @@ def sign_prepared_bounded_cosigner_group(
             )
             continue
         if key.signing_flow == SIGNING_FLOW_COSIGNER1:
-            raise ValueError("cannot mix cosigner1 and bounded-cosigner1 targets in one group")
+            raise ValueError("cannot mix cosigner1 and cosigned1 targets in one group")
         if key.signing_flow not in ("", SIGNING_FLOW_BOUNDED1):
             raise ValueError(
                 f"prepared transaction {index}: signer key requires signing flow "
@@ -5658,6 +5706,13 @@ def sign_prepared_bounded_cosigner_group(
                 f"signer returned no bounded component for target index "
                 f"{target['target_index']}"
             )
+        # Budget the position on the path the signer named, which only the
+        # signer can choose: whether a rekey target is listed is not public.
+        target_resources[target["target_index"]] = _component_path_resources(
+            target_keys[target["target_index"]],
+            components[target["target_index"]].get("path", ""),
+            f"prepared transaction {target['target_index']}",
+        )
 
     primary_response, passthrough = _request_bounded_primary_passthrough(
         user_client,
@@ -5668,9 +5723,12 @@ def sign_prepared_bounded_cosigner_group(
         primary_targets,
     )
     # The user side is complete, including ordinary primary positions. Only
-    # now may the SDK disclose the frozen group to the cosigner endpoint.
+    # now may the SDK disclose the frozen group to the cosigner endpoint, and
+    # only for the targets that need it: a listed rekey takes no cosigner.
     cosigner_groups: Dict[tuple, Dict[str, Any]] = {}
     for target in targets:
+        if not component_needs_cosigner(components[target["target_index"]]):
+            continue
         client, component_key = _resolve_cosigner_for_target(
             target, cosigner_client, cosigner_component_key, cosigner_resolver
         )
@@ -5706,10 +5764,13 @@ def sign_prepared_bounded_cosigner_group(
     assembly_targets: List[AssemblyTarget] = []
     for target in targets:
         index = target["target_index"]
-        cosigner = cosigner_signatures.get(index)
-        if cosigner is None:
-            raise SignerError(f"missing cosigner component signature for target {index}")
         component = components[index]
+        cosigner = {"signature": "", "request_id": ""}
+        if component_needs_cosigner(component):
+            found = cosigner_signatures.get(index)
+            if found is None:
+                raise SignerError(f"missing cosigner component signature for target {index}")
+            cosigner = found
         assembly_targets.append(
             AssemblyTarget(
                 target_index=index,
@@ -5764,7 +5825,7 @@ def sign_prepared_guarded_group(
     )
     if has_bounded_cosigner:
         if has_cosigner1:
-            raise ValueError("cannot mix cosigner1 and bounded-cosigner1 targets in one group")
+            raise ValueError("cannot mix cosigner1 and cosigned1 targets in one group")
         return sign_prepared_bounded_cosigner_group(
             user_client=user_client,
             prepared_group=prepared_group,

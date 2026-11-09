@@ -63,8 +63,12 @@ import {
   ErrorCodes,
   SIGNING_FLOW_COSIGNER1,
   SIGNING_FLOW_BOUNDED1,
-  SIGNING_FLOW_BOUNDED_COSIGNER1,
+  SIGNING_FLOW_COSIGNED1,
   SIGNING_FLOW_ROTATING1,
+  COMPONENT_PATH_SPEND,
+  COMPONENT_PATH_SPENDING_REKEY,
+  COMPONENT_PATH_LISTED_REKEY,
+  componentNeedsCosigner,
   PQ_SCHEME_FALCON1024,
   AUTHORIZATION_KIND_NATIVE_PQ,
   validateLogicSigResources,
@@ -520,7 +524,7 @@ async function preparedCosignerFlowKinds(
     if (!key && item.authAddress) {
       key = await options.userClient.getKeyInfo(item.authAddress);
     }
-    if (key?.signingFlow === SIGNING_FLOW_BOUNDED_COSIGNER1) boundedCosigner = true;
+    if (key?.signingFlow === SIGNING_FLOW_COSIGNED1) boundedCosigner = true;
     if (key?.signingFlow === SIGNING_FLOW_COSIGNER1) cosigner1 = true;
   }
   return { boundedCosigner, cosigner1 };
@@ -830,7 +834,9 @@ async function requestBoundedPrimaryPassthrough(
 }
 
 /**
- * Sign a prepared bounded-cosigner1 group using the user-first choreography.
+ * Sign a prepared cosigned1 group using the user-first choreography. The
+ * cosigner is asked only for targets whose base component needs it: a listed
+ * rekey takes none.
  */
 export async function signPreparedBoundedCosignerGroup(
   options: PreparedGuardedGroupOptions,
@@ -843,6 +849,7 @@ export async function signPreparedBoundedCosignerGroup(
   const targets: GuardedSignTarget[] = [];
   const primaryTargets: GuardedPrimarySignTarget[] = [];
   const targetResources = new Map<number, LogicSigResourceUsage | undefined>();
+  const targetKeys = new Map<number, KeyInfo>();
   const targetMaxFees = new Map<number, number>();
   for (let index = 0; index < prepared.length; index++) {
     const item = prepared[index];
@@ -862,7 +869,7 @@ export async function signPreparedBoundedCosignerGroup(
       throw new SignerError(`prepared transaction ${index}: signer key metadata is required`);
     }
     const resources = selectedPreparedResources(key, item.transaction);
-    if (key.signingFlow === SIGNING_FLOW_BOUNDED_COSIGNER1) {
+    if (key.signingFlow === SIGNING_FLOW_COSIGNED1) {
       if (!item.authAddress) {
         throw new SignerError(`prepared transaction ${index}: bounded auth address is required`);
       }
@@ -872,6 +879,7 @@ export async function signPreparedBoundedCosignerGroup(
       );
       requests.push(preparedTransactionToSignRequest(item));
       targetResources.set(index, requiredResources);
+      targetKeys.set(index, key);
       if (!key.boundedAuthorization) {
         throw new SignerError(
           `prepared transaction ${index}: bounded authorization metadata is required`,
@@ -889,7 +897,7 @@ export async function signPreparedBoundedCosignerGroup(
       continue;
     }
     if (key.signingFlow === SIGNING_FLOW_COSIGNER1) {
-      throw new SignerError("cannot mix cosigner1 and bounded-cosigner1 targets in one group");
+      throw new SignerError("cannot mix cosigner1 and cosigned1 targets in one group");
     }
     if (key.signingFlow && key.signingFlow !== SIGNING_FLOW_BOUNDED1) {
       throw new SignerError(
@@ -972,9 +980,16 @@ export async function signPreparedBoundedCosignerGroup(
     components.set(component.target_index, component);
   }
   for (const target of targets) {
-    if (!components.has(target.targetIndex)) {
+    const component = components.get(target.targetIndex);
+    if (!component) {
       throw new SignerError(`signer returned no bounded component for target index ${target.targetIndex}`);
     }
+    // Budget the position on the path the signer named, which only the signer
+    // can choose: whether a rekey target is listed is not public.
+    targetResources.set(
+      target.targetIndex,
+      componentPathResources(targetKeys.get(target.targetIndex), component.path, `prepared transaction ${target.targetIndex}`),
+    );
   }
 
   const primary = await requestBoundedPrimaryPassthrough(
@@ -988,7 +1003,8 @@ export async function signPreparedBoundedCosignerGroup(
   );
 
   // The user side is complete, including ordinary primary positions. Only
-  // now may the SDK disclose the frozen group to the cosigner endpoint.
+  // now may the SDK disclose the frozen group to the cosigner endpoint, and
+  // only for the targets that need it: a listed rekey takes no cosigner.
   const cosignerOptions: GuardedSignOptions = {
     userClient: options.userClient,
     cosignerClient: options.cosignerClient,
@@ -1000,6 +1016,8 @@ export async function signPreparedBoundedCosignerGroup(
   };
   const cosignerGroups: Array<{ client: SignerClient; componentKey: string; indices: number[] }> = [];
   for (const target of targets) {
+    const component = components.get(target.targetIndex);
+    if (component && !componentNeedsCosigner(component)) continue;
     const resolved = await resolveCosignerForTarget(target, cosignerOptions);
     let group = cosignerGroups.find(
       (candidate) => candidate.client === resolved.client &&
@@ -1040,14 +1058,10 @@ export async function signPreparedBoundedCosignerGroup(
   ];
   const assemblyTargets: AssemblyTarget[] = targets.map((target) => {
     const component = components.get(target.targetIndex);
-    const cosigner = cosignerSignatures.get(target.targetIndex);
     if (!component) {
       throw new SignerError(`missing bounded base component for target ${target.targetIndex}`);
     }
-    if (!cosigner) {
-      throw new SignerError(`missing cosigner component signature for target ${target.targetIndex}`);
-    }
-    return {
+    const assemblyTarget: AssemblyTarget = {
       target_index: target.targetIndex,
       kind: "bounded-cosigner",
       auth_address: component.auth_address || "",
@@ -1055,9 +1069,16 @@ export async function signPreparedBoundedCosignerGroup(
       bounded_runtime_args: component.runtime_args ? { ...component.runtime_args } : undefined,
       assembly_receipt: component.assembly_receipt || "",
       base_source_request_id: componentResponse.request_id,
-      cosigner_signature: cosigner.signature,
-      cosigner_source_request_id: cosigner.requestId,
     };
+    if (componentNeedsCosigner(component)) {
+      const cosigner = cosignerSignatures.get(target.targetIndex);
+      if (!cosigner) {
+        throw new SignerError(`missing cosigner component signature for target ${target.targetIndex}`);
+      }
+      assemblyTarget.cosigner_signature = cosigner.signature;
+      assemblyTarget.cosigner_source_request_id = cosigner.requestId;
+    }
+    return assemblyTarget;
   });
   const assemblyResponse = await options.userClient.requestAssemble({
     request_id: options.assemblyRequestId,
@@ -1092,7 +1113,7 @@ export async function signPreparedGuardedGroup(
   const flows = await preparedCosignerFlowKinds(options);
   if (flows.boundedCosigner) {
     if (flows.cosigner1) {
-      throw new SignerError("cannot mix cosigner1 and bounded-cosigner1 targets in one group");
+      throw new SignerError("cannot mix cosigner1 and cosigned1 targets in one group");
     }
     return signPreparedBoundedCosignerGroup(options);
   }
@@ -1440,12 +1461,16 @@ function validateComponentResponse(response: ComponentResponse, request?: Compon
     }
     seen.add(component.target_index);
     if (component.kind === "user" || component.kind === "cosigner") {
-      if (!component.signature || !component.signature_scheme || component.base_signatures?.length || component.assembly_receipt) {
+      if (!component.signature || !component.signature_scheme || component.base_signatures?.length || component.assembly_receipt || component.path) {
         throw new SignerError(`component ${index + 1} has invalid signature material`);
       }
     } else if (component.kind === "bounded-base") {
       if (!component.auth_address || !component.base_signatures?.length || !component.assembly_receipt || !component.signature_scheme || component.signature) {
         throw new SignerError(`component ${index + 1} has invalid bounded-base material`);
+      }
+      if (component.path !== COMPONENT_PATH_SPEND && component.path !== COMPONENT_PATH_SPENDING_REKEY &&
+          component.path !== COMPONENT_PATH_LISTED_REKEY) {
+        throw new SignerError(`component ${index + 1} has unknown bounded path ${JSON.stringify(component.path)}`);
       }
     } else {
       throw new SignerError(`component ${index + 1} has unsupported kind`);
@@ -1558,12 +1583,31 @@ function selectedPreparedResources(
       // Only these addresses: the signer checks the target and adds the proof.
       selected = profile.listedRekey;
     } else if (bounded.rekey === "spending_key") {
+      // With a list too (plus cosigned) the signer moves a listed target to the
+      // listed path, and its base component says so.
       selected = profile.spendingRekey;
     } else {
       throw new SignerError("bounded rekey authorization metadata is unavailable");
     }
   }
   return selected ? { ...selected } : undefined;
+}
+
+/** The key's LogicSig resources for the path a base component named. */
+function componentPathResources(
+  key: KeyInfo | undefined,
+  path: string | undefined,
+  label: string,
+): LogicSigResourceUsage {
+  const profile = key?.logicSigResources;
+  const selected = path === COMPONENT_PATH_SPEND ? profile?.spend
+    : path === COMPONENT_PATH_SPENDING_REKEY ? profile?.spendingRekey
+      : path === COMPONENT_PATH_LISTED_REKEY ? profile?.listedRekey
+        : undefined;
+  if (!selected) {
+    throw new SignerError(`${label}: signer key publishes no LogicSig resources for path ${JSON.stringify(path)}`);
+  }
+  return { ...selected };
 }
 
 function requiredPreparedResources(
@@ -1653,10 +1697,16 @@ function validateAssemblyRequest(request: AssemblyRequest): void {
   targets.forEach((target, index) => {
     const item = index + 1;
     validateAssemblyIndex(target.target_index, request.group_bytes_hex.length, covered);
-    if (!target.auth_address || !target.cosigner_signature) {
-      throw new SignerError(`target ${item}: auth_address and cosigner_signature are required`);
+    if (!target.auth_address) {
+      throw new SignerError(`target ${item}: auth_address is required`);
+    }
+    if (!target.cosigner_signature && target.cosigner_source_request_id) {
+      throw new SignerError(`target ${item}: cosigner_source_request_id needs a cosigner_signature`);
     }
     if (target.kind === "guarded") {
+      if (!target.cosigner_signature) {
+        throw new SignerError(`target ${item}: cosigner_signature is required for guarded target`);
+      }
       if (!target.user_signature) {
         throw new SignerError(`target ${item}: user_signature is required for guarded target`);
       }
@@ -2255,7 +2305,7 @@ function rekeyTargetFlowCheck(rekeyTo: string, flow: string | undefined): void {
     case "":
     case SIGNING_FLOW_BOUNDED1:
     case SIGNING_FLOW_COSIGNER1:
-    case SIGNING_FLOW_BOUNDED_COSIGNER1:
+    case SIGNING_FLOW_COSIGNED1:
       return;
     case SIGNING_FLOW_ROTATING1:
       throw new SignerError(`cannot rekey to ${rekeyTo}: it is a rotating account, whose address authorizes only itself`);

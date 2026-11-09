@@ -65,6 +65,7 @@ func TestSignPreparedBoundedCosignerGroupOneTarget(t *testing.T) {
 					RuntimeArgs:     map[string]string{"proof": "aabb"},
 					AssemblyReceipt: "receipt",
 					SignatureScheme: "aplane.falcon1024.v1",
+					Path:            ComponentPathSpend,
 				}},
 			})
 		case "/sign/assemble":
@@ -126,7 +127,7 @@ func TestSignPreparedBoundedCosignerGroupOneTarget(t *testing.T) {
 			AppCallInfo: &AppCallInfo{Mode: "raw"},
 			SignerKey: &KeyInfo{
 				Address: bounded, KeyType: "aplane.falcon1024-b.v1",
-				SigningFlow: SigningFlowBoundedCosigner1,
+				SigningFlow: SigningFlowCosigned1,
 				LogicSigResources: &LogicSigResourceProfile{
 					Spend: &LogicSigResourceUsage{ProgramBytes: 5308, ArgumentBytes: 3358, MaxOpcodeCost: 20000},
 				},
@@ -156,6 +157,101 @@ func TestSignPreparedBoundedCosignerGroupOneTarget(t *testing.T) {
 	}
 	if componentCalls != 0 {
 		t.Fatalf("component calls = %d, want none before max_fee rejection", componentCalls)
+	}
+}
+
+// A listed rekey on a cosigned account takes no cosigner component: the base
+// component names the listed path, the SDK asks the cosigner nothing, and the
+// assembly target carries no cosigner signature. The position is budgeted on
+// the listed path's resources.
+func TestSignPreparedBoundedCosignerGroupSkipsTheCosignerOnAListedRekey(t *testing.T) {
+	bounded := sdkTestAddress(23)
+	target := sdkTestAddress(24)
+	userClient, userServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/status":
+			json.NewEncoder(w).Encode(StatusResponse{State: "unlocked", ApprovalWaitSeconds: 60})
+		case "/plan":
+			var req GroupSignRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode plan request: %v", err)
+			}
+			json.NewEncoder(w).Encode(PlanGroupResponse{Transactions: []string{req.Requests[0].TxnBytesHex}})
+		case "/sign/component":
+			var req ComponentRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode bounded component request: %v", err)
+			}
+			json.NewEncoder(w).Encode(ComponentResponse{
+				RequestID: req.RequestID,
+				Components: []Component{{
+					TargetIndex: 0, Kind: ComponentTargetKindBoundedBase, AuthAddress: bounded,
+					BaseSignatures: []string{"base-sig"}, AssemblyReceipt: "receipt",
+					SignatureScheme: "aplane.falcon1024.v1", Path: ComponentPathListedRekey,
+				}},
+			})
+		case "/sign/assemble":
+			var req AssemblyRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode bounded assembly request: %v", err)
+			}
+			if len(req.Targets) != 1 || req.Targets[0].CosignerSignature != "" || req.Targets[0].CosignerSourceRequestID != "" {
+				t.Fatalf("listed rekey assembly targets = %+v, want no cosigner material", req.Targets)
+			}
+			json.NewEncoder(w).Encode(AssemblyResponse{RequestID: req.RequestID, SignedGroup: signedGroupFor(t, req.GroupBytesHex)})
+		default:
+			t.Fatalf("unexpected user path %s", r.URL.Path)
+		}
+	})
+	defer userServer.Close()
+	cosignerClient, cosignerServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("the cosigner was asked about a listed rekey: %s", r.URL.Path)
+	})
+	defer cosignerServer.Close()
+
+	var genesisHash types.Digest
+	sp := types.SuggestedParams{
+		Fee: types.MicroAlgos(1000), FirstRoundValid: 1, LastRoundValid: 100,
+		GenesisID: "testnet-v1.0", GenesisHash: genesisHash[:], FlatFee: true,
+	}
+	txn, err := transaction.MakePaymentTxn(bounded, bounded, 0, nil, "", sp)
+	if err != nil {
+		t.Fatalf("MakePaymentTxn() error = %v", err)
+	}
+	txn.RekeyTo, err = types.DecodeAddress(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := &KeyInfo{
+		Address: bounded, KeyType: "aplane.falcon1024-b.v1", SigningFlow: SigningFlowCosigned1,
+		LogicSigResources: &LogicSigResourceProfile{
+			Spend:         &LogicSigResourceUsage{ProgramBytes: 5308, ArgumentBytes: 3358, MaxOpcodeCost: 20000},
+			SpendingRekey: &LogicSigResourceUsage{ProgramBytes: 5308, ArgumentBytes: 2846, MaxOpcodeCost: 20000},
+			ListedRekey:   &LogicSigResourceUsage{ProgramBytes: 5308, ArgumentBytes: 1583, MaxOpcodeCost: 20000},
+		},
+		CosignerComponentKeyType: KeyTypeWitnessFalcon1024,
+		BoundedAuthorization: &BoundedAuthorizationInfo{
+			MaxFee: 1000, Rekey: "spending_key",
+			RekeyList: &BoundedRekeyListInfo{Contract: "rekey_list1", Depth: 4},
+			Cosigner:  &BoundedCosignerAuthorizationInfo{ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: "aabb"},
+		},
+	}
+	result, err := SignPreparedGuardedGroup(PreparedGuardedGroupOptions{
+		UserClient: userClient, CosignerClient: cosignerClient, CosignerComponentKey: "COSIGNER_COMPONENT",
+		PreparedGroup: NewPreparedGroup(PreparedTransaction{Transaction: &txn, AuthAddress: bounded, SignerKey: key}),
+	})
+	if err != nil {
+		t.Fatalf("SignPreparedGuardedGroup() error = %v", err)
+	}
+	if len(result.SignedGroup) != 1 || len(result.CosignerComponentResponses) != 0 {
+		t.Fatalf("result = %+v, want a signed group and no cosigner response", result)
+	}
+	resources, err := componentPathResources(key, ComponentPathListedRekey)
+	if err != nil || resources.ArgumentBytes != 1583 {
+		t.Fatalf("listed rekey resources = %+v, %v", resources, err)
+	}
+	if _, err := componentPathResources(key, "admin_rekey"); err == nil {
+		t.Fatal("an unknown path selected resources")
 	}
 }
 
@@ -216,6 +312,7 @@ func TestSignPreparedBoundedCosignerGroupDeclaresNativePQPrimary(t *testing.T) {
 							BaseSignatures:  []string{"base-sig"},
 							AssemblyReceipt: "receipt",
 							SignatureScheme: "aplane.falcon1024.v1",
+							Path:            ComponentPathSpend,
 						}},
 					})
 				case "/sign":
@@ -284,7 +381,7 @@ func TestSignPreparedBoundedCosignerGroupDeclaresNativePQPrimary(t *testing.T) {
 						SignerKey: &KeyInfo{
 							Address: bounded, KeyType: "aplane.falcon1024-b.v1",
 							AuthorizationKind: AuthorizationKindLogicSig,
-							SigningFlow:       SigningFlowBoundedCosigner1,
+							SigningFlow:       SigningFlowCosigned1,
 							LogicSigResources: &LogicSigResourceProfile{
 								Spend: &LogicSigResourceUsage{ProgramBytes: 5308, ArgumentBytes: 3358, MaxOpcodeCost: 20000},
 							},
@@ -420,7 +517,7 @@ func TestUnifiedBoundedComponentResponseRejectsMalformedTargets(t *testing.T) {
 	valid := Component{
 		TargetIndex: 0, Kind: ComponentTargetKindBoundedBase, AuthAddress: "BOUNDED",
 		BaseSignatures: []string{"base"}, AssemblyReceipt: "receipt",
-		SignatureScheme: "aplane.falcon1024.v1",
+		SignatureScheme: "aplane.falcon1024.v1", Path: ComponentPathSpend,
 	}
 	tests := []struct {
 		name       string
@@ -440,6 +537,15 @@ func TestUnifiedBoundedComponentResponseRejectsMalformedTargets(t *testing.T) {
 				return item
 			}()},
 			want: "invalid bounded-base material",
+		},
+		{
+			name: "no path",
+			components: []Component{func() Component {
+				item := valid
+				item.Path = ""
+				return item
+			}()},
+			want: "unknown bounded path",
 		},
 	}
 	for _, tt := range tests {
@@ -653,11 +759,11 @@ func TestPreparedBoundedCosignerRejectsMixedFlow(t *testing.T) {
 	_, err := SignPreparedGuardedGroup(PreparedGuardedGroupOptions{
 		UserClient: &SignerClient{},
 		PreparedGroup: NewPreparedGroup(
-			PreparedTransaction{SignerKey: &KeyInfo{SigningFlow: SigningFlowBoundedCosigner1}},
+			PreparedTransaction{SignerKey: &KeyInfo{SigningFlow: SigningFlowCosigned1}},
 			PreparedTransaction{SignerKey: &KeyInfo{SigningFlow: SigningFlowCosigner1}},
 		),
 	})
-	if err == nil || !strings.Contains(err.Error(), "cannot mix cosigner1 and bounded-cosigner1") {
+	if err == nil || !strings.Contains(err.Error(), "cannot mix cosigner1 and cosigned1") {
 		t.Fatalf("SignPreparedGuardedGroup() error = %v, want mixed-flow rejection", err)
 	}
 }

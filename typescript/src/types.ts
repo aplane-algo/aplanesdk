@@ -17,7 +17,12 @@ import { SignerError } from "./errors.js";
  */
 export const SIGNING_FLOW_COSIGNER1 = "cosigner1";
 export const SIGNING_FLOW_BOUNDED1 = "bounded1";
-export const SIGNING_FLOW_BOUNDED_COSIGNER1 = "bounded-cosigner1";
+/**
+ * Cosigned account choreography: a target may be a spend or a rekey, and each
+ * base component names the path the signer classified. A listed rekey takes no
+ * cosigner component. It replaces bounded-cosigner1, which carried spends only.
+ */
+export const SIGNING_FLOW_COSIGNED1 = "cosigned1";
 /**
  * Rotating account choreography (/sign/rotating/prepare then
  * /sign/rotating/sign), in which the signer rekeys the account to a fresh
@@ -618,6 +623,15 @@ export interface ComponentTarget {
   app_call_info?: AppCallInfo;
 }
 
+/** Bounded-base component paths: the path the signer classified a target on. */
+export const COMPONENT_PATH_SPEND = "spend";
+export const COMPONENT_PATH_SPENDING_REKEY = "spending_rekey";
+export const COMPONENT_PATH_LISTED_REKEY = "listed_rekey";
+export type ComponentPath =
+  | typeof COMPONENT_PATH_SPEND
+  | typeof COMPONENT_PATH_SPENDING_REKEY
+  | typeof COMPONENT_PATH_LISTED_REKEY;
+
 export interface Component {
   target_index: number;
   kind: ComponentTargetKind;
@@ -627,6 +641,17 @@ export interface Component {
   base_signatures?: string[];
   runtime_args?: Record<string, string>;
   assembly_receipt?: string;
+  /**
+   * The path the signer classified a bounded-base target on. A listed rekey
+   * takes no cosigner component; it routes the request only, since assembly
+   * classifies again.
+   */
+  path?: ComponentPath;
+}
+
+/** Whether a bounded-base component's path takes a cosigner component. */
+export function componentNeedsCosigner(component: Component): boolean {
+  return component.path !== COMPONENT_PATH_LISTED_REKEY;
 }
 
 export interface ComponentResponse {
@@ -647,7 +672,11 @@ export interface AssemblyTarget {
   bounded_runtime_args?: Record<string, string>;
   assembly_receipt?: string;
   base_source_request_id?: string;
-  cosigner_signature: string;
+  /**
+   * Required on a guarded target and on every bounded-cosigner target except a
+   * listed rekey, which takes none.
+   */
+  cosigner_signature?: string;
   cosigner_source_request_id?: string;
 }
 

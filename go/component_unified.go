@@ -97,12 +97,17 @@ func (r ComponentResponse) Validate() error {
 		seen[component.TargetIndex] = true
 		switch component.Kind {
 		case ComponentTargetKindUser, ComponentTargetKindCosigner:
-			if component.Signature == "" || component.SignatureScheme == "" || len(component.BaseSignatures) != 0 || component.AssemblyReceipt != "" {
+			if component.Signature == "" || component.SignatureScheme == "" || len(component.BaseSignatures) != 0 || component.AssemblyReceipt != "" || component.Path != "" {
 				return fmt.Errorf("component %d has invalid signature material", i+1)
 			}
 		case ComponentTargetKindBoundedBase:
 			if component.AuthAddress == "" || len(component.BaseSignatures) == 0 || component.AssemblyReceipt == "" || component.SignatureScheme == "" || component.Signature != "" {
 				return fmt.Errorf("component %d has invalid bounded-base material", i+1)
+			}
+			switch component.Path {
+			case ComponentPathSpend, ComponentPathSpendingRekey, ComponentPathListedRekey:
+			default:
+				return fmt.Errorf("component %d has unknown bounded path %q", i+1, component.Path)
 			}
 		default:
 			return fmt.Errorf("component %d has unsupported kind %q", i+1, component.Kind)

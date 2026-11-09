@@ -510,7 +510,7 @@ def test_bounded_inventory_projects_layer3_policy():
         spend="required", spending_rekey="required", listed_rekey="required"
     )
     corridor = keys[1]
-    assert corridor.signing_flow == "bounded-cosigner1"
+    assert corridor.signing_flow == "cosigned1"
     assert corridor.cosigner_component_key_type == "aplane.witness-falcon1024.v1"
     assert corridor.bounded_authorization.cosigner.public_key_hex
     assert corridor.bounded_authorization.cosigner.component_key_id
@@ -529,7 +529,7 @@ def test_bounded_inventory_projects_layer3_policy():
     assert key_type.bounded_authorization.contract == "bounded2"
     assert key_type.bounded_authorization.rekey == "refused"
     corridor_type = key_types[1]
-    assert corridor_type.signing_flow == "bounded-cosigner1"
+    assert corridor_type.signing_flow == "cosigned1"
     assert corridor_type.cosigner_component_key_type == "aplane.witness-falcon1024.v1"
     assert corridor_type.bounded_authorization.cosigner.required_on == ["spend"]
     assert corridor_type.bounded_authorization.rekey == "refused"

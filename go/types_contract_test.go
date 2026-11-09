@@ -234,7 +234,7 @@ func TestBoundedInventoryUsesStructuredResources(t *testing.T) {
 	}
 
 	corridor := response.Keys[1]
-	if corridor.SigningFlow != SigningFlowBoundedCosigner1 ||
+	if corridor.SigningFlow != SigningFlowCosigned1 ||
 		corridor.CosignerComponentKeyType != KeyTypeWitnessFalcon1024 {
 		t.Fatalf("Corridor routing = %q/%q, want bounded cosigner flow", corridor.SigningFlow, corridor.CosignerComponentKeyType)
 	}
@@ -267,7 +267,7 @@ func TestBoundedInventoryUsesStructuredResources(t *testing.T) {
 		}
 	}
 	corridorType := keyTypes.KeyTypes[1]
-	if corridorType.SigningFlow != SigningFlowBoundedCosigner1 ||
+	if corridorType.SigningFlow != SigningFlowCosigned1 ||
 		corridorType.CosignerComponentKeyType != KeyTypeWitnessFalcon1024 ||
 		corridorType.BoundedAuthorization == nil || corridorType.BoundedAuthorization.Cosigner == nil {
 		t.Fatalf("Corridor key type routing = %+v, want bounded cosigner metadata", corridorType)

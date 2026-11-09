@@ -16,7 +16,7 @@ import (
 )
 
 // SignPreparedBoundedCosignerGroup signs a prepared group containing one or more
-// bounded-cosigner1 targets. Most callers can use SignPreparedGuardedGroup,
+// cosigned1 targets. Most callers can use SignPreparedGuardedGroup,
 // which dispatches to this choreography from signer inventory metadata.
 func SignPreparedBoundedCosignerGroup(opts PreparedGuardedGroupOptions) (*GuardedSignResult, error) {
 	return SignPreparedBoundedCosignerGroupWithContext(context.Background(), opts)
@@ -41,6 +41,7 @@ func signPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts Prepa
 	targets := make([]GuardedSignTarget, 0, len(prepared))
 	primaryTargets := make([]GuardedPrimarySignTarget, 0, len(prepared))
 	targetResources := make(map[int]*LogicSigResourceUsage)
+	targetKeys := make(map[int]*KeyInfo)
 	targetMaxFees := make(map[int]uint64)
 	for i, item := range prepared {
 		if item.SignedTransactionBase64 != "" {
@@ -66,7 +67,7 @@ func signPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts Prepa
 			return nil, fmt.Errorf("prepared transaction %d: %w", i, err)
 		}
 		switch key.SigningFlow {
-		case SigningFlowBoundedCosigner1:
+		case SigningFlowCosigned1:
 			if item.AuthAddress == "" {
 				return nil, fmt.Errorf("prepared transaction %d: bounded auth address is required", i)
 			}
@@ -79,6 +80,7 @@ func signPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts Prepa
 			}
 			requests[i] = req
 			targetResources[i] = resources
+			targetKeys[i] = key
 			if key.BoundedAuthorization == nil {
 				return nil, fmt.Errorf("prepared transaction %d: bounded authorization metadata is required", i)
 			}
@@ -92,7 +94,7 @@ func signPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts Prepa
 				AppCallInfo:              item.AppCallInfo,
 			})
 		case SigningFlowCosigner1:
-			return nil, fmt.Errorf("cannot mix cosigner1 and bounded-cosigner1 targets in one group")
+			return nil, fmt.Errorf("cannot mix cosigner1 and cosigned1 targets in one group")
 		default:
 			if key.SigningFlow != "" && key.SigningFlow != SigningFlowBounded1 {
 				return nil, fmt.Errorf("prepared transaction %d: signer key requires signing flow %q, which this SDK does not support; upgrade the SDK", i, key.SigningFlow)
@@ -180,9 +182,17 @@ func signPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts Prepa
 		components[component.TargetIndex] = component
 	}
 	for _, target := range targets {
-		if _, ok := components[target.TargetIndex]; !ok {
+		component, ok := components[target.TargetIndex]
+		if !ok {
 			return nil, fmt.Errorf("signer returned no bounded component for target index %d", target.TargetIndex)
 		}
+		// Budget the position on the path the signer named, which only the
+		// signer can choose: whether a rekey target is listed is not public.
+		resources, err := componentPathResources(targetKeys[target.TargetIndex], component.Path)
+		if err != nil {
+			return nil, fmt.Errorf("prepared transaction %d: %w", target.TargetIndex, err)
+		}
+		targetResources[target.TargetIndex] = resources
 	}
 
 	result := &GuardedSignResult{BoundedComponentResponse: componentResp}
@@ -208,9 +218,20 @@ func signPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts Prepa
 		PrimaryTargets:       primaryTargets,
 		DummyPositions:       contiguousIndices(len(prepared), len(planResp.Transactions)),
 	}
-	cosignerSignatures, err := requestCosignerComponentSignatures(ctx, cosignerOpts, targets, result)
-	if err != nil {
-		return nil, err
+	// A listed rekey takes no cosigner component, so the cosigner sees only
+	// the targets that need it, and none at all when no target does.
+	cosigned := make([]GuardedSignTarget, 0, len(targets))
+	for _, target := range targets {
+		if components[target.TargetIndex].NeedsCosigner() {
+			cosigned = append(cosigned, target)
+		}
+	}
+	cosignerSignatures := map[int]guardedComponentSignature{}
+	if len(cosigned) > 0 {
+		cosignerSignatures, err = requestCosignerComponentSignatures(ctx, cosignerOpts, cosigned, result)
+		if err != nil {
+			return nil, err
+		}
 	}
 	passthrough := make([]AssemblyPassthroughItem, 0, len(planned)-len(targets))
 	if primary != nil {
@@ -225,21 +246,24 @@ func signPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts Prepa
 	assemblyTargets := make([]AssemblyTarget, 0, len(targets))
 	for _, target := range targets {
 		component := components[target.TargetIndex]
-		cosigner, ok := cosignerSignatures[target.TargetIndex]
-		if !ok {
-			return nil, fmt.Errorf("missing cosigner component signature for target %d", target.TargetIndex)
+		assemblyTarget := AssemblyTarget{
+			TargetIndex:         target.TargetIndex,
+			Kind:                AssemblyTargetKindBoundedCosigner,
+			AuthAddress:         target.GuardedAccount,
+			BaseSignatures:      append([]string(nil), component.BaseSignatures...),
+			BoundedRuntimeArgs:  cloneStringMap(component.RuntimeArgs),
+			AssemblyReceipt:     component.AssemblyReceipt,
+			BaseSourceRequestID: componentResp.RequestID,
 		}
-		assemblyTargets = append(assemblyTargets, AssemblyTarget{
-			TargetIndex:             target.TargetIndex,
-			Kind:                    AssemblyTargetKindBoundedCosigner,
-			AuthAddress:             target.GuardedAccount,
-			BaseSignatures:          append([]string(nil), component.BaseSignatures...),
-			BoundedRuntimeArgs:      cloneStringMap(component.RuntimeArgs),
-			AssemblyReceipt:         component.AssemblyReceipt,
-			BaseSourceRequestID:     componentResp.RequestID,
-			CosignerSignature:       cosigner.signature,
-			CosignerSourceRequestID: cosigner.requestID,
-		})
+		if component.NeedsCosigner() {
+			cosigner, ok := cosignerSignatures[target.TargetIndex]
+			if !ok {
+				return nil, fmt.Errorf("missing cosigner component signature for target %d", target.TargetIndex)
+			}
+			assemblyTarget.CosignerSignature = cosigner.signature
+			assemblyTarget.CosignerSourceRequestID = cosigner.requestID
+		}
+		assemblyTargets = append(assemblyTargets, assemblyTarget)
 	}
 	assemblyPassthrough := make([]AssemblyPassthroughItem, 0, len(passthrough))
 	for _, item := range passthrough {
@@ -260,6 +284,28 @@ func signPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts Prepa
 	result.BoundedAssemblyResponse = assemblyResp
 	result.SignedGroup = append([]string(nil), assemblyResp.SignedGroup...)
 	return result, nil
+}
+
+// componentPathResources is the key's LogicSig resource profile for the path a
+// base component named.
+func componentPathResources(key *KeyInfo, path string) (*LogicSigResourceUsage, error) {
+	if key == nil || key.LogicSigResources == nil {
+		return nil, fmt.Errorf("bounded LogicSig resources are unavailable")
+	}
+	var selected *LogicSigResourceUsage
+	switch path {
+	case ComponentPathSpend:
+		selected = key.LogicSigResources.Spend
+	case ComponentPathSpendingRekey:
+		selected = key.LogicSigResources.SpendingRekey
+	case ComponentPathListedRekey:
+		selected = key.LogicSigResources.ListedRekey
+	}
+	if selected == nil {
+		return nil, fmt.Errorf("signer key publishes no LogicSig resources for path %q", path)
+	}
+	copy := *selected
+	return &copy, nil
 }
 
 func requestBoundedPrimaryPassthrough(
