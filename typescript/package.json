@@ -34,16 +34,6 @@
         "types": "./dist/cjs/index.d.ts",
         "default": "./dist/cjs/index.js"
       }
-    },
-    "./algokit": {
-      "import": {
-        "types": "./dist/esm/algokit.d.ts",
-        "default": "./dist/esm/algokit.js"
-      },
-      "require": {
-        "types": "./dist/cjs/algokit.d.ts",
-        "default": "./dist/cjs/algokit.js"
-      }
     }
   },
   "files": [
@@ -70,16 +60,9 @@
     "ssh2": "^1.15.0"
   },
   "peerDependencies": {
-    "@algorandfoundation/algokit-utils": "^10.0.0-beta.4",
     "algosdk": "^3.0.0"
   },
-  "peerDependenciesMeta": {
-    "@algorandfoundation/algokit-utils": {
-      "optional": true
-    }
-  },
   "devDependencies": {
-    "@algorandfoundation/algokit-utils": "^10.0.0-beta.4",
     "@eslint/js": "^9.39.5",
     "@types/node": "^20.0.0",
     "@types/ssh2": "^1.15.0",

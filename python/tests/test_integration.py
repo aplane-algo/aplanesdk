@@ -12,8 +12,6 @@ import pytest
 import yaml
 from algosdk import encoding, transaction
 
-from aplanesdk.algokit import ApsignerAccount
-from aplanesdk.signer import encode_transaction
 from aplanesdk.signer import SignerClient
 
 
@@ -100,16 +98,6 @@ def test_live_signer_ed25519_workflow():
         signed = client.sign_transaction(_self_payment_txn(address), auth_address=address)
         assert base64.b64decode(signed)
 
-        account = ApsignerAccount(
-            client,
-            address,
-            auth_address=address,
-            encode_transaction=_adapter_encode_transaction,
-        )
-        signed_blobs = account.signer([_self_payment_txn(address)], [0])
-        assert len(signed_blobs) == 1
-        assert _decode_signed_blob(signed_blobs[0])
-
         client.delete_key(address)
         cleanup = False
 
@@ -186,11 +174,6 @@ def _self_payment_txn(address: str) -> transaction.PaymentTxn:
         flat_fee=True,
     )
     return transaction.PaymentTxn(sender=address, sp=params, receiver=address, amt=0)
-
-
-def _adapter_encode_transaction(txn: transaction.Transaction) -> bytes:
-    txn_bytes_hex, _ = encode_transaction(txn)
-    return bytes.fromhex(txn_bytes_hex)
 
 
 def _decode_signed_blob(blob: bytes) -> dict:

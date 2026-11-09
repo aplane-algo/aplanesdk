@@ -8,8 +8,6 @@ import * as path from "node:path";
 import YAML from "yaml";
 import algosdk from "algosdk";
 import { SignerClient } from "../src/client.js";
-import { createApsignerAccount } from "../src/algokit.js";
-import { encodeTransaction, hexToBytes } from "../src/encoding.js";
 
 function integrationEnabled(): boolean {
   return process.env.APLANE_SDK_INTEGRATION === "1";
@@ -101,19 +99,6 @@ test(
 
       const signed = await client.signTransaction(selfPaymentTxn(address), address);
       assert.ok(Buffer.from(signed, "base64").length > 0);
-
-      const account = createApsignerAccount({
-        client,
-        address,
-        authAddress: address,
-        encodeTransaction: (txn) => {
-          const [txnBytesHex] = encodeTransaction(txn as algosdk.Transaction);
-          return hexToBytes(txnBytesHex);
-        },
-      });
-      const signedBlobs = await account.signer([selfPaymentTxn(address)], [0]);
-      assert.equal(signedBlobs.length, 1);
-      assert.ok(algosdk.decodeSignedTransaction(signedBlobs[0]));
 
       await client.deleteKey(address);
       cleanup = false;

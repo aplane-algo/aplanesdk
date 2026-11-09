@@ -3266,8 +3266,8 @@ describe("SignerClient", () => {
   });
 
   describe("signRequests", () => {
-    // Audit finding 24: the wire report is snake_case, and callers (the
-    // AlgoKit adapter among them) read the typed camelCase fields.
+    // Audit finding 24: the wire report is snake_case, and callers read the
+    // typed camelCase fields.
     it("returns the mutation report in its typed camelCase form", async () => {
       queueStatusResponse();
       mockFetch.mockResolvedValueOnce({

@@ -46,11 +46,6 @@ export type {
   CosignedSimulationResult,
   PreparedCosignedGroupOptions,
 } from "./client.js";
-export {
-  ApsignerAlgoKitAccount,
-  createApsignerAccount,
-  listApsignerAccounts,
-} from "./algokit.js";
 
 // Utilities
 export {
@@ -183,15 +178,6 @@ export {
   AUTHORIZATION_KIND_NATIVE_PQ,
   AUTHORIZATION_KIND_LOGIC_SIG,
 } from "./types.js";
-
-export type {
-  AlgoKitAddress,
-  AlgoKitTransaction,
-  AlgoKitTransactionEncoder,
-  AlgoKitTransactionSigner,
-  ApsignerAccount,
-  ApsignerAccountOptions,
-} from "./algokit.js";
 
 export type {
   EnrollmentResult,
