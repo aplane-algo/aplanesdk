@@ -15,20 +15,10 @@ import (
 	"github.com/algorand/go-algorand-sdk/v2/types"
 )
 
-// SignPreparedBoundedCosignerGroup signs a prepared group containing one or more
-// cosigned1 targets. Most callers can use SignPreparedCosignedGroup,
-// which dispatches to this choreography from signer inventory metadata.
-func SignPreparedBoundedCosignerGroup(opts PreparedCosignedGroupOptions) (*CosignedSignResult, error) {
-	return SignPreparedBoundedCosignerGroupWithContext(context.Background(), opts)
-}
-
-// SignPreparedBoundedCosignerGroupWithContext is the context-aware form of
-// SignPreparedBoundedCosignerGroup.
-func SignPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts PreparedCosignedGroupOptions) (*CosignedSignResult, error) {
-	return signPreparedBoundedCosignerGroupWithContext(ctx, opts)
-}
-
-func signPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts PreparedCosignedGroupOptions) (*CosignedSignResult, error) {
+// signPreparedCosignedGroup is the cosigned1 choreography behind
+// SignPreparedCosignedGroup, for a prepared group with one or more cosigned
+// targets.
+func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOptions) (*CosignedSignResult, error) {
 	if opts.UserClient == nil {
 		return nil, fmt.Errorf("user client is required")
 	}
@@ -38,8 +28,9 @@ func signPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts Prepa
 	}
 
 	requests := make([]SignRequest, len(prepared))
-	targets := make([]CosignedSignTarget, 0, len(prepared))
-	primaryTargets := make([]CosignedPrimarySignTarget, 0, len(prepared))
+	targets := make([]cosignedSignTarget, 0, len(prepared))
+	primaryTargets := make([]cosignedPrimarySignTarget, 0, len(prepared))
+	appCallInfo := make(map[int]*AppCallInfo, len(prepared))
 	targetResources := make(map[int]*LogicSigResourceUsage)
 	targetKeys := make(map[int]*KeyInfo)
 	targetMaxFees := make(map[int]uint64)
@@ -61,6 +52,7 @@ func signPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts Prepa
 		if key == nil {
 			return nil, fmt.Errorf("prepared transaction %d: signer key metadata is required", i)
 		}
+		appCallInfo[i] = item.AppCallInfo
 
 		resources, err := selectedPreparedResources(key, item.Transaction)
 		if err != nil {
@@ -91,7 +83,7 @@ func signPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts Prepa
 			if hasCeiling {
 				targetMaxFees[i] = maxFee
 			}
-			targets = append(targets, CosignedSignTarget{
+			targets = append(targets, cosignedSignTarget{
 				TargetIndex:              i,
 				CosignedAccount:          item.AuthAddress,
 				CosignerPublicKeyHex:     boundedCosignerPublicKey(key),
@@ -120,7 +112,7 @@ func signPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts Prepa
 			if item.AuthAddress == "" {
 				return nil, fmt.Errorf("prepared transaction %d: primary auth address is required", i)
 			}
-			primaryTargets = append(primaryTargets, CosignedPrimarySignTarget{
+			primaryTargets = append(primaryTargets, cosignedPrimarySignTarget{
 				TargetIndex: i,
 				AuthAddress: item.AuthAddress,
 				TxnSender:   item.TxnSender,
@@ -160,7 +152,8 @@ func signPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts Prepa
 		if targetSet[i] {
 			componentReq.Targets = append(componentReq.Targets, ComponentTarget{TargetIndex: i, Kind: ComponentTargetKindBoundedBase, AuthAddress: request.AuthAddress, LsigArgs: request.LsigArgs, AppCallInfo: request.AppCallInfo})
 		} else {
-			componentReq.ContextualPositions = append(componentReq.ContextualPositions, ComponentContextPosition{TargetIndex: i, LsigResources: request.LsigResources, PQScheme: request.PQScheme, AppCallInfo: request.AppCallInfo})
+			// The user signer's approval shows the other positions' app calls.
+			componentReq.ContextualPositions = append(componentReq.ContextualPositions, ComponentContextPosition{TargetIndex: i, LsigResources: request.LsigResources, PQScheme: request.PQScheme, AppCallInfo: appCallInfo[i]})
 		}
 	}
 	for i := len(prepared); i < len(planResp.Transactions); i++ {
@@ -171,7 +164,7 @@ func signPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts Prepa
 		return nil, fmt.Errorf("bounded base component signing failed: %w", err)
 	}
 	components := make(map[int]Component, len(componentResp.Components))
-	targetsByIndex := make(map[int]CosignedSignTarget, len(targets))
+	targetsByIndex := make(map[int]cosignedSignTarget, len(targets))
 	for _, target := range targets {
 		targetsByIndex[target.TargetIndex] = target
 	}
@@ -213,18 +206,17 @@ func signPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts Prepa
 
 	// The user side is complete, including ordinary primary positions. Only
 	// now may the SDK disclose the frozen group to the cosigner endpoint.
-	cosignerOpts := CosignedSignOptions{
-		UserClient:           opts.UserClient,
+	cosignerOpts := cosignerRequestOptions{
 		CosignerClient:       opts.CosignerClient,
 		CosignerResolver:     opts.CosignerResolver,
 		CosignerComponentKey: opts.CosignerComponentKey,
 		GroupBytesHex:        planResp.Transactions,
-		PrimaryTargets:       primaryTargets,
+		AppCallInfo:          appCallInfo,
 		DummyPositions:       contiguousIndices(len(prepared), len(planResp.Transactions)),
 	}
 	// A listed rekey takes no cosigner component, so the cosigner sees only
 	// the targets that need it, and none at all when no target does.
-	cosigned := make([]CosignedSignTarget, 0, len(targets))
+	cosigned := make([]cosignedSignTarget, 0, len(targets))
 	for _, target := range targets {
 		if components[target.TargetIndex].NeedsCosigner() {
 			cosigned = append(cosigned, target)
@@ -269,15 +261,11 @@ func signPreparedBoundedCosignerGroupWithContext(ctx context.Context, opts Prepa
 		}
 		assemblyTargets = append(assemblyTargets, assemblyTarget)
 	}
-	assemblyPassthrough := make([]AssemblyPassthroughItem, 0, len(passthrough))
-	for _, item := range passthrough {
-		assemblyPassthrough = append(assemblyPassthrough, AssemblyPassthroughItem(item))
-	}
 	assemblyResp, err := opts.UserClient.RequestAssembleWithContext(ctx, AssemblyRequest{
 		RequestID:     opts.AssemblyRequestID,
 		GroupBytesHex: append([]string(nil), planResp.Transactions...),
 		Targets:       assemblyTargets,
-		Passthrough:   assemblyPassthrough,
+		Passthrough:   passthrough,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("bounded-cosigner assembly failed: %w", err)
@@ -317,14 +305,14 @@ func requestBoundedPrimaryPassthrough(
 	client *SignerClient,
 	groupBytesHex []string,
 	originalCount int,
-	targets map[int]CosignedSignTarget,
+	targets map[int]cosignedSignTarget,
 	targetResources map[int]*LogicSigResourceUsage,
-	primaryTargets []CosignedPrimarySignTarget,
+	primaryTargets []cosignedPrimarySignTarget,
 ) (*primaryCosignedPassthrough, error) {
 	if len(primaryTargets) == 0 {
 		return nil, nil
 	}
-	primaryByIndex := make(map[int]CosignedPrimarySignTarget, len(primaryTargets))
+	primaryByIndex := make(map[int]cosignedPrimarySignTarget, len(primaryTargets))
 	for _, target := range primaryTargets {
 		if target.TargetIndex < 0 || target.TargetIndex >= originalCount {
 			return nil, fmt.Errorf("primary target %d out of range", target.TargetIndex)

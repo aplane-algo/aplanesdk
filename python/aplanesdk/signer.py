@@ -113,11 +113,12 @@ AUTHORIZATION_KIND_ED25519 = "ed25519"
 AUTHORIZATION_KIND_NATIVE_PQ = "native_pq"
 AUTHORIZATION_KIND_LOGIC_SIG = "logic_sig"
 
-# Signing choreography label for the cosigner co-signed component flow (one
-# user plus one cosigner component signature per target, assembled via
-# /sign/assemble). Signer inventory labels cosigned keys with this flow;
-# clients route on the label and must fail fast on flow labels they do not
-# implement. An empty signing_flow means the ordinary /sign path.
+# Signing choreography labels name a frozen client flow. Clients route on
+# signing_flow and must fail fast on labels they do not implement; an empty
+# signing_flow means the ordinary /sign path.
+#
+# The transaction-aware LogicSig choreography: the signer classifies and signs
+# a bounded account without a cosigner on the ordinary /sign path.
 SIGNING_FLOW_BOUNDED1 = "bounded1"
 # The cosigned account choreography: a target may be a spend or a rekey, and each
 # base component names the path the signer classified. A listed rekey takes no
@@ -1518,6 +1519,8 @@ def _selected_prepared_resources(
             # With a list too (plus cosigned) the signer moves a listed target to
             # the listed path, and its base component says so.
             selected = profile.spending_rekey
+        elif bounded.rekey == "refused":
+            raise ValueError("the account refuses rekeys")
         else:
             raise ValueError("bounded rekey authorization metadata is unavailable")
     return LogicSigResourceUsage(**vars(selected)) if selected else None
@@ -1646,25 +1649,6 @@ def _parse_bounded_authorization(data: Any) -> Optional[BoundedAuthorizationInfo
     )
 
 
-def _bounded_assembly_to_unified(data: Dict[str, Any]) -> Dict[str, Any]:
-    converted = dict(data)
-    converted["targets"] = [
-        {
-            "target_index": target.get("target_index"),
-            "kind": ASSEMBLY_TARGET_KIND_BOUNDED_COSIGNER,
-            "auth_address": target.get("bounded_account", ""),
-            "base_signatures": target.get("base_signatures"),
-            "bounded_runtime_args": target.get("runtime_args"),
-            "assembly_receipt": target.get("assembly_receipt", ""),
-            "base_source_request_id": target.get("base_source_request_id", ""),
-            "cosigner_signature": target.get("cosigner_signature", ""),
-            "cosigner_source_request_id": target.get("cosigner_source_request_id", ""),
-        }
-        for target in data.get("targets") or []
-    ]
-    return converted
-
-
 def _validate_assembly_request(data: Dict[str, Any]) -> None:
     _validate_sign_request_id(str(data.get("request_id", "")))
     group_bytes_hex = data.get("group_bytes_hex") or []
@@ -1758,24 +1742,6 @@ def _validate_bounded_component_request(data: Dict[str, Any]) -> None:
             raise ValueError(f"dummy position {offset + 1} is not in the contiguous suffix")
 
 
-def _bounded_component_to_unified(data: Dict[str, Any]) -> Dict[str, Any]:
-    return {
-        "request_id": data.get("request_id", ""),
-        "group_bytes_hex": list(data.get("group_bytes_hex") or []),
-        "targets": [
-            {
-                "target_index": target.get("target_index"),
-                "kind": COMPONENT_TARGET_KIND_BOUNDED_BASE,
-                "auth_address": target.get("auth_address", ""),
-                "lsig_args": target.get("lsig_args"),
-            }
-            for target in data.get("targets") or []
-        ],
-        "contextual_positions": list(data.get("contextual_positions") or []),
-        "dummy_positions": list(data.get("dummy_positions") or []),
-    }
-
-
 def _validate_component_request(data: Dict[str, Any]) -> None:
     _validate_sign_request_id(str(data.get("request_id", "")))
     group = data.get("group_bytes_hex") or []
@@ -1848,53 +1814,6 @@ def _validate_component_response(
                 raise ValueError(f"component {index} has unknown bounded path {component.get('path')!r}")
         else:
             raise ValueError(f"component {index} has unsupported kind")
-
-
-def _validate_bounded_component_response(data: Dict[str, Any]) -> None:
-    if not isinstance(data, dict):
-        raise ValueError("response must be a mapping")
-    request_id = data.get("request_id", "")
-    _validate_sign_request_id(str(request_id), required=True)
-    transactions = data.get("transactions") or []
-    components = data.get("components") or []
-    if (
-        not isinstance(transactions, list)
-        or not isinstance(components, list)
-        or not transactions
-        or not components
-    ):
-        raise ValueError("transactions and components are required")
-    for index, encoded in enumerate(transactions):
-        if not isinstance(encoded, str) or not encoded:
-            raise ValueError(f"transaction {index} must be a non-empty hex string")
-    seen = set()
-    for index, component in enumerate(components, start=1):
-        if not isinstance(component, dict):
-            raise ValueError(f"component {index} must be a mapping")
-        target = component.get("target_index")
-        if (
-            not isinstance(target, int)
-            or target < 0
-            or target >= len(transactions)
-            or target in seen
-        ):
-            raise ValueError(f"component {index} has invalid or duplicate target_index")
-        seen.add(target)
-        if (
-            not component.get("bounded_account")
-            or not component.get("base_signatures")
-            or not component.get("assembly_receipt")
-            or not component.get("signature_scheme")
-        ):
-            raise ValueError(f"component {index} is incomplete")
-
-
-def _validate_bounded_assembly_request(data: Dict[str, Any]) -> None:
-    _validate_assembly_request(_bounded_assembly_to_unified(data))
-
-
-def _validate_bounded_assembly_response(data: Dict[str, Any]) -> None:
-    _validate_assembly_response(data)
 
 
 def _extract_auth_address(account_info: Any) -> str:
@@ -4780,14 +4699,23 @@ class SignerClient:
 
 def _component_signatures_by_index(
     response: ComponentResponse,
+    schemes: Dict[int, str],
 ) -> Dict[int, Dict[str, str]]:
-    return {
-        item["target_index"]: {
-            "signature": item["signature"],
-            "request_id": response.request_id,
-        }
-        for item in response.components
-    }
+    """The cosigner signatures by target index. request_components has checked
+    the response covers exactly the requested targets as cosigner components;
+    each signature must also be in the scheme the account names for its
+    cosigner."""
+    signatures = {}
+    for item in response.components:
+        index = item["target_index"]
+        want = schemes.get(index, "")
+        if want and item.get("signature_scheme") != want:
+            raise SignerError(
+                f"cosigner signature for target {index} used scheme "
+                f"{item.get('signature_scheme')!r}, want {want!r}"
+            )
+        signatures[index] = {"signature": item["signature"], "request_id": response.request_id}
+    return signatures
 
 
 def _component_request_for_indices(
@@ -4886,7 +4814,7 @@ def _resolve_cosigner_for_target(
         return client, component_key or ""
     if cosigner_client is None:
         raise SignerError("cosigner_client or cosigner_resolver is required")
-    return cosigner_client, target.get("cosigner_component_key") or cosigner_component_key
+    return cosigner_client, cosigner_component_key
 
 
 def _decode_canonical_group(group_bytes_hex: List[str]) -> List[transaction.Transaction]:
@@ -5218,7 +5146,7 @@ def _request_bounded_primary_passthrough(
     return response, passthrough
 
 
-def sign_prepared_bounded_cosigner_group(
+def sign_prepared_cosigned_group(
     *,
     user_client: SignerClient,
     prepared_group: PreparedGroup,
@@ -5227,8 +5155,12 @@ def sign_prepared_bounded_cosigner_group(
     cosigner_component_key: str = "",
     assembly_request_id: str = "",
 ) -> CosignedSignResult:
-    """Sign a prepared cosigned1 group using the user-first flow.
+    """
+    Canonicalize a prepared group locally, classify cosigned and primary slots,
+    then sign and assemble it through cosigned component endpoints (cosigned1).
 
+    The signer /plan endpoint owns canonical group sizing, dummy insertion,
+    and authorization-fee pooling before component signatures are collected.
     The cosigner is asked only for targets whose base component needs it: a
     listed rekey takes none, and assembles without a cosigner signature.
     """
@@ -5441,7 +5373,10 @@ def sign_prepared_bounded_cosigner_group(
             )
         )
         cosigner_component_responses.append(response)
-        cosigner_signatures.update(_component_signatures_by_index(response))
+        cosigner_signatures.update(_component_signatures_by_index(
+            response,
+            {target["target_index"]: target.get("cosigner_component_key_type") or "" for target in targets},
+        ))
 
     passthrough.extend(_sign_cosigned_dummies(planned[len(prepared) :], len(prepared)))
     assembly_targets: List[AssemblyTarget] = []
@@ -5482,32 +5417,6 @@ def sign_prepared_bounded_cosigner_group(
         primary_sign_response=primary_response,
         bounded_component_response=component_response,
         bounded_assembly_response=assembly_response,
-    )
-
-
-def sign_prepared_cosigned_group(
-    *,
-    user_client: SignerClient,
-    prepared_group: PreparedGroup,
-    cosigner_client: Optional[SignerClient] = None,
-    cosigner_resolver: Optional[Any] = None,
-    cosigner_component_key: str = "",
-    assembly_request_id: str = "",
-) -> CosignedSignResult:
-    """
-    Canonicalize a prepared group locally, classify cosigned and primary slots,
-    then sign and assemble it through cosigned component endpoints.
-
-    The signer /plan endpoint owns canonical group sizing, dummy insertion,
-    and authorization-fee pooling before component signatures are collected.
-    """
-    return sign_prepared_bounded_cosigner_group(
-        user_client=user_client,
-        prepared_group=prepared_group,
-        cosigner_client=cosigner_client,
-        cosigner_resolver=cosigner_resolver,
-        cosigner_component_key=cosigner_component_key,
-        assembly_request_id=assembly_request_id,
     )
 
 

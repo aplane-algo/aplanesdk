@@ -160,12 +160,27 @@ function validateSignRequestId(requestId: string, required = false): void {
 
 type ComponentSignatureByIndex = Map<number, { signature: string; requestId: string }>;
 
-function componentSignaturesByIndex(response: ComponentResponse): ComponentSignatureByIndex {
-	const signatures: ComponentSignatureByIndex = new Map();
-	for (const component of response.components) {
-		signatures.set(component.target_index, {
-			signature: component.signature || "",
-			requestId: response.request_id,
+/**
+ * The cosigner signatures by target index. requestComponents has checked the
+ * response covers exactly the requested targets as cosigner components; each
+ * signature must also be in the scheme the account names for its cosigner.
+ */
+function componentSignaturesByIndex(
+  response: ComponentResponse,
+  schemes: Map<number, string>,
+): ComponentSignatureByIndex {
+  const signatures: ComponentSignatureByIndex = new Map();
+  for (const component of response.components) {
+    const want = schemes.get(component.target_index);
+    if (want && component.signature_scheme !== want) {
+      throw new SignerError(
+        `cosigner signature for target ${component.target_index} used scheme ` +
+          `${JSON.stringify(component.signature_scheme)}, want ${JSON.stringify(want)}`,
+      );
+    }
+    signatures.set(component.target_index, {
+      signature: component.signature || "",
+      requestId: response.request_id,
     });
   }
   return signatures;
@@ -211,7 +226,7 @@ async function resolveCosignerForTarget(
   }
   return {
     client: options.cosignerClient,
-    componentKey: target.cosignerComponentKey || options.cosignerComponentKey || "",
+    componentKey: options.cosignerComponentKey || "",
   };
 }
 
@@ -583,11 +598,12 @@ async function requestBoundedPrimaryPassthrough(
 }
 
 /**
- * Sign a prepared cosigned1 group using the user-first choreography. The
- * cosigner is asked only for targets whose base component needs it: a listed
- * rekey takes none.
+ * Sign and assemble a prepared group with one or more cosigned accounts
+ * (cosigned1): the signer plans the group, its base components and the
+ * cosigner's components are collected, and the signer assembles the result.
+ * The cosigner is asked only for targets whose base component needs it.
  */
-export async function signPreparedBoundedCosignerGroup(
+export async function signPreparedCosignedGroup(
   options: PreparedCosignedGroupOptions,
 ): Promise<CosignedSignResult> {
   if (!options.userClient) throw new SignerError("userClient is required");
@@ -703,11 +719,12 @@ export async function signPreparedBoundedCosignerGroup(
         lsig_args: request.lsig_args,
         app_call_info: request.app_call_info,
       }] : []),
+      // The user signer's approval shows the other positions' app calls.
       contextual_positions: requests.flatMap((request, index) => targetIndices.has(index) ? [] : [{
         target_index: index,
         lsig_resources: request.lsig_resources,
         pq_scheme: request.pq_scheme,
-        app_call_info: request.app_call_info,
+        app_call_info: prepared[index].appCallInfo,
       }]),
       dummy_positions: frozenGroup.slice(prepared.length).map((_, offset) => ({
         target_index: prepared.length + offset,
@@ -771,8 +788,13 @@ export async function signPreparedBoundedCosignerGroup(
   }
   const cosignerComponentResponses: ComponentResponse[] = [];
   const cosignerSignatures: ComponentSignatureByIndex = new Map();
+  // Every original position's app call description, as the caller gave it: a
+  // primary slot's /plan request does not carry it.
   const appCallInfo = new Map<number, AppCallInfo | undefined>(
-    requests.map((request, index) => [index, request.app_call_info]),
+    prepared.map((item, index) => [index, item.appCallInfo]),
+  );
+  const cosignerSchemes = new Map(
+    targets.map((target) => [target.targetIndex, target.cosignerComponentKeyType || ""]),
   );
   for (const group of cosignerGroups) {
     const response = await group.client.requestComponents(
@@ -786,7 +808,7 @@ export async function signPreparedBoundedCosignerGroup(
       { signal: options.signal },
     );
     cosignerComponentResponses.push(response);
-    for (const [index, signature] of componentSignaturesByIndex(response)) {
+    for (const [index, signature] of componentSignaturesByIndex(response, cosignerSchemes)) {
       cosignerSignatures.set(index, signature);
     }
   }
@@ -836,17 +858,6 @@ export async function signPreparedBoundedCosignerGroup(
     boundedComponentResponse: componentResponse,
     boundedAssemblyResponse: assemblyResponse,
   };
-}
-
-/**
- * Sign and assemble a prepared group with one or more cosigned accounts: the
- * signer plans the group, its base components and the cosigner's components
- * are collected, and the signer assembles the result.
- */
-export async function signPreparedCosignedGroup(
-  options: PreparedCosignedGroupOptions,
-): Promise<CosignedSignResult> {
-  return signPreparedBoundedCosignerGroup(options);
 }
 
 /**
@@ -1169,6 +1180,8 @@ function selectedPreparedResources(
       // With a list too (plus cosigned) the signer moves a listed target to the
       // listed path, and its base component says so.
       selected = profile.spendingRekey;
+    } else if (bounded.rekey === "refused") {
+      throw new SignerError("the account refuses rekeys");
     } else {
       throw new SignerError("bounded rekey authorization metadata is unavailable");
     }
@@ -1570,13 +1583,11 @@ export interface CosignedSignTarget {
   cosignedAccount: string;
   cosignerPublicKeyHex?: string;
   cosignerComponentKeyType?: string;
-  cosignerComponentKey?: string;
-  runtimeArgs?: string[];
   logicSigResources: LogicSigResourceUsage;
   appCallInfo?: AppCallInfo;
 }
 
-export interface CosignedPrimarySignTarget {
+interface CosignedPrimarySignTarget {
   targetIndex: number;
   authAddress: string;
   txnSender?: string;

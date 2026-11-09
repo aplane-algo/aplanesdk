@@ -34,14 +34,12 @@
 export {
   SignerClient,
   signPreparedCosignedGroup,
-  signPreparedBoundedCosignerGroup,
   simulatePreparedCosignedGroup,
 } from "./client.js";
 export { ErrorCodes } from "./types.js";
 export type { ErrorCode } from "./types.js";
 export type {
   CosignedSignTarget,
-  CosignedPrimarySignTarget,
   CosignedCosignerResolution,
   CosignedCosignerResolver,
   CosignedSignResult,

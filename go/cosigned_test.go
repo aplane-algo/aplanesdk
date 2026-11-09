@@ -68,16 +68,21 @@ func TestSelectedPreparedResourcesRejectsRekeyWithoutSpendingKeyAuthorization(t 
 	rekeyTo[31] = 1
 	txn := &types.Transaction{Header: types.Header{RekeyTo: rekeyTo}}
 
-	// Only spending_key authorizes a rekey; refused, a missing setting and
-	// any other value (such as the removed admin_key authorization) fail.
-	for _, rekey := range []string{"refused", "", "admin_key"} {
+	// Only spending_key authorizes a rekey without a list. refused says so; a
+	// missing setting and any other value (such as the removed admin_key
+	// authorization) are unavailable metadata.
+	for rekey, want := range map[string]string{
+		"refused":   "the account refuses rekeys",
+		"":          "bounded rekey authorization metadata is unavailable",
+		"admin_key": "bounded rekey authorization metadata is unavailable",
+	} {
 		t.Run(fmt.Sprintf("rekey=%q", rekey), func(t *testing.T) {
 			got, err := selectedPreparedResources(boundedResourceTestKey(spend, spendingRekey, rekey), txn)
 			if err == nil {
 				t.Fatalf("selectedPreparedResources() = %+v, want error for rekey setting %q", got, rekey)
 			}
-			if !strings.Contains(err.Error(), "bounded rekey authorization metadata is unavailable") {
-				t.Fatalf("selectedPreparedResources() error = %v, want unavailable rekey authorization", err)
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("selectedPreparedResources() error = %v, want %q", err, want)
 			}
 		})
 	}

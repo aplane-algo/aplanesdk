@@ -1,10 +1,10 @@
 {
   "key_types": [
     {
-      "key_type": "aplane.falcon1024-b.v1",
+      "key_type": "aplane.falcon1024.v1",
       "family": "aplane.falcon1024",
-      "display_name": "Bounded Account",
-      "description": "Falcon-1024 account limited to a fixed recipient list, chosen at generation.",
+      "display_name": "Falcon-1024",
+      "description": "Falcon-1024 signature scheme",
       "authorization_kind": "logic_sig",
       "requires_logicsig": true,
       "mnemonic_word_count": 0,
@@ -18,22 +18,24 @@
           "name": "spend_effects",
           "label": "Transfer Kinds",
           "type": "string",
-          "required": true
+          "required": false
         },
         {
           "name": "recipients",
           "label": "Allowed Recipients",
           "type": "address[]",
-          "required": true
+          "required": false
         },
         {
           "name": "rekey_authority",
           "label": "Rekey Authority",
           "type": "string",
-          "required": true,
+          "required": false,
           "options": [
+            "refused",
             "spending_key",
-            "refused"
+            "only_these",
+            "plus_cosigned"
           ]
         },
         {

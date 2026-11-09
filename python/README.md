@@ -390,14 +390,13 @@ client.close()
 |----------|-------------|-------|
 | `ed25519` | Native Algorand keys | Standard signing |
 | `falcon1024` | Native post-quantum keys | Protocol-native Falcon-1024 signature (`PQsig`) |
-| `aplane.falcon1024.v1` | Post-quantum plain host | Library-visible; `plain1` contract, no host rules or fee ceiling; `cosigned1` signing flow with a cosigner, `bounded1` without one |
-| `aplane.ed25519.v1` | Ed25519 plain host | Library-visible, like `aplane.falcon1024.v1`; the spending key is classical |
+| `aplane.falcon1024.v1` | Post-quantum plain host | Enabled by default. With bounds (transfer kinds, a recipient list, a timelock, or limits only) a `bounded2` account; without, `plain1`, with no host rules or fee ceiling. `cosigned1` signing flow with a cosigner, `bounded1` without one |
+| `aplane.ed25519.v1` | Ed25519 plain host | Library-visible; the same bounds and overlays as `aplane.falcon1024.v1`, and the spending key is classical |
 | `aplane.witness-falcon1024.v1` | Witness key | Cosigner-custodied policy signature key; not a spending account |
-| `aplane.falcon1024-b.v1` | General bounded account | `bounded2` contract; `bounded1` signing flow, or `cosigned1` when it embeds a cosigner |
 | `aplane.htlc.v1` | Hash-locked funds | Requires `preimage` arg (check `signing_args`) |
 
-Only the protocol-native types, `ed25519` and `falcon1024`, are enabled by
-default. The operator must enable any other type on the node (`apadmin keytype
+Only the protocol-native types, `ed25519` and `falcon1024`, and the Falcon plain
+host, `aplane.falcon1024.v1`, are enabled by default. The operator must enable any other type on the node (`apadmin keytype
 enable <type>` or the apadmin KeyType Library) before key generation accepts
 it; until then generation fails with "key type ... is not enabled on this
 node". Enablement gates only creating keys: existing keys of a disabled type

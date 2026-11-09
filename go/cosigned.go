@@ -47,21 +47,19 @@ func (r StaticCosignerResolver) ResolveCosigner(ctx context.Context, cosignerPub
 	return r.Client, r.ComponentKey, nil
 }
 
-// CosignedSignTarget describes one cosigned-account group position.
-type CosignedSignTarget struct {
+// cosignedSignTarget describes one cosigned-account group position.
+type cosignedSignTarget struct {
 	TargetIndex              int
 	CosignedAccount          string
 	CosignerPublicKeyHex     string
 	CosignerComponentKeyType string
-	CosignerComponentKey     string
-	RuntimeArgs              []string
 	LogicSigResources        *LogicSigResourceUsage
 	AppCallInfo              *AppCallInfo
 }
 
-// CosignedPrimarySignTarget describes one non-cosigned group position that the
+// cosignedPrimarySignTarget describes one non-cosigned group position that the
 // primary/user signer should sign before cosigned assembly.
-type CosignedPrimarySignTarget struct {
+type cosignedPrimarySignTarget struct {
 	TargetIndex int
 	AuthAddress string
 	TxnSender   string
@@ -69,15 +67,15 @@ type CosignedPrimarySignTarget struct {
 	AppCallInfo *AppCallInfo
 }
 
-// CosignedSignOptions configures the cosigner component request of a prepared
-// cosigned group: where the cosigner is, and the frozen group it signs over.
-type CosignedSignOptions struct {
-	UserClient           *SignerClient
+// cosignerRequestOptions configures the cosigner component request of a
+// prepared cosigned group: where the cosigner is, the frozen group it signs
+// over, and the app call description of every original position.
+type cosignerRequestOptions struct {
 	CosignerClient       *SignerClient
 	CosignerResolver     CosignedCosignerResolver
 	CosignerComponentKey string
 	GroupBytesHex        []string
-	PrimaryTargets       []CosignedPrimarySignTarget
+	AppCallInfo          map[int]*AppCallInfo
 	DummyPositions       []int
 }
 
@@ -165,7 +163,7 @@ func SignPreparedCosignedGroup(opts PreparedCosignedGroupOptions) (*CosignedSign
 // SignPreparedCosignedGroupWithContext is the context-aware form of
 // SignPreparedCosignedGroup.
 func SignPreparedCosignedGroupWithContext(ctx context.Context, opts PreparedCosignedGroupOptions) (*CosignedSignResult, error) {
-	return signPreparedBoundedCosignerGroupWithContext(ctx, opts)
+	return signPreparedCosignedGroup(ctx, opts)
 }
 
 func selectedPreparedResources(key *KeyInfo, txn *types.Transaction) (*LogicSigResourceUsage, error) {
@@ -186,6 +184,8 @@ func selectedPreparedResources(key *KeyInfo, txn *types.Transaction) (*LogicSigR
 			// With a list too (plus cosigned) the signer moves a listed target to
 			// the listed path, and its base component says so.
 			selected = profile.SpendingRekey
+		case key.BoundedAuthorization.Rekey == "refused":
+			return nil, fmt.Errorf("the account refuses rekeys")
 		default:
 			return nil, fmt.Errorf("bounded rekey authorization metadata is unavailable")
 		}
@@ -267,14 +267,11 @@ func validateCosignedDummies(dummies []types.Transaction) error {
 	return nil
 }
 
-func requestCosignerComponentSignatures(ctx context.Context, opts CosignedSignOptions, targets []CosignedSignTarget, result *CosignedSignResult) (map[int]cosignedComponentSignature, error) {
+func requestCosignerComponentSignatures(ctx context.Context, opts cosignerRequestOptions, targets []cosignedSignTarget, result *CosignedSignResult) (map[int]cosignedComponentSignature, error) {
 	groups := make(map[cosignerSignGroupKey][]int)
-	appCallInfo := make(map[int]*AppCallInfo, len(targets)+len(opts.PrimaryTargets))
-	for _, target := range opts.PrimaryTargets {
-		appCallInfo[target.TargetIndex] = target.AppCallInfo
-	}
+	schemes := make(map[int]string, len(targets))
 	for _, target := range targets {
-		appCallInfo[target.TargetIndex] = target.AppCallInfo
+		schemes[target.TargetIndex] = target.CosignerComponentKeyType
 		client, componentKey, err := resolveCosignedCosigner(ctx, opts, target)
 		if err != nil {
 			return nil, err
@@ -288,12 +285,18 @@ func requestCosignerComponentSignatures(ctx context.Context, opts CosignedSignOp
 	signatures := make(map[int]cosignedComponentSignature)
 	for group, indices := range groups {
 		sort.Ints(indices)
-		resp, err := group.client.RequestComponentsWithContext(ctx, componentRequestForIndices(opts.GroupBytesHex, indices, opts.DummyPositions, group.componentKey, appCallInfo))
+		resp, err := group.client.RequestComponentsWithContext(ctx, componentRequestForIndices(opts.GroupBytesHex, indices, opts.DummyPositions, group.componentKey, opts.AppCallInfo))
 		if err != nil {
 			return nil, err
 		}
 		result.CosignerComponentResponses = append(result.CosignerComponentResponses, resp)
+		// RequestComponents has checked the response covers exactly these
+		// targets, as cosigner components. Each signature must also be in the
+		// scheme the account names for its cosigner.
 		for _, component := range resp.Components {
+			if want := schemes[component.TargetIndex]; want != "" && component.SignatureScheme != want {
+				return nil, fmt.Errorf("cosigner signature for target %d used scheme %q, want %q", component.TargetIndex, component.SignatureScheme, want)
+			}
 			signatures[component.TargetIndex] = cosignedComponentSignature{
 				signature: component.Signature,
 				requestID: resp.RequestID,
@@ -333,18 +336,14 @@ func contiguousIndices(start, end int) []int {
 	return indices
 }
 
-func resolveCosignedCosigner(ctx context.Context, opts CosignedSignOptions, target CosignedSignTarget) (*SignerClient, string, error) {
+func resolveCosignedCosigner(ctx context.Context, opts cosignerRequestOptions, target cosignedSignTarget) (*SignerClient, string, error) {
 	if opts.CosignerResolver != nil {
 		return opts.CosignerResolver.ResolveCosigner(ctx, target.CosignerPublicKeyHex, target.CosignerComponentKeyType)
 	}
 	if opts.CosignerClient == nil {
 		return nil, "", fmt.Errorf("cosigner client or resolver is required")
 	}
-	componentKey := target.CosignerComponentKey
-	if componentKey == "" {
-		componentKey = opts.CosignerComponentKey
-	}
-	return opts.CosignerClient, componentKey, nil
+	return opts.CosignerClient, opts.CosignerComponentKey, nil
 }
 
 type primaryCosignedPassthrough struct {

@@ -1769,7 +1769,7 @@ describe("SignerClient", () => {
             signerKey: {
               address: bounded,
               publicKeyHex: "",
-              keyType: "aplane.falcon1024-b.v1",
+              keyType: "aplane.falcon1024.v1",
               signingFlow: SIGNING_FLOW_COSIGNED1,
               cosignerComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
               logicSigResources: {
@@ -1803,6 +1803,172 @@ describe("SignerClient", () => {
       } as any);
       assert.equal(result.signedGroup.length, 1);
       assert.deepEqual(result.cosignerComponentResponses, []);
+    });
+
+    it("asks the cosigner once for the spends of a mixed cosigned group", async () => {
+      // A listed rekey (0), two spends under one cosigner key (1, 2) and a
+      // primary slot (3). A cosigner signature in another scheme than the
+      // account's cosigner key type is refused.
+      const listed = testAddress(41);
+      const spendA = testAddress(42);
+      const spendB = testAddress(43);
+      const primary = testAddress(44);
+      const receiver = testAddress(45);
+      const rekeyTarget = testAddress(46);
+      const suggestedParams = {
+        fee: 1000n, minFee: 1000n, firstValid: 1n, lastValid: 100n,
+        genesisHash: new Uint8Array(32), genesisID: "testnet-v1", flatFee: true,
+      };
+      const txns = algosdk.assignGroupID([
+        algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+          sender: listed, receiver: listed, amount: 0n, rekeyTo: rekeyTarget, suggestedParams,
+        }),
+        algosdk.makePaymentTxnWithSuggestedParamsFromObject({ sender: spendA, receiver, amount: 1000n, suggestedParams }),
+        algosdk.makePaymentTxnWithSuggestedParamsFromObject({ sender: spendB, receiver, amount: 2000n, suggestedParams }),
+        algosdk.makePaymentTxnWithSuggestedParamsFromObject({ sender: primary, receiver, amount: 3000n, suggestedParams }),
+      ]);
+      const signature = new Uint8Array(64);
+      signature[63] = 1;
+      const signedGroup = txns.map((txn) =>
+        bytesToHex(algosdk.encodeMsgpack(new algosdk.SignedTransaction({ txn, sig: signature }))));
+      const cosignedKey = (address: string) => ({
+        address,
+        publicKeyHex: "",
+        keyType: "aplane.falcon1024.v1",
+        signingFlow: SIGNING_FLOW_COSIGNED1,
+        cosignerComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
+        logicSigResources: {
+          spend: { programBytes: 5308, argumentBytes: 3358, maxOpcodeCost: 20000 },
+          spendingRekey: { programBytes: 5308, argumentBytes: 2846, maxOpcodeCost: 20000 },
+          listedRekey: { programBytes: 5308, argumentBytes: 1583, maxOpcodeCost: 20000 },
+        },
+        isGenericLsig: false,
+        boundedAuthorization: {
+          contract: "plain1",
+          baseSignatureArgLayout: { count: 1, maxSizes: [1280] },
+          spendEffects: [],
+          rekey: "spending_key",
+          rekeyList: { contract: "rekey_list1", depth: 4 },
+          cosigner: {
+            contract: "cosigner1",
+            componentKeyType: KEY_TYPE_WITNESS_FALCON1024,
+            publicKeyHex: "aabb",
+            signatureMaxSize: 1280,
+            requiredOn: ["spend", "spending_rekey"],
+          },
+          runtimeArgs: [],
+          derivedArgs: [],
+          argumentLayout: [],
+          layer3Policy: "",
+        },
+      });
+      const base = (index: number, account: string, path: string) => ({
+        target_index: index,
+        kind: "bounded-base",
+        auth_address: account,
+        base_signatures: ["base-sig"],
+        assembly_receipt: "receipt",
+        signature_scheme: "aplane.falcon1024.v1",
+        path,
+      });
+
+      for (const wrongScheme of [false, true]) {
+        const user = new SignerClient("http://localhost:11270");
+        const cosigner = new SignerClient("http://cosigner:11270");
+        const cosignerRequests: any[] = [];
+        let primaryRequests: any[] | undefined;
+        let assembly: any;
+        (user as any).planRequests = async (requests: any[]) => ({
+          transactions: requests.map((request) => request.txn_bytes_hex),
+        });
+        let baseRequest: any;
+        (user as any).requestComponents = async (request: any) => {
+          baseRequest = request;
+          return {
+            request_id: "base-id",
+            components: [base(0, listed, "listed_rekey"), base(1, spendA, "spend"), base(2, spendB, "spend")],
+          };
+        };
+        (user as any).signRequests = async (requests: any[]) => {
+          primaryRequests = requests;
+          return { signed: signedGroup };
+        };
+        (user as any).requestAssemble = async (request: any) => {
+          assembly = request;
+          return { request_id: "assembly-id", signed_group: signedGroup };
+        };
+        (cosigner as any).requestComponents = async (request: any) => {
+          cosignerRequests.push(request);
+          return {
+            request_id: "cosigner-id",
+            components: request.targets.map((target: any) => ({
+              target_index: target.target_index,
+              kind: "cosigner",
+              signature: `cosigner-sig-${target.target_index}`,
+              signature_scheme: wrongScheme ? "aplane.falcon1024.v1" : KEY_TYPE_WITNESS_FALCON1024,
+            })),
+          };
+        };
+        const sign = () => signPreparedCosignedGroup({
+          userClient: user,
+          cosignerClient: cosigner,
+          cosignerComponentKey: "COSIGNER_COMPONENT",
+          preparedGroup: {
+            transactions: [
+              { transaction: txns[0], authAddress: listed, signerKey: cosignedKey(listed), appCallInfo: { mode: "listed" } },
+              { transaction: txns[1], authAddress: spendA, signerKey: cosignedKey(spendA) },
+              { transaction: txns[2], authAddress: spendB, signerKey: cosignedKey(spendB) },
+              {
+                transaction: txns[3], authAddress: primary, appCallInfo: { mode: "primary" },
+                signerKey: { address: primary, publicKeyHex: "", keyType: "ed25519", authorizationKind: "ed25519", isGenericLsig: false },
+              },
+            ],
+          },
+        } as any);
+        if (wrongScheme) {
+          await assert.rejects(sign(), /used scheme/);
+          assert.equal(assembly, undefined);
+          continue;
+        }
+        const result = await sign();
+
+        // The user signer's approval shows the primary slot's app call.
+        assert.deepEqual(
+          baseRequest.contextual_positions.map((position: any) => [position.target_index, position.app_call_info]),
+          [[3, { mode: "primary" }]],
+        );
+        assert.equal(cosignerRequests.length, 1);
+        const cosignerRequest = cosignerRequests[0];
+        assert.deepEqual(cosignerRequest.targets.map((target: any) => target.target_index), [1, 2]);
+        assert.deepEqual(
+          [...new Set(cosignerRequest.targets.map((target: any) => target.component_key))],
+          ["COSIGNER_COMPONENT"],
+        );
+        assert.deepEqual(
+          Object.fromEntries(cosignerRequest.contextual_positions.map((position: any) =>
+            [position.target_index, position.app_call_info])),
+          { 0: { mode: "listed" }, 3: { mode: "primary" } },
+        );
+
+        assert.equal(primaryRequests?.length, 4);
+        for (const [index, argumentBytes] of [[0, 1583], [1, 3358], [2, 3358]]) {
+          assert.equal(primaryRequests?.[index].auth_address, undefined);
+          assert.equal(primaryRequests?.[index].lsig_resources.argument_bytes, argumentBytes);
+        }
+        assert.equal(primaryRequests?.[3].auth_address, primary);
+        assert.deepEqual(primaryRequests?.[3].app_call_info, { mode: "primary" });
+
+        const byIndex = new Map(assembly.targets.map((target: any) => [target.target_index, target]));
+        assert.deepEqual([...byIndex.keys()].sort(), [0, 1, 2]);
+        assert.equal((byIndex.get(0) as any).cosigner_signature, undefined);
+        for (const index of [1, 2]) {
+          assert.equal((byIndex.get(index) as any).cosigner_signature, `cosigner-sig-${index}`);
+          assert.equal((byIndex.get(index) as any).cosigner_source_request_id, "cosigner-id");
+        }
+        assert.deepEqual(assembly.passthrough.map((item: any) => item.target_index), [3]);
+        assert.equal(result.signedGroup.length, 4);
+        assert.equal(result.cosignerComponentResponses.length, 1);
+      }
     });
 
     it("routes prepared bounded-cosigner groups through the user-first flow", async () => {
@@ -1895,7 +2061,7 @@ describe("SignerClient", () => {
             signerKey: {
               address: bounded,
               publicKeyHex: "",
-              keyType: "aplane.falcon1024-b.v1",
+              keyType: "aplane.falcon1024.v1",
               signingFlow: SIGNING_FLOW_COSIGNED1,
               cosignerComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
               logicSigResources: {
@@ -2105,9 +2271,10 @@ describe("SignerClient", () => {
         { name: "spend on a refused account", rekeySetting: "refused", rekey: false, expected: profiles.spend },
         { name: "spend", rekeySetting: "spending_key", rekey: false, expected: profiles.spend },
         { name: "spending rekey", rekeySetting: "spending_key", rekey: true, expected: profiles.spendingRekey },
-        // Only spending_key authorizes a rekey; refused, a missing setting and
-        // any other value (such as the removed admin_key authorization) fail.
-        { name: "refused rekey", rekeySetting: "refused", rekey: true, error: unavailable },
+        // Only spending_key authorizes a rekey without a list. refused says so;
+        // a missing setting and any other value (such as the removed admin_key
+        // authorization) are unavailable metadata.
+        { name: "refused rekey", rekeySetting: "refused", rekey: true, error: /the account refuses rekeys/ },
         { name: "missing rekey setting", rekeySetting: "", rekey: true, error: unavailable },
         { name: "unknown rekey setting", rekeySetting: "admin_key", rekey: true, error: unavailable },
       ];
@@ -2151,7 +2318,7 @@ describe("SignerClient", () => {
                 signerKey: {
                   address: bounded,
                   publicKeyHex: "",
-                  keyType: "aplane.falcon1024-b.v1",
+                  keyType: "aplane.falcon1024.v1",
                   signingFlow: SIGNING_FLOW_COSIGNED1,
                   cosignerComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
                   logicSigResources: profiles,
@@ -2331,7 +2498,7 @@ describe("SignerClient", () => {
               signerKey: {
                 address: bounded,
                 publicKeyHex: "",
-                keyType: "aplane.falcon1024-b.v1",
+                keyType: "aplane.falcon1024.v1",
                 signingFlow: SIGNING_FLOW_COSIGNED1,
                 cosignerComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
                 logicSigResources: {
@@ -2492,7 +2659,7 @@ describe("SignerClient", () => {
               signerKey: {
                 address: bounded,
                 publicKeyHex: "",
-                keyType: "aplane.falcon1024-b.v1",
+                keyType: "aplane.falcon1024.v1",
                 authorizationKind: "logic_sig",
                 signingFlow: SIGNING_FLOW_COSIGNED1,
                 cosignerComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,

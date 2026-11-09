@@ -29,7 +29,6 @@ from .signer import (
     send_raw_transaction,
     assemble_group,
     sign_prepared_cosigned_group,
-    sign_prepared_bounded_cosigner_group,
     simulate_prepared_cosigned_group,
 
     # Enrollment
@@ -141,7 +140,6 @@ __all__ = [
     "send_raw_transaction",
     "assemble_group",
     "sign_prepared_cosigned_group",
-    "sign_prepared_bounded_cosigner_group",
     "simulate_prepared_cosigned_group",
 
     # Enrollment
