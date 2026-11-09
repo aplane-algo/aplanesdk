@@ -286,7 +286,8 @@ const signedList = await client.signTransactionsList([txn1, txn2]);
 #### `signRequests(requests, options?): Promise<GroupSignResponse>`
 
 Send one or more raw `/sign` request entries. Use this when an integration
-already owns transaction encoding and wants APlane's native response shape.
+already owns transaction encoding and wants APlane's native response shape. The
+mutation report comes back in the typed camelCase `MutationReport` form.
 
 ```typescript
 const response = await client.signRequests(

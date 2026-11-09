@@ -667,8 +667,9 @@ never trigger another signing request automatically.
   signed group.
 - `signTransactionsList()` returns per-slot base64 strings; it also rejects
   foreign slots for `/sign`.
-- `signRequests()` accepts one or more raw `/sign` request entries and returns the raw
-  `/sign` response.
+- `signRequests()` accepts one or more raw `/sign` request entries and returns the
+  `/sign` response, with its mutation report in the typed camelCase
+  `MutationReport` form.
 - `planGroup()` returns unsigned `TX`-prefixed hex transactions plus a mutation
   report.
 - `simulatePreparedGroup()` performs ordinary signing, then uses the

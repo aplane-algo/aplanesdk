@@ -3861,8 +3861,9 @@ export class SignerClient {
    * Send raw signing request entries to /sign.
    *
    * Higher-level helpers build these entries from algosdk transactions;
-   * adapters can use this method directly when they already own transaction
-   * encoding.
+   * integrations can use this method directly when they already own
+   * transaction encoding. The mutation report is returned in its typed
+   * camelCase form.
    */
   async signRequests(
     requests: SignRequest[],
@@ -3922,6 +3923,11 @@ export class SignerClient {
 
     validateGroupSignResponse(requests, data.signed ?? []);
 
+    // The wire report is snake_case; callers read the typed camelCase fields.
+    if (data.mutations) {
+      data = { ...data, mutations: this.normalizeMutationReport(data.mutations) };
+    }
+
     return data;
   }
 
@@ -3938,9 +3944,7 @@ export class SignerClient {
       throw new SignerError("algodClient is required");
     }
     const response = await this.signRequests(preparedGroupToSignRequests(group), options);
-    const mutations = response.mutations
-      ? this.normalizeMutationReport(response.mutations)
-      : undefined;
+    const mutations = response.mutations;
     if ((mutations?.foreignCount ?? 0) > 0) {
       throw new SignerError(
         `signed simulation requires a complete group; signer returned ${mutations?.foreignCount} foreign transaction(s)`
