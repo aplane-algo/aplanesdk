@@ -342,9 +342,10 @@ for (const key of keys) {
 - `templateProvenanceNote`
 
 `logicSigResources` publishes independent program-byte, argument-byte, and
-maximum-opcode-cost demand by authorization path. Bounded keys may publish
-different `spend` and `spendingRekey` profiles. They also publish an
-`adminRekey` profile, which no rekey authorization selects.
+maximum-opcode-cost demand by authorization path. Non-bounded LogicSig keys
+publish a `default` profile. Bounded keys publish exactly two paths, `spend`
+and `spendingRekey`, which may differ: a rekey selects `spendingRekey` and
+every other transaction selects `spend`.
 
 `KeyTypeInfo.authorizationKind` distinguishes `ed25519`, `native_pq`, and
 `logic_sig`. `requiresLogicsig === false` alone does not imply Ed25519.
@@ -358,10 +359,10 @@ indistinguishable from an Ed25519 key. `signPreparedGuardedGroup` uses it to
 declare `pq_scheme` on native-PQ group positions that are planned as foreign
 slots.
 
-`boundedAuthorization.adminOperations` lists a bounded account's rekey
-authority: a `rekey` operation with `spending_key` authorization lets the
-spending key rekey the account, and an empty list means the account refuses
-rekeys.
+`boundedAuthorization.rekey` is a bounded account's rekey setting:
+`spending_key` lets the spending key rekey the account, and `refused` means the
+account refuses rekeys. The SDK fails a rekey on a bounded key unless the
+setting is `spending_key`. `boundedAuthorization.contract` is `bounded2`.
 
 ### List Key Types
 
@@ -609,7 +610,7 @@ ordinary-position signing) before requesting cosigner components, so a cosigner
 never sees a group the user signer rejects. `assembleGroup()`
 remains only the local multi-party concatenation helper.
 
-Corridor is a bounded cosigner account: its LogicSig contract is `bounded1`, and
+Corridor is a bounded cosigner account: its LogicSig contract is `bounded2`, and
 its online spend flow is `bounded-cosigner1`. These are separate compatibility
 dimensions. `signPreparedGuardedGroup()` discovers the flow from signer
 inventory and performs the user-first sequence:

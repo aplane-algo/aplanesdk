@@ -275,13 +275,6 @@ class BoundedSignatureArgLayout:
 
 
 @dataclass
-class BoundedAdminOperationInfo:
-    kind: str
-    authorization: str
-    policy_gate: str
-
-
-@dataclass
 class BoundedDerivedArgInfo:
     name: str
     kind: str
@@ -293,7 +286,6 @@ class BoundedDerivedArgInfo:
 class BoundedArgumentPathMask:
     spend: str
     spending_rekey: str
-    admin_rekey: str
 
 
 @dataclass
@@ -333,7 +325,6 @@ class LogicSigResourceProfile:
     default: Optional[LogicSigResourceUsage] = None
     spend: Optional[LogicSigResourceUsage] = None
     spending_rekey: Optional[LogicSigResourceUsage] = None
-    admin_rekey: Optional[LogicSigResourceUsage] = None
 
 
 @dataclass
@@ -342,7 +333,7 @@ class BoundedAuthorizationInfo:
     base_signature_arg_layout: BoundedSignatureArgLayout
     spend_effects: List[str]
     max_fee: int
-    admin_operations: List[BoundedAdminOperationInfo]
+    rekey: str  # "refused" or "spending_key"
     runtime_args: List[RuntimeArg]
     derived_args: List[BoundedDerivedArgInfo]
     argument_layout: List[BoundedArgumentSlotInfo]
@@ -1524,7 +1515,6 @@ def _parse_lsig_resource_profile(data: Any) -> Optional[LogicSigResourceProfile]
         default=_parse_lsig_resource_usage(data.get("default")),
         spend=_parse_lsig_resource_usage(data.get("spend")),
         spending_rekey=_parse_lsig_resource_usage(data.get("spending_rekey")),
-        admin_rekey=_parse_lsig_resource_usage(data.get("admin_rekey")),
     )
 
 
@@ -1536,15 +1526,7 @@ def _selected_prepared_resources(
     profile = key.logic_sig_resources
     selected = profile.spend or profile.default
     if key.bounded_authorization and txn is not None and txn.rekey_to is not None:
-        authorization = next(
-            (
-                operation.authorization
-                for operation in key.bounded_authorization.admin_operations
-                if operation.kind == "rekey"
-            ),
-            "",
-        )
-        if authorization == "spending_key":
+        if key.bounded_authorization.rekey == "spending_key":
             selected = profile.spending_rekey
         else:
             raise ValueError("bounded rekey authorization metadata is unavailable")
@@ -1590,7 +1572,6 @@ def _parse_bounded_authorization(data: Any) -> Optional[BoundedAuthorizationInfo
     if isinstance(max_fee, bool) or not isinstance(max_fee, int) or max_fee < 0:
         raise SignerError("invalid bounded_authorization: max_fee must be a non-negative integer")
     layout = data.get("base_signature_arg_layout") or {}
-    operations = data.get("admin_operations") or []
     runtime_args = data.get("runtime_args") or []
     derived_args = data.get("derived_args") or []
     argument_layout = data.get("argument_layout") or []
@@ -1602,14 +1583,7 @@ def _parse_bounded_authorization(data: Any) -> Optional[BoundedAuthorizationInfo
         ),
         spend_effects=list(data.get("spend_effects") or []),
         max_fee=max_fee,
-        admin_operations=[
-            BoundedAdminOperationInfo(
-                kind=item.get("kind", ""),
-                authorization=item.get("authorization", ""),
-                policy_gate=item.get("policy_gate", ""),
-            )
-            for item in operations
-        ],
+        rekey=data.get("rekey", ""),
         runtime_args=[
             RuntimeArg(
                 name=item.get("name", ""),
@@ -1640,7 +1614,6 @@ def _parse_bounded_authorization(data: Any) -> Optional[BoundedAuthorizationInfo
                 paths=BoundedArgumentPathMask(
                     spend=(item.get("paths") or {}).get("spend", ""),
                     spending_rekey=(item.get("paths") or {}).get("spending_rekey", ""),
-                    admin_rekey=(item.get("paths") or {}).get("admin_rekey", ""),
                 ),
             )
             for item in argument_layout

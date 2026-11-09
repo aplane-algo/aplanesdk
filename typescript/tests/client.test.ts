@@ -2142,11 +2142,11 @@ describe("SignerClient", () => {
               },
               isGenericLsig: false,
               boundedAuthorization: {
-                contract: "bounded1",
+                contract: "bounded2",
                 baseSignatureArgLayout: { count: 1, maxSizes: [1280] },
                 spendEffects: ["pay"],
                 maxFee: 1000,
-                adminOperations: [],
+                rekey: "refused",
                 cosigner: {
                   contract: "cosigner1",
                   componentKeyType: KEY_TYPE_WITNESS_FALCON1024,
@@ -2328,25 +2328,23 @@ describe("SignerClient", () => {
       const profiles = {
         spend: { programBytes: 1001, argumentBytes: 101, maxOpcodeCost: 10001 },
         spendingRekey: { programBytes: 2002, argumentBytes: 202, maxOpcodeCost: 20002 },
-        // The signer still publishes the vestigial admin_rekey path; no rekey
-        // authorization selects it.
-        adminRekey: { programBytes: 3003, argumentBytes: 303, maxOpcodeCost: 30003 },
       };
+      const unavailable = /bounded rekey authorization metadata is unavailable/;
       const cases: Array<{
         name: string;
-        authorization?: string;
+        rekeySetting: string;
         rekey: boolean;
         expected?: typeof profiles.spend;
         error?: RegExp;
       }> = [
-        { name: "spend", authorization: "spending_key", rekey: false, expected: profiles.spend },
-        { name: "spending rekey", authorization: "spending_key", rekey: true, expected: profiles.spendingRekey },
-        // A refused account publishes no rekey operation.
-        {
-          name: "refused rekey",
-          rekey: true,
-          error: /bounded rekey authorization metadata is unavailable/,
-        },
+        { name: "spend on a refused account", rekeySetting: "refused", rekey: false, expected: profiles.spend },
+        { name: "spend", rekeySetting: "spending_key", rekey: false, expected: profiles.spend },
+        { name: "spending rekey", rekeySetting: "spending_key", rekey: true, expected: profiles.spendingRekey },
+        // Only spending_key authorizes a rekey; refused, a missing setting and
+        // any other value (such as the removed admin_key authorization) fail.
+        { name: "refused rekey", rekeySetting: "refused", rekey: true, error: unavailable },
+        { name: "missing rekey setting", rekeySetting: "", rekey: true, error: unavailable },
+        { name: "unknown rekey setting", rekeySetting: "admin_key", rekey: true, error: unavailable },
       ];
 
       for (const item of cases) {
@@ -2393,15 +2391,11 @@ describe("SignerClient", () => {
                   logicSigResources: profiles,
                   isGenericLsig: false,
                   boundedAuthorization: {
-                    contract: "bounded1",
+                    contract: "bounded2",
                     baseSignatureArgLayout: { count: 1, maxSizes: [1423] },
                     spendEffects: ["pay"],
                     maxFee: 1000,
-                    adminOperations: item.authorization ? [{
-                      kind: "rekey",
-                      authorization: item.authorization,
-                      policyGate: "none",
-                    }] : [],
+                    rekey: item.rekeySetting,
                     cosigner: {
                       contract: "cosigner1",
                       componentKeyType: KEY_TYPE_WITNESS_FALCON1024,
@@ -2567,11 +2561,11 @@ describe("SignerClient", () => {
                 },
                 isGenericLsig: false,
                 boundedAuthorization: {
-                  contract: "bounded1",
+                  contract: "bounded2",
                   baseSignatureArgLayout: { count: 1, maxSizes: [1280] },
                   spendEffects: ["pay"],
                   maxFee: 1000,
-                  adminOperations: [],
+                  rekey: "refused",
                   cosigner: {
                     contract: "cosigner1",
                     componentKeyType: KEY_TYPE_WITNESS_FALCON1024,
@@ -2728,11 +2722,11 @@ describe("SignerClient", () => {
                   spend: { programBytes: 5308, argumentBytes: 3358, maxOpcodeCost: 20000 },
                 },
                 boundedAuthorization: {
-                  contract: "bounded1",
+                  contract: "bounded2",
                   baseSignatureArgLayout: { count: 1, maxSizes: [1280] },
                   spendEffects: ["pay"],
                   maxFee: 1000,
-                  adminOperations: [],
+                  rekey: "refused",
                   cosigner: {
                     contract: "cosigner1",
                     componentKeyType: KEY_TYPE_WITNESS_FALCON1024,

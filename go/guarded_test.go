@@ -37,15 +37,12 @@ func guardedTestResources() *LogicSigResourceUsage {
 	return &LogicSigResourceUsage{ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000}
 }
 
-func boundedResourceTestKey(spend, spendingRekey *LogicSigResourceUsage, operations []BoundedAdminOperationInfo) *KeyInfo {
-	// The signer still publishes the vestigial admin_rekey path; no rekey
-	// authorization selects it.
-	adminRekey := &LogicSigResourceUsage{ProgramBytes: 3003, ArgumentBytes: 303, MaxOpcodeCost: 30003}
+func boundedResourceTestKey(spend, spendingRekey *LogicSigResourceUsage, rekey string) *KeyInfo {
 	return &KeyInfo{
 		LogicSigResources: &LogicSigResourceProfile{
-			Spend: spend, SpendingRekey: spendingRekey, AdminRekey: adminRekey,
+			Spend: spend, SpendingRekey: spendingRekey,
 		},
-		BoundedAuthorization: &BoundedAuthorizationInfo{AdminOperations: operations},
+		BoundedAuthorization: &BoundedAuthorizationInfo{Rekey: rekey},
 	}
 }
 
@@ -56,23 +53,22 @@ func TestSelectedPreparedResourcesUsesBoundedAuthorizationPath(t *testing.T) {
 	rekeyTo[31] = 1
 
 	tests := []struct {
-		name          string
-		rekey         bool
-		authorization string
-		want          *LogicSigResourceUsage
+		name         string
+		rekey        bool
+		rekeySetting string
+		want         *LogicSigResourceUsage
 	}{
-		{name: "spend", want: spend},
-		{name: "spending-key rekey", rekey: true, authorization: "spending_key", want: spendingRekey},
+		{name: "spend on a refused account", rekeySetting: "refused", want: spend},
+		{name: "spend on a spending-key account", rekeySetting: "spending_key", want: spend},
+		{name: "spending-key rekey", rekey: true, rekeySetting: "spending_key", want: spendingRekey},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			txn := &types.Transaction{}
-			operations := []BoundedAdminOperationInfo(nil)
 			if tt.rekey {
 				txn.RekeyTo = rekeyTo
-				operations = []BoundedAdminOperationInfo{{Kind: "rekey", Authorization: tt.authorization}}
 			}
-			got, err := selectedPreparedResources(boundedResourceTestKey(spend, spendingRekey, operations), txn)
+			got, err := selectedPreparedResources(boundedResourceTestKey(spend, spendingRekey, tt.rekeySetting), txn)
 			if err != nil {
 				t.Fatalf("selectedPreparedResources() error = %v", err)
 			}
@@ -86,20 +82,25 @@ func TestSelectedPreparedResourcesUsesBoundedAuthorizationPath(t *testing.T) {
 	}
 }
 
-func TestSelectedPreparedResourcesRejectsRekeyOfRefusedBoundedAccount(t *testing.T) {
+func TestSelectedPreparedResourcesRejectsRekeyWithoutSpendingKeyAuthorization(t *testing.T) {
 	spend := &LogicSigResourceUsage{ProgramBytes: 1001, ArgumentBytes: 101, MaxOpcodeCost: 10001}
 	spendingRekey := &LogicSigResourceUsage{ProgramBytes: 2002, ArgumentBytes: 202, MaxOpcodeCost: 20002}
 	var rekeyTo types.Address
 	rekeyTo[31] = 1
 	txn := &types.Transaction{Header: types.Header{RekeyTo: rekeyTo}}
 
-	// A refused account publishes no rekey operation.
-	got, err := selectedPreparedResources(boundedResourceTestKey(spend, spendingRekey, []BoundedAdminOperationInfo{}), txn)
-	if err == nil {
-		t.Fatalf("selectedPreparedResources() = %+v, want error for a refused rekey", got)
-	}
-	if !strings.Contains(err.Error(), "bounded rekey authorization metadata is unavailable") {
-		t.Fatalf("selectedPreparedResources() error = %v, want unavailable rekey authorization", err)
+	// Only spending_key authorizes a rekey; refused, a missing setting and
+	// any other value (such as the removed admin_key authorization) fail.
+	for _, rekey := range []string{"refused", "", "admin_key"} {
+		t.Run(fmt.Sprintf("rekey=%q", rekey), func(t *testing.T) {
+			got, err := selectedPreparedResources(boundedResourceTestKey(spend, spendingRekey, rekey), txn)
+			if err == nil {
+				t.Fatalf("selectedPreparedResources() = %+v, want error for rekey setting %q", got, rekey)
+			}
+			if !strings.Contains(err.Error(), "bounded rekey authorization metadata is unavailable") {
+				t.Fatalf("selectedPreparedResources() error = %v, want unavailable rekey authorization", err)
+			}
+		})
 	}
 }
 

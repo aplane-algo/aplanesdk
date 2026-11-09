@@ -220,12 +220,17 @@ func TestBoundedInventoryUsesStructuredResources(t *testing.T) {
 	if len(key.BoundedAuthorization.SpendEffects) != 3 || len(key.BoundedAuthorization.ArgumentLayout) != 1 {
 		t.Fatalf("bounded authorization = %+v, want effects and static slots", key.BoundedAuthorization)
 	}
-	if operations := key.BoundedAuthorization.AdminOperations; operations == nil || len(operations) != 0 {
-		t.Fatalf("admin operations = %#v, want an empty list for an account that refuses rekeys", operations)
+	if key.BoundedAuthorization.Contract != "bounded2" {
+		t.Fatalf("bounded contract = %q, want bounded2", key.BoundedAuthorization.Contract)
 	}
-	// The vestigial admin_rekey path is still on the wire.
-	if key.LogicSigResources.AdminRekey == nil || key.BoundedAuthorization.ArgumentLayout[0].Paths.AdminRekey != "required" {
-		t.Fatalf("admin_rekey path = %#v / %+v, want it decoded", key.LogicSigResources.AdminRekey, key.BoundedAuthorization.ArgumentLayout[0].Paths)
+	if key.BoundedAuthorization.Rekey != "refused" {
+		t.Fatalf("bounded rekey = %q, want refused", key.BoundedAuthorization.Rekey)
+	}
+	if key.LogicSigResources.SpendingRekey == nil {
+		t.Fatalf("spending_rekey resources = %#v, want them decoded", key.LogicSigResources)
+	}
+	if paths := key.BoundedAuthorization.ArgumentLayout[0].Paths; paths.Spend != "required" || paths.SpendingRekey != "required" {
+		t.Fatalf("argument path mask = %+v, want spend and spending_rekey required", paths)
 	}
 
 	corridor := response.Keys[1]
@@ -240,6 +245,9 @@ func TestBoundedInventoryUsesStructuredResources(t *testing.T) {
 		cosigner.ComponentKeyID == "" || len(cosigner.RequiredOn) != 1 || cosigner.RequiredOn[0] != "spend" {
 		t.Fatalf("Corridor cosigner metadata = %+v, want routable spend authorization", cosigner)
 	}
+	if corridor.BoundedAuthorization.Contract != "bounded2" || corridor.BoundedAuthorization.Rekey != "refused" {
+		t.Fatalf("Corridor contract/rekey = %q/%q, want bounded2/refused", corridor.BoundedAuthorization.Contract, corridor.BoundedAuthorization.Rekey)
+	}
 
 	raw, err = os.ReadFile(sdkContractFixturePath(t, "keytypes_response_bounded.json"))
 	if err != nil {
@@ -251,6 +259,12 @@ func TestBoundedInventoryUsesStructuredResources(t *testing.T) {
 	}
 	if len(keyTypes.KeyTypes) != 2 {
 		t.Fatalf("bounded key type count = %d, want 2", len(keyTypes.KeyTypes))
+	}
+	for _, keyType := range keyTypes.KeyTypes {
+		if authorization := keyType.BoundedAuthorization; authorization == nil ||
+			authorization.Contract != "bounded2" || authorization.Rekey != "refused" {
+			t.Fatalf("%s bounded authorization = %+v, want bounded2 with rekeys refused", keyType.KeyType, authorization)
+		}
 	}
 	corridorType := keyTypes.KeyTypes[1]
 	if corridorType.SigningFlow != SigningFlowBoundedCosigner1 ||

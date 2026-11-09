@@ -82,7 +82,6 @@ export interface LogicSigResourceProfile {
   default?: LogicSigResourceUsage;
   spend?: LogicSigResourceUsage;
   spendingRekey?: LogicSigResourceUsage;
-  adminRekey?: LogicSigResourceUsage;
 }
 
 export interface RuntimeArg {
@@ -112,12 +111,6 @@ export interface BoundedSignatureArgLayout {
   maxSizes: number[];
 }
 
-export interface BoundedAdminOperationInfo {
-  kind: string;
-  authorization: string;
-  policyGate: string;
-}
-
 export interface BoundedDerivedArgInfo {
   name: string;
   kind: string;
@@ -128,7 +121,6 @@ export interface BoundedDerivedArgInfo {
 export interface BoundedArgumentPathMask {
   spend: string;
   spendingRekey: string;
-  adminRekey: string;
 }
 
 export interface BoundedArgumentSlotInfo {
@@ -153,7 +145,8 @@ export interface BoundedAuthorizationInfo {
   baseSignatureArgLayout: BoundedSignatureArgLayout;
   spendEffects: string[];
   maxFee: number;
-  adminOperations: BoundedAdminOperationInfo[];
+  /** "refused" or "spending_key" */
+  rekey: string;
   cosigner?: BoundedCosignerAuthorizationInfo;
   runtimeArgs: RuntimeArg[];
   derivedArgs: BoundedDerivedArgInfo[];
