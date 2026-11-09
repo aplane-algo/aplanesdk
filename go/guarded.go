@@ -489,8 +489,11 @@ func selectedPreparedResources(key *KeyInfo, txn *types.Transaction) (*LogicSigR
 		selected = profile.Spend
 	}
 	if key.BoundedAuthorization != nil && txn != nil && !txn.RekeyTo.IsZero() {
-		switch key.BoundedAuthorization.Rekey {
-		case "spending_key":
+		switch {
+		case key.BoundedAuthorization.RekeyList != nil && key.BoundedAuthorization.Rekey == "refused":
+			// Only these addresses: the signer checks the target and adds the proof.
+			selected = profile.ListedRekey
+		case key.BoundedAuthorization.Rekey == "spending_key":
 			selected = profile.SpendingRekey
 		default:
 			return nil, fmt.Errorf("bounded rekey authorization metadata is unavailable")

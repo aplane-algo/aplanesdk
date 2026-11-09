@@ -533,7 +533,9 @@ describe("signer API contract fixtures", () => {
     assert.deepEqual(key.boundedAuthorization?.argumentLayout[0].paths, {
       spend: "required",
       spendingRekey: "required",
+      listedRekey: "required",
     });
+    assert.equal(key.logicSigResources?.listedRekey?.argumentBytes, 1423);
     const corridor = keys[1];
     assert.equal(corridor.signingFlow, "bounded-cosigner1");
     assert.equal(corridor.cosignerComponentKeyType, "aplane.witness-falcon1024.v1");

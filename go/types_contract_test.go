@@ -573,6 +573,7 @@ func signerAPIErrorCodes(t *testing.T) []string {
 		ErrCodeCacheRefresh,
 		ErrCodeInternal,
 		ErrCodeBoundedCosignerRequired,
+		ErrCodeBoundedRekeyTargetNotListed,
 		ErrCodeRotatingSigningRequired,
 		ErrCodeRotatingStageUnproven,
 		ErrCodeRotatingStageChanged,

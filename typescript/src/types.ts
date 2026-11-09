@@ -82,6 +82,8 @@ export interface LogicSigResourceProfile {
   default?: LogicSigResourceUsage;
   spend?: LogicSigResourceUsage;
   spendingRekey?: LogicSigResourceUsage;
+  /** A rekey on an account with a rekey-to list takes this path. */
+  listedRekey?: LogicSigResourceUsage;
 }
 
 export interface RuntimeArg {
@@ -121,6 +123,14 @@ export interface BoundedDerivedArgInfo {
 export interface BoundedArgumentPathMask {
   spend: string;
   spendingRekey: string;
+  listedRekey: string;
+}
+
+/** A bounded account's rekey-to list. The entries are never published. */
+export interface BoundedRekeyListInfo {
+  contract: string;
+  depth: number;
+  rootHex?: string;
 }
 
 export interface BoundedArgumentSlotInfo {
@@ -147,6 +157,8 @@ export interface BoundedAuthorizationInfo {
   maxFee: number;
   /** "refused" or "spending_key" */
   rekey: string;
+  /** With rekey "refused": "only these", a rekey may go only to a listed address. */
+  rekeyList?: BoundedRekeyListInfo;
   cosigner?: BoundedCosignerAuthorizationInfo;
   runtimeArgs: RuntimeArg[];
   derivedArgs: BoundedDerivedArgInfo[];
@@ -1110,6 +1122,7 @@ export const ErrorCodes = {
   Unavailable: "unavailable",
   CacheRefresh: "cache_refresh",
   BoundedCosignerRequired: "bounded_cosigner_required",
+  BoundedRekeyTargetNotListed: "bounded_rekey_target_not_listed",
   /** A rotating account (rotating1) was sent to an ordinary signing endpoint. */
   RotatingSigningRequired: "rotating_signing_required",
   /** 409, temporary: the signer has not yet found the account's live stage. */

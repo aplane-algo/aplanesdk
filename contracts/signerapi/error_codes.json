@@ -11,6 +11,7 @@
     "cache_refresh",
     "internal",
     "bounded_cosigner_required",
+    "bounded_rekey_target_not_listed",
     "rotating_signing_required",
     "rotating_stage_unproven",
     "rotating_stage_changed"

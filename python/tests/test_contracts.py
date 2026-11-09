@@ -26,6 +26,7 @@ from aplanesdk.signer import (
     ERR_CODE_FORBIDDEN,
     ERR_CODE_INTERNAL,
     ERR_CODE_BOUNDED_COSIGNER_REQUIRED,
+    ERR_CODE_BOUNDED_REKEY_TARGET_NOT_LISTED,
     ERR_CODE_ROTATING_SIGNING_REQUIRED,
     ERR_CODE_ROTATING_STAGE_UNPROVEN,
     ERR_CODE_ROTATING_STAGE_CHANGED,
@@ -102,6 +103,7 @@ def sdk_error_codes() -> list[str]:
         ERR_CODE_CACHE_REFRESH,
         ERR_CODE_INTERNAL,
         ERR_CODE_BOUNDED_COSIGNER_REQUIRED,
+    ERR_CODE_BOUNDED_REKEY_TARGET_NOT_LISTED,
         ERR_CODE_ROTATING_SIGNING_REQUIRED,
         ERR_CODE_ROTATING_STAGE_UNPROVEN,
         ERR_CODE_ROTATING_STAGE_CHANGED,
@@ -503,8 +505,9 @@ def test_bounded_inventory_projects_layer3_policy():
         "base_signature"
     ]
     assert key.logic_sig_resources.spending_rekey == LogicSigResourceUsage(5169, 1423, 20000)
+    assert key.logic_sig_resources.listed_rekey == LogicSigResourceUsage(5169, 1423, 20000)
     assert key.bounded_authorization.argument_layout[0].paths == BoundedArgumentPathMask(
-        spend="required", spending_rekey="required"
+        spend="required", spending_rekey="required", listed_rekey="required"
     )
     corridor = keys[1]
     assert corridor.signing_flow == "bounded-cosigner1"

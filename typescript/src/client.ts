@@ -1476,6 +1476,13 @@ function mapBoundedAuthorization(raw: any): BoundedAuthorizationInfo | undefined
     spendEffects: raw.spend_effects || [],
     maxFee: raw.max_fee || 0,
     rekey: raw.rekey || "",
+    rekeyList: raw.rekey_list
+      ? {
+          contract: raw.rekey_list.contract || "",
+          depth: raw.rekey_list.depth || 0,
+          rootHex: raw.rekey_list.root || undefined,
+        }
+      : undefined,
     cosigner: raw.cosigner
       ? {
           contract: raw.cosigner.contract || "",
@@ -1501,6 +1508,7 @@ function mapBoundedAuthorization(raw: any): BoundedAuthorizationInfo | undefined
       paths: {
         spend: slot.paths?.spend || "",
         spendingRekey: slot.paths?.spending_rekey || "",
+        listedRekey: slot.paths?.listed_rekey || "",
       },
     })),
     layer3Policy: raw.layer3_policy || "",
@@ -1533,6 +1541,7 @@ function mapLogicSigResourceProfile(raw: any): LogicSigResourceProfile | undefin
     default: mapLogicSigResourceUsage(raw.default),
     spend: mapLogicSigResourceUsage(raw.spend),
     spendingRekey: mapLogicSigResourceUsage(raw.spending_rekey),
+    listedRekey: mapLogicSigResourceUsage(raw.listed_rekey),
   };
 }
 
@@ -1544,7 +1553,11 @@ function selectedPreparedResources(
   if (!profile) return undefined;
   let selected = profile.spend || profile.default;
   if (key?.boundedAuthorization && txn?.rekeyTo !== undefined) {
-    if (key.boundedAuthorization.rekey === "spending_key") {
+    const bounded = key.boundedAuthorization;
+    if (bounded.rekeyList && bounded.rekey === "refused") {
+      // Only these addresses: the signer checks the target and adds the proof.
+      selected = profile.listedRekey;
+    } else if (bounded.rekey === "spending_key") {
       selected = profile.spendingRekey;
     } else {
       throw new SignerError("bounded rekey authorization metadata is unavailable");

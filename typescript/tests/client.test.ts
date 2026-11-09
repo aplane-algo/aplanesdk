@@ -2328,15 +2328,20 @@ describe("SignerClient", () => {
       const profiles = {
         spend: { programBytes: 1001, argumentBytes: 101, maxOpcodeCost: 10001 },
         spendingRekey: { programBytes: 2002, argumentBytes: 202, maxOpcodeCost: 20002 },
+        listedRekey: { programBytes: 1001, argumentBytes: 1583, maxOpcodeCost: 20003 },
       };
       const unavailable = /bounded rekey authorization metadata is unavailable/;
       const cases: Array<{
         name: string;
         rekeySetting: string;
+        rekeyList?: boolean;
         rekey: boolean;
         expected?: typeof profiles.spend;
         error?: RegExp;
       }> = [
+        // Only these addresses: the signer checks the target and adds the proof.
+        { name: "listed rekey", rekeySetting: "refused", rekeyList: true, rekey: true, expected: profiles.listedRekey },
+        { name: "spend on a list account", rekeySetting: "refused", rekeyList: true, rekey: false, expected: profiles.spend },
         { name: "spend on a refused account", rekeySetting: "refused", rekey: false, expected: profiles.spend },
         { name: "spend", rekeySetting: "spending_key", rekey: false, expected: profiles.spend },
         { name: "spending rekey", rekeySetting: "spending_key", rekey: true, expected: profiles.spendingRekey },
@@ -2396,6 +2401,7 @@ describe("SignerClient", () => {
                     spendEffects: ["pay"],
                     maxFee: 1000,
                     rekey: item.rekeySetting,
+                    rekeyList: item.rekeyList ? { contract: "rekey_list1", depth: 4 } : undefined,
                     cosigner: {
                       contract: "cosigner1",
                       componentKeyType: KEY_TYPE_WITNESS_FALCON1024,

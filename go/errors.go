@@ -77,6 +77,9 @@ const (
 	ErrCodeCacheRefresh            = "cache_refresh"
 	ErrCodeInternal                = "internal"
 	ErrCodeBoundedCosignerRequired = "bounded_cosigner_required"
+	// ErrCodeBoundedRekeyTargetNotListed: the account refuses every rekey but
+	// one to an address on its rekey-to list, and the target is not on it.
+	ErrCodeBoundedRekeyTargetNotListed = "bounded_rekey_target_not_listed"
 	// ErrCodeRotatingSigningRequired: a rotating account (signing_flow
 	// rotating1) was sent to an ordinary signing endpoint. The SDK does not
 	// implement the rotating flow.
