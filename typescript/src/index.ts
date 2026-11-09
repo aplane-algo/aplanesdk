@@ -33,10 +33,8 @@
 // Main client
 export {
   SignerClient,
-  signGuardedGroup,
   signPreparedGuardedGroup,
   signPreparedBoundedCosignerGroup,
-  simulateGuardedGroup,
   simulatePreparedGuardedGroup,
 } from "./client.js";
 export { ErrorCodes } from "./types.js";
@@ -46,7 +44,6 @@ export type {
   GuardedPrimarySignTarget,
   GuardedCosignerResolution,
   GuardedCosignerResolver,
-  GuardedSignOptions,
   GuardedSignResult,
   GuardedSimulationResult,
   PreparedGuardedGroupOptions,
@@ -173,16 +170,16 @@ export type {
 } from "./types.js";
 
 export {
-  SIGNING_FLOW_COSIGNER1,
   SIGNING_FLOW_BOUNDED1,
   SIGNING_FLOW_COSIGNED1,
+  BOUNDED_CONTRACT_BOUNDED2,
+  BOUNDED_CONTRACT_PLAIN1,
   COMPONENT_PATH_SPEND,
   COMPONENT_PATH_SPENDING_REKEY,
   COMPONENT_PATH_LISTED_REKEY,
   componentNeedsCosigner,
   SIGNING_FLOW_ROTATING1,
   KEY_TYPE_WITNESS_FALCON1024,
-  KEY_TYPE_GUARDED_FALCON1024_COSIGNER1024,
   PQ_SCHEME_FALCON1024,
   AUTHORIZATION_KIND_ED25519,
   AUTHORIZATION_KIND_NATIVE_PQ,

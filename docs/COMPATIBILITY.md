@@ -31,11 +31,10 @@ The shipped cosigner default rejects every transaction type, so a held
 cosigner key with no document of its own rejects `/sign/component` with HTTP
 403, `code: "forbidden"`, and a `transaction_type:<type>` rule ID in the error
 message until the operator applies a document for it. A key the node does not
-hold returns HTTP 400 with `code: "bad_request"`. This applies to both
-`cosigner1` and `cosigned1` flows. The existing Go, Python, and
-TypeScript SDKs handle these responses without client API or signer
-wire-contract changes. Policy provisioning remains an operator workflow outside
-the SDKs.
+hold returns HTTP 400 with `code: "bad_request"`. This applies to the
+`cosigned1` flow. The existing Go, Python, and TypeScript SDKs handle these
+responses without client API or signer wire-contract changes. Policy
+provisioning remains an operator workflow outside the SDKs.
 
 The SDKs read only the current signer wire and client file formats:
 
@@ -49,6 +48,17 @@ The SDKs read only the current signer wire and client file formats:
   and `template_provenance_note`; the `template_status` and
   `template_warning` aliases are gone.
 - `endpoints.yaml` must declare `schema_version: 2`.
+- `bounded_authorization.contract` is `bounded2` or `plain1`, and `max_fee` is
+  optional: required on `bounded2`, absent on `plain1` (a plain host, which has
+  no fee ceiling). The cosigned helpers refuse an account with any other
+  contract, or with a ceiling that contradicts its contract, before any request.
+- The `cosigner1` signing flow, the `user` component target kind, the
+  `guarded` assembly target kind and the explicit-group signing API are gone.
+  `cosigner1` is an unknown flow, so an SDK refuses such a key before sending
+  anything; the string survives only as the cosigner contract label in
+  `bounded_authorization.cosigner.contract`.
+- Key types may carry `boundary_schema`, the boundary file grammar a per-key
+  type's requests take; it is absent on a plain host.
 
 Package source files retain placeholder versions. The publish workflow derives
 the released Python and TypeScript package versions from the requested `vX.Y.Z`

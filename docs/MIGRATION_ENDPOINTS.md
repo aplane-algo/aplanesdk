@@ -45,7 +45,7 @@ registries.
 The former cosigner-reference synchronization client methods and wire types are
 removed. APlane now keeps generation trust inputs and transaction routing
 separate: operators explicitly export/import public cosigner references for
-guarded-account generation, while the APlane engine discovers routes from live
+cosigned-account generation, while the APlane engine discovers routes from live
 authenticated `/keys` responses for each signing operation. SDK applications
 continue to choose or resolve their cosigner client explicitly; loading
 `endpoints.yaml` never creates a durable cosigner-key inventory.

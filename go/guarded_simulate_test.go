@@ -23,7 +23,7 @@ func TestComponentRequestTimeoutKeepsTwoMinuteFloor(t *testing.T) {
 	}
 }
 
-func TestRequestComponentsUserKindDiscoversApprovalWait(t *testing.T) {
+func TestRequestComponentsBoundedBaseDiscoversApprovalWait(t *testing.T) {
 	var paths []string
 	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
@@ -38,29 +38,29 @@ func TestRequestComponentsUserKindDiscoversApprovalWait(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("decode component request: %v", err)
 			}
-			json.NewEncoder(w).Encode(ComponentResponse{
-				RequestID: req.RequestID,
-				Components: []Component{{Kind: req.Targets[0].Kind,
-					TargetIndex:     0,
-					Signature:       "sig",
-					SignatureScheme: KeyTypeWitnessFalcon1024,
-				}},
-			})
+			component := Component{Kind: req.Targets[0].Kind, TargetIndex: 0, SignatureScheme: KeyTypeWitnessFalcon1024}
+			if component.Kind == ComponentTargetKindBoundedBase {
+				component.AuthAddress, component.BaseSignatures = req.Targets[0].AuthAddress, []string{"base"}
+				component.AssemblyReceipt, component.Path = "receipt", ComponentPathSpend
+			} else {
+				component.Signature = "sig"
+			}
+			json.NewEncoder(w).Encode(ComponentResponse{RequestID: req.RequestID, Components: []Component{component}})
 		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
 	})
 	defer server.Close()
 
-	userReq := ComponentRequest{
+	baseReq := ComponentRequest{
 		GroupBytesHex: []string{"5458a16374786ea0"},
-		Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindUser, AuthAddress: "GUARDED"}},
+		Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindBoundedBase, AuthAddress: "BOUNDED"}},
 	}
-	if _, err := client.RequestComponents(userReq); err != nil {
-		t.Fatalf("RequestComponents(user) error = %v", err)
+	if _, err := client.RequestComponents(baseReq); err != nil {
+		t.Fatalf("RequestComponents(bounded-base) error = %v", err)
 	}
 	if len(paths) != 2 || paths[0] != "/status" || paths[1] != "/sign/component" {
-		t.Fatalf("user-role request paths = %v, want approval-wait discovery before component signing", paths)
+		t.Fatalf("bounded-base request paths = %v, want approval-wait discovery before component signing", paths)
 	}
 
 	paths = nil

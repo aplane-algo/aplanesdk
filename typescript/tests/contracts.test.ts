@@ -374,12 +374,15 @@ describe("signer API contract fixtures", () => {
     mockFetch.mockResolvedValueOnce({
       status: 200,
       ok: true,
-      json: async () => fixture("keys_response_guarded.json"),
+      json: async () => fixture("keys_response_plain_host.json"),
     });
-    const guarded = (await client.listKeys(true))[0];
-    assert.equal(guarded.keyType, "aplane.falcon1024-cosigner1024.v1");
-    assert.equal(guarded.authorizationKind, "logic_sig");
-    assert.ok(guarded.parameters?.cosigner_public_key);
+    const plain = (await client.listKeys(true))[0];
+    assert.equal(plain.keyType, "aplane.falcon1024.v1");
+    assert.equal(plain.authorizationKind, "logic_sig");
+    assert.ok(plain.parameters?.cosigner_public_key);
+    // A plain host has no fee ceiling: max_fee is absent, never zero.
+    assert.equal(plain.boundedAuthorization?.contract, "plain1");
+    assert.equal(plain.boundedAuthorization?.maxFee, undefined);
   });
 
   it("maps authorizationKind for a native-PQ spending key", async () => {
@@ -467,7 +470,9 @@ describe("signer API contract fixtures", () => {
     assert.ok(unifiedComponentResp.components[0].assembly_receipt);
 
     const unifiedReq = fixture("assembly_request_mixed.json") as AssemblyRequest;
-    assert.equal(unifiedReq.targets?.[0].kind, "guarded");
+    assert.equal(unifiedReq.targets?.[0].kind, "bounded-cosigner");
+    // A listed rekey assembles without a cosigner signature.
+    assert.equal(unifiedReq.targets?.[0].cosigner_signature, undefined);
     const unifiedResp = fixture("assembly_response.json") as AssemblyResponse;
     assert.equal(unifiedResp.signed_group.length, 3);
 

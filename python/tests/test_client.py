@@ -28,9 +28,8 @@ from aplanesdk.signer import (
     KeyNotFoundError,
     KeyDeletionError,
     assemble_group,
-    sign_guarded_group,
     sign_prepared_guarded_group,
-    simulate_guarded_group,
+    simulate_prepared_guarded_group,
     load_config,
     load_client_endpoint_registry,
     resolve_client_endpoint,
@@ -43,23 +42,16 @@ from aplanesdk.signer import (
     KeyInfo,
     LogicSigResourceProfile,
     LogicSigResourceUsage,
-    GuardedPassthroughAuthorization,
-    GuardedPassthroughItem,
-    _normalize_guarded_passthrough_item,
     BoundedCosignerAuthorizationInfo,
     BoundedAuthorizationInfo,
     BoundedRekeyListInfo,
     BoundedSignatureArgLayout,
-    GuardedSignTarget,
-    GuardedPrimarySignTarget,
     PreparedTransaction,
     PreparedGroup,
     COMPONENT_TARGET_KIND_BOUNDED_BASE,
     COMPONENT_PATH_LISTED_REKEY,
     ASSEMBLY_TARGET_KIND_BOUNDED_COSIGNER,
-    KEY_TYPE_GUARDED_FALCON1024_COSIGNER1024,
     KEY_TYPE_WITNESS_FALCON1024,
-    SIGNING_FLOW_COSIGNER1,
     SIGNING_FLOW_COSIGNED1,
     EnrollmentError,
     EnrollmentResult,
@@ -77,18 +69,15 @@ from aplanesdk.signer import (
     _selected_prepared_resources,
 )
 
-TEST_COMPONENT_KIND_USER = "user"
 TEST_COMPONENT_KIND_COSIGNER = "cosigner"
 
 
 def component_request(*, role, group_bytes_hex, target_indices, request_id="", component_key=""):
     target_set = set(target_indices)
-    kind = "user" if role == TEST_COMPONENT_KIND_USER else "cosigner"
+    del role
     targets = []
     for index in target_indices:
-        target = {"target_index": index, "kind": kind}
-        target["auth_address" if kind == "user" else "component_key"] = component_key
-        targets.append(target)
+        targets.append({"target_index": index, "kind": "cosigner", "component_key": component_key})
     return ComponentRequest(
         request_id=request_id,
         group_bytes_hex=group_bytes_hex,
@@ -115,19 +104,14 @@ def component_response(*, request_id, signatures, component_key=""):
     return ComponentResponse(request_id=request_id, components=signatures)
 
 
-def guarded_assembly_target(
-    *, target_index, guarded_account, user_signature, cosigner_signature,
-    user_source_request_id="", cosigner_source_request_id="", runtime_args=None,
-):
+def cosigned_assembly_target(*, target_index, account, cosigner_signature):
     return AssemblyTarget(
         target_index=target_index,
-        kind="guarded",
-        auth_address=guarded_account,
-        user_signature=user_signature,
+        kind="bounded-cosigner",
+        auth_address=account,
+        base_signatures=["aabb"],
+        assembly_receipt="eeff",
         cosigner_signature=cosigner_signature,
-        user_source_request_id=user_source_request_id,
-        cosigner_source_request_id=cosigner_source_request_id,
-        guarded_runtime_args=runtime_args,
     )
 
 
@@ -896,10 +880,9 @@ class TestSpecializedLowLevelEndpoints:
                 request_id="sdk-assembly",
                 group_bytes_hex=["5458aa"],
                 targets=[
-                    guarded_assembly_target(
+                    cosigned_assembly_target(
                         target_index=0,
-                        guarded_account="GUARDED",
-                        user_signature="aabb",
+                        account="BOUNDED",
                         cosigner_signature="bbcc",
                     ),
                 ],
@@ -909,8 +892,8 @@ class TestSpecializedLowLevelEndpoints:
         assert mock_post.call_args.args[0] == "http://localhost:11270/sign/assemble"
         body = mock_post.call_args.kwargs["json"]
         assert body["request_id"].startswith("sdk-")
-        assert body["targets"][0]["kind"] == "guarded"
-        assert body["targets"][0]["auth_address"] == "GUARDED"
+        assert body["targets"][0]["kind"] == "bounded-cosigner"
+        assert body["targets"][0]["auth_address"] == "BOUNDED"
 
     def test_request_assemble_rejects_missing_coverage(self):
         client = make_client()
@@ -919,10 +902,9 @@ class TestSpecializedLowLevelEndpoints:
                 client.request_assemble(guarded_assembly_request(
                     group_bytes_hex=["5458aa", "5458bb"],
                     targets=[
-                        guarded_assembly_target(
+                        cosigned_assembly_target(
                             target_index=0,
-                            guarded_account="GUARDED",
-                            user_signature="aabb",
+                            account="BOUNDED",
                             cosigner_signature="bbcc",
                         ),
                     ],
@@ -1067,333 +1049,7 @@ def record_call_order(events, **mocks):
         mock.side_effect = side_effect
 
 
-class TestSignGuardedGroup:
-    def test_signs_one_guarded_target(self):
-        user = make_client()
-        cosigner = make_client("http://cosigner:11270")
-
-        user.request_components = MagicMock(return_value=component_response(
-            request_id="user-id",
-            signatures=[component_signature(0, "user-sig", KEY_TYPE_WITNESS_FALCON1024)],
-        ))
-        cosigner.request_components = MagicMock(return_value=component_response(
-            request_id="cosigner-id",
-            signatures=[component_signature(0, "cosigner-sig", KEY_TYPE_WITNESS_FALCON1024)],
-        ))
-
-        def assemble(req):
-            assert req.targets[0].user_signature == "user-sig"
-            assert req.targets[0].cosigner_signature == "cosigner-sig"
-            return assembly_response(
-                request_id=req.request_id or "assembly-id",
-                signed_group=["signed-guarded"],
-            )
-
-        user.request_assemble = MagicMock(side_effect=assemble)
-
-        result = sign_guarded_group(
-            user_client=user,
-            cosigner_client=cosigner,
-            cosigner_component_key="COSIGNER_COMPONENT",
-            group_bytes_hex=["5458aa"],
-            guarded_targets=[
-                GuardedSignTarget(
-                    target_index=0,
-                    guarded_account="GUARDED",
-                    logic_sig_resources=guarded_test_resources(),
-                )
-            ],
-        )
-
-        assert result.signed_group == ["signed-guarded"]
-        user_req = user.request_components.call_args.args[0]
-        assert user_req.targets[0]["kind"] == "user"
-        assert user_req.targets[0]["auth_address"] == "GUARDED"
-        cosigner_req = cosigner.request_components.call_args.args[0]
-        assert cosigner_req.targets[0]["kind"] == "cosigner"
-        assert cosigner_req.targets[0]["component_key"] == "COSIGNER_COMPONENT"
-
-    def test_batches_targets_for_shared_cosigner_key(self):
-        user = make_client()
-        cosigner = make_client("http://cosigner:11270")
-        user.request_components = MagicMock(return_value=component_response(
-            request_id="user-id",
-            signatures=[
-                component_signature(0, "user-0", KEY_TYPE_WITNESS_FALCON1024),
-                component_signature(1, "user-1", KEY_TYPE_WITNESS_FALCON1024),
-            ],
-        ))
-        cosigner.request_components = MagicMock(return_value=component_response(
-            request_id="cosigner-id",
-            signatures=[
-                component_signature(0, "cosigner-0", KEY_TYPE_WITNESS_FALCON1024),
-                component_signature(1, "cosigner-1", KEY_TYPE_WITNESS_FALCON1024),
-            ],
-        ))
-        user.request_assemble = MagicMock(return_value=assembly_response(
-            request_id="assembly-id",
-            signed_group=["signed-0", "signed-1"],
-        ))
-
-        sign_guarded_group(
-            user_client=user,
-            cosigner_client=cosigner,
-            cosigner_component_key="COSIGNER_COMPONENT",
-            group_bytes_hex=["5458aa", "5458bb"],
-            guarded_targets=[
-                GuardedSignTarget(
-                    target_index=0,
-                    guarded_account="GUARDED",
-                    logic_sig_resources=guarded_test_resources(),
-                ),
-                GuardedSignTarget(
-                    target_index=1,
-                    guarded_account="GUARDED",
-                    logic_sig_resources=guarded_test_resources(),
-                ),
-            ],
-        )
-
-        assert cosigner.request_components.call_count == 1
-        assert [target["target_index"] for target in cosigner.request_components.call_args.args[0].targets] == [0, 1]
-
-    @pytest.mark.parametrize("reject_sign", [False, True])
-    def test_mixed_primary_and_guarded_group(self, reject_sign):
-        user = make_client()
-        cosigner = make_client("http://cosigner:11270")
-        sender = sdk_test_address(7)
-        receiver = sdk_test_address(8)
-        params = transaction.SuggestedParams(
-            1000,
-            1,
-            100,
-            base64.b64encode(bytes(32)).decode(),
-            "testnet-v1.0",
-            flat_fee=True,
-        )
-        primary_txn = transaction.PaymentTxn(sender, params, receiver, 1000)
-        primary_hex, _ = encode_transaction(primary_txn)
-        logic_sig = transaction.LogicSigAccount(bytes.fromhex("033120320312"))
-        primary_signed = base64.b64decode(algo_encoding.msgpack_encode(
-            transaction.LogicSigTransaction(primary_txn, logic_sig)
-        )).hex()
-        user.request_components = MagicMock(return_value=component_response(
-            request_id="user-id",
-            signatures=[component_signature(1, "user-sig", KEY_TYPE_WITNESS_FALCON1024)],
-        ))
-        cosigner.request_components = MagicMock(return_value=component_response(
-            request_id="cosigner-id",
-            signatures=[component_signature(1, "cosigner-sig", KEY_TYPE_WITNESS_FALCON1024)],
-        ))
-        user.sign_requests = MagicMock(return_value=GroupSignResponse(
-            signed=[primary_signed, "", ""],
-        ))
-        if reject_sign:
-            user.sign_requests = MagicMock(
-                side_effect=SignerError("rejected by signer policy")
-            )
-
-        def assemble(req):
-            by_index = {item.target_index: item for item in req.passthrough}
-            assert set(by_index) == {0, 2}
-            assert by_index[0].signed_txn_hex == primary_signed
-            return assembly_response(
-                request_id="assembly-id",
-                signed_group=[primary_signed, "guarded-signed", "counterparty-signed"],
-            )
-
-        user.request_assemble = MagicMock(side_effect=assemble)
-
-        events = []
-        record_call_order(
-            events,
-            user=user.request_components,
-            cosigner=cosigner.request_components,
-            sign=user.sign_requests,
-            assemble=user.request_assemble,
-        )
-
-        def run():
-            return sign_guarded_group(
-                user_client=user,
-                cosigner_client=cosigner,
-                cosigner_component_key="COSIGNER_COMPONENT",
-                group_bytes_hex=[primary_hex, "5458bb", "5458cc"],
-                primary_targets=[
-                    GuardedPrimarySignTarget(
-                        target_index=0,
-                        auth_address="AUTH",
-                        app_call_info={"mode": "abi", "method": "primary()void"},
-                    ),
-                ],
-                guarded_targets=[
-                    GuardedSignTarget(
-                        target_index=1,
-                        guarded_account="GUARDED",
-                        logic_sig_resources=guarded_test_resources(),
-                    )
-                ],
-                passthrough=[{
-                    "target_index": 2,
-                    "signed_txn_hex": "counterparty-signed",
-                    "authorization": {
-                        "logic_sig_resources": {
-                            "program_bytes": 5000,
-                            "argument_bytes": 1200,
-                            "max_opcode_cost": 30000,
-                        },
-                    },
-                }],
-            )
-
-        if reject_sign:
-            with pytest.raises(SignerError, match="rejected by signer policy"):
-                run()
-            assert events == ["user", "sign"]
-            return
-        result = run()
-        assert events == ["user", "sign", "cosigner", "assemble"]
-
-        assert result.signed_group[1] == "guarded-signed"
-        sign_requests = user.sign_requests.call_args.args[0]
-        assert sign_requests[0]["auth_address"] == "AUTH"
-        assert "auth_address" not in sign_requests[1]
-        assert sign_requests[1]["lsig_resources"] == {
-            "program_bytes": 1612,
-            "argument_bytes": 1423,
-            "max_opcode_cost": 20000,
-        }
-        for client in (user, cosigner):
-            request = client.request_components.call_args.args[0]
-            primary_context = next(
-                item
-                for item in request.contextual_positions
-                if item["target_index"] == 0
-            )
-            assert primary_context["app_call_info"] == {
-                "mode": "abi",
-                "method": "primary()void",
-            }
-        assert sign_requests[2]["lsig_resources"] == {
-            "program_bytes": 5000,
-            "argument_bytes": 1200,
-            "max_opcode_cost": 30000,
-        }
-
-    def test_rejects_missing_resources_before_component_signing(self):
-        user = make_client()
-        user.request_components = MagicMock()
-
-        with pytest.raises(ValueError, match="LogicSig resources are unavailable"):
-            sign_guarded_group(
-                user_client=user,
-                group_bytes_hex=["5458aa"],
-                guarded_targets=[{
-                    "target_index": 0,
-                    "guarded_account": "GUARDED",
-                }],
-            )
-
-        user.request_components.assert_not_called()
-
-    def test_prepared_all_guarded_adds_dummies_without_plan_or_sign(self):
-        guarded = sdk_test_address(1)
-        receiver = sdk_test_address(2)
-        user = make_client()
-        cosigner = make_client("http://cosigner:11270")
-
-        user.request_components = MagicMock(return_value=component_response(
-            request_id="user-id",
-            signatures=[component_signature(0, "user-sig", KEY_TYPE_WITNESS_FALCON1024)],
-        ))
-        cosigner.request_components = MagicMock(return_value=component_response(
-            request_id="cosigner-id",
-            signatures=[component_signature(0, "cosigner-sig", KEY_TYPE_WITNESS_FALCON1024)],
-        ))
-        user.sign_requests = MagicMock(side_effect=AssertionError("all-guarded path must not call /sign"))
-
-        def assemble(req):
-            assert len(req.group_bytes_hex) == 2
-            assert len(req.passthrough) == 1
-            assert [item.target_index for item in req.passthrough] == [1]
-            assert all(item.signed_txn_hex for item in req.passthrough)
-            return assembly_response(
-                request_id="assembly-id",
-                signed_group=[signed_txn_hex(planned[0]), signed_txn_hex(planned[1])],
-            )
-
-        user.request_assemble = MagicMock(side_effect=assemble)
-
-        params = transaction.SuggestedParams(
-            1000,
-            1,
-            100,
-            base64.b64encode(bytes(32)).decode(),
-            "testnet-v1.0",
-            flat_fee=True,
-        )
-        txn = transaction.PaymentTxn(guarded, params, receiver, 1000)
-        planned = [copy.deepcopy(txn), create_guarded_dummies(txn, 1)[0]]
-        transaction.assign_group_id(planned)
-        user.plan_requests = MagicMock(
-            return_value={
-                "transactions": [encode_transaction(item)[0] for item in planned],
-                "mutations": {
-                    "dummies_added": 1,
-                    "group_id_changed": True,
-                    "fees_modified": [],
-                    "total_fees_delta": 0,
-                    "original_count": 1,
-                    "final_count": 2,
-                },
-            }
-        )
-
-        def signed_txn_hex(inner):
-            logic_sig = transaction.LogicSigAccount(bytes.fromhex("033120320312"))
-            encoded = algo_encoding.msgpack_encode(
-                transaction.LogicSigTransaction(inner, logic_sig)
-            )
-            return base64.b64decode(encoded).hex()
-
-        result = sign_prepared_guarded_group(
-            user_client=user,
-            cosigner_client=cosigner,
-            cosigner_component_key="COSIGNER_COMPONENT",
-            prepared_group=PreparedGroup([
-                PreparedTransaction(
-                    transaction=txn,
-                    auth_address=guarded,
-                    app_call_info={"mode": "raw"},
-                    signer_key=KeyInfo(
-                        address=guarded,
-                        key_type=KEY_TYPE_GUARDED_FALCON1024_COSIGNER1024,
-                        signing_flow=SIGNING_FLOW_COSIGNER1,
-                        cosigner_component_key_type=KEY_TYPE_WITNESS_FALCON1024,
-                        logic_sig_resources=LogicSigResourceProfile(
-                            spend=LogicSigResourceUsage(1612, 1423, 20000)
-                        ),
-                        parameters={"cosigner_public_key": "aabbcc"},
-                    ),
-                )
-            ]),
-        )
-
-        assert len(result.signed_group) == 2
-        assert result.primary_sign_response is None
-        for client in (user, cosigner):
-            request = client.request_components.call_args.args[0]
-            assert request.contextual_positions is None
-            assert request.dummy_positions == [{"target_index": 1}]
-            assert request.targets[0]["app_call_info"] == {"mode": "raw"}
-        user.plan_requests.assert_called_once()
-        user_req = user.request_components.call_args.args[0]
-        assert user_req.targets[0]["auth_address"] == guarded
-        assert len(user_req.group_bytes_hex) == 2
-        cosigner_req = cosigner.request_components.call_args.args[0]
-        assert cosigner_req.targets[0]["component_key"] == "COSIGNER_COMPONENT"
-        assert len(cosigner_req.group_bytes_hex) == 2
-
+class TestSignPreparedGuardedGroup:
     def test_prepared_plan_preserves_per_slot_args_for_repeated_auth_address(self):
         guarded = sdk_test_address(31)
         receiver = sdk_test_address(32)
@@ -1408,13 +1064,31 @@ class TestSignGuardedGroup:
         )
         signer_key = KeyInfo(
             address=guarded,
-            key_type=KEY_TYPE_GUARDED_FALCON1024_COSIGNER1024,
-            signing_flow=SIGNING_FLOW_COSIGNER1,
+            key_type="aplane.falcon1024.v1",
+            signing_flow=SIGNING_FLOW_COSIGNED1,
             cosigner_component_key_type=KEY_TYPE_WITNESS_FALCON1024,
             logic_sig_resources=LogicSigResourceProfile(
                 spend=LogicSigResourceUsage(1612, 1423, 20000)
             ),
-            parameters={"cosigner_public_key": "aabbcc"},
+            bounded_authorization=BoundedAuthorizationInfo(
+                contract="plain1",
+                base_signature_arg_layout=BoundedSignatureArgLayout(count=1, max_sizes=[1280]),
+                spend_effects=[],
+                max_fee=None,
+                rekey="refused",
+                runtime_args=[],
+                derived_args=[],
+                argument_layout=[],
+                layer3_policy="none",
+                cosigner=BoundedCosignerAuthorizationInfo(
+                    contract="cosigner1",
+                    component_key_type=KEY_TYPE_WITNESS_FALCON1024,
+                    public_key_hex="aabbcc",
+                    component_key_id="",
+                    signature_max_size=1423,
+                    required_on=["spend"],
+                ),
+            ),
         )
 
         def assert_per_slot_requests(requests):
@@ -1446,7 +1120,7 @@ class TestSignGuardedGroup:
             ),
         ])
 
-        with pytest.raises(SignerError, match="stop after per-slot plan assertion"):
+        with pytest.raises(RuntimeError, match="stop after per-slot plan assertion"):
             sign_prepared_guarded_group(user_client=user, prepared_group=prepared)
 
     def test_bounded_component_plan_rejects_unreported_changes_and_bad_dummies(self):
@@ -1583,36 +1257,23 @@ class TestSignGuardedGroup:
                 ],
             })
 
-        with pytest.raises(ValueError, match="cannot mix cosigner1 and cosigned1"):
-            sign_prepared_guarded_group(
-                user_client=make_client(),
-                prepared_group=PreparedGroup([
-                    PreparedTransaction(
-                        signer_key=KeyInfo(
-                            address="bounded",
-                            key_type="bounded",
-                            signing_flow=SIGNING_FLOW_COSIGNED1,
-                        )
-                    ),
-                    PreparedTransaction(
-                        signer_key=KeyInfo(
-                            address="guarded",
-                            key_type="guarded",
-                            signing_flow=SIGNING_FLOW_COSIGNER1,
-                        )
-                    ),
-                ]),
-            )
-
         user = make_client()
         user.get_key_info = MagicMock(
             side_effect=AuthenticationError("Not authenticated: connect through an enrolled SSH key")
+        )
+        params = transaction.SuggestedParams(
+            1000, 1, 100, base64.b64encode(bytes(32)).decode(), "testnet-v1.0", flat_fee=True
         )
         with pytest.raises(AuthenticationError):
             sign_prepared_guarded_group(
                 user_client=user,
                 prepared_group=PreparedGroup([
-                    PreparedTransaction(auth_address=sdk_test_address(24))
+                    PreparedTransaction(
+                        transaction=transaction.PaymentTxn(
+                            sdk_test_address(24), params, sdk_test_address(25), 1
+                        ),
+                        auth_address=sdk_test_address(24),
+                    )
                 ]),
             )
 
@@ -1862,7 +1523,6 @@ class TestSignGuardedGroup:
         )
 
         assert result.signed_group == [signed_txn_hex(txn)]
-        assert result.assembly_response is None
         assert result.bounded_component_response is not None
         assert result.bounded_assembly_response is not None
         cosigner_req = cosigner.request_components.call_args.args[0]
@@ -2075,115 +1735,48 @@ class TestSignGuardedGroup:
                 ]),
             )
 
+    def test_prepared_group_refuses_cosigner1_as_unknown_flow(self):
+        """cosigner1, the retired dedicated cosigned flow, fails closed before any request."""
+        account = sdk_test_address(1)
+        user = make_client()
+        params = transaction.SuggestedParams(
+            1000,
+            1,
+            100,
+            base64.b64encode(bytes(32)).decode(),
+            "testnet-v1.0",
+            flat_fee=True,
+        )
+        txn = transaction.PaymentTxn(account, params, sdk_test_address(2), 1000)
+        with patch.object(user.session, "post") as mock_post, patch.object(
+            user.session, "get"
+        ) as mock_get:
+            with pytest.raises(ValueError, match="signing flow 'cosigner1', which this SDK does not support"):
+                sign_prepared_guarded_group(
+                    user_client=user,
+                    prepared_group=PreparedGroup([
+                        PreparedTransaction(
+                            transaction=txn,
+                            auth_address=account,
+                            signer_key=KeyInfo(
+                                address=account,
+                                key_type="aplane.falcon1024-cosigner1024.v1",
+                                signing_flow="cosigner1",
+                                cosigner_component_key_type=KEY_TYPE_WITNESS_FALCON1024,
+                                logic_sig_resources=LogicSigResourceProfile(
+                                    spend=LogicSigResourceUsage(1612, 1423, 20000)
+                                ),
+                            ),
+                        )
+                    ]),
+                )
+        mock_post.assert_not_called()
+        mock_get.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # plan_group
 # ---------------------------------------------------------------------------
-
-class TestNormalizeGuardedPassthroughItem:
-    """Typed instances are normalized, not trusted.
-
-    A caller can build GuardedPassthroughItem and GuardedPassthroughAuthorization
-    directly and still leave a nested value as a plain dict. Skipping
-    normalization for typed instances let those dicts reach attribute-based
-    validation and raise AttributeError; unknown or missing top-level keys
-    leaked TypeError from the dataclass constructor. Both must be ValueError.
-    """
-
-    def _valid_resources_dict(self):
-        return {"program_bytes": 5000, "argument_bytes": 1200, "max_opcode_cost": 30000}
-
-    def test_typed_instance_with_dict_resources_is_normalized(self):
-        item = GuardedPassthroughItem(
-            target_index=2,
-            signed_txn_hex="abcd",
-            authorization=GuardedPassthroughAuthorization(
-                logic_sig_resources=self._valid_resources_dict()
-            ),
-        )
-        normalized = _normalize_guarded_passthrough_item(item)
-        assert isinstance(
-            normalized.authorization.logic_sig_resources, LogicSigResourceUsage
-        )
-        assert normalized.authorization.logic_sig_resources.program_bytes == 5000
-        assert normalized.target_index == 2
-        assert normalized.signed_txn_hex == "abcd"
-
-    def test_typed_instance_with_invalid_dict_resources_raises_value_error(self):
-        item = GuardedPassthroughItem(
-            target_index=0,
-            signed_txn_hex="abcd",
-            authorization=GuardedPassthroughAuthorization(
-                logic_sig_resources={"program_bytes": 5000}
-            ),
-        )
-        with pytest.raises(ValueError, match="LogicSig resources are invalid"):
-            _normalize_guarded_passthrough_item(item)
-
-    def test_typed_instance_with_out_of_bounds_resources_raises_value_error(self):
-        item = GuardedPassthroughItem(
-            target_index=0,
-            signed_txn_hex="abcd",
-            authorization=GuardedPassthroughAuthorization(
-                logic_sig_resources=LogicSigResourceUsage(0, 1200, 30000)
-            ),
-        )
-        with pytest.raises(ValueError, match="LogicSig resources are invalid"):
-            _normalize_guarded_passthrough_item(item)
-
-    def test_typed_instance_preserves_pq_scheme_and_absent_resources(self):
-        item = GuardedPassthroughItem(
-            target_index=1,
-            signed_txn_hex="abcd",
-            authorization=GuardedPassthroughAuthorization(pq_scheme=PQ_SCHEME_FALCON1024),
-        )
-        normalized = _normalize_guarded_passthrough_item(item)
-        assert normalized.authorization.pq_scheme == PQ_SCHEME_FALCON1024
-        assert normalized.authorization.logic_sig_resources is None
-
-    def test_typed_instance_without_authorization_stays_none(self):
-        normalized = _normalize_guarded_passthrough_item(
-            GuardedPassthroughItem(target_index=0, signed_txn_hex="abcd")
-        )
-        assert normalized.authorization is None
-
-    def test_dict_with_unknown_top_level_field_raises_value_error(self):
-        with pytest.raises(ValueError, match="unknown fields: target_indx"):
-            _normalize_guarded_passthrough_item({
-                "target_indx": 2,
-                "signed_txn_hex": "abcd",
-            })
-
-    def test_dict_missing_required_field_raises_value_error(self):
-        with pytest.raises(ValueError, match="missing fields: signed_txn_hex"):
-            _normalize_guarded_passthrough_item({"target_index": 2})
-
-    def test_dict_with_unknown_authorization_field_raises_value_error(self):
-        with pytest.raises(ValueError, match="authorization has unknown fields"):
-            _normalize_guarded_passthrough_item({
-                "target_index": 2,
-                "signed_txn_hex": "abcd",
-                "authorization": {"pq_scheme": "f1", "extra": 1},
-            })
-
-    def test_non_object_authorization_raises_value_error(self):
-        with pytest.raises(ValueError, match="authorization must be an object"):
-            _normalize_guarded_passthrough_item(
-                GuardedPassthroughItem(
-                    target_index=0, signed_txn_hex="abcd", authorization="f1"
-                )
-            )
-
-    def test_dict_item_normalizes_nested_resources(self):
-        normalized = _normalize_guarded_passthrough_item({
-            "target_index": 3,
-            "signed_txn_hex": "abcd",
-            "authorization": {"logic_sig_resources": self._valid_resources_dict()},
-        })
-        assert normalized.authorization.logic_sig_resources == LogicSigResourceUsage(
-            5000, 1200, 30000
-        )
-
 
 class TestPlanGroup:
     def _make_mock_txn(self, sender="SENDER_ADDR"):
@@ -2292,7 +1885,7 @@ class TestClientSideSignedSimulation:
 
     def test_guarded_requires_algod_before_signing(self):
         with pytest.raises(ValueError, match="algod_client is required"):
-            simulate_guarded_group(None)
+            simulate_prepared_guarded_group(None)
 
 
 class TestConfigAndConstruction:
@@ -3800,3 +3393,49 @@ class TestApplyPrepFee:
         p = _FeeParams()
         _apply_prep_fee(p, None)
         assert p.fee == 7 and p.flat_fee is False
+
+
+def _bounded_info(contract, max_fee):
+    from aplanesdk.signer import BoundedAuthorizationInfo, BoundedSignatureArgLayout
+
+    return BoundedAuthorizationInfo(
+        contract=contract,
+        base_signature_arg_layout=BoundedSignatureArgLayout(1, [1280]),
+        spend_effects=[],
+        max_fee=max_fee,
+        rekey="refused",
+        runtime_args=[],
+        derived_args=[],
+        argument_layout=[],
+        layer3_policy="none",
+    )
+
+
+@pytest.mark.parametrize(
+    ("contract", "max_fee", "ceiling", "error"),
+    [
+        ("bounded2", 10_000, 10_000, None),
+        ("bounded2", None, None, "has no max_fee"),
+        ("plain1", None, None, None),
+        ("plain1", 0, None, "never has"),
+        ("bounded3", 1, None, "not supported"),
+    ],
+)
+def test_bounded_fee_ceiling_follows_the_contract(contract, max_fee, ceiling, error):
+    from aplanesdk.signer import _bounded_fee_ceiling
+
+    info = _bounded_info(contract, max_fee)
+    if error:
+        with pytest.raises(SignerError, match=error):
+            _bounded_fee_ceiling(info)
+    else:
+        assert _bounded_fee_ceiling(info) == ceiling
+
+
+def test_bounded_authorization_parses_an_absent_fee_ceiling():
+    from aplanesdk.signer import _parse_bounded_authorization
+
+    info = _parse_bounded_authorization({"contract": "plain1", "rekey": "refused", "layer3_policy": "none"})
+    assert info is not None and info.max_fee is None
+    with pytest.raises(SignerError, match="non-negative integer"):
+        _parse_bounded_authorization({"contract": "bounded2", "max_fee": -1})

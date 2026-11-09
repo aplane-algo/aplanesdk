@@ -8,14 +8,6 @@ import { SignerError } from "./errors.js";
  * Runtime argument specification for a generic LogicSig.
  * Position in the array corresponds to the TEAL arg index.
  */
-/**
- * Signing choreography label for the cosigner co-signed component flow (one
- * user plus one cosigner component signature per target, assembled via
- * /sign/assemble). Signer inventory labels guarded keys with this flow;
- * clients route on the label and must fail fast on flow labels they do not
- * implement. An empty signing_flow means the ordinary /sign path.
- */
-export const SIGNING_FLOW_COSIGNER1 = "cosigner1";
 export const SIGNING_FLOW_BOUNDED1 = "bounded1";
 /**
  * Cosigned account choreography: a target may be a spend or a rekey, and each
@@ -23,6 +15,11 @@ export const SIGNING_FLOW_BOUNDED1 = "bounded1";
  * cosigner component. It replaces bounded-cosigner1, which carried spends only.
  */
 export const SIGNING_FLOW_COSIGNED1 = "cosigned1";
+
+/** A bounded host's contract: it has a fee ceiling. */
+export const BOUNDED_CONTRACT_BOUNDED2 = "bounded2";
+/** A plain host's contract: it has no fee ceiling. */
+export const BOUNDED_CONTRACT_PLAIN1 = "plain1";
 /**
  * Rotating account choreography (/sign/rotating/prepare then
  * /sign/rotating/sign), in which the signer rekeys the account to a fresh
@@ -32,8 +29,6 @@ export const SIGNING_FLOW_COSIGNED1 = "cosigned1";
 export const SIGNING_FLOW_ROTATING1 = "rotating1";
 
 export const KEY_TYPE_WITNESS_FALCON1024 = "aplane.witness-falcon1024.v1";
-export const KEY_TYPE_GUARDED_FALCON1024_COSIGNER1024 =
-  "aplane.falcon1024-cosigner1024.v1";
 export const PQ_SCHEME_FALCON1024 = "f1";
 
 export const AUTHORIZATION_KIND_ED25519 = "ed25519";
@@ -159,7 +154,8 @@ export interface BoundedAuthorizationInfo {
   contract: string;
   baseSignatureArgLayout: BoundedSignatureArgLayout;
   spendEffects: string[];
-  maxFee: number;
+  /** A bounded host's fee ceiling; absent on a plain host, which has none. */
+  maxFee?: number;
   /** "refused" or "spending_key" */
   rekey: string;
   /** With rekey "refused": "only these", a rekey may go only to a listed address. */
@@ -187,9 +183,9 @@ export interface KeyInfo {
    * accounts. Never infer Ed25519 from an absent value.
    */
   authorizationKind?: AuthorizationKind;
-  /** Signing choreography label (e.g. "cosigner1"); empty/absent = plain /sign path */
+  /** Signing choreography label (e.g. "cosigned1"); empty/absent = plain /sign path */
   signingFlow?: string;
-  /** Cosigner component key type for signing flow "cosigner1" */
+  /** Cosigner component key type for signing flow "cosigned1" */
   cosignerComponentKeyType?: string;
   /** Independent LogicSig resources by authorization path. */
   logicSigResources?: LogicSigResourceProfile;
@@ -370,12 +366,17 @@ export interface KeyTypeInfo {
   mnemonicImport?: boolean;
   /** Mnemonic scheme name */
   mnemonicScheme?: string;
-  /** Signing choreography label (e.g. "cosigner1"); empty/absent = plain /sign path */
+  /** Signing choreography label (e.g. "cosigned1"); empty/absent = plain /sign path */
   signingFlow?: string;
-  /** Cosigner component key type for signing flow "cosigner1" */
+  /** Cosigner component key type for signing flow "cosigned1" */
   cosignerComponentKeyType?: string;
   /** Each account selects its own contract; route by /keys, not this type */
   perKeyContract?: boolean;
+  /**
+   * The boundary file grammar a per-key type's requests take ("aplane.boundary.v1");
+   * absent for one that takes none, such as a plain host.
+   */
+  boundarySchema?: string;
   /** Definition-level transaction-authorization capability */
   boundedAuthorization?: BoundedAuthorizationInfo;
   /** Creation parameters */
@@ -604,7 +605,7 @@ export interface CancelSignResponse {
   error?: string;
 }
 
-export type ComponentTargetKind = "user" | "cosigner" | "bounded-base";
+export type ComponentTargetKind = "cosigner" | "bounded-base";
 
 export interface ComponentRequest {
   request_id?: string;
@@ -659,22 +660,19 @@ export interface ComponentResponse {
   components: Component[];
 }
 
-export type AssemblyTargetKind = "guarded" | "bounded-cosigner";
+export type AssemblyTargetKind = "bounded-cosigner";
 
 export interface AssemblyTarget {
   target_index: number;
   kind: AssemblyTargetKind;
   auth_address: string;
-  user_signature?: string;
-  user_source_request_id?: string;
-  guarded_runtime_args?: string[];
   base_signatures?: string[];
   bounded_runtime_args?: Record<string, string>;
   assembly_receipt?: string;
   base_source_request_id?: string;
   /**
-   * Required on a guarded target and on every bounded-cosigner target except a
-   * listed rekey, which takes none.
+   * Required on every bounded-cosigner target except a listed rekey, which
+   * takes none.
    */
   cosigner_signature?: string;
   cosigner_source_request_id?: string;

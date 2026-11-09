@@ -373,10 +373,9 @@ if err != nil {
 |----------|-------------|-------|
 | `ed25519` | Native Algorand keys | Standard signing |
 | `falcon1024` | Native post-quantum keys | Protocol-native Falcon-1024 signature (`PQsig`) |
-| `aplane.falcon1024.v1` | Post-quantum LogicSig | Library-visible; enable before generating. Signature in LogicSig.Args[0] |
-| `aplane.ed25519.v1` | Ed25519 DSA LogicSig | Library-visible plain DSA account |
+| `aplane.falcon1024.v1` | Post-quantum plain host | Library-visible; `plain1` contract, no host rules or fee ceiling; `cosigned1` signing flow with a cosigner, `bounded1` without one |
+| `aplane.ed25519.v1` | Ed25519 plain host | Library-visible, like `aplane.falcon1024.v1`; the spending key is classical |
 | `aplane.witness-falcon1024.v1` | Witness key | Cosigner-custodied policy signature key; not a spending account |
-| `aplane.falcon1024-cosigner1024.v1` | Guarded account | Requires user and cosigner component signatures |
 | `aplane.falcon1024-b.v1` | General bounded account | `bounded2` contract; `bounded1` signing flow, or `cosigned1` when it embeds a cosigner |
 | `aplane.htlc.v1` | Hash-locked funds | Requires `preimage` arg |
 
@@ -387,73 +386,24 @@ it; until then generation fails with "key type ... is not enabled on this
 node". Enablement gates only creating keys: existing keys of a disabled type
 keep signing.
 
-## Cosigner And Guarded Accounts
+## Cosigner And Cosigned Accounts
 
 Witness keys enrolled as cosigners use 52-character public selectors for policy-signature
 keys. They are not Algorand spending accounts and must not be used as senders,
-receivers, auth addresses, or rekey targets. Guarded account keys embed the
-cosigner public key and are assembled through `/sign/assemble`; ordinary `/sign`
-is not sufficient for guarded slots.
-
-Use the low-level methods when your application owns the orchestration:
-
-```go
-userPart, err := userClient.RequestComponents(aplane.ComponentRequest{
-	GroupBytesHex: []string{"5458..."},
-	Targets: []aplane.ComponentTarget{{
-		TargetIndex: 0,
-		Kind: aplane.ComponentTargetKindUser,
-		AuthAddress: "GUARDED_ACCOUNT_ADDRESS",
-	}},
-})
-
-cosignerPart, err := cosignerClient.RequestComponents(aplane.ComponentRequest{
-	GroupBytesHex: []string{"5458..."},
-	Targets: []aplane.ComponentTarget{{
-		TargetIndex: 0,
-		Kind: aplane.ComponentTargetKindCosigner,
-		ComponentKey: "COSIGNER_COMPONENT_SELECTOR",
-	}},
-})
-
-assembled, err := userClient.RequestAssemble(aplane.AssemblyRequest{
-	GroupBytesHex: []string{"5458..."},
-	Targets: []aplane.AssemblyTarget{{
-		TargetIndex:     0,
-		Kind:            aplane.AssemblyTargetKindGuarded,
-		AuthAddress:     "GUARDED_ACCOUNT_ADDRESS",
-		UserSignature:   userPart.Components[0].Signature,
-		CosignerSignature: cosignerPart.Components[0].Signature,
-	}},
-})
-```
-
-For the common explicit two-client flow, use `SignGuardedGroup`. The direct
-helper does not perform inventory discovery, so pass the reviewed spend-path
-resource profile returned by `ListKeys`:
-
-```go
-result, err := aplane.SignGuardedGroup(aplane.GuardedSignOptions{
-	UserClient:         userClient,
-	CosignerClient:       cosignerClient,
-	CosignerComponentKey: "COSIGNER_COMPONENT_SELECTOR",
-	GroupBytesHex:      []string{"5458..."},
-	Targets: []aplane.GuardedSignTarget{{
-		TargetIndex:       0,
-		GuardedAccount:    "GUARDED_ACCOUNT_ADDRESS",
-		LogicSigResources: reviewedSpendResources,
-	}},
-})
-signedGroup := result.SignedGroup
-```
+receivers, auth addresses, or rekey targets. A cosigned account (signing flow
+`cosigned1`) embeds the cosigner public key and is assembled through
+`/sign/assemble`; ordinary `/sign` is not sufficient for its slots. Sign it with
+`SignPreparedGuardedGroup`, below. `RequestComponents` and `RequestAssemble` are
+the low-level calls that helper makes, for applications that own the
+orchestration.
 
 `AssembleGroup` is still the local multi-party concatenation helper. It is not
 the same operation as server-side `RequestAssemble`.
 
 ### Bounded Cosigner Accounts
 
-Corridor uses the bounded contract `bounded2` with the distinct
-`cosigned1` online signing flow, which carries spends and rekeys. A rekey to
+Corridor uses the bounded contract `bounded2`, and a cosigned plain host
+`plain1`, with the distinct `cosigned1` online signing flow, which carries spends and rekeys. A rekey to
 an address on the account's rekey-to list needs no cosigner: the signer's base
 component names its `path`, and the helper skips the cosigner for it. The contract identifies the LogicSig
 rules; the flow identifies the user-first multi-endpoint choreography. The
@@ -487,11 +437,11 @@ approval-bearing request is canceled or times out. `RequestAssemble`
 does not open an approval request and is not a cancellation handle.
 
 The signer planner owns fee selection, authorization-resource sizing, and any
-reported group mutations for both guarded flows.
+reported group mutations for the cosigned flow.
 
 Applications that own orchestration can call `RequestComponents` and
-`RequestAssemble` directly. Cosigner authorization is spend-only in this
-contract.
+`RequestAssemble` directly. The cosigner signs spends and
+cosigned rekeys, never a rekey to a listed address.
 
 ## Error Handling
 

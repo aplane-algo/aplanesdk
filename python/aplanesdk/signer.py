@@ -118,12 +118,16 @@ AUTHORIZATION_KIND_LOGIC_SIG = "logic_sig"
 # /sign/assemble). Signer inventory labels guarded keys with this flow;
 # clients route on the label and must fail fast on flow labels they do not
 # implement. An empty signing_flow means the ordinary /sign path.
-SIGNING_FLOW_COSIGNER1 = "cosigner1"
 SIGNING_FLOW_BOUNDED1 = "bounded1"
 # The cosigned account choreography: a target may be a spend or a rekey, and each
 # base component names the path the signer classified. A listed rekey takes no
 # cosigner component. It replaces bounded-cosigner1, which carried spends only.
 SIGNING_FLOW_COSIGNED1 = "cosigned1"
+
+# Bounded authorization contracts this SDK signs for: a bounded host, with a
+# fee ceiling, and a plain host, which has none.
+BOUNDED_CONTRACT_BOUNDED2 = "bounded2"
+BOUNDED_CONTRACT_PLAIN1 = "plain1"
 # Rotating account choreography (/sign/rotating/prepare then
 # /sign/rotating/sign), in which the signer rekeys the account to a fresh
 # stage on every spend. This SDK does not implement it; keys labelled with
@@ -131,7 +135,6 @@ SIGNING_FLOW_COSIGNED1 = "cosigned1"
 SIGNING_FLOW_ROTATING1 = "rotating1"
 
 KEY_TYPE_WITNESS_FALCON1024 = "aplane.witness-falcon1024.v1"
-KEY_TYPE_GUARDED_FALCON1024_COSIGNER1024 = "aplane.falcon1024-cosigner1024.v1"
 
 
 def _resolve_data_dir(data_dir: Optional[str]) -> str:
@@ -350,7 +353,7 @@ class BoundedAuthorizationInfo:
     contract: str
     base_signature_arg_layout: BoundedSignatureArgLayout
     spend_effects: List[str]
-    max_fee: int
+    max_fee: Optional[int]  # None on a plain host, which has no fee ceiling
     rekey: str  # "refused" or "spending_key"
     runtime_args: List[RuntimeArg]
     derived_args: List[BoundedDerivedArgInfo]
@@ -371,8 +374,8 @@ class KeyInfo:
     # Account authorization envelope; empty when the signer does not report it
     # or the key is not a spending account. Never infer ed25519 from empty.
     authorization_kind: str = ""
-    signing_flow: str = ""  # Signing choreography label (e.g. "cosigner1"); empty = plain /sign
-    cosigner_component_key_type: str = ""  # Cosigner component key type for signing flow "cosigner1"
+    signing_flow: str = ""  # Signing choreography label (e.g. "cosigned1"); empty = plain /sign
+    cosigner_component_key_type: str = ""  # Cosigner component key type for signing flow "cosigned1"
     logic_sig_resources: Optional[LogicSigResourceProfile] = None
     is_generic_lsig: bool = False
     is_witness_key: bool = False
@@ -473,9 +476,12 @@ class KeyTypeInfo:
     mnemonic_word_count: int = 0
     mnemonic_import: bool = False
     mnemonic_scheme: str = ""
-    signing_flow: str = ""  # Signing choreography label (e.g. "cosigner1"); empty = plain /sign
-    cosigner_component_key_type: str = ""  # Cosigner component key type for signing flow "cosigner1"
+    signing_flow: str = ""  # Signing choreography label (e.g. "cosigned1"); empty = plain /sign
+    cosigner_component_key_type: str = ""  # Cosigner component key type for signing flow "cosigned1"
     per_key_contract: bool = False  # Each account selects its own contract; route by /keys
+    # The boundary file grammar a per-key type's requests take ("aplane.boundary.v1"),
+    # or "" for one that takes none, such as a plain host.
+    boundary_schema: str = ""
     bounded_authorization: Optional[BoundedAuthorizationInfo] = None
     creation_params: Optional[List[CreationParam]] = None
     runtime_args: Optional[List[RuntimeArg]] = None
@@ -638,7 +644,6 @@ class SimulationResult:
     failed: bool = False
 
 
-COMPONENT_TARGET_KIND_USER = "user"
 COMPONENT_TARGET_KIND_COSIGNER = "cosigner"
 COMPONENT_TARGET_KIND_BOUNDED_BASE = "bounded-base"
 # Bounded-base component paths: the path the signer classified a target on. A
@@ -673,7 +678,6 @@ class ComponentResponse:
     components: List[Dict[str, Any]]
 
 
-ASSEMBLY_TARGET_KIND_GUARDED = "guarded"
 ASSEMBLY_TARGET_KIND_BOUNDED_COSIGNER = "bounded-cosigner"
 
 
@@ -684,12 +688,9 @@ class AssemblyTarget:
     target_index: int
     kind: str
     auth_address: str
-    # Required on a guarded target and on every bounded-cosigner target except
-    # a listed rekey, which takes none.
+    # Required on every bounded-cosigner target except a listed rekey, which
+    # takes none.
     cosigner_signature: str = ""
-    user_signature: str = ""
-    user_source_request_id: str = ""
-    guarded_runtime_args: Optional[List[str]] = None
     base_signatures: Optional[List[str]] = None
     bounded_runtime_args: Optional[Dict[str, str]] = None
     assembly_receipt: str = ""
@@ -783,38 +784,11 @@ class GuardedPassthroughItem:
 
 
 @dataclass
-class GuardedSignTarget:
-    """One guarded-account slot for the high-level guarded signing helper"""
-
-    target_index: int
-    guarded_account: str
-    logic_sig_resources: LogicSigResourceUsage
-    cosigner_public_key_hex: str = ""
-    cosigner_component_key_type: str = ""
-    cosigner_component_key: str = ""
-    runtime_args: Optional[List[str]] = None
-    app_call_info: Optional[Dict[str, str]] = None
-
-
-@dataclass
-class GuardedPrimarySignTarget:
-    """One non-guarded slot signed by the primary/user signer before assembly"""
-
-    target_index: int
-    auth_address: str
-    txn_sender: str = ""
-    lsig_args: Optional[Dict[str, str]] = None
-    app_call_info: Optional[Dict[str, str]] = None
-
-
-@dataclass
 class GuardedSignResult:
-    """Result from sign_guarded_group"""
+    """Result from sign_prepared_guarded_group"""
 
     signed_group: List[str]
-    user_component_responses: List[ComponentResponse]
     cosigner_component_responses: List[ComponentResponse]
-    assembly_response: Optional[AssemblyResponse]
     primary_sign_response: Optional[GroupSignResponse] = None
     bounded_component_response: Optional[ComponentResponse] = None
     bounded_assembly_response: Optional[AssemblyResponse] = None
@@ -1039,7 +1013,6 @@ def _validate_endpoint_alias(alias: str) -> None:
         raise SignerError(
             f"alias \"{alias}\" must contain only ASCII letters, digits, '.', '_', or '-'"
         )
-
 
 
 def _normalize_client_endpoint(
@@ -1441,29 +1414,6 @@ def _normalize_guarded_passthrough_authorization(
     )
 
 
-def _normalize_guarded_passthrough_item(item: Any) -> GuardedPassthroughItem:
-    # Typed instances are normalized too, not passed through: their nested
-    # fields are only as well-formed as the caller made them.
-    if isinstance(item, GuardedPassthroughItem):
-        return GuardedPassthroughItem(
-            target_index=item.target_index,
-            signed_txn_hex=item.signed_txn_hex,
-            authorization=_normalize_guarded_passthrough_authorization(item.authorization),
-        )
-    data = _compact_payload(item)
-    if not isinstance(data, dict):
-        raise ValueError("guarded passthrough item must be an object")
-    authorization = _normalize_guarded_passthrough_authorization(data.pop("authorization", None))
-    expected = {"target_index", "signed_txn_hex"}
-    unknown = sorted(set(data) - expected)
-    if unknown:
-        raise ValueError(f"guarded passthrough item has unknown fields: {', '.join(unknown)}")
-    missing = sorted(expected - set(data))
-    if missing:
-        raise ValueError(f"guarded passthrough item is missing fields: {', '.join(missing)}")
-    return GuardedPassthroughItem(authorization=authorization, **data)
-
-
 def _sign_request_mode(entry: Dict[str, Any]) -> str:
     has_passthrough = bool(entry.get("signed_txn_hex"))
     has_txn = bool(entry.get("txn_bytes_hex"))
@@ -1590,14 +1540,6 @@ def _component_path_resources(
     return LogicSigResourceUsage(**vars(selected))
 
 
-def _required_prepared_resources(
-    key: Optional[KeyInfo],
-    txn: Optional[transaction.Transaction],
-    label: str,
-) -> LogicSigResourceUsage:
-    return _require_lsig_resources(_selected_prepared_resources(key, txn), label)
-
-
 def _prepared_foreign_pq_scheme(
     key: Optional[KeyInfo],
     resources: Optional[LogicSigResourceUsage],
@@ -1623,10 +1565,12 @@ def _prepared_foreign_pq_scheme(
 def _parse_bounded_authorization(data: Any) -> Optional[BoundedAuthorizationInfo]:
     if not isinstance(data, dict):
         return None
-    if "max_fee" not in data:
-        raise SignerError("invalid bounded_authorization: max_fee is required")
-    max_fee = data["max_fee"]
-    if isinstance(max_fee, bool) or not isinstance(max_fee, int) or max_fee < 0:
+    # A plain host has no fee ceiling, so max_fee may be absent; signing checks
+    # that the contract agrees (_bounded_fee_ceiling).
+    max_fee = data.get("max_fee")
+    if max_fee is not None and (
+        isinstance(max_fee, bool) or not isinstance(max_fee, int) or max_fee < 0
+    ):
         raise SignerError("invalid bounded_authorization: max_fee must be a non-negative integer")
     layout = data.get("base_signature_arg_layout") or {}
     runtime_args = data.get("runtime_args") or []
@@ -1738,21 +1682,9 @@ def _validate_assembly_request(data: Dict[str, Any]) -> None:
         if not target.get("cosigner_signature") and target.get("cosigner_source_request_id"):
             raise ValueError(f"target {i}: cosigner_source_request_id needs a cosigner_signature")
         kind = target.get("kind")
-        if kind == ASSEMBLY_TARGET_KIND_GUARDED:
-            if not target.get("cosigner_signature"):
-                raise ValueError(f"target {i}: cosigner_signature is required for guarded target")
-            if not target.get("user_signature"):
-                raise ValueError(f"target {i}: user_signature is required for guarded target")
-            if (target.get("base_signatures") or target.get("bounded_runtime_args")
-                    or target.get("assembly_receipt") or target.get("base_source_request_id")):
-                raise ValueError(f"target {i}: bounded authorization material is forbidden for guarded target")
-            _validate_sign_request_id(str(target.get("user_source_request_id", "")))
-        elif kind == ASSEMBLY_TARGET_KIND_BOUNDED_COSIGNER:
+        if kind == ASSEMBLY_TARGET_KIND_BOUNDED_COSIGNER:
             if not target.get("base_signatures") or not target.get("assembly_receipt"):
                 raise ValueError(f"target {i}: base_signatures and assembly_receipt are required for bounded-cosigner target")
-            if (target.get("user_signature") or target.get("user_source_request_id")
-                    or target.get("guarded_runtime_args")):
-                raise ValueError(f"target {i}: guarded authorization material is forbidden for bounded-cosigner target")
             _validate_sign_request_id(str(target.get("base_source_request_id", "")))
         else:
             raise ValueError(f"target {i}: invalid kind")
@@ -1864,13 +1796,7 @@ def _validate_component_request(data: Dict[str, Any]) -> None:
         covered.add(target_index)
         if target.get("kind") != kind:
             raise ValueError("mixed component target kinds are not supported")
-        if kind == COMPONENT_TARGET_KIND_USER:
-            if (not target.get("auth_address") or target.get("component_key")
-                    or target.get("lsig_args")):
-                raise ValueError(f"target {index}: user target requires only auth_address")
-            if index > 1 and target.get("auth_address") != targets[0].get("auth_address"):
-                raise ValueError("user targets must share one auth_address")
-        elif kind == COMPONENT_TARGET_KIND_COSIGNER:
+        if kind == COMPONENT_TARGET_KIND_COSIGNER:
             if target.get("auth_address") or target.get("lsig_args"):
                 raise ValueError(f"target {index}: cosigner target forbids auth_address and lsig_args")
             if index > 1 and target.get("component_key") != targets[0].get("component_key"):
@@ -1908,7 +1834,7 @@ def _validate_component_response(
             raise ValueError(f"component {index} target_index is outside the frozen group")
         seen.add(target_index)
         kind = component.get("kind")
-        if kind in (COMPONENT_TARGET_KIND_USER, COMPONENT_TARGET_KIND_COSIGNER):
+        if kind == COMPONENT_TARGET_KIND_COSIGNER:
             if (not component.get("signature") or not component.get("signature_scheme")
                     or component.get("base_signatures") or component.get("assembly_receipt")
                     or component.get("path")):
@@ -2209,7 +2135,7 @@ def _rekey_target_flow_check(rekey_to: str, flow: str) -> None:
     SDK does not know is refused too, so a future flow fails closed here
     rather than at the signer.
     """
-    if flow in ("", SIGNING_FLOW_BOUNDED1, SIGNING_FLOW_COSIGNER1, SIGNING_FLOW_COSIGNED1):
+    if flow in ("", SIGNING_FLOW_BOUNDED1, SIGNING_FLOW_COSIGNED1):
         return
     if flow == SIGNING_FLOW_ROTATING1:
         raise SignerError(
@@ -2461,7 +2387,6 @@ def _find_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
-
 
 
 class _SSHTunnel:
@@ -3979,6 +3904,7 @@ class SignerClient:
                     signing_flow=kt.get("signing_flow", ""),
                     cosigner_component_key_type=kt.get("cosigner_component_key_type", ""),
                     per_key_contract=kt.get("per_key_contract", False),
+                    boundary_schema=kt.get("boundary_schema", ""),
                     bounded_authorization=_parse_bounded_authorization(
                         kt.get("bounded_authorization")
                     ),
@@ -4867,8 +4793,7 @@ def _component_signatures_by_index(
 def _component_request_for_indices(
     group_bytes_hex: List[str],
     indices: List[int],
-    kind: str,
-    key: str,
+    component_key: str,
     dummy_positions: Optional[List[int]] = None,
     app_call_info: Optional[Dict[int, Optional[Dict[str, str]]]] = None,
 ) -> ComponentRequest:
@@ -4877,11 +4802,11 @@ def _component_request_for_indices(
     target_set = set(indices)
     targets = []
     for index in indices:
-        target: Dict[str, Any] = {"target_index": index, "kind": kind}
-        if kind == COMPONENT_TARGET_KIND_USER:
-            target["auth_address"] = key
-        else:
-            target["component_key"] = key
+        target: Dict[str, Any] = {
+            "target_index": index,
+            "kind": COMPONENT_TARGET_KIND_COSIGNER,
+            "component_key": component_key,
+        }
         if app_call_info.get(index):
             target["app_call_info"] = app_call_info[index]
         targets.append(target)
@@ -4943,131 +4868,6 @@ def _encode_guarded_lsig_args(args: Optional[Dict[str, bytes]]) -> Optional[Dict
     return {name: value.hex() for name, value in args.items()}
 
 
-def _build_prepared_guarded_sign_inputs(
-    user_client: SignerClient,
-    prepared_group: PreparedGroup,
-    cosigner_client: Optional[SignerClient],
-    cosigner_resolver: Optional[Any],
-    cosigner_component_key: str,
-    assembly_request_id: str,
-) -> Dict[str, Any]:
-    if user_client is None:
-        raise SignerError("user_client is required")
-    prepared = prepared_group.transactions
-    if not prepared:
-        raise ValueError("prepared group is empty")
-
-    txns = []
-    guarded_targets = []
-    primary_targets = []
-    plan_requests = []
-
-    for index, item in enumerate(prepared):
-        if item.signed_transaction_base64:
-            raise ValueError(
-                f"prepared transaction {index}: passthrough entries are not supported in prepared guarded groups"
-            )
-        if item.transaction is None:
-            raise ValueError(f"prepared transaction {index}: transaction is required")
-        txns.append(copy.deepcopy(item.transaction))
-
-        key = item.signer_key
-        if key is None and item.auth_address:
-            key = user_client.get_key_info(item.auth_address)
-        if key is None:
-            raise ValueError(f"prepared transaction {index}: signer key metadata is required")
-
-        if not item.auth_address:
-            raise ValueError(f"prepared transaction {index}: auth address is required")
-        plan_requests.append(item.to_sign_request())
-
-        if key.signing_flow:
-            if key.signing_flow == SIGNING_FLOW_BOUNDED1:
-                pass
-            elif key.signing_flow != SIGNING_FLOW_COSIGNER1:
-                raise ValueError(
-                    f"prepared transaction {index}: signer key requires signing flow "
-                    f"{key.signing_flow!r}, which this SDK does not support; upgrade the SDK"
-                )
-            if key.signing_flow == SIGNING_FLOW_BOUNDED1:
-                if not item.auth_address:
-                    raise ValueError(
-                        f"prepared transaction {index}: primary auth address is required"
-                    )
-                primary_targets.append(
-                    GuardedPrimarySignTarget(
-                        target_index=index,
-                        auth_address=item.auth_address,
-                        txn_sender=item.txn_sender,
-                        lsig_args=_encode_guarded_lsig_args(item.lsig_args),
-                        app_call_info=item.app_call_info,
-                    )
-                )
-                continue
-            if not item.auth_address:
-                raise ValueError(f"prepared transaction {index}: guarded auth address is required")
-            resources = _required_prepared_resources(
-                key,
-                item.transaction,
-                f"prepared transaction {index}: guarded",
-            )
-            guarded_targets.append(
-                GuardedSignTarget(
-                    target_index=index,
-                    guarded_account=item.auth_address,
-                    logic_sig_resources=resources,
-                    cosigner_public_key_hex=(key.parameters or {}).get("cosigner_public_key", ""),
-                    cosigner_component_key_type=key.cosigner_component_key_type,
-                    app_call_info=item.app_call_info,
-                )
-            )
-            continue
-
-        if not item.auth_address:
-            raise ValueError(f"prepared transaction {index}: primary auth address is required")
-        primary_targets.append(
-            GuardedPrimarySignTarget(
-                target_index=index,
-                auth_address=item.auth_address,
-                txn_sender=item.txn_sender,
-                lsig_args=_encode_guarded_lsig_args(item.lsig_args),
-                app_call_info=item.app_call_info,
-            )
-        )
-
-    if not guarded_targets:
-        raise ValueError("prepared group has no guarded targets")
-
-    try:
-        plan = user_client.plan_requests(plan_requests)
-    except Exception as e:
-        if isinstance(e, SignerError):
-            raise
-        raise SignerError(f"guarded group planning failed: {e}") from e
-    try:
-        all_txns = _decode_canonical_group(plan.get("transactions") or [])
-        _validate_bounded_component_plan(txns, all_txns, plan.get("mutations"))
-    except Exception as e:
-        if isinstance(e, SignerError):
-            raise SignerError(f"invalid guarded group plan: {e}") from e
-        raise
-
-    dummy_passthrough = _sign_guarded_dummies(all_txns[len(txns) :], len(txns))
-    group_bytes_hex = [encode_transaction(txn)[0] for txn in all_txns]
-    return {
-        "user_client": user_client,
-        "group_bytes_hex": group_bytes_hex,
-        "guarded_targets": guarded_targets,
-        "cosigner_client": cosigner_client,
-        "cosigner_resolver": cosigner_resolver,
-        "cosigner_component_key": cosigner_component_key,
-        "primary_targets": primary_targets,
-        "passthrough": dummy_passthrough,
-        "dummy_positions": list(range(len(txns), len(all_txns))),
-        "assembly_request_id": assembly_request_id,
-    }
-
-
 def _resolve_cosigner_for_target(
     target: Dict[str, Any],
     cosigner_client: Optional[SignerClient],
@@ -5087,143 +4887,6 @@ def _resolve_cosigner_for_target(
     if cosigner_client is None:
         raise SignerError("cosigner_client or cosigner_resolver is required")
     return cosigner_client, target.get("cosigner_component_key") or cosigner_component_key
-
-
-def _request_primary_guarded_passthrough(
-    user_client: SignerClient,
-    group_bytes_hex: List[str],
-    guarded_by_index: Dict[int, Dict[str, Any]],
-    primary_targets: List[Dict[str, Any]],
-    passthrough: List[GuardedPassthroughItem],
-) -> tuple:
-    primary_by_index: Dict[int, Dict[str, Any]] = {}
-    for target in primary_targets:
-        index = target.get("target_index")
-        if not isinstance(index, int) or index < 0 or index >= len(group_bytes_hex):
-            raise ValueError(f"primary target {index} out of range")
-        if index in guarded_by_index:
-            raise ValueError(f"primary target {index} overlaps guarded target")
-        if index in primary_by_index:
-            raise ValueError(f"duplicate primary target index {index}")
-        if not target.get("auth_address"):
-            raise ValueError(f"primary target {index} missing auth_address")
-        primary_by_index[index] = target
-
-    passthrough_by_index: Dict[int, GuardedPassthroughItem] = {}
-    for item in passthrough:
-        index = item.target_index
-        if not isinstance(index, int) or index < 0 or index >= len(group_bytes_hex):
-            raise ValueError(f"passthrough target {index} out of range")
-        if index in passthrough_by_index:
-            raise ValueError(f"duplicate passthrough target index {index}")
-        if index in primary_by_index:
-            raise ValueError(f"passthrough target {index} overlaps primary target")
-        if index in guarded_by_index:
-            raise ValueError(f"passthrough target {index} overlaps guarded target")
-        authorization = item.authorization
-        if authorization is None:
-            raise ValueError(f"passthrough target {index} missing planning authorization")
-        if authorization.pq_scheme and authorization.logic_sig_resources is not None:
-            raise ValueError(
-                f"passthrough target {index} cannot specify both pq_scheme and logic_sig_resources"
-            )
-        if authorization.pq_scheme and authorization.pq_scheme != PQ_SCHEME_FALCON1024:
-            raise ValueError(
-                f"passthrough target {index} has unsupported pq_scheme {authorization.pq_scheme!r}"
-            )
-        if authorization.logic_sig_resources is not None:
-            _validate_lsig_resources(
-                authorization.logic_sig_resources,
-                f"passthrough target {index}",
-            )
-        passthrough_by_index[index] = item
-
-    requests = []
-    for index, txn_hex in enumerate(group_bytes_hex):
-        target = primary_by_index.get(index)
-        if target:
-            request = {
-                "txn_bytes_hex": txn_hex,
-                "auth_address": target["auth_address"],
-            }
-            if target.get("txn_sender"):
-                request["txn_sender"] = target["txn_sender"]
-            if target.get("lsig_args"):
-                request["lsig_args"] = target["lsig_args"]
-            if target.get("app_call_info"):
-                request["app_call_info"] = target["app_call_info"]
-            requests.append(request)
-        else:
-            guarded = guarded_by_index.get(index)
-            if guarded is not None:
-                resources = _require_lsig_resources(
-                    guarded.get("logic_sig_resources"),
-                    f"guarded target {index}",
-                )
-                requests.append(
-                    {
-                        "txn_bytes_hex": txn_hex,
-                        "lsig_resources": _wire_lsig_resources(resources),
-                    }
-                )
-                continue
-            passthrough_item = passthrough_by_index.get(index)
-            if passthrough_item is None:
-                raise ValueError(
-                    f"group position {index} has no guarded, primary, or passthrough target"
-                )
-            authorization = passthrough_item.authorization
-            request = {"txn_bytes_hex": txn_hex}
-            if authorization.logic_sig_resources is not None:
-                request["lsig_resources"] = _wire_lsig_resources(
-                    authorization.logic_sig_resources
-                )
-            if authorization.pq_scheme:
-                request["pq_scheme"] = authorization.pq_scheme
-            requests.append(request)
-
-    response = user_client.sign_requests(requests)
-    primary_passthrough = []
-    for index in sorted(primary_by_index):
-        if index >= len(response.signed) or not response.signed[index]:
-            raise SignerError(f"primary signer returned no signed transaction for target {index}")
-        _verify_signed_transaction_matches_canonical(
-            "primary passthrough",
-            index,
-            response.signed[index],
-            group_bytes_hex[index],
-        )
-        primary_passthrough.append(
-            GuardedPassthroughItem(
-                target_index=index,
-                signed_txn_hex=response.signed[index],
-            )
-        )
-    return response, primary_passthrough
-
-
-def _prepared_cosigner_flow_kinds(
-    user_client: SignerClient,
-    prepared_group: PreparedGroup,
-) -> tuple:
-    bounded_cosigner = False
-    cosigner1 = False
-    for index, item in enumerate(prepared_group.transactions):
-        key = item.signer_key
-        if key is None and item.auth_address:
-            try:
-                key = user_client.get_key_info(item.auth_address)
-            except SignerError:
-                raise
-            except Exception as e:
-                raise SignerError(f"prepared transaction {index}: resolve signer key: {e}") from e
-        if key is None:
-            continue
-        if key.signing_flow == SIGNING_FLOW_COSIGNED1:
-            bounded_cosigner = True
-        elif key.signing_flow == SIGNING_FLOW_COSIGNER1:
-            cosigner1 = True
-    return bounded_cosigner, cosigner1
 
 
 def _decode_canonical_group(group_bytes_hex: List[str]) -> List[transaction.Transaction]:
@@ -5396,6 +5059,27 @@ def _validate_bounded_component_plan(
                 f"match observed delta {total_fee_delta}"
             )
     _validate_guarded_dummies(planned[len(original) :])
+
+
+def _bounded_fee_ceiling(info: BoundedAuthorizationInfo) -> Optional[int]:
+    """Return an account's on-chain fee ceiling, or None for a plain host.
+
+    A bounded host must advertise one; a plain host never has one; a contract
+    this SDK does not know fails closed.
+    """
+    if info.contract == BOUNDED_CONTRACT_BOUNDED2:
+        if info.max_fee is None:
+            raise SignerError(f"bounded authorization {info.contract} has no max_fee")
+        return info.max_fee
+    if info.contract == BOUNDED_CONTRACT_PLAIN1:
+        if info.max_fee is not None:
+            raise SignerError(
+                f"bounded authorization {info.contract} has a max_fee, which a plain host never has"
+            )
+        return None
+    raise SignerError(
+        f"bounded authorization contract {info.contract!r} is not supported by this SDK; upgrade it"
+    )
 
 
 def _validate_bounded_target_fees(
@@ -5588,7 +5272,9 @@ def sign_prepared_bounded_cosigner_group(
                 raise ValueError(
                     f"prepared transaction {index}: bounded authorization " "metadata is required"
                 )
-            target_max_fees[index] = key.bounded_authorization.max_fee
+            ceiling = _bounded_fee_ceiling(key.bounded_authorization)
+            if ceiling is not None:
+                target_max_fees[index] = ceiling
             targets.append(
                 {
                     "target_index": index,
@@ -5600,8 +5286,6 @@ def sign_prepared_bounded_cosigner_group(
                 }
             )
             continue
-        if key.signing_flow == SIGNING_FLOW_COSIGNER1:
-            raise ValueError("cannot mix cosigner1 and cosigned1 targets in one group")
         if key.signing_flow not in ("", SIGNING_FLOW_BOUNDED1):
             raise ValueError(
                 f"prepared transaction {index}: signer key requires signing flow "
@@ -5748,7 +5432,6 @@ def sign_prepared_bounded_cosigner_group(
             _component_request_for_indices(
                 frozen_group,
                 sorted(group["indices"]),
-                COMPONENT_TARGET_KIND_COSIGNER,
                 group["component_key"],
                 list(range(len(prepared), len(frozen_group))),
                 {
@@ -5795,10 +5478,8 @@ def sign_prepared_bounded_cosigner_group(
     _verify_bounded_assembled_group(frozen_group, assembly_response.signed_group)
     return GuardedSignResult(
         signed_group=list(assembly_response.signed_group),
-        user_component_responses=[],
         cosigner_component_responses=cosigner_component_responses,
         primary_sign_response=primary_response,
-        assembly_response=None,
         bounded_component_response=component_response,
         bounded_assembly_response=assembly_response,
     )
@@ -5820,196 +5501,13 @@ def sign_prepared_guarded_group(
     The signer /plan endpoint owns canonical group sizing, dummy insertion,
     and authorization-fee pooling before component signatures are collected.
     """
-    has_bounded_cosigner, has_cosigner1 = _prepared_cosigner_flow_kinds(
-        user_client, prepared_group
-    )
-    if has_bounded_cosigner:
-        if has_cosigner1:
-            raise ValueError("cannot mix cosigner1 and cosigned1 targets in one group")
-        return sign_prepared_bounded_cosigner_group(
-            user_client=user_client,
-            prepared_group=prepared_group,
-            cosigner_client=cosigner_client,
-            cosigner_resolver=cosigner_resolver,
-            cosigner_component_key=cosigner_component_key,
-            assembly_request_id=assembly_request_id,
-        )
-    inputs = _build_prepared_guarded_sign_inputs(
-        user_client,
-        prepared_group,
-        cosigner_client,
-        cosigner_resolver,
-        cosigner_component_key,
-        assembly_request_id,
-    )
-    return sign_guarded_group(**inputs)
-
-
-def sign_guarded_group(
-    *,
-    user_client: SignerClient,
-    group_bytes_hex: List[str],
-    guarded_targets: List[Any],
-    cosigner_client: Optional[SignerClient] = None,
-    cosigner_resolver: Optional[Any] = None,
-    cosigner_component_key: str = "",
-    primary_targets: Optional[List[Any]] = None,
-    passthrough: Optional[List[Any]] = None,
-    dummy_positions: Optional[List[int]] = None,
-    assembly_request_id: str = "",
-) -> GuardedSignResult:
-    """
-    Sign and assemble a guarded group using explicit signer clients.
-
-    The helper expects canonical TX-prefixed group bytes. Planning and endpoint
-    discovery stay caller-owned.
-    """
-    if user_client is None:
-        raise SignerError("user_client is required")
-    _validate_component_group_bytes(group_bytes_hex)
-    targets = [_compact_payload(target) for target in guarded_targets]
-    if not targets:
-        raise ValueError("at least one guarded target is required")
-    targets.sort(key=lambda item: item["target_index"])
-    app_call_info = {
-        target.get("target_index"): target.get("app_call_info")
-        for target in (_compact_payload(item) for item in (primary_targets or []))
-    }
-    # Guarded metadata wins if a malformed low-level request names the same
-    # position as both guarded and primary; the overlap is rejected later.
-    app_call_info.update({
-        target["target_index"]: target.get("app_call_info") for target in targets
-    })
-
-    guarded_by_index: Dict[int, Dict[str, Any]] = {}
-    user_groups: Dict[str, List[int]] = {}
-    for target in targets:
-        index = target.get("target_index")
-        if not isinstance(index, int) or index < 0 or index >= len(group_bytes_hex):
-            raise ValueError(f"guarded target {index} out of range")
-        if index in guarded_by_index:
-            raise ValueError(f"duplicate guarded target index {index}")
-        if not target.get("guarded_account"):
-            raise ValueError(f"guarded target {index} missing guarded_account")
-        target["logic_sig_resources"] = _compact_payload(
-            _require_lsig_resources(
-                target.get("logic_sig_resources"),
-                f"guarded target {index}",
-            )
-        )
-        guarded_by_index[index] = target
-        user_groups.setdefault(target["guarded_account"], []).append(index)
-
-    user_component_responses = []
-    user_signatures: Dict[int, Dict[str, str]] = {}
-    for guarded_account in sorted(user_groups):
-        response = user_client.request_components(
-            _component_request_for_indices(
-                group_bytes_hex,
-                sorted(user_groups[guarded_account]),
-                COMPONENT_TARGET_KIND_USER,
-                guarded_account,
-                dummy_positions,
-                app_call_info,
-            )
-        )
-        user_component_responses.append(response)
-        user_signatures.update(_component_signatures_by_index(response))
-
-    primary_sign_response = None
-    assembly_passthrough = [
-        _normalize_guarded_passthrough_item(item) for item in (passthrough or [])
-    ]
-    if primary_targets:
-        primary_sign_response, primary_passthrough = _request_primary_guarded_passthrough(
-            user_client,
-            group_bytes_hex,
-            guarded_by_index,
-            [_compact_payload(target) for target in primary_targets],
-            assembly_passthrough,
-        )
-        assembly_passthrough.extend(primary_passthrough)
-
-    # The user side is complete, including ordinary primary positions. Only
-    # now may the SDK disclose the frozen group to the cosigner endpoint.
-    cosigner_groups: Dict[tuple, Dict[str, Any]] = {}
-    for target in targets:
-        client, component_key = _resolve_cosigner_for_target(
-            target, cosigner_client, cosigner_component_key, cosigner_resolver
-        )
-        key = (id(client), component_key)
-        if key not in cosigner_groups:
-            cosigner_groups[key] = {
-                "client": client,
-                "component_key": component_key,
-                "indices": [],
-            }
-        cosigner_groups[key]["indices"].append(target["target_index"])
-
-    cosigner_component_responses = []
-    cosigner_signatures: Dict[int, Dict[str, str]] = {}
-    for group in cosigner_groups.values():
-        response = group["client"].request_components(
-            _component_request_for_indices(
-                group_bytes_hex,
-                sorted(group["indices"]),
-                COMPONENT_TARGET_KIND_COSIGNER,
-                group["component_key"],
-                dummy_positions,
-                app_call_info,
-            )
-        )
-        cosigner_component_responses.append(response)
-        cosigner_signatures.update(_component_signatures_by_index(response))
-
-    assembly_targets = []
-    for target in targets:
-        index = target["target_index"]
-        if index not in user_signatures:
-            raise SignerError(f"missing user component signature for target {index}")
-        if index not in cosigner_signatures:
-            raise SignerError(f"missing cosigner component signature for target {index}")
-        assembly_targets.append(
-            AssemblyTarget(
-                target_index=index,
-                kind=ASSEMBLY_TARGET_KIND_GUARDED,
-                auth_address=target["guarded_account"],
-                user_signature=user_signatures[index]["signature"],
-                user_source_request_id=user_signatures[index]["request_id"],
-                cosigner_signature=cosigner_signatures[index]["signature"],
-                cosigner_source_request_id=cosigner_signatures[index]["request_id"],
-                guarded_runtime_args=target.get("runtime_args"),
-            )
-        )
-
-    assembly_response = user_client.request_assemble(
-        AssemblyRequest(
-            request_id=assembly_request_id,
-            group_bytes_hex=group_bytes_hex,
-            targets=assembly_targets,
-            passthrough=assembly_passthrough,
-        )
-    )
-    return GuardedSignResult(
-        signed_group=assembly_response.signed_group,
-        user_component_responses=user_component_responses,
-        cosigner_component_responses=cosigner_component_responses,
-        primary_sign_response=primary_sign_response,
-        assembly_response=assembly_response,
-    )
-
-
-def simulate_guarded_group(
-    algod_client: Any,
-    **sign_options: Any,
-) -> GuardedSimulationResult:
-    """Run ordinary guarded signing, then simulate through client algod."""
-    if algod_client is None:
-        raise ValueError("algod_client is required")
-    signing = sign_guarded_group(**sign_options)
-    return GuardedSimulationResult(
-        signing=signing,
-        simulation=_simulate_signed_group(algod_client, signing.signed_group),
+    return sign_prepared_bounded_cosigner_group(
+        user_client=user_client,
+        prepared_group=prepared_group,
+        cosigner_client=cosigner_client,
+        cosigner_resolver=cosigner_resolver,
+        cosigner_component_key=cosigner_component_key,
+        assembly_request_id=assembly_request_id,
     )
 
 

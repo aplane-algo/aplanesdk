@@ -8,10 +8,12 @@
   "targets": [
     {
       "target_index": 0,
-      "kind": "guarded",
-      "auth_address": "GUARDED_ACCOUNT",
-      "user_signature": "aa",
-      "cosigner_signature": "bb"
+      "kind": "bounded-cosigner",
+      "auth_address": "PLAIN_HOST_ACCOUNT",
+      "base_signatures": [
+        "aa"
+      ],
+      "assembly_receipt": "bb"
     },
     {
       "target_index": 1,
