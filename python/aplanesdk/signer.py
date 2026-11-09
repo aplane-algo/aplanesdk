@@ -158,9 +158,7 @@ ERR_CODE_INVALID_PASSPHRASE = "invalid_passphrase"
 ERR_CODE_UNAVAILABLE = "unavailable"
 ERR_CODE_CACHE_REFRESH = "cache_refresh"
 ERR_CODE_INTERNAL = "internal"
-ERR_CODE_BOUNDED_ADMIN_REQUIRED = "bounded_admin_required"
 ERR_CODE_BOUNDED_COSIGNER_REQUIRED = "bounded_cosigner_required"
-ERR_CODE_BOUNDED_ADMIN_TARGET_REJECTED = "bounded_admin_target_rejected"
 # A rotating account (rotating1) was sent to an ordinary signing endpoint.
 ERR_CODE_ROTATING_SIGNING_REQUIRED = "rotating_signing_required"
 # 409, temporary: the signer has not yet found the account's live stage.
@@ -350,8 +348,6 @@ class BoundedAuthorizationInfo:
     argument_layout: List[BoundedArgumentSlotInfo]
     layer3_policy: str
     cosigner: Optional[BoundedCosignerAuthorizationInfo] = None
-    admin_key_id: str = ""
-    program_binding: str = ""
 
 
 @dataclass
@@ -1550,8 +1546,6 @@ def _selected_prepared_resources(
         )
         if authorization == "spending_key":
             selected = profile.spending_rekey
-        elif authorization == "admin_key":
-            selected = profile.admin_rekey
         else:
             raise ValueError("bounded rekey authorization metadata is unavailable")
     return LogicSigResourceUsage(**vars(selected)) if selected else None
@@ -1664,8 +1658,6 @@ def _parse_bounded_authorization(data: Any) -> Optional[BoundedAuthorizationInfo
             if isinstance(cosigner, dict)
             else None
         ),
-        admin_key_id=data.get("admin_key_id", ""),
-        program_binding=data.get("program_binding", ""),
     )
 
 

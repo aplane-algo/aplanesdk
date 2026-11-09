@@ -291,7 +291,8 @@ for _, key := range keys {
 
 `LogicSigResources` publishes independent program-byte, argument-byte, and
 maximum-opcode-cost demand by authorization path. Bounded keys may publish
-different `Spend`, `SpendingRekey`, and `AdminRekey` profiles.
+different `Spend` and `SpendingRekey` profiles. They also publish an
+`AdminRekey` profile, which no rekey authorization selects.
 
 `KeyTypeInfo.AuthorizationKind` distinguishes `ed25519`, `native_pq`, and
 `logic_sig`. Do not infer Ed25519 from `RequiresLogicSig == false`: native
@@ -306,9 +307,10 @@ spending key publishes no LogicSig profile and is otherwise indistinguishable
 from an Ed25519 key. `SignPreparedGuardedGroup` uses it to declare
 `PQScheme` on native-PQ group positions that are planned as foreign slots.
 
-The Go SDK exposes bounded inventory and ordinary spend signing only. It does
-not expose `/sign/bounded-admin` or build and complete contract-admin rekeys;
-use the APlane `aprekey` workflow for those operations.
+`BoundedAuthorization.AdminOperations` lists a bounded account's rekey
+authority: a `rekey` operation with `spending_key` authorization lets the
+spending key rekey the account, and an empty list means the account refuses
+rekeys.
 
 ### Get One Key
 
@@ -586,8 +588,7 @@ also public for applications that own the orchestration.
 The signer planner owns fee selection, authorization-resource sizing, and any
 reported group mutations for both guarded flows.
 
-The v1 cosigner gate applies only to spends. Contract-admin rekeys use the
-external `aprekey` witness ceremony and are outside SDK completion.
+The v1 cosigner gate applies only to spends.
 
 User-role component signing runs the signer-domain approval gates and can
 block on a manual operator decision. The SDK automatically discovers the

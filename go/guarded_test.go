@@ -37,10 +37,21 @@ func guardedTestResources() *LogicSigResourceUsage {
 	return &LogicSigResourceUsage{ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000}
 }
 
+func boundedResourceTestKey(spend, spendingRekey *LogicSigResourceUsage, operations []BoundedAdminOperationInfo) *KeyInfo {
+	// The signer still publishes the vestigial admin_rekey path; no rekey
+	// authorization selects it.
+	adminRekey := &LogicSigResourceUsage{ProgramBytes: 3003, ArgumentBytes: 303, MaxOpcodeCost: 30003}
+	return &KeyInfo{
+		LogicSigResources: &LogicSigResourceProfile{
+			Spend: spend, SpendingRekey: spendingRekey, AdminRekey: adminRekey,
+		},
+		BoundedAuthorization: &BoundedAuthorizationInfo{AdminOperations: operations},
+	}
+}
+
 func TestSelectedPreparedResourcesUsesBoundedAuthorizationPath(t *testing.T) {
 	spend := &LogicSigResourceUsage{ProgramBytes: 1001, ArgumentBytes: 101, MaxOpcodeCost: 10001}
 	spendingRekey := &LogicSigResourceUsage{ProgramBytes: 2002, ArgumentBytes: 202, MaxOpcodeCost: 20002}
-	adminRekey := &LogicSigResourceUsage{ProgramBytes: 3003, ArgumentBytes: 303, MaxOpcodeCost: 30003}
 	var rekeyTo types.Address
 	rekeyTo[31] = 1
 
@@ -52,7 +63,6 @@ func TestSelectedPreparedResourcesUsesBoundedAuthorizationPath(t *testing.T) {
 	}{
 		{name: "spend", want: spend},
 		{name: "spending-key rekey", rekey: true, authorization: "spending_key", want: spendingRekey},
-		{name: "admin-key rekey", rekey: true, authorization: "admin_key", want: adminRekey},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -62,12 +72,7 @@ func TestSelectedPreparedResourcesUsesBoundedAuthorizationPath(t *testing.T) {
 				txn.RekeyTo = rekeyTo
 				operations = []BoundedAdminOperationInfo{{Kind: "rekey", Authorization: tt.authorization}}
 			}
-			got, err := selectedPreparedResources(&KeyInfo{
-				LogicSigResources: &LogicSigResourceProfile{
-					Spend: spend, SpendingRekey: spendingRekey, AdminRekey: adminRekey,
-				},
-				BoundedAuthorization: &BoundedAuthorizationInfo{AdminOperations: operations},
-			}, txn)
+			got, err := selectedPreparedResources(boundedResourceTestKey(spend, spendingRekey, operations), txn)
 			if err != nil {
 				t.Fatalf("selectedPreparedResources() error = %v", err)
 			}
@@ -78,6 +83,23 @@ func TestSelectedPreparedResourcesUsesBoundedAuthorizationPath(t *testing.T) {
 				t.Fatal("selectedPreparedResources() returned shared inventory metadata")
 			}
 		})
+	}
+}
+
+func TestSelectedPreparedResourcesRejectsRekeyOfRefusedBoundedAccount(t *testing.T) {
+	spend := &LogicSigResourceUsage{ProgramBytes: 1001, ArgumentBytes: 101, MaxOpcodeCost: 10001}
+	spendingRekey := &LogicSigResourceUsage{ProgramBytes: 2002, ArgumentBytes: 202, MaxOpcodeCost: 20002}
+	var rekeyTo types.Address
+	rekeyTo[31] = 1
+	txn := &types.Transaction{Header: types.Header{RekeyTo: rekeyTo}}
+
+	// A refused account publishes no rekey operation.
+	got, err := selectedPreparedResources(boundedResourceTestKey(spend, spendingRekey, []BoundedAdminOperationInfo{}), txn)
+	if err == nil {
+		t.Fatalf("selectedPreparedResources() = %+v, want error for a refused rekey", got)
+	}
+	if !strings.Contains(err.Error(), "bounded rekey authorization metadata is unavailable") {
+		t.Fatalf("selectedPreparedResources() error = %v, want unavailable rekey authorization", err)
 	}
 }
 

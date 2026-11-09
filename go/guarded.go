@@ -499,8 +499,6 @@ func selectedPreparedResources(key *KeyInfo, txn *types.Transaction) (*LogicSigR
 		switch authorization {
 		case "spending_key":
 			selected = profile.SpendingRekey
-		case "admin_key":
-			selected = profile.AdminRekey
 		default:
 			return nil, fmt.Errorf("bounded rekey authorization metadata is unavailable")
 		}

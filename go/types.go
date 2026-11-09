@@ -750,8 +750,6 @@ type BoundedAuthorizationInfo struct {
 	DerivedArgs            []BoundedDerivedArgInfo           `json:"derived_args"`
 	ArgumentLayout         []BoundedArgumentSlotInfo         `json:"argument_layout"`
 	Layer3Policy           string                            `json:"layer3_policy"`
-	AdminKeyID             string                            `json:"admin_key_id,omitempty"`
-	ProgramBindingHex      string                            `json:"program_binding,omitempty"`
 }
 
 // KeyInfo represents a key returned from the /keys endpoint.

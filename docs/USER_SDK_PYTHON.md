@@ -327,7 +327,8 @@ Useful `KeyInfo` fields include:
 
 `logic_sig_resources` publishes independent program-byte, argument-byte, and
 maximum-opcode-cost demand by authorization path. Bounded keys may publish
-different `spend`, `spending_rekey`, and `admin_rekey` profiles.
+different `spend` and `spending_rekey` profiles. They also publish an
+`admin_rekey` profile, which no rekey authorization selects.
 
 `KeyTypeInfo.authorization_kind` distinguishes `ed25519`, `native_pq`, and
 `logic_sig`. A false `requires_logicsig` value may mean either native Ed25519
@@ -343,9 +344,10 @@ indistinguishable from an Ed25519 key. `sign_prepared_guarded_group` uses it
 to declare `pq_scheme` on native-PQ group positions that are planned as
 foreign slots.
 
-The Python SDK exposes bounded inventory and ordinary spend signing only. It
-does not expose `/sign/bounded-admin` or build and complete contract-admin
-rekeys; use the APlane `aprekey` workflow for those operations.
+`bounded_authorization.admin_operations` lists a bounded account's rekey
+authority: a `rekey` operation with `spending_key` authorization lets the
+spending key rekey the account, and an empty list means the account refuses
+rekeys.
 
 If you need one cached entry by address:
 
@@ -694,8 +696,7 @@ also public for applications that own the orchestration.
 The signer planner owns fee selection, authorization-resource sizing, and any
 reported group mutations for both guarded flows.
 
-The v1 cosigner gate applies only to spends. Contract-admin rekeys use the
-external `aprekey` witness ceremony and are outside SDK completion.
+The v1 cosigner gate applies only to spends.
 
 User-role component signing runs the signer-domain approval gates and can
 block on a manual operator decision. The SDK automatically discovers the

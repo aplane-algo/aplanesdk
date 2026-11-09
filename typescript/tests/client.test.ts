@@ -2134,7 +2134,7 @@ describe("SignerClient", () => {
             signerKey: {
               address: bounded,
               publicKeyHex: "",
-              keyType: "aplane.corridor.v1",
+              keyType: "aplane.falcon1024-b.v1",
               signingFlow: SIGNING_FLOW_BOUNDED_COSIGNER1,
               cosignerComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
               logicSigResources: {
@@ -2328,12 +2328,25 @@ describe("SignerClient", () => {
       const profiles = {
         spend: { programBytes: 1001, argumentBytes: 101, maxOpcodeCost: 10001 },
         spendingRekey: { programBytes: 2002, argumentBytes: 202, maxOpcodeCost: 20002 },
+        // The signer still publishes the vestigial admin_rekey path; no rekey
+        // authorization selects it.
         adminRekey: { programBytes: 3003, argumentBytes: 303, maxOpcodeCost: 30003 },
       };
-      const cases = [
+      const cases: Array<{
+        name: string;
+        authorization?: string;
+        rekey: boolean;
+        expected?: typeof profiles.spend;
+        error?: RegExp;
+      }> = [
         { name: "spend", authorization: "spending_key", rekey: false, expected: profiles.spend },
         { name: "spending rekey", authorization: "spending_key", rekey: true, expected: profiles.spendingRekey },
-        { name: "admin rekey", authorization: "admin_key", rekey: true, expected: profiles.adminRekey },
+        // A refused account publishes no rekey operation.
+        {
+          name: "refused rekey",
+          rekey: true,
+          error: /bounded rekey authorization metadata is unavailable/,
+        },
       ];
 
       for (const item of cases) {
@@ -2374,7 +2387,7 @@ describe("SignerClient", () => {
                 signerKey: {
                   address: bounded,
                   publicKeyHex: "",
-                  keyType: "aplane.corridor.v1",
+                  keyType: "aplane.falcon1024-b.v1",
                   signingFlow: SIGNING_FLOW_BOUNDED_COSIGNER1,
                   cosignerComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
                   logicSigResources: profiles,
@@ -2384,11 +2397,11 @@ describe("SignerClient", () => {
                     baseSignatureArgLayout: { count: 1, maxSizes: [1423] },
                     spendEffects: ["pay"],
                     maxFee: 1000,
-                    adminOperations: [{
+                    adminOperations: item.authorization ? [{
                       kind: "rekey",
                       authorization: item.authorization,
                       policyGate: "none",
-                    }],
+                    }] : [],
                     cosigner: {
                       contract: "cosigner1",
                       componentKeyType: KEY_TYPE_WITNESS_FALCON1024,
@@ -2405,7 +2418,7 @@ describe("SignerClient", () => {
               }],
             },
           }),
-          new RegExp(`observed ${item.name}`),
+          item.error ?? new RegExp(`observed ${item.name}`),
         );
       }
     });
@@ -2546,7 +2559,7 @@ describe("SignerClient", () => {
               signerKey: {
                 address: bounded,
                 publicKeyHex: "",
-                keyType: "aplane.corridor.v1",
+                keyType: "aplane.falcon1024-b.v1",
                 signingFlow: SIGNING_FLOW_BOUNDED_COSIGNER1,
                 cosignerComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
                 logicSigResources: {
@@ -2706,7 +2719,7 @@ describe("SignerClient", () => {
               signerKey: {
                 address: bounded,
                 publicKeyHex: "",
-                keyType: "aplane.corridor.v1",
+                keyType: "aplane.falcon1024-b.v1",
                 authorizationKind: "logic_sig",
                 signingFlow: SIGNING_FLOW_BOUNDED_COSIGNER1,
                 cosignerComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,

@@ -1,10 +1,10 @@
 {
   "key_types": [
     {
-      "key_type": "aplane.falcon1024-allowlist-lock.v1",
-      "family": "falcon1024-allowlist-lock",
+      "key_type": "example.falcon1024-locked-allowlist.v1",
+      "family": "falcon1024-locked-allowlist",
       "display_name": "Falcon-1024 Bounded Authorization Allowlist",
-      "description": "Fixed allowlist with external Falcon contract administration",
+      "description": "Falcon-1024 account limited to a fixed recipient list. It can never be rekeyed.",
       "authorization_kind": "logic_sig",
       "requires_logicsig": true,
       "mnemonic_word_count": 0,
@@ -15,18 +15,31 @@
         "contract": "bounded1",
         "base_signature_arg_layout": {
           "count": 1,
-          "max_sizes": [1423]
+          "max_sizes": [
+            1423
+          ]
         },
-        "spend_effects": ["pay", "axfer", "asset_opt_in"],
-        "max_fee": 10000,
-        "admin_operations": [
-          {"kind": "rekey", "authorization": "admin_key", "policy_gate": "none"}
+        "spend_effects": [
+          "pay",
+          "axfer",
+          "asset_opt_in"
         ],
+        "max_fee": 10000,
+        "admin_operations": [],
         "runtime_args": [],
         "derived_args": [],
         "argument_layout": [
-          {"index": 0, "name": "base_signature_0", "source": "base_signature", "max_size": 1423, "paths": {"spend": "required", "spending_rekey": "required", "admin_rekey": "required"}},
-          {"index": 1, "name": "admin_signature", "source": "admin", "max_size": 1423, "paths": {"spend": "forbidden", "spending_rekey": "forbidden", "admin_rekey": "required"}}
+          {
+            "index": 0,
+            "name": "base_signature_0",
+            "source": "base_signature",
+            "max_size": 1423,
+            "paths": {
+              "spend": "required",
+              "spending_rekey": "required",
+              "admin_rekey": "required"
+            }
+          }
         ],
         "layer3_policy": "fixed_allowlist"
       },
@@ -38,19 +51,12 @@
           "required": true,
           "min_items": 1,
           "max_items": 30
-        },
-        {
-          "name": "bounded_admin_public_key",
-          "label": "Contract Admin Public Key",
-          "type": "bytes",
-          "required": true,
-          "max_length": 3586
         }
       ],
       "runtime_args": []
     },
     {
-      "key_type": "aplane.corridor.v1",
+      "key_type": "example.falcon1024-corridor.v1",
       "family": "corridor",
       "display_name": "Corridor",
       "description": "Bounded Falcon-1024 account with cosigner authorization and a Merkle recipient allowlist.",
@@ -75,13 +81,7 @@
           "asset_opt_in"
         ],
         "max_fee": 10000,
-        "admin_operations": [
-          {
-            "kind": "rekey",
-            "authorization": "admin_key",
-            "policy_gate": "none"
-          }
-        ],
+        "admin_operations": [],
         "cosigner": {
           "contract": "cosigner1",
           "component_key_type": "aplane.witness-falcon1024.v1",
@@ -132,17 +132,6 @@
               "spending_rekey": "forbidden",
               "admin_rekey": "forbidden"
             }
-          },
-          {
-            "index": 3,
-            "name": "admin_signature",
-            "source": "admin",
-            "max_size": 1423,
-            "paths": {
-              "spend": "forbidden",
-              "spending_rekey": "forbidden",
-              "admin_rekey": "required"
-            }
           }
         ],
         "layer3_policy": "merkle_allowlist"
@@ -168,13 +157,6 @@
             "ROGAFDACF7ASC3EMZRWNKVM73NXHO4P6O4EB7ZXWER37SM63BMFQ"
           ],
           "default": "ROGAFDACF7ASC3EMZRWNKVM73NXHO4P6O4EB7ZXWER37SM63BMFQ"
-        },
-        {
-          "name": "bounded_admin_public_key",
-          "label": "Contract Admin Public Key",
-          "type": "bytes",
-          "required": true,
-          "max_length": 3586
         }
       ],
       "runtime_args": []

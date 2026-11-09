@@ -217,14 +217,15 @@ func TestBoundedInventoryUsesStructuredResources(t *testing.T) {
 	if key.BoundedAuthorization == nil {
 		t.Fatal("bounded authorization is missing")
 	}
-	if key.BoundedAuthorization.ProgramBindingHex != "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f" {
-		t.Fatalf("program binding = %q, want fixture binding", key.BoundedAuthorization.ProgramBindingHex)
-	}
-	if len(key.BoundedAuthorization.SpendEffects) != 3 || len(key.BoundedAuthorization.ArgumentLayout) != 2 {
+	if len(key.BoundedAuthorization.SpendEffects) != 3 || len(key.BoundedAuthorization.ArgumentLayout) != 1 {
 		t.Fatalf("bounded authorization = %+v, want effects and static slots", key.BoundedAuthorization)
 	}
-	if operation := key.BoundedAuthorization.AdminOperations[0]; operation.PolicyGate != "none" {
-		t.Fatalf("admin operation = %+v, want policy_gate none", operation)
+	if operations := key.BoundedAuthorization.AdminOperations; operations == nil || len(operations) != 0 {
+		t.Fatalf("admin operations = %#v, want an empty list for an account that refuses rekeys", operations)
+	}
+	// The vestigial admin_rekey path is still on the wire.
+	if key.LogicSigResources.AdminRekey == nil || key.BoundedAuthorization.ArgumentLayout[0].Paths.AdminRekey != "required" {
+		t.Fatalf("admin_rekey path = %#v / %+v, want it decoded", key.LogicSigResources.AdminRekey, key.BoundedAuthorization.ArgumentLayout[0].Paths)
 	}
 
 	corridor := response.Keys[1]
@@ -256,47 +257,6 @@ func TestBoundedInventoryUsesStructuredResources(t *testing.T) {
 		corridorType.CosignerComponentKeyType != KeyTypeWitnessFalcon1024 ||
 		corridorType.BoundedAuthorization == nil || corridorType.BoundedAuthorization.Cosigner == nil {
 		t.Fatalf("Corridor key type routing = %+v, want bounded cosigner metadata", corridorType)
-	}
-}
-
-func TestSDKProductionSurfaceExcludesBoundedAdminWorkflow(t *testing.T) {
-	roots := []struct {
-		path string
-		ext  string
-	}{
-		{path: ".", ext: ".go"},
-		{path: "../python/aplanesdk", ext: ".py"},
-		{path: "../typescript/src", ext: ".ts"},
-	}
-	forbidden := []string{
-		"/sign/" + "bounded-admin",
-		".apbounded-" + "admin-key",
-		".apbounded-" + "admin-request",
-		".apbounded-" + "admin-signature",
-	}
-
-	for _, root := range roots {
-		err := filepath.WalkDir(root.path, func(path string, entry os.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if entry.IsDir() || filepath.Ext(path) != root.ext || strings.HasSuffix(path, "_test.go") {
-				return nil
-			}
-			content, readErr := os.ReadFile(path)
-			if readErr != nil {
-				return readErr
-			}
-			for _, token := range forbidden {
-				if strings.Contains(string(content), token) {
-					t.Errorf("%s exposes forbidden bounded-admin workflow token %q", path, token)
-				}
-			}
-			return nil
-		})
-		if err != nil {
-			t.Fatalf("scan SDK production surface %s: %v", root.path, err)
-		}
 	}
 }
 
@@ -598,9 +558,7 @@ func signerAPIErrorCodes(t *testing.T) []string {
 		ErrCodeUnavailable,
 		ErrCodeCacheRefresh,
 		ErrCodeInternal,
-		ErrCodeBoundedAdminRequired,
 		ErrCodeBoundedCosignerRequired,
-		ErrCodeBoundedAdminTargetRejected,
 		ErrCodeRotatingSigningRequired,
 		ErrCodeRotatingStageUnproven,
 		ErrCodeRotatingStageChanged,

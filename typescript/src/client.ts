@@ -1509,8 +1509,6 @@ function mapBoundedAuthorization(raw: any): BoundedAuthorizationInfo | undefined
       },
     })),
     layer3Policy: raw.layer3_policy || "",
-    adminKeyId: raw.admin_key_id || undefined,
-    programBinding: raw.program_binding || undefined,
   };
 }
 
@@ -1557,8 +1555,6 @@ function selectedPreparedResources(
     )?.authorization;
     if (authorization === "spending_key") {
       selected = profile.spendingRekey;
-    } else if (authorization === "admin_key") {
-      selected = profile.adminRekey;
     } else {
       throw new SignerError("bounded rekey authorization metadata is unavailable");
     }
