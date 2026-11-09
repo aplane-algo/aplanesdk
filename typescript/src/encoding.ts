@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 APlane Project LLC
 
-import type { Transaction } from "algosdk";
+import { decodeSignedTransaction, type Transaction } from "algosdk";
 import { SignerError } from "./errors.js";
 
 /**
@@ -53,6 +53,14 @@ export function encodeTransaction(txn: Transaction): [string, string] {
   const sender = txn.sender.toString();
 
   return [bytesToHex(txnBytes), sender];
+}
+
+/**
+ * The canonical "TX"-prefixed hex of the transaction inside a hex-encoded
+ * signed transaction: the bytes its transaction ID is the hash of.
+ */
+export function signedTransactionTxnHex(signedHex: string): string {
+  return encodeTransaction(decodeSignedTransaction(hexToBytes(signedHex)).txn)[0];
 }
 
 /**

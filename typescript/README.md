@@ -347,9 +347,17 @@ const signed = await account.signer([txn], [0]);
 const txId = (await algorand.client.algod.sendRawTransaction(signed)).txId;
 ```
 
-Use `createTransaction.*` when APlane must own final signing and any
-APlane-managed group expansion. `algorand.send.*` owns the composer send path
-and signs inside that path.
+The adapter returns a signed transaction only if it is exactly the transaction
+AlgoKit built. AlgoKit computes transaction IDs from its own copies, so a
+transaction apsigner changed would land under an ID AlgoKit never sees, and
+`algorand.send.*` would report a failure for a payment that went through. So
+the adapter refuses, before anything is submitted, a group apsigner regrouped
+(LogicSig-budget dummies or a recomputed group ID) and any transaction it
+changed, including the authorization charge it adds to a lone transaction's fee
+for a native Falcon or LogicSig account. Those accounts can't sign through the
+adapter, on either `createTransaction.*` or `algorand.send.*`; sign their
+transactions with the SDK's `signTransaction` or `signTransactions`, which
+return what apsigner signed. An ed25519 account carries no charge.
 
 Signing calls discover `/status.approval_wait_seconds` and use that value
 plus 30 seconds of slack for the request timeout. If discovery fails or an older

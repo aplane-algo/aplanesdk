@@ -8,7 +8,13 @@ from secrets import token_hex
 from threading import Lock
 from typing import Any, Optional, Protocol
 
-from .signer import CancelSignResponse, GroupSignResponse, KeyInfo, SignerError
+from .signer import (
+    CancelSignResponse,
+    GroupSignResponse,
+    KeyInfo,
+    SignerError,
+    _signed_transaction_txn_hex,
+)
 
 
 class _GroupSignerClient(Protocol):
@@ -173,9 +179,46 @@ class ApsignerAccount:
                     f"but AlgoKit requested {len(indexes_to_sign)}"
                 )
 
+            # The signer may change a transaction it signs: it adds the
+            # account's authorization charge (a native Falcon signature or
+            # priced LogicSig bytes) to a lone transaction's fee. AlgoKit
+            # computes each transaction ID from its own copy and waits for that
+            # ID after it submits, so a changed transaction would land under an
+            # ID AlgoKit never sees: it would report a failure for a payment
+            # that went through, and a retry would pay twice. So every signed
+            # transaction must be exactly the one AlgoKit asked for, and
+            # nothing is returned, so nothing is submitted, if one isn't.
+            for position, (index, signed_hex) in enumerate(zip(indexes_to_sign, result.signed)):
+                try:
+                    returned = _signed_transaction_txn_hex("AlgoKit transaction", index, signed_hex)
+                except SignerError as e:
+                    raise SignerError(
+                        f"apsigner returned an unreadable signed transaction for "
+                        f"AlgoKit transaction {index}: {e}"
+                    ) from e
+                if returned != requests[position]["txn_bytes_hex"].lower():
+                    raise SignerError(_changed_transaction_message(index, position, mutations))
+
             return [bytes.fromhex(item) for item in result.signed]
         finally:
             self._end_sign(request_id)
+
+
+def _changed_transaction_message(index: int, position: int, mutations: dict[str, Any]) -> str:
+    consequence = (
+        "AlgoKit's transaction ID would no longer match what is submitted, "
+        "so nothing was submitted"
+    )
+    if position in (mutations.get("fees_modified") or []):
+        delta = mutations.get("total_fees_delta") or 0
+        return (
+            f"apsigner raised the fee of AlgoKit transaction {index} by the account's "
+            f"authorization charge ({delta} microAlgos in total); {consequence}. Accounts "
+            "whose signatures carry a fee charge (native Falcon or LogicSig accounts) "
+            "can't sign through the AlgoKit adapter; use the aplane SDK's "
+            "sign_transaction or sign_transactions instead."
+        )
+    return f"apsigner returned AlgoKit transaction {index} changed; {consequence}."
 
 
 def create_apsigner_account(

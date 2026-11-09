@@ -4,7 +4,7 @@
 import { decodeAddress } from "algosdk";
 import type { SignerClient } from "./client.js";
 import { SignerError } from "./errors.js";
-import { bytesToHex, encodeLsigArgs, hexToBytes } from "./encoding.js";
+import { bytesToHex, encodeLsigArgs, hexToBytes, signedTransactionTxnHex } from "./encoding.js";
 import type {
   GroupSignResponse,
   KeyInfo,
@@ -219,8 +219,52 @@ export class ApsignerAlgoKitAccount implements ApsignerAccount {
       );
     }
 
+    // The signer may change a transaction it signs: it adds the account's
+    // authorization charge (a native Falcon signature or priced LogicSig bytes)
+    // to a lone transaction's fee. AlgoKit computes each transaction ID from
+    // its own copy and waits for that ID after it submits, so a changed
+    // transaction would land under an ID AlgoKit never sees: it would report a
+    // failure for a payment that went through, and a retry would pay twice.
+    // So every signed transaction must be exactly the one AlgoKit asked for,
+    // and nothing is returned, so nothing is submitted, if one isn't.
+    signed.forEach((hex, i) => {
+      const index = indexesToSign[i];
+      let returned: string;
+      try {
+        returned = signedTransactionTxnHex(hex);
+      } catch (error) {
+        throw new SignerError(
+          `apsigner returned an unreadable signed transaction for AlgoKit transaction ${index}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+      if (returned !== requests[i]?.txn_bytes_hex?.toLowerCase()) {
+        throw new SignerError(changedTransactionMessage(index, i, mutations));
+      }
+    });
+
     return signed.map((hex) => hexToBytes(hex));
   }
+}
+
+function changedTransactionMessage(
+  index: number,
+  requestIndex: number,
+  mutations: GroupSignResponse["mutations"],
+): string {
+  const consequence =
+    "AlgoKit's transaction ID would no longer match what is submitted, so nothing was submitted";
+  if (mutations?.feesModified?.includes(requestIndex)) {
+    const delta = mutations.totalFeesDelta ?? 0;
+    return (
+      `apsigner raised the fee of AlgoKit transaction ${index} by the account's authorization charge ` +
+      `(${delta} microAlgos in total); ${consequence}. Accounts whose signatures carry a fee charge ` +
+      "(native Falcon or LogicSig accounts) can't sign through the AlgoKit adapter; use the aplane SDK's " +
+      "signTransaction or signTransactions instead."
+    );
+  }
+  return `apsigner returned AlgoKit transaction ${index} changed; ${consequence}.`;
 }
 
 export function createApsignerAccount(options: ApsignerAccountOptions): ApsignerAccount {

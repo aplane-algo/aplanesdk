@@ -537,9 +537,17 @@ The adapter connects AlgoKit clients to APlane's transaction signing functions
 and presents the AlgoKit `addr` plus `signer(txn_group, indexes_to_sign)`
 account shape.
 
-Use `create_transaction.*` when APlane must own final signing and any
-APlane-managed group expansion. `algorand.send.*` owns the composer send path
-and signs inside that path.
+The adapter returns a signed transaction only if it is exactly the transaction
+AlgoKit built. AlgoKit computes transaction IDs from its own copies, so a
+transaction apsigner changed would land under an ID AlgoKit never sees, and
+`algorand.send.*` would report a failure for a payment that went through. So
+the adapter refuses, before anything is submitted, a group apsigner regrouped
+(LogicSig-budget dummies or a recomputed group ID) and any transaction it
+changed, including the authorization charge it adds to a lone transaction's fee
+for a native Falcon or LogicSig account. Those accounts can't sign through the
+adapter, on either `create_transaction.*` or `algorand.send.*`; sign their
+transactions with the SDK's `sign_transaction` or `sign_transactions`, which
+return what apsigner signed. An ed25519 account carries no charge.
 
 The Python AlgoKit signer callback is synchronous. `ApsignerAccount` exposes
 `cancel()` as the cancellation side channel and rejects overlapping sign calls

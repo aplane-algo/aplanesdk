@@ -5044,6 +5044,13 @@ def _verify_signed_transaction_matches_canonical(
     signed_hex: str,
     canonical_hex: str,
 ) -> None:
+    if _signed_transaction_txn_hex(label, index, signed_hex) != canonical_hex.lower():
+        raise SignerError(f"{label} {index} does not match the submitted canonical bytes")
+
+
+def _signed_transaction_txn_hex(label: str, index: int, signed_hex: str) -> str:
+    """The canonical TX-prefixed hex of the transaction inside a signed
+    transaction: the bytes its transaction ID is the hash of."""
     try:
         signed_bytes = bytes.fromhex(signed_hex)
     except ValueError as e:
@@ -5062,8 +5069,7 @@ def _verify_signed_transaction_matches_canonical(
     ):
         raise SignerError(f"{label} {index} did not decode as a signed transaction")
     encoded, _ = encode_transaction(decoded.transaction)
-    if encoded != canonical_hex.lower():
-        raise SignerError(f"{label} {index} does not match the submitted canonical bytes")
+    return str(encoded)
 
 
 def _bounded_cosigner_public_key(key: KeyInfo) -> str:
