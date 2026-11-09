@@ -978,16 +978,30 @@ export interface RekeyPrepParams {
 
 /**
  * Key registration transaction intent accepted by prepareKeyreg().
+ *
+ * `mode` is required. An online registration needs the vote, selection and
+ * state proof keys, the vote rounds and the key dilution; an offline one takes
+ * none of them and takes
+ * the account offline, which can register keys again later. A
+ * nonparticipating registration, which can never be undone, isn't offered,
+ * and apsigner refuses one.
  */
 export interface KeyregPrepParams {
   sender: string;
+  mode: "online" | "offline";
   voteKey?: Uint8Array | string;
   selectionKey?: Uint8Array | string;
   stateProofKey?: Uint8Array | string;
   voteFirst?: number | bigint;
   voteLast?: number | bigint;
   voteKeyDilution?: number | bigint;
-  nonParticipation?: boolean;
+  /**
+   * Ask for consensus incentive eligibility, on an online registration only.
+   * Unless the account is already eligible, the fee is raised to the 2 ALGO
+   * the protocol requires; an explicit lower `fee` is refused. An eligible
+   * account stays eligible and pays no extra fee.
+   */
+  incentiveEligible?: boolean;
   note?: Uint8Array;
   fee?: number;
 }

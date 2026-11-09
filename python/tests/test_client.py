@@ -2780,32 +2780,146 @@ class TestPrepHelpers:
         with pytest.raises(SignerError, match="rekey target is itself rekeyed"):
             client.prepare_rekey(algod, sender=sender, rekey_to=rekey_to)
 
-    def test_prepare_keyreg_nonparticipation(self):
-        sender = sdk_test_address(1)
-        algod = MockAlgod({
-            sender: {"amount": 2_000_000, "min-balance": 100_000},
+    def _keyreg_algod(self, sender, already_eligible=False, amount=5_000_000):
+        return MockAlgod({
+            sender: {
+                "amount": amount,
+                "min-balance": 100_000,
+                "incentive-eligible": already_eligible,
+            },
         })
+
+    @staticmethod
+    def _online_keyreg():
+        key32 = base64.b64encode(bytes(32)).decode()
+        key64 = base64.b64encode(bytes(64)).decode()
+        return dict(
+            mode="online",
+            votekey=key32,
+            selkey=key32,
+            sprfkey=key64,
+            votefst=10,
+            votelst=20,
+            votekd=5,
+        )
+
+    def test_prepare_keyreg_requires_mode(self):
+        # The mode is always explicit, so a forgotten key never takes an
+        # account offline.
+        sender = sdk_test_address(1)
+        algod = self._keyreg_algod(sender)
+        client = make_client()
+        with pytest.raises(TypeError, match="mode"):
+            client.prepare_keyreg(algod, sender=sender)  # type: ignore[call-arg]
+        with pytest.raises(ValueError, match='mode is required: "online" or "offline"'):
+            client.prepare_keyreg(algod, sender=sender, mode="")
+        with pytest.raises(ValueError, match="mode 'part' is not \"online\" or \"offline\""):
+            client.prepare_keyreg(algod, sender=sender, mode="part")
+
+    def test_prepare_keyreg_online_requires_participation_keys(self):
+        sender = sdk_test_address(1)
+        algod = self._keyreg_algod(sender)
+        client = make_client()
+        with pytest.raises(ValueError, match="votekey is required"):
+            client.prepare_keyreg(algod, sender=sender, mode="online")
+        # The network refuses an online keyreg without a state proof key.
+        online = self._online_keyreg()
+        online["sprfkey"] = None
+        with pytest.raises(ValueError, match="sprfkey is required"):
+            client.prepare_keyreg(algod, sender=sender, **online)
+
+    def test_prepare_keyreg_refuses_unaffordable_fee(self):
+        # The fee, including the 2 ALGO incentive fee, must be payable without
+        # going below the minimum balance.
+        sender = sdk_test_address(1)
+        algod = self._keyreg_algod(sender, amount=1_600_000)
+        client = make_client()
+        with pytest.raises(
+            SignerError,
+            match="insufficient funds for keyreg fee: available 1500000, fee 2000000",
+        ):
+            client.prepare_keyreg(
+                algod, sender=sender, incentive_eligible=True, **self._online_keyreg()
+            )
+
+    def test_prepare_keyreg_offline_treats_empty_fields_as_unset(self):
+        # Like Go, 0 and an empty key count as unset on an offline keyreg.
+        sender = sdk_test_address(1)
+        algod = self._keyreg_algod(sender)
         client = make_client()
         with patch.object(client.session, "get", side_effect=[
             self._status(),
             self._keys(sender),
         ]):
             prepared = client.prepare_keyreg(
-                algod,
-                sender=sender,
-                nonpart=True,
+                algod, sender=sender, mode="offline", votekey="", votefst=0, votekd=0
             )
-
-        assert prepared.transaction.nonpart is True
-        assert prepared.checks[0].name == "keyreg"
+        assert prepared.checks[0].data == {"mode": "offline"}
 
     def test_prepare_keyreg_online(self):
         sender = sdk_test_address(1)
-        key32 = base64.b64encode(bytes(32)).decode()
-        key64 = base64.b64encode(bytes(64)).decode()
-        algod = MockAlgod({
-            sender: {"amount": 2_000_000, "min-balance": 100_000},
-        })
+        algod = self._keyreg_algod(sender)
+        client = make_client()
+        with patch.object(client.session, "get", side_effect=[
+            self._status(),
+            self._keys(sender),
+        ]):
+            prepared = client.prepare_keyreg(algod, sender=sender, **self._online_keyreg())
+
+        assert prepared.transaction.votefst == 10
+        assert prepared.transaction.votelst == 20
+        assert not prepared.transaction.nonpart
+        assert prepared.transaction.fee < 2_000_000
+        assert prepared.checks[0].data["mode"] == "online"
+        assert prepared.checks[0].data["incentive_fee_charged"] is False
+
+    def test_prepare_keyreg_offline(self):
+        sender = sdk_test_address(1)
+        algod = self._keyreg_algod(sender)
+        client = make_client()
+        with patch.object(client.session, "get", side_effect=[
+            self._status(),
+            self._keys(sender),
+        ]):
+            prepared = client.prepare_keyreg(algod, sender=sender, mode="offline")
+
+        txn = prepared.transaction
+        assert isinstance(txn, transaction.KeyregOfflineTxn)
+        assert txn.votepk is None and txn.selkey is None and txn.sprfkey is None
+        assert txn.votefst is None and txn.votelst is None and txn.votekd is None
+        assert not txn.nonpart
+        assert prepared.checks[0].data == {"mode": "offline"}
+
+    @pytest.mark.parametrize("field,extra", [
+        ("but votekey is set", {"votekey": base64.b64encode(bytes(32)).decode()}),
+        ("but selkey is set", {"selkey": base64.b64encode(bytes(32)).decode()}),
+        ("but sprfkey is set", {"sprfkey": base64.b64encode(bytes(64)).decode()}),
+        ("but votefst is set", {"votefst": 1}),
+        ("but votelst is set", {"votelst": 100}),
+        ("but votekd is set", {"votekd": 10}),
+        ("incentive eligibility needs an online keyreg", {"incentive_eligible": True}),
+    ])
+    def test_prepare_keyreg_offline_refuses_online_fields(self, field, extra):
+        # Offline with any participation field, or with incentive
+        # eligibility, is contradictory, so it is refused rather than
+        # building either registration.
+        sender = sdk_test_address(1)
+        algod = self._keyreg_algod(sender)
+        client = make_client()
+        with pytest.raises(ValueError, match=field):
+            client.prepare_keyreg(algod, sender=sender, mode="offline", **extra)
+
+    @pytest.mark.parametrize("already_eligible,fee,want_fee,charged", [
+        (False, None, 2_000_000, True),
+        (False, 3_000_000, 3_000_000, True),
+        (True, None, None, False),
+    ])
+    def test_prepare_keyreg_incentive_eligibility(self, already_eligible, fee, want_fee, charged):
+        # Incentive eligibility raises the fee to the protocol's 2 ALGO,
+        # unless the account is already eligible: an online re-registration
+        # keeps it.
+        sender = sdk_test_address(1)
+        algod = self._keyreg_algod(sender, already_eligible=already_eligible)
         client = make_client()
         with patch.object(client.session, "get", side_effect=[
             self._status(),
@@ -2814,16 +2928,33 @@ class TestPrepHelpers:
             prepared = client.prepare_keyreg(
                 algod,
                 sender=sender,
-                votekey=key32,
-                selkey=key32,
-                sprfkey=key64,
-                votefst=10,
-                votelst=20,
-                votekd=5,
+                incentive_eligible=True,
+                fee=fee,
+                **self._online_keyreg(),
             )
 
-        assert prepared.transaction.votefst == 10
-        assert prepared.transaction.votelst == 20
+        if want_fee is None:
+            assert prepared.transaction.fee < 2_000_000
+        else:
+            assert prepared.transaction.fee == want_fee
+        check = prepared.checks[0]
+        assert check.data["incentive_eligible"] is True
+        assert check.data["incentive_fee_charged"] is charged
+        assert check.message
+
+    def test_prepare_keyreg_incentive_eligibility_refuses_low_explicit_fee(self):
+        # An explicit fee below the 2 ALGO the protocol needs is refused, not
+        # overridden.
+        sender = sdk_test_address(1)
+        algod = self._keyreg_algod(sender)
+        client = make_client()
+        with pytest.raises(
+            SignerError,
+            match="needs a keyreg fee of at least 2000000 microAlgos, but fee is set to 0",
+        ):
+            client.prepare_keyreg(
+                algod, sender=sender, incentive_eligible=True, fee=0, **self._online_keyreg()
+            )
 
     def test_prepare_app_call(self):
         sender = sdk_test_address(1)

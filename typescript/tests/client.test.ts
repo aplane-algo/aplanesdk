@@ -772,28 +772,90 @@ describe("SignerClient", () => {
       );
     });
 
-    it("prepares keyreg nonparticipation", async () => {
+    // The mode is always explicit, so a forgotten key never takes an account
+    // offline.
+    it("requires a keyreg mode", async () => {
+      const sender = testAddress(1);
+      const algod = mockAlgod({
+        [sender]: { amount: 2_000_000, minBalance: 100_000 },
+      });
+      const client = new SignerClient("http://localhost:11270");
+      await assert.rejects(
+        client.prepareKeyreg(algod, { sender } as any),
+        /mode is required: "online" or "offline"/,
+      );
+      await assert.rejects(
+        client.prepareKeyreg(algod, { sender, mode: "part" } as any),
+        /mode "part" is not "online" or "offline"/,
+      );
+    });
+
+    it("requires participation keys for an online keyreg", async () => {
+      const sender = testAddress(1);
+      const algod = mockAlgod({
+        [sender]: { amount: 2_000_000, minBalance: 100_000 },
+      });
+
+      const client = new SignerClient("http://localhost:11270");
+      await assert.rejects(
+        client.prepareKeyreg(algod, { sender, mode: "online" }),
+        /voteKey is required/,
+      );
+      // The network refuses an online keyreg without a state proof key.
+      await assert.rejects(
+        client.prepareKeyreg(algod, { ...onlineKeyreg(sender), stateProofKey: undefined }),
+        /stateProofKey is required/,
+      );
+    });
+
+    // The fee, including the 2 ALGO incentive fee, must be payable without
+    // going below the minimum balance.
+    it("refuses an unaffordable keyreg fee", async () => {
+      const sender = testAddress(1);
+      const algod = mockAlgod({
+        [sender]: { amount: 1_600_000, minBalance: 100_000 },
+      });
+      const client = new SignerClient("http://localhost:11270");
+      await assert.rejects(
+        client.prepareKeyreg(algod, { ...onlineKeyreg(sender), incentiveEligible: true }),
+        /insufficient funds for keyreg fee: available 1500000, fee 2000000/,
+      );
+    });
+
+    // Like Go, 0 and an empty key count as unset on an offline keyreg.
+    it("treats empty participation fields as unset on an offline keyreg", async () => {
       const sender = testAddress(1);
       const algod = mockAlgod({
         [sender]: { amount: 2_000_000, minBalance: 100_000 },
       });
       queueStatusResponse(60, 1);
       mockFetch.mockResolvedValueOnce(keysResponse(sender));
-
       const client = new SignerClient("http://localhost:11270");
       const prepared = await client.prepareKeyreg(algod, {
         sender,
-        nonParticipation: true,
+        mode: "offline",
+        voteKey: "",
+        selectionKey: new Uint8Array(0),
+        voteFirst: 0,
+        voteLast: 0n,
+        voteKeyDilution: 0,
       });
+      assert.deepEqual(prepared.checks[0].data, { mode: "offline" });
+    });
 
-      assert.equal((prepared.transaction as any).keyreg.nonParticipation, true);
-      assert.equal(prepared.checks?.[0].name, "keyreg");
+    const onlineKeyreg = (sender: string) => ({
+      sender,
+      mode: "online" as const,
+      voteKey: new Uint8Array(32).fill(1),
+      selectionKey: new Uint8Array(32).fill(1),
+      stateProofKey: new Uint8Array(64).fill(2),
+      voteFirst: 10,
+      voteLast: 20,
+      voteKeyDilution: 5,
     });
 
     it("prepares online keyreg", async () => {
       const sender = testAddress(1);
-      const key32 = new Uint8Array(32).fill(1);
-      const key64 = new Uint8Array(64).fill(2);
       const algod = mockAlgod({
         [sender]: { amount: 2_000_000, minBalance: 100_000 },
       });
@@ -801,18 +863,107 @@ describe("SignerClient", () => {
       mockFetch.mockResolvedValueOnce(keysResponse(sender));
 
       const client = new SignerClient("http://localhost:11270");
-      const prepared = await client.prepareKeyreg(algod, {
-        sender,
-        voteKey: key32,
-        selectionKey: key32,
-        stateProofKey: key64,
-        voteFirst: 10,
-        voteLast: 20,
-        voteKeyDilution: 5,
-      });
+      const prepared = await client.prepareKeyreg(algod, onlineKeyreg(sender));
 
-      assert.equal(String((prepared.transaction as any).keyreg.voteFirst), "10");
-      assert.equal(String((prepared.transaction as any).keyreg.voteLast), "20");
+      const keyreg = (prepared.transaction as any).keyreg;
+      assert.equal(String(keyreg.voteFirst), "10");
+      assert.equal(String(keyreg.voteLast), "20");
+      assert.equal(keyreg.nonParticipation, false);
+      assert.ok(prepared.transaction.fee < 2_000_000n);
+      assert.equal(prepared.checks[0].data?.mode, "online");
+      assert.equal(prepared.checks[0].data?.incentiveFeeCharged, false);
+    });
+
+    it("prepares offline keyreg", async () => {
+      const sender = testAddress(1);
+      const algod = mockAlgod({
+        [sender]: { amount: 2_000_000, minBalance: 100_000 },
+      });
+      queueStatusResponse(60, 1);
+      mockFetch.mockResolvedValueOnce(keysResponse(sender));
+
+      const client = new SignerClient("http://localhost:11270");
+      const prepared = await client.prepareKeyreg(algod, { sender, mode: "offline" });
+
+      const keyreg = (prepared.transaction as any).keyreg;
+      assert.equal(prepared.transaction.type, algosdk.TransactionType.keyreg);
+      assert.equal(keyreg.voteKey, undefined);
+      assert.equal(keyreg.selectionKey, undefined);
+      assert.equal(keyreg.stateProofKey, undefined);
+      assert.equal(keyreg.voteFirst, undefined);
+      assert.equal(keyreg.nonParticipation, false);
+      assert.deepEqual(prepared.checks[0].data, { mode: "offline" });
+    });
+
+    // Offline with any participation field, or with incentive eligibility, is
+    // contradictory, so it is refused rather than building either registration.
+    it("refuses online fields on an offline keyreg", async () => {
+      const sender = testAddress(1);
+      const algod = mockAlgod({
+        [sender]: { amount: 2_000_000, minBalance: 100_000 },
+      });
+      const client = new SignerClient("http://localhost:11270");
+      const key32 = new Uint8Array(32).fill(1);
+      const key64 = new Uint8Array(64).fill(2);
+      const cases: [RegExp, Record<string, unknown>][] = [
+        [/but voteKey is set/, { voteKey: key32 }],
+        [/but selectionKey is set/, { selectionKey: key32 }],
+        [/but stateProofKey is set/, { stateProofKey: key64 }],
+        [/but voteFirst is set/, { voteFirst: 1 }],
+        [/but voteLast is set/, { voteLast: 100 }],
+        [/but voteKeyDilution is set/, { voteKeyDilution: 10 }],
+        [/incentive eligibility needs an online keyreg/, { incentiveEligible: true }],
+      ];
+      for (const [want, extra] of cases) {
+        await assert.rejects(client.prepareKeyreg(algod, { sender, mode: "offline", ...extra }), want);
+      }
+    });
+
+    // Incentive eligibility raises the fee to the protocol's 2 ALGO, unless
+    // the account is already eligible: an online re-registration keeps it.
+    for (const tc of [
+      { name: "not yet eligible", alreadyEligible: false, fee: undefined, wantFee: 2_000_000n, charged: true },
+      { name: "a higher explicit fee is kept", alreadyEligible: false, fee: 3_000_000, wantFee: 3_000_000n, charged: true },
+      { name: "already eligible", alreadyEligible: true, fee: undefined, wantFee: undefined, charged: false },
+    ]) {
+      it(`prepares incentive-eligible keyreg: ${tc.name}`, async () => {
+        const sender = testAddress(1);
+        const algod = mockAlgod({
+          [sender]: { amount: 5_000_000, minBalance: 100_000, incentiveEligible: tc.alreadyEligible },
+        });
+        queueStatusResponse(60, 1);
+        mockFetch.mockResolvedValueOnce(keysResponse(sender));
+
+        const client = new SignerClient("http://localhost:11270");
+        const prepared = await client.prepareKeyreg(algod, {
+          ...onlineKeyreg(sender),
+          incentiveEligible: true,
+          fee: tc.fee,
+        });
+
+        if (tc.wantFee === undefined) {
+          assert.ok(prepared.transaction.fee < 2_000_000n, `fee ${prepared.transaction.fee} was raised`);
+        } else {
+          assert.equal(prepared.transaction.fee, tc.wantFee);
+        }
+        assert.equal(prepared.checks[0].data?.incentiveEligible, true);
+        assert.equal(prepared.checks[0].data?.incentiveFeeCharged, tc.charged);
+        assert.ok(prepared.checks[0].message);
+      });
+    }
+
+    // An explicit fee below the 2 ALGO the protocol needs is refused, not
+    // overridden.
+    it("refuses a low explicit fee on an incentive-eligible keyreg", async () => {
+      const sender = testAddress(1);
+      const algod = mockAlgod({
+        [sender]: { amount: 5_000_000, minBalance: 100_000 },
+      });
+      const client = new SignerClient("http://localhost:11270");
+      await assert.rejects(
+        client.prepareKeyreg(algod, { ...onlineKeyreg(sender), incentiveEligible: true, fee: 0 }),
+        /incentive eligibility needs a keyreg fee of at least 2000000 microAlgos, but fee is set to 0/,
+      );
     });
 
     it("prepares raw app calls with app call info", async () => {

@@ -299,52 +299,217 @@ func TestPrepareRekeyAllowsCosignedSignerTarget(t *testing.T) {
 	}
 }
 
-func TestPrepareKeyRegNonparticipation(t *testing.T) {
-	sender := sdkTestAddress(1)
-	receiver := sdkTestAddress(2)
-	signer, algodClient, cleanup := newPrepTestClients(t, sender, receiver, 2_000_000, 0, false)
-	defer cleanup()
+// newKeyRegTestClients serves a signer holding sender and an algod reporting
+// whether sender is already incentive eligible.
+func newKeyRegTestClients(t *testing.T, sender string, incentiveEligible bool) (*SignerClient, *algod.Client) {
+	t.Helper()
+	return newKeyRegTestClientsWithBalance(t, sender, incentiveEligible, 5_000_000)
+}
 
-	prepared, err := signer.PrepareKeyReg(context.Background(), algodClient, KeyRegPrepParams{
-		Sender:           sender,
-		Nonparticipation: true,
-	})
+func newKeyRegTestClientsWithBalance(t *testing.T, sender string, incentiveEligible bool, amount uint64) (*SignerClient, *algod.Client) {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/status":
+			json.NewEncoder(w).Encode(StatusResponse{State: "unlocked", ReadyForSigning: true, KeysetRevision: 1})
+		case r.URL.Path == "/keys":
+			json.NewEncoder(w).Encode(KeysResponse{Count: 1, Keys: []KeyInfo{{Address: sender, KeyType: "ed25519"}}})
+		case r.URL.Path == "/v2/transactions/params":
+			json.NewEncoder(w).Encode(map[string]any{
+				"fee":               1000,
+				"genesis-id":        "testnet-v1",
+				"genesis-hash":      "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+				"last-round":        100,
+				"consensus-version": "future",
+				"min-fee":           1000,
+			})
+		case r.URL.Path == "/v2/accounts/"+sender:
+			json.NewEncoder(w).Encode(map[string]any{
+				"address":            sender,
+				"amount":             amount,
+				"min-balance":        uint64(100_000),
+				"incentive-eligible": incentiveEligible,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	algodClient, err := algod.MakeClient(server.URL, "")
 	if err != nil {
-		t.Fatalf("PrepareKeyReg() error = %v", err)
+		t.Fatalf("algod.MakeClient() error = %v", err)
 	}
-	if prepared.Transaction == nil || prepared.Transaction.Type != types.KeyRegistrationTx {
-		t.Fatalf("keyreg transaction mismatch: %#v", prepared.Transaction)
+	return NewSignerClient(server.URL), algodClient
+}
+
+func onlineKeyRegParams(sender string) KeyRegPrepParams {
+	return KeyRegPrepParams{
+		Sender:          sender,
+		Mode:            KeyRegOnline,
+		VoteKey:         base64.StdEncoding.EncodeToString(make([]byte, 32)),
+		SelectionKey:    base64.StdEncoding.EncodeToString(make([]byte, 32)),
+		StateProofKey:   base64.StdEncoding.EncodeToString(make([]byte, 64)),
+		VoteFirst:       10,
+		VoteLast:        20,
+		VoteKeyDilution: 5,
 	}
-	if !prepared.Transaction.Nonparticipation {
-		t.Fatal("Nonparticipation = false, want true")
+}
+
+// The mode is always explicit, so a forgotten key never takes an account
+// offline.
+func TestPrepareKeyRegRequiresMode(t *testing.T) {
+	sender := sdkTestAddress(1)
+	signer, algodClient := newKeyRegTestClients(t, sender, false)
+	for mode, want := range map[KeyRegMode]string{
+		"":     `mode is required: "online" or "offline"`,
+		"part": `mode "part" is not "online" or "offline"`,
+	} {
+		params := onlineKeyRegParams(sender)
+		params.Mode = mode
+		if prepared, err := signer.PrepareKeyReg(context.Background(), algodClient, params); err == nil || prepared != nil || err.Error() != want {
+			t.Fatalf("mode %q: PrepareKeyReg() = %v, %v; want %q", mode, prepared, err, want)
+		}
 	}
-	if prepared.Checks[0].Name != "keyreg" {
-		t.Fatalf("checks mismatch: %#v", prepared.Checks)
+}
+
+func TestPrepareKeyRegOnlineRequiresParticipationKeys(t *testing.T) {
+	sender := sdkTestAddress(1)
+	signer, algodClient := newKeyRegTestClients(t, sender, false)
+	prepared, err := signer.PrepareKeyReg(context.Background(), algodClient, KeyRegPrepParams{Sender: sender, Mode: KeyRegOnline})
+	if err == nil || prepared != nil || err.Error() != "vote_key is required" {
+		t.Fatalf("PrepareKeyReg(online, no keys) = %v, %v; want the vote_key refusal", prepared, err)
+	}
+	// The network refuses an online keyreg without a state proof key.
+	params := onlineKeyRegParams(sender)
+	params.StateProofKey = ""
+	if prepared, err := signer.PrepareKeyReg(context.Background(), algodClient, params); err == nil || prepared != nil || err.Error() != "state_proof_key is required" {
+		t.Fatalf("PrepareKeyReg(online, no state proof key) = %v, %v; want the state_proof_key refusal", prepared, err)
+	}
+}
+
+// The fee, including the 2 ALGO incentive fee, must be payable without going
+// below the minimum balance.
+func TestPrepareKeyRegRefusesUnaffordableFee(t *testing.T) {
+	sender := sdkTestAddress(1)
+	signer, algodClient := newKeyRegTestClientsWithBalance(t, sender, false, 1_600_000)
+	params := onlineKeyRegParams(sender)
+	params.IncentiveEligible = true
+	prepared, err := signer.PrepareKeyReg(context.Background(), algodClient, params)
+	if err == nil || prepared != nil || err.Error() != "insufficient funds for keyreg fee: available 1500000, fee 2000000" {
+		t.Fatalf("PrepareKeyReg(eligible, 1.5 ALGO spendable) = %v, %v", prepared, err)
+	}
+	params.IncentiveEligible = false
+	if _, err := signer.PrepareKeyReg(context.Background(), algodClient, params); err != nil {
+		t.Fatalf("PrepareKeyReg(ordinary fee) error = %v", err)
 	}
 }
 
 func TestPrepareKeyRegOnline(t *testing.T) {
 	sender := sdkTestAddress(1)
-	receiver := sdkTestAddress(2)
-	signer, algodClient, cleanup := newPrepTestClients(t, sender, receiver, 2_000_000, 0, false)
-	defer cleanup()
-	key32 := base64.StdEncoding.EncodeToString(make([]byte, 32))
-	key64 := base64.StdEncoding.EncodeToString(make([]byte, 64))
-
-	prepared, err := signer.PrepareKeyReg(context.Background(), algodClient, KeyRegPrepParams{
-		Sender:          sender,
-		VoteKey:         key32,
-		SelectionKey:    key32,
-		StateProofKey:   key64,
-		VoteFirst:       10,
-		VoteLast:        20,
-		VoteKeyDilution: 5,
-	})
+	signer, algodClient := newKeyRegTestClients(t, sender, false)
+	prepared, err := signer.PrepareKeyReg(context.Background(), algodClient, onlineKeyRegParams(sender))
 	if err != nil {
 		t.Fatalf("PrepareKeyReg() error = %v", err)
 	}
-	if prepared.Transaction == nil || prepared.Transaction.VoteFirst != 10 || prepared.Transaction.VoteLast != 20 {
-		t.Fatalf("keyreg fields mismatch: %#v", prepared.Transaction)
+	txn := prepared.Transaction
+	if txn == nil || txn.VoteFirst != 10 || txn.VoteLast != 20 || txn.Nonparticipation {
+		t.Fatalf("keyreg fields mismatch: %#v", txn)
+	}
+	if txn.Fee >= incentiveEligibilityFee {
+		t.Fatalf("fee = %d, want the suggested fee without incentive eligibility", txn.Fee)
+	}
+	if data := prepared.Checks[0].Data; data["mode"] != "online" || data["incentive_fee_charged"] != false {
+		t.Fatalf("keyreg check data = %#v", data)
+	}
+}
+
+func TestPrepareKeyRegOffline(t *testing.T) {
+	sender := sdkTestAddress(1)
+	signer, algodClient := newKeyRegTestClients(t, sender, false)
+	prepared, err := signer.PrepareKeyReg(context.Background(), algodClient, KeyRegPrepParams{Sender: sender, Mode: KeyRegOffline})
+	if err != nil {
+		t.Fatalf("PrepareKeyReg(offline) error = %v", err)
+	}
+	txn := prepared.Transaction
+	if txn == nil || txn.Type != types.KeyRegistrationTx {
+		t.Fatalf("offline keyreg = %#v, want a keyreg", txn)
+	}
+	if txn.KeyregTxnFields != (types.KeyregTxnFields{}) {
+		t.Fatalf("offline keyreg fields = %#v, want none: keyless, and not nonparticipating", txn.KeyregTxnFields)
+	}
+	if data := prepared.Checks[0].Data; len(data) != 1 || data["mode"] != "offline" {
+		t.Fatalf("keyreg check data = %#v, want only the offline mode", data)
+	}
+}
+
+// Offline with any participation field, or with incentive eligibility, is
+// contradictory, so it is refused rather than building either registration.
+func TestPrepareKeyRegOfflineRefusesOnlineFields(t *testing.T) {
+	key32 := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	key64 := base64.StdEncoding.EncodeToString(make([]byte, 64))
+	for want, params := range map[string]KeyRegPrepParams{
+		"but vote_key is set":                          {VoteKey: key32},
+		"but selection_key is set":                     {SelectionKey: key32},
+		"but state_proof_key is set":                   {StateProofKey: key64},
+		"but vote_first is set":                        {VoteFirst: 1},
+		"but vote_last is set":                         {VoteLast: 100},
+		"but vote_key_dilution is set":                 {VoteKeyDilution: 10},
+		"incentive eligibility needs an online keyreg": {IncentiveEligible: true},
+	} {
+		params.Mode = KeyRegOffline
+		if err := validateKeyRegParams(params); err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("offline: error = %v, want %q", err, want)
+		}
+	}
+}
+
+// Incentive eligibility raises the fee to the protocol's 2 ALGO, unless the
+// account is already eligible: an online re-registration keeps eligibility.
+func TestPrepareKeyRegIncentiveEligibility(t *testing.T) {
+	sender := sdkTestAddress(1)
+	for _, tc := range []struct {
+		name            string
+		alreadyEligible bool
+		fee             uint64
+		wantFee         types.MicroAlgos // 0: the suggested fee, not raised
+		wantCharged     bool
+	}{
+		{"not yet eligible", false, 0, 2_000_000, true},
+		{"not yet eligible, higher flat fee kept", false, 3_000_000, 3_000_000, true},
+		{"already eligible", true, 0, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			signer, algodClient := newKeyRegTestClients(t, sender, tc.alreadyEligible)
+			params := onlineKeyRegParams(sender)
+			params.IncentiveEligible = true
+			params.Fee = tc.fee
+			prepared, err := signer.PrepareKeyReg(context.Background(), algodClient, params)
+			if err != nil {
+				t.Fatalf("PrepareKeyReg() error = %v", err)
+			}
+			fee := prepared.Transaction.Fee
+			if tc.wantFee == 0 && fee >= incentiveEligibilityFee || tc.wantFee != 0 && fee != tc.wantFee {
+				t.Fatalf("fee = %d, want %d (0: the suggested fee)", fee, tc.wantFee)
+			}
+			check := prepared.Checks[0]
+			if check.Data["incentive_eligible"] != true || check.Data["incentive_fee_charged"] != tc.wantCharged || check.Message == "" {
+				t.Fatalf("keyreg check = %#v", check)
+			}
+		})
+	}
+}
+
+// An explicit fee below the 2 ALGO the protocol needs is refused, not
+// overridden.
+func TestPrepareKeyRegIncentiveEligibilityRefusesLowExplicitFee(t *testing.T) {
+	sender := sdkTestAddress(1)
+	signer, algodClient := newKeyRegTestClients(t, sender, false)
+	params := onlineKeyRegParams(sender)
+	params.IncentiveEligible = true
+	params.UseFlatFee = true
+	prepared, err := signer.PrepareKeyReg(context.Background(), algodClient, params)
+	if err == nil || prepared != nil || !strings.Contains(err.Error(), "incentive eligibility needs a keyreg fee of at least 2000000 microAlgos, but fee is set to 0") {
+		t.Fatalf("PrepareKeyReg(fee 0, eligible) = %v, %v", prepared, err)
 	}
 }
 

@@ -1684,6 +1684,14 @@ function accountMinBalanceBig(accountInfo: AccountInfoResult | Record<string, an
   return BigInt(raw["min-balance"] ?? raw.min_balance ?? raw.minBalance ?? 0);
 }
 
+function accountIncentiveEligible(accountInfo: AccountInfoResult | Record<string, any>): boolean {
+  if (!accountInfo || typeof accountInfo === "string") {
+    return false;
+  }
+  const raw = accountInfo as Record<string, any>;
+  return Boolean(raw["incentive-eligible"] ?? raw.incentive_eligible ?? raw.incentiveEligible);
+}
+
 function accountAssetHolding(
   accountInfo: AccountInfoResult | Record<string, any>,
   assetId: number | bigint,
@@ -1863,7 +1871,7 @@ function rekeyTargetFlowCheck(rekeyTo: string, flow: string | undefined): void {
     case SIGNING_FLOW_COSIGNED1:
       return;
     case SIGNING_FLOW_ROTATING1:
-      throw new SignerError(`cannot rekey to ${rekeyTo}: it is a rotating account, whose address authorizes only itself`);
+      throw new SignerError(`cannot rekey to ${rekeyTo}: it is a rotating account, and its address is a one-time stage key; an account rekeyed to it would be stuck on that stage, and every signature would reuse that key`);
     default:
       throw new SignerError(
         `cannot rekey to ${rekeyTo}: it uses signing flow "${flow}", which this SDK cannot use as another account's authorizer`,
@@ -1871,15 +1879,59 @@ function rekeyTargetFlowCheck(rekeyTo: string, flow: string | undefined): void {
   }
 }
 
+// The protocol's minimum keyreg fee for an account to become eligible for
+// consensus incentives: GoOnlineFee, 2 ALGO since consensus v40. The ledger
+// grants eligibility only where payouts are enabled, as on MainNet, TestNet
+// and a current LocalNet; algod doesn't report either value.
+const INCENTIVE_ELIGIBILITY_FEE = 2_000_000n;
+
+// isSetKeyregField treats undefined, null, 0 and an empty key as unset, the
+// same as the Go SDK, which can't tell them apart.
+function isSetKeyregField(value: unknown): boolean {
+  if (value === undefined || value === null || value === "" || value === 0 || value === 0n) {
+    return false;
+  }
+  return !(value instanceof Uint8Array && value.length === 0);
+}
+
 function validateKeyregParams(params: KeyregPrepParams): void {
-  if (params.nonParticipation) {
+  const mode: unknown = params.mode;
+  if (mode === undefined || mode === null || mode === "") {
+    throw new SignerError('mode is required: "online" or "offline"');
+  }
+  if (mode === "offline") {
+    if (params.incentiveEligible) {
+      throw new SignerError("incentive eligibility needs an online keyreg");
+    }
+    const participationFields: [string, unknown][] = [
+      ["voteKey", params.voteKey],
+      ["selectionKey", params.selectionKey],
+      ["stateProofKey", params.stateProofKey],
+      ["voteFirst", params.voteFirst],
+      ["voteLast", params.voteLast],
+      ["voteKeyDilution", params.voteKeyDilution],
+    ];
+    for (const [name, value] of participationFields) {
+      if (isSetKeyregField(value)) {
+        throw new SignerError(
+          `an offline keyreg takes no participation keys or vote rounds, but ${name} is set`,
+        );
+      }
+    }
     return;
+  }
+  if (mode !== "online") {
+    throw new SignerError(`mode ${JSON.stringify(mode)} is not "online" or "offline"`);
   }
   if (!params.voteKey) {
     throw new SignerError("voteKey is required");
   }
   if (!params.selectionKey) {
     throw new SignerError("selectionKey is required");
+  }
+  // The network refuses an online keyreg without a state proof key.
+  if (!params.stateProofKey) {
+    throw new SignerError("stateProofKey is required");
   }
   if (!params.voteFirst) {
     throw new SignerError("voteFirst is required");
@@ -2975,20 +3027,45 @@ export class SignerClient {
     applyPrepFee(suggestedParams, params.fee);
 
     const senderInfo = await algodClient.accountInformation(params.sender).do();
-    const txn = algosdk.makeKeyRegistrationTxnWithSuggestedParamsFromObject({
-      sender: params.sender,
-      voteKey: params.voteKey,
-      selectionKey: params.selectionKey,
-      stateProofKey: params.stateProofKey,
-      voteFirst: params.voteFirst,
-      voteLast: params.voteLast,
-      voteKeyDilution: params.voteKeyDilution,
-      nonParticipation: params.nonParticipation,
-      note: params.note,
-      suggestedParams,
-    });
+    // An offline registration is a keyless one; nonParticipation is never set.
+    const txn = algosdk.makeKeyRegistrationTxnWithSuggestedParamsFromObject(
+      params.mode === "offline"
+        ? { sender: params.sender, note: params.note, suggestedParams }
+        : {
+          sender: params.sender,
+          voteKey: params.voteKey,
+          selectionKey: params.selectionKey,
+          stateProofKey: params.stateProofKey,
+          voteFirst: params.voteFirst,
+          voteLast: params.voteLast,
+          voteKeyDilution: params.voteKeyDilution,
+          note: params.note,
+          suggestedParams,
+        },
+    );
+    const chargeIncentiveFee = Boolean(params.incentiveEligible) && !accountIncentiveEligible(senderInfo);
+    if (chargeIncentiveFee && txn.fee < INCENTIVE_ELIGIBILITY_FEE) {
+      if (params.fee !== undefined) {
+        throw new SignerError(
+          `incentive eligibility needs a keyreg fee of at least ${INCENTIVE_ELIGIBILITY_FEE} microAlgos, but fee is set to ${params.fee}`,
+        );
+      }
+      txn.fee = INCENTIVE_ELIGIBILITY_FEE;
+    }
+    const available = accountAmountBig(senderInfo) > accountMinBalanceBig(senderInfo)
+      ? accountAmountBig(senderInfo) - accountMinBalanceBig(senderInfo)
+      : 0n;
+    if (available < txn.fee) {
+      throw new SignerError(`insufficient funds for keyreg fee: available ${available}, fee ${txn.fee}`);
+    }
 
     const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
+    let message: string | undefined;
+    if (chargeIncentiveFee) {
+      message = "the 2 ALGO incentive eligibility fee is included";
+    } else if (params.incentiveEligible) {
+      message = "the account is already incentive eligible and stays eligible, so no 2 ALGO fee is added";
+    }
     return {
       transaction: txn,
       authAddress: resolved.authAddress,
@@ -2996,12 +3073,17 @@ export class SignerClient {
       checks: [{
         name: "keyreg",
         status: "ok",
-        data: {
-          nonParticipation: Boolean(params.nonParticipation),
-          voteFirst: params.voteFirst || 0,
-          voteLast: params.voteLast || 0,
-          voteKeyDilution: params.voteKeyDilution || 0,
-        },
+        ...(message ? { message } : {}),
+        data: params.mode === "offline"
+          ? { mode: "offline" }
+          : {
+            mode: "online",
+            voteFirst: params.voteFirst || 0,
+            voteLast: params.voteLast || 0,
+            voteKeyDilution: params.voteKeyDilution || 0,
+            incentiveEligible: Boolean(params.incentiveEligible),
+            incentiveFeeCharged: chargeIncentiveFee,
+          },
       }],
     };
   }
