@@ -87,14 +87,18 @@ const (
 	KeyRegOffline KeyRegMode = "offline"
 )
 
-// incentiveEligibilityFee is the protocol's minimum keyreg fee (2 ALGO) for an
-// account to become eligible for consensus incentives.
+// incentiveEligibilityFee is the protocol's minimum keyreg fee for an account
+// to become eligible for consensus incentives: GoOnlineFee, 2 ALGO since
+// consensus v40. The ledger grants eligibility only where payouts are enabled,
+// as on MainNet, TestNet and a current LocalNet; algod doesn't report either
+// value, so the SDK can't check them.
 const incentiveEligibilityFee = 2_000_000
 
 // KeyRegPrepParams describes a key registration transaction intent.
 //
-// Mode is required. An online registration needs the participation keys, vote
-// rounds and key dilution; an offline one takes none of them. A
+// Mode is required. An online registration needs the vote, selection and state
+// proof keys, the vote rounds and the key dilution; an offline one takes none
+// of them. A
 // nonparticipating registration, which can never be undone, isn't offered, and
 // apsigner refuses one.
 type KeyRegPrepParams struct {
@@ -579,6 +583,9 @@ func (c *SignerClient) PrepareKeyReg(ctx context.Context, algodClient *algod.Cli
 		}
 		txn.Fee = incentiveEligibilityFee
 	}
+	if available := spendableBalance(senderAcct); available < uint64(txn.Fee) {
+		return nil, fmt.Errorf("insufficient funds for keyreg fee: available %d, fee %d", available, uint64(txn.Fee))
+	}
 
 	resolved, err := c.ResolveAuthAddress(ctx, params.Sender, func(context.Context, string) (string, error) {
 		return senderAcct.AuthAddr, nil
@@ -893,15 +900,21 @@ func applyPrepFee(params *types.SuggestedParams, fee uint64, useFlatFee bool) {
 	params.FlatFee = true
 }
 
+// spendableBalance is what the account can pay without going below its
+// minimum balance.
+func spendableBalance(account models.Account) uint64 {
+	if account.Amount > account.MinBalance {
+		return account.Amount - account.MinBalance
+	}
+	return 0
+}
+
 func paymentChecks(sender models.Account, amount uint64, fee uint64) ([]PreparedCheck, error) {
 	required := amount + fee
 	if required < amount {
 		return nil, fmt.Errorf("amount %d plus fee %d overflows uint64", amount, fee)
 	}
-	available := uint64(0)
-	if sender.Amount > sender.MinBalance {
-		available = sender.Amount - sender.MinBalance
-	}
+	available := spendableBalance(sender)
 	if available < required {
 		return nil, fmt.Errorf("insufficient funds: available %d, required %d", available, required)
 	}
@@ -1068,6 +1081,10 @@ func validateKeyRegParams(params KeyRegPrepParams) error {
 	}
 	if params.SelectionKey == "" {
 		return fmt.Errorf("selection_key is required")
+	}
+	// The network refuses an online keyreg without a state proof key.
+	if params.StateProofKey == "" {
+		return fmt.Errorf("state_proof_key is required")
 	}
 	if params.VoteFirst == 0 {
 		return fmt.Errorf("vote_first is required")

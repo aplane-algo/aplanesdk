@@ -2068,8 +2068,10 @@ def _rekey_target_flow_check(rekey_to: str, flow: str) -> None:
     )
 
 
-# The protocol's minimum keyreg fee (2 ALGO) for an account to become eligible
-# for consensus incentives.
+# The protocol's minimum keyreg fee for an account to become eligible for
+# consensus incentives: GoOnlineFee, 2 ALGO since consensus v40. The ledger
+# grants eligibility only where payouts are enabled, as on MainNet, TestNet and
+# a current LocalNet; algod doesn't report either value.
 _INCENTIVE_ELIGIBILITY_FEE = 2_000_000
 
 
@@ -2097,7 +2099,8 @@ def _validate_keyreg_params(
             ("votelst", votelst),
             ("votekd", votekd),
         ):
-            if value is not None:
+            # Like Go, 0 and an empty key count as unset.
+            if value:
                 raise ValueError(
                     "an offline keyreg takes no participation keys or vote rounds, "
                     f"but {name} is set"
@@ -2109,6 +2112,9 @@ def _validate_keyreg_params(
         raise ValueError("votekey is required")
     if not selkey:
         raise ValueError("selkey is required")
+    # The network refuses an online keyreg without a state proof key.
+    if not sprfkey:
+        raise ValueError("sprfkey is required")
     if not votefst:
         raise ValueError("votefst is required")
     if not votelst:
@@ -3383,10 +3389,10 @@ class SignerClient:
     ) -> PreparedTransaction:
         """Build a prepared key registration transaction.
 
-        ``mode`` is required. An ``"online"`` registration needs the
-        participation keys, vote rounds and key dilution; an ``"offline"`` one
-        takes none of them and takes the account offline, which can register
-        keys again later. A nonparticipating registration, which can never be
+        ``mode`` is required. An ``"online"`` registration needs the vote,
+        selection and state proof keys, the vote rounds and the key dilution;
+        an ``"offline"`` one takes none of them and takes the account offline,
+        which can register keys again later. A nonparticipating registration, which can never be
         undone, isn't offered, and apsigner refuses one.
 
         ``incentive_eligible`` asks for consensus incentive eligibility, on an
@@ -3438,6 +3444,11 @@ class SignerClient:
                     f"{_INCENTIVE_ELIGIBILITY_FEE} microAlgos, but fee is set to {fee}"
                 )
             txn.fee = _INCENTIVE_ELIGIBILITY_FEE
+        available = max(_account_amount(sender_info) - _account_min_balance(sender_info), 0)
+        if available < txn.fee:
+            raise SignerError(
+                f"insufficient funds for keyreg fee: available {available}, fee {txn.fee}"
+            )
 
         message = ""
         if charge_incentive_fee:

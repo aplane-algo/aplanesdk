@@ -78,6 +78,7 @@ def build_groups(addresses: dict) -> dict[str, PreparedGroup]:
         suggested_params(),
         votekey="CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo=",
         selkey="CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws=",
+        sprfkey="DAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA==",
         votefst=1,
         votelst=100,
         votekd=10,

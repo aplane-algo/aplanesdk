@@ -2780,10 +2780,10 @@ class TestPrepHelpers:
         with pytest.raises(SignerError, match="rekey target is itself rekeyed"):
             client.prepare_rekey(algod, sender=sender, rekey_to=rekey_to)
 
-    def _keyreg_algod(self, sender, already_eligible=False):
+    def _keyreg_algod(self, sender, already_eligible=False, amount=5_000_000):
         return MockAlgod({
             sender: {
-                "amount": 5_000_000,
+                "amount": amount,
                 "min-balance": 100_000,
                 "incentive-eligible": already_eligible,
             },
@@ -2822,6 +2822,39 @@ class TestPrepHelpers:
         client = make_client()
         with pytest.raises(ValueError, match="votekey is required"):
             client.prepare_keyreg(algod, sender=sender, mode="online")
+        # The network refuses an online keyreg without a state proof key.
+        online = self._online_keyreg()
+        online["sprfkey"] = None
+        with pytest.raises(ValueError, match="sprfkey is required"):
+            client.prepare_keyreg(algod, sender=sender, **online)
+
+    def test_prepare_keyreg_refuses_unaffordable_fee(self):
+        # The fee, including the 2 ALGO incentive fee, must be payable without
+        # going below the minimum balance.
+        sender = sdk_test_address(1)
+        algod = self._keyreg_algod(sender, amount=1_600_000)
+        client = make_client()
+        with pytest.raises(
+            SignerError,
+            match="insufficient funds for keyreg fee: available 1500000, fee 2000000",
+        ):
+            client.prepare_keyreg(
+                algod, sender=sender, incentive_eligible=True, **self._online_keyreg()
+            )
+
+    def test_prepare_keyreg_offline_treats_empty_fields_as_unset(self):
+        # Like Go, 0 and an empty key count as unset on an offline keyreg.
+        sender = sdk_test_address(1)
+        algod = self._keyreg_algod(sender)
+        client = make_client()
+        with patch.object(client.session, "get", side_effect=[
+            self._status(),
+            self._keys(sender),
+        ]):
+            prepared = client.prepare_keyreg(
+                algod, sender=sender, mode="offline", votekey="", votefst=0, votekd=0
+            )
+        assert prepared.checks[0].data == {"mode": "offline"}
 
     def test_prepare_keyreg_online(self):
         sender = sdk_test_address(1)

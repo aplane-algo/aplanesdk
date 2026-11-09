@@ -979,8 +979,9 @@ export interface RekeyPrepParams {
 /**
  * Key registration transaction intent accepted by prepareKeyreg().
  *
- * `mode` is required. An online registration needs the participation keys,
- * vote rounds and key dilution; an offline one takes none of them and takes
+ * `mode` is required. An online registration needs the vote, selection and
+ * state proof keys, the vote rounds and the key dilution; an offline one takes
+ * none of them and takes
  * the account offline, which can register keys again later. A
  * nonparticipating registration, which can never be undone, isn't offered,
  * and apsigner refuses one.

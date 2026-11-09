@@ -801,6 +801,46 @@ describe("SignerClient", () => {
         client.prepareKeyreg(algod, { sender, mode: "online" }),
         /voteKey is required/,
       );
+      // The network refuses an online keyreg without a state proof key.
+      await assert.rejects(
+        client.prepareKeyreg(algod, { ...onlineKeyreg(sender), stateProofKey: undefined }),
+        /stateProofKey is required/,
+      );
+    });
+
+    // The fee, including the 2 ALGO incentive fee, must be payable without
+    // going below the minimum balance.
+    it("refuses an unaffordable keyreg fee", async () => {
+      const sender = testAddress(1);
+      const algod = mockAlgod({
+        [sender]: { amount: 1_600_000, minBalance: 100_000 },
+      });
+      const client = new SignerClient("http://localhost:11270");
+      await assert.rejects(
+        client.prepareKeyreg(algod, { ...onlineKeyreg(sender), incentiveEligible: true }),
+        /insufficient funds for keyreg fee: available 1500000, fee 2000000/,
+      );
+    });
+
+    // Like Go, 0 and an empty key count as unset on an offline keyreg.
+    it("treats empty participation fields as unset on an offline keyreg", async () => {
+      const sender = testAddress(1);
+      const algod = mockAlgod({
+        [sender]: { amount: 2_000_000, minBalance: 100_000 },
+      });
+      queueStatusResponse(60, 1);
+      mockFetch.mockResolvedValueOnce(keysResponse(sender));
+      const client = new SignerClient("http://localhost:11270");
+      const prepared = await client.prepareKeyreg(algod, {
+        sender,
+        mode: "offline",
+        voteKey: "",
+        selectionKey: new Uint8Array(0),
+        voteFirst: 0,
+        voteLast: 0n,
+        voteKeyDilution: 0,
+      });
+      assert.deepEqual(prepared.checks[0].data, { mode: "offline" });
     });
 
     const onlineKeyreg = (sender: string) => ({

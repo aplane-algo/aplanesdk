@@ -1879,9 +1879,20 @@ function rekeyTargetFlowCheck(rekeyTo: string, flow: string | undefined): void {
   }
 }
 
-// The protocol's minimum keyreg fee (2 ALGO) for an account to become
-// eligible for consensus incentives.
+// The protocol's minimum keyreg fee for an account to become eligible for
+// consensus incentives: GoOnlineFee, 2 ALGO since consensus v40. The ledger
+// grants eligibility only where payouts are enabled, as on MainNet, TestNet
+// and a current LocalNet; algod doesn't report either value.
 const INCENTIVE_ELIGIBILITY_FEE = 2_000_000n;
+
+// isSetKeyregField treats undefined, null, 0 and an empty key as unset, the
+// same as the Go SDK, which can't tell them apart.
+function isSetKeyregField(value: unknown): boolean {
+  if (value === undefined || value === null || value === "" || value === 0 || value === 0n) {
+    return false;
+  }
+  return !(value instanceof Uint8Array && value.length === 0);
+}
 
 function validateKeyregParams(params: KeyregPrepParams): void {
   const mode: unknown = params.mode;
@@ -1901,7 +1912,7 @@ function validateKeyregParams(params: KeyregPrepParams): void {
       ["voteKeyDilution", params.voteKeyDilution],
     ];
     for (const [name, value] of participationFields) {
-      if (value !== undefined && value !== null) {
+      if (isSetKeyregField(value)) {
         throw new SignerError(
           `an offline keyreg takes no participation keys or vote rounds, but ${name} is set`,
         );
@@ -1917,6 +1928,10 @@ function validateKeyregParams(params: KeyregPrepParams): void {
   }
   if (!params.selectionKey) {
     throw new SignerError("selectionKey is required");
+  }
+  // The network refuses an online keyreg without a state proof key.
+  if (!params.stateProofKey) {
+    throw new SignerError("stateProofKey is required");
   }
   if (!params.voteFirst) {
     throw new SignerError("voteFirst is required");
@@ -3036,6 +3051,12 @@ export class SignerClient {
         );
       }
       txn.fee = INCENTIVE_ELIGIBILITY_FEE;
+    }
+    const available = accountAmountBig(senderInfo) > accountMinBalanceBig(senderInfo)
+      ? accountAmountBig(senderInfo) - accountMinBalanceBig(senderInfo)
+      : 0n;
+    if (available < txn.fee) {
+      throw new SignerError(`insufficient funds for keyreg fee: available ${available}, fee ${txn.fee}`);
     }
 
     const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);

@@ -111,7 +111,7 @@ func prepParityBuilders(t *testing.T) map[string]func() PreparedGroup {
 	if err := rekey.Rekey(rekeyTo); err != nil {
 		t.Fatalf("set rekey target: %v", err)
 	}
-	keyreg := must(transaction.MakeKeyRegTxnWithStateProofKey(sender, []byte("keyreg"), prepSuggestedParams(), "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo=", "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws=", "", 1, 100, 10, false))
+	keyreg := must(transaction.MakeKeyRegTxnWithStateProofKey(sender, []byte("keyreg"), prepSuggestedParams(), "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo=", "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws=", "DAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA==", 1, 100, 10, false))
 	keyregOffline := must(transaction.MakeKeyRegTxnWithStateProofKey(sender, []byte("keyreg-offline"), prepSuggestedParams(), "", "", "", 0, 0, 0, false))
 	rawApp := prepAppCallTxn(t, sender, appAccount, [][]byte{[]byte("raw")}, []byte("rawapp"))
 	abiApp := prepAppCallTxn(t, sender, appAccount, [][]byte{{0x01, 0x02, 0x03, 0x04}, {0, 0, 0, 0, 0, 0, 0, 42}}, []byte("abiapp"))

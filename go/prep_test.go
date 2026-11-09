@@ -303,6 +303,11 @@ func TestPrepareRekeyAllowsCosignedSignerTarget(t *testing.T) {
 // whether sender is already incentive eligible.
 func newKeyRegTestClients(t *testing.T, sender string, incentiveEligible bool) (*SignerClient, *algod.Client) {
 	t.Helper()
+	return newKeyRegTestClientsWithBalance(t, sender, incentiveEligible, 5_000_000)
+}
+
+func newKeyRegTestClientsWithBalance(t *testing.T, sender string, incentiveEligible bool, amount uint64) (*SignerClient, *algod.Client) {
+	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/status":
@@ -321,7 +326,7 @@ func newKeyRegTestClients(t *testing.T, sender string, incentiveEligible bool) (
 		case r.URL.Path == "/v2/accounts/"+sender:
 			json.NewEncoder(w).Encode(map[string]any{
 				"address":            sender,
-				"amount":             uint64(5_000_000),
+				"amount":             amount,
 				"min-balance":        uint64(100_000),
 				"incentive-eligible": incentiveEligible,
 			})
@@ -373,6 +378,29 @@ func TestPrepareKeyRegOnlineRequiresParticipationKeys(t *testing.T) {
 	prepared, err := signer.PrepareKeyReg(context.Background(), algodClient, KeyRegPrepParams{Sender: sender, Mode: KeyRegOnline})
 	if err == nil || prepared != nil || err.Error() != "vote_key is required" {
 		t.Fatalf("PrepareKeyReg(online, no keys) = %v, %v; want the vote_key refusal", prepared, err)
+	}
+	// The network refuses an online keyreg without a state proof key.
+	params := onlineKeyRegParams(sender)
+	params.StateProofKey = ""
+	if prepared, err := signer.PrepareKeyReg(context.Background(), algodClient, params); err == nil || prepared != nil || err.Error() != "state_proof_key is required" {
+		t.Fatalf("PrepareKeyReg(online, no state proof key) = %v, %v; want the state_proof_key refusal", prepared, err)
+	}
+}
+
+// The fee, including the 2 ALGO incentive fee, must be payable without going
+// below the minimum balance.
+func TestPrepareKeyRegRefusesUnaffordableFee(t *testing.T) {
+	sender := sdkTestAddress(1)
+	signer, algodClient := newKeyRegTestClientsWithBalance(t, sender, false, 1_600_000)
+	params := onlineKeyRegParams(sender)
+	params.IncentiveEligible = true
+	prepared, err := signer.PrepareKeyReg(context.Background(), algodClient, params)
+	if err == nil || prepared != nil || err.Error() != "insufficient funds for keyreg fee: available 1500000, fee 2000000" {
+		t.Fatalf("PrepareKeyReg(eligible, 1.5 ALGO spendable) = %v, %v", prepared, err)
+	}
+	params.IncentiveEligible = false
+	if _, err := signer.PrepareKeyReg(context.Background(), algodClient, params); err != nil {
+		t.Fatalf("PrepareKeyReg(ordinary fee) error = %v", err)
 	}
 }
 

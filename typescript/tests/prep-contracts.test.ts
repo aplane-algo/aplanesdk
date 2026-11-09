@@ -102,6 +102,7 @@ function buildGroups(addresses: Record<string, string>): Record<string, Prepared
     sender,
     voteKey: new Uint8Array(32).fill(0x0a),
     selectionKey: new Uint8Array(32).fill(0x0b),
+    stateProofKey: new Uint8Array(64).fill(0x0c),
     voteFirst: 1,
     voteLast: 100,
     voteKeyDilution: 10,
