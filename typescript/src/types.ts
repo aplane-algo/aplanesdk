@@ -5,8 +5,12 @@ import type { Transaction, modelsv2 } from "algosdk";
 import { SignerError } from "./errors.js";
 
 /**
- * Runtime argument specification for a generic LogicSig.
- * Position in the array corresponds to the TEAL arg index.
+ * Signing choreography labels name a frozen client flow. Clients route on
+ * signing_flow and must fail fast on labels they do not implement; an empty
+ * signing_flow means the ordinary /sign path.
+ *
+ * The transaction-aware LogicSig choreography: the signer classifies and signs
+ * a bounded account without a cosigner on the ordinary /sign path.
  */
 export const SIGNING_FLOW_BOUNDED1 = "bounded1";
 /**
@@ -86,6 +90,10 @@ export interface LogicSigResourceProfile {
   listedRekey?: LogicSigResourceUsage;
 }
 
+/**
+ * Runtime argument specification for a generic LogicSig.
+ * Position in the array corresponds to the TEAL arg index.
+ */
 export interface RuntimeArg {
   /** Internal name for the argument (e.g., "preimage") */
   name: string;

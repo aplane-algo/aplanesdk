@@ -27,7 +27,7 @@ type sdkNoncanonicalMap []interface{}
 
 func (sdkNoncanonicalMap) MapBySlice() {}
 
-func TestSignPreparedBoundedCosignerGroupOneTarget(t *testing.T) {
+func TestSignPreparedCosignedGroupOneTarget(t *testing.T) {
 	bounded := sdkTestAddress(21)
 	receiver := sdkTestAddress(22)
 	var frozenGroup []string
@@ -164,7 +164,7 @@ func TestSignPreparedBoundedCosignerGroupOneTarget(t *testing.T) {
 // component names the listed path, the SDK asks the cosigner nothing, and the
 // assembly target carries no cosigner signature. The position is budgeted on
 // the listed path's resources.
-func TestSignPreparedBoundedCosignerGroupSkipsTheCosignerOnAListedRekey(t *testing.T) {
+func TestSignPreparedCosignedGroupSkipsTheCosignerOnAListedRekey(t *testing.T) {
 	bounded := sdkTestAddress(23)
 	target := sdkTestAddress(24)
 	userClient, userServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
@@ -259,7 +259,7 @@ func TestSignPreparedBoundedCosignerGroupSkipsTheCosignerOnAListedRekey(t *testi
 // the signer budgets its fee purely from the declared pq_scheme. Omitting it
 // freezes an under-funded canonical group that the later /sign identity check
 // cannot detect, because the shortfall is already inside the canonical bytes.
-func TestSignPreparedBoundedCosignerGroupDeclaresNativePQPrimary(t *testing.T) {
+func TestSignPreparedCosignedGroupDeclaresNativePQPrimary(t *testing.T) {
 	for _, rejectSign := range []bool{false, true} {
 		t.Run(fmt.Sprintf("rejectSign=%v", rejectSign), func(t *testing.T) {
 			var eventsMu sync.Mutex
@@ -792,9 +792,9 @@ func TestRequestBoundedPrimaryPassthroughVerifiesTransactionIdentity(t *testing.
 			client,
 			[]string{canonical},
 			1,
-			map[int]CosignedSignTarget{},
+			map[int]cosignedSignTarget{},
 			map[int]*LogicSigResourceUsage{},
-			[]CosignedPrimarySignTarget{{TargetIndex: 0, AuthAddress: sender}},
+			[]cosignedPrimarySignTarget{{TargetIndex: 0, AuthAddress: sender}},
 		)
 	}
 	if _, err := args(); err != nil {
@@ -912,6 +912,262 @@ func TestBoundedFeeCeilingFollowsTheContract(t *testing.T) {
 			}
 			if err != nil || ceiling != tc.ceiling || has != tc.has {
 				t.Fatalf("boundedFeeCeiling() = %d, %v, %v", ceiling, has, err)
+			}
+		})
+	}
+}
+
+// A mixed group: a listed rekey (index 0), two spends that need the same
+// cosigner key (1 and 2), and an ordinary primary slot (3). The cosigner gets
+// one request for the two spends, with every other original position as
+// context and its app call description; the primary /sign declares each
+// cosigned position on the path its base component named; assembly carries a
+// cosigner signature only where the path needs one. A cosigner signature in
+// a scheme other than the account's cosigner key type is refused.
+func TestSignPreparedCosignedGroupMixedPaths(t *testing.T) {
+	for _, wrongScheme := range []bool{false, true} {
+		t.Run(fmt.Sprintf("wrongScheme=%v", wrongScheme), func(t *testing.T) {
+			listed := sdkTestAddress(61)
+			spendA := sdkTestAddress(62)
+			spendB := sdkTestAddress(63)
+			primary := sdkTestAddress(64)
+			receiver := sdkTestAddress(65)
+			rekeyTarget := sdkTestAddress(66)
+			appInfo := map[int]*AppCallInfo{0: {Mode: "listed"}, 3: {Mode: "primary"}}
+			var frozenGroup []string
+			var primarySign GroupSignRequest
+			var assembly AssemblyRequest
+			var cosignerRequests []capturedComponentRequest
+
+			userClient, userServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/status":
+					json.NewEncoder(w).Encode(StatusResponse{State: "unlocked", ApprovalWaitSeconds: 60})
+				case "/plan":
+					var req GroupSignRequest
+					if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+						t.Fatalf("decode plan request: %v", err)
+					}
+					frozenGroup = nil
+					for _, item := range req.Requests {
+						frozenGroup = append(frozenGroup, item.TxnBytesHex)
+					}
+					json.NewEncoder(w).Encode(PlanGroupResponse{Transactions: frozenGroup})
+				case "/sign/component":
+					var req ComponentRequest
+					if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+						t.Fatalf("decode bounded component request: %v", err)
+					}
+					if len(req.Targets) != 3 || len(req.ContextualPositions) != 1 || req.ContextualPositions[0].TargetIndex != 3 {
+						t.Fatalf("bounded component partition = %+v", req)
+					}
+					base := func(index int, account, path string) Component {
+						return Component{
+							TargetIndex: index, Kind: ComponentTargetKindBoundedBase, AuthAddress: account,
+							BaseSignatures: []string{"base-sig"}, AssemblyReceipt: "receipt",
+							SignatureScheme: "aplane.falcon1024.v1", Path: path,
+						}
+					}
+					json.NewEncoder(w).Encode(ComponentResponse{
+						RequestID: req.RequestID,
+						Components: []Component{
+							base(0, listed, ComponentPathListedRekey),
+							base(1, spendA, ComponentPathSpend),
+							base(2, spendB, ComponentPathSpend),
+						},
+					})
+				case "/sign":
+					if err := json.NewDecoder(r.Body).Decode(&primarySign); err != nil {
+						t.Fatalf("decode primary sign request: %v", err)
+					}
+					json.NewEncoder(w).Encode(GroupSignResponse{Signed: signedGroupFor(t, frozenGroup)})
+				case "/sign/assemble":
+					if err := json.NewDecoder(r.Body).Decode(&assembly); err != nil {
+						t.Fatalf("decode bounded assembly request: %v", err)
+					}
+					json.NewEncoder(w).Encode(AssemblyResponse{RequestID: assembly.RequestID, SignedGroup: signedGroupFor(t, assembly.GroupBytesHex)})
+				default:
+					t.Fatalf("unexpected user path %s", r.URL.Path)
+				}
+			})
+			defer userServer.Close()
+			cosignerClient, cosignerServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+				var req capturedComponentRequest
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Fatalf("decode cosigner component request: %v", err)
+				}
+				cosignerRequests = append(cosignerRequests, req)
+				scheme := KeyTypeWitnessFalcon1024
+				if wrongScheme {
+					scheme = "aplane.falcon1024.v1"
+				}
+				var components []Component
+				for _, index := range req.TargetIndices {
+					components = append(components, Component{
+						TargetIndex: index, Kind: ComponentTargetKindCosigner,
+						Signature: fmt.Sprintf("cosigner-sig-%d", index), SignatureScheme: scheme,
+					})
+				}
+				json.NewEncoder(w).Encode(ComponentResponse{RequestID: req.RequestID, Components: components})
+			})
+			defer cosignerServer.Close()
+
+			var genesisHash types.Digest
+			sp := types.SuggestedParams{
+				Fee: types.MicroAlgos(1000), FirstRoundValid: 1, LastRoundValid: 100,
+				GenesisID: "testnet-v1.0", GenesisHash: genesisHash[:], FlatFee: true,
+			}
+			rekeyTxn, err := transaction.MakePaymentTxn(listed, listed, 0, nil, "", sp)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if rekeyTxn.RekeyTo, err = types.DecodeAddress(rekeyTarget); err != nil {
+				t.Fatal(err)
+			}
+			spendATxn, err := transaction.MakePaymentTxn(spendA, receiver, 1000, nil, "", sp)
+			if err != nil {
+				t.Fatal(err)
+			}
+			spendBTxn, err := transaction.MakePaymentTxn(spendB, receiver, 2000, nil, "", sp)
+			if err != nil {
+				t.Fatal(err)
+			}
+			primaryTxn, err := transaction.MakePaymentTxn(primary, receiver, 3000, nil, "", sp)
+			if err != nil {
+				t.Fatal(err)
+			}
+			txns := []*types.Transaction{&rekeyTxn, &spendATxn, &spendBTxn, &primaryTxn}
+			groupID, err := algocrypto.ComputeGroupID([]types.Transaction{rekeyTxn, spendATxn, spendBTxn, primaryTxn})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, txn := range txns {
+				txn.Group = groupID
+			}
+			resources := &LogicSigResourceProfile{
+				Spend:         &LogicSigResourceUsage{ProgramBytes: 5308, ArgumentBytes: 3358, MaxOpcodeCost: 20000},
+				SpendingRekey: &LogicSigResourceUsage{ProgramBytes: 5308, ArgumentBytes: 2846, MaxOpcodeCost: 20000},
+				ListedRekey:   &LogicSigResourceUsage{ProgramBytes: 5308, ArgumentBytes: 1583, MaxOpcodeCost: 20000},
+			}
+			cosignedKey := func(address string) *KeyInfo {
+				return &KeyInfo{
+					Address: address, KeyType: "aplane.falcon1024.v1", SigningFlow: SigningFlowCosigned1,
+					LogicSigResources: resources, CosignerComponentKeyType: KeyTypeWitnessFalcon1024,
+					BoundedAuthorization: &BoundedAuthorizationInfo{
+						Contract: BoundedContractPlain1, Rekey: "spending_key",
+						RekeyList: &BoundedRekeyListInfo{Contract: "rekey_list1", Depth: 4},
+						Cosigner:  &BoundedCosignerAuthorizationInfo{ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: "aabb"},
+					},
+				}
+			}
+			result, err := SignPreparedCosignedGroup(PreparedCosignedGroupOptions{
+				UserClient: userClient, CosignerClient: cosignerClient, CosignerComponentKey: "COSIGNER_COMPONENT",
+				PreparedGroup: NewPreparedGroup(
+					PreparedTransaction{Transaction: &rekeyTxn, AuthAddress: listed, SignerKey: cosignedKey(listed), AppCallInfo: appInfo[0]},
+					PreparedTransaction{Transaction: &spendATxn, AuthAddress: spendA, SignerKey: cosignedKey(spendA)},
+					PreparedTransaction{Transaction: &spendBTxn, AuthAddress: spendB, SignerKey: cosignedKey(spendB)},
+					PreparedTransaction{
+						Transaction: &primaryTxn, AuthAddress: primary, AppCallInfo: appInfo[3],
+						SignerKey: &KeyInfo{Address: primary, KeyType: "ed25519", AuthorizationKind: AuthorizationKindEd25519},
+					},
+				),
+			})
+			if wrongScheme {
+				if err == nil || !strings.Contains(err.Error(), "used scheme") {
+					t.Fatalf("SignPreparedCosignedGroup() error = %v, want a scheme refusal", err)
+				}
+				if assembly.Targets != nil {
+					t.Fatal("a group with a wrong-scheme cosigner signature reached assembly")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("SignPreparedCosignedGroup() error = %v", err)
+			}
+
+			if len(cosignerRequests) != 1 {
+				t.Fatalf("cosigner requests = %d, want one for the shared key", len(cosignerRequests))
+			}
+			cosigner := cosignerRequests[0]
+			if fmt.Sprint(cosigner.TargetIndices) != "[1 2]" || cosigner.ComponentKey != "COSIGNER_COMPONENT" {
+				t.Fatalf("cosigner targets = %v under %q, want [1 2] under the shared key", cosigner.TargetIndices, cosigner.ComponentKey)
+			}
+			contextual := map[int]*AppCallInfo{}
+			for _, position := range cosigner.Contextual {
+				contextual[position.TargetIndex] = position.AppCallInfo
+			}
+			if len(contextual) != 2 || contextual[0] == nil || contextual[0].Mode != "listed" ||
+				contextual[3] == nil || contextual[3].Mode != "primary" {
+				t.Fatalf("cosigner contextual positions = %+v, want 0 and 3 with their app call info", cosigner.Contextual)
+			}
+
+			if len(primarySign.Requests) != 4 {
+				t.Fatalf("primary /sign requests = %d, want 4", len(primarySign.Requests))
+			}
+			for index, want := range map[int]uint64{0: 1583, 1: 3358, 2: 3358} {
+				got := primarySign.Requests[index]
+				if got.AuthAddress != "" || got.LsigResources == nil || got.LsigResources.ArgumentBytes != want {
+					t.Fatalf("primary /sign position %d = %+v, want foreign with %d argument bytes", index, got, want)
+				}
+			}
+			if got := primarySign.Requests[3]; got.AuthAddress != primary || got.AppCallInfo == nil || got.AppCallInfo.Mode != "primary" {
+				t.Fatalf("primary /sign position 3 = %+v, want the primary slot", got)
+			}
+
+			if len(assembly.Targets) != 3 {
+				t.Fatalf("assembly targets = %+v", assembly.Targets)
+			}
+			for _, target := range assembly.Targets {
+				needs := target.TargetIndex != 0
+				if (target.CosignerSignature != "") != needs ||
+					(needs && (target.CosignerSignature != fmt.Sprintf("cosigner-sig-%d", target.TargetIndex) || target.CosignerSourceRequestID != cosigner.RequestID)) {
+					t.Fatalf("assembly target %d = %+v, want cosigner material only on a spend", target.TargetIndex, target)
+				}
+			}
+			if len(assembly.Passthrough) != 1 || assembly.Passthrough[0].TargetIndex != 3 {
+				t.Fatalf("assembly passthrough = %+v, want the primary slot", assembly.Passthrough)
+			}
+			if len(result.SignedGroup) != 4 || len(result.CosignerComponentResponses) != 1 {
+				t.Fatalf("result = %+v", result)
+			}
+		})
+	}
+}
+
+// The assembled group must be the frozen group, position by position.
+func TestVerifyAssembledGroupRejectsMismatches(t *testing.T) {
+	var genesisHash types.Digest
+	sp := types.SuggestedParams{
+		Fee: types.MicroAlgos(1000), FirstRoundValid: 1, LastRoundValid: 100,
+		GenesisID: "testnet-v1.0", GenesisHash: genesisHash[:], FlatFee: true,
+	}
+	first, err := transaction.MakePaymentTxn(sdkTestAddress(71), sdkTestAddress(72), 1000, nil, "", sp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := transaction.MakePaymentTxn(sdkTestAddress(71), sdkTestAddress(73), 1000, nil, "", sp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frozen := []string{hex.EncodeToString(encodeTxn(first)), hex.EncodeToString(encodeTxn(second))}
+	good := signedGroupFor(t, frozen)
+	if err := verifyAssembledGroup(frozen, good); err != nil {
+		t.Fatalf("verifyAssembledGroup() error = %v for the frozen group", err)
+	}
+	for name, tt := range map[string]struct {
+		signed []string
+		want   string
+	}{
+		"short":       {signed: good[:1], want: "has 1 transaction(s), want 2"},
+		"long":        {signed: append(append([]string(nil), good...), good[0]), want: "has 3 transaction(s), want 2"},
+		"substituted": {signed: []string{good[0], good[0]}, want: "assembled transaction 1 does not match"},
+		"swapped":     {signed: []string{good[1], good[0]}, want: "assembled transaction 0 does not match"},
+		"not hex":     {signed: []string{good[0], "zz"}, want: "assembled transaction 1: invalid hex"},
+		"not msgpack": {signed: []string{good[0], "c1"}, want: "assembled transaction 1: decode failed"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := verifyAssembledGroup(frozen, tt.signed); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("verifyAssembledGroup() error = %v, want %q", err, tt.want)
 			}
 		})
 	}
