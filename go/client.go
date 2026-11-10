@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/algorand/go-algorand-sdk/v2/encoding/msgpack"
 	"github.com/algorand/go-algorand-sdk/v2/types"
 )
 
@@ -857,15 +858,31 @@ func buildSignRequestsWithOptions(txns []types.Transaction, authAddresses []stri
 		}
 	}
 	requests := make([]SignRequest, len(txns))
-	usedArgs := make(map[string]bool, len(lsigArgsMap))
+	matchedArgs := make(map[string]bool, len(lsigArgsMap))
 
 	for i, txn := range txns {
+		// A position matches its auth address, or its sender when none is
+		// given, whatever its mode.
+		if i < len(authAddresses) && authAddresses[i] != "" {
+			matchedArgs[authAddresses[i]] = true
+		} else {
+			matchedArgs[txn.Sender.String()] = true
+		}
+
 		// Passthrough: include pre-signed transaction as-is
 		if opts != nil && opts.Passthrough != nil {
 			if b64, ok := opts.Passthrough[i]; ok {
 				decoded, err := base64.StdEncoding.DecodeString(b64)
 				if err != nil {
 					return nil, fmt.Errorf("invalid passthrough transaction %d: invalid base64: %w", i+1, err)
+				}
+				// The signed bytes name the position's sender and signer too.
+				var stxn types.SignedTxn
+				if msgpack.Decode(decoded, &stxn) == nil {
+					matchedArgs[stxn.Txn.Sender.String()] = true
+					if !stxn.AuthAddr.IsZero() {
+						matchedArgs[stxn.AuthAddr.String()] = true
+					}
 				}
 				req := SignRequest{SignedTxnHex: hex.EncodeToString(decoded)}
 				if opts.LsigResources != nil {
@@ -915,7 +932,6 @@ func buildSignRequestsWithOptions(txns []types.Transaction, authAddresses []stri
 		}
 
 		if args, ok := lsigArgsMap[authAddr]; ok {
-			usedArgs[authAddr] = true
 			req.LsigArgs = make(map[string]string)
 			for name, value := range args {
 				req.LsigArgs[name] = hex.EncodeToString(value)
@@ -925,27 +941,30 @@ func buildSignRequestsWithOptions(txns []types.Transaction, authAddresses []stri
 		requests[i] = req
 	}
 
-	if err := requireLsigArgsUsed(lsigArgsMap, usedArgs); err != nil {
+	if err := requireLsigArgsMatched(lsigArgsMap, matchedArgs); err != nil {
 		return nil, err
 	}
 	return requests, nil
 }
 
-// requireLsigArgsUsed rejects LogicSig args keyed under an address that signs
-// no position. Dropping them would sign without the args the caller supplied,
-// and an optional arg left out can select a different authorization branch.
-func requireLsigArgsUsed(lsigArgsMap LsigArgsMap, used map[string]bool) error {
-	unused := make([]string, 0)
-	for address := range lsigArgsMap {
-		if !used[address] {
-			unused = append(unused, fmt.Sprintf("%q", address))
+// requireLsigArgsMatched rejects LogicSig args keyed under an address that
+// is no position's auth address. Such a key is a mistake, and dropping its args
+// would sign without them; an optional arg left out can select a different
+// authorization branch. A key that matches a passthrough or foreign position
+// is fine: the same map can serve several calls over one group. An entry with
+// no args is ignored.
+func requireLsigArgsMatched(lsigArgsMap LsigArgsMap, matched map[string]bool) error {
+	unmatched := make([]string, 0)
+	for address, args := range lsigArgsMap {
+		if len(args) > 0 && !matched[address] {
+			unmatched = append(unmatched, fmt.Sprintf("%q", address))
 		}
 	}
-	if len(unused) == 0 {
+	if len(unmatched) == 0 {
 		return nil
 	}
-	sort.Strings(unused)
-	return fmt.Errorf("lsig args are keyed by auth address, and no signed transaction has auth address %s", strings.Join(unused, ", "))
+	sort.Strings(unmatched)
+	return fmt.Errorf("lsig args are keyed by auth address, and no transaction in the request has auth address %s", strings.Join(unmatched, ", "))
 }
 
 func validateIndexedLogicSigResources(resources map[int]LogicSigResourceUsage, txnCount int) error {
@@ -972,7 +991,7 @@ func hasForeignRequests(requests []SignRequest) bool {
 // buildSignRequests converts transactions into sign requests.
 func buildSignRequests(txns []types.Transaction, authAddresses []string, lsigArgsMap LsigArgsMap) ([]SignRequest, error) {
 	requests := make([]SignRequest, len(txns))
-	usedArgs := make(map[string]bool, len(lsigArgsMap))
+	matchedArgs := make(map[string]bool, len(lsigArgsMap))
 
 	for i, txn := range txns {
 		txnBytes := encodeTxn(txn)
@@ -982,6 +1001,7 @@ func buildSignRequests(txns []types.Transaction, authAddresses []string, lsigArg
 		if i < len(authAddresses) && authAddresses[i] != "" {
 			authAddr = authAddresses[i]
 		}
+		matchedArgs[authAddr] = true
 
 		req := SignRequest{
 			AuthAddress: authAddr,
@@ -990,7 +1010,6 @@ func buildSignRequests(txns []types.Transaction, authAddresses []string, lsigArg
 		}
 
 		if args, ok := lsigArgsMap[authAddr]; ok {
-			usedArgs[authAddr] = true
 			req.LsigArgs = make(map[string]string)
 			for name, value := range args {
 				req.LsigArgs[name] = hex.EncodeToString(value)
@@ -1000,7 +1019,7 @@ func buildSignRequests(txns []types.Transaction, authAddresses []string, lsigArg
 		requests[i] = req
 	}
 
-	if err := requireLsigArgsUsed(lsigArgsMap, usedArgs); err != nil {
+	if err := requireLsigArgsMatched(lsigArgsMap, matchedArgs); err != nil {
 		return nil, err
 	}
 	return requests, nil
@@ -1035,6 +1054,27 @@ func (c *SignerClient) SignGroupWithContext(ctx context.Context, groupReq GroupS
 	if err := groupReq.Validate(); err != nil {
 		return nil, err
 	}
+	return c.postSign(ctx, groupReq, signErrorsGroup)
+}
+
+// signErrorStyle keeps each public /sign entry point's established error
+// text and sentinel mapping while they share one implementation.
+type signErrorStyle int
+
+const (
+	// signErrorsGroup is SignGroupWithContext: every non-200 is an APIError.
+	signErrorsGroup signErrorStyle = iota
+	// signErrorsClassic is SignTransactions and its variants: 401, 403 and
+	// 503 map to the SDK's sentinel errors.
+	signErrorsClassic
+)
+
+// postSign is the one /sign implementation. It decodes the request entries
+// before sending, posts them, cancels a pending approval when the deadline or
+// the caller's context ends first, and checks the response against the
+// request, so a truncated, altered or padded group can never be returned for
+// submission or simulation. groupReq must already be validated.
+func (c *SignerClient) postSign(ctx context.Context, groupReq GroupSignRequest, style signErrorStyle) (*GroupSignResponse, error) {
 	slots, err := decodeRequestSlots(groupReq.Requests)
 	if err != nil {
 		return nil, fmt.Errorf("invalid sign request: %w", err)
@@ -1089,10 +1129,23 @@ func (c *SignerClient) SignGroupWithContext(ctx context.Context, groupReq GroupS
 		if reqCtx.Err() != nil {
 			sendCancel()
 		}
+		if style == signErrorsClassic {
+			return nil, fmt.Errorf("failed to sign: %w", err)
+		}
 		return nil, fmt.Errorf("failed to make request to Signer: %w", err)
 	}
 	defer resp.Body.Close()
 
+	if style == signErrorsClassic {
+		switch resp.StatusCode {
+		case 401:
+			return nil, ErrAuthentication
+		case 403:
+			return nil, rejectedForbiddenError(resp)
+		case 503:
+			return nil, ErrSignerUnavailable
+		}
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, signerHTTPError(resp)
 	}
@@ -1103,6 +1156,9 @@ func (c *SignerClient) SignGroupWithContext(ctx context.Context, groupReq GroupS
 	}
 
 	if groupResp.Error != "" {
+		if style == signErrorsClassic {
+			return nil, fmt.Errorf("signing failed: %s", groupResp.Error)
+		}
 		return nil, fmt.Errorf("group signing failed: %s", groupResp.Error)
 	}
 
@@ -1201,95 +1257,7 @@ func (c *SignerClient) signResponse(requests []SignRequest) (*GroupSignResponse,
 	if err := groupReq.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid sign request: %w", err)
 	}
-	slots, err := decodeRequestSlots(requests)
-	if err != nil {
-		return nil, fmt.Errorf("invalid sign request: %w", err)
-	}
-
-	jsonBody, err := json.Marshal(groupReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	ctx := context.Background()
-	c.discoverApprovalWait(ctx)
-
-	reqCtx, cancel := c.requestContext(ctx, c.signRequestTimeout())
-	defer cancel()
-
-	var cancelOnce sync.Once
-	sendCancel := func() {
-		cancelOnce.Do(func() {
-			cancelCtx, cancel := context.WithTimeout(context.Background(), signCancelTimeout)
-			defer cancel()
-			_, _ = c.CancelSignRequestWithContext(cancelCtx, requestID)
-		})
-	}
-	// done is closed the moment the request returns so a deadline landing in the
-	// same instant as a successful response cannot fire a spurious cancel for a
-	// request the server already processed. Mirrors SignGroupWithContext.
-	done := make(chan struct{})
-	go func() {
-		select {
-		case <-done:
-			return
-		case <-reqCtx.Done():
-		}
-		select {
-		case <-done:
-		default:
-			sendCancel()
-		}
-	}()
-
-	req, err := http.NewRequestWithContext(reqCtx, "POST", c.baseURL+"/sign", bytes.NewBuffer(jsonBody))
-	if err != nil {
-		close(done)
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.client.Do(req)
-	close(done)
-	if err != nil {
-		if reqCtx.Err() != nil {
-			sendCancel()
-		}
-		return nil, fmt.Errorf("failed to sign: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == 401 {
-		return nil, ErrAuthentication
-	}
-	if resp.StatusCode == 403 {
-		return nil, rejectedForbiddenError(resp)
-	}
-	if resp.StatusCode == 503 {
-		return nil, ErrSignerUnavailable
-	}
-	if resp.StatusCode != 200 {
-		return nil, signerHTTPError(resp)
-	}
-
-	var groupResp GroupSignResponse
-	if err := json.NewDecoder(resp.Body).Decode(&groupResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	if groupResp.Error != "" {
-		return nil, fmt.Errorf("signing failed: %s", groupResp.Error)
-	}
-
-	// Every sign path (sign/signList and their public callers
-	// SignTransactions*/SignTransactionsList*) checks the response against
-	// the request here, as SignGroupWithContext does, so a truncated, altered
-	// or padded group can never be returned for submission.
-	if err := validateSignResponse(slots, groupResp.Signed, groupResp.Mutations); err != nil {
-		return nil, fmt.Errorf("verify signer response: %w", err)
-	}
-
-	return &groupResp, nil
+	return c.postSign(context.Background(), groupReq, signErrorsClassic)
 }
 
 // lsigArgsToMap converts single LsigArgs to LsigArgsMap.

@@ -722,25 +722,91 @@ func TestSignTransactionSendsLsigArgsForTheSender(t *testing.T) {
 	}
 }
 
-func TestBuildSignRequestsRejectsLsigArgsNoPositionUses(t *testing.T) {
+func TestBuildSignRequestsRejectsLsigArgsNoPositionMatches(t *testing.T) {
 	txn := verifyTestPayment(t, 41, 42, 1)
 	stray := LsigArgsMap{sdkTestAddress(45): LsigArgs{"preimage": []byte("secret")}}
-	const want = "no signed transaction has auth address"
+	const want = "no transaction in the request has auth address"
 
 	if _, err := buildSignRequests([]types.Transaction{txn}, nil, stray); err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("buildSignRequests() error = %v, want %q", err, want)
 	}
-	if _, err := buildSignRequests([]types.Transaction{txn}, nil, LsigArgsMap{"": LsigArgs{"a": nil}}); err == nil || !strings.Contains(err.Error(), want) {
+	if _, err := buildSignRequests([]types.Transaction{txn}, nil, LsigArgsMap{"": LsigArgs{"a": []byte{1}}}); err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("buildSignRequests() with an empty key error = %v, want %q", err, want)
 	}
 	if _, err := buildSignRequestsWithOptions([]types.Transaction{txn}, []string{txn.Sender.String()}, stray, nil); err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("buildSignRequestsWithOptions() error = %v, want %q", err, want)
 	}
-	// Args keyed to a foreign position's sender sign nothing either.
-	foreignArgs := LsigArgsMap{txn.Sender.String(): LsigArgs{"preimage": []byte("secret")}}
-	if _, err := buildSignRequestsWithOptions([]types.Transaction{txn}, []string{""}, foreignArgs, nil); err == nil || !strings.Contains(err.Error(), want) {
-		t.Fatalf("buildSignRequestsWithOptions() for a foreign position error = %v, want %q", err, want)
+	// An entry with no args has nothing to drop, so it is ignored.
+	empty := LsigArgsMap{sdkTestAddress(45): nil, sdkTestAddress(46): LsigArgs{}}
+	if _, err := buildSignRequests([]types.Transaction{txn}, nil, empty); err != nil {
+		t.Fatalf("buildSignRequests() with empty args error = %v", err)
 	}
+	if _, err := buildSignRequestsWithOptions([]types.Transaction{txn}, []string{txn.Sender.String()}, empty, nil); err != nil {
+		t.Fatalf("buildSignRequestsWithOptions() with empty args error = %v", err)
+	}
+}
+
+// One args map serves every call over a group: the plan with a foreign
+// position, and the final signing once that position has come back signed.
+func TestBuildSignRequestsAcceptsAReusedLsigArgsMap(t *testing.T) {
+	grouped, err := transaction.AssignGroupID([]types.Transaction{
+		verifyTestPayment(t, 41, 42, 1), verifyTestPayment(t, 43, 44, 2),
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, second := grouped[0].Sender.String(), grouped[1].Sender.String()
+	args := LsigArgsMap{
+		first:  LsigArgs{"preimage": []byte("one")},
+		second: LsigArgs{"preimage": []byte("two")},
+	}
+	wantFirst := hex.EncodeToString([]byte("one"))
+
+	// Position 2 is foreign: its sender is still a position of the group.
+	requests, err := buildSignRequestsWithOptions(grouped, []string{first, ""}, args, nil)
+	if err != nil {
+		t.Fatalf("plan with a foreign position: %v", err)
+	}
+	if requests[0].LsigArgs["preimage"] != wantFirst || requests[1].LsigArgs != nil {
+		t.Fatalf("requests = %+v, want args on the signed position only", requests)
+	}
+
+	// Position 2 is passthrough, with its auth address given, defaulted from
+	// the transaction, or known only from the signed bytes.
+	passthrough := base64.StdEncoding.EncodeToString(mustDecodeHex(t, fakeSignedTxnHex(grouped[1])))
+	opts := &SignOptions{Passthrough: map[int]string{1: passthrough}}
+	for name, tc := range map[string]struct {
+		txns  []types.Transaction
+		auths []string
+	}{
+		"auth address given":    {grouped, []string{first, second}},
+		"sender of the slot":    {grouped, []string{first, ""}},
+		"only the signed bytes": {[]types.Transaction{grouped[0], {}}, []string{first, ""}},
+	} {
+		requests, err := buildSignRequestsWithOptions(tc.txns, tc.auths, args, opts)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if requests[0].LsigArgs["preimage"] != wantFirst || requests[1].SignedTxnHex == "" || requests[1].LsigArgs != nil {
+			t.Fatalf("%s: requests = %+v", name, requests)
+		}
+	}
+
+	// The whole call goes through with the reused map.
+	client, server := newTestClient(fakeSignHandler(t, fakeSigner{}))
+	defer server.Close()
+	if _, err := client.SignTransactionsListWithOptions(grouped, []string{first, second}, args, opts); err != nil {
+		t.Fatalf("SignTransactionsListWithOptions() with a reused args map: %v", err)
+	}
+}
+
+func mustDecodeHex(t *testing.T, value string) []byte {
+	t.Helper()
+	raw, err := hex.DecodeString(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
 }
 
 func TestSignedTransactionIdentityChecksRejectTrailingBytes(t *testing.T) {
