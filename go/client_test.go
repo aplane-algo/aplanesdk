@@ -4,6 +4,7 @@
 package aplane
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/hex"
@@ -157,11 +158,14 @@ func TestBuildSignRequests(t *testing.T) {
 	txn.Type = types.PaymentTx
 	txn.Sender = types.Address{}
 
-	requests := buildSignRequests(
+	requests, err := buildSignRequests(
 		[]types.Transaction{txn},
 		[]string{"AUTH_ADDR"},
 		nil,
 	)
+	if err != nil {
+		t.Fatalf("buildSignRequests() error = %v", err)
+	}
 
 	if len(requests) != 1 {
 		t.Fatalf("expected 1 request, got %d", len(requests))
@@ -175,11 +179,14 @@ func TestBuildSignRequests_DefaultAuthAddress(t *testing.T) {
 	txn := types.Transaction{}
 	txn.Type = types.PaymentTx
 
-	requests := buildSignRequests(
+	requests, err := buildSignRequests(
 		[]types.Transaction{txn},
 		nil,
 		nil,
 	)
+	if err != nil {
+		t.Fatalf("buildSignRequests() error = %v", err)
+	}
 
 	if len(requests) != 1 {
 		t.Fatalf("expected 1 request, got %d", len(requests))
@@ -195,11 +202,14 @@ func TestBuildSignRequests_WithLsigArgs(t *testing.T) {
 	txn.Type = types.PaymentTx
 	authAddr := txn.Sender.String()
 
-	requests := buildSignRequests(
+	requests, err := buildSignRequests(
 		[]types.Transaction{txn},
 		nil,
 		LsigArgsMap{authAddr: LsigArgs{"preimage": []byte("secret")}},
 	)
+	if err != nil {
+		t.Fatalf("buildSignRequests() error = %v", err)
+	}
 
 	if requests[0].LsigArgs == nil {
 		t.Fatal("expected lsig args")
@@ -210,25 +220,11 @@ func TestBuildSignRequests_WithLsigArgs(t *testing.T) {
 }
 
 func TestSignTransactionsList_ReturnsIndividualBase64(t *testing.T) {
-	// Create mock server that returns two signed transactions
-	signedHex1 := hex.EncodeToString([]byte("signed-txn-1"))
-	signedHex2 := hex.EncodeToString([]byte("signed-txn-2"))
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp := GroupSignResponse{
-			Signed: []string{signedHex1, signedHex2},
-		}
-		json.NewEncoder(w).Encode(resp)
-	}))
+	client, server := newTestClient(fakeSignHandler(t, fakeSigner{}))
 	defer server.Close()
 
-	client := &SignerClient{
-		baseURL: server.URL,
-		client:  http.DefaultClient,
-	}
-
-	txn1 := types.Transaction{Type: types.PaymentTx}
-	txn2 := types.Transaction{Type: types.PaymentTx}
+	txn1 := verifyTestPayment(t, 41, 42, 1)
+	txn2 := verifyTestPayment(t, 43, 44, 2)
 
 	result, err := client.SignTransactionsList(
 		[]types.Transaction{txn1, txn2},
@@ -242,43 +238,56 @@ func TestSignTransactionsList_ReturnsIndividualBase64(t *testing.T) {
 		t.Fatalf("expected 2 results, got %d", len(result))
 	}
 
-	// Verify each is individually base64-encoded
-	decoded1, err := base64.StdEncoding.DecodeString(result[0])
-	if err != nil {
-		t.Fatalf("result[0] is not valid base64: %v", err)
-	}
-	if string(decoded1) != "signed-txn-1" {
-		t.Fatalf("result[0] decoded to %q, expected %q", decoded1, "signed-txn-1")
-	}
-
-	decoded2, err := base64.StdEncoding.DecodeString(result[1])
-	if err != nil {
-		t.Fatalf("result[1] is not valid base64: %v", err)
-	}
-	if string(decoded2) != "signed-txn-2" {
-		t.Fatalf("result[1] decoded to %q, expected %q", decoded2, "signed-txn-2")
+	// Each slot is individually base64-encoded and signs its own transaction,
+	// changed only by the group ID the signer assigned.
+	for i, want := range []types.Transaction{txn1, txn2} {
+		decoded, err := base64.StdEncoding.DecodeString(result[i])
+		if err != nil {
+			t.Fatalf("result[%d] is not valid base64: %v", i, err)
+		}
+		stxn, err := decodeCanonicalSignedTxn(decoded)
+		if err != nil {
+			t.Fatalf("result[%d]: %v", i, err)
+		}
+		if stxn.Txn.Group == (types.Digest{}) {
+			t.Fatalf("result[%d] carries no group ID", i)
+		}
+		want.Group = stxn.Txn.Group
+		if !bytes.Equal(encodeTxn(stxn.Txn), encodeTxn(want)) {
+			t.Fatalf("result[%d] signs a different transaction", i)
+		}
 	}
 }
 
 // TestSignTransactionsList_RejectsTruncatedResponse pins that the legacy sign
-// path (sign/signList via signResponse) now shape-validates the signer reply:
-// a response with fewer signed slots than requests, or an empty non-foreign
-// slot, is rejected rather than silently yielding a partial group.
+// path (sign/signList via signResponse) validates the signer reply: a response
+// with fewer signed slots than requests, or an empty non-foreign slot, is
+// rejected rather than silently yielding a partial group.
 func TestSignTransactionsList_RejectsTruncatedResponse(t *testing.T) {
-	cases := map[string]GroupSignResponse{
-		"too few slots":     {Signed: []string{hex.EncodeToString([]byte("only-one"))}},
-		"empty signed slot": {Signed: []string{hex.EncodeToString([]byte("ok")), ""}},
+	cases := map[string]func(resp *GroupSignResponse){
+		"too few slots":     func(resp *GroupSignResponse) { resp.Signed = resp.Signed[:1] },
+		"empty signed slot": func(resp *GroupSignResponse) { resp.Signed[1] = "" },
 	}
-	for name, resp := range cases {
+	for name, truncate := range cases {
 		t.Run(name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/sign" {
+					json.NewEncoder(w).Encode(StatusResponse{State: "unlocked", ApprovalWaitSeconds: 60})
+					return
+				}
+				var req GroupSignRequest
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Errorf("decode sign request: %v", err)
+				}
+				resp := fakeSigner{}.sign(t, req.Requests)
+				truncate(&resp)
 				json.NewEncoder(w).Encode(resp)
 			}))
 			defer server.Close()
 
 			client := &SignerClient{baseURL: server.URL, client: http.DefaultClient}
 			_, err := client.SignTransactionsList(
-				[]types.Transaction{{Type: types.PaymentTx}, {Type: types.PaymentTx}},
+				[]types.Transaction{verifyTestPayment(t, 41, 42, 1), verifyTestPayment(t, 43, 44, 2)},
 				nil, nil,
 			)
 			if err == nil {
@@ -289,29 +298,15 @@ func TestSignTransactionsList_RejectsTruncatedResponse(t *testing.T) {
 }
 
 func TestSignTransactions_ReturnsConcatenatedBase64(t *testing.T) {
-	signedHex1 := hex.EncodeToString([]byte("signed-txn-1"))
-	signedHex2 := hex.EncodeToString([]byte("signed-txn-2"))
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp := GroupSignResponse{
-			Signed: []string{signedHex1, signedHex2},
-		}
-		json.NewEncoder(w).Encode(resp)
-	}))
+	client, server := newTestClient(fakeSignHandler(t, fakeSigner{}))
 	defer server.Close()
 
-	client := &SignerClient{
-		baseURL: server.URL,
-		client:  http.DefaultClient,
+	txns := []types.Transaction{verifyTestPayment(t, 41, 42, 1), verifyTestPayment(t, 43, 44, 2)}
+	result, err := client.SignTransactions(txns, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-
-	txn1 := types.Transaction{Type: types.PaymentTx}
-	txn2 := types.Transaction{Type: types.PaymentTx}
-
-	result, err := client.SignTransactions(
-		[]types.Transaction{txn1, txn2},
-		nil, nil,
-	)
+	list, err := client.SignTransactionsList(txns, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -320,9 +315,16 @@ func TestSignTransactions_ReturnsConcatenatedBase64(t *testing.T) {
 	if err != nil {
 		t.Fatalf("result is not valid base64: %v", err)
 	}
-	expected := "signed-txn-1signed-txn-2"
-	if string(decoded) != expected {
-		t.Fatalf("decoded to %q, expected %q", decoded, expected)
+	var expected []byte
+	for _, item := range list {
+		raw, err := base64.StdEncoding.DecodeString(item)
+		if err != nil {
+			t.Fatal(err)
+		}
+		expected = append(expected, raw...)
+	}
+	if !bytes.Equal(decoded, expected) {
+		t.Fatal("concatenated result is not the signed slots in order")
 	}
 }
 
@@ -499,16 +501,14 @@ func TestSignRequestsDiscoversApprovalWaitBeforeSigning(t *testing.T) {
 			if signReq.RequestID == "" {
 				t.Fatal("/sign request_id is empty")
 			}
-			json.NewEncoder(w).Encode(GroupSignResponse{Signed: []string{"deadbeef"}})
+			json.NewEncoder(w).Encode(fakeSigner{}.sign(t, signReq.Requests))
 		default:
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
 	})
 	defer server.Close()
 
-	_, err := client.SignRequestsWithContext(context.Background(), []SignRequest{
-		{AuthAddress: "AUTH", TxnBytesHex: "545801"},
-	})
+	_, err := client.SignRequestsWithContext(context.Background(), signRequestsFor(verifyTestPayment(t, 41, 42, 1)))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -574,7 +574,7 @@ func TestSignRequestsCancelsApprovalWhenContextCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan error, 1)
 	go func() {
-		_, err := client.SignRequestsWithContext(ctx, []SignRequest{{AuthAddress: "AUTH", TxnBytesHex: "545801"}})
+		_, err := client.SignRequestsWithContext(ctx, signRequestsFor(verifyTestPayment(t, 41, 42, 1)))
 		result <- err
 	}()
 
@@ -613,16 +613,18 @@ func TestSignRequestsStatusFailureFallsBackToSign(t *testing.T) {
 		case "/status":
 			w.WriteHeader(http.StatusServiceUnavailable)
 		case "/sign":
-			json.NewEncoder(w).Encode(GroupSignResponse{Signed: []string{"deadbeef"}})
+			var signReq GroupSignRequest
+			if err := json.NewDecoder(r.Body).Decode(&signReq); err != nil {
+				t.Fatalf("decode /sign request: %v", err)
+			}
+			json.NewEncoder(w).Encode(fakeSigner{}.sign(t, signReq.Requests))
 		default:
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
 	})
 	defer server.Close()
 
-	_, err := client.SignRequestsWithContext(context.Background(), []SignRequest{
-		{AuthAddress: "AUTH", TxnBytesHex: "545801"},
-	})
+	_, err := client.SignRequestsWithContext(context.Background(), signRequestsFor(verifyTestPayment(t, 41, 42, 1)))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1036,13 +1038,15 @@ func TestPlanGroup_Success(t *testing.T) {
 		if r.URL.Path != "/plan" {
 			t.Fatalf("expected /plan, got %s", r.URL.Path)
 		}
-		json.NewEncoder(w).Encode(PlanGroupResponse{
-			Mutations: &MutationReport{DummiesAdded: 2, GroupIDChanged: true},
-		})
+		var req GroupSignRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode /plan request: %v", err)
+		}
+		json.NewEncoder(w).Encode(fakeSigner{feeRaise: map[int]uint64{0: 2000}, dummies: 2}.plan(t, req.Requests))
 	})
 	defer server.Close()
 
-	txn := types.Transaction{Type: types.PaymentTx}
+	txn := verifyTestPayment(t, 41, 42, 1)
 	result, err := client.PlanGroup([]types.Transaction{txn}, []string{"ADDR"}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

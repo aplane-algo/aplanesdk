@@ -149,64 +149,6 @@ func TestGenericErrorCarriesAPIErrorCode(t *testing.T) {
 	}
 }
 
-func TestValidateGroupSignResponse(t *testing.T) {
-	signReq := SignRequest{AuthAddress: "AUTH", TxnBytesHex: "5458aa"}
-	foreignReq := SignRequest{TxnBytesHex: "5458bb"}
-	passthroughReq := SignRequest{SignedTxnHex: "82a3"}
-
-	cases := []struct {
-		name     string
-		requests []SignRequest
-		signed   []string
-		wantErr  string
-	}{
-		{
-			name:     "truncated response rejected",
-			requests: []SignRequest{signReq, signReq},
-			signed:   []string{"aa"},
-			wantErr:  "want at least 2",
-		},
-		{
-			name:     "empty sign slot rejected",
-			requests: []SignRequest{signReq, signReq},
-			signed:   []string{"aa", ""},
-			wantErr:  "no signature for position 2",
-		},
-		{
-			name:     "empty foreign slot tolerated with trailing dummies",
-			requests: []SignRequest{signReq, foreignReq},
-			signed:   []string{"aa", "", "dd"},
-		},
-		{
-			name:     "empty dummy slot rejected",
-			requests: []SignRequest{signReq},
-			signed:   []string{"aa", ""},
-			wantErr:  "empty dummy transaction at position 2",
-		},
-		{
-			name:     "passthrough slot must be echoed",
-			requests: []SignRequest{passthroughReq},
-			signed:   []string{""},
-			wantErr:  "no signature for position 1",
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := validateGroupSignResponse(tc.requests, tc.signed)
-			if tc.wantErr == "" {
-				if err != nil {
-					t.Fatalf("validateGroupSignResponse() error = %v, want nil", err)
-				}
-				return
-			}
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("validateGroupSignResponse() error = %v, want containing %q", err, tc.wantErr)
-			}
-		})
-	}
-}
-
 func requireUncodedAPIError(t *testing.T, err error, status int) {
 	t.Helper()
 	if errors.Is(err, ErrSignerLocked) || errors.Is(err, ErrSigningRejected) || errors.Is(err, ErrKeyNotFound) {

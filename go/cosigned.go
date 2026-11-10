@@ -10,8 +10,6 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/algorand/go-algorand-sdk/v2/crypto"
-	"github.com/algorand/go-algorand-sdk/v2/encoding/msgpack"
 	"github.com/algorand/go-algorand-sdk/v2/types"
 )
 
@@ -129,10 +127,9 @@ func verifyAssembledGroup(groupBytesHex []string, signedGroup []string) error {
 
 // signedTxnMatchesCanonical decodes a hex-encoded SignedTxn and checks that its
 // inner transaction re-encodes to exactly the canonical TX-prefixed bytes
-// expected at this position. It is the per-slot identity check shared by
-// assembled-group verification and primary-passthrough verification: a signer
-// must return a signature over the transaction we asked it to sign, not a
-// substituted one.
+// expected at this position, and that the signed bytes are themselves
+// canonical, with nothing after the signed transaction. A signer must return
+// a signature over the transaction we asked it to sign, not a substituted one.
 func signedTxnMatchesCanonical(label string, index int, signedHex, canonicalHex string) error {
 	canonical, err := hex.DecodeString(canonicalHex)
 	if err != nil {
@@ -142,9 +139,9 @@ func signedTxnMatchesCanonical(label string, index int, signedHex, canonicalHex 
 	if err != nil {
 		return fmt.Errorf("%s %d: invalid hex: %w", label, index, err)
 	}
-	var stxn types.SignedTxn
-	if err := msgpack.Decode(signedBytes, &stxn); err != nil {
-		return fmt.Errorf("%s %d: decode failed: %w", label, index, err)
+	stxn, err := decodeCanonicalSignedTxn(signedBytes)
+	if err != nil {
+		return fmt.Errorf("%s %d: %w", label, index, err)
 	}
 	if reencoded := encodeTxn(stxn.Txn); !bytes.Equal(reencoded, canonical) {
 		return fmt.Errorf("%s %d does not match the submitted canonical bytes", label, index)
@@ -208,17 +205,18 @@ func encodeCosignedLsigArgs(args LsigArgs) map[string]string {
 	return out
 }
 
-func signCosignedDummies(dummies []types.Transaction, startIndex int) ([]AssemblyPassthroughItem, error) {
+// signCosignedDummies signs the resource dummies a plan appended, after
+// checking each is the canonical dummy for the group.
+func signCosignedDummies(firstOriginal types.Transaction, groupID types.Digest, dummies []types.Transaction, startIndex int) ([]AssemblyPassthroughItem, error) {
 	if len(dummies) == 0 {
 		return nil, nil
 	}
-	if err := validateCosignedDummies(dummies); err != nil {
+	if err := validateCanonicalDummies(firstOriginal, groupID, dummies); err != nil {
 		return nil, err
 	}
-	logicSig := types.LogicSig{Logic: cosignedDummyProgram}
 	passthrough := make([]AssemblyPassthroughItem, len(dummies))
 	for i, txn := range dummies {
-		_, signedBytes, err := crypto.SignLogicSigTransaction(logicSig, txn)
+		signedBytes, err := signCanonicalDummy(txn)
 		if err != nil {
 			return nil, fmt.Errorf("failed to sign dummy transaction %d: %w", i+1, err)
 		}
@@ -231,22 +229,6 @@ func signCosignedDummies(dummies []types.Transaction, startIndex int) ([]Assembl
 		}
 	}
 	return passthrough, nil
-}
-
-func validateCosignedDummies(dummies []types.Transaction) error {
-	dummyAcct := crypto.LogicSigAccount{Lsig: types.LogicSig{Logic: cosignedDummyProgram}}
-	dummyAddr, err := dummyAcct.Address()
-	if err != nil {
-		return fmt.Errorf("failed to compute dummy address: %w", err)
-	}
-	for i, txn := range dummies {
-		if txn.Type != types.PaymentTx || txn.Sender != dummyAddr || txn.Receiver != dummyAddr ||
-			txn.Amount != 0 || txn.Fee != 0 || len(txn.Note) != 1 || txn.Note[0] != byte(i) ||
-			!txn.RekeyTo.IsZero() || !txn.CloseRemainderTo.IsZero() {
-			return fmt.Errorf("signer-appended transaction %d is not a canonical cosigned budget dummy", i)
-		}
-	}
-	return nil
 }
 
 func requestCosignerComponentSignatures(ctx context.Context, opts cosignerRequestOptions, targets []cosignedSignTarget, result *CosignedSignResult) (map[int]cosignedComponentSignature, error) {

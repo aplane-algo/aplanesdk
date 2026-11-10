@@ -11,7 +11,6 @@ import (
 	"github.com/algorand/go-algorand-sdk/v2/client/v2/algod"
 	"github.com/algorand/go-algorand-sdk/v2/client/v2/common/models"
 	"github.com/algorand/go-algorand-sdk/v2/crypto"
-	"github.com/algorand/go-algorand-sdk/v2/encoding/msgpack"
 	"github.com/algorand/go-algorand-sdk/v2/types"
 )
 
@@ -197,8 +196,11 @@ func decodeExecutableSignedGroup(signedGroup []string) ([]types.SignedTxn, []str
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("signed group position %d is invalid hex: %w", i+1, err)
 		}
-		if err := msgpack.Decode(raw, &decoded[i]); err != nil {
-			return nil, nil, nil, fmt.Errorf("signed group position %d is invalid msgpack: %w", i+1, err)
+		// The raw hex is what gets submitted and the decoded value is what
+		// gets simulated, so the two must be the same transaction exactly.
+		decoded[i], err = decodeCanonicalSignedTxn(raw)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("signed group position %d: %w", i+1, err)
 		}
 		txIDs[i] = crypto.GetTxID(decoded[i].Txn)
 		transactions[i] = hex.EncodeToString(encodeTxn(decoded[i].Txn))

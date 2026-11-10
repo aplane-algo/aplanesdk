@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -742,6 +743,10 @@ func (c *SignerClient) PlanRequestsWithContext(ctx context.Context, requests []S
 	if err := validateRequests(requests); err != nil {
 		return nil, err
 	}
+	slots, err := decodeRequestSlots(requests)
+	if err != nil {
+		return nil, fmt.Errorf("invalid plan request: %w", err)
+	}
 	groupReq := groupSignRequest{Requests: requests}
 
 	jsonBody, err := json.Marshal(groupReq)
@@ -780,12 +785,21 @@ func (c *SignerClient) PlanRequestsWithContext(ctx context.Context, requests []S
 		return nil, fmt.Errorf("plan failed: %s", planResp.Error)
 	}
 
+	if err := validatePlanResponse(slots, planResp.Transactions, planResp.Mutations); err != nil {
+		return nil, fmt.Errorf("verify signer plan: %w", err)
+	}
+
 	return &planResp, nil
 }
 
 // SignTransaction signs a single transaction.
 // Returns the signed transaction as base64.
+// An empty authAddress means the sender signs for itself; lsigArgs then apply
+// to the sender.
 func (c *SignerClient) SignTransaction(txn types.Transaction, authAddress string, lsigArgs LsigArgs) (string, error) {
+	if authAddress == "" {
+		authAddress = txn.Sender.String()
+	}
 	signed, err := c.SignTransactions([]types.Transaction{txn}, []string{authAddress}, lsigArgsToMap(authAddress, lsigArgs))
 	return signed, err
 }
@@ -793,7 +807,11 @@ func (c *SignerClient) SignTransaction(txn types.Transaction, authAddress string
 // SignTransactions signs multiple transactions as a group.
 // Returns concatenated signed transactions as base64.
 func (c *SignerClient) SignTransactions(txns []types.Transaction, authAddresses []string, lsigArgsMap LsigArgsMap) (string, error) {
-	return c.sign(buildSignRequests(txns, authAddresses, lsigArgsMap))
+	requests, err := buildSignRequests(txns, authAddresses, lsigArgsMap)
+	if err != nil {
+		return "", err
+	}
+	return c.sign(requests)
 }
 
 // SignTransactionsWithOptions signs transactions with passthrough support.
@@ -811,7 +829,11 @@ func (c *SignerClient) SignTransactionsWithOptions(txns []types.Transaction, aut
 
 // SignTransactionsList signs transactions and returns individual base64 strings.
 func (c *SignerClient) SignTransactionsList(txns []types.Transaction, authAddresses []string, lsigArgsMap LsigArgsMap) ([]string, error) {
-	return c.signList(buildSignRequests(txns, authAddresses, lsigArgsMap))
+	requests, err := buildSignRequests(txns, authAddresses, lsigArgsMap)
+	if err != nil {
+		return nil, err
+	}
+	return c.signList(requests)
 }
 
 // SignTransactionsListWithOptions signs transactions with passthrough support
@@ -835,6 +857,7 @@ func buildSignRequestsWithOptions(txns []types.Transaction, authAddresses []stri
 		}
 	}
 	requests := make([]SignRequest, len(txns))
+	usedArgs := make(map[string]bool, len(lsigArgsMap))
 
 	for i, txn := range txns {
 		// Passthrough: include pre-signed transaction as-is
@@ -891,19 +914,38 @@ func buildSignRequestsWithOptions(txns []types.Transaction, authAddresses []stri
 			TxnBytesHex: txnBytesHex,
 		}
 
-		if lsigArgsMap != nil {
-			if args, ok := lsigArgsMap[authAddr]; ok {
-				req.LsigArgs = make(map[string]string)
-				for name, value := range args {
-					req.LsigArgs[name] = hex.EncodeToString(value)
-				}
+		if args, ok := lsigArgsMap[authAddr]; ok {
+			usedArgs[authAddr] = true
+			req.LsigArgs = make(map[string]string)
+			for name, value := range args {
+				req.LsigArgs[name] = hex.EncodeToString(value)
 			}
 		}
 
 		requests[i] = req
 	}
 
+	if err := requireLsigArgsUsed(lsigArgsMap, usedArgs); err != nil {
+		return nil, err
+	}
 	return requests, nil
+}
+
+// requireLsigArgsUsed rejects LogicSig args keyed under an address that signs
+// no position. Dropping them would sign without the args the caller supplied,
+// and an optional arg left out can select a different authorization branch.
+func requireLsigArgsUsed(lsigArgsMap LsigArgsMap, used map[string]bool) error {
+	unused := make([]string, 0)
+	for address := range lsigArgsMap {
+		if !used[address] {
+			unused = append(unused, fmt.Sprintf("%q", address))
+		}
+	}
+	if len(unused) == 0 {
+		return nil
+	}
+	sort.Strings(unused)
+	return fmt.Errorf("lsig args are keyed by auth address, and no signed transaction has auth address %s", strings.Join(unused, ", "))
 }
 
 func validateIndexedLogicSigResources(resources map[int]LogicSigResourceUsage, txnCount int) error {
@@ -928,8 +970,9 @@ func hasForeignRequests(requests []SignRequest) bool {
 }
 
 // buildSignRequests converts transactions into sign requests.
-func buildSignRequests(txns []types.Transaction, authAddresses []string, lsigArgsMap LsigArgsMap) []SignRequest {
+func buildSignRequests(txns []types.Transaction, authAddresses []string, lsigArgsMap LsigArgsMap) ([]SignRequest, error) {
 	requests := make([]SignRequest, len(txns))
+	usedArgs := make(map[string]bool, len(lsigArgsMap))
 
 	for i, txn := range txns {
 		txnBytes := encodeTxn(txn)
@@ -946,19 +989,21 @@ func buildSignRequests(txns []types.Transaction, authAddresses []string, lsigArg
 			TxnBytesHex: txnBytesHex,
 		}
 
-		if lsigArgsMap != nil {
-			if args, ok := lsigArgsMap[authAddr]; ok {
-				req.LsigArgs = make(map[string]string)
-				for name, value := range args {
-					req.LsigArgs[name] = hex.EncodeToString(value)
-				}
+		if args, ok := lsigArgsMap[authAddr]; ok {
+			usedArgs[authAddr] = true
+			req.LsigArgs = make(map[string]string)
+			for name, value := range args {
+				req.LsigArgs[name] = hex.EncodeToString(value)
 			}
 		}
 
 		requests[i] = req
 	}
 
-	return requests
+	if err := requireLsigArgsUsed(lsigArgsMap, usedArgs); err != nil {
+		return nil, err
+	}
+	return requests, nil
 }
 
 func validateRequests(requests []SignRequest) error {
@@ -989,6 +1034,10 @@ func (c *SignerClient) SignGroupWithContext(ctx context.Context, groupReq GroupS
 	}
 	if err := groupReq.Validate(); err != nil {
 		return nil, err
+	}
+	slots, err := decodeRequestSlots(groupReq.Requests)
+	if err != nil {
+		return nil, fmt.Errorf("invalid sign request: %w", err)
 	}
 
 	jsonBody, err := json.Marshal(groupReq)
@@ -1057,39 +1106,11 @@ func (c *SignerClient) SignGroupWithContext(ctx context.Context, groupReq GroupS
 		return nil, fmt.Errorf("group signing failed: %s", groupResp.Error)
 	}
 
-	if err := validateGroupSignResponse(groupReq.Requests, groupResp.Signed); err != nil {
-		return nil, err
+	if err := validateSignResponse(slots, groupResp.Signed, groupResp.Mutations); err != nil {
+		return nil, fmt.Errorf("verify signer response: %w", err)
 	}
 
 	return &groupResp, nil
-}
-
-// validateGroupSignResponse rejects truncated or partially empty /sign
-// responses so a malformed signer reply can never submit an incomplete
-// group. The server may append signed dummy transactions after the request
-// slots, and foreign-mode slots are returned empty by design.
-func validateGroupSignResponse(requests []SignRequest, signed []string) error {
-	if len(signed) < len(requests) {
-		return fmt.Errorf("signer returned %d signed transaction(s), want at least %d", len(signed), len(requests))
-	}
-	for i, req := range requests {
-		mode, err := req.Mode()
-		if err != nil {
-			continue
-		}
-		if mode == RequestModeForeign {
-			continue
-		}
-		if signed[i] == "" {
-			return fmt.Errorf("signer returned no signature for position %d", i+1)
-		}
-	}
-	for i := len(requests); i < len(signed); i++ {
-		if signed[i] == "" {
-			return fmt.Errorf("signer returned empty dummy transaction at position %d", i+1)
-		}
-	}
-	return nil
 }
 
 // CancelSignRequest asks apsigner to cancel a pending manual approval request.
@@ -1180,6 +1201,10 @@ func (c *SignerClient) signResponse(requests []SignRequest) (*GroupSignResponse,
 	if err := groupReq.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid sign request: %w", err)
 	}
+	slots, err := decodeRequestSlots(requests)
+	if err != nil {
+		return nil, fmt.Errorf("invalid sign request: %w", err)
+	}
 
 	jsonBody, err := json.Marshal(groupReq)
 	if err != nil {
@@ -1256,13 +1281,12 @@ func (c *SignerClient) signResponse(requests []SignRequest) (*GroupSignResponse,
 		return nil, fmt.Errorf("signing failed: %s", groupResp.Error)
 	}
 
-	// Shape-validate here so every legacy sign path (sign/signList and their
-	// public callers SignTransactions*/SignTransactionsList*) gets the same
-	// truncated/empty-slot protection that SignGroupWithContext has; otherwise
-	// hexArrayToBase64 below would silently decode an empty hex slot to empty
-	// bytes and yield a partial group.
-	if err := validateGroupSignResponse(requests, groupResp.Signed); err != nil {
-		return nil, err
+	// Every sign path (sign/signList and their public callers
+	// SignTransactions*/SignTransactionsList*) checks the response against
+	// the request here, as SignGroupWithContext does, so a truncated, altered
+	// or padded group can never be returned for submission.
+	if err := validateSignResponse(slots, groupResp.Signed, groupResp.Mutations); err != nil {
+		return nil, fmt.Errorf("verify signer response: %w", err)
 	}
 
 	return &groupResp, nil

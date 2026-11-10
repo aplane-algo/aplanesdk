@@ -347,7 +347,11 @@ func TestSignPreparedCosignedGroupSendsAHeldPrimaryAsTheSignersOwn(t *testing.T)
 						writeCodedError(w, http.StatusForbidden, ErrCodeForbidden, "rejected by signer policy")
 						return
 					}
-					json.NewEncoder(w).Encode(GroupSignResponse{Signed: signedGroupFor(t, frozenGroup)})
+					var req GroupSignRequest
+					if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+						t.Fatalf("decode primary sign request: %v", err)
+					}
+					json.NewEncoder(w).Encode(fakeSigner{}.sign(t, req.Requests))
 				case "/sign/assemble":
 					record("assemble")
 					var req AssemblyRequest
@@ -794,7 +798,7 @@ func TestRequestBoundedPrimaryPassthroughVerifiesTransactionIdentity(t *testing.
 		t.Fatal(err)
 	}
 	canonical := hex.EncodeToString(encodeTxn(txn))
-	signedTxn := txn
+	var respond func(requests []SignRequest) GroupSignResponse
 
 	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -803,9 +807,11 @@ func TestRequestBoundedPrimaryPassthroughVerifiesTransactionIdentity(t *testing.
 				State: "unlocked", ApprovalWaitSeconds: 60,
 			})
 		case "/sign":
-			json.NewEncoder(w).Encode(GroupSignResponse{
-				Signed: signedGroupFor(t, []string{hex.EncodeToString(encodeTxn(signedTxn))}),
-			})
+			var req GroupSignRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode primary sign request: %v", err)
+			}
+			json.NewEncoder(w).Encode(respond(req.Requests))
 		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
@@ -823,93 +829,35 @@ func TestRequestBoundedPrimaryPassthroughVerifiesTransactionIdentity(t *testing.
 			[]cosignedPrimarySignTarget{{TargetIndex: 0, AuthAddress: sender}},
 		)
 	}
+	respond = func(requests []SignRequest) GroupSignResponse { return fakeSigner{}.sign(t, requests) }
 	if _, err := args(); err != nil {
 		t.Fatalf("matching primary passthrough: %v", err)
 	}
-	signedTxn = other
-	if _, err := args(); err == nil || !strings.Contains(err.Error(), "does not match") {
-		t.Fatalf("mismatched primary passthrough error = %v, want identity rejection", err)
+	respond = func([]SignRequest) GroupSignResponse {
+		return GroupSignResponse{Signed: []string{fakeSignedTxnHex(other)}}
+	}
+	if _, err := args(); err == nil || !strings.Contains(err.Error(), "unreported fields at original position 1") {
+		t.Fatalf("substituted primary passthrough error = %v, want identity rejection", err)
+	}
+	// A fee raise the signer reports is acceptable on an ordinary /sign, but
+	// not here: the group was frozen by /plan.
+	respond = func(requests []SignRequest) GroupSignResponse {
+		return fakeSigner{feeRaise: map[int]uint64{0: 1000}}.sign(t, requests)
+	}
+	if _, err := args(); err == nil || !strings.Contains(err.Error(), "does not match the submitted canonical bytes") {
+		t.Fatalf("mutated frozen primary passthrough error = %v, want identity rejection", err)
 	}
 }
 
-func TestValidateBoundedComponentPlan(t *testing.T) {
-	sender := sdkTestAddress(31)
-	receiver := sdkTestAddress(32)
-	var genesisHash types.Digest
-	sp := types.SuggestedParams{
-		Fee: types.MicroAlgos(1000), FirstRoundValid: 1, LastRoundValid: 100,
-		GenesisID: "testnet-v1.0", GenesisHash: genesisHash[:], FlatFee: true,
+func TestValidateBoundedTargetFees(t *testing.T) {
+	planned := []types.Transaction{{Header: types.Header{Fee: 2000}}}
+	if err := validateBoundedTargetFees(planned, map[int]uint64{0: 2000}); err != nil {
+		t.Fatalf("fee at the ceiling: unexpected error %v", err)
 	}
-	original, err := transaction.MakePaymentTxn(sender, receiver, 1000, nil, "", sp)
-	if err != nil {
-		t.Fatal(err)
+	if err := validateBoundedTargetFees(planned, map[int]uint64{0: 1999}); err == nil ||
+		!strings.Contains(err.Error(), "exceeds advertised max_fee") {
+		t.Fatalf("error = %v, want max_fee rejection", err)
 	}
-	plannedOriginal := original
-	plannedOriginal.Fee += 1000
-	plannedOriginal.Group = types.Digest{0x44}
-	dummies, err := createCosignedDummies(original, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dummies[0].Group = plannedOriginal.Group
-	planned := []types.Transaction{plannedOriginal, dummies[0]}
-	mutations := &MutationReport{
-		DummiesAdded: 1, GroupIDChanged: true, FeesModified: []int{0},
-		TotalFeesDelta: 1000, OriginalCount: 1, FinalCount: 2,
-	}
-
-	if err := validateBoundedComponentPlan([]types.Transaction{original}, planned, mutations); err != nil {
-		t.Fatalf("valid plan: unexpected error %v", err)
-	}
-
-	t.Run("unreported original mutation", func(t *testing.T) {
-		badPlanned := append([]types.Transaction(nil), planned...)
-		badPlanned[0].Receiver, err = types.DecodeAddress(sdkTestAddress(33))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := validateBoundedComponentPlan([]types.Transaction{original}, badPlanned, mutations); err == nil ||
-			!strings.Contains(err.Error(), "unreported fields") {
-			t.Fatalf("error = %v, want original mutation rejection", err)
-		}
-	})
-	t.Run("wrong mutation counts", func(t *testing.T) {
-		bad := *mutations
-		bad.DummiesAdded = 0
-		if err := validateBoundedComponentPlan([]types.Transaction{original}, planned, &bad); err == nil ||
-			!strings.Contains(err.Error(), "dummies_added") {
-			t.Fatalf("error = %v, want dummy count rejection", err)
-		}
-	})
-	t.Run("non-dummy appended transaction", func(t *testing.T) {
-		badPlanned := append([]types.Transaction(nil), planned...)
-		badPlanned[1].Amount = 1
-		if err := validateBoundedComponentPlan([]types.Transaction{original}, badPlanned, mutations); err == nil ||
-			!strings.Contains(err.Error(), "canonical cosigned budget dummy") {
-			t.Fatalf("error = %v, want dummy-shape rejection", err)
-		}
-		if _, err := signCosignedDummies(badPlanned[1:], 1); err == nil ||
-			!strings.Contains(err.Error(), "canonical cosigned budget dummy") {
-			t.Fatalf("signCosignedDummies() error = %v, want dummy-shape rejection", err)
-		}
-	})
-	t.Run("gratuitous existing group change", func(t *testing.T) {
-		grouped := original
-		grouped.Group = types.Digest{0x31}
-		regrouped := grouped
-		regrouped.Group = types.Digest{0x32}
-		report := &MutationReport{GroupIDChanged: true, OriginalCount: 1, FinalCount: 1}
-		if err := validateBoundedComponentPlan([]types.Transaction{grouped}, []types.Transaction{regrouped}, report); err == nil ||
-			!strings.Contains(err.Error(), "existing bounded group ID") {
-			t.Fatalf("error = %v, want gratuitous regrouping rejection", err)
-		}
-	})
-	t.Run("fee exceeds advertised ceiling", func(t *testing.T) {
-		if err := validateBoundedTargetFees(planned, map[int]uint64{0: uint64(plannedOriginal.Fee) - 1}); err == nil ||
-			!strings.Contains(err.Error(), "exceeds advertised max_fee") {
-			t.Fatalf("error = %v, want max_fee rejection", err)
-		}
-	})
 }
 
 // A plain host has no fee ceiling; a bounded host must advertise one; a contract
@@ -1010,7 +958,7 @@ func TestSignPreparedCosignedGroupMixedPaths(t *testing.T) {
 					if err := json.NewDecoder(r.Body).Decode(&primarySign); err != nil {
 						t.Fatalf("decode primary sign request: %v", err)
 					}
-					json.NewEncoder(w).Encode(GroupSignResponse{Signed: signedGroupFor(t, frozenGroup)})
+					json.NewEncoder(w).Encode(fakeSigner{}.sign(t, primarySign.Requests))
 				case "/sign/assemble":
 					if err := json.NewDecoder(r.Body).Decode(&assembly); err != nil {
 						t.Fatalf("decode bounded assembly request: %v", err)
@@ -1193,7 +1141,7 @@ func TestVerifyAssembledGroupRejectsMismatches(t *testing.T) {
 		"substituted": {signed: []string{good[0], good[0]}, want: "assembled transaction 1 does not match"},
 		"swapped":     {signed: []string{good[1], good[0]}, want: "assembled transaction 0 does not match"},
 		"not hex":     {signed: []string{good[0], "zz"}, want: "assembled transaction 1: invalid hex"},
-		"not msgpack": {signed: []string{good[0], "c1"}, want: "assembled transaction 1: decode failed"},
+		"not msgpack": {signed: []string{good[0], "c1"}, want: "assembled transaction 1: invalid msgpack"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := verifyAssembledGroup(frozen, tt.signed); err == nil || !strings.Contains(err.Error(), tt.want) {
