@@ -4819,7 +4819,7 @@ class SignerClient:
         # Build request array
         sign_requests = []
         slots: List[_RequestSlot] = []
-        matched_lsig_args = set()
+        matched_lsig_args: set = set()
         for i, (txn, auth_addr) in enumerate(zip(txns, auth_addresses)):
             # Passthrough: include pre-signed transaction as-is
             if passthrough and i in passthrough:
