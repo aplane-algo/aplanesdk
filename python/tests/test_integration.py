@@ -10,9 +10,11 @@ from pathlib import Path
 
 import pytest
 import yaml
-from algosdk import encoding, transaction
+from algosdk import encoding, kmd, transaction
+from algosdk.error import AlgodHTTPError
+from algosdk.v2client import algod
 
-from aplanesdk.signer import SignerClient
+from aplanesdk.signer import SignerClient, _verify_signed_transaction_matches_canonical
 
 
 def _integration_enabled() -> bool:
@@ -138,11 +140,73 @@ def test_live_signer_native_falcon_signing():
 
         client.delete_key(address)
         cleanup = False
-        _wait_for_keyset_revision(
-            client, after_generate.keyset_revision, "native Falcon delete"
-        )
+        _wait_for_keyset_revision(client, after_generate.keyset_revision, "native Falcon delete")
     finally:
         if cleanup and address:
+            try:
+                client.delete_key(address)
+            except Exception:
+                pass
+        client.close()
+
+
+@pytest.mark.skipif(not _integration_enabled(), reason="set APLANE_SDK_INTEGRATION=1")
+def test_live_native_falcon_signature_verifies_on_localnet():
+    """A real native Falcon signature survives the SDK and the network accepts it.
+
+    The signing test above checks only the envelope's shape. Here the node
+    verifies the signature: simulation runs with empty signatures disallowed,
+    a tampered copy must fail, and the untouched transaction must confirm.
+    """
+    if not _localnet_available():
+        pytest.skip("needs a LocalNet algod and KMD (ALGOD_URL, APLANE_LOCALNET_KMD_URL)")
+    algod_client = algod.AlgodClient(
+        os.environ.get("ALGOD_TOKEN", ""), os.environ["ALGOD_URL"].strip()
+    )
+    client = _live_signer_client()
+    address = ""
+    try:
+        before = client.get_status()
+        address = client.generate_key("falcon1024", {}).address
+        assert address
+        _wait_for_keyset_revision(client, before.keyset_revision, "native Falcon generate")
+        _fund_from_localnet_kmd(algod_client, address, 500_000)
+
+        prepared = client.prepare_payment(algod_client, sender=address, receiver=address, amount=0)
+        result = client.simulate_prepared_transaction(algod_client, prepared)
+        assert not result.failed, _simulation_failure(result.response)
+        assert len(result.signed_group) == 1
+
+        signed_hex = result.signed_group[0]
+        signed_bytes = bytes.fromhex(signed_hex)
+        _assert_native_falcon_envelope(signed_bytes)
+
+        # The check the cosigned flow runs on every assembled transaction,
+        # against canonical bytes taken from the wire and not from the SDK's
+        # own decoding of them.
+        envelope = _decode_signed_blob(signed_bytes)
+        canonical = b"TX" + encoding.msgpack.packb(envelope["txn"], use_bin_type=True)
+        _verify_signed_transaction_matches_canonical(
+            "native Falcon transaction", 0, signed_hex, canonical.hex()
+        )
+        assert result.transactions[0] == canonical.hex()
+
+        tampered = _decode_signed_blob(signed_bytes)
+        signature = bytearray(tampered["pqsig"]["sig"])
+        signature[len(signature) // 2] ^= 0x01
+        tampered["pqsig"]["sig"] = bytes(signature)
+        rejection = _raw_simulation_rejection(
+            algod_client, encoding.msgpack.packb(tampered, use_bin_type=True)
+        )
+        assert (
+            "signature" in rejection
+        ), f"the node did not reject a tampered native Falcon signature: {rejection[-200:]!r}"
+
+        tx_id = algod_client.send_raw_transaction(base64.b64encode(signed_bytes).decode())
+        assert tx_id == result.tx_ids[0]
+        transaction.wait_for_confirmation(algod_client, tx_id, 10)
+    finally:
+        if address:
             try:
                 client.delete_key(address)
             except Exception:
@@ -174,6 +238,57 @@ def _self_payment_txn(address: str) -> transaction.PaymentTxn:
         flat_fee=True,
     )
     return transaction.PaymentTxn(sender=address, sp=params, receiver=address, amt=0)
+
+
+def _localnet_available() -> bool:
+    return bool(
+        os.environ.get("ALGOD_URL", "").strip()
+        and os.environ.get("APLANE_LOCALNET_KMD_URL", "").strip()
+    )
+
+
+def _fund_from_localnet_kmd(algod_client, receiver: str, amount: int) -> None:
+    """Pay `receiver` from the richest account in the LocalNet KMD wallet."""
+    kmd_client = kmd.KMDClient(
+        os.environ.get("APLANE_LOCALNET_TOKEN", ""),
+        os.environ["APLANE_LOCALNET_KMD_URL"].strip(),
+    )
+    wallet_name = os.environ.get("APLANE_LOCALNET_WALLET", "unencrypted-default-wallet")
+    password = os.environ.get("APLANE_LOCALNET_WALLET_PASSWORD", "")
+    wallet_id = next((w["id"] for w in kmd_client.list_wallets() if w["name"] == wallet_name), None)
+    assert wallet_id, f"LocalNet KMD has no wallet named {wallet_name!r}"
+    handle = kmd_client.init_wallet_handle(wallet_id, password)
+    try:
+        funder = max(
+            kmd_client.list_keys(handle),
+            key=lambda item: algod_client.account_info(item)["amount"],
+        )
+        payment = transaction.PaymentTxn(
+            sender=funder,
+            sp=algod_client.suggested_params(),
+            receiver=receiver,
+            amt=amount,
+        )
+        signed = kmd_client.sign_transaction(handle, password, payment)
+    finally:
+        kmd_client.release_wallet_handle(handle)
+    tx_id = algod_client.send_transaction(signed)
+    transaction.wait_for_confirmation(algod_client, tx_id, 10)
+
+
+def _simulation_failure(response: dict) -> str:
+    groups = response.get("txn-groups") or []
+    return groups[0].get("failure-message", "") if groups else ""
+
+
+def _raw_simulation_rejection(algod_client, signed_bytes: bytes) -> str:
+    """Why the node refuses these signed bytes; empty when it accepts them."""
+    signed = encoding.msgpack_decode(base64.b64encode(signed_bytes).decode())
+    try:
+        response = algod_client.simulate_raw_transactions([signed])
+    except AlgodHTTPError as exc:
+        return str(exc) or "rejected"
+    return _simulation_failure(response)
 
 
 def _decode_signed_blob(blob: bytes) -> dict:
