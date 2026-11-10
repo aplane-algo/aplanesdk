@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 
 	algocrypto "github.com/algorand/go-algorand-sdk/v2/crypto"
@@ -232,7 +233,7 @@ func TestValidateSignResponseAcceptsReportedMutations(t *testing.T) {
 			if len(resp.Signed) != tc.want {
 				t.Fatalf("fake signer returned %d slots, want %d", len(resp.Signed), tc.want)
 			}
-			if err := validateSignResponse(mustDecodeSlots(t, tc.requests), resp.Signed, resp.Mutations, nil); err != nil {
+			if err := validateSignResponse(mustDecodeSlots(t, tc.requests), resp.Signed, resp.Mutations, feeCeiling{}); err != nil {
 				t.Fatalf("validateSignResponse() error = %v", err)
 			}
 		})
@@ -457,11 +458,11 @@ func TestValidateSignResponseRejectsTampering(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			resp := tc.signer.sign(t, tc.requests)
 			slots := mustDecodeSlots(t, tc.requests)
-			if err := validateSignResponse(slots, resp.Signed, resp.Mutations, nil); err != nil {
+			if err := validateSignResponse(slots, resp.Signed, resp.Mutations, feeCeiling{}); err != nil {
 				t.Fatalf("untampered response rejected: %v", err)
 			}
 			tc.tamper(&resp)
-			err := validateSignResponse(slots, resp.Signed, resp.Mutations, nil)
+			err := validateSignResponse(slots, resp.Signed, resp.Mutations, feeCeiling{})
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("validateSignResponse() error = %v, want %q", err, tc.want)
 			}
@@ -503,7 +504,7 @@ func TestValidatePlanResponse(t *testing.T) {
 	if len(resp.Transactions) != 3 {
 		t.Fatalf("fake plan returned %d transactions, want 3", len(resp.Transactions))
 	}
-	if err := validatePlanResponse(slots, resp.Transactions, resp.Mutations, nil); err != nil {
+	if err := validatePlanResponse(slots, resp.Transactions, resp.Mutations, feeCeiling{}); err != nil {
 		t.Fatalf("valid plan: unexpected error %v", err)
 	}
 
@@ -583,7 +584,7 @@ func TestValidatePlanResponse(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			resp := signer.plan(t, requests)
 			tc.tamper(&resp)
-			err := validatePlanResponse(slots, resp.Transactions, resp.Mutations, nil)
+			err := validatePlanResponse(slots, resp.Transactions, resp.Mutations, feeCeiling{})
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("validatePlanResponse() error = %v, want %q", err, tc.want)
 			}
@@ -951,5 +952,90 @@ func TestMaxFeeIncreaseSetAndClear(t *testing.T) {
 	}
 	if _, err := client.SignTransaction(txn, "", nil); err != nil {
 		t.Fatalf("SignTransaction() after clearing the ceiling: %v", err)
+	}
+}
+
+// A call is held to the ceiling in force when it started. Clearing it while
+// the signer is still waiting for approval must not let the response through.
+func TestMaxFeeIncreaseIsSnapshottedWhenTheCallStarts(t *testing.T) {
+	txn := verifyTestPayment(t, 41, 42, 1)
+	signer := fakeSigner{feeRaise: map[int]uint64{0: 3000}}
+	for _, path := range []string{"/sign", "/plan"} {
+		t.Run(path, func(t *testing.T) {
+			arrived := make(chan struct{})
+			release := make(chan struct{})
+			var held sync.Once
+			client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == path {
+					// Only the first call is held back.
+					held.Do(func() {
+						close(arrived)
+						<-release
+					})
+				}
+				fakeSignHandler(t, signer)(w, r)
+			})
+			defer server.Close()
+			client.cacheApprovalWait(60)
+			client.SetMaxFeeIncrease(1000)
+
+			result := make(chan error, 1)
+			go func() {
+				var err error
+				if path == "/sign" {
+					_, err = client.SignTransaction(txn, "", nil)
+				} else {
+					_, err = client.PlanGroup([]types.Transaction{txn}, []string{txn.Sender.String()}, nil, nil)
+				}
+				result <- err
+			}()
+			<-arrived
+			client.ClearMaxFeeIncrease()
+			close(release)
+
+			err := <-result
+			if err == nil || !strings.Contains(err.Error(), "more than the max fee increase 1000 set on this client") {
+				t.Fatalf("error = %v, want the ceiling set when the call started to refuse", err)
+			}
+			// The next call starts with no ceiling.
+			if _, err := client.SignTransaction(txn, "", nil); err != nil {
+				t.Fatalf("call started after clearing the ceiling: %v", err)
+			}
+		})
+	}
+}
+
+func TestConnectionOptionsSetMaxFeeIncrease(t *testing.T) {
+	limit := uint64(250_000)
+
+	client := newTunnelClient(1234, nil, DefaultTimeout, &SSHConnectOptions{MaxFeeIncrease: &limit})
+	if got, set := client.MaxFeeIncrease(); !set || got != limit {
+		t.Fatalf("client built from SSHConnectOptions: MaxFeeIncrease() = %d, %v, want %d, true", got, set, limit)
+	}
+	// The client keeps its own copy.
+	limit = 1
+	if got, _ := client.MaxFeeIncrease(); got != 250_000 {
+		t.Fatalf("MaxFeeIncrease() = %d after the caller changed its variable, want 250000", got)
+	}
+	for name, opts := range map[string]*SSHConnectOptions{"nil options": nil, "unset": {}} {
+		if _, set := newTunnelClient(1234, nil, DefaultTimeout, opts).MaxFeeIncrease(); set {
+			t.Fatalf("%s: client has a max fee increase; there must be no default", name)
+		}
+	}
+
+	limit = 250_000
+	sshOpts := fromEnvSSHOptions(&FromEnvOptions{MaxFeeIncrease: &limit, Timeout: 7, TrustOnFirstUse: true}, 2222, "/kh")
+	if sshOpts.MaxFeeIncrease == nil || *sshOpts.MaxFeeIncrease != limit {
+		t.Fatalf("FromEnvOptions.MaxFeeIncrease was not carried to the SSH options: %+v", sshOpts)
+	}
+	if sshOpts.SSHPort != 2222 || sshOpts.KnownHostsPath != "/kh" || sshOpts.Timeout != 7 || !sshOpts.TrustOnFirstUse {
+		t.Fatalf("fromEnvSSHOptions() = %+v", sshOpts)
+	}
+	if got := fromEnvSSHOptions(nil, 2222, "/kh"); got.MaxFeeIncrease != nil || got.SSHPort != 2222 {
+		t.Fatalf("fromEnvSSHOptions(nil) = %+v", got)
+	}
+	zero := uint64(0)
+	if got, set := newTunnelClient(1, nil, DefaultTimeout, fromEnvSSHOptions(&FromEnvOptions{MaxFeeIncrease: &zero}, 1, "")).MaxFeeIncrease(); !set || got != 0 {
+		t.Fatalf("a zero ceiling from FromEnvOptions: MaxFeeIncrease() = %d, %v, want 0, true", got, set)
 	}
 }

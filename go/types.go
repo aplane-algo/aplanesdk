@@ -878,6 +878,10 @@ type SSHConnectOptions struct {
 	SSHSetupTimeout time.Duration
 	KnownHostsPath  string
 	TrustOnFirstUse bool
+	// MaxFeeIncrease, when set, is the ceiling in microAlgos on the total fee
+	// the signer may add to a request, applied before the client is returned.
+	// See SignerClient.SetMaxFeeIncrease. Nil sets none.
+	MaxFeeIncrease *uint64
 }
 
 // FromEnvOptions contains options for FromEnv().
@@ -888,6 +892,10 @@ type FromEnvOptions struct {
 	// SSHSetupTimeout bounds TCP dialing and SSH authentication.
 	SSHSetupTimeout time.Duration
 	TrustOnFirstUse bool
+	// MaxFeeIncrease, when set, is the ceiling in microAlgos on the total fee
+	// the signer may add to a request, applied before the client is returned.
+	// See SignerClient.SetMaxFeeIncrease. Nil sets none.
+	MaxFeeIncrease *uint64
 }
 
 // SignOptions contains options for signing with passthrough and foreign support.
