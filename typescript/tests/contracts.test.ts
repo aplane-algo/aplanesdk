@@ -9,7 +9,7 @@ import * as path from "path";
 import { fileURLToPath } from "url";
 import { SignerClient } from "../src/client.js";
 import { ErrorCodes } from "../src/types.js";
-import { fakePayment, signerFetch } from "./fakeSigner.js";
+import { fakePayment, signedHex, signerFetch } from "./fakeSigner.js";
 import type {
   CancelSignResponse,
   ComponentRequest,
@@ -166,32 +166,42 @@ describe("signer API contract fixtures", () => {
   });
 
   it("encodes mixed group sign request wire fields", () => {
+    // The fixture's addresses and bytes are placeholders, and the client only
+    // builds requests it could verify the answer to, so this builds the same
+    // shape from real values and compares field for field.
     const client = new SignerClient("http://localhost:11270");
-    const signTxn = {
-      sender: { toString: () => "SENDERADDR0000000000000000000000000000000000000000000" },
-      toByte: () => new Uint8Array([1]),
-    };
-    const foreignTxn = {
-      sender: { toString: () => "FOREIGNADDR000000000000000000000000000000000000000000" },
-      toByte: () => new Uint8Array([2]),
-    };
+    const signTxn = fakePayment(41, 42);
+    const foreignTxn = fakePayment(43, 44);
+    const presigned = signedHex(fakePayment(45, 46));
+    const auth = signTxn.sender.toString();
 
     const body = (client as any).buildSignRequestBody(
       [signTxn, null, foreignTxn],
-      ["AUTHADDR00000000000000000000000000000000000000000000000", null, null],
+      [auth, null, null],
       {
-        AUTHADDR00000000000000000000000000000000000000000000000: {
+        [auth]: {
           preimage: Buffer.from("secret"),
           recipient: new Uint8Array([0xaa, 0xbb, 0xcc, 0xdd]),
         },
       },
-      { 1: Buffer.from("82a3736967c440", "hex").toString("base64") },
+      { 1: Buffer.from(presigned, "hex").toString("base64") },
       { 2: { programBytes: 1600, argumentBytes: 1423, maxOpcodeCost: 20000 } },
     );
 
     const expected = fixture("group_sign_request_mixed.json");
     delete expected.requests[0].app_call_info;
-    assert.deepEqual(body, expected);
+    assert.deepEqual(
+      body.requests.map((request: any) => Object.keys(request).sort()),
+      expected.requests.map((request: any) => Object.keys(request).sort()),
+    );
+    const [sign, passthrough, foreign] = body.requests;
+    assert.equal(sign.auth_address, auth);
+    assert.equal(sign.txn_sender, auth);
+    assert.match(sign.txn_bytes_hex, /^5458/);
+    assert.deepEqual(sign.lsig_args, expected.requests[0].lsig_args);
+    assert.deepEqual(passthrough, { signed_txn_hex: presigned });
+    assert.match(foreign.txn_bytes_hex, /^5458/);
+    assert.deepEqual(foreign.lsig_resources, expected.requests[2].lsig_resources);
   });
 
   it("maps /keys wire fields to public KeyInfo fields", async () => {

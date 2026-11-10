@@ -77,7 +77,7 @@ func TestSign_LockedCodeIsLocked(t *testing.T) {
 	defer server.Close()
 
 	txn := types.Transaction{Type: types.PaymentTx}
-	_, err := client.SignTransaction(txn, "ADDR", nil)
+	_, err := client.SignTransaction(txn, sdkTestAddress(0xA0), nil)
 	if err != ErrSignerLocked {
 		t.Fatalf("expected ErrSignerLocked, got: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestSign_ForbiddenCodeIsRejected(t *testing.T) {
 	defer server.Close()
 
 	txn := types.Transaction{Type: types.PaymentTx}
-	_, err := client.SignTransaction(txn, "ADDR", nil)
+	_, err := client.SignTransaction(txn, sdkTestAddress(0xA0), nil)
 	if err != ErrSigningRejected {
 		t.Fatalf("expected ErrSigningRejected, got: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestGenericErrorCarriesAPIErrorCode(t *testing.T) {
 	defer server.Close()
 
 	txn := types.Transaction{Type: types.PaymentTx}
-	_, err := client.PlanGroup([]types.Transaction{txn}, []string{"ADDR"}, nil, nil)
+	_, err := client.PlanGroup([]types.Transaction{txn}, []string{sdkTestAddress(0xA0)}, nil, nil)
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) {
 		t.Fatalf("expected *APIError, got: %v", err)
@@ -190,7 +190,7 @@ func TestForbiddenWithoutCodeIsGenericAPIError(t *testing.T) {
 		t.Run("sign/"+body, func(t *testing.T) {
 			client, server := newTestClient(handler)
 			defer server.Close()
-			_, err := client.SignTransaction(types.Transaction{Type: types.PaymentTx}, "ADDR", nil)
+			_, err := client.SignTransaction(types.Transaction{Type: types.PaymentTx}, sdkTestAddress(0xA0), nil)
 			requireUncodedAPIError(t, err, http.StatusForbidden)
 		})
 		t.Run("components/"+body, func(t *testing.T) {
@@ -219,6 +219,6 @@ func TestNotFoundMessageWithoutCodeIsNotKeyNotFound(t *testing.T) {
 		writeCodedError(w, http.StatusNotFound, "", "key not found")
 	})
 	defer server.Close()
-	_, err := client.PlanGroup([]types.Transaction{{Type: types.PaymentTx}}, []string{"ADDR"}, nil, nil)
+	_, err := client.PlanGroup([]types.Transaction{{Type: types.PaymentTx}}, []string{sdkTestAddress(0xA0)}, nil, nil)
 	requireUncodedAPIError(t, err, http.StatusNotFound)
 }

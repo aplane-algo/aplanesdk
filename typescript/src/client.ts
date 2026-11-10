@@ -78,6 +78,7 @@ import {
 } from "./types.js";
 import {
   SignerError,
+  errorText,
   AuthenticationError,
   SigningRejectedError,
   SignerUnavailableError,
@@ -101,7 +102,10 @@ import {
   cloneTransaction,
   decodeCanonicalSignedTransaction,
   decodeCanonicalTransaction,
+  decodePassthroughSlot,
   decodeRequestSlots,
+  signSlot,
+  type RequestSlot,
   groupIDBytes,
   signCanonicalDummy,
   signedTransactionMatchesCanonical,
@@ -277,7 +281,7 @@ function decodeCanonicalGroup(groupBytesHex: string[]): Transaction[] {
       return decodeCanonicalTransaction(hexToBytes(encoded));
     } catch (error) {
       throw new SignerError(
-        `transaction ${index}: ${error instanceof Error ? error.message : String(error)}`,
+        `transaction ${index}: ${errorText(error)}`,
       );
     }
   });
@@ -718,7 +722,7 @@ async function simulateSignedGroup(
       return decodeCanonicalSignedTransaction(hexToBytes(signedHex));
     } catch (error) {
       throw new SignerError(
-        `signed group position ${index + 1}: ${error instanceof Error ? error.message : String(error)}`
+        `signed group position ${index + 1}: ${errorText(error)}`
       );
     }
   });
@@ -3576,7 +3580,7 @@ export class SignerClient {
       txns, authAddrs, lsigArgsMap, passthrough, lsigResources,
     );
 
-    return this.planRequests(requestBody.requests);
+    return this.planWithSlots(requestBody.requests, requestBody.slots);
   }
 
   /**
@@ -3584,8 +3588,19 @@ export class SignerClient {
    * address-keyed convenience API.
    */
   async planRequests(requests: SignRequest[]): Promise<PlanGroupResponse> {
+    return this.planWithSlots(requests);
+  }
+
+  /**
+   * planRequests for requests whose slots may already be decoded: requests
+   * the SDK built arrive with them, raw requests are decoded here.
+   */
+  private async planWithSlots(
+    requests: SignRequest[],
+    decoded?: RequestSlot[],
+  ): Promise<PlanGroupResponse> {
     validateSignRequests(requests);
-    const slots = decodeRequestSlots(requests);
+    const slots = decoded ?? decodeRequestSlots(requests);
     const maxFeeIncrease = this.feeCeilingSnapshot();
 
     const response = await this.fetch("/plan", {
@@ -3629,7 +3644,7 @@ export class SignerClient {
       validatePlanResponse(slots, data.transactions, data.mutations, maxFeeIncrease);
     } catch (error) {
       throw new SignerError(
-        `verify signer plan: ${error instanceof Error ? error.message : String(error)}`,
+        `verify signer plan: ${errorText(error)}`,
       );
     }
 
@@ -3795,10 +3810,22 @@ export class SignerClient {
     requests: SignRequest[],
     options?: SignOptions,
   ): Promise<GroupSignResponse> {
+    return this.signWithSlots(requests, undefined, options);
+  }
+
+  /**
+   * signRequests for requests whose slots may already be decoded: requests
+   * the SDK built arrive with them, raw requests are decoded here.
+   */
+  private async signWithSlots(
+    requests: SignRequest[],
+    decoded: RequestSlot[] | undefined,
+    options?: SignOptions,
+  ): Promise<GroupSignResponse> {
     const requestId = options?.requestId ?? newSignRequestId();
     validateSignRequestId(requestId, true);
     validateSignRequests(requests);
-    const slots = decodeRequestSlots(requests);
+    const slots = decoded ?? decodeRequestSlots(requests);
     const maxFeeIncrease = this.feeCeilingSnapshot();
     const signBody: GroupSignRequest = { request_id: requestId, requests };
 
@@ -3860,7 +3887,7 @@ export class SignerClient {
       validateSignResponse(slots, data.signed ?? [], data.mutations, maxFeeIncrease);
     } catch (error) {
       throw new SignerError(
-        `verify signer response: ${error instanceof Error ? error.message : String(error)}`,
+        `verify signer response: ${errorText(error)}`,
       );
     }
 
@@ -3910,7 +3937,7 @@ export class SignerClient {
     passthrough?: Record<number, string>,
     lsigResources?: Record<number, LogicSigResourceUsage>,
     allowForeign = true,
-  ): { requests: SignRequest[] } {
+  ): { requests: SignRequest[]; slots: RequestSlot[] } {
     if (txns.length === 0) {
       throw new SignerError("transactions must not be empty");
     }
@@ -3928,38 +3955,45 @@ export class SignerClient {
     }
 
     const signRequests: SignRequest[] = [];
+    const slots: RequestSlot[] = [];
     const matchedLsigArgs = new Set<string>();
     for (let i = 0; i < txns.length; i++) {
       const txn = txns[i];
       const authAddr = authAddresses[i];
 
-      // A position matches its auth address, or its sender when none is
-      // given, whatever its mode.
-      if (authAddr) {
-        matchedLsigArgs.add(authAddr);
-      } else if (txn) {
-        matchedLsigArgs.add(txn.sender.toString());
-      }
-
-      // Passthrough: include pre-signed transaction as-is
+      // Passthrough: include pre-signed transaction as-is. It is decoded
+      // once, strictly, and both its request and its part in matching the
+      // LogicSig args come from that.
       const passthroughEntry = passthroughByIndex.get(i);
       if (passthroughEntry !== undefined) {
-        // The signed bytes name the position's sender and signer too.
+        const signedBytes = Buffer.from(passthroughEntry, "base64");
+        let slot: RequestSlot;
         try {
-          const signed = algosdk.decodeSignedTransaction(Buffer.from(passthroughEntry, "base64"));
-          matchedLsigArgs.add(signed.txn.sender.toString());
-          if (signed.sgnr) matchedLsigArgs.add(signed.sgnr.toString());
-        } catch {
-          // Malformed passthrough bytes are reported when the request is decoded.
+          slot = decodePassthroughSlot(new Uint8Array(signedBytes));
+        } catch (error) {
+          throw new SignerError(`invalid passthrough[${i}]: ${errorText(error)}`);
         }
-        const signedHex = Buffer.from(passthroughEntry, "base64").toString("hex");
-        const request: SignRequest = { signed_txn_hex: signedHex };
+        // A passthrough position matches the auth address given for it and
+        // the sender and signer its signed bytes name.
+        for (const address of [authAddr, slot.txn.sender.toString(), slot.signer]) {
+          if (address) matchedLsigArgs.add(address);
+        }
+        const request: SignRequest = { signed_txn_hex: signedBytes.toString("hex") };
         const resources = lsigResourcesByIndex.get(i);
         if (resources) {
           request.lsig_resources = wireLogicSigResources(resources);
         }
         signRequests.push(request);
+        slots.push(slot);
         continue;
+      }
+
+      // A sign or foreign position matches its auth address, or its sender
+      // when none is given.
+      if (authAddr) {
+        matchedLsigArgs.add(authAddr);
+      } else if (txn) {
+        matchedLsigArgs.add(txn.sender.toString());
       }
 
       if (authAddr && lsigResourcesByIndex.has(i)) {
@@ -3985,11 +4019,17 @@ export class SignerClient {
           req.lsig_resources = wireLogicSigResources(resources);
         }
         signRequests.push(req);
+        slots.push({ mode: "foreign", txn: cloneTransaction(txn) });
         continue;
       }
 
       if (!txn) {
         throw new SignerError(`transaction is required for sign-mode entry at index ${i}`);
+      }
+      try {
+        slots.push(signSlot(cloneTransaction(txn), authAddr));
+      } catch (error) {
+        throw new SignerError(`transaction ${i + 1}: ${errorText(error)}`);
       }
 
       const [txnBytesHex, txnSender] = encodeTransaction(txn);
@@ -4024,7 +4064,7 @@ export class SignerClient {
       );
     }
 
-    return { requests: signRequests };
+    return { requests: signRequests, slots };
   }
 
   /**
@@ -4042,7 +4082,7 @@ export class SignerClient {
     const requestBody = this.buildSignRequestBody(
       txns, authAddresses, lsigArgsMap, passthrough, lsigResources, false,
     );
-    const data = await this.signRequests(requestBody.requests, options);
+    const data = await this.signWithSlots(requestBody.requests, requestBody.slots, options);
 
     // Return hex-encoded signed transactions
     const signedHexes = data.signed || [];

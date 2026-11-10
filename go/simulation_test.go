@@ -19,11 +19,6 @@ import (
 	"github.com/algorand/go-algorand-sdk/v2/types"
 )
 
-func makeSimulationSignedTxn(t *testing.T, txn types.Transaction) string {
-	t.Helper()
-	return hex.EncodeToString(msgpack.Encode(types.SignedTxn{Txn: txn}))
-}
-
 func makeSimulationAlgodClient(t *testing.T, handler http.HandlerFunc) (*algod.Client, func()) {
 	t.Helper()
 	server := httptest.NewServer(handler)
@@ -36,8 +31,8 @@ func makeSimulationAlgodClient(t *testing.T, handler http.HandlerFunc) (*algod.C
 }
 
 func TestSimulatePreparedGroupUsesOrdinarySignThenClientAlgod(t *testing.T) {
-	txn := types.Transaction{Type: types.PaymentTx}
-	signedHex := makeSimulationSignedTxn(t, txn)
+	txn := verifyTestPayment(t, 41, 42, 1)
+	signedHex := fakeSignedTxnHex(txn)
 	var signerPaths []string
 	signer, signerServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		signerPaths = append(signerPaths, r.URL.Path)
@@ -49,7 +44,7 @@ func TestSimulatePreparedGroupUsesOrdinarySignThenClientAlgod(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 				t.Fatalf("decode sign request: %v", err)
 			}
-			if len(request.Requests) != 1 || request.Requests[0].AuthAddress != "AUTH" {
+			if len(request.Requests) != 1 || request.Requests[0].AuthAddress != txn.Sender.String() {
 				t.Fatalf("sign request = %+v", request.Requests)
 			}
 			json.NewEncoder(w).Encode(GroupSignResponse{
@@ -101,7 +96,7 @@ func TestSimulatePreparedGroupUsesOrdinarySignThenClientAlgod(t *testing.T) {
 
 	result, err := signer.SimulatePreparedGroup(context.Background(), algodClient, NewPreparedGroup(PreparedTransaction{
 		Transaction: &txn,
-		AuthAddress: "AUTH",
+		AuthAddress: txn.Sender.String(),
 	}))
 	if err != nil {
 		t.Fatalf("SimulatePreparedGroup() error = %v", err)
@@ -131,7 +126,7 @@ func TestSimulatePreparedGroupRequiresAlgodBeforeSigner(t *testing.T) {
 	txn := types.Transaction{Type: types.PaymentTx}
 	_, err := signer.SimulatePreparedGroup(context.Background(), nil, NewPreparedGroup(PreparedTransaction{
 		Transaction: &txn,
-		AuthAddress: "AUTH",
+		AuthAddress: sdkTestAddress(0xA1),
 	}))
 	if err == nil || !strings.Contains(err.Error(), "algod client is required") {
 		t.Fatalf("SimulatePreparedGroup() error = %v", err)

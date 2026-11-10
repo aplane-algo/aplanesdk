@@ -33,7 +33,11 @@ import {
 } from "../src/config.js";
 import { preparedGroupToSignRequests } from "../src/prepared.js";
 import {
+  authorize,
+  fakeAccount,
   fakeAddress,
+  fakeLogicSigAccount,
+  fakePQAccount,
   fakePayment,
   signEntries,
   signedHex,
@@ -3172,7 +3176,7 @@ describe("SignerClient", () => {
       const client = new SignerClient("http://localhost:11270");
       const mockTxn = createMockTxn() as Parameters<typeof client.planGroup>[0][0];
 
-      await client.planGroup([mockTxn, fakePayment(43, 44)], ["AUTH_ADDR", null], undefined, undefined, {
+      await client.planGroup([mockTxn, fakePayment(43, 44)], [fakeAddress(50), null], undefined, undefined, {
         1: { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 },
       });
 
@@ -3187,16 +3191,17 @@ describe("SignerClient", () => {
 
     it("carries LogicSig resources on passthrough entries", () => {
       const client = new SignerClient("http://localhost:11270");
+      const presigned = signedHex(fakePayment());
       const body = (client as any).buildSignRequestBody(
         [null],
         [null],
         undefined,
-        { 0: Buffer.from("signed-txn").toString("base64") },
+        { 0: Buffer.from(presigned, "hex").toString("base64") },
         { 0: { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 } },
         false,
       );
       assert.deepEqual(body.requests, [{
-        signed_txn_hex: Buffer.from("signed-txn").toString("hex"),
+        signed_txn_hex: presigned,
         lsig_resources: {
           program_bytes: 1612,
           argument_bytes: 1423,
@@ -3226,7 +3231,7 @@ describe("SignerClient", () => {
       const mockTxn = createMockTxn() as Parameters<typeof client.signTransactions>[0][0];
 
       await assert.rejects(
-        client.signTransactions([mockTxn, mockTxn], ["AUTH1", null]),
+        client.signTransactions([mockTxn, mockTxn], [fakeAddress(51), null]),
         { message: /foreign entries are only supported on \/plan/ },
       );
       assert.equal(mockFetch.mock.calls.length, 0);
@@ -3236,7 +3241,7 @@ describe("SignerClient", () => {
       const client = new SignerClient("http://localhost:11270");
       const mockTxn = createMockTxn() as Parameters<typeof client.signTransactionsList>[0][0];
       await assert.rejects(
-        client.signTransactionsList([mockTxn, mockTxn], ["AUTH1", null]),
+        client.signTransactionsList([mockTxn, mockTxn], [fakeAddress(51), null]),
         { message: /foreign entries are only supported on \/plan/ },
       );
       assert.equal(mockFetch.mock.calls.length, 0);
@@ -3313,7 +3318,7 @@ describe("SignerClient", () => {
       const client = new SignerClient("http://localhost:11270");
       const lockedTxn = createMockTxn() as Parameters<typeof client.signTransaction>[0];
       await assert.rejects(
-        client.signTransaction(lockedTxn, "A".repeat(58)),
+        client.signTransaction(lockedTxn, fakeAddress(52)),
         SignerUnavailableError
       );
     });
@@ -3589,7 +3594,7 @@ describe("SignerClient", () => {
       const txn = fakePayment();
       const entry = {
         txn_bytes_hex: encodeTransaction(txn)[0],
-        auth_address: "AUTH",
+        auth_address: txn.sender.toString(),
         txn_sender: "SENDER",
       };
       const client = new SignerClient("http://localhost:11270");
@@ -3685,7 +3690,7 @@ describe("SignerClient", () => {
   describe("client-side signed simulation", () => {
     it("uses ordinary signing before calling the caller's algod", async () => {
       const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
-        sender: testAddress(1),
+        sender: fakeAccount(1),
         receiver: testAddress(2),
         amount: 1n,
         suggestedParams: {
@@ -3698,11 +3703,7 @@ describe("SignerClient", () => {
           flatFee: true,
         },
       });
-      const signature = new Uint8Array(64);
-      signature[63] = 1;
-      const signedBytes = algosdk.encodeMsgpack(
-        new algosdk.SignedTransaction({ txn, sig: signature }),
-      );
+      const signedBytes = algosdk.encodeMsgpack(authorize(txn, txn.sender.toString()));
       const signedHex = bytesToHex(signedBytes);
 
       queueStatusResponse();
@@ -3731,7 +3732,7 @@ describe("SignerClient", () => {
 
       const client = new SignerClient("http://localhost:11270");
       const result = await client.simulatePreparedGroup(algodClient, {
-        transactions: [{ transaction: txn, authAddress: testAddress(1) }],
+        transactions: [{ transaction: txn, authAddress: txn.sender.toString() }],
       });
 
       assert.equal(mockFetch.mock.calls[1][0], "http://localhost:11270/sign");
@@ -3753,7 +3754,7 @@ describe("SignerClient", () => {
     // field drops it on decode, so simulation would see an unsigned transaction.
     it("keeps a native post-quantum signature through simulation", async () => {
       const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
-        sender: testAddress(1),
+        sender: fakePQAccount(7),
         receiver: testAddress(2),
         amount: 1n,
         suggestedParams: {
@@ -3766,13 +3767,9 @@ describe("SignerClient", () => {
           flatFee: true,
         },
       });
-      const pqsig = {
-        sch: new TextEncoder().encode("f1"),
-        slt: 3,
-        pk: new Uint8Array(1793).fill(7),
-        sig: new Uint8Array(1232).fill(9),
-      };
-      const signedBytes = algosdk.encodeMsgpack(new algosdk.SignedTransaction({ txn, pqsig }));
+      const signed = authorize(txn, txn.sender.toString());
+      assert.notEqual(signed.pqsig, undefined);
+      const signedBytes = algosdk.encodeMsgpack(signed);
       const signedHex = bytesToHex(signedBytes);
 
       queueStatusResponse();
@@ -3797,12 +3794,12 @@ describe("SignerClient", () => {
 
       const client = new SignerClient("http://localhost:11270");
       const result = await client.simulatePreparedGroup(algodClient, {
-        transactions: [{ transaction: txn, authAddress: testAddress(1) }],
+        transactions: [{ transaction: txn, authAddress: txn.sender.toString() }],
       });
 
       const simulated = simulationRequests[0].txnGroups[0].txns[0];
-      assert.deepEqual(simulated.pqsig?.sig, pqsig.sig);
-      assert.deepEqual(simulated.pqsig?.pk, pqsig.pk);
+      assert.deepEqual(simulated.pqsig?.sig, signed.pqsig?.sig);
+      assert.deepEqual(simulated.pqsig?.pk, signed.pqsig?.pk);
       assert.deepEqual(algosdk.encodeMsgpack(simulated), signedBytes);
       assert.deepEqual(result.signedGroup, [signedHex]);
     });
@@ -4249,12 +4246,12 @@ describe("buildSignRequests", () => {
 
     const client = new SignerClient("http://localhost:11270");
     const mockTxn = createMockTxn() as Parameters<typeof client.signTransaction>[0];
-    await client.signTransaction(mockTxn, "AUTH_ADDR");
+    await client.signTransaction(mockTxn, fakeAccount(50));
 
     const capturedBody = JSON.parse(mockFetch.mock.calls[1][1].body);
     assert.match(capturedBody.request_id, /^sdk-[0-9a-f]{32}$/);
     assert.equal(capturedBody.requests.length, 1);
-    assert.equal(capturedBody.requests[0].auth_address, "AUTH_ADDR");
+    assert.equal(capturedBody.requests[0].auth_address, fakeAccount(50));
     assert.notEqual(capturedBody.requests[0].txn_bytes_hex, undefined);
   });
 
@@ -4263,11 +4260,11 @@ describe("buildSignRequests", () => {
     mockFetch.mockImplementationOnce(signerFetch());
 
     const client = new SignerClient("http://localhost:11270");
-    const mockTxn = createMockTxn(fakeAddress(77)) as Parameters<typeof client.signTransaction>[0];
+    const mockTxn = createMockTxn(fakeAccount(77)) as Parameters<typeof client.signTransaction>[0];
     await client.signTransaction(mockTxn);
 
     const capturedBody = JSON.parse(mockFetch.mock.calls[1][1].body);
-    assert.equal(capturedBody.requests[0].auth_address, fakeAddress(77));
+    assert.equal(capturedBody.requests[0].auth_address, fakeAccount(77));
   });
 
   it("includes lsig args as hex", async () => {
@@ -4275,8 +4272,8 @@ describe("buildSignRequests", () => {
     mockFetch.mockImplementationOnce(signerFetch());
 
     const client = new SignerClient("http://localhost:11270");
-    const mockTxn = createMockTxn(fakeAddress(78)) as Parameters<typeof client.signTransaction>[0];
-    await client.signTransaction(mockTxn, fakeAddress(78), {
+    const mockTxn = createMockTxn(fakeLogicSigAccount(78)) as Parameters<typeof client.signTransaction>[0];
+    await client.signTransaction(mockTxn, fakeLogicSigAccount(78), {
       preimage: new Uint8Array([0x73, 0x65, 0x63, 0x72, 0x65, 0x74]),
     });
 

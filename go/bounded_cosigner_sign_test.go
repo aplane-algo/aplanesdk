@@ -276,7 +276,7 @@ func TestSignPreparedCosignedGroupSendsAHeldPrimaryAsTheSignersOwn(t *testing.T)
 				return strings.Join(events, ",")
 			}
 			bounded := sdkTestAddress(51)
-			nativePQ := sdkTestAddress(52)
+			nativePQ := fakePQAccount(t, 52)
 			receiver := sdkTestAddress(53)
 			var frozenGroup []string
 			var primaryRequest SignRequest
@@ -782,7 +782,7 @@ func TestDecodeCanonicalGroupRejectsNoncanonicalBytes(t *testing.T) {
 }
 
 func TestRequestBoundedPrimaryPassthroughVerifiesTransactionIdentity(t *testing.T) {
-	sender := sdkTestAddress(41)
+	sender := fakeAccount(41)
 	receiver := sdkTestAddress(42)
 	var genesisHash types.Digest
 	sp := types.SuggestedParams{
@@ -904,7 +904,7 @@ func TestSignPreparedCosignedGroupMixedPaths(t *testing.T) {
 			listed := sdkTestAddress(61)
 			spendA := sdkTestAddress(62)
 			spendB := sdkTestAddress(63)
-			primary := sdkTestAddress(64)
+			primary := fakeAccount(64)
 			receiver := sdkTestAddress(65)
 			rekeyTarget := sdkTestAddress(66)
 			appInfo := map[int]*AppCallInfo{0: {Mode: "listed"}, 3: {Mode: "primary"}}

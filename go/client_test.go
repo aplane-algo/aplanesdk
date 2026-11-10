@@ -158,9 +158,9 @@ func TestBuildSignRequests(t *testing.T) {
 	txn.Type = types.PaymentTx
 	txn.Sender = types.Address{}
 
-	requests, err := buildSignRequests(
+	requests, _, err := buildSignRequests(
 		[]types.Transaction{txn},
-		[]string{"AUTH_ADDR"},
+		[]string{sdkTestAddress(0xA2)},
 		nil,
 	)
 	if err != nil {
@@ -170,7 +170,7 @@ func TestBuildSignRequests(t *testing.T) {
 	if len(requests) != 1 {
 		t.Fatalf("expected 1 request, got %d", len(requests))
 	}
-	if requests[0].AuthAddress != "AUTH_ADDR" {
+	if requests[0].AuthAddress != sdkTestAddress(0xA2) {
 		t.Fatalf("expected auth address AUTH_ADDR, got %s", requests[0].AuthAddress)
 	}
 }
@@ -179,7 +179,7 @@ func TestBuildSignRequests_DefaultAuthAddress(t *testing.T) {
 	txn := types.Transaction{}
 	txn.Type = types.PaymentTx
 
-	requests, err := buildSignRequests(
+	requests, _, err := buildSignRequests(
 		[]types.Transaction{txn},
 		nil,
 		nil,
@@ -202,7 +202,7 @@ func TestBuildSignRequests_WithLsigArgs(t *testing.T) {
 	txn.Type = types.PaymentTx
 	authAddr := txn.Sender.String()
 
-	requests, err := buildSignRequests(
+	requests, _, err := buildSignRequests(
 		[]types.Transaction{txn},
 		nil,
 		LsigArgsMap{authAddr: LsigArgs{"preimage": []byte("secret")}},
@@ -639,7 +639,7 @@ func TestListKeys_Success(t *testing.T) {
 	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(keysResponse{
 			Count: 1,
-			Keys:  []KeyInfo{{Address: "ADDR1", KeyType: "ed25519", PublicKeyHex: "abcd"}},
+			Keys:  []KeyInfo{{Address: sdkTestAddress(0xA3), KeyType: "ed25519", PublicKeyHex: "abcd"}},
 		})
 	})
 	defer server.Close()
@@ -651,7 +651,7 @@ func TestListKeys_Success(t *testing.T) {
 	if len(keys) != 1 {
 		t.Fatalf("expected 1 key, got %d", len(keys))
 	}
-	if keys[0].Address != "ADDR1" {
+	if keys[0].Address != sdkTestAddress(0xA3) {
 		t.Fatalf("expected ADDR1, got %s", keys[0].Address)
 	}
 }
@@ -684,7 +684,7 @@ func TestGetKeyInfo_NotFound(t *testing.T) {
 	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(keysResponse{
 			Count: 1,
-			Keys:  []KeyInfo{{Address: "ADDR1", KeyType: "ed25519", PublicKeyHex: "abcd"}},
+			Keys:  []KeyInfo{{Address: sdkTestAddress(0xA3), KeyType: "ed25519", PublicKeyHex: "abcd"}},
 		})
 	})
 	defer server.Close()
@@ -773,7 +773,7 @@ func TestGenerateKey_WithParameters(t *testing.T) {
 		if req.Parameters["label"] != "my-key" {
 			t.Fatalf("expected parameter label=my-key, got %s", req.Parameters["label"])
 		}
-		json.NewEncoder(w).Encode(GenerateResult{Address: "ADDR", KeyType: "ed25519"})
+		json.NewEncoder(w).Encode(GenerateResult{Address: sdkTestAddress(0xA0), KeyType: "ed25519"})
 	})
 	defer server.Close()
 
@@ -845,7 +845,7 @@ func TestDeleteKey_AuthError(t *testing.T) {
 	})
 	defer server.Close()
 
-	err := client.DeleteKey("ADDR")
+	err := client.DeleteKey(sdkTestAddress(0xA0))
 	if err != ErrAuthentication {
 		t.Fatalf("expected ErrAuthentication, got: %v", err)
 	}
@@ -1047,7 +1047,7 @@ func TestPlanGroup_Success(t *testing.T) {
 	defer server.Close()
 
 	txn := verifyTestPayment(t, 41, 42, 1)
-	result, err := client.PlanGroup([]types.Transaction{txn}, []string{"ADDR"}, nil, nil)
+	result, err := client.PlanGroup([]types.Transaction{txn}, []string{sdkTestAddress(0xA0)}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1066,7 +1066,7 @@ func TestPlanGroup_AuthError(t *testing.T) {
 	defer server.Close()
 
 	txn := types.Transaction{Type: types.PaymentTx}
-	_, err := client.PlanGroup([]types.Transaction{txn}, []string{"ADDR"}, nil, nil)
+	_, err := client.PlanGroup([]types.Transaction{txn}, []string{sdkTestAddress(0xA0)}, nil, nil)
 	if err != ErrAuthentication {
 		t.Fatalf("expected ErrAuthentication, got: %v", err)
 	}
@@ -1079,7 +1079,7 @@ func TestPlanGroup_ServerError(t *testing.T) {
 	defer server.Close()
 
 	txn := types.Transaction{Type: types.PaymentTx}
-	_, err := client.PlanGroup([]types.Transaction{txn}, []string{"ADDR"}, nil, nil)
+	_, err := client.PlanGroup([]types.Transaction{txn}, []string{sdkTestAddress(0xA0)}, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "key not found") {
 		t.Fatalf("expected key not found error, got: %v", err)
 	}
@@ -1094,7 +1094,7 @@ func TestSign_AuthError(t *testing.T) {
 	defer server.Close()
 
 	txn := types.Transaction{Type: types.PaymentTx}
-	_, err := client.SignTransaction(txn, "ADDR", nil)
+	_, err := client.SignTransaction(txn, sdkTestAddress(0xA0), nil)
 	if err != ErrAuthentication {
 		t.Fatalf("expected ErrAuthentication, got: %v", err)
 	}
@@ -1107,7 +1107,7 @@ func TestSign_Rejected(t *testing.T) {
 	defer server.Close()
 
 	txn := types.Transaction{Type: types.PaymentTx}
-	_, err := client.SignTransaction(txn, "ADDR", nil)
+	_, err := client.SignTransaction(txn, sdkTestAddress(0xA0), nil)
 	if err != ErrSigningRejected {
 		t.Fatalf("expected ErrSigningRejected, got: %v", err)
 	}
@@ -1120,7 +1120,7 @@ func TestSign_Unavailable(t *testing.T) {
 	defer server.Close()
 
 	txn := types.Transaction{Type: types.PaymentTx}
-	_, err := client.SignTransaction(txn, "ADDR", nil)
+	_, err := client.SignTransaction(txn, sdkTestAddress(0xA0), nil)
 	if err != ErrSignerUnavailable {
 		t.Fatalf("expected ErrSignerUnavailable, got: %v", err)
 	}
@@ -1134,7 +1134,7 @@ func TestSign_ServerError(t *testing.T) {
 	defer server.Close()
 
 	txn := types.Transaction{Type: types.PaymentTx}
-	_, err := client.SignTransaction(txn, "ADDR", nil)
+	_, err := client.SignTransaction(txn, sdkTestAddress(0xA0), nil)
 	if err == nil || !strings.Contains(err.Error(), "500") {
 		t.Fatalf("expected 500 error, got: %v", err)
 	}
@@ -1148,7 +1148,7 @@ func TestSign_ServerJSONError(t *testing.T) {
 	defer server.Close()
 
 	txn := types.Transaction{Type: types.PaymentTx}
-	_, err := client.SignTransaction(txn, "ADDR", nil)
+	_, err := client.SignTransaction(txn, sdkTestAddress(0xA0), nil)
 	if err == nil || !strings.Contains(err.Error(), "policy engine unavailable") {
 		t.Fatalf("expected JSON error body, got: %v", err)
 	}
@@ -1164,7 +1164,7 @@ func TestSign_ResponseError(t *testing.T) {
 	defer server.Close()
 
 	txn := types.Transaction{Type: types.PaymentTx}
-	_, err := client.SignTransaction(txn, "ADDR", nil)
+	_, err := client.SignTransaction(txn, sdkTestAddress(0xA0), nil)
 	if err == nil || !strings.Contains(err.Error(), "key not found") {
 		t.Fatalf("expected key not found error, got: %v", err)
 	}
@@ -1174,11 +1174,15 @@ func TestSign_ResponseError(t *testing.T) {
 
 func TestBuildSignRequestsWithOptions_Passthrough(t *testing.T) {
 	txn := types.Transaction{Type: types.PaymentTx}
-	signed := base64.StdEncoding.EncodeToString([]byte("pre-signed"))
+	presigned, err := hex.DecodeString(fakeSignedTxnHex(verifyTestPayment(t, 43, 44, 2)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed := base64.StdEncoding.EncodeToString(presigned)
 
-	requests, err := buildSignRequestsWithOptions(
+	requests, _, err := buildSignRequestsWithOptions(
 		[]types.Transaction{txn, txn},
-		[]string{"ADDR1", "ADDR2"},
+		[]string{sdkTestAddress(0xA3), sdkTestAddress(0xA5)},
 		nil,
 		&SignOptions{
 			Passthrough: map[int]string{1: signed},
@@ -1194,7 +1198,7 @@ func TestBuildSignRequestsWithOptions_Passthrough(t *testing.T) {
 	if len(requests) != 2 {
 		t.Fatalf("expected 2 requests, got %d", len(requests))
 	}
-	if requests[0].AuthAddress != "ADDR1" {
+	if requests[0].AuthAddress != sdkTestAddress(0xA3) {
 		t.Fatal("first request should be normal sign")
 	}
 	if requests[1].SignedTxnHex == "" {
@@ -1211,9 +1215,9 @@ func TestBuildSignRequestsWithOptions_Passthrough(t *testing.T) {
 func TestBuildSignRequestsWithOptions_Foreign(t *testing.T) {
 	txn := types.Transaction{Type: types.PaymentTx}
 
-	requests, err := buildSignRequestsWithOptions(
+	requests, _, err := buildSignRequestsWithOptions(
 		[]types.Transaction{txn, txn},
-		[]string{"ADDR1", ""},
+		[]string{sdkTestAddress(0xA3), ""},
 		nil,
 		&SignOptions{LsigResources: map[int]LogicSigResourceUsage{1: {ProgramBytes: 3577, ArgumentBytes: 1423, MaxOpcodeCost: 20000}}},
 	)
@@ -1244,7 +1248,7 @@ func TestBuildSignRequestsWithOptionsRejectsInvalidIndexedResources(t *testing.T
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := buildSignRequestsWithOptions(
+			_, _, err := buildSignRequestsWithOptions(
 				[]types.Transaction{txn},
 				[]string{""},
 				nil,
@@ -1259,9 +1263,9 @@ func TestBuildSignRequestsWithOptionsRejectsInvalidIndexedResources(t *testing.T
 
 func TestBuildSignRequestsWithOptionsRejectsIndexedResourcesForSignMode(t *testing.T) {
 	txn := types.Transaction{Type: types.PaymentTx}
-	_, err := buildSignRequestsWithOptions(
+	_, _, err := buildSignRequestsWithOptions(
 		[]types.Transaction{txn},
-		[]string{"AUTH_ADDR"},
+		[]string{sdkTestAddress(0xA2)},
 		nil,
 		&SignOptions{LsigResources: map[int]LogicSigResourceUsage{
 			0: {ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000},
@@ -1275,9 +1279,9 @@ func TestBuildSignRequestsWithOptionsRejectsIndexedResourcesForSignMode(t *testi
 func TestBuildSignRequestsWithOptions_InvalidPassthroughBase64(t *testing.T) {
 	txn := types.Transaction{Type: types.PaymentTx}
 
-	_, err := buildSignRequestsWithOptions(
+	_, _, err := buildSignRequestsWithOptions(
 		[]types.Transaction{txn},
-		[]string{"ADDR1"},
+		[]string{sdkTestAddress(0xA3)},
 		nil,
 		&SignOptions{Passthrough: map[int]string{0: "not-base64!!!"}},
 	)
@@ -1292,7 +1296,7 @@ func TestSignTransactionsWithOptions_RejectsForeignEntries(t *testing.T) {
 
 	_, err := client.SignTransactionsWithOptions(
 		[]types.Transaction{txn, txn},
-		[]string{"AUTH1", ""},
+		[]string{sdkTestAddress(0xA4), ""},
 		nil,
 		&SignOptions{LsigResources: map[int]LogicSigResourceUsage{1: {ProgramBytes: 3577, ArgumentBytes: 1423, MaxOpcodeCost: 20000}}},
 	)
@@ -1307,7 +1311,7 @@ func TestSignTransactionsListWithOptions_RejectsForeignEntries(t *testing.T) {
 
 	_, err := client.SignTransactionsListWithOptions(
 		[]types.Transaction{txn, txn},
-		[]string{"AUTH1", ""},
+		[]string{sdkTestAddress(0xA4), ""},
 		nil,
 		&SignOptions{LsigResources: map[int]LogicSigResourceUsage{1: {ProgramBytes: 3577, ArgumentBytes: 1423, MaxOpcodeCost: 20000}}},
 	)
@@ -1501,11 +1505,11 @@ func TestSignRequestValidate(t *testing.T) {
 		request SignRequest
 		wantErr string
 	}{
-		{name: "sign mode", request: SignRequest{AuthAddress: "ADDR", TxnBytesHex: "deadbeef"}},
+		{name: "sign mode", request: SignRequest{AuthAddress: sdkTestAddress(0xA0), TxnBytesHex: "deadbeef"}},
 		{name: "foreign mode", request: SignRequest{TxnBytesHex: "deadbeef"}},
 		{name: "passthrough mode", request: SignRequest{SignedTxnHex: "cafebabe"}},
-		{name: "conflict", request: SignRequest{AuthAddress: "ADDR", TxnBytesHex: "deadbeef", SignedTxnHex: "cafebabe"}, wantErr: "cannot specify both sign fields"},
-		{name: "auth only", request: SignRequest{AuthAddress: "ADDR"}, wantErr: "txn_bytes_hex is required for sign mode"},
+		{name: "conflict", request: SignRequest{AuthAddress: sdkTestAddress(0xA0), TxnBytesHex: "deadbeef", SignedTxnHex: "cafebabe"}, wantErr: "cannot specify both sign fields"},
+		{name: "auth only", request: SignRequest{AuthAddress: sdkTestAddress(0xA0)}, wantErr: "txn_bytes_hex is required for sign mode"},
 		{name: "empty", request: SignRequest{}, wantErr: "must specify either sign fields"},
 	}
 

@@ -5,6 +5,7 @@
 
 import base64
 import copy
+import re
 from unittest.mock import MagicMock, patch
 
 import msgpack
@@ -708,3 +709,221 @@ def test_connection_helpers_forward_max_fee_increase(tmp_path):
             "signer.example.com", "/key", known_hosts_path="/kh", max_fee_increase=250_000
         )
     assert client.max_fee_increase == 250_000
+
+
+# A signed position must carry exactly one authorization, and it must be the
+# requested auth address's. The Go and TypeScript suites run the same list.
+
+ED = fake_signer.account(41)
+OTHER = fake_signer.account(45)
+LSIG = fake_signer.lsig_account(1)
+OTHER_LSIG = fake_signer.lsig_account(2)
+PQ = fake_signer.pq_account(3)
+OTHER_PQ = fake_signer.pq_account(4)
+DUMMY = fake_signer.hold_program(bytes.fromhex("033120320312"))
+
+
+def _check_authorization(txn, auth, signed_hex):
+    entry = {
+        "auth_address": auth,
+        "txn_sender": txn.sender,
+        "txn_bytes_hex": encode_transaction(txn)[0],
+    }
+    _validate_sign_response(_decode_request_slots([entry]), [signed_hex], None)
+
+
+@pytest.mark.parametrize(
+    ("sender", "auth"),
+    [(ED, ED), (OTHER, ED), (LSIG, LSIG), (ED, LSIG), (PQ, PQ), (ED, PQ), (DUMMY, DUMMY)],
+    ids=[
+        "ed25519, sender signs",
+        "ed25519, rekeyed sender",
+        "LogicSig account",
+        "LogicSig account, rekeyed sender",
+        "native Falcon account",
+        "native Falcon account, rekeyed sender",
+        "the dummy program, when it is the auth address",
+    ],
+)
+def test_authorization_accepted(sender, auth):
+    txn = fake_signer.payment(sender=sender)
+    _check_authorization(txn, auth, fake_signer.encode_signed(fake_signer.authorize(txn, auth)))
+
+
+def _raw(signed):
+    return msgpack.unpackb(bytes.fromhex(fake_signer.encode_signed(signed)), raw=False)
+
+
+def _pack(fields) -> str:
+    # Canonical msgpack: keys in sorted order, as the Algorand libraries write it.
+    def canonical(value):
+        if isinstance(value, dict):
+            return {key: canonical(value[key]) for key in sorted(value)}
+        if isinstance(value, list):
+            return [canonical(item) for item in value]
+        return value
+
+    return msgpack.packb(canonical(fields), use_bin_type=True).hex()
+
+
+def _edit(**changes):
+    """Edit the signed transaction's top-level wire fields; None removes one."""
+
+    def apply(signed):
+        fields = _raw(signed)
+        for name, value in changes.items():
+            if value is None:
+                fields.pop(name, None)
+            else:
+                fields[name] = value(fields) if callable(value) else value
+        return _pack(fields)
+
+    return apply
+
+
+def _resign(auth, strip_signer=False):
+    def apply(signed):
+        replaced = fake_signer.authorize(signed.transaction, auth)
+        fields = _raw(replaced)
+        if strip_signer:
+            fields.pop("sgnr", None)
+        return _pack(fields)
+
+    return apply
+
+
+_OTHER_BYTES = encoding.decode_address(OTHER)
+# Refused by the decoder, before the authorization check.
+_SIG_ONLY = "signed transaction 1: "
+
+AUTHORIZATION_REFUSALS = [
+    ("an unsigned wrapper", ED, ED, _edit(sig=None), _SIG_ONLY),
+    (
+        "a signature by another key",
+        ED,
+        ED,
+        _resign(OTHER, strip_signer=True),
+        "signature does not verify under the requested auth address",
+    ),
+    (
+        "a signature over another transaction",
+        ED,
+        ED,
+        _edit(sig=lambda _: _raw(fake_signer.authorize(fake_signer.payment(41, 45, 5), ED))["sig"]),
+        "signature does not verify under the requested auth address",
+    ),
+    (
+        "the dummy LogicSig on an original position",
+        ED,
+        ED,
+        _edit(sig=None, lsig={"l": bytes.fromhex("033120320312")}),
+        f"LogicSig program address {DUMMY} is not the requested auth address",
+    ),
+    (
+        "the dummy LogicSig naming itself as signer",
+        ED,
+        ED,
+        _resign(DUMMY),
+        f"names signer {DUMMY}, but the sender signs for itself",
+    ),
+    (
+        "another LogicSig program",
+        LSIG,
+        LSIG,
+        _edit(lsig=lambda fields: {**fields["lsig"], "l": bytes([0x06, 0x81, 2])}),
+        "is not the requested auth address",
+    ),
+    (
+        "a LogicSig delegated by a signature",
+        LSIG,
+        LSIG,
+        _edit(lsig=lambda fields: {**fields["lsig"], "sig": bytes([1]) * 64}),
+        "LogicSig is delegated by a signature",
+    ),
+    (
+        "a wrong signer field",
+        OTHER,
+        ED,
+        _edit(sgnr=_OTHER_BYTES),
+        "not the requested auth address",
+    ),
+    (
+        "a missing signer field for a rekeyed sender",
+        OTHER,
+        ED,
+        _edit(sgnr=None),
+        "does not name its signer",
+    ),
+    (
+        "a signer field when the sender signs",
+        ED,
+        ED,
+        _edit(sgnr=_OTHER_BYTES),
+        "but the sender signs for itself",
+    ),
+    (
+        "a multisig",
+        ED,
+        ED,
+        _edit(sig=None, msig={"subsig": [{"pk": bytes(32)}], "thr": 1, "v": 1}),
+        "carries a multisig",
+    ),
+    (
+        "two authorizations",
+        ED,
+        ED,
+        _edit(lsig={"l": bytes([0x06, 0x81, 1])}),
+        _SIG_ONLY,
+    ),
+    (
+        "a post-quantum proof with no signature",
+        PQ,
+        PQ,
+        _edit(pqsig=lambda fields: {**fields["pqsig"], "sig": b""}),
+        _SIG_ONLY,  # an empty field is not canonical, so the decoder refuses it
+    ),
+    (
+        "a post-quantum proof with another scheme",
+        PQ,
+        PQ,
+        _edit(pqsig=lambda fields: {**fields["pqsig"], "sch": b"x9"}),
+        "post-quantum scheme",
+    ),
+    (
+        "another post-quantum key",
+        PQ,
+        PQ,
+        _edit(
+            pqsig=lambda fields: _raw(
+                fake_signer.authorize(fake_signer.payment(sender=OTHER_PQ), OTHER_PQ)
+            )["pqsig"]
+        ),
+        "post-quantum key's address",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("sender", "auth", "tamper", "error"),
+    [case[1:] for case in AUTHORIZATION_REFUSALS],
+    ids=[case[0] for case in AUTHORIZATION_REFUSALS],
+)
+def test_authorization_refused(sender, auth, tamper, error):
+    txn = fake_signer.payment(sender=sender)
+    signed = fake_signer.authorize(txn, auth)
+    _check_authorization(txn, auth, fake_signer.encode_signed(signed))
+    with pytest.raises(SignerError, match=re.escape(error)) as refused:
+        _check_authorization(txn, auth, tamper(signed))
+    assert str(refused.value).startswith("signed transaction 1")
+
+
+def test_request_auth_address_must_be_an_address():
+    txn = fake_signer.payment()
+    entry = {"auth_address": "AUTH", "txn_bytes_hex": encode_transaction(txn)[0]}
+    with pytest.raises(ValueError, match="auth_address 'AUTH' is not a valid address"):
+        _decode_request_slots([entry])
+    client = make_client()
+    with patch.object(client.session, "post") as post:
+        with pytest.raises(ValueError, match="is not a valid address"):
+            client.sign_transaction(txn, auth_address="AUTH")
+    post.assert_not_called()

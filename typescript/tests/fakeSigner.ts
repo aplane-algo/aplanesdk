@@ -36,6 +36,78 @@ export function fakeAddress(seed: number): string {
   return algosdk.encodeAddress(bytes);
 }
 
+// The fake signer's accounts, by address: Ed25519 keys, LogicSig programs and
+// native Falcon public keys, as the real signer holds them.
+const keys = new Map<string, Uint8Array>();
+const programs = new Map<string, Uint8Array>();
+const pqKeys = new Map<string, { sch: Uint8Array; slt: number; pk: Uint8Array; sig: Uint8Array }>();
+const accountsBySeed = new Map<number, string>();
+
+/** The address of the fake signer's Ed25519 account for a seed. */
+export function fakeAccount(seed: number): string {
+  let address = accountsBySeed.get(seed);
+  if (!address) {
+    const generated = algosdk.generateAccount();
+    address = generated.addr.toString();
+    keys.set(address, generated.sk);
+    accountsBySeed.set(seed, address);
+  }
+  return address;
+}
+
+/** Have the fake signer hold a LogicSig account for the given program. */
+export function holdProgram(program: Uint8Array): string {
+  const address = new algosdk.LogicSigAccount(program).address().toString();
+  programs.set(address, program);
+  return address;
+}
+
+/** A LogicSig account the fake signer holds: the hash of its program. */
+export function fakeLogicSigAccount(seed: number): string {
+  return holdProgram(new Uint8Array([0x06, 0x81, seed])); // #pragma version 6; pushint seed
+}
+
+/**
+ * A native Falcon account the fake signer holds. The public key and signature
+ * are filler: nothing verifies them.
+ */
+export function fakePQAccount(seed: number): string {
+  const sch = new Uint8Array([0x66, 0x31]); // "f1"
+  const pk = new Uint8Array(1793).fill(seed);
+  const { address, salt } = algosdk.addressFromPQKey(sch, pk);
+  pqKeys.set(address.toString(), { sch, slt: salt, pk, sig: new Uint8Array(1232).fill(9) });
+  return address.toString();
+}
+
+/**
+ * Sign as the fake signer's account at authAddress would: the account's kind
+ * of authorization, and the signer field when the account is not the sender.
+ * An address the fake signer does not hold gets a signature that verifies
+ * under nothing.
+ */
+export function authorize(txn: Transaction, authAddress: string): algosdk.SignedTransaction {
+  const sgnr =
+    authAddress !== txn.sender.toString() ? algosdk.Address.fromString(authAddress) : undefined;
+  const key = keys.get(authAddress);
+  if (key) {
+    return algosdk.decodeSignedTransaction(txn.signTxn(key));
+  }
+  const program = programs.get(authAddress);
+  if (program) {
+    const lsig = new algosdk.LogicSig(program, [new Uint8Array([1, 2, 3])]);
+    return new algosdk.SignedTransaction({ txn, lsig, sgnr });
+  }
+  const pqsig = pqKeys.get(authAddress);
+  if (pqsig) {
+    return new algosdk.SignedTransaction({ txn, pqsig, sgnr });
+  }
+  return new algosdk.SignedTransaction({ txn, sig: new Uint8Array(64).fill(1), sgnr });
+}
+
+export function encodeSigned(signed: algosdk.SignedTransaction): string {
+  return bytesToHex(algosdk.encodeMsgpack(signed));
+}
+
 export function fakePayment(
   senderSeed = 41,
   receiverSeed = 42,
@@ -45,7 +117,7 @@ export function fakePayment(
   const genesisHash = new Uint8Array(32);
   genesisHash[0] = 7;
   return algosdk.makePaymentTxnWithSuggestedParamsFromObject({
-    sender: sender ?? fakeAddress(senderSeed),
+    sender: sender ?? fakeAccount(senderSeed),
     receiver: fakeAddress(receiverSeed),
     amount,
     suggestedParams: {
@@ -67,10 +139,17 @@ export function signEntries(...txns: Transaction[]): SignRequest[] {
   });
 }
 
-/** A signed transaction as an Ed25519 signer would return it. */
-export function signedHex(txn: Transaction, fill = 1): string {
-  const signed = new algosdk.SignedTransaction({ txn, sig: new Uint8Array(64).fill(fill) });
-  return bytesToHex(algosdk.encodeMsgpack(signed));
+/**
+ * A transaction signed by its sender. With `fill`, the signature is that byte
+ * repeated instead: the same transaction, signed by nobody.
+ */
+export function signedHex(txn: Transaction, fill?: number): string {
+  if (fill !== undefined) {
+    return encodeSigned(
+      new algosdk.SignedTransaction({ txn, sig: new Uint8Array(64).fill(fill) }),
+    );
+  }
+  return encodeSigned(authorize(txn, txn.sender.toString()));
 }
 
 export function decodeSigned(hex: string): algosdk.SignedTransaction {
@@ -136,7 +215,7 @@ export function signResponse(requests: SignRequest[], options: FakeSignerOptions
     if (index >= slots.length) return bytesToHex(signCanonicalDummy(txn));
     if (slots[index].mode === "passthrough") return requests[index].signed_txn_hex as string;
     if (slots[index].mode === "foreign") return "";
-    return signedHex(txn);
+    return encodeSigned(authorize(txn, requests[index].auth_address as string));
   });
   const body: any = { signed };
   if (report) body.mutations = report;

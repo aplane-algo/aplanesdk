@@ -2086,14 +2086,13 @@ class TestClientSideSignedSimulation:
             encode_transaction,
         )
 
-        _, sender = account.generate_account()
+        sender = fake_signer.pq_account(7)
         params = transaction.SuggestedParams(
             1000, 1, 100, base64.b64encode(bytes(32)).decode(), "testnet-v1.0", flat_fee=True,
         )
         txn = transaction.PaymentTxn(sender, params, sdk_test_address(2), 1)
-        signed = transaction.PQSignedTransaction(
-            txn, transaction.PQSig(b"f1", 3, bytes([7]) * 1793, bytes([9]) * 1232)
-        )
+        signed = fake_signer.authorize(txn, sender)
+        assert isinstance(signed, transaction.PQSignedTransaction)
         signed_b64 = algo_encoding.msgpack_encode(signed)
         signed_hex = base64.b64decode(signed_b64).hex()
 
@@ -2305,7 +2304,7 @@ class TestSignRequests:
         txn = fake_signer.payment()
         entry = {
             "txn_bytes_hex": encode_transaction(txn)[0],
-            "auth_address": "AUTH",
+            "auth_address": txn.sender,
             "txn_sender": "SENDER",
         }
 
@@ -2414,7 +2413,7 @@ class TestSignTransactionsForeign:
             with pytest.raises(SignerError, match="foreign entries are only supported on /plan"):
                 client.sign_transactions(
                     [self._make_mock_txn(), self._make_mock_txn()],
-                    auth_addresses=["AUTH1", None],
+                    auth_addresses=[fake_signer.account(41), None],
                 )
         mock_post.assert_not_called()
 
@@ -2424,7 +2423,7 @@ class TestSignTransactionsForeign:
             with pytest.raises(SignerError, match="foreign entries are only supported on /plan"):
                 client.sign_transactions_list(
                 [self._make_mock_txn(), self._make_mock_txn()],
-                auth_addresses=["AUTH1", None],
+                auth_addresses=[fake_signer.account(41), None],
             )
         mock_post.assert_not_called()
 
@@ -2442,18 +2441,18 @@ class TestBuildSignRequests:
         txn = self._make_mock_txn()
         with patch.object(client, "_discover_approval_wait"), \
              patch.object(client.session, "post", side_effect=fake_signer.signer_post()) as mock_post:
-            client.sign_transaction(txn, auth_address="AUTH_ADDR")
+            client.sign_transaction(txn, auth_address=fake_signer.account(50))
 
         call_kwargs = mock_post.call_args
         body = call_kwargs[1]["json"]
         assert body["request_id"]
         assert len(body["requests"]) == 1
-        assert body["requests"][0]["auth_address"] == "AUTH_ADDR"
+        assert body["requests"][0]["auth_address"] == fake_signer.account(50)
         assert body["requests"][0]["txn_bytes_hex"] == encode_transaction(txn)[0]
 
     def test_defaults_auth_address_to_sender(self):
         client = make_client()
-        sender = sdk_test_address(77)
+        sender = fake_signer.account(77)
         with patch.object(client, "_discover_approval_wait"), \
              patch.object(client.session, "post", side_effect=fake_signer.signer_post()) as mock_post:
             client.sign_transaction(self._make_mock_txn(sender=sender))
@@ -2464,7 +2463,7 @@ class TestBuildSignRequests:
 
     def test_includes_lsig_args_as_hex(self):
         client = make_client()
-        sender = sdk_test_address(78)
+        sender = fake_signer.lsig_account(78)
         with patch.object(client, "_discover_approval_wait"), \
              patch.object(client.session, "post", side_effect=fake_signer.signer_post()) as mock_post:
             client.sign_transaction(
@@ -2548,17 +2547,18 @@ class TestBuildSignRequests:
 
     def test_carries_lsig_resources_on_passthrough(self):
         client = make_client()
+        presigned = fake_signer.signed_hex(fake_signer.payment())
         body = client._build_sign_request_body(
             [None],
             [None],
-            passthrough={0: base64.b64encode(b"signed-txn").decode()},
+            passthrough={0: base64.b64encode(bytes.fromhex(presigned)).decode()},
             lsig_resources={
                 0: LogicSigResourceUsage(1612, 1423, 20000),
             },
             allow_foreign=False,
         )
         assert body["requests"] == [{
-            "signed_txn_hex": b"signed-txn".hex(),
+            "signed_txn_hex": presigned,
             "lsig_resources": {
                 "program_bytes": 1612,
                 "argument_bytes": 1423,

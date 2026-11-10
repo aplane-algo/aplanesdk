@@ -415,11 +415,12 @@ signed, err := client.SignTransaction(
 ```
 
 An empty auth address means the sender signs for itself, and the args then
-apply to the sender. `LsigArgsMap` is keyed by auth address. Args keyed under an address
-that is no position's auth address are an error; they are never dropped. A key
-that matches a passthrough or foreign position is accepted and unused, so one
-map can serve the plan and the final signing of the same group. An entry with
-no args is ignored.
+apply to the sender. `LsigArgsMap` is keyed by auth address. A key that matches no
+position's auth address is an error. A key whose only positions in the
+request are passthrough or foreign is accepted, and its args are not sent,
+because the request does not sign for that address; this lets one map serve
+the plan and the final signing of the same group. An entry with no args is
+ignored.
 
 ### Sign A Transaction Group
 
@@ -662,6 +663,17 @@ Anything else fails with an error whose message starts with
 
 - a signed or planned position that differs from the requested transaction in
   any field the report does not cover
+- a signed position that carries no authorization, more than one, or a
+  multisig
+- an authorization that is not the requested auth address's (the auth address
+  you passed, or the sender when you passed none): an Ed25519 signature that
+  does not verify over the transaction under that address; a LogicSig whose
+  program address is not that address, or one delegated by a signature; a
+  native Falcon proof whose scheme is not `f1`, whose public key or signature
+  is missing, or whose account address is not that address. The Falcon
+  signature itself is not verified.
+- a signer field (`sgnr`) that does not name the auth address when it differs
+  from the sender, or that is present when the sender signs for itself
 - a fee change that is unreported, is not an increase, or does not add up to
   the reported total
 - report counts (`original_count`, `final_count`, `dummies_added`,
@@ -723,7 +735,8 @@ Two limits to know:
 
 The SDK decodes request entries before sending them. Unsigned transaction
 bytes must be `TX`-prefixed canonical msgpack and passthrough entries must be
-canonical signed transactions, or the call fails before any request is made.
+canonical signed transactions, and the auth address of a position to sign
+must be a valid Algorand address, or the call fails before any request is made.
 A passthrough transaction must round-trip through the SDK's Algorand
 library (`go-algorand-sdk`), so one that uses a field newer than that library is refused
 locally.

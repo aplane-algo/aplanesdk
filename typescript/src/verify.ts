@@ -10,10 +10,11 @@
  * through here before a caller can submit or simulate it.
  */
 
+import { createPublicKey, verify as verifySignature } from "crypto";
 import algosdk, { type Transaction } from "algosdk";
 import type { MutationReport, SignRequest } from "./types.js";
 import { signRequestMode, type SignRequestMode } from "./types.js";
-import { SignerError } from "./errors.js";
+import { SignerError, errorText } from "./errors.js";
 import { encodeTransaction, hexToBytes } from "./encoding.js";
 
 /** Algorand's maximum transaction group size. */
@@ -47,10 +48,148 @@ export interface RequestSlot {
   txn: Transaction;
   /** The signed bytes as sent, for a passthrough entry. */
   signedBytes?: Uint8Array;
+  /** The address a sign position asked the signer to sign with. */
+  auth?: string;
+  /** The auth address a passthrough's signed bytes carry, if any. */
+  signer?: string;
 }
 
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+/**
+ * The slot of a sign-mode position. The auth address must be a real address:
+ * the returned authorization is checked against it.
+ */
+export function signSlot(txn: Transaction, authAddress: string | undefined): RequestSlot {
+  if (typeof authAddress !== "string" || !algosdk.isValidAddress(authAddress)) {
+    throw new SignerError(`auth_address ${JSON.stringify(authAddress)} is not a valid address`);
+  }
+  return { mode: "sign", txn, auth: authAddress };
+}
+
+/** Decode a passthrough's signed bytes, strictly. */
+export function decodePassthroughSlot(raw: Uint8Array): RequestSlot {
+  const signed = decodeCanonicalSignedTransaction(raw);
+  return {
+    mode: "passthrough",
+    txn: signed.txn,
+    signedBytes: raw,
+    signer: signed.sgnr?.toString(),
+  };
+}
+
+// The fixed DER prefix of an Ed25519 public key in SubjectPublicKeyInfo form.
+const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
+
+function ed25519Verifies(publicKey: Uint8Array, message: Uint8Array, signature: Uint8Array): boolean {
+  try {
+    const key = createPublicKey({
+      key: Buffer.concat([ED25519_SPKI_PREFIX, publicKey]),
+      format: "der",
+      type: "spki",
+    });
+    return verifySignature(null, message, key, signature);
+  } catch {
+    return false;
+  }
+}
+
+const FALCON1024_SCHEME = "f1";
+
+/**
+ * Require a signed position to carry exactly one authorization, and that
+ * authorization to be the requested auth address's. A response that signs the
+ * right transaction with the wrong key, or with no key at all, is as unusable
+ * as one that signs the wrong transaction.
+ *
+ * - sig: an Ed25519 signature over the transaction that verifies under the
+ *   auth address.
+ * - lsig: a plain LogicSig (a program and its args, not one delegated by a
+ *   signature) whose program address is the auth address.
+ * - pqsig: a native Falcon-1024 proof with its public key and signature
+ *   present, whose derived account address is the auth address. The Falcon
+ *   signature itself is not verified.
+ * - msig: refused. The signer never returns a multisig for a position it
+ *   signs.
+ *
+ * The signer field (sgnr) must name the auth address when that differs from
+ * the sender, and must be absent when they are the same.
+ */
+export function validateAuthorization(signed: algosdk.SignedTransaction, auth: string): void {
+  const kinds = [signed.sig, signed.msig, signed.lsig, signed.pqsig].filter(
+    (kind) => kind !== undefined,
+  ).length;
+  if (kinds === 0) {
+    throw new SignerError("carries no authorization");
+  }
+  if (kinds > 1) {
+    throw new SignerError("carries more than one authorization");
+  }
+
+  const sender = signed.txn.sender.toString();
+  const named = signed.sgnr?.toString();
+  const want = auth !== sender ? auth : undefined;
+  if (named !== want) {
+    if (want === undefined) {
+      throw new SignerError(`names signer ${named}, but the sender signs for itself`);
+    }
+    if (named === undefined) {
+      throw new SignerError(`does not name its signer ${auth}, which is not the sender`);
+    }
+    throw new SignerError(`names signer ${named}, not the requested auth address ${auth}`);
+  }
+
+  if (signed.msig !== undefined) {
+    throw new SignerError(
+      "carries a multisig, which the signer does not return for a position it signs",
+    );
+  }
+  if (signed.sig !== undefined) {
+    const message = hexToBytes(encodeTransaction(signed.txn)[0]);
+    if (!ed25519Verifies(algosdk.decodeAddress(auth).publicKey, message, signed.sig)) {
+      throw new SignerError(
+        `signature does not verify under the requested auth address ${auth}`,
+      );
+    }
+    return;
+  }
+  if (signed.lsig !== undefined) {
+    const lsig = signed.lsig;
+    if (!lsig.logic || lsig.logic.length === 0) {
+      throw new SignerError("LogicSig has no program");
+    }
+    if (lsig.sig || lsig.msig || lsig.lmsig || lsig.pqsig) {
+      throw new SignerError(
+        "LogicSig is delegated by a signature, which the signer does not return for a position it signs",
+      );
+    }
+    const program = lsig.address().toString();
+    if (program !== auth) {
+      throw new SignerError(
+        `LogicSig program address ${program} is not the requested auth address ${auth}`,
+      );
+    }
+    return;
+  }
+  const proof = signed.pqsig as NonNullable<typeof signed.pqsig>;
+  const scheme = Buffer.from(proof.sch ?? []).toString("latin1");
+  if (scheme !== FALCON1024_SCHEME) {
+    throw new SignerError(
+      `post-quantum scheme ${JSON.stringify(scheme)} is not ${JSON.stringify(FALCON1024_SCHEME)}`,
+    );
+  }
+  if (!proof.pk || proof.pk.length === 0 || !proof.sig || proof.sig.length === 0) {
+    throw new SignerError("post-quantum authorization is missing its public key or signature");
+  }
+  let derived: string;
+  try {
+    derived = algosdk.addressFromPQSig(proof).toString();
+  } catch (error) {
+    throw new SignerError(`post-quantum key's address cannot be derived: ${errorText(error)}`);
+  }
+  if (derived !== auth) {
+    throw new SignerError(
+      `post-quantum key's address ${derived} is not the requested auth address ${auth}`,
+    );
+  }
 }
 
 export function byteArraysEqual(left: Uint8Array, right: Uint8Array): boolean {
@@ -135,8 +274,7 @@ export function decodeRequestSlots(requests: SignRequest[]): RequestSlot[] {
     if (mode === "passthrough") {
       const raw = decodeHex(request.signed_txn_hex || "", `transaction ${position}: signed_txn_hex`);
       try {
-        const signed = decodeCanonicalSignedTransaction(raw);
-        return { mode, txn: signed.txn, signedBytes: raw };
+        return decodePassthroughSlot(raw);
       } catch (error) {
         throw new SignerError(
           `transaction ${position}: passthrough transaction: ${errorText(error)}`,
@@ -144,10 +282,19 @@ export function decodeRequestSlots(requests: SignRequest[]): RequestSlot[] {
       }
     }
     const raw = decodeHex(request.txn_bytes_hex || "", `transaction ${position}: txn_bytes_hex`);
+    let txn: Transaction;
     try {
-      return { mode, txn: decodeCanonicalTransaction(raw) };
+      txn = decodeCanonicalTransaction(raw);
     } catch (error) {
       throw new SignerError(`transaction ${position}: txn_bytes_hex: ${errorText(error)}`);
+    }
+    if (mode === "foreign") {
+      return { mode, txn };
+    }
+    try {
+      return signSlot(txn, request.auth_address);
+    } catch (error) {
+      throw new SignerError(`transaction ${position}: ${errorText(error)}`);
     }
   });
 }
@@ -470,11 +617,20 @@ export function validateSignResponse(
       }
       return slot.txn;
     }
+    let decoded: algosdk.SignedTransaction;
     try {
-      return decodeCanonicalSignedTransaction(raw).txn;
+      decoded = decodeCanonicalSignedTransaction(raw);
     } catch (error) {
       throw new SignerError(`signed transaction ${position}: ${errorText(error)}`);
     }
+    if (slot) {
+      try {
+        validateAuthorization(decoded, slot.auth as string);
+      } catch (error) {
+        throw new SignerError(`signed transaction ${position} ${errorText(error)}`);
+      }
+    }
+    return decoded.txn;
   });
   validateGroupMutations(slots, returned, mutations, maxFeeIncrease);
   for (let index = slots.length; index < signedHexes.length; index++) {
