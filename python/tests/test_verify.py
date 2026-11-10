@@ -538,3 +538,123 @@ def test_any_failure_while_verifying_is_a_signer_error():
     ):
         with pytest.raises(SignerError, match="verify signer response: "):
             client.sign_transaction(txn)
+
+
+FIVE_ALGO = 5_000_000
+
+
+def _fee_ceiling_txns(count):
+    return [fake_signer.payment(41, 42, 1_000_000), fake_signer.payment(43, 44, 5)][:count]
+
+
+@pytest.mark.parametrize(
+    ("limit", "fee_raise", "count", "refused"),
+    [
+        # Unset is unbounded: a reported raise of any size is accepted.
+        (None, {0: FIVE_ALGO}, 1, None),
+        (200_000, {0: 3000}, 1, None),
+        (3000, {0: 3000}, 1, None),
+        (2999, {0: 3000}, 1, (3000, 2999)),
+        (0, {0: 1}, 1, (1, 0)),
+        (0, {}, 2, None),
+        (4999, {0: 2000, 1: 3000}, 2, (5000, 4999)),
+        (5000, {0: 2000, 1: 3000}, 2, None),
+    ],
+    ids=[
+        "unset-large-raise",
+        "above-the-raise",
+        "equal-to-the-raise",
+        "one-below-the-raise",
+        "zero-with-a-raise",
+        "zero-with-no-raise",
+        "two-positions-summed",
+        "two-positions-at-the-sum",
+    ],
+)
+def test_max_fee_increase(limit, fee_raise, count, refused):
+    client = SignerClient("http://localhost:11270", timeout=10, max_fee_increase=limit)
+    txns = _fee_ceiling_txns(count)
+    prepared = PreparedGroup(
+        [PreparedTransaction(transaction=txn, auth_address=txn.sender) for txn in txns]
+    )
+    algod_client = MagicMock()
+    algod_client.simulate_transactions.return_value = {"txn-groups": [{}]}
+    calls = [
+        ("response", lambda: client.sign_transactions(txns)),
+        ("response", lambda: client.sign_transactions_list(txns)),
+        ("response", lambda: client.sign_requests(fake_signer.sign_entries(*txns))),
+        ("plan", lambda: client.plan_group(txns)),
+        ("response", lambda: client.simulate_prepared_group(algod_client, prepared)),
+    ]
+    with (
+        patch.object(client, "_discover_approval_wait"),
+        patch.object(
+            client.session, "post", side_effect=fake_signer.signer_post(fee_raise=fee_raise)
+        ),
+    ):
+        for kind, call in calls:
+            if refused is None:
+                call()
+                continue
+            raised, ceiling = refused
+            error = (
+                f"verify signer {kind}: signer raised fees by {raised} microAlgos, "
+                f"more than the max fee increase {ceiling} set on this client"
+            )
+            with pytest.raises(SignerError, match=error):
+                call()
+    if refused is None:
+        assert algod_client.simulate_transactions.call_count == 1
+    else:
+        algod_client.simulate_transactions.assert_not_called()
+
+
+def test_max_fee_increase_ignores_zero_fee_dummies():
+    client = SignerClient("http://localhost:11270", max_fee_increase=2000)
+    post = fake_signer.signer_post(fee_raise={0: 2000}, dummies=2)
+    with (
+        patch.object(client, "_discover_approval_wait"),
+        patch.object(client.session, "post", side_effect=post),
+    ):
+        assert len(client.sign_transactions_list([fake_signer.payment()])) == 3
+
+
+def test_max_fee_increase_setting():
+    client = make_client()
+    assert client.max_fee_increase is None, "there must be no default"
+    client.max_fee_increase = 0
+    assert client.max_fee_increase == 0
+    client.max_fee_increase = None
+    assert client.max_fee_increase is None
+    for bad in (-1, 1.5, "1000", True):
+        with pytest.raises(ValueError, match="max_fee_increase must be a non-negative integer"):
+            client.max_fee_increase = bad
+        with pytest.raises(ValueError, match="max_fee_increase must be a non-negative integer"):
+            SignerClient("http://localhost:11270", max_fee_increase=bad)
+        # Refused before any connection is attempted.
+        with pytest.raises(ValueError, match="max_fee_increase must be a non-negative integer"):
+            SignerClient.connect_ssh("signer.invalid", "/nonexistent/key", max_fee_increase=bad)
+
+
+def test_connection_helpers_forward_max_fee_increase(tmp_path):
+    (tmp_path / "endpoints.yaml").write_text(
+        "schema_version: 2\nendpoints:\n  primary:\n    role: signer\n"
+        "    url: ssh://signer.example.com\n"
+    )
+    ssh_dir = tmp_path / ".ssh"
+    ssh_dir.mkdir()
+    (ssh_dir / "id_ed25519").write_text("dummy-private-key")
+    with patch.object(SignerClient, "connect_ssh", return_value="client") as connect:
+        SignerClient.from_env(data_dir=str(tmp_path), max_fee_increase=250_000)
+    assert connect.call_args.kwargs["max_fee_increase"] == 250_000
+
+    tunnel = MagicMock()
+    tunnel.local_bind_port = 12345
+    with (
+        patch("aplanesdk.signer._SSHTunnel", return_value=tunnel),
+        patch.object(SignerClient, "health", return_value=True),
+    ):
+        client = SignerClient.connect_ssh(
+            "signer.example.com", "/key", known_hosts_path="/kh", max_fee_increase=250_000
+        )
+    assert client.max_fee_increase == 250_000
