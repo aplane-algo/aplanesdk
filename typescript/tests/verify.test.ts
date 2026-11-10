@@ -18,8 +18,14 @@ import {
 } from "../src/verify.js";
 import {
   type FakeSignerOptions,
+  authorize,
   decodeSigned,
+  encodeSigned,
+  fakeAccount,
   fakeAddress,
+  fakeLogicSigAccount,
+  fakePQAccount,
+  holdProgram,
   fakePayment,
   planResponse,
   regroup,
@@ -477,5 +483,155 @@ describe("signed transaction identity checks", () => {
       assert.throws(() => decodeRequestSlots([entry]), /transaction 1: /);
     }
     assert.deepEqual(decodeRequestSlots(signEntries(txn))[0].txn.toByte(), txn.toByte());
+  });
+});
+
+// A signed position must carry exactly one authorization, and it must be the
+// requested auth address's. The Go and Python suites run the same list.
+describe("authorization of a signed position", () => {
+  const ed = fakeAccount(41);
+  const other = fakeAccount(45);
+  const lsig = fakeLogicSigAccount(1);
+  fakeLogicSigAccount(2);
+  const pq = fakePQAccount(3);
+  const otherPQ = fakePQAccount(4);
+  const dummyProgram = new Uint8Array([0x03, 0x31, 0x20, 0x32, 0x03, 0x12]);
+  const dummy = holdProgram(dummyProgram);
+
+  function check(txn: Transaction, auth: string, signedHexValue: string): void {
+    const sender = txn.sender.toString();
+    const request = { auth_address: auth, txn_sender: sender, txn_bytes_hex: encodeTransaction(txn)[0] };
+    validateSignResponse(decodeRequestSlots([request]), [signedHexValue], undefined);
+  }
+
+  const accepted: Array<[string, string, string]> = [
+    ["ed25519, sender signs", ed, ed],
+    ["ed25519, rekeyed sender", other, ed],
+    ["LogicSig account", lsig, lsig],
+    ["LogicSig account, rekeyed sender", ed, lsig],
+    ["native Falcon account", pq, pq],
+    ["native Falcon account, rekeyed sender", ed, pq],
+    ["the dummy program, when it is the auth address", dummy, dummy],
+  ];
+  for (const [name, sender, auth] of accepted) {
+    it(`accepts ${name}`, () => {
+      const txn = fakePayment(41, 42, 1_000_000, sender);
+      check(txn, auth, encodeSigned(authorize(txn, auth)));
+    });
+  }
+
+  type Fields = Record<string, any>;
+  const raw = (signed: algosdk.SignedTransaction): Fields =>
+    algosdk.msgpackRawDecode(algosdk.encodeMsgpack(signed)) as Fields;
+  // msgpackRawEncode writes canonical msgpack: sorted keys, as the Algorand
+  // libraries do.
+  const pack = (fields: Fields): string => bytesToHex(algosdk.msgpackRawEncode(fields));
+  /** Edit the signed transaction's top-level wire fields; undefined removes one. */
+  const edit = (changes: Record<string, unknown | ((fields: Fields) => unknown)>) =>
+    (signed: algosdk.SignedTransaction): string => {
+      const fields = raw(signed);
+      for (const [name, value] of Object.entries(changes)) {
+        const next = typeof value === "function" ? (value as (f: Fields) => unknown)(fields) : value;
+        if (next === undefined) delete fields[name];
+        else fields[name] = next;
+      }
+      return pack(fields);
+    };
+  const resign = (auth: string, stripSigner = false) =>
+    (signed: algosdk.SignedTransaction): string => {
+      const fields = raw(authorize(signed.txn, auth));
+      if (stripSigner) delete fields.sgnr;
+      return pack(fields);
+    };
+  const otherBytes = algosdk.decodeAddress(other).publicKey;
+
+  const refused: Array<[string, string, string, (signed: algosdk.SignedTransaction) => string, RegExp]> = [
+    ["an unsigned wrapper", ed, ed, edit({ sig: undefined }), /carries no authorization/],
+    [
+      "a signature by another key", ed, ed, resign(other, true),
+      /signature does not verify under the requested auth address/,
+    ],
+    [
+      "a signature over another transaction", ed, ed,
+      edit({ sig: () => raw(authorize(fakePayment(41, 45, 5), ed)).sig }),
+      /signature does not verify under the requested auth address/,
+    ],
+    [
+      "the dummy LogicSig on an original position", ed, ed,
+      edit({ sig: undefined, lsig: { l: dummyProgram } }),
+      new RegExp(`LogicSig program address ${dummy} is not the requested auth address`),
+    ],
+    [
+      "the dummy LogicSig naming itself as signer", ed, ed, resign(dummy),
+      new RegExp(`names signer ${dummy}, but the sender signs for itself`),
+    ],
+    [
+      "another LogicSig program", lsig, lsig,
+      edit({ lsig: (fields: Fields) => ({ ...fields.lsig, l: new Uint8Array([0x06, 0x81, 2]) }) }),
+      /is not the requested auth address/,
+    ],
+    [
+      "a LogicSig delegated by a signature", lsig, lsig,
+      edit({ lsig: (fields: Fields) => ({ ...fields.lsig, sig: new Uint8Array(64).fill(1) }) }),
+      /LogicSig is delegated by a signature/,
+    ],
+    ["a wrong signer field", other, ed, edit({ sgnr: otherBytes }), /not the requested auth address/],
+    [
+      "a missing signer field for a rekeyed sender", other, ed, edit({ sgnr: undefined }),
+      /does not name its signer/,
+    ],
+    [
+      "a signer field when the sender signs", ed, ed, edit({ sgnr: otherBytes }),
+      /but the sender signs for itself/,
+    ],
+    [
+      "a multisig", ed, ed,
+      (signed) => encodeSigned(new algosdk.SignedTransaction({
+        txn: signed.txn,
+        msig: { v: 1, thr: 1, subsig: [{ pk: otherBytes }] },
+      })),
+      /carries a multisig/,
+    ],
+    [
+      "two authorizations", ed, ed, edit({ lsig: { l: new Uint8Array([0x06, 0x81, 1]) } }),
+      /signed transaction 1/,
+    ],
+    [
+      "a post-quantum proof with no signature", pq, pq,
+      edit({ pqsig: (fields: Fields) => ({ ...fields.pqsig, sig: new Uint8Array() }) }),
+      /signed transaction 1/,
+    ],
+    [
+      "a post-quantum proof with another scheme", pq, pq,
+      edit({ pqsig: (fields: Fields) => ({ ...fields.pqsig, sch: new Uint8Array([0x78, 0x39]) }) }),
+      /post-quantum scheme/,
+    ],
+    [
+      "another post-quantum key", pq, pq,
+      edit({ pqsig: () => raw(authorize(fakePayment(41, 42, 1, otherPQ), otherPQ)).pqsig }),
+      /post-quantum key's address/,
+    ],
+  ];
+  for (const [name, sender, auth, tamper, error] of refused) {
+    it(`refuses ${name}`, () => {
+      const txn = fakePayment(41, 42, 1_000_000, sender);
+      const signed = authorize(txn, auth);
+      check(txn, auth, encodeSigned(signed));
+      assert.throws(() => check(txn, auth, tamper(signed)), (thrown: Error) => {
+        assert.match(thrown.message, /^signed transaction 1/);
+        assert.match(thrown.message, error);
+        return true;
+      });
+    });
+  }
+
+  it("refuses a request whose auth address is not an address", async () => {
+    const txn = fakePayment();
+    assert.throws(
+      () => decodeRequestSlots([{ auth_address: "AUTH", txn_bytes_hex: encodeTransaction(txn)[0] }]),
+      /auth_address "AUTH" is not a valid address/,
+    );
+    const client = new SignerClient("http://localhost:11270");
+    await assert.rejects(client.signTransaction(txn, "AUTH"), /is not a valid address/);
   });
 });

@@ -127,3 +127,8 @@ export class InvalidTransactionError extends TransactionRejectedError {
     this.name = "InvalidTransactionError";
   }
 }
+
+/** The message of a caught value, which need not be an Error. */
+export function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
