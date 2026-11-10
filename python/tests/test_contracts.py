@@ -9,6 +9,7 @@ import hashlib
 import aplanesdk
 from dataclasses import asdict
 from pathlib import Path
+from tests import fake_signer
 from unittest.mock import MagicMock, patch
 
 from aplanesdk.signer import (
@@ -405,26 +406,28 @@ def test_list_keys_maps_component_and_cosigned_metadata():
 
 
 def test_plan_group_returns_wire_mutation_report():
+    # The fixture's transactions are placeholders, and the client checks a
+    # plan against its request, so the response here is one a signer could
+    # return for this request. Its report must use the fixture's wire fields.
     client = make_client()
-    resp = mock_response(200, fixture("group_plan_response_mutated.json"))
-    txn = MagicMock()
-    txn.sender = "SENDERADDR0000000000000000000000000000000000000000000"
+    wire = fixture("group_plan_response_mutated.json")["mutations"]
+    signed_txn = fake_signer.payment(41, 42)
+    foreign_txn = fake_signer.payment(43, 44)
 
-    with patch("aplanesdk.signer.encoding.msgpack_encode", return_value="AQ=="):
-        with patch.object(client.session, "post", return_value=resp):
-            plan = client.plan_group(
-                [txn],
-                auth_addresses=["AUTHADDR00000000000000000000000000000000000000000000000"],
-            )
+    with patch.object(
+        client.session, "post", side_effect=fake_signer.signer_post(fee_raise={0: 1000}, dummies=1)
+    ):
+        plan = client.plan_group([signed_txn, foreign_txn], auth_addresses=[signed_txn.sender, None])
 
-    assert plan["transactions"] == ["545801", "545802", "545803"]
-    assert plan["mutations"]["dummies_added"] == 1
-    assert plan["mutations"]["group_id_changed"] is True
-    assert plan["mutations"]["fees_modified"] == [0, 2]
-    assert plan["mutations"]["total_fees_delta"] == 1000
-    assert plan["mutations"]["original_count"] == 2
-    assert plan["mutations"]["final_count"] == 3
-    assert plan["mutations"]["foreign_count"] == 1
+    assert len(plan["transactions"]) == 3
+    assert set(plan["mutations"]) <= set(wire)
+    assert plan["mutations"]["dummies_added"] == wire["dummies_added"] == 1
+    assert plan["mutations"]["group_id_changed"] is wire["group_id_changed"] is True
+    assert plan["mutations"]["fees_modified"] == [0]
+    assert plan["mutations"]["total_fees_delta"] == wire["total_fees_delta"] == 1000
+    assert plan["mutations"]["original_count"] == wire["original_count"] == 2
+    assert plan["mutations"]["final_count"] == wire["final_count"] == 3
+    assert plan["mutations"]["foreign_count"] == wire["foreign_count"] == 1
 
 
 def test_generate_key_maps_admin_generate_response():

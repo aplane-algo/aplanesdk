@@ -1,0 +1,507 @@
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 APlane Project LLC
+
+"""The client checks every /sign and /plan result against what it asked for."""
+
+import base64
+import copy
+from unittest.mock import MagicMock, patch
+
+import msgpack
+import pytest
+from algosdk import encoding, transaction
+
+from aplanesdk import PreparedGroup, PreparedTransaction, SignerClient, SignerError
+from aplanesdk.signer import (
+    _decode_request_slots,
+    _simulate_signed_group,
+    _validate_plan_response,
+    _validate_sign_response,
+    _verify_bounded_assembled_group,
+    _verify_signed_transaction_matches_canonical,
+    encode_transaction,
+)
+from tests import fake_signer
+
+
+def make_client():
+    return SignerClient("http://localhost:11270", timeout=10)
+
+
+def pregrouped_pair():
+    pair = [fake_signer.payment(41, 42, 1_000_000), fake_signer.payment(43, 44, 5)]
+    transaction.assign_group_id(pair)
+    return pair
+
+
+def single_entries():
+    return fake_signer.sign_entries(fake_signer.payment(41, 42, 1_000_000))
+
+
+def pair_entries():
+    return fake_signer.sign_entries(
+        fake_signer.payment(41, 42, 1_000_000), fake_signer.payment(43, 44, 5)
+    )
+
+
+def passthrough_entries():
+    pair = pregrouped_pair()
+    entries = fake_signer.sign_entries(*pair)
+    entries[1] = {"signed_txn_hex": fake_signer.signed_hex(pair[1])}
+    return entries
+
+
+def foreign_entries():
+    entries = fake_signer.sign_entries(*pregrouped_pair())
+    entries[1] = {"txn_bytes_hex": entries[1]["txn_bytes_hex"]}
+    return entries
+
+
+def resign(body, index, edit):
+    """Replace the transaction inside a signed slot."""
+    signed = fake_signer.decode_signed(body["signed"][index])
+    edit(signed.transaction)
+    body["signed"][index] = fake_signer.signed_hex(signed.transaction)
+
+
+def set_fields(**fields):
+    def edit(txn):
+        for name, value in fields.items():
+            setattr(txn, name, value)
+
+    return edit
+
+
+def add_fee(amount):
+    def edit(txn):
+        txn.fee += amount
+
+    return edit
+
+
+RAISED = {"fee_raise": {0: 2000}}
+WITH_DUMMIES = {"fee_raise": {0: 2000}, "dummies": 2}
+
+
+@pytest.mark.parametrize(
+    ("entries", "signer", "want"),
+    [
+        (single_entries, {}, 1),
+        # A native Falcon or LogicSig account: the signer raises the fee of an
+        # ungrouped transaction and leaves it ungrouped.
+        (single_entries, RAISED, 1),
+        (pair_entries, {}, 2),
+        (single_entries, WITH_DUMMIES, 3),
+        (lambda: fake_signer.sign_entries(*pregrouped_pair()), {}, 2),
+        (passthrough_entries, {}, 2),
+        (foreign_entries, {}, 2),
+    ],
+    ids=[
+        "single",
+        "single-fee-raised",
+        "ungrouped-pair-grouped",
+        "fee-raised-with-dummies",
+        "pregrouped-pair",
+        "passthrough",
+        "foreign",
+    ],
+)
+def test_sign_response_accepts_reported_mutations(entries, signer, want):
+    requests = entries()
+    body = fake_signer.sign_response(requests, **signer)
+    assert len(body["signed"]) == want
+    _validate_sign_response(_decode_request_slots(requests), body["signed"], body.get("mutations"))
+
+
+def replace_dummy_with_payment(body):
+    # A 50 ALGO payment in the dummy's place, regrouped so the group ID is
+    # still canonical.
+    txns = [fake_signer.decode_signed(item).transaction for item in body["signed"]]
+    txns[1] = fake_signer.payment(41, 45, 50_000_000)
+    for txn in txns:
+        txn.group = None
+    transaction.assign_group_id(txns)
+    body["signed"] = [fake_signer.signed_hex(txn) for txn in txns]
+
+
+def regroup_with_wrong_id(body):
+    for index in range(len(body["signed"])):
+        resign(body, index, set_fields(group=bytes([0x99]) * 32))
+
+
+def alter_passthrough(body):
+    signed = fake_signer.decode_signed(body["signed"][1])
+    signed.signature = base64.b64encode(bytes([9]) * 64).decode()
+    body["signed"][1] = base64.b64decode(encoding.msgpack_encode(signed)).hex()
+
+
+def reauthorize_dummy(body):
+    body["signed"][2] = fake_signer.signed_hex(
+        fake_signer.decode_signed(body["signed"][2]).transaction
+    )
+
+
+def mutate(**fields):
+    return lambda body: body["mutations"].update(fields)
+
+
+TAMPER_CASES = [
+    (
+        "substituted receiver and amount",
+        single_entries,
+        {},
+        lambda body: resign(
+            body, 0, set_fields(receiver=fake_signer.test_address(45), amt=100_000_000)
+        ),
+        "unreported fields at original position 1",
+    ),
+    (
+        "unreported fee raise",
+        single_entries,
+        {},
+        lambda body: resign(body, 0, add_fee(5000)),
+        "unreported fields at original position 1",
+    ),
+    (
+        "fee raise larger than reported total",
+        single_entries,
+        RAISED,
+        lambda body: resign(body, 0, add_fee(1)),
+        "total_fees_delta 2000 does not match observed delta 2001",
+    ),
+    (
+        "reported fee index did not increase",
+        single_entries,
+        RAISED,
+        lambda body: resign(body, 0, set_fields(fee=1000)),
+        "did not increase the fee",
+    ),
+    (
+        "reported fee index decreased the fee",
+        single_entries,
+        RAISED,
+        lambda body: resign(body, 0, set_fields(fee=999)),
+        "did not increase the fee",
+    ),
+    (
+        "negative total fee delta",
+        single_entries,
+        RAISED,
+        mutate(total_fees_delta=-2000),
+        "total_fees_delta must not be negative",
+    ),
+    (
+        "duplicated fee index",
+        single_entries,
+        RAISED,
+        mutate(fees_modified=[0, 0]),
+        "fee index 0 is duplicated",
+    ),
+    (
+        "fee index outside the request",
+        single_entries,
+        WITH_DUMMIES,
+        mutate(fees_modified=[0, 1]),
+        "fee index 1 is outside original positions",
+    ),
+    (
+        "fee index on a passthrough position",
+        passthrough_entries,
+        {},
+        mutate(fees_modified=[1]),
+        "fee index 1 is a passthrough position",
+    ),
+    (
+        "group ID that does not bind the group",
+        pair_entries,
+        {},
+        regroup_with_wrong_id,
+        "does not carry the canonical group ID",
+    ),
+    (
+        "group ID changed without a report",
+        lambda: fake_signer.sign_entries(*pregrouped_pair()),
+        {},
+        lambda body: resign(body, 0, set_fields(group=bytes([0x99]) * 32)),
+        "unreported fields at original position 1",
+    ),
+    (
+        "group ID change reported for one transaction",
+        single_entries,
+        RAISED,
+        mutate(group_id_changed=True),
+        "group ID change for a single transaction",
+    ),
+    (
+        "appended payment that is not a dummy",
+        single_entries,
+        WITH_DUMMIES,
+        replace_dummy_with_payment,
+        "appended transaction 1 is not the canonical resource dummy",
+    ),
+    (
+        "dummy with a different authorization",
+        single_entries,
+        WITH_DUMMIES,
+        reauthorize_dummy,
+        "appended transaction 2 does not carry the canonical resource dummy authorization",
+    ),
+    (
+        "dummies_added does not match appended count",
+        single_entries,
+        WITH_DUMMIES,
+        mutate(dummies_added=1),
+        "dummies_added 1 does not match appended count 2",
+    ),
+    (
+        "final_count does not match returned count",
+        single_entries,
+        WITH_DUMMIES,
+        mutate(final_count=2),
+        "final_count 2 does not match returned count 3",
+    ),
+    (
+        "original_count does not match request",
+        single_entries,
+        RAISED,
+        mutate(original_count=2),
+        "original_count 2 does not match request count 1",
+    ),
+    (
+        "appended without a mutation report",
+        single_entries,
+        WITH_DUMMIES,
+        lambda body: body.pop("mutations"),
+        r"appended 2 transaction\(s\) without a mutation report",
+    ),
+    (
+        "appended without a group ID change",
+        single_entries,
+        WITH_DUMMIES,
+        mutate(group_id_changed=False),
+        "appended dummies without reporting a group ID change",
+    ),
+    (
+        "trailing bytes after a signed transaction",
+        single_entries,
+        {},
+        lambda body: body["signed"].__setitem__(0, body["signed"][0] * 2),
+        "signed transaction 1: ",
+    ),
+    (
+        "truncated response",
+        pair_entries,
+        {},
+        lambda body: body.update(signed=body["signed"][:1]),
+        r"returned 1 signed transaction\(s\), want at least 2",
+    ),
+    (
+        "empty signed position",
+        pair_entries,
+        {},
+        lambda body: body["signed"].__setitem__(1, ""),
+        "no signature for position 2",
+    ),
+    (
+        "empty dummy position",
+        single_entries,
+        WITH_DUMMIES,
+        lambda body: body["signed"].__setitem__(2, ""),
+        "empty dummy transaction at position 3",
+    ),
+    (
+        "empty passthrough position",
+        passthrough_entries,
+        {},
+        lambda body: body["signed"].__setitem__(1, ""),
+        "no signature for position 2",
+    ),
+    (
+        "altered passthrough",
+        passthrough_entries,
+        {},
+        alter_passthrough,
+        "signer changed passthrough transaction 2",
+    ),
+    (
+        "passthrough not reported",
+        passthrough_entries,
+        {},
+        lambda body: body.pop("mutations"),
+        r"passthrough_count 0 does not match the 1 passthrough transaction\(s\) requested",
+    ),
+    (
+        "signed foreign position",
+        foreign_entries,
+        {},
+        lambda body: body["signed"].__setitem__(1, fake_signer.signed_hex(pregrouped_pair()[1])),
+        "signed transaction for foreign position 2",
+    ),
+    (
+        "foreign count does not match",
+        foreign_entries,
+        {},
+        mutate(foreign_count=0),
+        r"foreign_count 0 does not match the 1 foreign transaction\(s\) requested",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("entries", "signer", "tamper", "error"),
+    [case[1:] for case in TAMPER_CASES],
+    ids=[case[0] for case in TAMPER_CASES],
+)
+def test_sign_response_rejects_tampering(entries, signer, tamper, error):
+    requests = entries()
+    slots = _decode_request_slots(requests)
+    body = fake_signer.sign_response(requests, **signer)
+    _validate_sign_response(slots, body["signed"], body.get("mutations"))
+    tamper(body)
+    with pytest.raises(SignerError, match=error):
+        _validate_sign_response(slots, body["signed"], body.get("mutations"))
+
+
+def test_plan_response_checks_foreign_positions_and_dummies():
+    requests = pair_entries()
+    requests[1] = {"txn_bytes_hex": requests[1]["txn_bytes_hex"]}
+    slots = _decode_request_slots(requests)
+    signer = {"fee_raise": {0: 1000}, "dummies": 1}
+
+    def replan(body, edit):
+        txns = [
+            encoding.msgpack_decode(base64.b64encode(bytes.fromhex(item)[2:]).decode())
+            for item in body["transactions"]
+        ]
+        for txn in txns:
+            txn.group = None
+        edit(txns)
+        transaction.assign_group_id(txns)
+        body["transactions"] = [encode_transaction(txn)[0] for txn in txns]
+
+    body = fake_signer.plan_response(requests, **signer)
+    assert len(body["transactions"]) == 3
+    _validate_plan_response(slots, body["transactions"], body["mutations"])
+
+    cases = [
+        (lambda txns: setattr(txns[0], "amt", 999_999), "unreported fields at original position 1"),
+        (lambda txns: setattr(txns[1], "fee", 2000), "unreported fields at original position 2"),
+        (lambda txns: setattr(txns[2], "amt", 1), "appended transaction 1 is not the canonical"),
+        (
+            lambda txns: setattr(txns[2], "last_valid_round", txns[2].last_valid_round + 1),
+            "appended transaction 1 is not the canonical",
+        ),
+    ]
+    for edit, error in cases:
+        body = fake_signer.plan_response(requests, **signer)
+        replan(body, edit)
+        with pytest.raises(SignerError, match=error):
+            _validate_plan_response(slots, body["transactions"], body["mutations"])
+
+    body = fake_signer.plan_response(requests, **signer)
+    body["mutations"]["fees_modified"] = [0, 1]
+    with pytest.raises(SignerError, match="fee index 1 is a foreign position"):
+        _validate_plan_response(slots, body["transactions"], body["mutations"])
+
+
+def test_public_calls_reject_a_substituted_transaction():
+    """The checks run inside the public sign, plan and simulate calls."""
+    client = make_client()
+    txn = fake_signer.payment(41, 42, 1_000_000)
+    other = fake_signer.payment(41, 45, 100_000_000)
+
+    def substitute(body):
+        if "signed" in body:
+            body["signed"] = [fake_signer.signed_hex(other)]
+        else:
+            body["transactions"] = [encode_transaction(other)[0]]
+
+    error = "unreported fields at original position 1"
+    algod_client = MagicMock()
+    with (
+        patch.object(client, "_discover_approval_wait"),
+        patch.object(
+            client.session, "post", side_effect=fake_signer.signer_post(tamper=substitute)
+        ),
+    ):
+        with pytest.raises(SignerError, match=error):
+            client.sign_transaction(txn)
+        with pytest.raises(SignerError, match=error):
+            client.sign_transactions([txn])
+        with pytest.raises(SignerError, match=error):
+            client.sign_transactions_list([txn])
+        with pytest.raises(SignerError, match=error):
+            client.sign_requests(fake_signer.sign_entries(txn))
+        with pytest.raises(SignerError, match=error):
+            client.plan_group([txn])
+        with pytest.raises(SignerError, match=error):
+            client.simulate_prepared_group(
+                algod_client,
+                PreparedGroup([PreparedTransaction(transaction=txn, auth_address=txn.sender)]),
+            )
+    algod_client.simulate_transactions.assert_not_called()
+
+
+def test_sign_transaction_accepts_a_raised_fee_and_dummies():
+    client = make_client()
+    txn = fake_signer.payment(41, 42, 1_000_000)
+    post = fake_signer.signer_post(fee_raise={0: 2000}, dummies=1)
+    with (
+        patch.object(client, "_discover_approval_wait"),
+        patch.object(client.session, "post", side_effect=post),
+    ):
+        signed = client.sign_transactions_list([txn])
+        plan = client.plan_group([txn])
+
+    assert len(signed) == 2
+    assert encoding.msgpack_decode(signed[0]).transaction.fee == txn.fee + 2000
+    assert len(plan["transactions"]) == 2
+    assert plan["mutations"]["dummies_added"] == 1
+
+
+def test_signed_transaction_identity_checks_reject_noncanonical_bytes():
+    txn = fake_signer.payment(41, 42, 1)
+    other = fake_signer.payment(41, 45, 2)
+    canonical_hex = encode_transaction(txn)[0]
+    signed_hex = fake_signer.signed_hex(txn)
+
+    _verify_signed_transaction_matches_canonical("slot", 0, signed_hex, canonical_hex)
+    _verify_bounded_assembled_group([canonical_hex], [signed_hex])
+
+    # A second signed transaction after the first.
+    concatenated = signed_hex + fake_signer.signed_hex(other)
+    # The same signed transaction with its keys out of canonical order.
+    fields = msgpack.unpackb(bytes.fromhex(signed_hex), raw=False, strict_map_key=False)
+    reordered = msgpack.packb({key: fields[key] for key in sorted(fields, reverse=True)}).hex()
+    assert reordered != signed_hex
+    # The same signed transaction with a field the SDK does not know.
+    extended = msgpack.packb({**fields, "zz": 1}).hex()
+
+    for bad in (concatenated, reordered, extended):
+        with pytest.raises(SignerError, match="slot 0: "):
+            _verify_signed_transaction_matches_canonical("slot", 0, bad, canonical_hex)
+        with pytest.raises(SignerError, match="assembled transaction 0: "):
+            _verify_bounded_assembled_group([canonical_hex], [bad])
+        algod_client = MagicMock()
+        with pytest.raises(SignerError, match="signed group position 1: "):
+            _simulate_signed_group(algod_client, [bad])
+        algod_client.simulate_transactions.assert_not_called()
+
+    with pytest.raises(SignerError, match="does not match the submitted canonical bytes"):
+        _verify_signed_transaction_matches_canonical(
+            "slot", 0, fake_signer.signed_hex(other), canonical_hex
+        )
+
+
+def test_request_bytes_must_be_canonical():
+    txn = fake_signer.payment(41, 42, 1)
+    canonical = encode_transaction(txn)[0]
+    signed = fake_signer.signed_hex(txn)
+    for entry in (
+        {"auth_address": "A", "txn_bytes_hex": canonical[4:]},
+        {"auth_address": "A", "txn_bytes_hex": canonical + "00"},
+        {"signed_txn_hex": signed + signed},
+    ):
+        with pytest.raises(ValueError, match="transaction 1: "):
+            _decode_request_slots([entry])
+    assert copy.deepcopy(_decode_request_slots(fake_signer.sign_entries(txn))[0].txn) == txn
