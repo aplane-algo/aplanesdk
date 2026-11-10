@@ -528,6 +528,34 @@ Anything else fails with `SignerError` whose message starts with
 - signed transaction bytes that are not canonical msgpack, including bytes
   after the signed transaction
 
+#### Limiting The Fee Increase
+
+The checks above confirm that a fee raise is reported, not that it is
+reasonable: the signer writes the report, so by default a reported raise of
+any size is accepted. Set `max_fee_increase` on the client to put your own ceiling on it.
+The value is in microAlgos and bounds the total the signer adds across all
+positions of one request. Zero means the signer may not raise any fee. When
+the raises add up to more than the ceiling, every sign, plan and simulate call
+through that client fails with `SignerError` before anything is returned, so nothing
+can be submitted or simulated. Resource dummies pay no fee and do not count.
+The per-account `max_fee` check in the cosigned flow still applies as well.
+
+```python
+client = SignerClient.from_env(max_fee_increase=200_000)  # microAlgos, summed over the request
+signed = client.sign_transaction(txn)
+# SignerError: verify signer response: signer raised fees by 5000000 microAlgos,
+# more than the max fee increase 200000 set on this client
+```
+
+`connect_ssh()` and the constructor take the same argument, and
+`client.max_fee_increase` can be set or returned to `None` at any time.
+
+There is no default. What the signer legitimately adds depends on the account
+type: an Ed25519 account adds nothing, while a LogicSig Falcon account's
+charge can be well over 100,000 microAlgos, so any built-in number would be a
+guess. Choose a ceiling that fits the accounts you sign for, or run a plan
+first to see the charge.
+
 The SDK decodes request entries before sending them. Unsigned transaction
 bytes must be `TX`-prefixed canonical msgpack and passthrough entries must be
 canonical signed transactions, or the call raises `ValueError` before any request is made.
