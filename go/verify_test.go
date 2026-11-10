@@ -232,7 +232,7 @@ func TestValidateSignResponseAcceptsReportedMutations(t *testing.T) {
 			if len(resp.Signed) != tc.want {
 				t.Fatalf("fake signer returned %d slots, want %d", len(resp.Signed), tc.want)
 			}
-			if err := validateSignResponse(mustDecodeSlots(t, tc.requests), resp.Signed, resp.Mutations); err != nil {
+			if err := validateSignResponse(mustDecodeSlots(t, tc.requests), resp.Signed, resp.Mutations, nil); err != nil {
 				t.Fatalf("validateSignResponse() error = %v", err)
 			}
 		})
@@ -457,11 +457,11 @@ func TestValidateSignResponseRejectsTampering(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			resp := tc.signer.sign(t, tc.requests)
 			slots := mustDecodeSlots(t, tc.requests)
-			if err := validateSignResponse(slots, resp.Signed, resp.Mutations); err != nil {
+			if err := validateSignResponse(slots, resp.Signed, resp.Mutations, nil); err != nil {
 				t.Fatalf("untampered response rejected: %v", err)
 			}
 			tc.tamper(&resp)
-			err := validateSignResponse(slots, resp.Signed, resp.Mutations)
+			err := validateSignResponse(slots, resp.Signed, resp.Mutations, nil)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("validateSignResponse() error = %v, want %q", err, tc.want)
 			}
@@ -503,7 +503,7 @@ func TestValidatePlanResponse(t *testing.T) {
 	if len(resp.Transactions) != 3 {
 		t.Fatalf("fake plan returned %d transactions, want 3", len(resp.Transactions))
 	}
-	if err := validatePlanResponse(slots, resp.Transactions, resp.Mutations); err != nil {
+	if err := validatePlanResponse(slots, resp.Transactions, resp.Mutations, nil); err != nil {
 		t.Fatalf("valid plan: unexpected error %v", err)
 	}
 
@@ -583,7 +583,7 @@ func TestValidatePlanResponse(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			resp := signer.plan(t, requests)
 			tc.tamper(&resp)
-			err := validatePlanResponse(slots, resp.Transactions, resp.Mutations)
+			err := validatePlanResponse(slots, resp.Transactions, resp.Mutations, nil)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("validatePlanResponse() error = %v, want %q", err, tc.want)
 			}
@@ -840,5 +840,116 @@ func TestSignedTransactionIdentityChecksRejectTrailingBytes(t *testing.T) {
 	noncanonical := append([]byte{0x82, 0xa3, 's', 'i', 'g', 0xc4, 0x00, 0xa3, 't', 'x', 'n'}, encodeTxn(txn)[2:]...)
 	if err := signedTxnMatchesCanonical("slot", 0, hex.EncodeToString(noncanonical), canonical); err == nil {
 		t.Fatal("signedTxnMatchesCanonical() accepted a non-canonical wrapper")
+	}
+}
+
+func TestMaxFeeIncrease(t *testing.T) {
+	first := verifyTestPayment(t, 41, 42, 1_000_000)
+	second := verifyTestPayment(t, 43, 44, 5)
+	u := func(v uint64) *uint64 { return &v }
+	cases := []struct {
+		name   string
+		limit  *uint64
+		signer fakeSigner
+		txns   []types.Transaction
+		want   string
+	}{
+		// Unset is unbounded: a reported raise of any size is accepted.
+		{name: "unset, large raise", signer: fakeSigner{feeRaise: map[int]uint64{0: 5_000_000}}, txns: []types.Transaction{first}},
+		{name: "above the raise", limit: u(200_000), signer: fakeSigner{feeRaise: map[int]uint64{0: 3000}}, txns: []types.Transaction{first}},
+		{name: "equal to the raise", limit: u(3000), signer: fakeSigner{feeRaise: map[int]uint64{0: 3000}}, txns: []types.Transaction{first}},
+		{
+			name: "one below the raise", limit: u(2999), signer: fakeSigner{feeRaise: map[int]uint64{0: 3000}}, txns: []types.Transaction{first},
+			want: "signer raised fees by 3000 microAlgos, more than the max fee increase 2999 set on this client",
+		},
+		{
+			name: "zero with a raise", limit: u(0), signer: fakeSigner{feeRaise: map[int]uint64{0: 1}}, txns: []types.Transaction{first},
+			want: "signer raised fees by 1 microAlgos, more than the max fee increase 0 set on this client",
+		},
+		{name: "zero with no raise", limit: u(0), txns: []types.Transaction{first, second}},
+		{
+			name: "raise spread over two positions is summed", limit: u(4999),
+			signer: fakeSigner{feeRaise: map[int]uint64{0: 2000, 1: 3000}}, txns: []types.Transaction{first, second},
+			want: "signer raised fees by 5000 microAlgos, more than the max fee increase 4999 set on this client",
+		},
+		{
+			name: "two positions at the sum", limit: u(5000),
+			signer: fakeSigner{feeRaise: map[int]uint64{0: 2000, 1: 3000}}, txns: []types.Transaction{first, second},
+		},
+		{
+			// Dummies pay no fee; only the raise counts.
+			name: "dummies add nothing", limit: u(2000),
+			signer: fakeSigner{feeRaise: map[int]uint64{0: 2000}, dummies: 2}, txns: []types.Transaction{first},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client, server := newTestClient(fakeSignHandler(t, tc.signer))
+			defer server.Close()
+			if tc.limit != nil {
+				client.SetMaxFeeIncrease(*tc.limit)
+			}
+			algodClient, closeAlgod := makeSimulationAlgodClient(t, func(w http.ResponseWriter, r *http.Request) {
+				if tc.want != "" {
+					t.Error("simulation reached algod with a fee raise over the ceiling")
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"last-round":1,"version":2,"txn-groups":[{}]}`))
+			})
+			defer closeAlgod()
+			auths := make([]string, len(tc.txns))
+			prepared := PreparedGroup{}
+			for i := range tc.txns {
+				auths[i] = tc.txns[i].Sender.String()
+				prepared.Transactions = append(prepared.Transactions, PreparedTransaction{Transaction: &tc.txns[i], AuthAddress: auths[i]})
+			}
+
+			check := func(call string, prefix string, err error) {
+				t.Helper()
+				if tc.want == "" {
+					if err != nil {
+						t.Fatalf("%s error = %v", call, err)
+					}
+					return
+				}
+				if err == nil || !strings.Contains(err.Error(), prefix+tc.want) {
+					t.Fatalf("%s error = %v, want %q", call, err, prefix+tc.want)
+				}
+			}
+			_, err := client.SignTransactions(tc.txns, nil, nil)
+			check("SignTransactions()", "verify signer response: ", err)
+			_, err = client.SignTransactionsList(tc.txns, nil, nil)
+			check("SignTransactionsList()", "verify signer response: ", err)
+			_, err = client.SignRequestsWithContext(context.Background(), signRequestsFor(tc.txns...))
+			check("SignRequestsWithContext()", "verify signer response: ", err)
+			_, err = client.PlanGroup(tc.txns, auths, nil, nil)
+			check("PlanGroup()", "verify signer plan: ", err)
+			_, err = client.SimulatePreparedGroup(context.Background(), algodClient, prepared)
+			check("SimulatePreparedGroup()", "verify signer response: ", err)
+		})
+	}
+}
+
+func TestMaxFeeIncreaseSetAndClear(t *testing.T) {
+	txn := verifyTestPayment(t, 41, 42, 1)
+	client, server := newTestClient(fakeSignHandler(t, fakeSigner{feeRaise: map[int]uint64{0: 3000}}))
+	defer server.Close()
+
+	if _, set := client.MaxFeeIncrease(); set {
+		t.Fatal("a new client has a max fee increase; there must be no default")
+	}
+	client.SetMaxFeeIncrease(1000)
+	if limit, set := client.MaxFeeIncrease(); !set || limit != 1000 {
+		t.Fatalf("MaxFeeIncrease() = %d, %v, want 1000, true", limit, set)
+	}
+	if _, err := client.SignTransaction(txn, "", nil); err == nil || !strings.Contains(err.Error(), "more than the max fee increase 1000") {
+		t.Fatalf("SignTransaction() error = %v, want the ceiling to refuse", err)
+	}
+	client.ClearMaxFeeIncrease()
+	if _, set := client.MaxFeeIncrease(); set {
+		t.Fatal("ClearMaxFeeIncrease() left a ceiling set")
+	}
+	if _, err := client.SignTransaction(txn, "", nil); err != nil {
+		t.Fatalf("SignTransaction() after clearing the ceiling: %v", err)
 	}
 }

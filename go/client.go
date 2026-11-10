@@ -39,6 +39,9 @@ type SignerClient struct {
 	approvalWaitSeconds int64
 	approvalWaitFetched time.Time
 	approvalWaitKnown   bool
+
+	feeMu          sync.RWMutex
+	maxFeeIncrease *uint64
 }
 
 const (
@@ -74,6 +77,45 @@ func NewSignerClient(baseURL string) *SignerClient {
 		client:   &http.Client{},
 		keyCache: nil,
 	}
+}
+
+// SetMaxFeeIncrease sets a ceiling, in microAlgos, on the total fee the signer
+// may add to a request. Every sign, plan and simulate call through this client
+// fails, before anything is returned, when the signer's fee raises across the
+// request's positions add up to more than this. Zero means the signer may not
+// raise any fee. There is no default: until this is called, a reported raise
+// of any size is accepted.
+func (c *SignerClient) SetMaxFeeIncrease(microAlgos uint64) {
+	c.feeMu.Lock()
+	defer c.feeMu.Unlock()
+	c.maxFeeIncrease = &microAlgos
+}
+
+// ClearMaxFeeIncrease removes the ceiling set by SetMaxFeeIncrease.
+func (c *SignerClient) ClearMaxFeeIncrease() {
+	c.feeMu.Lock()
+	defer c.feeMu.Unlock()
+	c.maxFeeIncrease = nil
+}
+
+// MaxFeeIncrease returns the ceiling set by SetMaxFeeIncrease, and whether one
+// is set.
+func (c *SignerClient) MaxFeeIncrease() (uint64, bool) {
+	limit := c.feeCeiling()
+	if limit == nil {
+		return 0, false
+	}
+	return *limit, true
+}
+
+func (c *SignerClient) feeCeiling() *uint64 {
+	c.feeMu.RLock()
+	defer c.feeMu.RUnlock()
+	if c.maxFeeIncrease == nil {
+		return nil
+	}
+	limit := *c.maxFeeIncrease
+	return &limit
 }
 
 // SetHTTPClient overrides the HTTP client used for requests.
@@ -786,7 +828,7 @@ func (c *SignerClient) PlanRequestsWithContext(ctx context.Context, requests []S
 		return nil, fmt.Errorf("plan failed: %s", planResp.Error)
 	}
 
-	if err := validatePlanResponse(slots, planResp.Transactions, planResp.Mutations); err != nil {
+	if err := validatePlanResponse(slots, planResp.Transactions, planResp.Mutations, c.feeCeiling()); err != nil {
 		return nil, fmt.Errorf("verify signer plan: %w", err)
 	}
 
@@ -1162,7 +1204,7 @@ func (c *SignerClient) postSign(ctx context.Context, groupReq GroupSignRequest, 
 		return nil, fmt.Errorf("group signing failed: %s", groupResp.Error)
 	}
 
-	if err := validateSignResponse(slots, groupResp.Signed, groupResp.Mutations); err != nil {
+	if err := validateSignResponse(slots, groupResp.Signed, groupResp.Mutations, c.feeCeiling()); err != nil {
 		return nil, fmt.Errorf("verify signer response: %w", err)
 	}
 

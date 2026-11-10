@@ -99,7 +99,12 @@ func decodeRequestSlots(requests []SignRequest) ([]requestSlot, error) {
 // returned holds the transaction observed at each final position. A nil entry
 // is a foreign position /sign returned empty: nothing was observed, and the
 // position is taken as the request's transaction in the final group.
-func validateGroupMutations(slots []requestSlot, returned []*types.Transaction, mutations *MutationReport) error {
+//
+// maxFeeIncrease, when set, is the caller's ceiling on the total fee the signer
+// may add across the request's positions. The report's own total cannot serve:
+// it is written by the party being checked. Appended dummies pay no fee, so
+// the total over original positions is the whole increase.
+func validateGroupMutations(slots []requestSlot, returned []*types.Transaction, mutations *MutationReport, maxFeeIncrease *uint64) error {
 	if len(returned) < len(slots) {
 		return fmt.Errorf("signer returned %d transaction(s), want at least %d", len(returned), len(slots))
 	}
@@ -210,6 +215,9 @@ func validateGroupMutations(slots []requestSlot, returned []*types.Transaction, 
 	if uint64(report.TotalFeesDelta) != totalFeeDelta {
 		return fmt.Errorf("mutation total_fees_delta %d does not match observed delta %d", report.TotalFeesDelta, totalFeeDelta)
 	}
+	if maxFeeIncrease != nil && totalFeeDelta > *maxFeeIncrease {
+		return fmt.Errorf("signer raised fees by %d microAlgos, more than the max fee increase %d set on this client", totalFeeDelta, *maxFeeIncrease)
+	}
 	for i := len(slots); i < len(returned); i++ {
 		if returned[i] == nil {
 			return fmt.Errorf("signer returned no transaction at appended position %d", i+1)
@@ -305,7 +313,7 @@ func signCanonicalDummy(txn types.Transaction) ([]byte, error) {
 // transaction, changed only as the mutation report states. Passthrough
 // positions must come back byte for byte, foreign positions stay empty, and
 // every appended position must be the canonical signed resource dummy.
-func validateSignResponse(slots []requestSlot, signed []string, mutations *MutationReport) error {
+func validateSignResponse(slots []requestSlot, signed []string, mutations *MutationReport, maxFeeIncrease *uint64) error {
 	if len(signed) < len(slots) {
 		return fmt.Errorf("signer returned %d signed transaction(s), want at least %d", len(signed), len(slots))
 	}
@@ -343,7 +351,7 @@ func validateSignResponse(slots []requestSlot, signed []string, mutations *Mutat
 		}
 		returned[i] = &stxn.Txn
 	}
-	if err := validateGroupMutations(slots, returned, mutations); err != nil {
+	if err := validateGroupMutations(slots, returned, mutations, maxFeeIncrease); err != nil {
 		return err
 	}
 	for i := len(slots); i < len(signed); i++ {
@@ -361,7 +369,7 @@ func validateSignResponse(slots []requestSlot, signed []string, mutations *Mutat
 // validatePlanResponse checks a /plan response against the request. A plan
 // result is the final group as unsigned transactions, so every position is
 // observed, foreign ones included.
-func validatePlanResponse(slots []requestSlot, transactions []string, mutations *MutationReport) error {
+func validatePlanResponse(slots []requestSlot, transactions []string, mutations *MutationReport, maxFeeIncrease *uint64) error {
 	if len(transactions) < len(slots) {
 		return fmt.Errorf("signer returned %d planned transaction(s), want at least %d", len(transactions), len(slots))
 	}
@@ -377,5 +385,5 @@ func validatePlanResponse(slots []requestSlot, transactions []string, mutations 
 		}
 		returned[i] = &txn
 	}
-	return validateGroupMutations(slots, returned, mutations)
+	return validateGroupMutations(slots, returned, mutations, maxFeeIncrease)
 }
