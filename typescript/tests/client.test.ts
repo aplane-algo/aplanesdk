@@ -4516,7 +4516,7 @@ describe("fromEnv", () => {
       fs.writeFileSync(path.join(tmpDir, "key"), "dummy-private-key");
       const client = await SignerClient.fromEnv({ dataDir: tmpDir, maxFeeIncrease: 250_000 });
       assert.equal(forwarded.maxFeeIncrease, 250_000);
-      assert.equal(client.maxFeeIncrease, 250_000n);
+      assert.strictEqual(client.maxFeeIncrease, 250_000);
     } finally {
       (SignerClient as any).connectSsh = original;
       fs.rmSync(tmpDir, { recursive: true });

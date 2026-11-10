@@ -24,14 +24,17 @@ const UINT64_MAX = (1n << 64n) - 1n;
 
 /**
  * Validate a max fee increase setting: unset, or a non-negative whole number
- * of microAlgos.
+ * of microAlgos. The value is returned as given, so a caller reads back what
+ * it set; null is treated as unset.
  */
-export function checkMaxFeeIncrease(value: number | bigint | undefined | null): bigint | undefined {
+export function checkMaxFeeIncrease(
+  value: number | bigint | undefined | null,
+): number | bigint | undefined {
   if (value === undefined || value === null) {
     return undefined;
   }
   if (typeof value === "bigint" ? value >= 0n : Number.isSafeInteger(value) && value >= 0) {
-    return BigInt(value);
+    return value;
   }
   throw new SignerError(
     "maxFeeIncrease must be a non-negative whole number of microAlgos, or undefined",

@@ -2070,7 +2070,7 @@ export class SignerClient {
   private approvalWaitSeconds?: number;
   private approvalWaitFetchedAt?: number;
   private approvalWaitKnown = false;
-  private feeCeiling?: bigint;
+  private feeCeiling?: number | bigint;
 
   /**
    * Create a SignerClient instance.
@@ -2085,28 +2085,40 @@ export class SignerClient {
     baseUrl: string,
     timeout?: number,
     tunnel: SSHTunnel | null = null,
-    options: SignerClientOptions = {},
+    options?: SignerClientOptions | null,
   ) {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
     this.explicitTimeout = timeout && timeout > 0 ? timeout : undefined;
     this.tunnel = tunnel;
-    this.feeCeiling = checkMaxFeeIncrease(options.maxFeeIncrease);
+    this.feeCeiling = checkMaxFeeIncrease(options?.maxFeeIncrease);
   }
 
   /**
    * The ceiling, in microAlgos, on the total fee the signer may add to a
-   * request, or undefined when none is set. See SignerClientOptions.
+   * request, as it was set, or undefined when none is set. Assigning
+   * validates the value; undefined removes the ceiling and zero means the
+   * signer may not raise any fee. See SignerClientOptions.
    */
-  get maxFeeIncrease(): bigint | undefined {
+  get maxFeeIncrease(): number | bigint | undefined {
     return this.feeCeiling;
   }
 
-  /**
-   * Set or, with undefined, remove the ceiling on the signer's total fee
-   * increase. Zero means the signer may not raise any fee.
-   */
-  setMaxFeeIncrease(microAlgos: number | bigint | undefined): void {
+  set maxFeeIncrease(microAlgos: number | bigint | undefined) {
     this.feeCeiling = checkMaxFeeIncrease(microAlgos);
+  }
+
+  /** Set or, with undefined, remove the ceiling on the signer's total fee increase. */
+  setMaxFeeIncrease(microAlgos: number | bigint | undefined): void {
+    this.maxFeeIncrease = microAlgos;
+  }
+
+  /**
+   * The ceiling a call starting now is held to. A call reads it before
+   * sending its request, so a change made while the signer waits for approval
+   * does not apply to it.
+   */
+  private feeCeilingSnapshot(): bigint | undefined {
+    return this.feeCeiling === undefined ? undefined : BigInt(this.feeCeiling);
   }
 
   /**
@@ -3574,6 +3586,7 @@ export class SignerClient {
   async planRequests(requests: SignRequest[]): Promise<PlanGroupResponse> {
     validateSignRequests(requests);
     const slots = decodeRequestSlots(requests);
+    const maxFeeIncrease = this.feeCeilingSnapshot();
 
     const response = await this.fetch("/plan", {
       method: "POST",
@@ -3613,7 +3626,7 @@ export class SignerClient {
     }
 
     try {
-      validatePlanResponse(slots, data.transactions, data.mutations, this.feeCeiling);
+      validatePlanResponse(slots, data.transactions, data.mutations, maxFeeIncrease);
     } catch (error) {
       throw new SignerError(
         `verify signer plan: ${error instanceof Error ? error.message : String(error)}`,
@@ -3786,6 +3799,7 @@ export class SignerClient {
     validateSignRequestId(requestId, true);
     validateSignRequests(requests);
     const slots = decodeRequestSlots(requests);
+    const maxFeeIncrease = this.feeCeilingSnapshot();
     const signBody: GroupSignRequest = { request_id: requestId, requests };
 
     await this.discoverApprovalWait();
@@ -3843,7 +3857,7 @@ export class SignerClient {
     // Every sign path goes through here, so a truncated, altered or padded
     // group can never be returned for submission or simulation.
     try {
-      validateSignResponse(slots, data.signed ?? [], data.mutations, this.feeCeiling);
+      validateSignResponse(slots, data.signed ?? [], data.mutations, maxFeeIncrease);
     } catch (error) {
       throw new SignerError(
         `verify signer response: ${error instanceof Error ? error.message : String(error)}`,

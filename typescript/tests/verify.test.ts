@@ -573,7 +573,7 @@ describe("maxFeeIncrease", () => {
     const client = new SignerClient("http://localhost:11270");
     assert.equal(client.maxFeeIncrease, undefined);
     client.setMaxFeeIncrease(0);
-    assert.equal(client.maxFeeIncrease, 0n);
+    assert.equal(client.maxFeeIncrease, 0);
     client.setMaxFeeIncrease(250_000n);
     assert.equal(client.maxFeeIncrease, 250_000n);
     client.setMaxFeeIncrease(undefined);
@@ -582,6 +582,7 @@ describe("maxFeeIncrease", () => {
     const invalid = /maxFeeIncrease must be a non-negative whole number/;
     for (const bad of [-1, 1.5, Number.NaN, -1n, "1000" as any]) {
       assert.throws(() => client.setMaxFeeIncrease(bad), invalid);
+      assert.throws(() => { client.maxFeeIncrease = bad; }, invalid);
       assert.throws(
         () => new SignerClient("http://localhost:11270", undefined, null, { maxFeeIncrease: bad }),
         invalid,
@@ -592,5 +593,94 @@ describe("maxFeeIncrease", () => {
         invalid,
       );
     }
+    assert.equal(client.maxFeeIncrease, undefined, "a refused value must not become the setting");
+  });
+
+  // A getter alone would let `client.maxFeeIncrease = 0` vanish in plain
+  // JavaScript and leave the client unbounded.
+  it("is enforced when assigned as a property", async () => {
+    stubSigner({ feeRaise: { 0: 3000 } });
+    const client = new SignerClient("http://localhost:11270");
+    const txn = fakePayment();
+
+    (client as any).maxFeeIncrease = 0;
+    assert.equal(client.maxFeeIncrease, 0);
+    await assert.rejects(client.signTransaction(txn), /more than the max fee increase 0 set on this client/);
+
+    client.maxFeeIncrease = 3000n;
+    await client.signTransaction(txn);
+
+    client.maxFeeIncrease = undefined;
+    assert.equal(client.maxFeeIncrease, undefined);
+    await client.signTransaction(txn);
+  });
+
+  it("reads back as it was set", () => {
+    const fromNumber = new SignerClient("http://localhost:11270", undefined, null, {
+      maxFeeIncrease: 250_000,
+    });
+    assert.strictEqual(fromNumber.maxFeeIncrease, 250_000);
+    assert.equal(JSON.stringify({ maxFeeIncrease: fromNumber.maxFeeIncrease }), '{"maxFeeIncrease":250000}');
+    // A copy of the setting configures another client the same way.
+    const copy = new SignerClient("http://localhost:11270", undefined, null, {
+      maxFeeIncrease: fromNumber.maxFeeIncrease,
+    });
+    assert.strictEqual(copy.maxFeeIncrease, 250_000);
+
+    const fromBigint = new SignerClient("http://localhost:11270", undefined, null, {
+      maxFeeIncrease: 250_000n,
+    });
+    assert.strictEqual(fromBigint.maxFeeIncrease, 250_000n);
+  });
+
+  it("treats null options as no options", () => {
+    const client = new SignerClient("http://localhost:11270", undefined, null, null);
+    assert.equal(client.maxFeeIncrease, undefined);
+    const nullField = new SignerClient("http://localhost:11270", undefined, null, {
+      maxFeeIncrease: null as any,
+    });
+    assert.equal(nullField.maxFeeIncrease, undefined);
+  });
+
+  // A call is held to the ceiling in force when it started. Removing it
+  // while the signer is still waiting for approval lets nothing through.
+  it("is snapshotted when the call starts", async () => {
+    const txn = fakePayment();
+    const client = new SignerClient("http://localhost:11270", undefined, null, {
+      maxFeeIncrease: 1000,
+    });
+    let release: () => void = () => {};
+    let arrived: () => void = () => {};
+    let hold = true;
+    globalThis.fetch = (async (url: string, init: any) => {
+      if (String(url).endsWith("/status")) {
+        return { status: 200, ok: true, json: async () => ({ state: "unlocked", approval_wait_seconds: 60 }) };
+      }
+      if (hold) {
+        const released = new Promise<void>((resolve) => { release = resolve; });
+        arrived();
+        await released;
+      }
+      return signerFetch({ feeRaise: { 0: 3000 } })(url, init);
+    }) as any;
+    const refused = /more than the max fee increase 1000 set on this client/;
+
+    for (const start of [
+      () => client.signTransaction(txn),
+      () => client.planGroup([txn]),
+    ]) {
+      client.maxFeeIncrease = 1000;
+      const requestSent = new Promise<void>((resolve) => { arrived = resolve; });
+      const call = start();
+      const outcome = assert.rejects(call, refused);
+      await requestSent;
+      client.maxFeeIncrease = undefined;
+      release();
+      await outcome;
+    }
+
+    // A call started with no ceiling is not held to one.
+    hold = false;
+    await client.signTransaction(txn);
   });
 });
