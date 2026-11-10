@@ -4,15 +4,18 @@
 package aplane
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 
-	algocrypto "github.com/algorand/go-algorand-sdk/v2/crypto"
+	"github.com/algorand/go-algorand-sdk/v2/crypto"
 	"github.com/algorand/go-algorand-sdk/v2/encoding/msgpack"
 	"github.com/algorand/go-algorand-sdk/v2/transaction"
 	"github.com/algorand/go-algorand-sdk/v2/types"
@@ -64,7 +67,7 @@ func (f fakeSigner) finalize(t *testing.T, requests []SignRequest) ([]requestSlo
 		for i := range final {
 			final[i].Group = types.Digest{}
 		}
-		groupID, err := algocrypto.ComputeGroupID(final)
+		groupID, err := crypto.ComputeGroupID(final)
 		if err != nil {
 			t.Fatalf("fake signer: compute group ID: %v", err)
 		}
@@ -80,8 +83,81 @@ func (f fakeSigner) finalize(t *testing.T, requests []SignRequest) ([]requestSlo
 	return slots, final, &report
 }
 
+// The fake signer's accounts, by address: Ed25519 keys, LogicSig programs and
+// native Falcon public keys, as the real signer holds them.
+var (
+	fakeKeys     = map[string]ed25519.PrivateKey{}
+	fakePrograms = map[string][]byte{}
+	fakePQKeys   = map[string]types.PQSig{}
+	fakeKeysMu   sync.Mutex
+)
+
+// fakeAccount is the address of the fake signer's Ed25519 account for a seed.
+func fakeAccount(seed byte) string {
+	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{seed}, ed25519.SeedSize))
+	var address types.Address
+	copy(address[:], key.Public().(ed25519.PublicKey))
+	fakeKeysMu.Lock()
+	defer fakeKeysMu.Unlock()
+	fakeKeys[address.String()] = key
+	return address.String()
+}
+
+// fakeLogicSigAccount is the address of a LogicSig account the fake signer
+// holds: the hash of its program, as for a LogicSig Falcon or generic account.
+func fakeLogicSigAccount(seed byte) string {
+	program := []byte{0x06, 0x81, seed} // #pragma version 6; pushint seed
+	address := crypto.LogicSigAddress(types.LogicSig{Logic: program}).String()
+	fakeKeysMu.Lock()
+	defer fakeKeysMu.Unlock()
+	fakePrograms[address] = program
+	return address
+}
+
+// fakePQAccount is the address of a native Falcon account the fake signer
+// holds. The public key and signature are filler: nothing verifies them.
+func fakePQAccount(t *testing.T, seed byte) string {
+	t.Helper()
+	publicKey := bytes.Repeat([]byte{seed}, 1793)
+	salt, err := crypto.CanonicalSaltForPQAddress(publicKey, types.PQSchemeFalcon1024)
+	if err != nil {
+		t.Fatalf("canonical PQ salt: %v", err)
+	}
+	proof := types.PQSig{Scheme: types.PQSchemeFalcon1024, Salt: salt, PublicKey: publicKey, Signature: bytes.Repeat([]byte{9}, 1232)}
+	address := crypto.PQAddressFromSig(proof).String()
+	fakeKeysMu.Lock()
+	defer fakeKeysMu.Unlock()
+	fakePQKeys[address] = proof
+	return address
+}
+
+// fakeAuthorize signs a transaction as the fake signer's account at
+// authAddress would: the account's kind of authorization, and the signer
+// field when the account is not the sender. An address the fake signer does
+// not hold gets a signature that verifies under nothing.
+func fakeAuthorize(txn types.Transaction, authAddress string) types.SignedTxn {
+	stxn := types.SignedTxn{Txn: txn}
+	fakeKeysMu.Lock()
+	defer fakeKeysMu.Unlock()
+	switch {
+	case fakeKeys[authAddress] != nil:
+		copy(stxn.Sig[:], ed25519.Sign(fakeKeys[authAddress], encodeTxn(txn)))
+	case fakePrograms[authAddress] != nil:
+		stxn.Lsig = types.LogicSig{Logic: fakePrograms[authAddress], Args: [][]byte{{1, 2, 3}}}
+	case len(fakePQKeys[authAddress].PublicKey) != 0:
+		stxn.PQsig = fakePQKeys[authAddress]
+	default:
+		stxn.Sig = types.Signature{1, 2, 3}
+	}
+	if auth, err := types.DecodeAddress(authAddress); err == nil && auth != txn.Sender {
+		stxn.AuthAddr = auth
+	}
+	return stxn
+}
+
+// fakeSignedTxnHex is a transaction signed by its sender.
 func fakeSignedTxnHex(txn types.Transaction) string {
-	return hex.EncodeToString(msgpack.Encode(types.SignedTxn{Sig: types.Signature{1, 2, 3}, Txn: txn}))
+	return hex.EncodeToString(msgpack.Encode(fakeAuthorize(txn, txn.Sender.String())))
 }
 
 func (f fakeSigner) sign(t *testing.T, requests []SignRequest) GroupSignResponse {
@@ -101,7 +177,7 @@ func (f fakeSigner) sign(t *testing.T, requests []SignRequest) GroupSignResponse
 		case slots[i].mode == RequestModeForeign:
 			signed[i] = ""
 		default:
-			signed[i] = fakeSignedTxnHex(txn)
+			signed[i] = hex.EncodeToString(msgpack.Encode(fakeAuthorize(txn, requests[i].AuthAddress)))
 		}
 	}
 	return GroupSignResponse{Signed: signed, Mutations: report}
@@ -149,7 +225,7 @@ func verifyTestPayment(t *testing.T, senderSeed, receiverSeed byte, amount uint6
 		Fee: types.MicroAlgos(1000), FirstRoundValid: 10, LastRoundValid: 1010,
 		GenesisID: "testnet-v1.0", GenesisHash: genesisHash[:], FlatFee: true,
 	}
-	txn, err := transaction.MakePaymentTxn(sdkTestAddress(senderSeed), sdkTestAddress(receiverSeed), amount, nil, "", sp)
+	txn, err := transaction.MakePaymentTxn(fakeAccount(senderSeed), sdkTestAddress(receiverSeed), amount, nil, "", sp)
 	if err != nil {
 		t.Fatalf("MakePaymentTxn() error = %v", err)
 	}
@@ -259,11 +335,12 @@ func TestValidateSignResponseRejectsTampering(t *testing.T) {
 	raised := fakeSigner{feeRaise: map[int]uint64{0: 2000}}
 	withDummies := fakeSigner{feeRaise: map[int]uint64{0: 2000}, dummies: 2}
 
-	// resign replaces the transaction inside a signed slot.
+	// resign replaces the transaction inside a signed slot, signed again by
+	// its sender: the signature is good, the transaction is not the request's.
 	resign := func(resp *GroupSignResponse, index int, edit func(*types.Transaction)) {
-		stxn := mustDecodeSigned(t, resp.Signed[index])
-		edit(&stxn.Txn)
-		resp.Signed[index] = hex.EncodeToString(msgpack.Encode(stxn))
+		txn := mustDecodeSigned(t, resp.Signed[index]).Txn
+		edit(&txn)
+		resp.Signed[index] = fakeSignedTxnHex(txn)
 	}
 
 	cases := []struct {
@@ -360,7 +437,7 @@ func TestValidateSignResponseRejectsTampering(t *testing.T) {
 					txns[i].Group = types.Digest{}
 				}
 				txns[1] = verifyTestPayment(t, 41, 45, 50_000_000)
-				groupID, err := algocrypto.ComputeGroupID(txns)
+				groupID, err := crypto.ComputeGroupID(txns)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -489,7 +566,7 @@ func TestValidatePlanResponse(t *testing.T) {
 			txns[i] = txn
 		}
 		edit(txns)
-		groupID, err := algocrypto.ComputeGroupID(txns)
+		groupID, err := crypto.ComputeGroupID(txns)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -727,21 +804,21 @@ func TestBuildSignRequestsRejectsLsigArgsNoPositionMatches(t *testing.T) {
 	stray := LsigArgsMap{sdkTestAddress(45): LsigArgs{"preimage": []byte("secret")}}
 	const want = "no transaction in the request has auth address"
 
-	if _, err := buildSignRequests([]types.Transaction{txn}, nil, stray); err == nil || !strings.Contains(err.Error(), want) {
+	if _, _, err := buildSignRequests([]types.Transaction{txn}, nil, stray); err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("buildSignRequests() error = %v, want %q", err, want)
 	}
-	if _, err := buildSignRequests([]types.Transaction{txn}, nil, LsigArgsMap{"": LsigArgs{"a": []byte{1}}}); err == nil || !strings.Contains(err.Error(), want) {
+	if _, _, err := buildSignRequests([]types.Transaction{txn}, nil, LsigArgsMap{"": LsigArgs{"a": []byte{1}}}); err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("buildSignRequests() with an empty key error = %v, want %q", err, want)
 	}
-	if _, err := buildSignRequestsWithOptions([]types.Transaction{txn}, []string{txn.Sender.String()}, stray, nil); err == nil || !strings.Contains(err.Error(), want) {
+	if _, _, err := buildSignRequestsWithOptions([]types.Transaction{txn}, []string{txn.Sender.String()}, stray, nil); err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("buildSignRequestsWithOptions() error = %v, want %q", err, want)
 	}
 	// An entry with no args has nothing to drop, so it is ignored.
 	empty := LsigArgsMap{sdkTestAddress(45): nil, sdkTestAddress(46): LsigArgs{}}
-	if _, err := buildSignRequests([]types.Transaction{txn}, nil, empty); err != nil {
+	if _, _, err := buildSignRequests([]types.Transaction{txn}, nil, empty); err != nil {
 		t.Fatalf("buildSignRequests() with empty args error = %v", err)
 	}
-	if _, err := buildSignRequestsWithOptions([]types.Transaction{txn}, []string{txn.Sender.String()}, empty, nil); err != nil {
+	if _, _, err := buildSignRequestsWithOptions([]types.Transaction{txn}, []string{txn.Sender.String()}, empty, nil); err != nil {
 		t.Fatalf("buildSignRequestsWithOptions() with empty args error = %v", err)
 	}
 }
@@ -763,7 +840,7 @@ func TestBuildSignRequestsAcceptsAReusedLsigArgsMap(t *testing.T) {
 	wantFirst := hex.EncodeToString([]byte("one"))
 
 	// Position 2 is foreign: its sender is still a position of the group.
-	requests, err := buildSignRequestsWithOptions(grouped, []string{first, ""}, args, nil)
+	requests, _, err := buildSignRequestsWithOptions(grouped, []string{first, ""}, args, nil)
 	if err != nil {
 		t.Fatalf("plan with a foreign position: %v", err)
 	}
@@ -783,7 +860,7 @@ func TestBuildSignRequestsAcceptsAReusedLsigArgsMap(t *testing.T) {
 		"sender of the slot":    {grouped, []string{first, ""}},
 		"only the signed bytes": {[]types.Transaction{grouped[0], {}}, []string{first, ""}},
 	} {
-		requests, err := buildSignRequestsWithOptions(tc.txns, tc.auths, args, opts)
+		requests, _, err := buildSignRequestsWithOptions(tc.txns, tc.auths, args, opts)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -841,4 +918,107 @@ func TestSignedTransactionIdentityChecksRejectTrailingBytes(t *testing.T) {
 	if err := signedTxnMatchesCanonical("slot", 0, hex.EncodeToString(noncanonical), canonical); err == nil {
 		t.Fatal("signedTxnMatchesCanonical() accepted a non-canonical wrapper")
 	}
+}
+
+// A signed position must carry exactly one authorization, and it must be the
+// requested auth address's. The Python and TypeScript suites run the same
+// list of cases.
+func TestValidateSignResponseChecksTheAuthorization(t *testing.T) {
+	ed := fakeAccount(41)
+	other := fakeAccount(45)
+	lsig := fakeLogicSigAccount(1)
+	otherLsig := fakeLogicSigAccount(2)
+	pq := fakePQAccount(t, 3)
+	otherPQ := fakePQAccount(t, 4)
+	dummy := crypto.LogicSigAddress(types.LogicSig{Logic: cosignedDummyProgram}).String()
+	fakeKeysMu.Lock()
+	fakePrograms[dummy] = cosignedDummyProgram
+	fakeKeysMu.Unlock()
+
+	payment := func(sender string) types.Transaction {
+		txn := verifyTestPayment(t, 41, 42, 1_000_000)
+		address, err := types.DecodeAddress(sender)
+		if err != nil {
+			t.Fatal(err)
+		}
+		txn.Sender = address
+		return txn
+	}
+	check := func(txn types.Transaction, auth string, stxn types.SignedTxn) error {
+		request := SignRequest{AuthAddress: auth, TxnSender: txn.Sender.String(), TxnBytesHex: hex.EncodeToString(encodeTxn(txn))}
+		return validateSignResponse(mustDecodeSlots(t, []SignRequest{request}), []string{hex.EncodeToString(msgpack.Encode(stxn))}, nil)
+	}
+
+	accepted := []struct{ name, sender, auth string }{
+		{"ed25519, sender signs", ed, ed},
+		{"ed25519, rekeyed sender", other, ed},
+		{"LogicSig account", lsig, lsig},
+		{"LogicSig account, rekeyed sender", ed, lsig},
+		{"native Falcon account", pq, pq},
+		{"native Falcon account, rekeyed sender", ed, pq},
+		{"the dummy program, when it is the auth address", dummy, dummy},
+	}
+	for _, tc := range accepted {
+		t.Run("accepts "+tc.name, func(t *testing.T) {
+			txn := payment(tc.sender)
+			if err := check(txn, tc.auth, fakeAuthorize(txn, tc.auth)); err != nil {
+				t.Fatalf("validateSignResponse() error = %v", err)
+			}
+		})
+	}
+
+	otherAddress, _ := types.DecodeAddress(other)
+	refused := []struct {
+		name         string
+		sender, auth string
+		edit         func(stxn *types.SignedTxn)
+		want         string
+	}{
+		{"an unsigned wrapper", ed, ed, func(stxn *types.SignedTxn) { stxn.Sig = types.Signature{} }, "carries no authorization"},
+		{"a signature by another key", ed, ed, func(stxn *types.SignedTxn) { *stxn = fakeAuthorize(stxn.Txn, other); stxn.AuthAddr = types.Address{} }, "signature does not verify under the requested auth address"},
+		{"a signature over another transaction", ed, ed, func(stxn *types.SignedTxn) {
+			stxn.Sig = fakeAuthorize(verifyTestPayment(t, 41, 45, 5), ed).Sig
+		}, "signature does not verify under the requested auth address"},
+		{"the dummy LogicSig on an original position", ed, ed, func(stxn *types.SignedTxn) {
+			*stxn = types.SignedTxn{Txn: stxn.Txn, Lsig: types.LogicSig{Logic: cosignedDummyProgram}}
+		}, "LogicSig program address " + dummy + " is not the requested auth address"},
+		{"the dummy LogicSig naming itself as signer", ed, ed, func(stxn *types.SignedTxn) {
+			*stxn = fakeAuthorize(stxn.Txn, dummy)
+		}, "names signer " + dummy + ", but the sender signs for itself"},
+		{"another LogicSig program", lsig, lsig, func(stxn *types.SignedTxn) { stxn.Lsig.Logic = fakePrograms[otherLsig] }, "is not the requested auth address"},
+		{"a LogicSig delegated by a signature", lsig, lsig, func(stxn *types.SignedTxn) { stxn.Lsig.Sig = types.Signature{1} }, "LogicSig is delegated by a signature"},
+		{"a wrong signer field", other, ed, func(stxn *types.SignedTxn) { stxn.AuthAddr = otherAddress; stxn.AuthAddr[0] ^= 1 }, "not the requested auth address"},
+		{"a missing signer field for a rekeyed sender", other, ed, func(stxn *types.SignedTxn) { stxn.AuthAddr = types.Address{} }, "does not name its signer"},
+		{"a signer field when the sender signs", ed, ed, func(stxn *types.SignedTxn) { stxn.AuthAddr = otherAddress }, "but the sender signs for itself"},
+		{"a multisig", ed, ed, func(stxn *types.SignedTxn) {
+			stxn.Sig = types.Signature{}
+			stxn.Msig = types.MultisigSig{Version: 1, Threshold: 1, Subsigs: []types.MultisigSubsig{{Key: make([]byte, 32)}}}
+		}, "carries a multisig"},
+		{"two authorizations", ed, ed, func(stxn *types.SignedTxn) { stxn.Lsig = types.LogicSig{Logic: fakePrograms[lsig]} }, "carries more than one authorization"},
+		{"a post-quantum proof with no signature", pq, pq, func(stxn *types.SignedTxn) { stxn.PQsig.Signature = nil }, "missing its public key or signature"},
+		{"a post-quantum proof with another scheme", pq, pq, func(stxn *types.SignedTxn) { stxn.PQsig.Scheme = types.PQScheme{'x', '9'} }, "post-quantum scheme"},
+		{"another post-quantum key", pq, pq, func(stxn *types.SignedTxn) { stxn.PQsig = fakePQKeys[otherPQ] }, "post-quantum key's address"},
+	}
+	for _, tc := range refused {
+		t.Run("refuses "+tc.name, func(t *testing.T) {
+			txn := payment(tc.sender)
+			stxn := fakeAuthorize(txn, tc.auth)
+			if err := check(txn, tc.auth, stxn); err != nil {
+				t.Fatalf("untampered response rejected: %v", err)
+			}
+			tc.edit(&stxn)
+			err := check(txn, tc.auth, stxn)
+			if err == nil || !strings.Contains(err.Error(), "signed transaction 1 ") || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("validateSignResponse() error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+
+	t.Run("refuses a request whose auth address is not an address", func(t *testing.T) {
+		txn := payment(ed)
+		request := SignRequest{AuthAddress: "AUTH", TxnBytesHex: hex.EncodeToString(encodeTxn(txn))}
+		if _, err := decodeRequestSlots([]SignRequest{request}); err == nil || !strings.Contains(err.Error(), `auth_address "AUTH" is not a valid address`) {
+			t.Fatalf("decodeRequestSlots() error = %v", err)
+		}
+	})
 }

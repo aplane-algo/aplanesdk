@@ -5,6 +5,7 @@ package aplane
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"encoding/hex"
 	"fmt"
 
@@ -19,6 +20,29 @@ type requestSlot struct {
 	mode        RequestMode
 	txn         types.Transaction
 	signedBytes []byte
+	// auth is the address a sign position asked the signer to sign with.
+	auth types.Address
+	// signer is the auth address a passthrough's signed bytes carry, if any.
+	signer types.Address
+}
+
+// signSlot is the slot of a sign-mode position. The auth address must be a
+// real address: the returned authorization is checked against it.
+func signSlot(txn types.Transaction, authAddress string) (requestSlot, error) {
+	auth, err := types.DecodeAddress(authAddress)
+	if err != nil {
+		return requestSlot{}, fmt.Errorf("auth_address %q is not a valid address: %w", authAddress, err)
+	}
+	return requestSlot{mode: RequestModeSign, txn: txn, auth: auth}, nil
+}
+
+// decodePassthroughSlot decodes a passthrough's signed bytes, strictly.
+func decodePassthroughSlot(raw []byte) (requestSlot, error) {
+	stxn, err := decodeCanonicalSignedTxn(raw)
+	if err != nil {
+		return requestSlot{}, err
+	}
+	return requestSlot{mode: RequestModePassthrough, txn: stxn.Txn, signedBytes: raw, signer: stxn.AuthAddr}, nil
 }
 
 // decodeCanonicalTxn decodes TX-prefixed unsigned transaction bytes and
@@ -64,18 +88,15 @@ func decodeRequestSlots(requests []SignRequest) ([]requestSlot, error) {
 		if err != nil {
 			return nil, fmt.Errorf("transaction %d: %w", i+1, err)
 		}
-		slots[i].mode = mode
 		if mode == RequestModePassthrough {
 			raw, err := hex.DecodeString(req.SignedTxnHex)
 			if err != nil {
 				return nil, fmt.Errorf("transaction %d: signed_txn_hex is invalid hex: %w", i+1, err)
 			}
-			stxn, err := decodeCanonicalSignedTxn(raw)
+			slots[i], err = decodePassthroughSlot(raw)
 			if err != nil {
 				return nil, fmt.Errorf("transaction %d: passthrough transaction: %w", i+1, err)
 			}
-			slots[i].txn = stxn.Txn
-			slots[i].signedBytes = raw
 			continue
 		}
 		raw, err := hex.DecodeString(req.TxnBytesHex)
@@ -86,9 +107,100 @@ func decodeRequestSlots(requests []SignRequest) ([]requestSlot, error) {
 		if err != nil {
 			return nil, fmt.Errorf("transaction %d: txn_bytes_hex: %w", i+1, err)
 		}
-		slots[i].txn = txn
+		if mode == RequestModeForeign {
+			slots[i] = requestSlot{mode: mode, txn: txn}
+			continue
+		}
+		slots[i], err = signSlot(txn, req.AuthAddress)
+		if err != nil {
+			return nil, fmt.Errorf("transaction %d: %w", i+1, err)
+		}
 	}
 	return slots, nil
+}
+
+// validateAuthorization requires a signed position to carry exactly one
+// authorization, and that authorization to be the requested auth address's:
+// a response that signs the right transaction with the wrong key, or with no
+// key at all, is as unusable as one that signs the wrong transaction.
+//
+//   - sig: an Ed25519 signature over the transaction that verifies under the
+//     auth address.
+//   - lsig: a plain LogicSig (a program and its args, not one delegated by a
+//     signature) whose program address is the auth address.
+//   - pqsig: a native Falcon-1024 proof with its public key and signature
+//     present, whose derived account address is the auth address. The Falcon
+//     signature itself is not verified.
+//   - msig: refused. The signer never returns a multisig for a position it
+//     signs.
+//
+// The auth-address field (sgnr) must name the auth address when that differs
+// from the sender, and must be absent when they are the same.
+func validateAuthorization(stxn types.SignedTxn, auth types.Address) error {
+	hasSig := stxn.Sig != (types.Signature{})
+	hasMsig := !stxn.Msig.Blank()
+	hasLsig := len(stxn.Lsig.Logic) != 0 || stxn.Lsig.Args != nil || stxn.Lsig.Sig != (types.Signature{}) ||
+		!stxn.Lsig.Msig.Blank() || !stxn.Lsig.LMsig.Blank() || !stxn.Lsig.PQsig.Blank()
+	hasPQ := !stxn.PQsig.Blank()
+	count := 0
+	for _, present := range []bool{hasSig, hasMsig, hasLsig, hasPQ} {
+		if present {
+			count++
+		}
+	}
+	if count == 0 {
+		return fmt.Errorf("carries no authorization")
+	}
+	if count > 1 {
+		return fmt.Errorf("carries more than one authorization")
+	}
+
+	wantSigner := types.Address{}
+	if auth != stxn.Txn.Sender {
+		wantSigner = auth
+	}
+	if stxn.AuthAddr != wantSigner {
+		if wantSigner.IsZero() {
+			return fmt.Errorf("names signer %s, but the sender signs for itself", stxn.AuthAddr)
+		}
+		if stxn.AuthAddr.IsZero() {
+			return fmt.Errorf("does not name its signer %s, which is not the sender", auth)
+		}
+		return fmt.Errorf("names signer %s, not the requested auth address %s", stxn.AuthAddr, auth)
+	}
+
+	switch {
+	case hasMsig:
+		return fmt.Errorf("carries a multisig, which the signer does not return for a position it signs")
+	case hasSig:
+		if !ed25519.Verify(auth[:], encodeTxn(stxn.Txn), stxn.Sig[:]) {
+			return fmt.Errorf("signature does not verify under the requested auth address %s", auth)
+		}
+	case hasLsig:
+		lsig := stxn.Lsig
+		if len(lsig.Logic) == 0 {
+			return fmt.Errorf("LogicSig has no program")
+		}
+		if lsig.Sig != (types.Signature{}) || !lsig.Msig.Blank() || !lsig.LMsig.Blank() || !lsig.PQsig.Blank() {
+			return fmt.Errorf("LogicSig is delegated by a signature, which the signer does not return for a position it signs")
+		}
+		program := crypto.LogicSigAddress(types.LogicSig{Logic: lsig.Logic})
+		if program != auth {
+			return fmt.Errorf("LogicSig program address %s is not the requested auth address %s", program, auth)
+		}
+	case hasPQ:
+		proof := stxn.PQsig
+		if proof.Scheme != types.PQSchemeFalcon1024 {
+			return fmt.Errorf("post-quantum scheme %q is not %q", proof.Scheme[:], types.PQSchemeFalcon1024[:])
+		}
+		if len(proof.PublicKey) == 0 || len(proof.Signature) == 0 {
+			return fmt.Errorf("post-quantum authorization is missing its public key or signature")
+		}
+		if derived := crypto.PQAddressFromSig(proof); derived != auth {
+			return fmt.Errorf("post-quantum key's address %s is not the requested auth address %s", derived, auth)
+		}
+	}
+	return nil
 }
 
 // validateGroupMutations is the client-side authority boundary for a /sign or
@@ -340,6 +452,11 @@ func validateSignResponse(slots []requestSlot, signed []string, mutations *Mutat
 		stxn, err := decodeCanonicalSignedTxn(raw)
 		if err != nil {
 			return fmt.Errorf("signed transaction %d: %w", i+1, err)
+		}
+		if i < len(slots) {
+			if err := validateAuthorization(stxn, slots[i].auth); err != nil {
+				return fmt.Errorf("signed transaction %d %w", i+1, err)
+			}
 		}
 		returned[i] = &stxn.Txn
 	}
