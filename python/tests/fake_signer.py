@@ -19,7 +19,7 @@ from aplanesdk.signer import (
     _decode_request_slots,
     _group_id_bytes,
     _sign_canonical_dummy,
-    _txn_bytes,
+    encode_transaction,
 )
 
 
@@ -53,7 +53,7 @@ def sign_entries(*txns):
         {
             "auth_address": txn.sender,
             "txn_sender": txn.sender,
-            "txn_bytes_hex": _txn_bytes(txn).hex(),
+            "txn_bytes_hex": encode_transaction(txn)[0],
         }
         for txn in txns
     ]
@@ -128,7 +128,7 @@ def sign_response(entries, fee_raise=None, dummies=0) -> dict:
 def plan_response(entries, fee_raise=None, dummies=0) -> dict:
     """The /plan response body a real signer would return for these entries."""
     _, final, report = _finalize(entries, fee_raise, dummies)
-    body = {"transactions": [_txn_bytes(txn).hex() for txn in final]}
+    body = {"transactions": [encode_transaction(txn)[0] for txn in final]}
     if report is not None:
         body["mutations"] = report
     return body

@@ -2490,23 +2490,61 @@ class TestBuildSignRequests:
         assert request["auth_address"] == txn.sender
         assert request["lsig_args"] == {"preimage": "736563726574"}
 
-    def test_rejects_lsig_args_no_position_uses(self):
+    def test_rejects_lsig_args_no_position_matches(self):
         client = make_client()
         txn = self._make_mock_txn()
         stray = {sdk_test_address(79): {"preimage": b"secret"}}
+        error = "no transaction in the request has auth address"
         with patch.object(client.session, "post") as mock_post:
-            with pytest.raises(ValueError, match="no signed transaction has auth address"):
+            with pytest.raises(ValueError, match=error):
                 client.sign_transactions([txn], lsig_args_map=stray)
-            with pytest.raises(ValueError, match="no signed transaction has auth address"):
+            with pytest.raises(ValueError, match=error):
                 client.sign_transactions_list([txn], lsig_args_map=stray)
-            # Args keyed to a foreign position's sender sign nothing either.
-            with pytest.raises(ValueError, match="no signed transaction has auth address"):
-                client.plan_group(
-                    [txn, self._make_mock_txn(sender=sdk_test_address(80))],
-                    auth_addresses=[txn.sender, None],
-                    lsig_args_map={sdk_test_address(80): {"preimage": b"secret"}},
-                )
+            with pytest.raises(ValueError, match=error):
+                client.plan_group([txn], lsig_args_map=stray)
         mock_post.assert_not_called()
+
+    def test_ignores_lsig_args_entries_with_no_args(self):
+        client = make_client()
+        txn = self._make_mock_txn()
+        empty = {sdk_test_address(79): None, sdk_test_address(80): {}, txn.sender: {}}
+        body = client._build_sign_request_body([txn], [txn.sender], empty)
+        assert "lsig_args" not in body["requests"][0]
+
+    def test_accepts_a_reused_lsig_args_map(self):
+        # One args map serves every call over a group: the plan with a foreign
+        # position, and the final signing once that position came back signed.
+        client = make_client()
+        grouped = [fake_signer.payment(41, 42), fake_signer.payment(43, 44)]
+        transaction.assign_group_id(grouped)
+        first, second = grouped[0].sender, grouped[1].sender
+        args = {first: {"preimage": b"one"}, second: {"preimage": b"two"}}
+
+        body = client._build_sign_request_body(grouped, [first, None], args)
+        assert body["requests"][0]["lsig_args"] == {"preimage": b"one".hex()}
+        assert "lsig_args" not in body["requests"][1]
+
+        signed_second = base64.b64encode(
+            bytes.fromhex(fake_signer.signed_hex(grouped[1]))
+        ).decode()
+        cases = {
+            "auth address given": (grouped, [first, second]),
+            "sender of the slot": (grouped, [first, None]),
+            "only the signed bytes": ([grouped[0], None], [first, None]),
+        }
+        for name, (txns, auths) in cases.items():
+            body = client._build_sign_request_body(
+                txns, auths, args, passthrough={1: signed_second}, allow_foreign=False
+            )
+            assert body["requests"][0]["lsig_args"] == {"preimage": b"one".hex()}, name
+            assert set(body["requests"][1]) == {"signed_txn_hex"}, name
+
+        with patch.object(client, "_discover_approval_wait"), \
+             patch.object(client.session, "post", side_effect=fake_signer.signer_post()):
+            signed = client.sign_transactions_list(
+                grouped, lsig_args_map=args, passthrough={1: signed_second}
+            )
+        assert signed[1] == signed_second
 
     def test_carries_lsig_resources_on_passthrough(self):
         client = make_client()

@@ -1284,7 +1284,7 @@ def _decode_canonical_txn(raw: bytes) -> transaction.Transaction:
         raise SignerError(f"invalid msgpack: {e}") from e
     if not isinstance(decoded, transaction.Transaction):
         raise SignerError("did not decode as a transaction")
-    if raw != b"TX" + base64.b64decode(encoding.msgpack_encode(decoded)):
+    if raw.hex() != encode_transaction(decoded)[0]:
         raise SignerError("bytes are not canonical")
     return decoded
 
@@ -1306,10 +1306,6 @@ def _decode_canonical_signed_txn(raw: bytes) -> Any:
     if raw != base64.b64decode(encoding.msgpack_encode(decoded)):
         raise SignerError("bytes are not a canonical signed transaction")
     return decoded
-
-
-def _txn_bytes(txn: transaction.Transaction) -> bytes:
-    return b"TX" + base64.b64decode(encoding.msgpack_encode(txn))
 
 
 def _group_id_bytes(txn: transaction.Transaction) -> Optional[bytes]:
@@ -1415,7 +1411,7 @@ def _validate_canonical_dummies(
     """Require every appended transaction to be the canonical resource dummy."""
     for index, txn in enumerate(appended):
         want = _canonical_dummy_txn(first_original, group_id, index)
-        if _txn_bytes(want) != _txn_bytes(txn):
+        if encode_transaction(want)[0] != encode_transaction(txn)[0]:
             raise SignerError(
                 f"appended transaction {index + 1} is not the canonical resource dummy"
             )
@@ -1555,7 +1551,7 @@ def _validate_group_mutations(
             if total_fee_delta > _UINT64_MAX:
                 raise SignerError("observed fee delta overflows uint64")
             want.fee = got.fee
-        if _txn_bytes(want) != _txn_bytes(got):
+        if encode_transaction(want)[0] != encode_transaction(got)[0]:
             raise SignerError(f"signer changed unreported fields at original position {index + 1}")
         final.append(got)
     reported_delta = _mutation_int(report, "total_fees_delta")
@@ -4703,14 +4699,31 @@ class SignerClient:
 
         # Build request array
         sign_requests = []
-        used_lsig_args = set()
+        matched_lsig_args = set()
         for i, (txn, auth_addr) in enumerate(zip(txns, auth_addresses)):
+            # A position matches its auth address, or its sender when none is
+            # given, whatever its mode.
+            if auth_addr:
+                matched_lsig_args.add(auth_addr)
+            elif txn is not None:
+                matched_lsig_args.add(txn.sender)
+
             # Passthrough: include pre-signed transaction as-is
             if passthrough and i in passthrough:
                 try:
                     signed_hex = base64.b64decode(passthrough[i], validate=True).hex()
                 except Exception as e:
                     raise ValueError(f"invalid base64 in passthrough[{i}]: {e}") from e
+                # The signed bytes name the position's sender and signer too.
+                try:
+                    signed = encoding.msgpack_decode(passthrough[i])
+                    matched_lsig_args.add(signed.transaction.sender)
+                    for name in ("authorizing_address", "auth_addr"):
+                        if getattr(signed, name, None):
+                            matched_lsig_args.add(getattr(signed, name))
+                except Exception:
+                    # Malformed passthrough bytes are reported when the request is decoded.
+                    pass
                 request = {"signed_txn_hex": signed_hex}
                 if lsig_resources and i in lsig_resources:
                     request["lsig_resources"] = _wire_lsig_resources(
@@ -4752,24 +4765,27 @@ class SignerClient:
             }
 
             # Add LogicSig args if provided
-            if lsig_args_map and auth_addr in lsig_args_map:
-                used_lsig_args.add(auth_addr)
+            if lsig_args_map and lsig_args_map.get(auth_addr):
                 req["lsig_args"] = {
                     name: value.hex() for name, value in lsig_args_map[auth_addr].items()
                 }
 
             sign_requests.append(req)
 
-        # Args keyed under an address that signs no position would be dropped,
-        # and an optional arg left out can select a different authorization
-        # branch, so refuse instead of signing without them.
-        unused = sorted(
-            repr(address) for address in (lsig_args_map or {}) if address not in used_lsig_args
+        # Args keyed under an address that is no position's auth address are a
+        # mistake, and dropping them would sign without them; an optional arg
+        # left out can select a different authorization branch. A key that
+        # matches a passthrough or foreign position is fine: the same map can
+        # serve several calls over one group. An entry with no args is ignored.
+        unmatched = sorted(
+            repr(address)
+            for address, args in (lsig_args_map or {}).items()
+            if args and address not in matched_lsig_args
         )
-        if unused:
+        if unmatched:
             raise ValueError(
-                "lsig args are keyed by auth address, and no signed transaction "
-                f"has auth address {', '.join(unused)}"
+                "lsig args are keyed by auth address, and no transaction in the "
+                f"request has auth address {', '.join(unmatched)}"
             )
 
         return {"requests": sign_requests}
@@ -4906,7 +4922,7 @@ class SignerClient:
         # group can never be returned for submission or simulation.
         try:
             _validate_sign_response(slots, signed, mutations)
-        except SignerError as e:
+        except Exception as e:
             raise SignerError(f"verify signer response: {e}") from e
 
         return GroupSignResponse(
@@ -5009,7 +5025,7 @@ class SignerClient:
 
         try:
             _validate_plan_response(slots, data.get("transactions"), data.get("mutations"))
-        except SignerError as e:
+        except Exception as e:
             raise SignerError(f"verify signer plan: {e}") from e
 
         return data
@@ -5610,13 +5626,9 @@ def sign_prepared_cosigned_group(
             f"signer returned {len(planned)} bounded group positions, "
             f"want at least {len(prepared)}"
         )
-    # plan_requests checks the plan against the requests too; this keeps the
-    # check next to the code that relies on it.
-    _validate_group_mutations(
-        _decode_request_slots(requests_data),
-        cast(List[Optional[transaction.Transaction]], planned),
-        plan_response.get("mutations"),
-    )
+    # plan_requests has already checked the plan against the requests: only
+    # reported fee raises and group assignment on original positions, and
+    # canonical resource dummies after them.
     _validate_bounded_target_fees(planned, target_max_fees)
     target_indices = {target["target_index"] for target in targets}
     component_targets = []

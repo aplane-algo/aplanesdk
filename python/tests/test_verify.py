@@ -505,3 +505,36 @@ def test_request_bytes_must_be_canonical():
         with pytest.raises(ValueError, match="transaction 1: "):
             _decode_request_slots([entry])
     assert copy.deepcopy(_decode_request_slots(fake_signer.sign_entries(txn))[0].txn) == txn
+
+
+def test_any_failure_while_verifying_is_a_signer_error():
+    """A response the checks cannot even read is reported like any other bad response."""
+    client = make_client()
+    txn = fake_signer.payment(41, 42, 1)
+    boom = RuntimeError("decoder blew up")
+    with (
+        patch.object(client, "_discover_approval_wait"),
+        patch.object(client.session, "post", side_effect=fake_signer.signer_post()),
+    ):
+        with patch("aplanesdk.signer._validate_group_mutations", side_effect=boom):
+            with pytest.raises(
+                SignerError, match="verify signer response: decoder blew up"
+            ) as sign:
+                client.sign_transaction(txn)
+            with pytest.raises(SignerError, match="verify signer plan: decoder blew up") as plan:
+                client.plan_group([txn])
+    assert sign.value.__cause__ is boom
+    assert plan.value.__cause__ is boom
+
+    # A report whose fields are the wrong shape fails inside the checks too.
+    def break_report(body):
+        body["mutations"] = {"original_count": 1, "final_count": 1, "fees_modified": [[0]]}
+
+    with (
+        patch.object(client, "_discover_approval_wait"),
+        patch.object(
+            client.session, "post", side_effect=fake_signer.signer_post(tamper=break_report)
+        ),
+    ):
+        with pytest.raises(SignerError, match="verify signer response: "):
+            client.sign_transaction(txn)
