@@ -415,9 +415,11 @@ signed, err := client.SignTransaction(
 ```
 
 An empty auth address means the sender signs for itself, and the args then
-apply to the sender. `LsigArgsMap` is keyed by auth address. Args keyed under
-an address that signs no position in the request are an error; they are never
-dropped.
+apply to the sender. `LsigArgsMap` is keyed by auth address. Args keyed under an address
+that is no position's auth address are an error; they are never dropped. A key
+that matches a passthrough or foreign position is accepted and unused, so one
+map can serve the plan and the final signing of the same group. An entry with
+no args is ignored.
 
 ### Sign A Transaction Group
 
@@ -675,6 +677,9 @@ Anything else fails with an error whose message starts with
 The SDK decodes request entries before sending them. Unsigned transaction
 bytes must be `TX`-prefixed canonical msgpack and passthrough entries must be
 canonical signed transactions, or the call fails before any request is made.
+A passthrough transaction must round-trip through the SDK's Algorand
+library (`go-algorand-sdk`), so one that uses a field newer than that library is refused
+locally.
 
 ## Error Handling
 
