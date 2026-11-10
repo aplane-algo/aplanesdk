@@ -241,6 +241,72 @@ func TestIntegrationNativeFalconSigning(t *testing.T) {
 	waitForKeysetRevision(t, client, afterGenerate.KeysetRevision, "native Falcon delete")
 }
 
+// A LogicSig account's real response passes the SDK's checks. The signer
+// raises the fee, appends resource dummies and groups them, and signs with
+// the account's program; the SDK verifies all of that, so this is the live
+// check that its rules accept what the signer really returns.
+func TestIntegrationLogicSigAccountSigning(t *testing.T) {
+	const keyType = "aplane.falcon1024.v1"
+	client := liveSignerClient(t)
+	defer client.Close()
+
+	keyTypes, err := client.ListKeyTypes()
+	if err != nil {
+		t.Fatalf("list key types: %v", err)
+	}
+	if !hasKeyType(keyTypes, keyType) {
+		t.Skipf("the signer does not offer %s", keyType)
+	}
+	before, err := client.GetStatus()
+	if err != nil {
+		t.Fatalf("get identity before LogicSig generate: %v", err)
+	}
+	generated, err := client.GenerateKey(keyType, map[string]string{"rekey_authority": "spending_key"})
+	if err != nil {
+		t.Fatalf("generate LogicSig account: %v", err)
+	}
+	address := generated.Address
+	defer func() {
+		if err := client.DeleteKey(address); err != nil {
+			t.Logf("cleanup delete LogicSig account %s failed: %v", address, err)
+		}
+	}()
+	waitForKeysetRevision(t, client, before.KeysetRevision, "LogicSig generate")
+
+	txn, err := selfPaymentTxn(address)
+	if err != nil {
+		t.Fatalf("build self-payment: %v", err)
+	}
+	single, err := client.SignTransactionsList([]types.Transaction{txn}, []string{address}, nil)
+	if err != nil {
+		t.Fatalf("sign one LogicSig transaction: %v", err)
+	}
+	if len(single) < 2 {
+		t.Fatalf("signer returned %d transaction(s); a Falcon LogicSig account needs resource dummies", len(single))
+	}
+	firstBytes, err := base64.StdEncoding.DecodeString(single[0])
+	if err != nil {
+		t.Fatalf("signed transaction is not base64: %v", err)
+	}
+	var first types.SignedTxn
+	if err := msgpack.Decode(firstBytes, &first); err != nil {
+		t.Fatalf("decode signed transaction: %v", err)
+	}
+	if len(first.Lsig.Logic) == 0 {
+		t.Fatal("the position is not signed by a LogicSig")
+	}
+
+	second := txn
+	second.Note = []byte("second")
+	pair, err := client.SignTransactionsList([]types.Transaction{txn, second}, []string{address, address}, nil)
+	if err != nil {
+		t.Fatalf("sign two LogicSig transactions: %v", err)
+	}
+	if len(pair) < 3 {
+		t.Fatalf("signer returned %d transaction(s) for two, want dummies as well", len(pair))
+	}
+}
+
 func assertNativeFalconEnvelope(t *testing.T, signed []byte) {
 	t.Helper()
 	var envelope struct {

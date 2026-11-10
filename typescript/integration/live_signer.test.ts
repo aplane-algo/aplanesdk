@@ -168,6 +168,54 @@ test(
 );
 
 test(
+  "integration: live signer LogicSig account signing",
+  { skip: integrationEnabled() ? false : "set APLANE_SDK_INTEGRATION=1" },
+  async (t) => {
+    // A LogicSig account's real response passes the SDK's checks. The signer
+    // raises the fee, appends resource dummies and groups them, and signs
+    // with the account's program; the SDK verifies all of that, so this is
+    // the live check that its rules accept what the signer really returns.
+    const keyType = "aplane.falcon1024.v1";
+    const client = await liveSignerClient();
+    let address = "";
+
+    try {
+      const keyTypes = await client.listKeyTypes();
+      if (!keyTypes.some((item) => item.keyType === keyType)) {
+        t.skip(`the signer does not offer ${keyType}`);
+        return;
+      }
+      const before = await client.getStatus();
+      address = (await client.generateKey(keyType, { rekey_authority: "spending_key" })).address;
+      assert.ok(address);
+      await waitForKeysetRevision(client, before.keysetRevision, "LogicSig generate");
+
+      const single = await client.signTransactionsList([selfPaymentTxn(address)], [address]);
+      assert.ok(single.length > 1, "a Falcon LogicSig account needs resource dummies");
+      const first = algosdk.decodeObj(Buffer.from(single[0], "base64")) as {
+        lsig?: { l?: Uint8Array };
+      };
+      assert.ok(first.lsig?.l?.length, "the position is not signed by a LogicSig");
+
+      const pair = await client.signTransactionsList(
+        [selfPaymentTxn(address), selfPaymentTxn(address, "second")],
+        [address, address]
+      );
+      assert.ok(pair.length > 2);
+    } finally {
+      if (address) {
+        try {
+          await client.deleteKey(address);
+        } catch {
+          // Best-effort cleanup; the primary failure above should remain visible.
+        }
+      }
+      await client.close();
+    }
+  }
+);
+
+test(
   "integration: native Falcon signature verifies on LocalNet",
   {
     skip: !integrationEnabled()
@@ -252,7 +300,7 @@ test(
   },
 );
 
-function selfPaymentTxn(address: string): algosdk.Transaction {
+function selfPaymentTxn(address: string, note = ""): algosdk.Transaction {
   const genesisHash =
     (process.env.APLANE_INTEGRATION_GENESIS_HASH || "").trim() ||
     "SGO1GKSzyE7IEPItTxCByw9x8FmnrCDexi9/cOUJOiI=";
@@ -262,6 +310,7 @@ function selfPaymentTxn(address: string): algosdk.Transaction {
     sender: address,
     receiver: address,
     amount: 0,
+    note: note ? new TextEncoder().encode(note) : undefined,
     suggestedParams: {
       fee: 1000,
       minFee: 1000,
