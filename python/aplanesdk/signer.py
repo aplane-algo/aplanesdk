@@ -42,6 +42,7 @@ import copy
 import hashlib
 import json
 import math
+import operator
 import os
 import re
 import requests
@@ -1425,12 +1426,23 @@ def _sign_canonical_dummy(txn: transaction.Transaction) -> bytes:
 
 
 def _check_max_fee_increase(value: Any) -> Optional[int]:
-    """Validate a max fee increase setting: None, or a non-negative integer."""
+    """Validate a max fee increase setting: None, or a non-negative integer.
+
+    Any integral type is accepted (anything with ``__index__``, such as a
+    numpy integer). A bool or a float is not.
+    """
     if value is None:
         return None
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise ValueError("max_fee_increase must be a non-negative integer of microAlgos, or None")
-    return cast(int, value)
+    error = SignerError("max_fee_increase must be a non-negative integer of microAlgos, or None")
+    if isinstance(value, bool):
+        raise error
+    try:
+        limit = operator.index(value)
+    except TypeError:
+        raise error from None
+    if limit < 0:
+        raise error
+    return limit
 
 
 def _validate_group_mutations(
@@ -4925,6 +4937,9 @@ class SignerClient:
         _validate_sign_request_id(request_id, required=True)
         _validate_sign_entries(sign_entries)
         slots = _decode_request_slots(sign_entries)
+        # The call is held to the ceiling in force now, whatever is set on the
+        # client while the signer waits for approval.
+        max_fee_increase = self.max_fee_increase
         request_body = {
             "request_id": request_id,
             "requests": sign_entries,
@@ -4972,7 +4987,7 @@ class SignerClient:
         # Every sign path goes through here, so a truncated, altered or padded
         # group can never be returned for submission or simulation.
         try:
-            _validate_sign_response(slots, signed, mutations, self.max_fee_increase)
+            _validate_sign_response(slots, signed, mutations, max_fee_increase)
         except Exception as e:
             raise SignerError(f"verify signer response: {e}") from e
 
@@ -5043,6 +5058,7 @@ class SignerClient:
         """Preview raw per-slot signer requests without address-keyed rebuilding."""
         _validate_sign_entries(sign_entries)
         slots = _decode_request_slots(sign_entries)
+        max_fee_increase = self.max_fee_increase
         request_body = {"requests": sign_entries}
 
         try:
@@ -5076,7 +5092,7 @@ class SignerClient:
 
         try:
             _validate_plan_response(
-                slots, data.get("transactions"), data.get("mutations"), self.max_fee_increase
+                slots, data.get("transactions"), data.get("mutations"), max_fee_increase
             )
         except Exception as e:
             raise SignerError(f"verify signer plan: {e}") from e

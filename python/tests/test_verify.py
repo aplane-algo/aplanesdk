@@ -619,6 +619,16 @@ def test_max_fee_increase_ignores_zero_fee_dummies():
         assert len(client.sign_transactions_list([fake_signer.payment()])) == 3
 
 
+class _Integral:
+    """An integer that is not an int, as numpy.int64 is."""
+
+    def __init__(self, value):
+        self._value = value
+
+    def __index__(self):
+        return self._value
+
+
 def test_max_fee_increase_setting():
     client = make_client()
     assert client.max_fee_increase is None, "there must be no default"
@@ -626,14 +636,54 @@ def test_max_fee_increase_setting():
     assert client.max_fee_increase == 0
     client.max_fee_increase = None
     assert client.max_fee_increase is None
-    for bad in (-1, 1.5, "1000", True):
-        with pytest.raises(ValueError, match="max_fee_increase must be a non-negative integer"):
+
+    # Any integral type is accepted and stored as a plain int.
+    client.max_fee_increase = _Integral(250_000)
+    assert client.max_fee_increase == 250_000
+    assert type(client.max_fee_increase) is int
+    assert (
+        SignerClient("http://localhost:11270", max_fee_increase=_Integral(0)).max_fee_increase == 0
+    )
+
+    # The same error type as the constructor's other argument errors.
+    error = "max_fee_increase must be a non-negative integer"
+    for bad in (-1, _Integral(-1), 1.5, 1000.0, "1000", True, False):
+        with pytest.raises(SignerError, match=error):
             client.max_fee_increase = bad
-        with pytest.raises(ValueError, match="max_fee_increase must be a non-negative integer"):
+        with pytest.raises(SignerError, match=error):
             SignerClient("http://localhost:11270", max_fee_increase=bad)
         # Refused before any connection is attempted.
-        with pytest.raises(ValueError, match="max_fee_increase must be a non-negative integer"):
+        with pytest.raises(SignerError, match=error):
             SignerClient.connect_ssh("signer.invalid", "/nonexistent/key", max_fee_increase=bad)
+    assert client.max_fee_increase == 250_000, "a refused value must not replace the setting"
+
+
+def test_max_fee_increase_is_snapshotted_when_the_call_starts():
+    """Clearing the ceiling while the signer waits for approval lets nothing through."""
+    txn = fake_signer.payment(41, 42, 1)
+    client = SignerClient("http://localhost:11270", max_fee_increase=1000)
+    answer = fake_signer.signer_post(fee_raise={0: 3000})
+
+    def delayed_post(url, json=None, **kwargs):
+        # The response arrives after the ceiling has been removed.
+        client.max_fee_increase = None
+        return answer(url, json=json, **kwargs)
+
+    error = "more than the max fee increase 1000 set on this client"
+    with patch.object(client, "_discover_approval_wait"):
+        with patch.object(client.session, "post", side_effect=delayed_post):
+            with pytest.raises(SignerError, match="verify signer response: .*" + error):
+                client.sign_transaction(txn)
+        assert client.max_fee_increase is None
+
+        client.max_fee_increase = 1000
+        with patch.object(client.session, "post", side_effect=delayed_post):
+            with pytest.raises(SignerError, match="verify signer plan: .*" + error):
+                client.plan_group([txn])
+
+        # A call started with no ceiling is not held to one.
+        with patch.object(client.session, "post", side_effect=answer):
+            client.sign_transaction(txn)
 
 
 def test_connection_helpers_forward_max_fee_increase(tmp_path):
