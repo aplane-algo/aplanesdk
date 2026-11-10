@@ -373,7 +373,7 @@ if err != nil {
 |----------|-------------|-------|
 | `ed25519` | Native Algorand keys | Standard signing |
 | `falcon1024` | Native post-quantum keys | Protocol-native Falcon-1024 signature (`PQsig`) |
-| `aplane.falcon1024.v1` | Post-quantum plain host | Enabled by default. With bounds (transfer kinds, a recipient list, a timelock, or limits only) a `bounded2` account; without, `plain1`, with no host rules or fee ceiling. `cosigned1` signing flow with a cosigner, `bounded1` without one |
+| `aplane.falcon1024.v1` | Post-quantum plain host | Enabled by default. With bounds (transfer kinds, a recipient list, or limits only) a `bounded2` account; without, `plain1`, with no host rules or fee ceiling. `cosigned1` signing flow with a cosigner, `bounded1` without one |
 | `aplane.ed25519.v1` | Ed25519 plain host | Library-visible; the same bounds and overlays as `aplane.falcon1024.v1`, and the spending key is classical |
 | `aplane.witness-falcon1024.v1` | Witness key | Cosigner-custodied policy signature key; not a spending account |
 | `aplane.htlc.v1` | Hash-locked funds | Requires `preimage` arg |
