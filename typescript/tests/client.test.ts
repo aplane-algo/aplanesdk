@@ -2226,10 +2226,20 @@ describe("SignerClient", () => {
       let plannedMutations: any;
       let baseComponentCalls = 0;
 
-      (user as any).planRequests = async (requests: any[]) => ({
-        transactions: plannedTransactions ?? [requests[0].txn_bytes_hex],
-        mutations: plannedMutations,
-      });
+      // The real planRequests runs, so the plan is checked against the
+      // requests where every caller's plan is checked.
+      (user as any).fetch = async (path: string, init: any) => {
+        assert.equal(path, "/plan");
+        const requests = JSON.parse(init.body).requests;
+        return {
+          status: 200,
+          ok: true,
+          json: async () => ({
+            transactions: plannedTransactions ?? [requests[0].txn_bytes_hex],
+            mutations: plannedMutations,
+          }),
+        };
+      };
       (user as any).requestComponents = async (request: any) => {
         baseComponentCalls += 1;
         assert.equal(request.targets[0].auth_address, bounded);
@@ -2367,7 +2377,7 @@ describe("SignerClient", () => {
       };
       await assert.rejects(
         signPreparedCosignedGroup(options),
-        /group ID does not match decoded transactions/,
+        /verify signer plan: returned transaction 1 does not carry the canonical group ID/,
       );
 
       const changedPlanTxn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
@@ -4292,23 +4302,65 @@ describe("buildSignRequests", () => {
     }
   });
 
-  it("rejects lsig args no position uses", async () => {
+  it("rejects lsig args no position matches", async () => {
     const client = new SignerClient("http://localhost:11270");
     const mockTxn = createMockTxn();
     const stray = { [fakeAddress(79)]: { preimage: new Uint8Array([0x73]) } };
-    const unused = /no signed transaction has auth address/;
+    const unmatched = /no transaction in the request has auth address/;
 
-    await assert.rejects(client.signTransactions([mockTxn], undefined, stray), unused);
-    await assert.rejects(client.signTransactionsList([mockTxn], undefined, stray), unused);
-    // Args keyed to a foreign position's sender sign nothing either.
-    const foreign = createMockTxn(fakeAddress(80));
-    await assert.rejects(
-      client.planGroup([mockTxn, foreign], [mockTxn.sender.toString(), null], {
-        [fakeAddress(80)]: { preimage: new Uint8Array([0x73]) },
-      }),
-      unused,
-    );
+    await assert.rejects(client.signTransactions([mockTxn], undefined, stray), unmatched);
+    await assert.rejects(client.signTransactionsList([mockTxn], undefined, stray), unmatched);
+    await assert.rejects(client.planGroup([mockTxn], undefined, stray), unmatched);
     assert.equal(mockFetch.mock.calls.length, 0);
+  });
+
+  it("ignores lsig args entries with no args", () => {
+    const client = new SignerClient("http://localhost:11270");
+    const mockTxn = createMockTxn();
+    const sender = mockTxn.sender.toString();
+    const body = (client as any).buildSignRequestBody([mockTxn], [sender], {
+      [fakeAddress(79)]: undefined,
+      [fakeAddress(80)]: {},
+    });
+    assert.equal(body.requests[0].lsig_args, undefined);
+  });
+
+  // One args map serves every call over a group: the plan with a foreign
+  // position, and the final signing once that position came back signed.
+  it("accepts a reused lsig args map", async () => {
+    const client = new SignerClient("http://localhost:11270");
+    const grouped = algosdk.assignGroupID([fakePayment(41, 42), fakePayment(43, 44)]);
+    const first = grouped[0].sender.toString();
+    const second = grouped[1].sender.toString();
+    const args = {
+      [first]: { preimage: new Uint8Array([1]) },
+      [second]: { preimage: new Uint8Array([2]) },
+    };
+
+    const planBody = (client as any).buildSignRequestBody(grouped, [first, null], args);
+    assert.deepEqual(planBody.requests[0].lsig_args, { preimage: "01" });
+    assert.equal(planBody.requests[1].lsig_args, undefined);
+
+    const signedSecond = Buffer.from(signedHex(grouped[1]), "hex").toString("base64");
+    const cases: Array<[string, any[], Array<string | null>]> = [
+      ["auth address given", grouped, [first, second]],
+      ["sender of the slot", grouped, [first, null]],
+      ["only the signed bytes", [grouped[0], null], [first, null]],
+    ];
+    for (const [name, txns, auths] of cases) {
+      const body = (client as any).buildSignRequestBody(
+        txns, auths, args, { 1: signedSecond }, undefined, false,
+      );
+      assert.deepEqual(body.requests[0].lsig_args, { preimage: "01" }, name);
+      assert.deepEqual(Object.keys(body.requests[1]), ["signed_txn_hex"], name);
+    }
+
+    queueStatusResponse();
+    mockFetch.mockImplementationOnce(signerFetch());
+    const signed = await client.signTransactionsList(
+      grouped, [first, second], args, { 1: signedSecond },
+    );
+    assert.equal(signed[1], signedSecond);
   });
 });
 

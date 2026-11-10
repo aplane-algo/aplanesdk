@@ -94,7 +94,7 @@ import {
 import { preparedGroupToSignRequests, preparedTransactionToSignRequest } from "./prepared.js";
 import {
   DUMMY_PROGRAM as COSIGNED_DUMMY_PROGRAM,
-  MAX_GROUP_SIZE as COSIGNED_MAX_GROUP_SIZE,
+  MAX_GROUP_SIZE,
   byteArraysEqual,
   cloneTransaction,
   decodeCanonicalSignedTransaction,
@@ -104,7 +104,6 @@ import {
   signCanonicalDummy,
   signedTransactionMatchesCanonical,
   validateCanonicalDummies,
-  validateGroupMutations,
   validatePlanResponse,
   validateSignResponse,
 } from "./verify.js";
@@ -136,7 +135,6 @@ const DEFAULT_SIGN_REQUEST_TIMEOUT = 360000;
 const MAX_DISCOVERED_APPROVAL_WAIT = 1800000;
 const APPROVAL_WAIT_REFRESH = 300000;
 const MAX_SIGN_REQUEST_ID_LENGTH = 128;
-const MAX_COMPONENT_GROUP_SIZE = 16;
 const APP_CALL_MAX_APP_ARGS = 16;
 const APP_CALL_METHOD_ARGS_TUPLE_THRESHOLD = APP_CALL_MAX_APP_ARGS - 2;
 
@@ -267,9 +265,9 @@ function decodeCanonicalGroup(groupBytesHex: string[]): Transaction[] {
   if (groupBytesHex.length === 0) {
     throw new SignerError("canonical group is empty");
   }
-  if (groupBytesHex.length > COSIGNED_MAX_GROUP_SIZE) {
+  if (groupBytesHex.length > MAX_GROUP_SIZE) {
     throw new SignerError(
-      `canonical group size ${groupBytesHex.length} exceeds max ${COSIGNED_MAX_GROUP_SIZE}`,
+      `canonical group size ${groupBytesHex.length} exceeds max ${MAX_GROUP_SIZE}`,
     );
   }
   const txns = groupBytesHex.map((encoded, index) => {
@@ -517,9 +515,9 @@ export async function signPreparedCosignedGroup(
     );
   }
   const planned = decodeCanonicalGroup(frozenGroup);
-  // planRequests checks the plan against the requests too; this keeps the
-  // check next to the code that relies on it.
-  validateGroupMutations(decodeRequestSlots(requests), planned, planResponse.mutations);
+  // planRequests has already checked the plan against the requests: only
+  // reported fee raises and group assignment on original positions, and
+  // canonical resource dummies after them.
   validateBoundedTargetFees(planned, targetMaxFees);
   const targetIndices = new Set(targets.map((target) => target.targetIndex));
   const componentResponse = await options.userClient.requestComponents(
@@ -762,9 +760,9 @@ function validateComponentGroupBytes(items: string[]): void {
   if (!items || items.length === 0) {
     throw new SignerError("group_bytes_hex is empty");
   }
-  if (items.length > MAX_COMPONENT_GROUP_SIZE) {
+  if (items.length > MAX_GROUP_SIZE) {
     throw new SignerError(
-      `group_bytes_hex length ${items.length} exceeds max ${MAX_COMPONENT_GROUP_SIZE}`
+      `group_bytes_hex length ${items.length} exceeds max ${MAX_GROUP_SIZE}`
     );
   }
   items.forEach((item, index) => {
@@ -3893,14 +3891,30 @@ export class SignerClient {
     }
 
     const signRequests: SignRequest[] = [];
-    const usedLsigArgs = new Set<string>();
+    const matchedLsigArgs = new Set<string>();
     for (let i = 0; i < txns.length; i++) {
       const txn = txns[i];
       const authAddr = authAddresses[i];
 
+      // A position matches its auth address, or its sender when none is
+      // given, whatever its mode.
+      if (authAddr) {
+        matchedLsigArgs.add(authAddr);
+      } else if (txn) {
+        matchedLsigArgs.add(txn.sender.toString());
+      }
+
       // Passthrough: include pre-signed transaction as-is
       const passthroughEntry = passthroughByIndex.get(i);
       if (passthroughEntry !== undefined) {
+        // The signed bytes name the position's sender and signer too.
+        try {
+          const signed = algosdk.decodeSignedTransaction(Buffer.from(passthroughEntry, "base64"));
+          matchedLsigArgs.add(signed.txn.sender.toString());
+          if (signed.sgnr) matchedLsigArgs.add(signed.sgnr.toString());
+        } catch {
+          // Malformed passthrough bytes are reported when the request is decoded.
+        }
         const signedHex = Buffer.from(passthroughEntry, "base64").toString("hex");
         const request: SignRequest = { signed_txn_hex: signedHex };
         const resources = lsigResourcesByIndex.get(i);
@@ -3951,23 +3965,25 @@ export class SignerClient {
 
       // Add LogicSig args if provided
       if (lsigArgsMap && lsigArgsMap[authAddr]) {
-        usedLsigArgs.add(authAddr);
         req.lsig_args = encodeLsigArgs(lsigArgsMap[authAddr]);
       }
 
       signRequests.push(req);
     }
 
-    // Args keyed under an address that signs no position would be dropped,
-    // and an optional arg left out can select a different authorization
-    // branch, so refuse instead of signing without them.
-    const unused = Object.keys(lsigArgsMap ?? {})
-      .filter((address) => lsigArgsMap?.[address] && !usedLsigArgs.has(address))
-      .sort()
-      .map((address) => JSON.stringify(address));
-    if (unused.length > 0) {
+    // Args keyed under an address that is no position's auth address are a
+    // mistake, and dropping them would sign without them; an optional arg
+    // left out can select a different authorization branch. A key that
+    // matches a passthrough or foreign position is fine: the same map can
+    // serve several calls over one group. An entry with no args is ignored.
+    const unmatched = Object.entries(lsigArgsMap ?? {})
+      .filter(([address, args]) =>
+        args && Object.keys(args).length > 0 && !matchedLsigArgs.has(address))
+      .map(([address]) => JSON.stringify(address))
+      .sort();
+    if (unmatched.length > 0) {
       throw new SignerError(
-        `lsig args are keyed by auth address, and no signed transaction has auth address ${unused.join(", ")}`,
+        `lsig args are keyed by auth address, and no transaction in the request has auth address ${unmatched.join(", ")}`,
       );
     }
 

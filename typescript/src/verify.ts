@@ -14,8 +14,9 @@ import algosdk, { type Transaction } from "algosdk";
 import type { MutationReport, SignRequest } from "./types.js";
 import { signRequestMode, type SignRequestMode } from "./types.js";
 import { SignerError } from "./errors.js";
-import { bytesToHex, hexToBytes } from "./encoding.js";
+import { encodeTransaction, hexToBytes } from "./encoding.js";
 
+/** Algorand's maximum transaction group size. */
 export const MAX_GROUP_SIZE = 16;
 export const DUMMY_PROGRAM = new Uint8Array([0x03, 0x31, 0x20, 0x32, 0x03, 0x12]);
 
@@ -57,11 +58,13 @@ export function groupIDBytes(txn: Transaction): Uint8Array | undefined {
   return group;
 }
 
+/** hexToBytes, with the position named in the error. */
 function decodeHex(value: string, label: string): Uint8Array {
-  if (typeof value !== "string" || value.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(value)) {
+  try {
+    return hexToBytes(value);
+  } catch {
     throw new SignerError(`${label} is invalid hex`);
   }
-  return hexToBytes(value);
 }
 
 /**
@@ -500,8 +503,7 @@ export function signedTransactionMatchesCanonical(
   } catch (error) {
     throw new SignerError(`${label} ${index}: ${errorText(error)}`);
   }
-  const encoded = `5458${bytesToHex(signed.txn.toByte())}`;
-  if (encoded !== canonicalHex.toLowerCase()) {
+  if (encodeTransaction(signed.txn)[0] !== canonicalHex.toLowerCase()) {
     throw new SignerError(
       `${label} ${index} does not match the submitted canonical bytes`,
     );
