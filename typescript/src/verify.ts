@@ -22,6 +22,22 @@ export const DUMMY_PROGRAM = new Uint8Array([0x03, 0x31, 0x20, 0x32, 0x03, 0x12]
 
 const UINT64_MAX = (1n << 64n) - 1n;
 
+/**
+ * Validate a max fee increase setting: unset, or a non-negative whole number
+ * of microAlgos.
+ */
+export function checkMaxFeeIncrease(value: number | bigint | undefined | null): bigint | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value === "bigint" ? value >= 0n : Number.isSafeInteger(value) && value >= 0) {
+    return BigInt(value);
+  }
+  throw new SignerError(
+    "maxFeeIncrease must be a non-negative whole number of microAlgos, or undefined",
+  );
+}
+
 /** One decoded /sign or /plan request entry. */
 export interface RequestSlot {
   mode: SignRequestMode;
@@ -231,11 +247,17 @@ export function signCanonicalDummy(txn: Transaction): Uint8Array {
  * undefined entry is a foreign position /sign returned empty: nothing was
  * observed, and the position is taken as the request's transaction in the
  * final group.
+ *
+ * `maxFeeIncrease`, when set, is the caller's ceiling on the total fee the
+ * signer may add across the request's positions. The report's own total
+ * cannot serve: it is written by the party being checked. Appended dummies
+ * pay no fee, so the total over original positions is the whole increase.
  */
 export function validateGroupMutations(
   slots: RequestSlot[],
   returned: (Transaction | undefined)[],
   mutations?: MutationReport,
+  maxFeeIncrease?: bigint,
 ): void {
   if (returned.length < slots.length) {
     throw new SignerError(
@@ -376,6 +398,11 @@ export function validateGroupMutations(
       `mutation total_fees_delta ${reportedDelta} does not match observed delta ${totalFeeDelta}`,
     );
   }
+  if (maxFeeIncrease !== undefined && totalFeeDelta > maxFeeIncrease) {
+    throw new SignerError(
+      `signer raised fees by ${totalFeeDelta} microAlgos, more than the max fee increase ${maxFeeIncrease} set on this client`,
+    );
+  }
   for (let index = slots.length; index < returned.length; index++) {
     const extra = returned[index];
     if (extra === undefined) {
@@ -402,6 +429,7 @@ export function validateSignResponse(
   slots: RequestSlot[],
   signed: unknown,
   mutations?: MutationReport,
+  maxFeeIncrease?: bigint,
 ): void {
   if (!Array.isArray(signed) || signed.some((item) => typeof item !== "string")) {
     throw new SignerError("signer returned a malformed signed list");
@@ -445,7 +473,7 @@ export function validateSignResponse(
       throw new SignerError(`signed transaction ${position}: ${errorText(error)}`);
     }
   });
-  validateGroupMutations(slots, returned, mutations);
+  validateGroupMutations(slots, returned, mutations, maxFeeIncrease);
   for (let index = slots.length; index < signedHexes.length; index++) {
     const want = signCanonicalDummy(returned[index] as Transaction);
     if (!byteArraysEqual(want, signedBytes[index])) {
@@ -465,6 +493,7 @@ export function validatePlanResponse(
   slots: RequestSlot[],
   transactions: unknown,
   mutations?: MutationReport,
+  maxFeeIncrease?: bigint,
 ): void {
   const planned = transactions ?? [];
   if (!Array.isArray(planned) || planned.some((item) => typeof item !== "string")) {
@@ -483,7 +512,7 @@ export function validatePlanResponse(
       throw new SignerError(`planned transaction ${index + 1}: ${errorText(error)}`);
     }
   });
-  validateGroupMutations(slots, returned, mutations);
+  validateGroupMutations(slots, returned, mutations, maxFeeIncrease);
 }
 
 /**

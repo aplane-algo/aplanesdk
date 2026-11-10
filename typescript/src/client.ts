@@ -12,6 +12,7 @@ import type {
   AccountInfoLookup,
   AccountInfoResult,
   ConnectSshOptions,
+  SignerClientOptions,
   FromEnvOptions,
   PaymentPrepParams,
   AsaTransferPrepParams,
@@ -96,6 +97,7 @@ import {
   DUMMY_PROGRAM as COSIGNED_DUMMY_PROGRAM,
   MAX_GROUP_SIZE,
   byteArraysEqual,
+  checkMaxFeeIncrease,
   cloneTransaction,
   decodeCanonicalSignedTransaction,
   decodeCanonicalTransaction,
@@ -2068,6 +2070,7 @@ export class SignerClient {
   private approvalWaitSeconds?: number;
   private approvalWaitFetchedAt?: number;
   private approvalWaitKnown = false;
+  private feeCeiling?: bigint;
 
   /**
    * Create a SignerClient instance.
@@ -2081,11 +2084,29 @@ export class SignerClient {
   constructor(
     baseUrl: string,
     timeout?: number,
-    tunnel: SSHTunnel | null = null
+    tunnel: SSHTunnel | null = null,
+    options: SignerClientOptions = {},
   ) {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
     this.explicitTimeout = timeout && timeout > 0 ? timeout : undefined;
     this.tunnel = tunnel;
+    this.feeCeiling = checkMaxFeeIncrease(options.maxFeeIncrease);
+  }
+
+  /**
+   * The ceiling, in microAlgos, on the total fee the signer may add to a
+   * request, or undefined when none is set. See SignerClientOptions.
+   */
+  get maxFeeIncrease(): bigint | undefined {
+    return this.feeCeiling;
+  }
+
+  /**
+   * Set or, with undefined, remove the ceiling on the signer's total fee
+   * increase. Zero means the signer may not raise any fee.
+   */
+  setMaxFeeIncrease(microAlgos: number | bigint | undefined): void {
+    this.feeCeiling = checkMaxFeeIncrease(microAlgos);
   }
 
   /**
@@ -2121,6 +2142,7 @@ export class SignerClient {
     sshKeyPath: string,
     options: ConnectSshOptions = {}
   ): Promise<SignerClient> {
+    const maxFeeIncrease = checkMaxFeeIncrease(options.maxFeeIncrease);
     const sshPort = options.sshPort ?? DEFAULT_SSH_PORT;
     const localPort = options.localPort ?? 0;
     const timeout = options.timeout;
@@ -2168,7 +2190,7 @@ export class SignerClient {
 
     // Connect through tunnel
     const baseUrl = `http://127.0.0.1:${tunnel.localPort}`;
-    const client = new SignerClient(baseUrl, timeout, tunnel);
+    const client = new SignerClient(baseUrl, timeout, tunnel, { maxFeeIncrease });
 
     // Verify connection
     const healthy = await client.health();
@@ -2225,6 +2247,7 @@ export class SignerClient {
       signal: options.signal,
       knownHostsPath: endpoint.knownHostsPath,
       trustOnFirstUse: options.trustOnFirstUse ?? false,
+      maxFeeIncrease: options.maxFeeIncrease,
     });
   }
 
@@ -3590,7 +3613,7 @@ export class SignerClient {
     }
 
     try {
-      validatePlanResponse(slots, data.transactions, data.mutations);
+      validatePlanResponse(slots, data.transactions, data.mutations, this.feeCeiling);
     } catch (error) {
       throw new SignerError(
         `verify signer plan: ${error instanceof Error ? error.message : String(error)}`,
@@ -3820,7 +3843,7 @@ export class SignerClient {
     // Every sign path goes through here, so a truncated, altered or padded
     // group can never be returned for submission or simulation.
     try {
-      validateSignResponse(slots, data.signed ?? [], data.mutations);
+      validateSignResponse(slots, data.signed ?? [], data.mutations, this.feeCeiling);
     } catch (error) {
       throw new SignerError(
         `verify signer response: ${error instanceof Error ? error.message : String(error)}`,

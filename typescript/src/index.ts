@@ -116,6 +116,7 @@ export type {
   ClientEndpointRegistry,
   FromEnvOptions,
   ConnectSshOptions,
+  SignerClientOptions,
   LsigArgs,
   LsigArgsMap,
   SignOptions,

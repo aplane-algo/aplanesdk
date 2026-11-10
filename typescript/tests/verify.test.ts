@@ -479,3 +479,118 @@ describe("signed transaction identity checks", () => {
     assert.deepEqual(decodeRequestSlots(signEntries(txn))[0].txn.toByte(), txn.toByte());
   });
 });
+
+describe("maxFeeIncrease", () => {
+  const originalFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  function stubSigner(options: FakeSignerOptions): void {
+    globalThis.fetch = (async (url: string, init: any) => {
+      if (String(url).endsWith("/status")) {
+        return {
+          status: 200,
+          ok: true,
+          json: async () => ({ state: "unlocked", approval_wait_seconds: 60 }),
+        };
+      }
+      return signerFetch(options)(url, init);
+    }) as any;
+  }
+
+  const txnsFor = (count: number) =>
+    [fakePayment(41, 42, 1_000_000), fakePayment(43, 44, 5)].slice(0, count);
+
+  type Case = [
+    name: string,
+    limit: number | bigint | undefined,
+    feeRaise: Record<number, number>,
+    count: number,
+    refused?: [raised: number, ceiling: number],
+  ];
+  const cases: Case[] = [
+    // Unset is unbounded: a reported raise of any size is accepted.
+    ["unset, large raise", undefined, { 0: 5_000_000 }, 1],
+    ["above the raise", 200_000, { 0: 3000 }, 1],
+    ["equal to the raise", 3000, { 0: 3000 }, 1],
+    ["equal to the raise, as a bigint", 3000n, { 0: 3000 }, 1],
+    ["one below the raise", 2999, { 0: 3000 }, 1, [3000, 2999]],
+    ["zero with a raise", 0, { 0: 1 }, 1, [1, 0]],
+    ["zero with no raise", 0, {}, 2],
+    ["a raise spread over two positions is summed", 4999n, { 0: 2000, 1: 3000 }, 2, [5000, 4999]],
+    ["two positions at the sum", 5000, { 0: 2000, 1: 3000 }, 2],
+  ];
+  for (const [name, limit, feeRaise, count, refused] of cases) {
+    it(name, async () => {
+      stubSigner({ feeRaise });
+      const client = new SignerClient("http://localhost:11270", undefined, null, {
+        maxFeeIncrease: limit,
+      });
+      const txns = txnsFor(count);
+      let simulated = 0;
+      const algod = {
+        simulateTransactions: () => {
+          simulated++;
+          return { do: async () => ({ txnGroups: [{}] }) };
+        },
+      } as any;
+      const prepared = {
+        transactions: txns.map((txn) => ({ transaction: txn, authAddress: txn.sender.toString() })),
+      };
+      const calls: Array<[string, () => Promise<unknown>]> = [
+        ["response", () => client.signTransactions(txns)],
+        ["response", () => client.signTransactionsList(txns)],
+        ["response", () => client.signRequests(signEntries(...txns))],
+        ["plan", () => client.planGroup(txns)],
+        ["response", () => client.simulatePreparedGroup(algod, prepared)],
+      ];
+      for (const [kind, call] of calls) {
+        if (!refused) {
+          await call();
+          continue;
+        }
+        await assert.rejects(call(), {
+          name: "SignerError",
+          message:
+            `verify signer ${kind}: signer raised fees by ${refused[0]} microAlgos, ` +
+            `more than the max fee increase ${refused[1]} set on this client`,
+        });
+      }
+      assert.equal(simulated, refused ? 0 : 1);
+    });
+  }
+
+  it("ignores zero-fee dummies", async () => {
+    stubSigner({ feeRaise: { 0: 2000 }, dummies: 2 });
+    const client = new SignerClient("http://localhost:11270", undefined, null, {
+      maxFeeIncrease: 2000,
+    });
+    assert.equal((await client.signTransactionsList([fakePayment()])).length, 3);
+  });
+
+  it("has no default, and can be set, changed and removed", async () => {
+    const client = new SignerClient("http://localhost:11270");
+    assert.equal(client.maxFeeIncrease, undefined);
+    client.setMaxFeeIncrease(0);
+    assert.equal(client.maxFeeIncrease, 0n);
+    client.setMaxFeeIncrease(250_000n);
+    assert.equal(client.maxFeeIncrease, 250_000n);
+    client.setMaxFeeIncrease(undefined);
+    assert.equal(client.maxFeeIncrease, undefined);
+
+    const invalid = /maxFeeIncrease must be a non-negative whole number/;
+    for (const bad of [-1, 1.5, Number.NaN, -1n, "1000" as any]) {
+      assert.throws(() => client.setMaxFeeIncrease(bad), invalid);
+      assert.throws(
+        () => new SignerClient("http://localhost:11270", undefined, null, { maxFeeIncrease: bad }),
+        invalid,
+      );
+      // Refused before any connection is attempted.
+      await assert.rejects(
+        SignerClient.connectSsh("signer.invalid", "/nonexistent/key", { maxFeeIncrease: bad }),
+        invalid,
+      );
+    }
+  });
+});
