@@ -9,6 +9,7 @@ import * as path from "path";
 import { fileURLToPath } from "url";
 import { SignerClient } from "../src/client.js";
 import { ErrorCodes } from "../src/types.js";
+import { fakePayment, signerFetch } from "./fakeSigner.js";
 import type {
   CancelSignResponse,
   ComponentRequest,
@@ -27,6 +28,8 @@ interface MockFetch {
   (...args: any[]): Promise<any>;
   mock: { calls: any[][] };
   mockResolvedValueOnce(val: any): MockFetch;
+  /** Queue a response computed from the call's arguments. */
+  mockImplementationOnce(fn: (...args: any[]) => any): MockFetch;
   mockReset(): void;
 }
 
@@ -38,12 +41,16 @@ function createMockFetch(): MockFetch {
     calls.push(args);
     const entry = queue.shift();
     if (!entry) return Promise.reject(new Error("mock: no queued response"));
-    return Promise.resolve(entry);
+    return Promise.resolve(entry.compute ? entry.compute(...args) : entry.value);
   }) as MockFetch;
 
   fn.mock = { calls };
   fn.mockResolvedValueOnce = (val) => {
-    queue.push(val);
+    queue.push({ value: val });
+    return fn;
+  };
+  fn.mockImplementationOnce = (impl) => {
+    queue.push({ compute: impl });
     return fn;
   };
   fn.mockReset = () => {
@@ -402,30 +409,39 @@ describe("signer API contract fixtures", () => {
   });
 
   it("maps /plan mutation wire fields to public MutationReport fields", async () => {
-    mockFetch.mockResolvedValueOnce({
-      status: 200,
-      ok: true,
-      json: async () => fixture("group_plan_response_mutated.json"),
+    // The fixture's transactions are placeholders, and the client checks a
+    // plan against its request, so the response here is one a signer could
+    // return for this request. Its report must use the fixture's wire fields.
+    const wire = fixture("group_plan_response_mutated.json").mutations;
+    let sent: any;
+    mockFetch.mockImplementationOnce((url: unknown, init?: { body?: string }) => {
+      const response = signerFetch({ feeRaise: { 0: 1000 }, dummies: 1 })(url, init);
+      return {
+        ...response,
+        json: async () => {
+          sent = await response.json();
+          return sent;
+        },
+      };
     });
 
     const client = new SignerClient("http://localhost:11270");
-    const fakeTxn = {
-      sender: { toString: () => "SENDERADDR0000000000000000000000000000000000000000000" },
-      toByte: () => new Uint8Array([1, 2, 3]),
-    };
+    const signedTxn = fakePayment(41, 42);
+    const foreignTxn = fakePayment(43, 44);
 
-    const plan = await client.planGroup([fakeTxn as any], [
-      "AUTHADDR00000000000000000000000000000000000000000000000",
-    ]);
+    const plan = await client.planGroup([signedTxn, foreignTxn], [signedTxn.sender.toString(), null]);
 
-    assert.deepEqual(plan.transactions, ["545801", "545802", "545803"]);
-    assert.equal(plan.mutations?.dummiesAdded, 1);
-    assert.equal(plan.mutations?.groupIdChanged, true);
-    assert.deepEqual(plan.mutations?.feesModified, [0, 2]);
-    assert.equal(plan.mutations?.totalFeesDelta, 1000);
-    assert.equal(plan.mutations?.originalCount, 2);
-    assert.equal(plan.mutations?.finalCount, 3);
-    assert.equal(plan.mutations?.foreignCount, 1);
+    for (const field of Object.keys(sent.mutations)) {
+      assert.ok(field in wire, `fixture has no mutation field ${field}`);
+    }
+    assert.equal(plan.transactions.length, 3);
+    assert.equal(plan.mutations?.dummiesAdded, wire.dummies_added);
+    assert.equal(plan.mutations?.groupIdChanged, wire.group_id_changed);
+    assert.deepEqual(plan.mutations?.feesModified, [0]);
+    assert.equal(plan.mutations?.totalFeesDelta, wire.total_fees_delta);
+    assert.equal(plan.mutations?.originalCount, wire.original_count);
+    assert.equal(plan.mutations?.finalCount, wire.final_count);
+    assert.equal(plan.mutations?.foreignCount, wire.foreign_count);
   });
 
   it("maps /admin/generate response fields", async () => {

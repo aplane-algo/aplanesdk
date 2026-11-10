@@ -783,9 +783,10 @@ export interface GroupSignRequest {
   requests: SignRequest[];
 }
 
-type SignRequestMode = "sign" | "passthrough" | "foreign";
+export type SignRequestMode = "sign" | "passthrough" | "foreign";
 
-function signRequestMode(request: SignRequest): SignRequestMode {
+/** The mutually exclusive mode a /sign or /plan entry selects. */
+export function signRequestMode(request: SignRequest): SignRequestMode {
   const hasPassthrough = Boolean(request.signed_txn_hex);
   const hasTxnBytes = Boolean(request.txn_bytes_hex);
   const hasAuthAddress = Boolean(request.auth_address);
@@ -1080,13 +1081,19 @@ export interface SweepPrepParams {
 export type AccountInfoResult =
   | string
   | {
-      "auth-addr"?: string | null;
-      auth_addr?: string | null;
-      authAddr?: string | null;
-      authAddress?: string | null;
+      "auth-addr"?: AuthAddressValue | null;
+      auth_addr?: AuthAddressValue | null;
+      authAddr?: AuthAddressValue | null;
+      authAddress?: AuthAddressValue | null;
     }
   | null
   | undefined;
+
+/**
+ * An auth address as account information carries it: a string in raw algod
+ * JSON, an algosdk `Address` object in algosdk v3 account models.
+ */
+export type AuthAddressValue = string | { toString(): string };
 
 /**
  * Function that returns algod account information or directly returns auth addr.
