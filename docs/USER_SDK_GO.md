@@ -697,6 +697,8 @@ the raises add up to more than the ceiling, every sign, plan and simulate call
 through that client fails with an error and returns nothing, so nothing can be
 submitted or simulated. Resource dummies pay no fee and do not count.
 The per-account `max_fee` check in the cosigned flow still applies as well.
+The refusal is a `*aplane.MaxFeeIncreaseError` carrying `Raised` and `Limit`;
+match it with `errors.As`, or with `errors.Is(err, aplane.ErrMaxFeeIncreaseExceeded)`.
 
 ```go
 client.SetMaxFeeIncrease(200_000) // microAlgos, summed over the request

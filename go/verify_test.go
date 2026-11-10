@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"sync"
@@ -1217,4 +1218,44 @@ func TestValidateSignResponseChecksTheAuthorization(t *testing.T) {
 			t.Fatalf("decodeRequestSlots() error = %v", err)
 		}
 	})
+}
+
+func TestMaxFeeIncreaseRefusalIsTyped(t *testing.T) {
+	first := verifyTestPayment(t, 41, 42, 1_000_000)
+	second := verifyTestPayment(t, 43, 44, 5)
+	txns := []types.Transaction{first, second}
+	client, server := newTestClient(fakeSignHandler(t, fakeSigner{feeRaise: map[int]uint64{0: 2000, 1: 3000}}))
+	defer server.Close()
+	client.SetMaxFeeIncrease(4999)
+
+	_, signErr := client.SignTransactions(txns, nil, nil)
+	_, groupErr := client.SignRequestsWithContext(context.Background(), signRequestsFor(txns...))
+	_, planErr := client.PlanGroup(txns, []string{first.Sender.String(), second.Sender.String()}, nil, nil)
+	for call, err := range map[string]error{"SignTransactions": signErr, "SignRequestsWithContext": groupErr, "PlanGroup": planErr} {
+		if !errors.Is(err, ErrMaxFeeIncreaseExceeded) {
+			t.Fatalf("%s error = %v, want ErrMaxFeeIncreaseExceeded", call, err)
+		}
+		var refusal *MaxFeeIncreaseError
+		if !errors.As(err, &refusal) || refusal.Raised != 5000 || refusal.Limit != 4999 {
+			t.Fatalf("%s error = %v (%+v), want a *MaxFeeIncreaseError of 5000 over 4999", call, err, refusal)
+		}
+		const text = "signer raised fees by 5000 microAlgos, more than the max fee increase 4999 set on this client"
+		if !strings.HasSuffix(err.Error(), text) || !strings.HasPrefix(err.Error(), "verify signer ") {
+			t.Fatalf("%s error text = %q", call, err.Error())
+		}
+	}
+
+	// Any other verification failure is not a ceiling refusal.
+	client.ClearMaxFeeIncrease()
+	other, otherServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sign" {
+			json.NewEncoder(w).Encode(StatusResponse{State: "unlocked", ApprovalWaitSeconds: 60})
+			return
+		}
+		json.NewEncoder(w).Encode(GroupSignResponse{Signed: []string{"", ""}})
+	})
+	defer otherServer.Close()
+	if _, err := other.SignTransactions(txns, nil, nil); err == nil || errors.Is(err, ErrMaxFeeIncreaseExceeded) {
+		t.Fatalf("an unrelated verification failure = %v, want an error that is not a ceiling refusal", err)
+	}
 }

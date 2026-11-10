@@ -20,6 +20,33 @@ export class SignerError extends Error {
 }
 
 /**
+ * The signer raised fees by more than the client's `maxFeeIncrease`. `raised`
+ * is the total the signer added across the request's positions and `limit`
+ * the ceiling the call was held to, both in microAlgos.
+ */
+export class MaxFeeIncreaseError extends SignerError {
+  readonly raised: bigint;
+  readonly limit: bigint;
+
+  constructor(raised: bigint, limit: bigint, prefix: string = "") {
+    super(
+      `${prefix}signer raised fees by ${raised} microAlgos, more than the max fee increase ${limit} set on this client`,
+    );
+    this.name = "MaxFeeIncreaseError";
+    this.raised = raised;
+    this.limit = limit;
+  }
+}
+
+/** Word a failed check of a signer result, keeping a ceiling refusal's type. */
+export function verificationError(prefix: string, error: unknown): SignerError {
+  if (error instanceof MaxFeeIncreaseError) {
+    return new MaxFeeIncreaseError(error.raised, error.limit, prefix);
+  }
+  return new SignerError(`${prefix}${errorText(error)}`);
+}
+
+/**
  * The signer refused the request as unauthenticated (HTTP 401): the
  * connection did not arrive through an enrolled SSH key.
  */

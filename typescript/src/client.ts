@@ -79,6 +79,7 @@ import {
 import {
   SignerError,
   errorText,
+  verificationError,
   AuthenticationError,
   SigningRejectedError,
   SignerUnavailableError,
@@ -2111,11 +2112,6 @@ export class SignerClient {
     this.feeCeiling = checkMaxFeeIncrease(microAlgos);
   }
 
-  /** Set or, with undefined, remove the ceiling on the signer's total fee increase. */
-  setMaxFeeIncrease(microAlgos: number | bigint | undefined): void {
-    this.maxFeeIncrease = microAlgos;
-  }
-
   /**
    * The ceiling a call starting now is held to. A call reads it before
    * sending its request, so a change made while the signer waits for approval
@@ -2206,7 +2202,9 @@ export class SignerClient {
 
     // Connect through tunnel
     const baseUrl = `http://127.0.0.1:${tunnel.localPort}`;
-    const client = new SignerClient(baseUrl, timeout, tunnel, { maxFeeIncrease });
+    const client = new SignerClient(baseUrl, timeout, tunnel);
+    // Already checked above, before any connection was attempted.
+    client.feeCeiling = maxFeeIncrease;
 
     // Verify connection
     const healthy = await client.health();
@@ -3643,9 +3641,7 @@ export class SignerClient {
     try {
       validatePlanResponse(slots, data.transactions, data.mutations, maxFeeIncrease);
     } catch (error) {
-      throw new SignerError(
-        `verify signer plan: ${errorText(error)}`,
-      );
+      throw verificationError("verify signer plan: ", error);
     }
 
     return data;
@@ -3886,9 +3882,7 @@ export class SignerClient {
     try {
       validateSignResponse(slots, data.signed ?? [], data.mutations, maxFeeIncrease);
     } catch (error) {
-      throw new SignerError(
-        `verify signer response: ${errorText(error)}`,
-      );
+      throw verificationError("verify signer response: ", error);
     }
 
     return data;

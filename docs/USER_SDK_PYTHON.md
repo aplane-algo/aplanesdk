@@ -551,6 +551,8 @@ the raises add up to more than the ceiling, every sign, plan and simulate call
 through that client fails with `SignerError` and returns nothing, so nothing can be
 submitted or simulated. Resource dummies pay no fee and do not count.
 The per-account `max_fee` check in the cosigned flow still applies as well.
+The refusal is a `MaxFeeIncreaseError`, a `SignerError` subclass carrying
+`raised` and `limit`.
 
 ```python
 client = SignerClient.from_env(max_fee_increase=200_000)  # microAlgos, summed over the request

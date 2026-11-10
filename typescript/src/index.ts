@@ -78,6 +78,7 @@ export {
 // Errors
 export {
   SignerError,
+  MaxFeeIncreaseError,
   AuthenticationError,
   SigningRejectedError,
   SignerUnavailableError,

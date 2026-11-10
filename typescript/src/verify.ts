@@ -14,7 +14,7 @@ import { createPublicKey, verify as verifySignature } from "crypto";
 import algosdk, { type Transaction } from "algosdk";
 import type { MutationReport, SignRequest } from "./types.js";
 import { signRequestMode, type SignRequestMode } from "./types.js";
-import { SignerError, errorText } from "./errors.js";
+import { MaxFeeIncreaseError, SignerError, errorText } from "./errors.js";
 import { encodeTransaction, hexToBytes } from "./encoding.js";
 
 /** Algorand's maximum transaction group size. */
@@ -549,9 +549,7 @@ export function validateGroupMutations(
     );
   }
   if (maxFeeIncrease !== undefined && totalFeeDelta > maxFeeIncrease) {
-    throw new SignerError(
-      `signer raised fees by ${totalFeeDelta} microAlgos, more than the max fee increase ${maxFeeIncrease} set on this client`,
-    );
+    throw new MaxFeeIncreaseError(totalFeeDelta, maxFeeIncrease);
   }
   for (let index = slots.length; index < returned.length; index++) {
     const extra = returned[index];

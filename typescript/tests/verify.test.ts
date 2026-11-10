@@ -7,6 +7,7 @@ import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import algosdk, { type Transaction } from "algosdk";
 import { SignerClient } from "../src/client.js";
+import { MaxFeeIncreaseError, SignerError } from "../src/index.js";
 import type { SignRequest } from "../src/types.js";
 import { bytesToHex, encodeTransaction, hexToBytes } from "../src/encoding.js";
 import {
@@ -557,7 +558,7 @@ describe("maxFeeIncrease", () => {
           continue;
         }
         await assert.rejects(call(), {
-          name: "SignerError",
+          name: "MaxFeeIncreaseError",
           message:
             `verify signer ${kind}: signer raised fees by ${refused[0]} microAlgos, ` +
             `more than the max fee increase ${refused[1]} set on this client`,
@@ -578,16 +579,15 @@ describe("maxFeeIncrease", () => {
   it("has no default, and can be set, changed and removed", async () => {
     const client = new SignerClient("http://localhost:11270");
     assert.equal(client.maxFeeIncrease, undefined);
-    client.setMaxFeeIncrease(0);
+    client.maxFeeIncrease = 0;
     assert.equal(client.maxFeeIncrease, 0);
-    client.setMaxFeeIncrease(250_000n);
+    client.maxFeeIncrease = 250_000n;
     assert.equal(client.maxFeeIncrease, 250_000n);
-    client.setMaxFeeIncrease(undefined);
+    client.maxFeeIncrease = undefined;
     assert.equal(client.maxFeeIncrease, undefined);
 
     const invalid = /maxFeeIncrease must be a non-negative whole number/;
     for (const bad of [-1, 1.5, Number.NaN, -1n, "1000" as any]) {
-      assert.throws(() => client.setMaxFeeIncrease(bad), invalid);
       assert.throws(() => { client.maxFeeIncrease = bad; }, invalid);
       assert.throws(
         () => new SignerClient("http://localhost:11270", undefined, null, { maxFeeIncrease: bad }),
@@ -637,6 +637,45 @@ describe("maxFeeIncrease", () => {
       maxFeeIncrease: 250_000n,
     });
     assert.strictEqual(fromBigint.maxFeeIncrease, 250_000n);
+  });
+
+  it("refuses with a typed error carrying the raise and the limit", async () => {
+    stubSigner({ feeRaise: { 0: 2000, 1: 3000 } });
+    const client = new SignerClient("http://localhost:11270", undefined, null, {
+      maxFeeIncrease: 4999,
+    });
+    const txns = txnsFor(2);
+    const calls: Array<[string, () => Promise<unknown>]> = [
+      ["verify signer response: ", () => client.signTransactions(txns)],
+      ["verify signer plan: ", () => client.planGroup(txns)],
+    ];
+    for (const [prefix, call] of calls) {
+      await assert.rejects(call(), (error: unknown) => {
+        assert.ok(error instanceof MaxFeeIncreaseError);
+        assert.ok(error instanceof SignerError);
+        assert.equal(error.name, "MaxFeeIncreaseError");
+        assert.equal(error.raised, 5000n);
+        assert.equal(error.limit, 4999n);
+        assert.equal(
+          error.message,
+          `${prefix}signer raised fees by 5000 microAlgos, more than the max fee increase 4999 set on this client`,
+        );
+        return true;
+      });
+    }
+
+    // Any other verification failure is a plain SignerError.
+    stubSigner({ tamper: (body) => { if (body.signed) body.signed[0] = ""; } });
+    await assert.rejects(client.signTransactions(txns), (error: unknown) => {
+      assert.ok(error instanceof SignerError);
+      assert.ok(!(error instanceof MaxFeeIncreaseError));
+      return true;
+    });
+  });
+
+  it("is no longer settable through a method", () => {
+    const client = new SignerClient("http://localhost:11270");
+    assert.equal((client as any).setMaxFeeIncrease, undefined);
   });
 
   it("treats null options as no options", () => {

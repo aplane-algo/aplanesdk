@@ -12,7 +12,13 @@ import msgpack
 import pytest
 from algosdk import encoding, transaction
 
-from aplanesdk import PreparedGroup, PreparedTransaction, SignerClient, SignerError
+from aplanesdk import (
+    MaxFeeIncreaseError,
+    PreparedGroup,
+    PreparedTransaction,
+    SignerClient,
+    SignerError,
+)
 from aplanesdk.signer import (
     _decode_request_slots,
     _simulate_signed_group,
@@ -927,3 +933,64 @@ def test_request_auth_address_must_be_an_address():
         with pytest.raises(ValueError, match="is not a valid address"):
             client.sign_transaction(txn, auth_address="AUTH")
     post.assert_not_called()
+
+
+def test_max_fee_increase_refusal_is_typed():
+    client = SignerClient("http://localhost:11270", max_fee_increase=4999)
+    txns = _fee_ceiling_txns(2)
+    text = "signer raised fees by 5000 microAlgos, more than the max fee increase 4999 set on this client"
+    with (
+        patch.object(client, "_discover_approval_wait"),
+        patch.object(
+            client.session,
+            "post",
+            side_effect=fake_signer.signer_post(fee_raise={0: 2000, 1: 3000}),
+        ),
+    ):
+        for prefix, call in (
+            ("verify signer response: ", lambda: client.sign_transactions(txns)),
+            ("verify signer plan: ", lambda: client.plan_group(txns)),
+        ):
+            with pytest.raises(MaxFeeIncreaseError) as refused:
+                call()
+            assert isinstance(refused.value, SignerError)
+            assert (refused.value.raised, refused.value.limit) == (5000, 4999)
+            assert str(refused.value) == prefix + text
+            assert isinstance(refused.value.__cause__, MaxFeeIncreaseError)
+
+    # Any other verification failure is a plain SignerError.
+    def blank(body):
+        body["signed"][0] = ""
+
+    with (
+        patch.object(client, "_discover_approval_wait"),
+        patch.object(client.session, "post", side_effect=fake_signer.signer_post(tamper=blank)),
+    ):
+        with pytest.raises(SignerError) as other:
+            client.sign_transactions(txns)
+    assert type(other.value) is SignerError
+
+
+def test_connect_ssh_checks_the_ceiling_once_and_passes_it_on():
+    tunnel = MagicMock()
+    tunnel.local_bind_port = 12345
+    with (
+        patch("aplanesdk.signer._SSHTunnel", return_value=tunnel),
+        patch.object(SignerClient, "health", return_value=True),
+        patch(
+            "aplanesdk.signer._check_max_fee_increase",
+            wraps=__import__("aplanesdk.signer", fromlist=["x"])._check_max_fee_increase,
+        ) as check,
+    ):
+        client = SignerClient.connect_ssh(
+            "signer.example.com",
+            "/key",
+            known_hosts_path="/kh",
+            max_fee_increase=_Integral(250_000),
+        )
+    assert client.max_fee_increase == 250_000
+    assert type(client.max_fee_increase) is int
+    # connect_ssh checks its argument; the constructor checks only its own default.
+    assert [call.args[0] for call in check.call_args_list if call.args[0] is not None] == [
+        check.call_args_list[0].args[0]
+    ]

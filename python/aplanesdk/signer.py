@@ -193,6 +193,30 @@ class SignerError(Exception):
         self.code = code
 
 
+class MaxFeeIncreaseError(SignerError):
+    """The signer raised fees by more than the client's max fee increase.
+
+    Attributes:
+        raised: total the signer added across the request's positions, in microAlgos
+        limit: the ceiling the call was held to, in microAlgos
+    """
+
+    def __init__(self, raised: int, limit: int, prefix: str = ""):
+        super().__init__(
+            f"{prefix}signer raised fees by {raised} microAlgos, more than the "
+            f"max fee increase {limit} set on this client"
+        )
+        self.raised = raised
+        self.limit = limit
+
+
+def _verification_error(prefix: str, error: Exception) -> SignerError:
+    """Word a failed check of a signer result, keeping a ceiling refusal's type."""
+    if isinstance(error, MaxFeeIncreaseError):
+        return MaxFeeIncreaseError(error.raised, error.limit, prefix)
+    return SignerError(f"{prefix}{error}")
+
+
 class AuthenticationError(SignerError):
     """The signer refused the request as unauthenticated (HTTP 401): the
     connection did not arrive through an enrolled SSH key."""
@@ -1694,10 +1718,7 @@ def _validate_group_mutations(
             f"observed delta {total_fee_delta}"
         )
     if max_fee_increase is not None and total_fee_delta > max_fee_increase:
-        raise SignerError(
-            f"signer raised fees by {total_fee_delta} microAlgos, more than the "
-            f"max fee increase {max_fee_increase} set on this client"
-        )
+        raise MaxFeeIncreaseError(total_fee_delta, max_fee_increase)
     for index in range(len(slots), len(returned)):
         extra = returned[index]
         if extra is None:
@@ -3274,7 +3295,8 @@ class SignerClient:
         """
         import os
 
-        _check_max_fee_increase(max_fee_increase)
+        # Checked once, here, before any connection is attempted.
+        fee_ceiling = _check_max_fee_increase(max_fee_increase)
         ssh_key_path = os.path.expanduser(ssh_key_path)
         known_hosts_path = os.path.expanduser(known_hosts_path)
 
@@ -3303,7 +3325,8 @@ class SignerClient:
 
         # Connect through tunnel
         base_url = f"http://127.0.0.1:{tunnel.local_bind_port}"
-        client = cls(base_url, timeout, tunnel=tunnel, max_fee_increase=max_fee_increase)
+        client = cls(base_url, timeout, tunnel=tunnel)
+        client._max_fee_increase = fee_ceiling
 
         # Verify connection
         if not client.health():
@@ -5119,7 +5142,7 @@ class SignerClient:
         try:
             _validate_sign_response(slots, signed, mutations, max_fee_increase)
         except Exception as e:
-            raise SignerError(f"verify signer response: {e}") from e
+            raise _verification_error("verify signer response: ", e) from e
 
         return GroupSignResponse(
             signed=signed,
@@ -5230,7 +5253,7 @@ class SignerClient:
                 slots, data.get("transactions"), data.get("mutations"), max_fee_increase
             )
         except Exception as e:
-            raise SignerError(f"verify signer plan: {e}") from e
+            raise _verification_error("verify signer plan: ", e) from e
 
         return data
 

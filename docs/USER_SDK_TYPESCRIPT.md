@@ -672,6 +672,8 @@ the raises add up to more than the ceiling, every sign, plan and simulate call
 through that client fails with `SignerError` and returns nothing, so nothing can be
 submitted or simulated. Resource dummies pay no fee and do not count.
 The per-account `max_fee` check in the cosigned flow still applies as well.
+The refusal is a `MaxFeeIncreaseError`, a `SignerError` subclass carrying
+`raised` and `limit` as bigints.
 
 ```ts
 // microAlgos, summed over the request
@@ -682,8 +684,8 @@ const signed = await client.signTransaction(txn);
 ```
 
 `connectSsh()` and the constructor's options take the same field as a `number`
-or `bigint`. Assigning `client.maxFeeIncrease`, or calling
-`client.setMaxFeeIncrease(value)`, changes it, and `undefined` removes it.
+or `bigint`. Assigning `client.maxFeeIncrease` changes it, and assigning `undefined`
+removes it.
 Reading `client.maxFeeIncrease` returns the value as it was set.
 
 There is no default. What the signer legitimately adds depends on the account

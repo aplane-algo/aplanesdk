@@ -335,7 +335,7 @@ func validateGroupMutations(slots []requestSlot, returned []*types.Transaction, 
 		return fmt.Errorf("mutation total_fees_delta %d does not match observed delta %d", report.TotalFeesDelta, totalFeeDelta)
 	}
 	if ceiling.set && totalFeeDelta > ceiling.limit {
-		return fmt.Errorf("signer raised fees by %d microAlgos, more than the max fee increase %d set on this client", totalFeeDelta, ceiling.limit)
+		return &MaxFeeIncreaseError{Raised: totalFeeDelta, Limit: ceiling.limit}
 	}
 	for i := len(slots); i < len(returned); i++ {
 		if returned[i] == nil {
