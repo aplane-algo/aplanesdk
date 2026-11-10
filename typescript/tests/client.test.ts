@@ -3663,6 +3663,64 @@ describe("SignerClient", () => {
       assert.equal(result.failed, true);
     });
 
+    // A native post-quantum signature travels in pqsig. An algosdk without that
+    // field drops it on decode, so simulation would see an unsigned transaction.
+    it("keeps a native post-quantum signature through simulation", async () => {
+      const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+        sender: testAddress(1),
+        receiver: testAddress(2),
+        amount: 1n,
+        suggestedParams: {
+          fee: 1000n,
+          minFee: 1000n,
+          firstValid: 1n,
+          lastValid: 100n,
+          genesisHash: new Uint8Array(32),
+          genesisID: "testnet-v1",
+          flatFee: true,
+        },
+      });
+      const pqsig = {
+        sch: new TextEncoder().encode("f1"),
+        slt: 3,
+        pk: new Uint8Array(1793).fill(7),
+        sig: new Uint8Array(1232).fill(9),
+      };
+      const signedBytes = algosdk.encodeMsgpack(new algosdk.SignedTransaction({ txn, pqsig }));
+      const signedHex = bytesToHex(signedBytes);
+
+      queueStatusResponse();
+      mockFetch.mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: async () => ({
+          signed: [signedHex],
+          mutations: { original_count: 1, final_count: 1 },
+        }),
+      });
+
+      const simulationRequests: algosdk.modelsv2.SimulateRequest[] = [];
+      const algodClient = {
+        simulateTransactions: (request: algosdk.modelsv2.SimulateRequest) => {
+          simulationRequests.push(request);
+          return {
+            do: async () => ({ lastRound: 7n, version: 2n, txnGroups: [{ txnResults: [] }] }),
+          };
+        },
+      } as any;
+
+      const client = new SignerClient("http://localhost:11270");
+      const result = await client.simulatePreparedGroup(algodClient, {
+        transactions: [{ transaction: txn, authAddress: testAddress(1) }],
+      });
+
+      const simulated = simulationRequests[0].txnGroups[0].txns[0];
+      assert.deepEqual(simulated.pqsig?.sig, pqsig.sig);
+      assert.deepEqual(simulated.pqsig?.pk, pqsig.pk);
+      assert.deepEqual(algosdk.encodeMsgpack(simulated), signedBytes);
+      assert.deepEqual(result.signedGroup, [signedHex]);
+    });
+
     it("requires algod before contacting the signer", async () => {
       const client = new SignerClient("http://localhost:11270");
       await assert.rejects(

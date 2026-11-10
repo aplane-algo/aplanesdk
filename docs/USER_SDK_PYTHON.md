@@ -85,7 +85,8 @@ python -m pip install -e './python[dev]'
 
 Installing `aplanesdk` also installs its runtime dependencies, including:
 
-- `py-algorand-sdk`
+- `py-algorand-sdk` 2.12.0 or later. Earlier releases read a transaction with a native
+  post-quantum signature (`pqsig`) as unsigned
 - `paramiko`
 - `requests`
 - `pyyaml`

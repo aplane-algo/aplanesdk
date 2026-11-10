@@ -5147,6 +5147,8 @@ def _verify_signed_transaction_matches_canonical(
             transaction.SignedTransaction,
             transaction.LogicSigTransaction,
             transaction.MultisigTransaction,
+            # A native post-quantum signature, such as native Falcon.
+            transaction.PQSignedTransaction,
         ),
     ):
         raise SignerError(f"{label} {index} did not decode as a signed transaction")

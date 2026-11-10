@@ -2043,6 +2043,49 @@ class TestClientSideSignedSimulation:
         assert result.mutations == {"original_count": 1, "final_count": 1}
         assert result.failed is True
 
+    def test_native_post_quantum_signature_survives_simulation_and_the_canonical_check(self):
+        # A native post-quantum signature travels in pqsig. A py-algorand-sdk
+        # without that type decodes the bytes as an unsigned transaction.
+        from aplanesdk.signer import (
+            _verify_signed_transaction_matches_canonical,
+            encode_transaction,
+        )
+
+        _, sender = account.generate_account()
+        params = transaction.SuggestedParams(
+            1000, 1, 100, base64.b64encode(bytes(32)).decode(), "testnet-v1.0", flat_fee=True,
+        )
+        txn = transaction.PaymentTxn(sender, params, sdk_test_address(2), 1)
+        signed = transaction.PQSignedTransaction(
+            txn, transaction.PQSig(b"f1", 3, bytes([7]) * 1793, bytes([9]) * 1232)
+        )
+        signed_b64 = algo_encoding.msgpack_encode(signed)
+        signed_hex = base64.b64decode(signed_b64).hex()
+
+        canonical_hex, _ = encode_transaction(txn)
+        _verify_signed_transaction_matches_canonical("assembled transaction", 0, signed_hex, canonical_hex)
+
+        client = make_client()
+        sign_response = mock_response(200, {
+            "signed": [signed_hex],
+            "mutations": {"original_count": 1, "final_count": 1},
+        })
+        algod_client = MagicMock()
+        algod_client.simulate_transactions.return_value = {
+            "last-round": 7, "version": 2, "txn-groups": [{}],
+        }
+        with patch.object(client, "_discover_approval_wait"), \
+             patch.object(client.session, "post", return_value=sign_response):
+            result = client.simulate_prepared_group(
+                algod_client,
+                PreparedGroup([PreparedTransaction(transaction=txn, auth_address=sender)]),
+            )
+
+        simulated = algod_client.simulate_transactions.call_args.args[0].txn_groups[0].txns[0]
+        assert isinstance(simulated, transaction.PQSignedTransaction)
+        assert algo_encoding.msgpack_encode(simulated) == signed_b64
+        assert result.signed_group == [signed_hex]
+
     def test_requires_algod_before_contacting_signer(self):
         client = make_client()
         with patch.object(client.session, "post") as mock_post:
