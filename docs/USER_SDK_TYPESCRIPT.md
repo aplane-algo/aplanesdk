@@ -657,8 +657,8 @@ any size is accepted. Set `maxFeeIncrease` on the client to put your own ceiling
 The value is in microAlgos and bounds the total the signer adds across all
 positions of one request. Zero means the signer may not raise any fee. When
 the raises add up to more than the ceiling, every sign, plan and simulate call
-through that client fails with `SignerError` before anything is returned, so nothing
-can be submitted or simulated. Resource dummies pay no fee and do not count.
+through that client fails with `SignerError` and returns nothing, so nothing can be
+submitted or simulated. Resource dummies pay no fee and do not count.
 The per-account `max_fee` check in the cosigned flow still applies as well.
 
 ```ts
@@ -670,14 +670,33 @@ const signed = await client.signTransaction(txn);
 ```
 
 `connectSsh()` and the constructor's options take the same field as a `number`
-or `bigint`. `client.setMaxFeeIncrease(value)` changes it, `undefined` removes
-it, and `client.maxFeeIncrease` reports it.
+or `bigint`. Assigning `client.maxFeeIncrease`, or calling
+`client.setMaxFeeIncrease(value)`, changes it, and `undefined` removes it.
+Reading `client.maxFeeIncrease` returns the value as it was set.
 
 There is no default. What the signer legitimately adds depends on the account
 type: an Ed25519 account adds nothing, while a LogicSig Falcon account's
 charge can be well over 100,000 microAlgos, so any built-in number would be a
-guess. Choose a ceiling that fits the accounts you sign for, or run a plan
-first to see the charge.
+guess. Choose a ceiling that fits the accounts you sign for. To see the
+charge, call `planGroup()` with your transactions and read
+`mutations.totalFeesDelta` in the result.
+
+Two limits to know:
+
+- The ceiling is checked on each request by itself. If you plan and then send
+  the planned transactions to sign, the sign request is measured from the
+  already-raised fees, so the signer could raise them by up to the ceiling a
+  second time. Send your original transactions to sign, not the planned ones.
+  A plan is for looking at what the signer will do. The multi-party flow is
+  not affected: a group sent with passthrough positions is already grouped,
+  and the signer cannot change the fees of a group that is.
+- A call is held to the ceiling set when it started. On a plan call a refusal
+  comes before the signer asks anyone for approval. On a sign or simulate
+  call the check runs after the signer has answered: by then the signer has
+  already asked for approval and produced a signature. The SDK discards that
+  signature and returns nothing, but the approval was spent. To refuse before
+  any approval is asked for, plan the same transactions first on a client
+  with the same ceiling, then sign the originals.
 
 The SDK decodes request entries before sending them. Unsigned transaction
 bytes must be `TX`-prefixed canonical msgpack and passthrough entries must be

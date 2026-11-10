@@ -81,8 +81,10 @@ func NewSignerClient(baseURL string) *SignerClient {
 
 // SetMaxFeeIncrease sets a ceiling, in microAlgos, on the total fee the signer
 // may add to a request. Every sign, plan and simulate call through this client
-// fails, before anything is returned, when the signer's fee raises across the
-// request's positions add up to more than this. Zero means the signer may not
+// fails and returns nothing when the signer's fee raises across the request's
+// positions add up to more than this. On a sign or simulate call the signer
+// has already answered by then; its signature is discarded. A call is held to
+// the ceiling in force when it started. Zero means the signer may not
 // raise any fee. There is no default: until this is called, a reported raise
 // of any size is accepted.
 func (c *SignerClient) SetMaxFeeIncrease(microAlgos uint64) {

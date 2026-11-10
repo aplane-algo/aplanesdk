@@ -3088,9 +3088,12 @@ class SignerClient:
             tunnel: SSH tunnel instance (managed internally)
             max_fee_increase: Optional ceiling, in microAlgos, on the total fee
                 the signer may add to a request. Every sign, plan and simulate
-                call through this client fails, before anything is returned,
-                when the signer's fee raises across the request's positions
-                add up to more than this. Zero means the signer may not raise
+                call through this client fails and returns nothing when the
+                signer's fee raises across the request's positions add up to
+                more than this. On a sign or simulate call the signer has
+                already answered by then; its signature is discarded. A call is
+                held to the ceiling in force when it started. Any integral
+                value is accepted. Zero means the signer may not raise
                 any fee. There is no default: None accepts a reported raise of
                 any size. Also settable as the ``max_fee_increase`` attribute.
         """
