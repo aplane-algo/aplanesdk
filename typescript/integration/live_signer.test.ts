@@ -168,6 +168,73 @@ test(
 );
 
 test(
+  "integration: native Falcon signature verifies on LocalNet",
+  {
+    skip: !integrationEnabled()
+      ? "set APLANE_SDK_INTEGRATION=1"
+      : localnetAvailable()
+        ? false
+        : "needs a LocalNet algod and KMD (ALGOD_URL, APLANE_LOCALNET_KMD_URL)",
+  },
+  async () => {
+    // The signing test above checks only the envelope's shape. Here the node
+    // verifies the signature: simulation runs with empty signatures
+    // disallowed, a tampered copy must fail, and the untouched transaction
+    // must confirm.
+    const algodClient = clientFromUrl(
+      algosdk.Algodv2,
+      process.env.ALGOD_TOKEN || "",
+      process.env.ALGOD_URL || ""
+    );
+    const client = await liveSignerClient();
+    let address = "";
+
+    try {
+      const before = await client.getStatus();
+      address = (await client.generateKey("falcon1024", {})).address;
+      assert.ok(address);
+      await waitForKeysetRevision(client, before.keysetRevision, "native Falcon generate");
+      await fundFromLocalnetKmd(algodClient, address, 500_000);
+
+      const prepared = await client.preparePayment(algodClient, {
+        sender: address,
+        receiver: address,
+        amount: 0,
+      });
+      const result = await client.simulatePreparedTransaction(algodClient, prepared);
+      assert.equal(result.failed, false, result.response.txnGroups?.[0]?.failureMessage);
+      assert.equal(result.signedGroup.length, 1);
+
+      const signedBytes = Buffer.from(result.signedGroup[0], "hex");
+      assertNativeFalconEnvelope(signedBytes);
+
+      // Flip one byte of the signature in place, so nothing else in the
+      // encoding changes.
+      const envelope = algosdk.decodeObj(signedBytes) as { pqsig: { sig: Uint8Array } };
+      const signatureAt = signedBytes.indexOf(Buffer.from(envelope.pqsig.sig));
+      assert.ok(signatureAt >= 0);
+      const tampered = Buffer.from(signedBytes);
+      tampered[signatureAt + (envelope.pqsig.sig.length >> 1)] ^= 0x01;
+      const rejection = await rawSimulationRejection(algodClient, tampered);
+      assert.match(rejection, /signature/, "the node accepted a tampered native Falcon signature");
+
+      const { txid } = await algodClient.sendRawTransaction(signedBytes).do();
+      assert.equal(txid, result.txIds[0]);
+      await algosdk.waitForConfirmation(algodClient, txid, 10);
+    } finally {
+      if (address) {
+        try {
+          await client.deleteKey(address);
+        } catch {
+          // Best-effort cleanup; the primary failure above should remain visible.
+        }
+      }
+      await client.close();
+    }
+  }
+);
+
+test(
   "integration: endpoints.yaml connection",
   { skip: integrationEnabled() ? false : "set APLANE_SDK_INTEGRATION=1" },
   async (context) => {
@@ -197,6 +264,7 @@ function selfPaymentTxn(address: string): algosdk.Transaction {
     amount: 0,
     suggestedParams: {
       fee: 1000,
+      minFee: 1000,
       firstValid: 1,
       lastValid: 1000,
       genesisHash: Buffer.from(genesisHash, "base64"),
@@ -204,6 +272,79 @@ function selfPaymentTxn(address: string): algosdk.Transaction {
       flatFee: true,
     },
   });
+}
+
+function localnetAvailable(): boolean {
+  return Boolean(
+    (process.env.ALGOD_URL || "").trim() &&
+      (process.env.APLANE_LOCALNET_KMD_URL || "").trim()
+  );
+}
+
+function clientFromUrl<T>(
+  ctor: new (token: string, server: string, port: string) => T,
+  token: string,
+  rawUrl: string
+): T {
+  const url = new URL(rawUrl.trim());
+  return new ctor(token, `${url.protocol}//${url.hostname}`, url.port);
+}
+
+/** Pay `receiver` from the richest account in the LocalNet KMD wallet. */
+async function fundFromLocalnetKmd(
+  algodClient: algosdk.Algodv2,
+  receiver: string,
+  amount: number
+): Promise<void> {
+  const kmd = clientFromUrl(
+    algosdk.Kmd,
+    process.env.APLANE_LOCALNET_TOKEN || "",
+    process.env.APLANE_LOCALNET_KMD_URL || ""
+  );
+  const walletName = process.env.APLANE_LOCALNET_WALLET || "unencrypted-default-wallet";
+  const password = process.env.APLANE_LOCALNET_WALLET_PASSWORD || "";
+  const wallets: { id: string; name: string }[] = (await kmd.listWallets()).wallets;
+  const wallet = wallets.find((item) => item.name === walletName);
+  assert.ok(wallet, `LocalNet KMD has no wallet named ${JSON.stringify(walletName)}`);
+  const handle: string = (await kmd.initWalletHandle(wallet.id, password)).wallet_handle_token;
+  let signed: Uint8Array;
+  try {
+    const addresses: string[] = (await kmd.listKeys(handle)).addresses;
+    let funder = "";
+    let richest = -1n;
+    for (const candidate of addresses) {
+      const { amount: balance } = await algodClient.accountInformation(candidate).do();
+      if (balance > richest) {
+        richest = balance;
+        funder = candidate;
+      }
+    }
+    assert.ok(funder, "LocalNet KMD wallet has no accounts");
+    const payment = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+      sender: funder,
+      receiver,
+      amount,
+      suggestedParams: await algodClient.getTransactionParams().do(),
+    });
+    signed = await kmd.signTransaction(handle, password, payment);
+  } finally {
+    await kmd.releaseWalletHandle(handle);
+  }
+  const { txid } = await algodClient.sendRawTransaction(signed).do();
+  await algosdk.waitForConfirmation(algodClient, txid, 10);
+}
+
+/** Why the node refuses these signed bytes; empty when it accepts them. */
+async function rawSimulationRejection(
+  algodClient: algosdk.Algodv2,
+  signedBytes: Uint8Array
+): Promise<string> {
+  try {
+    const response = await algodClient.simulateRawTransactions(signedBytes).do();
+    return response.txnGroups?.[0]?.failureMessage ?? "";
+  } catch (error) {
+    return (error instanceof Error ? error.message : String(error)) || "rejected";
+  }
 }
 
 function assertNativeFalconEnvelope(blob: Uint8Array): void {
