@@ -54,6 +54,7 @@ from typing import Optional, Dict, List, Any, Callable, cast
 from urllib.parse import urlparse
 
 from algosdk import abi, constants, encoding, transaction
+from nacl.signing import VerifyKey
 from algosdk.v2client import models
 
 import paramiko
@@ -1272,6 +1273,106 @@ class _RequestSlot:
     mode: str
     txn: transaction.Transaction
     signed_bytes: Optional[bytes] = None
+    # The address a sign position asked the signer to sign with.
+    auth: Optional[str] = None
+    # The auth address a passthrough's signed bytes carry, if any.
+    signer: Optional[str] = None
+
+
+def _sign_slot(txn: transaction.Transaction, auth_address: Any) -> _RequestSlot:
+    """The slot of a sign-mode position.
+
+    The auth address must be a real address: the returned authorization is
+    checked against it.
+    """
+    if not isinstance(auth_address, str) or not encoding.is_valid_address(auth_address):
+        raise ValueError(f"auth_address {auth_address!r} is not a valid address")
+    return _RequestSlot("sign", txn, auth=auth_address)
+
+
+def _decode_passthrough_slot(raw: bytes) -> _RequestSlot:
+    """Decode a passthrough's signed bytes, strictly."""
+    signed = _decode_canonical_signed_txn(raw)
+    signer = getattr(signed, "authorizing_address", None) or getattr(signed, "auth_addr", None)
+    return _RequestSlot("passthrough", signed.transaction, raw, signer=signer or None)
+
+
+def _validate_authorization(signed: Any, auth: str) -> None:
+    """Require a signed position's one authorization to be the auth address's.
+
+    A response that signs the right transaction with the wrong key, or with no
+    key at all, is as unusable as one that signs the wrong transaction.
+
+    - Ed25519 signature: must verify over the transaction under the auth
+      address.
+    - LogicSig: a plain LogicSig (a program and its args, not one delegated by
+      a signature) whose program address is the auth address.
+    - Post-quantum proof: native Falcon-1024 with its public key and signature
+      present, whose derived account address is the auth address. The Falcon
+      signature itself is not verified.
+    - Multisig: refused. The signer never returns one for a position it signs.
+
+    The signer field (``sgnr``) must name the auth address when that differs
+    from the sender, and must be absent when they are the same. A wrapper with
+    no authorization, or with more than one, never reaches here: it does not
+    decode as a canonical signed transaction.
+    """
+    txn = signed.transaction
+    if isinstance(signed, transaction.MultisigTransaction):
+        raise SignerError(
+            "carries a multisig, which the signer does not return for a position it signs"
+        )
+    named = getattr(signed, "authorizing_address", None) or getattr(signed, "auth_addr", None)
+    want = auth if auth != txn.sender else None
+    if (named or None) != want:
+        if want is None:
+            raise SignerError(f"names signer {named}, but the sender signs for itself")
+        if not named:
+            raise SignerError(f"does not name its signer {auth}, which is not the sender")
+        raise SignerError(f"names signer {named}, not the requested auth address {auth}")
+
+    if isinstance(signed, transaction.SignedTransaction):
+        try:
+            signature = base64.b64decode(signed.signature or "")
+            VerifyKey(encoding.decode_address(auth)).verify(
+                bytes.fromhex(encode_transaction(txn)[0]), signature
+            )
+        except Exception:
+            raise SignerError(
+                f"signature does not verify under the requested auth address {auth}"
+            ) from None
+    elif isinstance(signed, transaction.LogicSigTransaction):
+        lsig = signed.lsig
+        if not lsig.logic:
+            raise SignerError("LogicSig has no program")
+        if lsig.sig or lsig.msig or lsig.lmsig or getattr(lsig, "pqsig", None):
+            raise SignerError(
+                "LogicSig is delegated by a signature, which the signer does not "
+                "return for a position it signs"
+            )
+        program = lsig.address()
+        if program != auth:
+            raise SignerError(
+                f"LogicSig program address {program} is not the requested auth address {auth}"
+            )
+    elif isinstance(signed, transaction.PQSignedTransaction):
+        proof = signed.pqsig
+        if proof.scheme != PQ_SCHEME_FALCON1024.encode():
+            raise SignerError(
+                f"post-quantum scheme {proof.scheme!r} is not {PQ_SCHEME_FALCON1024!r}"
+            )
+        if not proof.public_key or not proof.signature:
+            raise SignerError("post-quantum authorization is missing its public key or signature")
+        try:
+            derived = encoding.address_from_pq_sig(proof)
+        except Exception as e:
+            raise SignerError(f"post-quantum key's address cannot be derived: {e}") from e
+        if derived != auth:
+            raise SignerError(
+                f"post-quantum key's address {derived} is not the requested auth address {auth}"
+            )
+    else:
+        raise SignerError("carries no authorization")
 
 
 def _decode_canonical_txn(raw: bytes) -> transaction.Transaction:
@@ -1334,10 +1435,9 @@ def _decode_request_slots(sign_entries: List[Dict[str, Any]]) -> List[_RequestSl
             except (TypeError, ValueError) as e:
                 raise ValueError(f"transaction {index}: signed_txn_hex is invalid hex: {e}") from e
             try:
-                signed = _decode_canonical_signed_txn(raw)
+                slots.append(_decode_passthrough_slot(raw))
             except SignerError as e:
                 raise ValueError(f"transaction {index}: passthrough transaction: {e}") from e
-            slots.append(_RequestSlot(mode, signed.transaction, raw))
             continue
         try:
             raw = bytes.fromhex(entry["txn_bytes_hex"])
@@ -1347,7 +1447,13 @@ def _decode_request_slots(sign_entries: List[Dict[str, Any]]) -> List[_RequestSl
             txn = _decode_canonical_txn(raw)
         except SignerError as e:
             raise ValueError(f"transaction {index}: txn_bytes_hex: {e}") from e
-        slots.append(_RequestSlot(mode, txn))
+        if mode == "foreign":
+            slots.append(_RequestSlot(mode, txn))
+            continue
+        try:
+            slots.append(_sign_slot(txn, entry.get("auth_address")))
+        except ValueError as e:
+            raise ValueError(f"transaction {index}: {e}") from e
     return slots
 
 
@@ -1621,6 +1727,11 @@ def _validate_sign_response(
             decoded = _decode_canonical_signed_txn(raw)
         except SignerError as e:
             raise SignerError(f"signed transaction {index + 1}: {e}") from e
+        if slot is not None:
+            try:
+                _validate_authorization(decoded, cast(str, slot.auth))
+            except SignerError as e:
+                raise SignerError(f"signed transaction {index + 1} {e}") from e
         returned.append(decoded.transaction)
     _validate_group_mutations(slots, returned, mutations)
     for index in range(len(slots), len(signed)):
@@ -4644,7 +4755,11 @@ class SignerClient:
         except Exception:
             pass
 
-    def _build_sign_request_body(
+    def _build_sign_request_body(self, *args: Any, **kwargs: Any) -> dict:
+        """The JSON request body for /sign and /plan. See _build_sign_requests."""
+        return {"requests": self._build_sign_requests(*args, **kwargs)[0]}
+
+    def _build_sign_requests(
         self,
         txns: List[Optional[transaction.Transaction]],
         auth_addresses: List[Optional[str]],
@@ -4652,9 +4767,13 @@ class SignerClient:
         passthrough: Optional[Dict[int, str]] = None,
         lsig_resources: Optional[Dict[int, LogicSigResourceUsage]] = None,
         allow_foreign: bool = True,
-    ) -> dict:
+    ) -> tuple:
         """
-        Build the JSON request body for /sign and /plan endpoints.
+        Build the request entries for /sign and /plan, with their decoded slots.
+
+        Nothing built here is decoded again before it is sent: a passthrough
+        entry is decoded once, strictly, and both its request and its part in
+        matching the LogicSig args come from that.
 
         Args:
             txns: List of transactions
@@ -4667,7 +4786,7 @@ class SignerClient:
                 for foreign or passthrough transactions.
 
         Returns:
-            Dict ready for JSON serialization as request body
+            (entries, slots): the request entries, and one decoded slot each
 
         Raises:
             ValueError: If a passthrough index is out of range or a
@@ -4699,38 +4818,39 @@ class SignerClient:
 
         # Build request array
         sign_requests = []
+        slots: List[_RequestSlot] = []
         matched_lsig_args = set()
         for i, (txn, auth_addr) in enumerate(zip(txns, auth_addresses)):
-            # A position matches its auth address, or its sender when none is
-            # given, whatever its mode.
-            if auth_addr:
-                matched_lsig_args.add(auth_addr)
-            elif txn is not None:
-                matched_lsig_args.add(txn.sender)
-
             # Passthrough: include pre-signed transaction as-is
             if passthrough and i in passthrough:
                 try:
-                    signed_hex = base64.b64decode(passthrough[i], validate=True).hex()
+                    signed_bytes = base64.b64decode(passthrough[i], validate=True)
                 except Exception as e:
                     raise ValueError(f"invalid base64 in passthrough[{i}]: {e}") from e
-                # The signed bytes name the position's sender and signer too.
                 try:
-                    signed = encoding.msgpack_decode(passthrough[i])
-                    matched_lsig_args.add(signed.transaction.sender)
-                    for name in ("authorizing_address", "auth_addr"):
-                        if getattr(signed, name, None):
-                            matched_lsig_args.add(getattr(signed, name))
-                except Exception:
-                    # Malformed passthrough bytes are reported when the request is decoded.
-                    pass
-                request = {"signed_txn_hex": signed_hex}
+                    slot = _decode_passthrough_slot(signed_bytes)
+                except SignerError as e:
+                    raise ValueError(f"invalid passthrough[{i}]: {e}") from e
+                # A passthrough position matches the auth address given for it
+                # and the sender and signer its signed bytes name.
+                matched_lsig_args.update(
+                    address for address in (auth_addr, slot.txn.sender, slot.signer) if address
+                )
+                request = {"signed_txn_hex": signed_bytes.hex()}
                 if lsig_resources and i in lsig_resources:
                     request["lsig_resources"] = _wire_lsig_resources(
                         lsig_resources[i]
                     )
                 sign_requests.append(request)
+                slots.append(slot)
                 continue
+
+            # A sign or foreign position matches its auth address, or its
+            # sender when none is given.
+            if auth_addr:
+                matched_lsig_args.add(auth_addr)
+            elif txn is not None:
+                matched_lsig_args.add(txn.sender)
 
             if auth_addr and lsig_resources and i in lsig_resources:
                 raise ValueError(
@@ -4751,10 +4871,15 @@ class SignerClient:
                 if lsig_resources and i in lsig_resources:
                     req["lsig_resources"] = _wire_lsig_resources(lsig_resources[i])
                 sign_requests.append(req)
+                slots.append(_RequestSlot("foreign", copy.deepcopy(txn)))
                 continue
 
             if txn is None:
                 raise ValueError(f"transaction is required for sign-mode entry at index {i}")
+            try:
+                slots.append(_sign_slot(copy.deepcopy(txn), auth_addr))
+            except ValueError as e:
+                raise ValueError(f"transaction {i + 1}: {e}") from e
 
             txn_bytes_hex, txn_sender = encode_transaction(txn)
 
@@ -4788,7 +4913,7 @@ class SignerClient:
                 f"request has auth address {', '.join(unmatched)}"
             )
 
-        return {"requests": sign_requests}
+        return sign_requests, slots
 
     def _sign_request(
         self,
@@ -4836,10 +4961,10 @@ class SignerClient:
             ValueError: If a passthrough index is out of range or a
                 non-passthrough, non-foreign entry has a missing auth_address.
         """
-        request_body = self._build_sign_request_body(
+        entries, slots = self._build_sign_requests(
             txns, auth_addresses, lsig_args_map, passthrough, lsig_resources, False
         )
-        data = self.sign_requests(request_body["requests"], request_id=request_id)
+        data = self.sign_requests(entries, request_id=request_id, _slots=slots)
 
         # Parse signed transactions (convert hex to base64 for algosdk compatibility)
         signed_hexes = data.signed
@@ -4861,6 +4986,7 @@ class SignerClient:
         sign_entries: List[Dict[str, Any]],
         *,
         request_id: Optional[str] = None,
+        _slots: Optional[List[_RequestSlot]] = None,
     ) -> GroupSignResponse:
         """
         Send raw signing request entries to /sign.
@@ -4873,7 +4999,8 @@ class SignerClient:
             request_id = _new_sign_request_id()
         _validate_sign_request_id(request_id, required=True)
         _validate_sign_entries(sign_entries)
-        slots = _decode_request_slots(sign_entries)
+        # Entries the SDK built arrive with their slots already decoded.
+        slots = _slots if _slots is not None else _decode_request_slots(sign_entries)
         request_body = {
             "request_id": request_id,
             "requests": sign_entries,
@@ -4982,16 +5109,21 @@ class SignerClient:
         if len(auth_addresses) != len(txns):
             raise ValueError("auth_addresses length must match txns length")
 
-        request_body = self._build_sign_request_body(
+        entries, slots = self._build_sign_requests(
             txns, auth_addresses, lsig_args_map, passthrough, lsig_resources
         )
 
-        return self.plan_requests(request_body["requests"])
+        return self.plan_requests(entries, _slots=slots)
 
-    def plan_requests(self, sign_entries: List[Dict[str, Any]]) -> dict:
+    def plan_requests(
+        self,
+        sign_entries: List[Dict[str, Any]],
+        *,
+        _slots: Optional[List[_RequestSlot]] = None,
+    ) -> dict:
         """Preview raw per-slot signer requests without address-keyed rebuilding."""
         _validate_sign_entries(sign_entries)
-        slots = _decode_request_slots(sign_entries)
+        slots = _slots if _slots is not None else _decode_request_slots(sign_entries)
         request_body = {"requests": sign_entries}
 
         try:

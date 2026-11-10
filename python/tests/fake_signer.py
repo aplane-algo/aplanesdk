@@ -13,6 +13,7 @@ import copy
 from unittest.mock import MagicMock
 
 from algosdk import encoding, transaction
+from nacl.signing import SigningKey
 
 from aplanesdk.signer import (
     _canonical_dummy_txn,
@@ -32,6 +33,73 @@ def test_address(seed: int) -> str:
 test_address.__test__ = False  # type: ignore[attr-defined]
 
 
+# The fake signer's accounts, by address: Ed25519 keys, LogicSig programs and
+# native Falcon public keys, as the real signer holds them.
+_KEYS: dict = {}
+_PROGRAMS: dict = {}
+_PQ_KEYS: dict = {}
+
+
+def account(seed: int) -> str:
+    """The address of the fake signer's Ed25519 account for a seed."""
+    key = SigningKey(bytes([seed]) * 32)
+    address = encoding.encode_address(bytes(key.verify_key))
+    _KEYS[address] = key
+    return address
+
+
+def lsig_account(seed: int) -> str:
+    """A LogicSig account the fake signer holds: the hash of its program."""
+    program = bytes([0x06, 0x81, seed])  # #pragma version 6; pushint seed
+    address = transaction.LogicSigAccount(program).address()
+    _PROGRAMS[address] = program
+    return address
+
+
+def pq_account(seed: int) -> str:
+    """A native Falcon account the fake signer holds.
+
+    The public key and signature are filler: nothing verifies them.
+    """
+    public_key = bytes([seed]) * 1793
+    address, salt = encoding.address_from_pq_key(b"f1", public_key)
+    _PQ_KEYS[address] = transaction.PQSig(b"f1", salt, public_key, bytes([9]) * 1232)
+    return address
+
+
+def hold_program(program: bytes) -> str:
+    """Have the fake signer hold a LogicSig account for the given program."""
+    address = transaction.LogicSigAccount(program).address()
+    _PROGRAMS[address] = program
+    return address
+
+
+def authorize(txn, auth_address: str):
+    """Sign as the fake signer's account at auth_address would.
+
+    The account's kind of authorization, and the signer field when the account
+    is not the sender. An address the fake signer does not hold gets a
+    signature that verifies under nothing.
+    """
+    rekeyed = auth_address if auth_address != txn.sender else None
+    if auth_address in _KEYS:
+        message = bytes.fromhex(encode_transaction(txn)[0])
+        signature = _KEYS[auth_address].sign(message).signature
+        return transaction.SignedTransaction(txn, base64.b64encode(signature).decode(), rekeyed)
+    if auth_address in _PROGRAMS:
+        signed = transaction.LogicSigTransaction(
+            txn, transaction.LogicSigAccount(_PROGRAMS[auth_address], [b"\x01\x02\x03"])
+        )
+        return signed
+    if auth_address in _PQ_KEYS:
+        return transaction.PQSignedTransaction(txn, _PQ_KEYS[auth_address], rekeyed)
+    return transaction.SignedTransaction(txn, base64.b64encode(bytes([1]) * 64).decode(), rekeyed)
+
+
+def encode_signed(signed) -> str:
+    return base64.b64decode(encoding.msgpack_encode(signed)).hex()
+
+
 def payment(sender_seed: int = 41, receiver_seed: int = 42, amount: int = 1_000_000, sender=None):
     genesis_hash = bytearray(32)
     genesis_hash[0] = 7
@@ -44,7 +112,7 @@ def payment(sender_seed: int = 41, receiver_seed: int = 42, amount: int = 1_000_
         flat_fee=True,
     )
     return transaction.PaymentTxn(
-        sender or test_address(sender_seed), params, test_address(receiver_seed), amount
+        sender or account(sender_seed), params, test_address(receiver_seed), amount
     )
 
 
@@ -60,9 +128,8 @@ def sign_entries(*txns):
 
 
 def signed_hex(txn) -> str:
-    """A signed transaction as an Ed25519 signer would return it."""
-    signed = transaction.SignedTransaction(txn, base64.b64encode(bytes([1]) * 64).decode())
-    return base64.b64decode(encoding.msgpack_encode(signed)).hex()
+    """A transaction signed by its sender."""
+    return encode_signed(authorize(txn, txn.sender))
 
 
 def decode_signed(signed_hex_value: str):
@@ -118,7 +185,7 @@ def sign_response(entries, fee_raise=None, dummies=0) -> dict:
         elif slots[index].mode == "foreign":
             signed.append("")
         else:
-            signed.append(signed_hex(txn))
+            signed.append(encode_signed(authorize(txn, entries[index]["auth_address"])))
     body = {"signed": signed}
     if report is not None:
         body["mutations"] = report
