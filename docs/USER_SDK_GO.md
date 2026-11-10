@@ -414,6 +414,11 @@ signed, err := client.SignTransaction(
 )
 ```
 
+An empty auth address means the sender signs for itself, and the args then
+apply to the sender. `LsigArgsMap` is keyed by auth address. Args keyed under
+an address that signs no position in the request are an error; they are never
+dropped.
+
 ### Sign A Transaction Group
 
 ```go
@@ -637,6 +642,39 @@ error and never trigger another signing request automatically.
 
 The Go SDK does not provide a `SendRawTransaction(...)` helper. Decode the
 returned base64 string and submit it with the standard Algorand Go SDK.
+
+### What The SDK Checks Before Returning
+
+Every `/sign` and `/plan` result is checked against the request before
+`SignTransaction(...)`, `SignTransactions*(...)`, `SignRequestsWithContext(...)`/`SignGroupWithContext(...)`, `PlanGroup(...)`/`PlanRequestsWithContext(...)` or the simulation helpers returns it. The
+signer may change a request in three ways, and must report each in
+`mutations`:
+
+- raise the fee of a position it signs, listed in `fees_modified`, with the
+  sum of the raises equal to `total_fees_delta`
+- assign the group ID, which must be the ID computed over the returned group
+- append resource dummies, counted in `dummies_added`
+
+Anything else fails with an error whose message starts with
+`verify signer response:` or `verify signer plan:`, and nothing is returned:
+
+- a signed or planned position that differs from the requested transaction in
+  any field the report does not cover
+- a fee change that is unreported, is not an increase, or does not add up to
+  the reported total
+- report counts (`original_count`, `final_count`, `dummies_added`,
+  `passthrough_count`, `foreign_count`) that disagree with the request and
+  the returned group
+- an appended position that is not exactly the signer's resource dummy for
+  that group, or that carries any authorization but the dummy LogicSig
+- a passthrough position that does not come back byte for byte, or a foreign
+  position that comes back signed
+- signed transaction bytes that are not canonical msgpack, including bytes
+  after the signed transaction
+
+The SDK decodes request entries before sending them. Unsigned transaction
+bytes must be `TX`-prefixed canonical msgpack and passthrough entries must be
+canonical signed transactions, or the call fails before any request is made.
 
 ## Error Handling
 

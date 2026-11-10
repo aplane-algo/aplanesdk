@@ -444,6 +444,11 @@ signed = client.sign_transaction(
 )
 ```
 
+Without `auth_address` the sender signs for itself, and the args apply to the
+sender. `lsig_args_map` is keyed by auth address. Args keyed under an address
+that signs no position in the request raise `ValueError`; they are never
+dropped.
+
 ### Sign A Group
 
 ```python
@@ -491,6 +496,39 @@ Important behavior:
   `/sign` response
 - for large LogicSigs, the signer may add dummy transactions for fee pooling
 - the high-level signing helpers convert the server’s hex response to base64
+
+### What The SDK Checks Before Returning
+
+Every `/sign` and `/plan` result is checked against the request before
+`sign_transaction()`, `sign_transactions()`/`sign_transactions_list()`, `sign_requests()`, `plan_group()`/`plan_requests()` or `simulate_prepared_group()` returns it. The
+signer may change a request in three ways, and must report each in
+`mutations`:
+
+- raise the fee of a position it signs, listed in `fees_modified`, with the
+  sum of the raises equal to `total_fees_delta`
+- assign the group ID, which must be the ID computed over the returned group
+- append resource dummies, counted in `dummies_added`
+
+Anything else fails with `SignerError` whose message starts with
+`verify signer response:` or `verify signer plan:`, and nothing is returned:
+
+- a signed or planned position that differs from the requested transaction in
+  any field the report does not cover
+- a fee change that is unreported, is not an increase, or does not add up to
+  the reported total
+- report counts (`original_count`, `final_count`, `dummies_added`,
+  `passthrough_count`, `foreign_count`) that disagree with the request and
+  the returned group
+- an appended position that is not exactly the signer's resource dummy for
+  that group, or that carries any authorization but the dummy LogicSig
+- a passthrough position that does not come back byte for byte, or a foreign
+  position that comes back signed
+- signed transaction bytes that are not canonical msgpack, including bytes
+  after the signed transaction
+
+The SDK decodes request entries before sending them. Unsigned transaction
+bytes must be `TX`-prefixed canonical msgpack and passthrough entries must be
+canonical signed transactions, or the call raises `ValueError` before any request is made.
 
 ### Foreign Entries
 

@@ -427,6 +427,11 @@ const signed = await client.signTransaction(txn, hashlockAddress, {
 });
 ```
 
+Without `authAddress` the sender signs for itself, and the args apply to the
+sender. `lsigArgsMap` is keyed by auth address. Args keyed under an address
+that signs no position in the request throw `SignerError`; they are never
+dropped.
+
 ### Sign A Transaction Group
 
 ```ts
@@ -612,6 +617,47 @@ never trigger another signing request automatically.
 
 The helper `sendRawTransaction()` accepts the base64 string returned by the SDK
 and handles common algod rejection cases with cleaner APlane error types.
+
+### What The SDK Checks Before Returning
+
+Every `/sign` and `/plan` result is checked against the request before
+`signTransaction()`, `signTransactions()`/`signTransactionsList()`, `signRequests()`, `planGroup()`/`planRequests()` or `simulatePreparedGroup()` returns it. The
+signer may change a request in three ways, and must report each in
+`mutations`:
+
+- raise the fee of a position it signs, listed in `fees_modified`, with the
+  sum of the raises equal to `total_fees_delta`
+- assign the group ID, which must be the ID computed over the returned group
+- append resource dummies, counted in `dummies_added`
+
+Anything else fails with `SignerError` whose message starts with
+`verify signer response:` or `verify signer plan:`, and nothing is returned:
+
+- a signed or planned position that differs from the requested transaction in
+  any field the report does not cover
+- a fee change that is unreported, is not an increase, or does not add up to
+  the reported total
+- report counts (`original_count`, `final_count`, `dummies_added`,
+  `passthrough_count`, `foreign_count`) that disagree with the request and
+  the returned group
+- an appended position that is not exactly the signer's resource dummy for
+  that group, or that carries any authorization but the dummy LogicSig
+- a passthrough position that does not come back byte for byte, or a foreign
+  position that comes back signed
+- signed transaction bytes that are not canonical msgpack, including bytes
+  after the signed transaction
+
+The SDK decodes request entries before sending them. Unsigned transaction
+bytes must be `TX`-prefixed canonical msgpack and passthrough entries must be
+canonical signed transactions, or the call throws `SignerError` before any request is made.
+
+### Rekeyed Senders In Prep Helpers
+
+The `prepare*` helpers and `resolveAuthAddress()` read the sender's auth
+address from algod account information. algosdk v3 returns it as an `Address`
+object and raw algod JSON as a string; both are accepted, and
+`ResolvedAuthAddress.authAddress` and `PreparedTransaction.authAddress` are
+always strings.
 
 ## Error Handling
 
