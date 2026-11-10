@@ -33,7 +33,9 @@ Go, Python, and TypeScript SDK package versions will always match.
 
 The SDK expects:
 
-- `algosdk` as a peer dependency
+- `algosdk` 3.7.0 or later as a peer dependency. Earlier releases drop a native
+  post-quantum signature (`pqsig`) when they decode a signed transaction, which breaks
+  simulation for native Falcon keys
 - `ssh2` for the SSH-backed runtime path
 
 In a normal package-manager install, `ssh2` is brought in via `aplanesdk`'s
