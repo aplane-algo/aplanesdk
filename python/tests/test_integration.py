@@ -151,6 +151,44 @@ def test_live_signer_native_falcon_signing():
 
 
 @pytest.mark.skipif(not _integration_enabled(), reason="set APLANE_SDK_INTEGRATION=1")
+def test_live_signer_logicsig_account_signing():
+    """A LogicSig account's real response passes the SDK's checks.
+
+    The signer raises the fee, appends resource dummies and groups them, and
+    signs with the account's program. The SDK verifies all of that, so this
+    is the live check that its rules accept what the signer really returns.
+    """
+    key_type = "aplane.falcon1024.v1"
+    client = _live_signer_client()
+    address = ""
+    try:
+        if not any(item.key_type == key_type for item in client.list_key_types()):
+            pytest.skip(f"the signer does not offer {key_type}")
+        before = client.get_status()
+        address = client.generate_key(key_type, {"rekey_authority": "spending_key"}).address
+        assert address
+        _wait_for_keyset_revision(client, before.keyset_revision, "LogicSig generate")
+
+        single = client.sign_transactions_list([_self_payment_txn(address)], [address])
+        assert len(single) > 1, "a Falcon LogicSig account needs resource dummies"
+        first = _decode_signed_blob(base64.b64decode(single[0]))
+        assert first.get("lsig", {}).get("l"), "the position is not signed by a LogicSig"
+
+        pair = client.sign_transactions_list(
+            [_self_payment_txn(address), _self_payment_txn(address, note=b"second")],
+            [address, address],
+        )
+        assert len(pair) > 2
+    finally:
+        if address:
+            try:
+                client.delete_key(address)
+            except Exception:
+                pass
+        client.close()
+
+
+@pytest.mark.skipif(not _integration_enabled(), reason="set APLANE_SDK_INTEGRATION=1")
 def test_live_native_falcon_signature_verifies_on_localnet():
     """A real native Falcon signature survives the SDK and the network accepts it.
 
@@ -223,7 +261,7 @@ def test_endpoint_registry_connection():
         assert client.health() is True
 
 
-def _self_payment_txn(address: str) -> transaction.PaymentTxn:
+def _self_payment_txn(address: str, note: bytes = b"") -> transaction.PaymentTxn:
     genesis_hash = os.environ.get(
         "APLANE_INTEGRATION_GENESIS_HASH",
         "SGO1GKSzyE7IEPItTxCByw9x8FmnrCDexi9/cOUJOiI=",
@@ -237,7 +275,9 @@ def _self_payment_txn(address: str) -> transaction.PaymentTxn:
         gen=genesis_id,
         flat_fee=True,
     )
-    return transaction.PaymentTxn(sender=address, sp=params, receiver=address, amt=0)
+    return transaction.PaymentTxn(
+        sender=address, sp=params, receiver=address, amt=0, note=note or None
+    )
 
 
 def _localnet_available() -> bool:
