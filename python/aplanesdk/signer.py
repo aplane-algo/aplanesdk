@@ -8165,6 +8165,53 @@ def witness_key_id(key_type: str, public_key: bytes) -> str:
     return base64.b32encode(encoding.checksum(bytes(encoded))).decode().rstrip("=")
 
 
+_GO_SHORT_ESCAPES = {
+    "\a": "\\a",
+    "\b": "\\b",
+    "\f": "\\f",
+    "\n": "\\n",
+    "\r": "\\r",
+    "\t": "\\t",
+    "\v": "\\v",
+}
+
+
+def _go_quote(value: str) -> str:
+    """value in double quotes, escaped as Go's %q (strconv.Quote) escapes it,
+    so a discovery message reads the same in every SDK: \\" and \\\\; the
+    short escapes \\a \\b \\f \\n \\r \\t \\v; \\xNN (lowercase hex) for every
+    other C0 control and DEL; \\uNNNN or \\UNNNNNNNN for every other character
+    that is not printable (C1 controls among them); every printable
+    character as it is. A lone surrogate, which Go would hold as invalid
+    UTF-8, is \\xNN per byte, as Go writes those."""
+    out = ['"']
+    for ch in value:
+        code = ord(ch)
+        if ch == '"' or ch == "\\":
+            out.append("\\" + ch)
+        elif 0xD800 <= code <= 0xDFFF:
+            raw = (
+                bytes([code - 0xDC00])
+                if 0xDC80 <= code <= 0xDCFF
+                else ch.encode("utf-8", "surrogatepass")
+            )
+            out.extend(f"\\x{byte:02x}" for byte in raw)
+        elif ch.isprintable():
+            # Python's printable set is Go's strconv.IsPrint: letters, marks,
+            # numbers, punctuation, symbols and the ASCII space.
+            out.append(ch)
+        elif ch in _GO_SHORT_ESCAPES:
+            out.append(_GO_SHORT_ESCAPES[ch])
+        elif code < 0x20 or code == 0x7F:
+            out.append(f"\\x{code:02x}")
+        elif code < 0x10000:
+            out.append(f"\\u{code:04x}")
+        else:
+            out.append(f"\\U{code:08x}")
+    out.append('"')
+    return "".join(out)
+
+
 def _witness_public_key_hex(value: Any) -> Optional[str]:
     """A witness public key's hex as it is held and compared: lowercase. None
     when it is not hex, or is empty."""
@@ -8308,7 +8355,7 @@ class EndpointCosignerResolver:
         if public_key is None:
             raise CosignerDiscoveryError(
                 f"cosigner discovery: the account's cosigner public key "
-                f'"{cosigner_public_key_hex}" is not valid hex'
+                f"{_go_quote(str(cosigner_public_key_hex))} is not valid hex"
             )
         if not component_key_type or not isinstance(component_key_type, str):
             raise CosignerDiscoveryError("cosigner discovery: the account names no cosigner key type")
@@ -8371,7 +8418,9 @@ class EndpointCosignerResolver:
                 f"endpoints {names}; each witness key needs exactly one endpoint"
             )
         if not listing:
-            states = ", ".join(f'"{alias}" {probes[alias].state}' for alias in sorted(probes))
+            states = ", ".join(
+                f"{_go_quote(alias)} {probes[alias].state}" for alias in sorted(probes)
+            )
             raise CosignerDiscoveryError(
                 f"cosigner discovery: no endpoint lists Witness Key ID {key_id} "
                 f"({key_type}); endpoints: {states}"
@@ -8460,7 +8509,7 @@ class EndpointCosignerResolver:
                     result.client.close()
             if mismatch is not None:
                 raise CosignerDiscoveryError(
-                    f'cosigner discovery: endpoint "{mismatch.alias}": '
+                    f"cosigner discovery: endpoint {_go_quote(mismatch.alias)}: "
                     f"{mismatch.host_key_mismatch}"
                 )
             raise _CosignerDiscoveryTimeoutError(
@@ -8507,7 +8556,8 @@ class EndpointCosignerResolver:
             raise _ProbeFailed(_ENDPOINT_CONFIGURATION_INVALID, f"invalid url: {e}") from e
         if parsed.scheme != "ssh" or not parsed.hostname:
             raise _ProbeFailed(
-                _ENDPOINT_CONFIGURATION_INVALID, f"url {endpoint.url!r} is not ssh://host[:port]"
+                _ENDPOINT_CONFIGURATION_INVALID,
+                f"url {_go_quote(str(endpoint.url))} is not ssh://host[:port]",
             )
         try:
             return SignerClient.connect_ssh(
@@ -8564,20 +8614,23 @@ def _read_witness_keys(client: "SignerClient") -> List[tuple]:
         if canonical is not None and canonical != address:
             raise _ProbeFailed(
                 _ENDPOINT_INVALID_METADATA,
-                f'key {index} address "{address}" is a non-canonical spelling of {canonical}',
+                f"key {index} address {_go_quote(address)} is a non-canonical spelling of "
+                f"{canonical}",
             )
         if not record["is_witness_key"] or not record["key_type"]:
             continue
         public_key = _witness_public_key_hex(record["public_key_hex"])
         if public_key is None:
             raise _ProbeFailed(
-                _ENDPOINT_INVALID_METADATA, f"witness key {address!r} has no hex public key"
+                _ENDPOINT_INVALID_METADATA,
+                f"witness key {_go_quote(address)} has no hex public key",
             )
         key_id = witness_key_id(record["key_type"], bytes.fromhex(public_key))
         if address != key_id:
             raise _ProbeFailed(
                 _ENDPOINT_INVALID_METADATA,
-                f"witness key {address!r} is not the Witness Key ID {key_id} of its key",
+                f"witness key {_go_quote(address)} is not the Witness Key ID {key_id} of its "
+                "key",
             )
         keys.append((record["key_type"], public_key, address))
     return keys

@@ -363,6 +363,40 @@ class TestChoosing:
         )
         assert net.connects == []
 
+    def test_a_bad_value_is_quoted_as_go_quotes_it(self, network):
+        net = network({"alpha": Endpoint([witness_record(PUBLIC_A)])})
+        with net.resolver() as resolver, pytest.raises(CosignerDiscoveryError) as excinfo:
+            resolver.resolve('ab"c\\d\x01\n\x7f', WITNESS)
+        assert str(excinfo.value) == (
+            "cosigner discovery: the account's cosigner public key "
+            '"ab\\"c\\\\d\\x01\\n\\x7f" is not valid hex'
+        )
+
+    def test_odd_aliases_are_quoted_as_go_quotes_them(self):
+        # A hand-built registry is not held to the alias rules endpoints.yaml
+        # is read with.
+        registry = ClientEndpointRegistry(
+            endpoints={
+                'odd"one\t': ClientEndpointConfig(role="cosigner", url="ssh://odd.example:1"),
+                "back\\slash": ClientEndpointConfig(role="cosigner", url="ssh://b.example:1"),
+            }
+        )
+        with EndpointCosignerResolver(registry=registry) as resolver:
+            resolver._connect = _raises_from_connect(
+                signer_module._ProbeFailed("configuration invalid", "no")
+            )
+            with pytest.raises(CosignerDiscoveryError) as excinfo:
+                resolver.resolve(PUBLIC_A.hex(), WITNESS)
+        assert str(excinfo.value).endswith(
+            'endpoints: "back\\\\slash" configuration invalid, '
+            '"odd\\"one\\t" configuration invalid'
+        )
+        with EndpointCosignerResolver(registry=registry) as resolver:
+            resolver._connect = _raises_from_connect(_SSHHostKeyMismatchError("key changed"))
+            with pytest.raises(CosignerDiscoveryError) as excinfo:
+                resolver.resolve(PUBLIC_A.hex(), WITNESS)
+        assert str(excinfo.value) == 'cosigner discovery: endpoint "back\\\\slash": key changed'
+
     def test_a_required_key_type_is_needed(self, network):
         net = network({"alpha": Endpoint([witness_record(PUBLIC_A)])})
         with net.resolver() as resolver, pytest.raises(CosignerDiscoveryError) as excinfo:
@@ -393,6 +427,36 @@ class TestChoosing:
 
     def test_the_errors_are_sdk_errors(self):
         assert issubclass(CosignerDiscoveryError, SignerError)
+
+
+def _raises_from_connect(error):
+    def connect(_endpoint):
+        raise error
+
+    return connect
+
+
+@pytest.mark.parametrize(
+    "value,quoted",
+    [
+        # Go: fmt.Sprintf("%q", "\x00\x07\x08\t\n\x0b\x0c\r\x1b\x7f")
+        ("\x00\x07\x08\t\n\x0b\x0c\r\x1b\x7f", '"\\x00\\a\\b\\t\\n\\v\\f\\r\\x1b\\x7f"'),
+        ('say "hi"', '"say \\"hi\\""'),
+        ("back\\slash", '"back\\\\slash"'),
+        ("plain alias-1.x_y", '"plain alias-1.x_y"'),
+        # C1 controls, a no-break space, a line separator: not printable.
+        ("\x80\x9f\xa0\u2028", '"\\u0080\\u009f\\u00a0\\u2028"'),
+        # Printable beyond ASCII stays as it is.
+        ("caf\u00e9 \u65e5\U0001f600", '"caf\u00e9 \u65e5\U0001f600"'),
+        # Not printable beyond the Basic Multilingual Plane.
+        ("\U000e0001", '"\\U000e0001"'),
+        # A byte that was not UTF-8, as Python holds it, is Go's \xNN.
+        (b"a\xffb".decode("utf-8", "surrogateescape"), '"a\\xffb"'),
+        ("", '""'),
+    ],
+)
+def test_go_quote(value, quoted):
+    assert signer_module._go_quote(value) == quoted
 
 
 class _Tunnel:

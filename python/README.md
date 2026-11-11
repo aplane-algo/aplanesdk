@@ -769,6 +769,11 @@ Otherwise it raises `CosignerDiscoveryError` (a `SignerError`):
 - the call's `timeout` passed during discovery: an error that is both a
   `CosignerDiscoveryError` and a `SendTimeoutError`.
 
+The public key in the not-hex message, and the aliases in the list of
+endpoints and in the host key message, are quoted as Go's `%q` quotes them
+(`\"`, `\\`, `\n`, `\t`, `\xNN` for other control characters, and so on), so
+the three SDKs word the same failure alike.
+
 The cosigned sequence resolves the cosigner of every target that cannot take
 the listed path (a spend, or a rekey of an account without a rekey list)
 before anything is asked to sign, with any resolver, so a failure is a plain
