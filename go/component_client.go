@@ -32,10 +32,28 @@ func (c *SignerClient) RequestComponentsWithContext(ctx context.Context, reqBody
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal component request: %w", err)
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// A context that has already ended sends nothing, as in postApproval.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	approvalBearing := reqBody.TargetKind() != ComponentTargetKindCosigner
 	timeout := c.componentRequestTimeout(ctx, approvalBearing)
 	reqCtx, cancel := c.requestContext(ctx, timeout)
 	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, c.baseURL+"/sign/component", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	// Checked again before the cancel watcher starts: a watcher started on an
+	// ended context could cancel a request that was never posted.
+	if err := reqCtx.Err(); err != nil {
+		return nil, err
+	}
 
 	var cancelOnce sync.Once
 	sendCancel := func() {
@@ -63,12 +81,6 @@ func (c *SignerClient) RequestComponentsWithContext(ctx context.Context, reqBody
 			}
 		}()
 	}
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, c.baseURL+"/sign/component", bytes.NewReader(body))
-	if err != nil {
-		close(done)
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.client.Do(req)
 	close(done)
 	if err != nil {

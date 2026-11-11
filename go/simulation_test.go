@@ -115,6 +115,53 @@ func TestSimulatePreparedGroupUsesOrdinarySignThenClientAlgod(t *testing.T) {
 	}
 }
 
+// An answer without exactly one group result checked nothing, so a signed
+// simulation reports it as failed, as the rotating unsigned one does.
+func TestSimulatePreparedGroupFailsWithoutExactlyOneGroupResult(t *testing.T) {
+	cases := []struct {
+		name    string
+		groups  []models.SimulateTransactionGroupResult
+		failed  bool
+		message string
+	}{
+		{name: "no group result", groups: nil, failed: true, message: "the node returned no result for the group"},
+		{name: "two group results", groups: make([]models.SimulateTransactionGroupResult, 2), failed: true, message: "the node returned 2 results for one group"},
+		{name: "one passing group result", groups: make([]models.SimulateTransactionGroupResult, 1)},
+		{name: "one failing group result", groups: []models.SimulateTransactionGroupResult{{FailureMessage: "logic eval error"}}, failed: true, message: "logic eval error"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			txn := verifyTestPayment(t, 41, 42, 1)
+			signer, signerServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/status":
+					json.NewEncoder(w).Encode(StatusResponse{State: "unlocked"})
+				case "/sign":
+					json.NewEncoder(w).Encode(GroupSignResponse{Signed: []string{fakeSignedTxnHex(txn)}})
+				default:
+					t.Errorf("unexpected signer path %s", r.URL.Path)
+				}
+			})
+			defer signerServer.Close()
+			algodClient, closeAlgod := makeSimulationAlgodClient(t, func(w http.ResponseWriter, r *http.Request) {
+				json.NewEncoder(w).Encode(models.SimulateResponse{LastRound: 7, Version: 2, TxnGroups: tc.groups})
+			})
+			defer closeAlgod()
+
+			result, err := signer.SimulatePreparedGroup(context.Background(), algodClient, NewPreparedGroup(PreparedTransaction{
+				Transaction: &txn,
+				AuthAddress: txn.Sender.String(),
+			}))
+			if err != nil {
+				t.Fatalf("SimulatePreparedGroup() error = %v", err)
+			}
+			if result.Failed != tc.failed || result.FailureMessage != tc.message {
+				t.Fatalf("Failed = %v, FailureMessage = %q; want %v, %q", result.Failed, result.FailureMessage, tc.failed, tc.message)
+			}
+		})
+	}
+}
+
 func TestSimulatePreparedGroupRequiresAlgodBeforeSigner(t *testing.T) {
 	signerCalls := 0
 	signer, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {

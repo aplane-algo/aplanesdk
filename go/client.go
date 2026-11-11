@@ -398,7 +398,7 @@ func (c *SignerClient) GetStatusWithContext(ctx context.Context) (*StatusRespons
 	}
 
 	var statusResp StatusResponse
-	if err := json.NewDecoder(resp.Body).Decode(&statusResp); err != nil {
+	if err := readAnswer(resp.Body, &statusResp); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 	c.cacheApprovalWait(statusResp.ApprovalWaitSeconds)
@@ -575,7 +575,7 @@ func (c *SignerClient) GetKeysResponseWithContext(ctx context.Context) (*KeysRes
 	}
 
 	var keysResp keysResponse
-	if err := json.NewDecoder(resp.Body).Decode(&keysResp); err != nil {
+	if err := readAnswer(resp.Body, &keysResp); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
@@ -635,7 +635,7 @@ func (c *SignerClient) ListKeyTypes() ([]KeyTypeInfo, error) {
 	}
 
 	var ktResp keyTypesResponse
-	if err := json.NewDecoder(resp.Body).Decode(&ktResp); err != nil {
+	if err := readAnswer(resp.Body, &ktResp); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
@@ -676,7 +676,7 @@ func (c *SignerClient) GenerateKey(keyType string, parameters map[string]string)
 	}
 
 	var result GenerateResult
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := readAnswer(resp.Body, &result); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
@@ -841,7 +841,7 @@ func (c *SignerClient) PlanRequestsWithContext(ctx context.Context, requests []S
 	}
 
 	var planResp PlanGroupResponse
-	if err := json.NewDecoder(resp.Body).Decode(&planResp); err != nil {
+	if err := readAnswer(resp.Body, &planResp); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
@@ -1192,14 +1192,36 @@ func (c *SignerClient) postSign(ctx context.Context, groupReq GroupSignRequest) 
 // postApproval posts an approval-bearing request and decodes its 200 answer
 // into out. It waits as long as the signer's approval wait allows, and
 // cancels the pending approval when the deadline or the caller's context ends
-// first. A non-200 answer comes back as an *APIError, a failed exchange as a
-// *signTransportError, and a 200 whose body could not be read as a
-// *signUnreadError.
+// first. A context that has ended before the request is posted sends nothing
+// and returns its own error. A non-200 answer comes back as an *APIError, a
+// failed exchange as a *signTransportError, and a 200 whose body could not be
+// read as a *signUnreadError.
 func (c *SignerClient) postApproval(ctx context.Context, path, requestID string, jsonBody []byte, out any) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// A context that has already ended sends nothing, not even the status
+	// discovery, so it is a plain stop and not an exchange whose outcome is
+	// unknown.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	c.discoverApprovalWait(ctx)
 
 	reqCtx, cancel := c.requestContext(ctx, c.signRequestTimeout())
 	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, "POST", c.baseURL+path, bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	// Checked again before the cancel watcher starts: a watcher started on an
+	// ended context could cancel a request that was never posted.
+	if err := reqCtx.Err(); err != nil {
+		return err
+	}
 
 	var cancelOnce sync.Once
 	sendCancel := func() {
@@ -1227,19 +1249,6 @@ func (c *SignerClient) postApproval(ctx context.Context, path, requestID string,
 		}
 	}()
 
-	req, err := http.NewRequestWithContext(reqCtx, "POST", c.baseURL+path, bytes.NewBuffer(jsonBody))
-	if err != nil {
-		close(done)
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	// A context that has already ended sends nothing, so it is a plain stop
-	// and not an exchange whose outcome is unknown.
-	if err := reqCtx.Err(); err != nil {
-		close(done)
-		return err
-	}
 	resp, err := c.client.Do(req)
 	close(done)
 	if err != nil {
@@ -1299,7 +1308,7 @@ func (c *SignerClient) CancelSignRequestWithContext(ctx context.Context, request
 	}
 
 	var cancelResp CancelSignResponse
-	if err := json.NewDecoder(resp.Body).Decode(&cancelResp); err != nil {
+	if err := readAnswer(resp.Body, &cancelResp); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 	if cancelResp.Error != "" {
