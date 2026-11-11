@@ -132,6 +132,7 @@ import {
   checkSendOptions,
   decodeExecutableSignedGroup,
   describeSignedGroup,
+  earliestLastValid,
   runSimulation,
   signedGroupTransactions,
   simulationFailure,
@@ -4522,6 +4523,9 @@ export class SignerClient {
     }
 
     const result = emptySendResult(flow, group.transactions.length);
+    // The signer changes no validity round, so the prepared transactions say
+    // until when anything it releases for them can execute.
+    const lastValid = earliestLastValid(group.transactions.map((item) => item.transaction as Transaction));
     // The approval-bearing request whose answer released the group, for a
     // fault in describing what it signed.
     let released: { requestId: string; requests?: SignRequest[] };
@@ -4541,7 +4545,7 @@ export class SignerClient {
         // ended with no answer may have released a signature, and the last
         // of them releases the whole group. The mark names the request.
         if (isLostAnswer(error)) {
-          throw new SignOutcomeUnknownError({ requestId: lostAnswerRequestId(error), cause: error });
+          throw new SignOutcomeUnknownError({ requestId: lostAnswerRequestId(error), lastValid, cause: error });
         }
         throw error;
       }
@@ -4550,7 +4554,7 @@ export class SignerClient {
       result.cosigned = signed;
       released = { requestId: signed.boundedAssemblyResponse?.request_id ?? "" };
     } else {
-      const { response, requestId, requests } = await this.signForSend(group, signal);
+      const { response, requestId, requests } = await this.signForSend(group, lastValid, signal);
       result.signedGroup = [...(response.signed ?? [])];
       result.mutations = response.mutations;
       released = { requestId, requests };
@@ -4563,7 +4567,7 @@ export class SignerClient {
       // A fault in describing a signed group is not a refusal of it: the
       // signature is out.
       if (!(error instanceof SignerError)) {
-        throw new SignOutcomeUnknownError({ ...released, cause: error });
+        throw new SignOutcomeUnknownError({ ...released, lastValid, cause: error });
       }
       throw new SignerError(`verify signed group: ${errorText(error)}`);
     }
@@ -4666,6 +4670,7 @@ export class SignerClient {
    */
   private async signForSend(
     group: PreparedGroup,
+    lastValid: bigint,
     signal?: AbortSignal,
   ): Promise<{ response: GroupSignResponse; requestId: string; requests: SignRequest[] }> {
     const requests = preparedGroupToSignRequests(group);
@@ -4674,7 +4679,7 @@ export class SignerClient {
       return { response: await this.signRequests(requests, { requestId, signal }), requestId, requests };
     } catch (error) {
       if (isLostAnswer(error)) {
-        throw new SignOutcomeUnknownError({ requestId, requests, cause: error });
+        throw new SignOutcomeUnknownError({ requestId, requests, lastValid, cause: error });
       }
       throw error;
     }
@@ -4835,6 +4840,8 @@ export class SignerClient {
     }
     const requestId = options?.requestId || newSignRequestId();
     validateSignRequestId(requestId, true);
+    // The prepared group's rounds, which the signer does not change.
+    const lastValid = earliestLastValid(prepared.decoded());
 
     let data: RotatingSignResponse;
     try {
@@ -4848,7 +4855,7 @@ export class SignerClient {
       );
     } catch (error) {
       if (isLostAnswer(error)) {
-        throw new SignOutcomeUnknownError({ requestId, rotating: prepared, cause: error });
+        throw new SignOutcomeUnknownError({ requestId, rotating: prepared, lastValid, cause: error });
       }
       throw error;
     }
@@ -4859,7 +4866,7 @@ export class SignerClient {
       // A check that refuses the signed group is a plain error. A fault in
       // checking it is not: the signer answered, and the signature is out.
       if (!(error instanceof SignerError)) {
-        throw new SignOutcomeUnknownError({ requestId, rotating: prepared, cause: error });
+        throw new SignOutcomeUnknownError({ requestId, rotating: prepared, lastValid, cause: error });
       }
       throw verificationError("verify signer response: ", error);
     }
@@ -4953,6 +4960,8 @@ export class SignerClient {
       if (simulation.failed) {
         throw new RotatingPreflightError(prepared, simulation.failureMessage);
       }
+      // Read before anything is signed, so a later fault cannot lose it.
+      const preparedLastValid = earliestLastValid(prepared.decoded());
       // Nothing has been asked to sign yet, so an aborted signal is a plain
       // stop, not an unknown outcome.
       if (signal?.aborted) {
@@ -4991,7 +5000,12 @@ export class SignerClient {
       } catch (error) {
         // A fault in describing the signed group is not a refusal of it.
         if (!(error instanceof SignerError)) {
-          throw new SignOutcomeUnknownError({ requestId: signed.requestId, rotating: prepared, cause: error });
+          throw new SignOutcomeUnknownError({
+            requestId: signed.requestId,
+            rotating: prepared,
+            lastValid: preparedLastValid,
+            cause: error,
+          });
         }
         throw new SignerError(`verify signed group: ${errorText(error)}`);
       }

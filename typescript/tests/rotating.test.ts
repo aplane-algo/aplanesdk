@@ -841,6 +841,7 @@ describe("lost and refused sign answers", () => {
       assert.ok(error instanceof SignOutcomeUnknownError, String(error));
       assert.ok(error.rotating instanceof PreparedRotating, "want error.rotating instanceof PreparedRotating");
       assert.notEqual(error.requestId, "");
+      assert.equal(error.lastValid, txn.lastValid, "the rotating unknown outcome does not carry the prepared last valid round");
       unknown = error;
       return true;
     });
@@ -1332,6 +1333,7 @@ describe("a fault after the rotating sign answer", () => {
     assert.equal(error.requestId, signer.signRequests[0]?.request_id);
     assert.ok(error.rotating instanceof PreparedRotating, "want the prepared group");
     if (prepared) assert.equal(error.rotating, prepared);
+    assert.equal(error.lastValid, 110n, "the unknown outcome does not carry the prepared last valid round");
     assert.match(errorText(error), /injected fault in txID/);
     return true;
   };
@@ -1382,6 +1384,7 @@ describe("signPreparedRotating answer classification", () => {
     await assert.rejects(client.signPreparedRotating(prepared), (error: unknown) => {
       assert.ok(error instanceof SignOutcomeUnknownError, String(error));
       assert.equal(error.rotating, prepared);
+      assert.equal(error.lastValid, txn.lastValid, "the step call's unknown outcome does not carry the last valid round");
       return true;
     });
   });

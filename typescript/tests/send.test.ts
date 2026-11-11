@@ -32,7 +32,7 @@ import { describeSignedGroup, submitAndTrack, type SendResult } from "../src/sen
 import { SignerError, isLostAnswer, lostAnswerRequestId, markLostAnswer } from "../src/errors.js";
 import { bytesToBase64, encodeTransaction, hexToBytes } from "../src/encoding.js";
 import { readAnswer, type AnswerShape } from "../src/answers.js";
-import { fakeAccount, fakeAddress, fakePayment, planResponse, signEntries, signResponse, signedHex } from "./fakeSigner.js";
+import { fakeAccount, fakeAddress, fakePayment, planResponse, regroup, signEntries, signResponse, signedHex } from "./fakeSigner.js";
 import {
   FakeAlgod,
   SendSigner,
@@ -282,10 +282,31 @@ describe("sendPrepared", () => {
         assert.notEqual(error.requestId, "");
         assert.equal(error.requests?.length, 1);
         assert.equal(error.requests?.[0].auth_address, txn.sender.toString());
+        assert.equal(error.lastValid, txn.lastValid, "the error does not carry the transaction's last valid round");
         return true;
       });
       assert.equal(signer.count("/sign"), 1);
       assert.equal(node.submitted.length, 0);
+    });
+
+    it("an unknown outcome carries the earliest last valid round of the group", async () => {
+      const early = fakePayment(43, 44, 2);
+      early.lastValid = 500n;
+      const signer = new SendSigner([ordinaryKey(txn), ordinaryKey(early)], { sign: () => "drop" });
+      const { client, algod } = fixture(signer);
+      await assert.rejects(
+        client.sendPrepared(algod, {
+          transactions: [
+            { transaction: txn, authAddress: txn.sender.toString() },
+            { transaction: early, authAddress: early.sender.toString() },
+          ],
+        }),
+        (error: unknown) => {
+          assert.ok(error instanceof SignOutcomeUnknownError, String(error));
+          assert.equal(error.lastValid, 500n, `lastValid ${String(error.lastValid)}, want the group's earliest`);
+          return true;
+        },
+      );
     });
 
     // The cancel a send makes after a lost answer is best-effort: its own
@@ -544,6 +565,9 @@ describe("sendPrepared", () => {
             assert.ok(errorText(error).includes(test.text), errorText(error));
             assert.deepEqual(kept.signedGroup, [wantHex]);
             assert.deepEqual(kept.txIds, [wantId]);
+            if (error instanceof SubmissionUncertainError) {
+              assert.equal(error.lastValid, txn.lastValid, "the error does not carry the signed group's last valid round");
+            }
             return true;
           },
         );
@@ -677,6 +701,7 @@ describe("sendPrepared", () => {
         (error: unknown) => {
           assert.ok(error instanceof SubmissionUncertainError, String(error));
           assert.equal(error.stage, "unsent");
+          assert.equal(error.lastValid, txn.lastValid, "an unsent group's error does not carry its last valid round");
           assert.ok(error.cause instanceof SignerUnavailableError, "want error.cause instanceof SignerUnavailableError");
           assert.match(errorText(error.cause), /aborted by caller/);
           return true;
@@ -724,6 +749,26 @@ describe("sendPrepared", () => {
     await assert.rejects(
       new SignerClient(SIGNER).submitSignedGroup(node as any, [signedHex(txn) + "00"]),
       /verify signed group/,
+    );
+  });
+
+  it("submitSignedGroup's uncertain outcome carries the earliest last valid round of the signed group", async () => {
+    const first = fakePayment(41, 42, 1);
+    const second = fakePayment(43, 44, 2);
+    second.lastValid = 700n;
+    const group = regroup([first, second]);
+    const node = new FakeAlgod();
+    node.submit = () => {
+      throw new TypeError("fetch failed");
+    };
+    await assert.rejects(
+      new SignerClient(SIGNER).submitSignedGroup(node as any, group.map((txn) => signedHex(txn))),
+      (error: unknown) => {
+        assert.ok(error instanceof SubmissionUncertainError, String(error));
+        assert.equal(error.stage, "submit");
+        assert.equal(error.lastValid, 700n, `lastValid ${String(error.lastValid)}, want the group's earliest`);
+        return true;
+      },
     );
   });
 });
@@ -906,6 +951,7 @@ describe("sendPrepared with a cosigned account", () => {
           (error: unknown) => {
             assert.equal(error instanceof SignOutcomeUnknownError, unknown, String(error));
             if (error instanceof SignOutcomeUnknownError) {
+              assert.equal(error.lastValid, txn.lastValid, "the cosigned unknown outcome does not carry the last valid round");
               // The error names the request whose answer was lost.
               const path = fault.split(" ")[0];
               assert.ok(requestIds[path], `no request ID was posted to ${path}`);
@@ -1113,8 +1159,9 @@ describe("a fault after a signed answer", () => {
     };
     return { signer, asked };
   };
-  const unknownFrom = (asked: { requestId: string }, requests = true) => (error: unknown) => {
+  const unknownFrom = (asked: { requestId: string }, requests = true, lastValid = txn.lastValid) => (error: unknown) => {
     assert.ok(error instanceof SignOutcomeUnknownError, String(error));
+    assert.equal(error.lastValid, lastValid, "the unknown outcome does not carry the last valid round");
     assert.ok(fault?.fired(), "the fault was not injected");
     assert.notEqual(asked.requestId, "");
     assert.equal(error.requestId, asked.requestId);
@@ -1185,7 +1232,7 @@ describe("a fault after a signed answer", () => {
             cosignerClient,
             cosignerComponentKey: "COSIGNER_COMPONENT",
           }),
-          (error: unknown) => unknownFrom({ requestId: requestIds[named] }, false)(error),
+          (error: unknown) => unknownFrom({ requestId: requestIds[named] }, false, spend.lastValid)(error),
         );
         assert.equal(node.submitted.length, 0);
       });
