@@ -521,28 +521,40 @@ def _approval_answer(
 ) -> Dict[str, Any]:
     """Read the JSON object an approval-bearing request was answered with.
 
-    A 200 whose body is not a JSON object, or whose fields do not have the
-    wire types in ``shape``, is an answer that could not be read, not a
-    refusal: the signer may have released a signature. The Go SDK decodes
-    the same answer into typed structs and treats it the same way. ``what``
-    begins the error's message, and ``shape_what``, when given, that of a
-    field of the wrong type. A well-typed answer is checked by the caller.
+    The reading rule all three SDKs share: the body is exactly one JSON
+    object; a field left out or null takes its zero value, and so does a null
+    entry in a list; an unknown field is ignored. Anything else (a field of
+    the wrong type, a number outside the field's range, a null or non-object
+    body, an empty or cut-off body, anything after the object, a non-finite
+    number) is an answer that could not be read, not a refusal: the signer
+    may have released a signature. ``what`` begins the error's message, and
+    ``shape_what``, when given, that of a field of the wrong type. A
+    well-typed answer is checked by the caller.
     """
     try:
-        data = resp.json()
+        data = _read_json(resp)
     except ValueError as e:
         raise _AnswerUnreadError(f"{what}: {resp.text[:200]}") from e
-    # JSON null decodes into a typed struct as nothing at all.
-    if data is None:
-        data = {}
     if not isinstance(data, dict):
-        raise _AnswerUnreadError(f"{what}: the answer is not a JSON object")
+        what_it_is = "null" if data is None else "not a JSON object"
+        raise _AnswerUnreadError(f"{what}: the answer is {what_it_is}")
     if shape is not None:
         try:
             _check_wire_shape(data, shape, "answer")
         except _WireShapeError as e:
             raise _AnswerUnreadError(f"{shape_what or what}: {e}") from e
     return data
+
+
+def _refuse_json_constant(name: str) -> Any:
+    raise ValueError(f"{name} is not a JSON number")
+
+
+def _read_json(resp: requests.Response) -> Any:
+    """A response body as exactly one JSON value. Python's reader takes NaN
+    and Infinity, which JSON does not have; they are refused. Trailing text
+    and an empty body are refused by the reader itself."""
+    return resp.json(parse_constant=_refuse_json_constant)
 
 
 class _WireShapeError(Exception):
@@ -639,6 +651,14 @@ _GROUP_SIGN_RESPONSE_SHAPE: Dict[str, Any] = {
     "mutations": _MUTATION_REPORT_SHAPE,
     "error": "str",
 }
+_ROTATING_PREPARE_RESPONSE_SHAPE: Dict[str, Any] = {
+    "account": "str",
+    "stage": "uint64",
+    "target": "uint64",
+    "rekey_to": "str",
+    "transactions": "strs",
+    "mutations": _MUTATION_REPORT_SHAPE,
+}
 _ROTATING_SIGN_RESPONSE_SHAPE: Dict[str, Any] = {
     "signed": "strs",
     "stage": "uint64",
@@ -666,19 +686,36 @@ _COMPONENT_RESPONSE_SHAPE: Dict[str, Any] = {
 _ASSEMBLY_RESPONSE_SHAPE: Dict[str, Any] = {"request_id": "str", "signed_group": "strs"}
 
 
+def _wire_zero(kind: Any) -> Any:
+    """The zero value of a wire type: None for an object, which Go holds by
+    pointer."""
+    if isinstance(kind, dict):
+        return None
+    if isinstance(kind, tuple) or kind in ("strs", "ints"):
+        return []
+    return {"str": "", "int": 0, "uint64": 0, "bool": False, "str_map": {}}[kind]
+
+
+def _typed_answer(data: Dict[str, Any], shape: Dict[str, Any]) -> Dict[str, Any]:
+    """The fields of shape, as the Go SDK decodes them into a struct: each of
+    its wire type (_WireShapeError otherwise), and one left out or sent as
+    null at its zero value."""
+    answer = {name: data.get(name) for name in shape}
+    _check_wire_shape(answer, shape, "answer")
+    return {
+        name: _wire_zero(shape[name]) if value is None else value for name, value in answer.items()
+    }
+
+
 def _rotating_sign_answer(data: Dict[str, Any]) -> Dict[str, Any]:
-    """A /sign/rotating/sign answer as the Go SDK decodes it: each field of
-    its wire type, and one left out or sent as null at its zero value. A
-    field of another type makes the answer unreadable (_AnswerUnreadError)."""
-    answer = {name: data.get(name) for name in _ROTATING_SIGN_RESPONSE_SHAPE}
+    """A /sign/rotating/sign answer as the Go SDK decodes it. A field of
+    another type makes the answer unreadable (_AnswerUnreadError)."""
     try:
-        _check_wire_shape(answer, _ROTATING_SIGN_RESPONSE_SHAPE, "answer")
+        return _typed_answer(data, _ROTATING_SIGN_RESPONSE_SHAPE)
     except _WireShapeError as e:
         raise _AnswerUnreadError(
             f"verify signer response: the answer could not be read: {e}"
         ) from e
-    zeros: Dict[str, Any] = {"signed": [], "stage": 0, "target": 0, "txid": "", "group_id": ""}
-    return {name: zeros[name] if value is None else value for name, value in answer.items()}
 
 
 # -----------------------------------------------------------------------------
@@ -2267,9 +2304,16 @@ def _validate_group_mutations(
     if mutations is not None and not isinstance(mutations, dict):
         raise SignerError("mutation report must be a mapping")
     report: Dict[str, Any] = mutations or {}
-    group_id_changed = report.get("group_id_changed") or False
+    # Each field is read as the Go SDK's typed decoding reads it: absent or
+    # null is the zero value, and anything of another type is refused.
+    group_id_changed = report.get("group_id_changed")
+    if group_id_changed is None:
+        group_id_changed = False
     if not isinstance(group_id_changed, bool):
         raise SignerError("mutation group_id_changed must be a boolean")
+    reason = report.get("reason")
+    if reason is not None and not isinstance(reason, str):
+        raise SignerError("mutation reason must be a string")
     if mutations is None:
         if appended:
             raise SignerError(
@@ -2314,7 +2358,9 @@ def _validate_group_mutations(
         )
 
     fee_modified = set()
-    raw_fee_modified = report.get("fees_modified") or []
+    raw_fee_modified = report.get("fees_modified")
+    if raw_fee_modified is None:
+        raw_fee_modified = []
     if not isinstance(raw_fee_modified, list):
         raise SignerError("mutation fees_modified must be a list")
     for index in raw_fee_modified:
@@ -6811,11 +6857,19 @@ class SignerClient:
             raise SignerUnavailableError(f"Failed to connect: {e}") from e
         if resp.status_code != 200:
             raise self._signing_http_error(resp, "Rotating prepare failed")
+        # Read by the same rule as a sign answer, but preparing releases
+        # nothing: an answer that cannot be read is a plain failure.
         try:
-            data = resp.json()
+            data = _read_json(resp)
         except ValueError as e:
             raise SignerError(f"Server returned invalid JSON: {resp.text[:200]}") from e
-        return _new_prepared_rotating(original, data, max_fee_increase, app_call_info)
+        if not isinstance(data, dict):
+            raise SignerError("failed to decode response: the prepare answer is not a JSON object")
+        try:
+            answer = _typed_answer(data, _ROTATING_PREPARE_RESPONSE_SHAPE)
+        except _WireShapeError as e:
+            raise SignerError(f"failed to decode response: {e}") from e
+        return _new_prepared_rotating(original, answer, max_fee_increase, app_call_info)
 
     def simulate_prepared_rotating(
         self, algod_client: Any, prepared: "PreparedRotating"

@@ -18,7 +18,12 @@ from pathlib import Path
 import pytest
 from algosdk import encoding
 
-from aplanesdk import MaxFeeIncreaseError, SignerError
+from aplanesdk import (
+    MaxFeeIncreaseError,
+    RotatingSignResult,
+    SignerError,
+    SignOutcomeUnknownError,
+)
 from aplanesdk.signer import (
     _AnswerUnreadError,
     _new_prepared_rotating,
@@ -27,12 +32,15 @@ from aplanesdk.signer import (
     encode_transaction,
 )
 from tests.send_fakes import (
-    alternate_spelling,
+    HTTPFake,
     decode_map,
     encode_map,
     program_address,
     regroup,
+    reply,
     set_prepared,
+    signer_client,
+    status_body,
 )
 from tests.test_rotating import PREPARE_TAMPERS, SIGN_TAMPERS
 
@@ -133,26 +141,72 @@ def test_the_alterations_are_the_ones_this_sdk_tests_directly():
     assert {case[0] for case in SIGN_TAMPERS} <= sign_names
 
 
-@pytest.mark.parametrize("name", sorted(CASES))
-def test_another_spelling_of_the_rekey_target_is_refused(name):
-    # The group bytes are unchanged: they carry the target's 32 bytes, which
-    # both spellings decode to. Only the address check can refuse it.
-    case = CASES[name]
-    prepare = copy.deepcopy(case["prepare"])
-    prepare["rekey_to"] = alternate_spelling(prepare["rekey_to"])
-    with pytest.raises(SignerError, match="invalid rekey_to") as excinfo:
-        prepared_from(case, prepare)
-    assert_verifier_refusal(excinfo.value)
+@pytest.fixture(scope="module")
+def raw_signer():
+    """A signer that answers each sign request with the raw body it is set
+    to, through the SDK's real transport."""
+
+    class Signer:
+        body = b""
+
+        def app(self, method, path, request):
+            if path == "/status":
+                return reply(200, status_body())
+            if path == "/sign/cancel":
+                return reply(200, {"success": True, "state": "canceled"})
+            if path == "/sign/rotating/sign":
+                return (200, self.body, "application/json")
+            raise AssertionError(f"unexpected signer path {path}")
+
+    signer = Signer()
+    signer.http = HTTPFake(signer.app)
+    yield signer
+    signer.http.close()
 
 
-@pytest.mark.parametrize("name", sorted(CASES))
-def test_another_spelling_of_the_account_is_refused(name):
-    case = CASES[name]
-    prepare = copy.deepcopy(case["prepare"])
-    prepare["account"] = alternate_spelling(prepare["account"])
-    with pytest.raises(SignerError, match="is not the sender") as excinfo:
-        prepared_from(case, prepare)
-    assert_verifier_refusal(excinfo.value)
+@pytest.mark.parametrize(
+    "entry",
+    VECTORS["sign_answer_bodies"],
+    ids=[f"{entry['case']}: {entry['name']}" for entry in VECTORS["sign_answer_bodies"]],
+)
+def test_every_raw_sign_answer_is_read_as_the_vectors_say(raw_signer, entry):
+    # The body answers a sign request for the case's own prepared group. The
+    # class is decided by how the transport reads it and the checks after.
+    case = CASES[entry["case"]]
+    prepared = prepared_from(case, case["prepare"])
+    raw_signer.body = entry["body"].encode()
+    client = signer_client(raw_signer.http.url)
+
+    if entry["expect"] == "accepted":
+        result = client.sign_prepared_rotating(prepared)
+        assert isinstance(result, RotatingSignResult)
+        assert result.signed_group == case["sign"]["signed"]
+    elif entry["expect"] == "refused":
+        with pytest.raises(SignerError) as excinfo:
+            client.sign_prepared_rotating(prepared)
+        assert not isinstance(excinfo.value, SignOutcomeUnknownError)
+        assert_verifier_refusal(excinfo.value)
+    elif entry["expect"] == "unknown":
+        with pytest.raises(SignOutcomeUnknownError) as excinfo:
+            client.sign_prepared_rotating(prepared)
+        assert excinfo.value.rotating is prepared
+    else:
+        raise AssertionError(f"unknown expectation {entry['expect']!r}")
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+@pytest.mark.parametrize("field", ["stage", "extra"])
+def test_a_sign_answer_with_a_non_finite_number_is_unreadable(raw_signer, constant, field):
+    # JSON has no such numbers, so the body is not JSON, even where the
+    # number is in a field the client would otherwise ignore. Python's reader
+    # would take them.
+    case = CASES["wotsc_stage2"]
+    prepared = prepared_from(case, case["prepare"])
+    answer = dict(case["sign"], **{field: "PLACEHOLDER"})
+    body = json.dumps(answer).replace('"PLACEHOLDER"', constant)
+    raw_signer.body = body.encode()
+    with pytest.raises(SignOutcomeUnknownError):
+        signer_client(raw_signer.http.url).sign_prepared_rotating(prepared)
 
 
 # The two rules the vectors cannot carry, because they depend on the client's

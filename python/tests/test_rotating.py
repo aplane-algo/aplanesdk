@@ -57,6 +57,7 @@ from tests.send_fakes import (
     HTTPFake,
     RotatingSigner,
     SendSigner,
+    alternate_spelling,
     decode_map,
     key,
     program_address,
@@ -289,6 +290,16 @@ PREPARE_TAMPERS = [
         _field("rekey_to", lambda r: r["account"]),
         "rekey_to must be another, non-zero address",
     ),
+    (
+        "reported rekey target in another spelling of its address",
+        _field("rekey_to", lambda r: alternate_spelling(r["rekey_to"])),
+        "invalid rekey_to",
+    ),
+    (
+        "account in another spelling of the sender",
+        _field("account", lambda r: alternate_spelling(r["account"])),
+        "is not the sender",
+    ),
     ("reported rekey target is not an address", _field("rekey_to", "nonsense"), "invalid rekey_to"),
     (
         "fee raised more than reported",
@@ -386,8 +397,87 @@ def test_prepare_rotating_refuses_a_stage_that_is_not_a_uint64(fakes, stage, tar
         response["stage"], response["target"] = stage, target
 
     f.signer.alter_prepare = alter
-    with pytest.raises(SignerError, match="verify prepared rotating group"):
+    # Refused where the answer is read, or by the check after: a plain
+    # failure either way, since preparing releases nothing.
+    with pytest.raises(SignerError, match="failed to decode response|verify prepared") as e:
         f.client.prepare_rotating(f.txn)
+    assert not isinstance(e.value, SignOutcomeUnknownError)
+    assert f.signer.count("/sign/rotating/sign") == 0
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("group_id_changed", 0),
+        ("group_id_changed", "true"),
+        ("fees_modified", 0),
+        ("fees_modified", ""),
+        ("fees_modified", {}),
+        ("fees_modified", [0.0]),
+        ("reason", 5),
+        ("total_fees_delta", "1000"),
+        ("dummies_added", 1 << 63),
+    ],
+)
+def test_prepare_answers_mutation_report_is_typed_as_go_decodes_it(fakes, field, value):
+    # A plain failure: preparing releases nothing.
+    f = Fixture(fakes)
+
+    def alter(response, txns):
+        response["mutations"][field] = value
+
+    f.signer.alter_prepare = alter
+    with pytest.raises(SignerError, match="failed to decode response") as excinfo:
+        f.client.prepare_rotating(f.txn)
+    assert not isinstance(excinfo.value, SignOutcomeUnknownError)
+
+
+@pytest.mark.parametrize("body", [b"null", b"[]", b"", b"{} {}", b'{"stage": NaN}'])
+def test_an_unreadable_prepare_answer_is_a_plain_failure(fakes, body):
+    f = Fixture(fakes)
+
+    def app(method, path, request):
+        if path == "/sign/rotating/prepare":
+            return (200, body, "application/json")
+        return f.signer.app(method, path, request)
+
+    other = fakes(_Fake(app))
+    with pytest.raises(SignerError) as excinfo:
+        signer_client(other.http.url).prepare_rotating(f.txn)
+    assert not isinstance(excinfo.value, SignOutcomeUnknownError)
+
+
+def test_a_prepare_answer_field_left_out_takes_its_zero_value(fakes):
+    # As in Go's typed decoding: a stage left out is stage 0.
+    account = program_address(ROTATING_TEST_PROGRAM)
+    f = Fixture(fakes, RotatingSigner(account, stage=0, dummies=0, charge=0))
+
+    def alter(response, txns):
+        del response["stage"]
+        response["mutations"] = None
+
+    f.signer.alter_prepare = alter
+    prepared = f.client.prepare_rotating(rotating_payment(account, 10, 110))
+    assert prepared.stage == 0 and prepared.target == 1
+
+
+@pytest.mark.parametrize(
+    "field,value", [("group_id_changed", 0), ("fees_modified", 0), ("reason", 5)]
+)
+def test_a_plan_report_is_typed_as_go_decodes_it(field, value):
+    # The /plan check shares the mutation report check, so it reads the same
+    # fields the same way.
+    from unittest.mock import patch
+
+    client = signer_client("http://127.0.0.1:9")
+    txn = fake_signer.payment(41, 42)
+
+    def tamper(body):
+        body.setdefault("mutations", {"original_count": 1, "final_count": 1})[field] = value
+
+    with patch.object(client.session, "post", side_effect=fake_signer.signer_post(tamper=tamper)):
+        with pytest.raises(SignerError, match="verify signer plan"):
+            client.plan_group([txn])
 
 
 # -----------------------------------------------------------------------------
