@@ -355,9 +355,28 @@ payment.
   `"submitted"`. `waitRounds` is how many further rounds to wait for
   confirmation (default 10). A cosigned account needs `cosignerClient` with
   `cosignerComponentKey`, or a `cosignerResolver`; the SDK does not close a
-  cosigner client you pass. `signal` is an `AbortSignal`: an abort before
-  anything is asked of the signer is a plain stop, and the send passes it to
-  its signing, rotating prepare and algod requests.
+  cosigner client you pass. `signal` is an `AbortSignal`; see
+  **Cancellation** below.
+- **Cancellation.** The send checks `signal` before it asks the signer
+  anything, before the ordinary `/sign` and before the rotating sign, and an
+  abort found there is a plain stop: a `SignerUnavailableError` ("Request
+  aborted by caller"), not an unknown outcome. Inside the cosigned sequence an
+  abort ends the next step's request, which counts as a lost answer
+  (`SignOutcomeUnknownError`), as in the Go SDK. Once the group is signed, an
+  abort before it is sent is a `SubmissionUncertainError` at stage `"unsent"`.
+  These requests take the signal and are aborted with it: `/sign` (including
+  the cosigned sequence's other positions), the cosigned `/sign/component`
+  requests (yours and the cosigner's) and `/sign/assemble`, the rotating
+  `/sign/rotating/prepare` and `/sign/rotating/sign`, and every algod request
+  the send makes (the account lookup for an account that left rotation, round
+  reads, the suggested parameters for rebuilt rounds, the simulation, the
+  submission and the confirmation wait). These do not, and run to completion
+  or their own timeout: the prepare step inside `sendPayment` (its algod and
+  key lookups), the key listing (`/status` and `/keys`) that picks the flow
+  and the cosigned sequence's own key listing, the cosigned `/plan`, and the
+  `/status` call that discovers the approval wait. None of them signs
+  anything. The best-effort `/sign/cancel` sent after an aborted or lost
+  signing request uses its own short timeout.
 - **Refused before signing:** an unknown signing flow
   (`UnsupportedSigningFlowError`), and a pre-signed or foreign position
   (`UnsupportedGroupError`). Use the lower-level signing calls for those
@@ -448,10 +467,12 @@ const signed = await client.signPreparedRotating(prepared);                  // 
 const result = await client.submitSignedGroup(algodClient, signed.signedGroup);
 ```
 
-A `PreparedRotating` cannot be changed after it is made: every value it hands
-out is a copy, and it is checked again when it is simulated or signed. Submit a
-signed rotating group promptly: the stage's one-time keys are revealed until
-that transaction or a later rotation confirms.
+A `PreparedRotating` cannot be changed after it is made: its state is in
+private fields, every value it hands out is a copy, and it is checked again
+when it is simulated or signed. Only one that `prepareRotating` made is
+accepted; an object built on its prototype is refused before any request is
+made. Submit a signed rotating group promptly: the stage's one-time keys are
+revealed until that transaction or a later rotation confirms.
 
 **If a sign answer is lost** (`SignOutcomeUnknownError`, whose `rotating`
 field holds the prepared group), call `signPreparedRotating` again with that
