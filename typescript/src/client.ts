@@ -11,6 +11,7 @@ import type {
   KeyInfo,
   AccountInfoLookup,
   AccountInfoResult,
+  AuthAddressValue,
   ConnectSshOptions,
   FromEnvOptions,
   PaymentPrepParams,
@@ -1444,12 +1445,20 @@ function extractAuthAddress(accountInfo: AccountInfoResult): string {
   }
   // algosdk v3 returns the auth address as an Address object, which never
   // compares equal to an address string; raw algod JSON carries a string.
-  const authAddress =
-    accountInfo["auth-addr"] ||
-    accountInfo.auth_addr ||
-    accountInfo.authAddr ||
-    accountInfo.authAddress;
-  return authAddress ? authAddress.toString() : "";
+  const info = accountInfo as {
+    "auth-addr"?: AuthAddressValue | null;
+    auth_addr?: AuthAddressValue | null;
+    authAddr?: AuthAddressValue | null;
+    authAddress?: AuthAddressValue | null;
+  };
+  const authAddress = info["auth-addr"] || info.auth_addr || info.authAddr || info.authAddress;
+  if (authAddress) {
+    return authAddress.toString();
+  }
+  // A lookup may return the auth address itself rather than account
+  // information, and from algosdk that is an Address object too.
+  const direct = String(accountInfo);
+  return algosdk.isValidAddress(direct) ? direct : "";
 }
 
 function findSpendableKey(keys: KeyInfo[], address: string): KeyInfo | undefined {
@@ -3893,11 +3902,12 @@ export class SignerClient {
         } catch (error) {
           throw new SignerError(`invalid passthrough[${i}]: ${errorText(error)}`);
         }
-        // A passthrough position matches the auth address given for it and
-        // the sender and signer its signed bytes name.
-        for (const address of [authAddr, slot.txn.sender.toString(), slot.signer]) {
-          if (address) matchedLsigArgs.add(address);
-        }
+        // A passthrough position's authorizer is whoever signed it: the
+        // signer its bytes name, or the sender when they name none. An auth
+        // address given for the position counts too. The sender of a rekeyed
+        // account is not its authorizer.
+        if (authAddr) matchedLsigArgs.add(authAddr);
+        matchedLsigArgs.add(slot.signer ?? slot.txn.sender.toString());
         const request: SignRequest = { signed_txn_hex: signedBytes.toString("hex") };
         const resources = lsigResourcesByIndex.get(i);
         if (resources) {
@@ -3966,11 +3976,13 @@ export class SignerClient {
       signRequests.push(req);
     }
 
-    // Args keyed under an address that is no position's auth address are a
-    // mistake, and dropping them would sign without them; an optional arg
-    // left out can select a different authorization branch. A key that
-    // matches a passthrough or foreign position is fine: the same map can
-    // serve several calls over one group. An entry with no args is ignored.
+    // Args keyed under an address that authorizes no position are a mistake,
+    // and dropping them would sign without them; an optional arg left out can
+    // select a different authorization branch. A position's authorizer is its
+    // auth address, never its sender when the two differ. A key that is the
+    // authorizer of a passthrough or foreign position is fine: the same map
+    // can serve several calls over one group. An entry with no args is
+    // ignored.
     const unmatched = Object.entries(lsigArgsMap ?? {})
       .filter(([address, args]) =>
         args && Object.keys(args).length > 0 && !matchedLsigArgs.has(address))

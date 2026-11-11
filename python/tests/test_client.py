@@ -2323,9 +2323,9 @@ class TestSignRequests:
         client = make_client()
         canonical = encode_transaction(fake_signer.payment())[0]
         with patch.object(client.session, "post") as mock_post:
-            with pytest.raises(ValueError, match="missing TX prefix"):
+            with pytest.raises(SignerError, match="invalid sign request: transaction 1: txn_bytes_hex: missing TX prefix"):
                 client.sign_requests([{"txn_bytes_hex": canonical[4:], "auth_address": "AUTH"}])
-            with pytest.raises(ValueError, match="invalid msgpack|not canonical"):
+            with pytest.raises(SignerError, match="invalid msgpack|not canonical"):
                 client.sign_requests([{"txn_bytes_hex": canonical + "00", "auth_address": "AUTH"}])
         mock_post.assert_not_called()
 
@@ -2544,6 +2544,51 @@ class TestBuildSignRequests:
                 grouped, lsig_args_map=args, passthrough={1: signed_second}
             )
         assert signed[1] == signed_second
+
+    def test_lsig_args_are_matched_to_the_authorizer_not_a_rekeyed_sender(self):
+        # Args keyed under the sender of a rekeyed account would be sent with
+        # no position, and the signature made without them.
+        client = make_client()
+        sender = fake_signer.account(41)  # S, rekeyed
+        passthrough_key = fake_signer.account(45)  # K, signed position 1 for S
+        lsig = fake_signer.lsig_account(7)  # L, signs position 2 for S
+        grouped = [
+            fake_signer.payment(41, 42, 1, sender=sender),
+            fake_signer.payment(41, 43, 2, sender=sender),
+        ]
+        transaction.assign_group_id(grouped)
+        # Position 1 was signed by K on S's behalf, so its signed bytes name K.
+        # (Signed by S itself, S would be that position's authorizer and a key
+        # under S would rightly match it.)
+        presigned = fake_signer.authorize(grouped[0], passthrough_key)
+        assert presigned.authorizing_address == passthrough_key
+        passthrough = {
+            0: base64.b64encode(bytes.fromhex(fake_signer.encode_signed(presigned))).decode()
+        }
+        auths = [None, lsig]
+        args = {"preimage": b"secret"}
+        error = "no transaction in the request has auth address"
+
+        def build(lsig_args_map):
+            return client._build_sign_requests(
+                grouped, auths, lsig_args_map, passthrough=passthrough, allow_foreign=False
+            )
+
+        with pytest.raises(ValueError, match=error):
+            build({sender: args})
+        # The same without the passthrough: a sign position's sender is not
+        # its authorizer.
+        with pytest.raises(ValueError, match=error):
+            client._build_sign_requests([grouped[1]], [lsig], {sender: args})
+
+        # Keyed under the authorizer, the args are sent with its position.
+        entries = build({lsig: args})
+        assert entries[1]["lsig_args"] == {"preimage": b"secret".hex()}
+        assert "lsig_args" not in entries[0]
+        # Keyed under the passthrough's signer, they are accepted and not
+        # sent: one map serves the call where K signs and this one.
+        entries = build({passthrough_key: args, lsig: args})
+        assert set(entries[0]) == {"signed_txn_hex"}
 
     def test_carries_lsig_resources_on_passthrough(self):
         client = make_client()

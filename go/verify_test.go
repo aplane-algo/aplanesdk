@@ -1176,3 +1176,58 @@ func TestValidateSignResponseAcceptsCapturedSignerResponses(t *testing.T) {
 		t.Fatalf("dummy with a changed authorization: error = %v", err)
 	}
 }
+
+// LogicSig args are matched to each position's authorizer, never to the
+// sender of a rekeyed account: args keyed under such a sender would be sent
+// with no position and the signature made without them.
+func TestBuildSignRequestsMatchesLsigArgsToTheAuthorizer(t *testing.T) {
+	sender := fakeAccount(41)         // S, rekeyed
+	passthroughKey := fakeAccount(45) // K, signed position 1 for S
+	lsig := fakeLogicSigAccount(7)    // L, signs position 2 for S
+	senderAddr, _ := types.DecodeAddress(sender)
+	first := verifyTestPayment(t, 41, 42, 1)
+	second := verifyTestPayment(t, 41, 43, 2)
+	first.Sender, second.Sender = senderAddr, senderAddr
+	grouped, err := transaction.AssignGroupID([]types.Transaction{first, second}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Position 1 was signed by K on S's behalf, so its signed bytes name K.
+	// (Signed by S itself, S would be that position's authorizer and a key
+	// under S would rightly match it.)
+	presigned := fakeAuthorize(grouped[0], passthroughKey)
+	if presigned.AuthAddr.String() != passthroughKey {
+		t.Fatalf("test setup: passthrough signer = %s, want %s", presigned.AuthAddr, passthroughKey)
+	}
+	opts := &SignOptions{Passthrough: map[int]string{0: base64.StdEncoding.EncodeToString(msgpack.Encode(presigned))}}
+	auths := []string{"", lsig}
+	args := LsigArgs{"preimage": []byte("secret")}
+	const want = "no transaction in the request has auth address"
+
+	// Keyed under the sender, which authorizes neither position.
+	if _, err := buildSignRequestsWithOptions(grouped, auths, LsigArgsMap{sender: args}, opts); err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("args keyed under a rekeyed sender: error = %v, want %q", err, want)
+	}
+	// The same without the passthrough: a sign position's sender is not its authorizer.
+	if _, err := buildSignRequests([]types.Transaction{second}, []string{lsig}, LsigArgsMap{sender: args}); err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("args keyed under a sign position's sender: error = %v, want %q", err, want)
+	}
+
+	// Keyed under the authorizer, the args are sent with its position.
+	requests, err := buildSignRequestsWithOptions(grouped, auths, LsigArgsMap{lsig: args}, opts)
+	if err != nil {
+		t.Fatalf("args keyed under the auth address: %v", err)
+	}
+	if requests[1].LsigArgs["preimage"] != hex.EncodeToString([]byte("secret")) || requests[0].LsigArgs != nil {
+		t.Fatalf("requests = %+v, want the args on the signed position", requests)
+	}
+	// Keyed under the passthrough's signer, they are accepted and not sent:
+	// one map serves the call where K signs and this one, where K has signed.
+	requests, err = buildSignRequestsWithOptions(grouped, auths, LsigArgsMap{passthroughKey: args, lsig: args}, opts)
+	if err != nil {
+		t.Fatalf("args keyed under the passthrough's signer: %v", err)
+	}
+	if requests[0].LsigArgs != nil {
+		t.Fatalf("passthrough request carries args: %+v", requests[0])
+	}
+}

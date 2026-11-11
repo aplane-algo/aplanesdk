@@ -54,6 +54,8 @@ from typing import Optional, Dict, List, Any, Callable, cast
 from urllib.parse import urlparse
 
 from algosdk import abi, constants, encoding, transaction
+from algosdk import error as algosdk_error
+from nacl.exceptions import BadSignatureError
 from nacl.signing import VerifyKey
 from algosdk.v2client import models
 
@@ -190,6 +192,21 @@ class SignerError(Exception):
     def __init__(self, *args, code: str = ""):
         super().__init__(*args)
         self.code = code
+
+
+def _verification_error(prefix: str, error: Exception) -> SignerError:
+    """Word a failed check of a signer result.
+
+    A refusal by one of the checks is a SignerError and is passed on as it
+    reads. Anything else is a fault in the checking itself, and says so by
+    naming the exception, so an SDK defect is not reported as the signer
+    having sent something wrong.
+    """
+    if isinstance(error, SignerError):
+        return SignerError(f"{prefix}{error}")
+    return SignerError(
+        f"{prefix}the check itself failed with {type(error).__name__}: {error}"
+    )
 
 
 class AuthenticationError(SignerError):
@@ -1332,15 +1349,19 @@ def _validate_authorization(signed: Any, auth: str) -> None:
         raise SignerError(f"names signer {named}, not the requested auth address {auth}")
 
     if isinstance(signed, transaction.SignedTransaction):
+        signature = base64.b64decode(signed.signature or "")
+        if len(signature) != 64:
+            raise SignerError(f"signature is {len(signature)} bytes, not 64")
+        message = bytes.fromhex(encode_transaction(txn)[0])
         try:
-            signature = base64.b64decode(signed.signature or "")
-            VerifyKey(encoding.decode_address(auth)).verify(
-                bytes.fromhex(encode_transaction(txn)[0]), signature
-            )
-        except Exception:
+            VerifyKey(encoding.decode_address(auth)).verify(message, signature)
+        except BadSignatureError as e:
+            # Only the library's own verdict reads as a failed verification.
+            # Anything else that goes wrong here is not the signer's doing and
+            # is left for the caller to report as what it is.
             raise SignerError(
                 f"signature does not verify under the requested auth address {auth}"
-            ) from None
+            ) from e
     elif isinstance(signed, transaction.LogicSigTransaction):
         lsig = signed.lsig
         if not lsig.logic:
@@ -1365,7 +1386,11 @@ def _validate_authorization(signed: Any, auth: str) -> None:
             raise SignerError("post-quantum authorization is missing its public key or signature")
         try:
             derived = encoding.address_from_pq_sig(proof)
-        except Exception as e:
+        except (
+            algosdk_error.InvalidPQSaltError,
+            algosdk_error.PQSchemeLengthError,
+            algosdk_error.NoCanonicalSaltError,
+        ) as e:
             raise SignerError(f"post-quantum key's address cannot be derived: {e}") from e
         if derived != auth:
             raise SignerError(
@@ -1439,7 +1464,11 @@ def _group_id_bytes(txn: transaction.Transaction) -> Optional[bytes]:
 
 
 def _decode_request_slots(sign_entries: List[Dict[str, Any]]) -> List[_RequestSlot]:
-    """Decode every request entry before it is sent to the signer."""
+    """Decode every request entry before it is sent to the signer.
+
+    Malformed request bytes raise SignerError, as the signer's own refusal of
+    them would.
+    """
     slots = []
     for index, entry in enumerate(sign_entries, start=1):
         mode = _sign_request_mode(entry)
@@ -1447,27 +1476,29 @@ def _decode_request_slots(sign_entries: List[Dict[str, Any]]) -> List[_RequestSl
             try:
                 raw = _strict_hex(entry["signed_txn_hex"])
             except (TypeError, ValueError) as e:
-                raise ValueError(f"transaction {index}: signed_txn_hex is invalid hex: {e}") from e
+                raise SignerError(
+                    f"transaction {index}: signed_txn_hex is invalid hex: {e}"
+                ) from e
             try:
                 slots.append(_decode_passthrough_slot(raw))
             except SignerError as e:
-                raise ValueError(f"transaction {index}: passthrough transaction: {e}") from e
+                raise SignerError(f"transaction {index}: passthrough transaction: {e}") from e
             continue
         try:
             raw = _strict_hex(entry["txn_bytes_hex"])
         except (TypeError, ValueError) as e:
-            raise ValueError(f"transaction {index}: txn_bytes_hex is invalid hex: {e}") from e
+            raise SignerError(f"transaction {index}: txn_bytes_hex is invalid hex: {e}") from e
         try:
             txn = _decode_canonical_txn(raw)
         except SignerError as e:
-            raise ValueError(f"transaction {index}: txn_bytes_hex: {e}") from e
+            raise SignerError(f"transaction {index}: txn_bytes_hex: {e}") from e
         if mode == "foreign":
             slots.append(_RequestSlot(mode, txn))
             continue
         try:
             slots.append(_sign_slot(txn, entry.get("auth_address")))
         except ValueError as e:
-            raise ValueError(f"transaction {index}: {e}") from e
+            raise SignerError(f"transaction {index}: {e}") from e
     return slots
 
 
@@ -4861,11 +4892,13 @@ class SignerClient:
                     slot = _decode_passthrough_slot(signed_bytes)
                 except SignerError as e:
                     raise ValueError(f"invalid passthrough[{i}]: {e}") from e
-                # A passthrough position matches the auth address given for it
-                # and the sender and signer its signed bytes name.
-                matched_lsig_args.update(
-                    address for address in (auth_addr, slot.txn.sender, slot.signer) if address
-                )
+                # A passthrough position's authorizer is whoever signed it:
+                # the signer its bytes name, or the sender when they name
+                # none. An auth address given for the position counts too.
+                # The sender of a rekeyed account is not its authorizer.
+                if auth_addr:
+                    matched_lsig_args.add(auth_addr)
+                matched_lsig_args.add(slot.signer or slot.txn.sender)
                 request = {"signed_txn_hex": signed_bytes.hex()}
                 if lsig_resources and i in lsig_resources:
                     request["lsig_resources"] = _wire_lsig_resources(
@@ -4925,11 +4958,13 @@ class SignerClient:
 
             sign_requests.append(req)
 
-        # Args keyed under an address that is no position's auth address are a
+        # Args keyed under an address that authorizes no position are a
         # mistake, and dropping them would sign without them; an optional arg
-        # left out can select a different authorization branch. A key that
-        # matches a passthrough or foreign position is fine: the same map can
-        # serve several calls over one group. An entry with no args is ignored.
+        # left out can select a different authorization branch. A position's
+        # authorizer is its auth address, never its sender when the two
+        # differ. A key that is the authorizer of a passthrough or foreign
+        # position is fine: the same map can serve several calls over one
+        # group. An entry with no args is ignored.
         unmatched = sorted(
             repr(address)
             for address, args in (lsig_args_map or {}).items()
@@ -5028,7 +5063,10 @@ class SignerClient:
         _validate_sign_entries(sign_entries)
         # The slots the response is checked against are decoded here, from the
         # very entries that are sent.
-        slots = _decode_request_slots(sign_entries)
+        try:
+            slots = _decode_request_slots(sign_entries)
+        except SignerError as e:
+            raise SignerError(f"invalid sign request: {e}") from e
         request_body = {
             "request_id": request_id,
             "requests": sign_entries,
@@ -5078,7 +5116,7 @@ class SignerClient:
         try:
             _validate_sign_response(slots, signed, mutations)
         except Exception as e:
-            raise SignerError(f"verify signer response: {e}") from e
+            raise _verification_error("verify signer response: ", e) from e
 
         return GroupSignResponse(
             signed=signed,
@@ -5146,7 +5184,10 @@ class SignerClient:
     def plan_requests(self, sign_entries: List[Dict[str, Any]]) -> dict:
         """Preview raw per-slot signer requests without address-keyed rebuilding."""
         _validate_sign_entries(sign_entries)
-        slots = _decode_request_slots(sign_entries)
+        try:
+            slots = _decode_request_slots(sign_entries)
+        except SignerError as e:
+            raise SignerError(f"invalid plan request: {e}") from e
         request_body = {"requests": sign_entries}
 
         try:
@@ -5181,7 +5222,7 @@ class SignerClient:
         try:
             _validate_plan_response(slots, data.get("transactions"), data.get("mutations"))
         except Exception as e:
-            raise SignerError(f"verify signer plan: {e}") from e
+            raise _verification_error("verify signer plan: ", e) from e
 
         return data
 

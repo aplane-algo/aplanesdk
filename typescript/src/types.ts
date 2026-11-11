@@ -1079,7 +1079,7 @@ export interface SweepPrepParams {
  * Account information shape accepted by auth-resolution helpers.
  */
 export type AccountInfoResult =
-  | string
+  | AuthAddressValue
   | {
       "auth-addr"?: AuthAddressValue | null;
       auth_addr?: AuthAddressValue | null;

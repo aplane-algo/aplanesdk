@@ -506,7 +506,7 @@ def test_request_bytes_must_be_canonical():
         {"auth_address": "A", "txn_bytes_hex": canonical + "00"},
         {"signed_txn_hex": signed + signed},
     ):
-        with pytest.raises(ValueError, match="transaction 1: "):
+        with pytest.raises(SignerError, match="transaction 1: "):
             _decode_request_slots([entry])
     assert copy.deepcopy(_decode_request_slots(fake_signer.sign_entries(txn))[0].txn) == txn
 
@@ -522,10 +522,14 @@ def test_any_failure_while_verifying_is_a_signer_error():
     ):
         with patch("aplanesdk.signer._validate_group_mutations", side_effect=boom):
             with pytest.raises(
-                SignerError, match="verify signer response: decoder blew up"
+                SignerError,
+                match="verify signer response: the check itself failed with RuntimeError: decoder blew up",
             ) as sign:
                 client.sign_transaction(txn)
-            with pytest.raises(SignerError, match="verify signer plan: decoder blew up") as plan:
+            with pytest.raises(
+                SignerError,
+                match="verify signer plan: the check itself failed with RuntimeError: decoder blew up",
+            ) as plan:
                 client.plan_group([txn])
     assert sign.value.__cause__ is boom
     assert plan.value.__cause__ is boom
@@ -753,7 +757,7 @@ def test_authorization_refused(sender, auth, tamper, error):
 def test_request_auth_address_must_be_an_address():
     txn = fake_signer.payment()
     entry = {"auth_address": "AUTH", "txn_bytes_hex": encode_transaction(txn)[0]}
-    with pytest.raises(ValueError, match="auth_address 'AUTH' is not a valid address"):
+    with pytest.raises(SignerError, match="auth_address 'AUTH' is not a valid address"):
         _decode_request_slots([entry])
     client = make_client()
     with patch.object(client.session, "post") as post:
@@ -934,7 +938,7 @@ def test_hex_with_whitespace_is_refused():
             _validate_sign_response(slots, [spaced(body["signed"][0])], None)
         with pytest.raises(SignerError, match="planned transaction 1 is invalid hex"):
             _validate_plan_response(slots, [spaced(plan["transactions"][0])], None)
-        with pytest.raises(ValueError, match="txn_bytes_hex is invalid hex"):
+        with pytest.raises(SignerError, match="txn_bytes_hex is invalid hex"):
             _decode_request_slots(
                 [{**entries[0], "txn_bytes_hex": spaced(entries[0]["txn_bytes_hex"])}]
             )
@@ -972,3 +976,63 @@ def test_sign_and_plan_requests_keep_their_public_signatures():
         "self",
         "sign_entries",
     ]
+
+
+def test_malformed_request_bytes_are_a_signer_error():
+    """An adapter catching SignerError sees a bad request as it did when the signer refused it."""
+    client = make_client()
+    canonical = encode_transaction(fake_signer.payment())[0]
+    bad = [{"txn_bytes_hex": canonical + "00", "auth_address": fake_signer.account(41)}]
+    with patch.object(client.session, "post") as post:
+        with pytest.raises(SignerError, match="invalid sign request: transaction 1: txn_bytes_hex"):
+            client.sign_requests(bad)
+        with pytest.raises(SignerError, match="invalid plan request: transaction 1: txn_bytes_hex"):
+            client.plan_requests(bad)
+        with pytest.raises(SignerError, match="invalid sign request: transaction 1: auth_address"):
+            client.sign_requests([{"txn_bytes_hex": canonical, "auth_address": "AUTH"}])
+        # Plain argument misuse stays a ValueError.
+        with pytest.raises(ValueError, match="sign_entries must not be empty"):
+            client.sign_requests([])
+    post.assert_not_called()
+
+
+def test_an_internal_error_while_verifying_is_not_reported_as_a_bad_signature():
+    client = make_client()
+    txn = fake_signer.payment()
+    boom = RuntimeError("verifier blew up")
+
+    class BrokenKey:
+        def __init__(self, *_):
+            pass
+
+        def verify(self, *_):
+            raise boom
+
+    with (
+        patch.object(client, "_discover_approval_wait"),
+        patch.object(client.session, "post", side_effect=fake_signer.signer_post()),
+        patch("aplanesdk.signer.VerifyKey", BrokenKey),
+    ):
+        with pytest.raises(SignerError) as failed:
+            client.sign_transaction(txn)
+    message = str(failed.value)
+    assert message.startswith("verify signer response: ")
+    assert "RuntimeError" in message and "verifier blew up" in message
+    assert "does not verify" not in message
+    assert failed.value.__cause__ is boom
+
+    # A real bad signature still reads as one, with the library's verdict chained.
+    def break_signature(body):
+        fields = msgpack.unpackb(bytes.fromhex(body["signed"][0]), raw=False)
+        fields["sig"] = bytes([fields["sig"][0] ^ 0x01]) + fields["sig"][1:]
+        body["signed"][0] = _pack(fields)
+
+    with (
+        patch.object(client, "_discover_approval_wait"),
+        patch.object(
+            client.session, "post", side_effect=fake_signer.signer_post(tamper=break_signature)
+        ),
+    ):
+        with pytest.raises(SignerError, match="signature does not verify") as refused:
+            client.sign_transaction(txn)
+    assert type(refused.value.__cause__.__cause__.__cause__).__name__ == "BadSignatureError"

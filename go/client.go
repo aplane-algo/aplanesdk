@@ -904,13 +904,16 @@ func buildRequests(txns []types.Transaction, authAddresses []string, lsigArgsMap
 			if err != nil {
 				return nil, fmt.Errorf("invalid passthrough transaction %d: %w", i+1, err)
 			}
-			// A passthrough position matches the auth address given for it
-			// and the sender and signer its signed bytes name.
+			// A passthrough position's authorizer is whoever signed it: the
+			// signer its bytes name, or the sender when they name none. An
+			// auth address given for the position counts too. The sender of a
+			// rekeyed account is not its authorizer.
 			if authAddr != "" {
 				matchedArgs[authAddr] = true
 			}
-			matchedArgs[slot.txn.Sender.String()] = true
-			if !slot.signer.IsZero() {
+			if slot.signer.IsZero() {
+				matchedArgs[slot.txn.Sender.String()] = true
+			} else {
 				matchedArgs[slot.signer.String()] = true
 			}
 			requests[i] = req
@@ -922,7 +925,8 @@ func buildRequests(txns []types.Transaction, authAddresses []string, lsigArgsMap
 		}
 		txnBytesHex := hex.EncodeToString(encodeTxn(txn))
 
-		// Foreign mode: no auth address
+		// Foreign mode: no auth address. Nothing names its authorizer, so
+		// the sender stands for it.
 		if authAddr == "" {
 			matchedArgs[txn.Sender.String()] = true
 			requests[i] = SignRequest{TxnBytesHex: txnBytesHex, LsigResources: resources}
@@ -965,11 +969,13 @@ func encodeLsigArgs(lsigArgsMap LsigArgsMap, authAddr string) map[string]string 
 }
 
 // requireLsigArgsMatched rejects LogicSig args keyed under an address that
-// is no position's auth address. Such a key is a mistake, and dropping its args
+// authorizes no position. Such a key is a mistake, and dropping its args
 // would sign without them; an optional arg left out can select a different
-// authorization branch. A key that matches a passthrough or foreign position
-// is fine: the same map can serve several calls over one group. An entry with
-// no args is ignored.
+// authorization branch. A position's authorizer is its auth address, never
+// its sender when the two differ: args keyed under the sender of a rekeyed
+// account would otherwise be dropped unnoticed. A key that is the authorizer
+// of a passthrough or foreign position is fine: the same map can serve
+// several calls over one group. An entry with no args is ignored.
 func requireLsigArgsMatched(lsigArgsMap LsigArgsMap, matched map[string]bool) error {
 	unmatched := make([]string, 0)
 	for address, args := range lsigArgsMap {

@@ -515,6 +515,40 @@ describe("SignerClient", () => {
       assert.equal(resolved.isRekeyed, false);
     });
 
+    // A lookup may return the auth address itself, and from algosdk that is
+    // an Address object: `async (a) => (await algod.accountInformation(a).do()).authAddr`.
+    it("resolves a rekeyed account from a lookup that returns an Address", async () => {
+      const sender = testAddress(1);
+      const auth = testAddress(2);
+      queueStatusResponse(60, 1);
+      mockFetch.mockResolvedValueOnce(keysResponse(auth));
+
+      const client = new SignerClient("http://localhost:11270");
+      const resolved = await client.resolveAuthAddress(
+        sender,
+        async () => algosdk.Address.fromString(auth),
+      );
+
+      assert.equal(resolved.authAddress, auth);
+      assert.equal(typeof resolved.authAddress, "string");
+      assert.equal(resolved.isRekeyed, true);
+      assert.equal(resolved.keyInfo.address, auth);
+    });
+
+    it("reads a lookup that returns the account's own Address as not rekeyed", async () => {
+      const sender = testAddress(1);
+      queueStatusResponse(60, 1);
+      mockFetch.mockResolvedValueOnce(keysResponse(sender));
+
+      const client = new SignerClient("http://localhost:11270");
+      const resolved = await client.resolveAuthAddress(
+        sender,
+        () => algosdk.Address.fromString(sender),
+      );
+      assert.equal(resolved.isRekeyed, false);
+      assert.equal(resolved.authAddress, sender);
+    });
+
     it("rejects rekeyed accounts whose auth address is not signable", async () => {
       queueStatusResponse(60, 1);
       mockFetch.mockResolvedValueOnce(keysResponse("SENDER"));
@@ -854,6 +888,23 @@ describe("SignerClient", () => {
         await assert.rejects(client.prepareRekey(algod, { sender, rekeyTo }), want);
       });
     }
+
+    it("rejects a rekey chain when the target's lookup returns an Address", async () => {
+      const sender = testAddress(1);
+      const rekeyTo = testAddress(2);
+      const other = testAddress(3);
+      const algod = mockAlgod({
+        [sender]: { amount: 2_000_000, minBalance: 100_000 },
+        // The auth address itself, as algosdk carries it.
+        [rekeyTo]: algosdk.Address.fromString(other),
+      });
+
+      const client = new SignerClient("http://localhost:11270");
+      await assert.rejects(
+        client.prepareRekey(algod, { sender, rekeyTo }),
+        new RegExp(`rekey target is itself rekeyed to ${other}`),
+      );
+    });
 
     it("rejects rekey chains", async () => {
       const sender = testAddress(1);
@@ -4309,6 +4360,47 @@ describe("buildSignRequests", () => {
     await assert.rejects(client.signTransactionsList([mockTxn], undefined, stray), unmatched);
     await assert.rejects(client.planGroup([mockTxn], undefined, stray), unmatched);
     assert.equal(mockFetch.mock.calls.length, 0);
+  });
+
+  // Args keyed under the sender of a rekeyed account would be sent with no
+  // position, and the signature made without them.
+  it("matches lsig args to the authorizer, not a rekeyed sender", () => {
+    const client = new SignerClient("http://localhost:11270");
+    const sender = fakeAccount(41); // S, rekeyed
+    const passthroughKey = fakeAccount(45); // K, signed position 1 for S
+    const lsig = fakeLogicSigAccount(7); // L, signs position 2 for S
+    const grouped = algosdk.assignGroupID([
+      fakePayment(41, 42, 1, sender),
+      fakePayment(41, 43, 2, sender),
+    ]);
+    // Position 1 was signed by K on S's behalf, so its signed bytes name K.
+    // (Signed by S itself, S would be that position's authorizer and a key
+    // under S would rightly match it.)
+    const presigned = authorize(grouped[0], passthroughKey);
+    assert.equal(presigned.sgnr?.toString(), passthroughKey);
+    const passthrough = { 0: Buffer.from(algosdk.encodeMsgpack(presigned)).toString("base64") };
+    const auths = [null, lsig];
+    const args = { preimage: new Uint8Array([0x73]) };
+    const unmatched = /no transaction in the request has auth address/;
+    const build = (map: Record<string, unknown>) =>
+      (client as any).buildSignRequestBody(grouped, auths, map, passthrough, undefined, false);
+
+    assert.throws(() => build({ [sender]: args }), unmatched);
+    // The same without the passthrough: a sign position's sender is not its
+    // authorizer.
+    assert.throws(
+      () => (client as any).buildSignRequestBody([grouped[1]], [lsig], { [sender]: args }),
+      unmatched,
+    );
+
+    // Keyed under the authorizer, the args are sent with its position.
+    let body = build({ [lsig]: args });
+    assert.deepEqual(body.requests[1].lsig_args, { preimage: "73" });
+    assert.equal(body.requests[0].lsig_args, undefined);
+    // Keyed under the passthrough's signer, they are accepted and not sent:
+    // one map serves the call where K signs and this one.
+    body = build({ [passthroughKey]: args, [lsig]: args });
+    assert.deepEqual(Object.keys(body.requests[0]), ["signed_txn_hex"]);
   });
 
   it("ignores lsig args entries with no args", () => {
