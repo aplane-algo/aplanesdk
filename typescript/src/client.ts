@@ -754,11 +754,20 @@ export async function signPreparedCosignedGroup(
   // The user side is complete, including ordinary primary positions. Only
   // now may the SDK disclose the frozen group to the cosigner endpoint, and
   // only for the targets that need it: a listed rekey takes no cosigner.
-  const cosignerGroups: Array<{ client: SignerClient; componentKey: string; indices: number[] }> = [];
-  for (const target of targets) {
+  const needsCosigner = targets.filter((target) => {
     const component = components.get(target.targetIndex);
-    if (component && !componentNeedsCosigner(component)) continue;
-    const resolved = cosigners.get(target.targetIndex) ?? await resolveCosignerForTarget(target, options);
+    return !component || componentNeedsCosigner(component);
+  });
+  // The targets not resolved up front are resolved now, in the order of the
+  // witness key each needs, as the up-front ones were.
+  for (const target of [...needsCosigner].sort(byRequiredWitnessKey)) {
+    if (cosigners.has(target.targetIndex)) continue;
+    cosigners.set(target.targetIndex, await resolveCosignerForTarget(target, options));
+  }
+  // The requests go out in the order of their first target position.
+  const cosignerGroups: Array<{ client: SignerClient; componentKey: string; indices: number[] }> = [];
+  for (const target of needsCosigner) {
+    const resolved = cosigners.get(target.targetIndex) as CosignedCosignerResolution;
     let group = cosignerGroups.find(
       (candidate) => candidate.client === resolved.client &&
         candidate.componentKey === (resolved.componentKey || ""),

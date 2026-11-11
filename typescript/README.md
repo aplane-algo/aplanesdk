@@ -760,7 +760,9 @@ in the order of the witness key each needs (key type, then public key), and
 the cosigner component requests go out in the order of their first target
 position. A rekey that may take the listed path is resolved only
 once the base component says it needs the cosigner: a listed rekey needs
-none, and works with no cosigner configured or reachable. A resolver's own
+none, and works with no cosigner configured or reachable. Such late targets
+are resolved in the same witness key order (key type, then public key, then
+position), so the first missing key reported is the same. A resolver's own
 error is passed on as it is, never as an unknown outcome, even when it wraps
 the lost answer of a request the resolver made itself.
 

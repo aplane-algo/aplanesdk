@@ -1033,6 +1033,74 @@ describe("the cosigned sequence's cosigner resolution", () => {
     );
   });
 
+  it("resolves late targets in the order of the witness keys they need too", async () => {
+    const net = new Network();
+    const first = fakeAddress(25);
+    const second = fakeAddress(26);
+    // Both may take the listed path, so both are resolved after the base
+    // component, which says each needs the cosigner.
+    const user = new CosignedUser([cosignedKey(first, WITNESS_C, true), cosignedKey(second, WITNESS_A, true)]);
+    user.pathFor = () => "spending_rekey";
+    net.add("alpha", []);
+    net.install(user.handle);
+    const rekeys = () => group(cosignedPayment(first, fakeAddress(23)), cosignedPayment(second, fakeAddress(23)));
+    const { resolver, calls } = recordingResolver(user, async () => {
+      throw new RangeError("stop");
+    });
+    await assert.rejects(new SignerClient(SIGNER).sendPrepared(new FakeAlgod() as any, rekeys(), { cosignerResolver: resolver }), RangeError);
+    assert.deepEqual(calls.map((call) => call.index), [1], "the first key in order was not resolved first");
+    assert.ok(calls[0].before.includes("/sign/component"), `resolved before the base component: ${calls[0].before.join(", ")}`);
+    // Discovery reports the first missing key in that order.
+    await assert.rejects(
+      new SignerClient(SIGNER).sendPrepared(new FakeAlgod() as any, rekeys(), {
+        cosignerResolver: new EndpointCosignerResolver(registry("alpha")),
+      }),
+      discoveryError(
+        `cosigner discovery: no endpoint lists Witness Key ID ${id(WITNESS_A)} (${KEY_TYPE_WITNESS_FALCON1024}); endpoints: "alpha" ok`,
+      ),
+    );
+  });
+
+  it("sends late cosigner requests in the order of their first target position", async () => {
+    const net = new Network();
+    const accounts = [fakeAddress(25), fakeAddress(26), fakeAddress(27)];
+    // Position 0 and 2 need beta's key, position 1 alpha's: alpha's key is
+    // resolved first, and beta is still asked first.
+    const alpha = net.add("alpha", [witnessRecord(WITNESS_A)]);
+    const beta = net.add("beta", [witnessRecord(WITNESS_B)]);
+    const user = new CosignedUser([
+      cosignedKey(accounts[0], WITNESS_B, true),
+      cosignedKey(accounts[1], WITNESS_A, true),
+      cosignedKey(accounts[2], WITNESS_B, true),
+    ]);
+    user.pathFor = () => "spending_rekey";
+    const asked: string[] = [];
+    for (const endpoint of [alpha, beta]) {
+      const handle = endpoint.handle;
+      endpoint.handle = (path, body) => {
+        if (path === "/sign/component") asked.push(endpoint.alias);
+        return handle(path, body);
+      };
+    }
+    net.install(user.handle);
+    const endpoints = new EndpointCosignerResolver(registry("alpha", "beta"));
+    const resolvedFor: number[] = [];
+    const resolver: CosignedCosignerResolver = async (item, options) => {
+      resolvedFor.push(item.targetIndex);
+      return endpoints.resolve(item, options);
+    };
+    const result = await new SignerClient(SIGNER).sendPrepared(
+      new FakeAlgod() as any,
+      group(...accounts.map((account) => cosignedPayment(account, fakeAddress(23)))),
+      { cosignerResolver: resolver },
+    );
+    assert.equal(result.outcome, "confirmed", "the group was not sent");
+    assert.deepEqual(resolvedFor, [1, 0, 2], `resolution order: ${resolvedFor.join(", ")}`);
+    assert.deepEqual(asked, ["beta", "alpha"], `cosigner request order: ${asked.join(", ")}`);
+    assert.deepEqual(beta.componentRequests[0].targets.map((item: any) => item.target_index), [0, 2], "beta's targets");
+    await endpoints.close();
+  });
+
   it("sends with an EndpointCosignerResolver, each target routed to its endpoint", async () => {
     const net = new Network();
     const first = fakeAddress(25);
