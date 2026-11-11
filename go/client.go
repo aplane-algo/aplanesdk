@@ -582,6 +582,12 @@ func (c *SignerClient) GetKeysResponseWithContext(ctx context.Context) (*KeysRes
 	cache := make(map[string]*KeyInfo, len(keysResp.Keys))
 	for i := range keysResp.Keys {
 		k := &keysResp.Keys[i]
+		// One record per address. Should the signer list an address twice,
+		// the spendable row is the one kept: it is the row every lookup
+		// selects, and a later non-spending row must not displace it.
+		if kept, ok := cache[k.Address]; ok && isSpendableKey(*kept) && !isSpendableKey(*k) {
+			continue
+		}
 		cache[k.Address] = k
 	}
 	c.keyMu.Lock()

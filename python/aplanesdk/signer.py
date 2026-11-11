@@ -3785,6 +3785,15 @@ class SignerClient:
                 template_provenance_note=k.get("template_provenance_note", ""),
             )
             keys.append(key_info)
+            # One record per address. Should the signer list an address
+            # twice, the spendable row is the one kept.
+            kept = self._key_cache.get(key_info.address)
+            if (
+                kept is not None
+                and kept.is_spending_account is not False
+                and key_info.is_spending_account is False
+            ):
+                continue
             self._key_cache[key_info.address] = key_info
 
         return keys
@@ -5973,6 +5982,9 @@ def sign_prepared_cosigned_group(
     target_resources: Dict[int, Optional[LogicSigResourceUsage]] = {}
     target_keys: Dict[int, KeyInfo] = {}
     target_max_fees: Dict[int, int] = {}
+    # One read of the signer's keys for the whole call, refreshed when the
+    # signer's keyset revision has changed: the lookup the prepare helpers make.
+    signer_keys = user_client.list_keys_if_keyset_changed()
     for index, item in enumerate(prepared):
         if item.signed_transaction_base64:
             raise ValueError(
@@ -5983,16 +5995,17 @@ def sign_prepared_cosigned_group(
             raise ValueError(f"prepared transaction {index}: transaction is required")
         # The key's flow, resources and fee ceiling decide how the position
         # is signed, so they come from the signer's own record of the key,
-        # looked up by the position's auth address, never from the caller.
-        key = user_client.get_key_info(item.auth_address) if item.auth_address else None
+        # the spendable key for the position's auth address, never from the
+        # caller.
+        if not item.auth_address:
+            raise ValueError(f"prepared transaction {index}: auth address is required")
+        key = _find_spendable_key(signer_keys, item.auth_address)
         if key is None:
-            raise ValueError(
-                f"prepared transaction {index}: the signer holds no key for "
-                f"auth address {item.auth_address!r}"
+            raise KeyNotFoundError(
+                f"prepared transaction {index}: {item.auth_address} is not "
+                "available for signing"
             )
         if key.signing_flow == SIGNING_FLOW_COSIGNED1:
-            if not item.auth_address:
-                raise ValueError(f"prepared transaction {index}: bounded auth address is required")
             resources = _require_lsig_resources(
                 _selected_prepared_resources(key, item.transaction),
                 f"prepared transaction {index}: bounded",
@@ -6023,8 +6036,6 @@ def sign_prepared_cosigned_group(
                 f"prepared transaction {index}: signer key requires signing flow "
                 f"{key.signing_flow!r}, which this SDK does not support; upgrade the SDK"
             )
-        if not item.auth_address:
-            raise ValueError(f"prepared transaction {index}: primary auth address is required")
         # The signer holds this position's key, so it is sent as the signer's
         # own: in sign mode on /plan, and as a contextual position with
         # auth_address on /sign/component. The signer sizes it from its records

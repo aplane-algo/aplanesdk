@@ -202,7 +202,7 @@ function mockAlgod(accounts: Record<string, any>): any {
 }
 
 // The keys the signer of a cosigned test holds, by address. The cosigned flow
-// reads each key from the signer by the position's auth address, so a test
+// reads the signer's keys and picks by the position's auth address, so a test
 // names the signer's key beside the position that uses it with held(), and
 // signCosignedWithHeldKeys has the user client answer key lookups with those.
 const heldKeys = new Map<string, unknown>();
@@ -216,7 +216,7 @@ function held<T>(position: T, key?: { address: string }): T {
   return position;
 }
 
-const lookupHeldKey = async (address: string) => heldKeys.get(address);
+const listHeldKeys = async () => Array.from(heldKeys.values());
 
 // A test that sets its own key lookup on the client keeps it.
 function signCosignedWithHeldKeys(
@@ -224,9 +224,11 @@ function signCosignedWithHeldKeys(
 ): ReturnType<typeof signPreparedCosignedGroup> {
   const user = options.userClient as any;
   const ownLookup =
-    user && Object.prototype.hasOwnProperty.call(user, "getKeyInfo") && user.getKeyInfo !== lookupHeldKey;
+    user &&
+    Object.prototype.hasOwnProperty.call(user, "listKeysIfKeysetChanged") &&
+    user.listKeysIfKeysetChanged !== listHeldKeys;
   if (user && !ownLookup) {
-    user.getKeyInfo = lookupHeldKey;
+    user.listKeysIfKeysetChanged = listHeldKeys;
   }
   return signPreparedCosignedGroup(options);
 }

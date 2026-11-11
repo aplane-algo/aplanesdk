@@ -221,51 +221,93 @@ func TestNewAlgodClientEnforcesNetworksAllowed(t *testing.T) {
 	}
 }
 
+// keysetSigner is a signer whose key list and keyset revision a test sets. It
+// counts /keys fetches, and fails the test on any request past the key read.
+type keysetSigner struct {
+	revision uint64
+	keys     []KeyInfo
+	fetches  int
+}
+
+func (k *keysetSigner) client(t *testing.T) (*SignerClient, func()) {
+	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/status":
+			json.NewEncoder(w).Encode(StatusResponse{State: "unlocked", KeysetRevision: k.revision})
+		case "/keys":
+			k.fetches++
+			json.NewEncoder(w).Encode(KeysResponse{Count: len(k.keys), Keys: k.keys})
+		default:
+			t.Errorf("unexpected request %s: the flow must stop at the signer's key record", r.URL.Path)
+		}
+	})
+	return client, server.Close
+}
+
 // The cosigned flow takes each key's flow, resources and fee ceiling from the
-// signer's own record, looked up by the position's auth address. A prepared
-// transaction carries no key of its own.
-func TestCosignedGroupTakesTheKeyFromTheSigner(t *testing.T) {
+// signer's own record: the spendable key for the position's auth address, read
+// from a key list that is refreshed when the signer's keyset revision changes.
+// It is the lookup the prepare helpers make. A prepared transaction carries no
+// key of its own.
+func TestCosignedGroupTakesTheSpendableKeyFromTheSigner(t *testing.T) {
 	txn := verifyTestPayment(t, 41, 42, 1)
 	sender := txn.Sender.String()
-	lookups := 0
-	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/keys" {
-			t.Errorf("unexpected request %s: the flow must stop at the signer's key record", r.URL.Path)
-			return
-		}
-		lookups++
-		// The signer's record: this key needs a flow this SDK does not have.
-		json.NewEncoder(w).Encode(KeysResponse{Count: 1, Keys: []KeyInfo{{Address: sender, KeyType: "ed25519", SigningFlow: "cosigner9"}}})
-	})
-	defer server.Close()
-
-	for attempt := 0; attempt < 2; attempt++ {
+	notSpending := false
+	attempt := func(client *SignerClient) error {
 		_, err := SignPreparedCosignedGroup(PreparedCosignedGroupOptions{
 			UserClient:    client,
 			PreparedGroup: NewPreparedGroup(PreparedTransaction{Transaction: &txn, AuthAddress: sender}),
 		})
-		if err == nil || !strings.Contains(err.Error(), `signing flow "cosigner9"`) {
-			t.Fatalf("error = %v, want the signer's record to decide the flow", err)
-		}
-	}
-	// The record is cached: two groups, one lookup.
-	if lookups != 1 {
-		t.Fatalf("/keys was fetched %d times, want 1", lookups)
+		return err
 	}
 
-	// A key the signer does not hold stops the flow, as does a position with
-	// no auth address to look one up by.
-	other := verifyTestPayment(t, 43, 44, 1)
-	_, err := SignPreparedCosignedGroup(PreparedCosignedGroupOptions{
-		UserClient:    client,
-		PreparedGroup: NewPreparedGroup(PreparedTransaction{Transaction: &other, AuthAddress: other.Sender.String()}),
-	})
-	if !errors.Is(err, ErrKeyNotFound) {
-		t.Fatalf("a key the signer does not hold: error = %v, want ErrKeyNotFound", err)
+	// Two rows for one address, the non-spending one last. The spendable row
+	// decides the flow, on the fresh read and again from the cache.
+	signer := &keysetSigner{revision: 1, keys: []KeyInfo{
+		{Address: sender, KeyType: "ed25519", SigningFlow: "cosigner9"},
+		{Address: sender, KeyType: KeyTypeWitnessFalcon1024, IsSpendingAccount: &notSpending, SigningFlow: "witness9"},
+	}}
+	client, closeServer := signer.client(t)
+	defer closeServer()
+	for i := 0; i < 2; i++ {
+		if err := attempt(client); err == nil || !strings.Contains(err.Error(), `signing flow "cosigner9"`) {
+			t.Fatalf("attempt %d: error = %v, want the spendable row to decide the flow", i+1, err)
+		}
 	}
+	// An unchanged keyset revision costs no further /keys request.
+	if signer.fetches != 1 {
+		t.Fatalf("/keys was fetched %d times for an unchanged revision, want 1", signer.fetches)
+	}
+	// The prepare helpers select the same row.
+	resolved, err := client.ResolveAuthAddress(context.Background(), sender, func(context.Context, string) (string, error) { return "", nil })
+	if err != nil || resolved.KeyInfo.SigningFlow != "cosigner9" {
+		t.Fatalf("ResolveAuthAddress() = %+v, %v, want the spendable row", resolved, err)
+	}
+	if signer.fetches != 1 {
+		t.Fatalf("/keys was fetched %d times, want the prepare helper to share the cached list", signer.fetches)
+	}
+
+	// The operator changes the key: a new revision, and the next call reads
+	// the new record.
+	signer.revision = 2
+	signer.keys = []KeyInfo{{Address: sender, KeyType: "ed25519", SigningFlow: "cosigner10"}}
+	if err := attempt(client); err == nil || !strings.Contains(err.Error(), `signing flow "cosigner10"`) {
+		t.Fatalf("after a keyset change: error = %v, want the new record", err)
+	}
+	if signer.fetches != 2 {
+		t.Fatalf("/keys was fetched %d times after one keyset change, want 2", signer.fetches)
+	}
+
+	// Only a non-spending row for the address: there is no key to sign with.
+	signer.revision = 3
+	signer.keys = []KeyInfo{{Address: sender, KeyType: KeyTypeWitnessFalcon1024, IsSpendingAccount: &notSpending}}
+	if err := attempt(client); !errors.Is(err, ErrKeyNotFound) {
+		t.Fatalf("a witness-only address: error = %v, want ErrKeyNotFound", err)
+	}
+	// A position with no auth address has nothing to look a key up by.
 	_, err = SignPreparedCosignedGroup(PreparedCosignedGroupOptions{
 		UserClient:    client,
-		PreparedGroup: NewPreparedGroup(PreparedTransaction{Transaction: &other}),
+		PreparedGroup: NewPreparedGroup(PreparedTransaction{Transaction: &txn}),
 	})
 	if err == nil || !strings.Contains(err.Error(), "auth address is required") {
 		t.Fatalf("a position with no auth address: error = %v", err)

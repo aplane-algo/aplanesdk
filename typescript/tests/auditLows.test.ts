@@ -11,6 +11,7 @@ import * as path from "node:path";
 import algosdk from "algosdk";
 import { SignerClient, signPreparedCosignedGroup } from "../src/client.js";
 import * as sdk from "../src/index.js";
+import { KeyNotFoundError } from "../src/errors.js";
 import { isNetworkAllowed, loadConfig, sendRawTransaction } from "../src/utils.js";
 import { base64ToBytes } from "../src/encoding.js";
 import { preparedGroupToSignRequests } from "../src/prepared.js";
@@ -349,45 +350,73 @@ describe("IDs, counts and indexes everywhere", () => {
 
 describe("cosigned group key record", () => {
   // The flow takes each key's flow, resources and fee ceiling from the
-  // signer's own record, looked up by the position's auth address. A prepared
-  // transaction carries no key of its own.
-  it("comes from the signer", async () => {
+  // signer's own record: the spendable key for the position's auth address,
+  // read from a key list refreshed when the signer's keyset revision changes.
+  // It is the lookup the prepare helpers make. A prepared transaction carries
+  // no key of its own.
+  it("is the spendable key from the signer's current keyset", async () => {
     const txn = fakePayment();
-    const auth = txn.sender.toString();
+    const sender = txn.sender.toString();
     const userClient = new SignerClient("http://localhost:11270");
-    let lookups = 0;
+    const witness = { address: sender, key_type: "aplane.witness-falcon1024.v1", is_spending_account: false };
+    // Two rows for one address, the non-spending one last.
+    const signer = {
+      revision: 1,
+      keys: [
+        { address: sender, key_type: "ed25519", signing_flow: "cosigner9" },
+        { ...witness, signing_flow: "witness9" },
+      ] as Record<string, unknown>[],
+      fetches: 0,
+    };
     globalThis.fetch = (async (url: string) => {
-      assert.ok(String(url).endsWith("/keys"), `unexpected request ${url}`);
-      lookups++;
-      // The signer's record: this key needs a flow this SDK does not have.
-      return {
-        status: 200,
-        ok: true,
-        json: async () => ({ count: 1, keys: [{ address: auth, key_type: "ed25519", signing_flow: "cosigner9" }] }),
-      };
+      const path = new URL(String(url)).pathname;
+      let body: unknown;
+      if (path === "/status") {
+        body = { state: "unlocked", keyset_revision: signer.revision };
+      } else if (path === "/keys") {
+        signer.fetches++;
+        body = { count: signer.keys.length, keys: signer.keys };
+      } else {
+        assert.fail(`unexpected request ${url}: the flow must stop at the key record`);
+      }
+      return { status: 200, ok: true, json: async () => body };
     }) as any;
-    for (let attempt = 0; attempt < 2; attempt++) {
-      await assert.rejects(
-        signPreparedCosignedGroup({
-          userClient,
-          preparedGroup: { transactions: [{ transaction: txn, authAddress: auth }] },
-        }),
-        /signing flow "cosigner9"/,
-      );
-    }
-    // The record is cached: two groups, one lookup.
-    assert.equal(lookups, 1);
-
-    // A key the signer does not hold stops the flow.
-    const other = fakePayment(43, 44);
-    await assert.rejects(
+    const attempt = () =>
       signPreparedCosignedGroup({
         userClient,
-        preparedGroup: {
-          transactions: [{ transaction: other, authAddress: other.sender.toString() }],
-        },
-      }),
-      /the signer holds no key for auth address/,
+        preparedGroup: { transactions: [{ transaction: txn, authAddress: sender }] },
+      });
+
+    // The spendable row decides the flow, on the fresh read and from the cache.
+    for (let i = 0; i < 2; i++) {
+      await assert.rejects(attempt(), /signing flow "cosigner9"/);
+    }
+    // An unchanged keyset revision costs no further /keys request.
+    assert.equal(signer.fetches, 1);
+    // The prepare helpers select the same row from the same list.
+    const resolved = await userClient.resolveAuthAddress(sender, async () => ({}));
+    assert.equal(resolved.keyInfo.signingFlow, "cosigner9");
+    assert.equal(signer.fetches, 1);
+
+    // The operator changes the key: a new revision, and the next call reads
+    // the new record.
+    signer.revision = 2;
+    signer.keys = [{ address: sender, key_type: "ed25519", signing_flow: "cosigner10" }];
+    await assert.rejects(attempt(), /signing flow "cosigner10"/);
+    assert.equal(signer.fetches, 2);
+
+    // Only a non-spending row for the address: there is no key to sign with.
+    signer.revision = 3;
+    signer.keys = [witness];
+    await assert.rejects(attempt(), (err: unknown) => {
+      assert.ok(err instanceof KeyNotFoundError);
+      assert.match(err.message, /is not available for signing/);
+      return true;
+    });
+    // A position with no auth address has nothing to look a key up by.
+    await assert.rejects(
+      signPreparedCosignedGroup({ userClient, preparedGroup: { transactions: [{ transaction: txn }] } }),
+      /auth address is required/,
     );
   });
 });

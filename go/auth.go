@@ -93,15 +93,18 @@ func (c *SignerClient) ResolveAuthAddress(ctx context.Context, address string, l
 	}, nil
 }
 
+// isSpendableKey reports whether a key record is one that signs for its
+// address. A witness or cosigner record is listed with is_spending_account
+// false and does not.
+func isSpendableKey(key KeyInfo) bool {
+	return key.IsSpendingAccount == nil || *key.IsSpendingAccount
+}
+
 func findSpendableKey(keys []KeyInfo, address string) (KeyInfo, bool) {
 	for _, key := range keys {
-		if key.Address != address {
-			continue
+		if key.Address == address && isSpendableKey(key) {
+			return key, true
 		}
-		if key.IsSpendingAccount != nil && !*key.IsSpendingAccount {
-			continue
-		}
-		return key, true
 	}
 	return KeyInfo{}, false
 }

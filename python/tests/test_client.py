@@ -1072,7 +1072,7 @@ def held(position, key):
 class TestSignPreparedCosignedGroup:
     @pytest.fixture(autouse=True)
     def _signer_holds_the_named_keys(self, monkeypatch):
-        """The cosigned flow reads each key from the signer by auth address.
+        """The cosigned flow reads the signer's keys and picks by auth address.
 
         A test names the signer's key beside the position that uses it with
         held(), and the user client here answers key lookups with those.
@@ -1084,10 +1084,10 @@ class TestSignPreparedCosignedGroup:
             user = kwargs.get("user_client")
             # A test that sets its own key lookup on a real client keeps it.
             own_lookup = not isinstance(user, MagicMock) and isinstance(
-                getattr(user, "__dict__", {}).get("get_key_info"), MagicMock
+                getattr(user, "__dict__", {}).get("list_keys_if_keyset_changed"), MagicMock
             )
             if user is not None and not own_lookup:
-                user.get_key_info = HELD_KEYS.get
+                user.list_keys_if_keyset_changed = lambda: list(HELD_KEYS.values())
             return real(*args, **kwargs)
 
         monkeypatch.setitem(globals(), "sign_prepared_cosigned_group", sign)
@@ -1288,7 +1288,7 @@ class TestSignPreparedCosignedGroup:
             })
 
         user = make_client()
-        user.get_key_info = MagicMock(
+        user.list_keys_if_keyset_changed = MagicMock(
             side_effect=AuthenticationError("Not authenticated: connect through an enrolled SSH key")
         )
         params = transaction.SuggestedParams(

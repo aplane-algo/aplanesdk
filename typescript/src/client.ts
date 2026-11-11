@@ -419,6 +419,9 @@ export async function signPreparedCosignedGroup(
   const targetResources = new Map<number, LogicSigResourceUsage | undefined>();
   const targetKeys = new Map<number, KeyInfo>();
   const targetMaxFees = new Map<number, number>();
+  // One read of the signer's keys for the whole call, refreshed when the
+  // signer's keyset revision has changed: the lookup the prepare helpers make.
+  const signerKeys = await options.userClient.listKeysIfKeysetChanged();
   for (let index = 0; index < prepared.length; index++) {
     const item = prepared[index];
     if (item.signedTransactionBase64) {
@@ -431,19 +434,18 @@ export async function signPreparedCosignedGroup(
     }
     // The key's flow, resources and fee ceiling decide how the position is
     // signed, so they come from the signer's own record of the key, looked up
-    // by the position's auth address, never from the caller.
-    const key = item.authAddress
-      ? await options.userClient.getKeyInfo(item.authAddress)
-      : undefined;
+    // as the spendable key for the position's auth address, never from the
+    // caller.
+    if (!item.authAddress) {
+      throw new SignerError(`prepared transaction ${index}: auth address is required`);
+    }
+    const key = findSpendableKey(signerKeys, item.authAddress);
     if (!key) {
-      throw new SignerError(
-        `prepared transaction ${index}: the signer holds no key for auth address ${JSON.stringify(item.authAddress)}`,
+      throw new KeyNotFoundError(
+        `prepared transaction ${index}: ${item.authAddress} is not available for signing`,
       );
     }
     if (key.signingFlow === SIGNING_FLOW_COSIGNED1) {
-      if (!item.authAddress) {
-        throw new SignerError(`prepared transaction ${index}: bounded auth address is required`);
-      }
       const requiredResources = requireLogicSigResources(
         selectedPreparedResources(key, item.transaction),
         `prepared transaction ${index}: bounded`,
@@ -474,9 +476,6 @@ export async function signPreparedCosignedGroup(
       throw new SignerError(
         `prepared transaction ${index}: signer key requires signing flow "${key.signingFlow}", which this SDK does not support; upgrade the SDK`,
       );
-    }
-    if (!item.authAddress) {
-      throw new SignerError(`prepared transaction ${index}: primary auth address is required`);
     }
     // The signer holds this position's key, so it is sent as the signer's
     // own: in sign mode on /plan, and as a contextual position with
@@ -2541,6 +2540,12 @@ export class SignerClient {
         templateProvenanceNote: raw.template_provenance_note || undefined,
       };
       keys.push(keyInfo);
+      // One record per address. Should the signer list an address twice, the
+      // spendable row is the one kept.
+      const kept = this.keyCache.get(keyInfo.address);
+      if (kept && kept.isSpendingAccount !== false && keyInfo.isSpendingAccount === false) {
+        continue;
+      }
       this.keyCache.set(keyInfo.address, keyInfo);
     }
 

@@ -5,6 +5,7 @@ package aplane
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -156,8 +157,16 @@ func TestSignPreparedCosignedGroupRejectsUnsupportedSigningFlow(t *testing.T) {
 		t.Fatalf("MakePaymentTxn() error = %v", err)
 	}
 
+	// The flow reads the signer's keyset revision, and nothing else here.
+	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/status" {
+			t.Errorf("unexpected request %s", r.URL.Path)
+		}
+		json.NewEncoder(w).Encode(StatusResponse{State: "unlocked"})
+	})
+	defer server.Close()
 	_, err = signCosignedWithHeldKeys(PreparedCosignedGroupOptions{
-		UserClient: &SignerClient{},
+		UserClient: client,
 		PreparedGroup: NewPreparedGroup(held(PreparedTransaction{
 			Transaction: &txn,
 			AuthAddress: cosigned,
@@ -190,6 +199,11 @@ func TestSignPreparedCosignedGroupRefusesCosigner1AsUnknown(t *testing.T) {
 	}
 	requests := 0
 	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		// Reading the signer's keyset revision is not a signing request.
+		if r.URL.Path == "/status" {
+			json.NewEncoder(w).Encode(StatusResponse{State: "unlocked"})
+			return
+		}
 		requests++
 		http.Error(w, "unexpected request", http.StatusInternalServerError)
 	})
@@ -258,8 +272,12 @@ func signCosignedWithHeldKeys(opts PreparedCosignedGroupOptions) (*CosignedSignR
 			copied := *key
 			cache[address] = &copied
 		}
+		// Cached at the keyset revision the test signers report, so the flow's
+		// key read is served from here.
 		opts.UserClient.keyMu.Lock()
 		opts.UserClient.keyCache = cache
+		opts.UserClient.keyCacheRevision = 0
+		opts.UserClient.keyCacheRevisionKnown = true
 		opts.UserClient.keyMu.Unlock()
 	}
 	return SignPreparedCosignedGroup(opts)

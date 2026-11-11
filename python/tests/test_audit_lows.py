@@ -14,6 +14,7 @@ import aplanesdk
 from aplanesdk import PreparedGroup, PreparedTransaction, SignerClient, SignerError
 from aplanesdk.signer import (
     KeyInfo,
+    KeyNotFoundError,
     _parse_lsig_resource_usage,
     _require_uint,
     load_config,
@@ -389,29 +390,93 @@ def test_box_references_with_integer_indexes_are_accepted():
     assert len(prepared.transaction.boxes) == 2
 
 
-def test_cosigned_group_takes_the_key_from_the_signer():
+class _KeysetSigner:
+    """A signer whose key list and keyset revision a test sets.
+
+    It counts /keys fetches and refuses any request past the key read.
+    """
+
+    def __init__(self, revision, keys):
+        self.revision = revision
+        self.keys = keys
+        self.fetches = 0
+
+    def get(self, url, **_kwargs):
+        if url.endswith("/status"):
+            return mock_response(json_data={"state": "unlocked", "keyset_revision": self.revision})
+        if url.endswith("/keys"):
+            self.fetches += 1
+            return mock_response(json_data={"count": len(self.keys), "keys": self.keys})
+        raise AssertionError(f"unexpected request {url}")
+
+
+def test_cosigned_group_takes_the_spendable_key_from_the_signer():
     """The key's flow, resources and ceiling come from the signer's record.
 
-    The flow looks the key up by the position's auth address; a prepared
-    transaction carries no key of its own.
+    The flow takes the spendable key for the position's auth address from a
+    key list refreshed when the signer's keyset revision changes: the lookup
+    the prepare helpers make. A prepared transaction carries no key of its own.
     """
     assert "signer_key" not in {field.name for field in dataclasses.fields(PreparedTransaction)}
     txn = fake_signer.payment()
-    # The signer's record: this key needs a flow this SDK does not have.
-    record = KeyInfo(address=txn.sender, key_type="ed25519", signing_flow="cosigner9")
+    sender = txn.sender
+    # Two rows for one address, the non-spending one last.
+    signer = _KeysetSigner(
+        1,
+        [
+            {"address": sender, "key_type": "ed25519", "signing_flow": "cosigner9"},
+            {
+                "address": sender,
+                "key_type": "aplane.witness-falcon1024.v1",
+                "is_spending_account": False,
+                "signing_flow": "witness9",
+            },
+        ],
+    )
     user = make_client()
-    user.get_key_info = MagicMock(return_value=record)
-    user.plan_requests = MagicMock()
-    group = PreparedGroup([PreparedTransaction(transaction=txn, auth_address=txn.sender)])
-    with pytest.raises(ValueError, match="signing flow 'cosigner9'"):
-        sign_prepared_cosigned_group(user_client=user, prepared_group=group)
-    user.get_key_info.assert_called_once_with(txn.sender)
-    user.plan_requests.assert_not_called()
+    user.session = MagicMock()
+    user.session.get.side_effect = signer.get
+    user.session.post.side_effect = AssertionError("the flow must stop at the key record")
+    group = PreparedGroup([PreparedTransaction(transaction=txn, auth_address=sender)])
 
-    # A key the signer does not hold stops the flow.
-    user.get_key_info = MagicMock(return_value=None)
-    with pytest.raises(ValueError, match="the signer holds no key for auth address"):
+    def attempt():
         sign_prepared_cosigned_group(user_client=user, prepared_group=group)
+
+    # The spendable row decides the flow, on the fresh read and from the cache.
+    for _ in range(2):
+        with pytest.raises(ValueError, match="signing flow 'cosigner9'"):
+            attempt()
+    # An unchanged keyset revision costs no further /keys request.
+    assert signer.fetches == 1
+    # The prepare helpers select the same row from the same list.
+    resolved = user.resolve_auth_address(sender, lambda _address: {})
+    assert resolved.key_info.signing_flow == "cosigner9"
+    assert signer.fetches == 1
+
+    # The operator changes the key: a new revision, and the next call reads
+    # the new record.
+    signer.revision = 2
+    signer.keys = [{"address": sender, "key_type": "ed25519", "signing_flow": "cosigner10"}]
+    with pytest.raises(ValueError, match="signing flow 'cosigner10'"):
+        attempt()
+    assert signer.fetches == 2
+
+    # Only a non-spending row for the address: there is no key to sign with.
+    signer.revision = 3
+    signer.keys = [
+        {
+            "address": sender,
+            "key_type": "aplane.witness-falcon1024.v1",
+            "is_spending_account": False,
+        }
+    ]
+    with pytest.raises(KeyNotFoundError, match="is not available for signing"):
+        attempt()
+    # A position with no auth address has nothing to look a key up by.
+    with pytest.raises(ValueError, match="auth address is required"):
+        sign_prepared_cosigned_group(
+            user_client=user, prepared_group=PreparedGroup([PreparedTransaction(transaction=txn)])
+        )
 
 
 def test_config_enforces_networks_allowed(tmp_path):
