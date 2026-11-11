@@ -1,13 +1,14 @@
 /**
  * Atomic swap example - exchange ALGO between two accounts in a single group.
  *
- * This demonstrates signing a transaction group where both parties must sign.
- * Works with any combination of key types (Ed25519, Falcon, etc.).
+ * This demonstrates signing a transaction group where both parties must sign:
+ * either both payments execute or neither does. Works with any combination of
+ * key types (Ed25519, Falcon, etc.) the signer holds.
  *
  * Setup:
  *   1. Create data directory: mkdir -p ~/aplane/apclient/.ssh
- *   2. Copy token: cp /path/to/aplane.token ~/aplane/apclient/
- *   3. Generate APlane SSH key: ssh-keygen -t ed25519 -f ~/aplane/apclient/.ssh/id_ed25519 -N ''
+ *   2. Generate APlane SSH key: ssh-keygen -t ed25519 -f ~/aplane/apclient/.ssh/id_ed25519 -N ''
+ *   3. Enroll it at the signer: run apshell enroll and approve in apadmin
  *   4. Create endpoints.yaml (see below)
  *   5. Set env: export APCLIENT_DATA=~/aplane/apclient
  *
@@ -18,15 +19,16 @@
  *       role: signer
  *       url: ssh://192.168.86.73:1127
  *       identity_file: .ssh/id_ed25519
- * *
+ *
  * Important:
  *   - Do NOT pre-assign group IDs with assignGroupID()
  *   - The server computes the group ID after adding any required dummy transactions
- *   - The return value can be passed directly to sendRawTransaction()
+ *   - A rotating account cannot take part: it sends one transaction alone, so
+ *     sendPrepared refuses such a group with UnsupportedGroupError
  */
 
 import algosdk from "algosdk";
-import { SignerClient, sendRawTransaction } from "aplanesdk";
+import { SignOutcomeUnknownError, SignerClient, SubmissionUncertainError } from "aplanesdk";
 
 // Swap parameters (replace with your actual addresses)
 const ALICE = "ALICEED255EXAMPLE777777777777777777777777777777777777777777"; // Ed25519 account
@@ -36,51 +38,35 @@ const SWAP_AMOUNT = 100000; // 0.1 ALGO in microAlgos
 async function main() {
   // Connect using config from $APCLIENT_DATA
   const signer = await SignerClient.fromEnv();
+  const algodClient = new algosdk.Algodv2("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "http://localhost", 4001);
 
   try {
-    const algodClient = new algosdk.Algodv2("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "http://localhost", 4001);
-    const params = await algodClient.getTransactionParams().do();
+    // Build both payments, ungrouped. The helper checks each sender's balance
+    // and names the key that signs for a rekeyed sender.
+    const group = await signer.preparePaymentGroup(algodClient, [
+      { sender: ALICE, receiver: BOB, amount: SWAP_AMOUNT },
+      { sender: BOB, receiver: ALICE, amount: SWAP_AMOUNT },
+    ]);
 
-    // Build transactions (do NOT call assignGroupID)
-    const txnAliceToBob = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
-      sender: ALICE,
-      receiver: BOB,
-      amount: SWAP_AMOUNT,
-      suggestedParams: params,
-    });
-
-    const txnBobToAlice = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
-      sender: BOB,
-      receiver: ALICE,
-      amount: SWAP_AMOUNT,
-      suggestedParams: params,
-    });
-
-    // Resolve auth addresses (handles rekeyed accounts)
-    const aliceInfo = await algodClient.accountInformation(ALICE).do();
-    const bobInfo = await algodClient.accountInformation(BOB).do();
-    const authAddresses = [
-      aliceInfo.authAddr?.toString() || ALICE,
-      bobInfo.authAddr?.toString() || BOB,
-    ];
-
-    // Sign the group (server handles grouping and dummies for Falcon)
-    console.log(`Signing atomic swap: ${ALICE.slice(0, 8)}... <-> ${BOB.slice(0, 8)}...`);
-    const signed = await signer.signTransactions(
-      [txnAliceToBob, txnBobToAlice],
-      authAddresses
-    );
-
-    // Submit (handles concatenated group bytes from Falcon/LogicSig keys)
-    const txid = await sendRawTransaction(algodClient, signed);
-    console.log(`Submitted: ${txid}`);
-
-    // Wait for confirmation
-    const result = await algosdk.waitForConfirmation(algodClient, txid, 4);
-    console.log(`Confirmed in round ${result.confirmedRound}`);
+    // Sign the group (server handles grouping and dummies for Falcon), check
+    // it, submit it and wait for confirmation.
+    console.log(`Sending atomic swap: ${ALICE.slice(0, 8)}... <-> ${BOB.slice(0, 8)}...`);
+    const result = await signer.sendPrepared(algodClient, group);
+    console.log(`Confirmed group ${result.groupId} in round ${result.confirmedRound}`);
     console.log("Atomic swap complete!");
+  } catch (error) {
+    // Neither error means "send again": a second swap and the first could
+    // both execute.
+    if (error instanceof SubmissionUncertainError) {
+      const report = await signer.resolveOutcome(algodClient, error);
+      console.error(`Outcome of ${error.txIds[0]} is ${report.state}: ${report.advice}`);
+    } else if (error instanceof SignOutcomeUnknownError) {
+      const report = await signer.resolveOutcome(algodClient, error);
+      console.error(`Sign request ${error.requestId || "(no ID)"} is ${report.state}: ${report.advice}`);
+    }
+    throw error;
   } finally {
-    signer.close();
+    await signer.close();
   }
 }
 

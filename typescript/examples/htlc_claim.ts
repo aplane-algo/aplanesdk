@@ -6,8 +6,8 @@
  *
  * Setup:
  *   1. Create data directory: mkdir -p ~/aplane/apclient/.ssh
- *   2. Copy token: cp /path/to/aplane.token ~/aplane/apclient/
- *   3. Generate APlane SSH key: ssh-keygen -t ed25519 -f ~/aplane/apclient/.ssh/id_ed25519 -N ''
+ *   2. Generate APlane SSH key: ssh-keygen -t ed25519 -f ~/aplane/apclient/.ssh/id_ed25519 -N ''
+ *   3. Enroll it at the signer: run apshell enroll and approve in apadmin
  *   4. Create endpoints.yaml (see below)
  *   5. Set env: export APCLIENT_DATA=~/aplane/apclient
  *
@@ -26,7 +26,7 @@
  */
 
 import algosdk from "algosdk";
-import { SignerClient, sendRawTransaction } from "aplanesdk";
+import { SignOutcomeUnknownError, SignerClient, SubmissionUncertainError } from "aplanesdk";
 
 // The hashlock address (must exist in apsigner keystore)
 const HASHLOCK_ADDRESS = "HASHLOCKEXAMPLE7777777777777777777777777777777777777777";
@@ -41,10 +41,9 @@ const PREIMAGE = new Uint8Array(Buffer.from("my_secret_preimage_32_bytes_long"))
 async function main() {
   // Connect using config from $APCLIENT_DATA
   const signer = await SignerClient.fromEnv();
+  const algodClient = new algosdk.Algodv2("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "http://localhost", 4001);
 
   try {
-    const algodClient = new algosdk.Algodv2("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "http://localhost", 4001);
-
     // Discover required arguments for this LogicSig
     const keyInfo = await signer.getKeyInfo(HASHLOCK_ADDRESS);
     if (keyInfo?.signingArgs) {
@@ -54,34 +53,34 @@ async function main() {
       }
     }
 
-    // Build claim transaction (send all funds to recipient)
-    const params = await algodClient.getTransactionParams().do();
-    const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+    // Build the claim: close the hashlock account to the recipient, which
+    // sends it all the funds.
+    const claim = await signer.prepareAccountClose(algodClient, {
       sender: HASHLOCK_ADDRESS,
-      receiver: RECIPIENT,
-      amount: 0, // Use closeRemainderTo to send all funds
-      closeRemainderTo: RECIPIENT,
-      suggestedParams: params,
+      closeTo: RECIPIENT,
     });
+    // The preimage is the LogicSig's runtime argument; the signer passes it
+    // to the program, which checks its hash.
+    claim.lsigArgs = { preimage: PREIMAGE };
 
-    // Sign with the preimage argument
-    console.log("Signing hashlock claim with preimage...");
-    const signed = await signer.signTransaction(
-      txn,
-      HASHLOCK_ADDRESS,
-      { preimage: PREIMAGE }
-    );
-
-    // Submit (handles concatenated group bytes from Falcon/LogicSig keys)
-    const txid = await sendRawTransaction(algodClient, signed);
-    console.log(`Submitted: ${txid}`);
-
-    // Wait for confirmation
-    const result = await algosdk.waitForConfirmation(algodClient, txid, 4);
-    console.log(`Confirmed in round ${result.confirmedRound}`);
+    // Sign with the preimage argument, check, submit and wait for confirmation
+    console.log("Sending hashlock claim with preimage...");
+    const result = await signer.sendPrepared(algodClient, { transactions: [claim] });
+    console.log(`Confirmed ${result.txIds[0]} in round ${result.confirmedRound}`);
     console.log("Hashlock claimed successfully!");
+  } catch (error) {
+    // Neither error means "claim again" with a new transaction: ask the node
+    // where things stand.
+    if (error instanceof SubmissionUncertainError) {
+      const report = await signer.resolveOutcome(algodClient, error);
+      console.error(`Outcome of ${error.txIds[0]} is ${report.state}: ${report.advice}`);
+    } else if (error instanceof SignOutcomeUnknownError) {
+      const report = await signer.resolveOutcome(algodClient, error);
+      console.error(`Sign request ${error.requestId || "(no ID)"} is ${report.state}: ${report.advice}`);
+    }
+    throw error;
   } finally {
-    signer.close();
+    await signer.close();
   }
 }
 
