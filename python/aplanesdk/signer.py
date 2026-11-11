@@ -3160,14 +3160,12 @@ def _extract_auth_address(account_info: Any) -> str:
 
 def _find_spendable_key(keys: List[KeyInfo], address: str) -> Optional[KeyInfo]:
     """The spendable key the signer lists for address. Addresses are compared
-    in canonical form."""
+    in canonical form: list_keys holds each key's address canonically, so
+    only address is canonicalised here."""
     wanted = _address_key(address)
     for key in keys:
-        if _address_key(key.address) != wanted:
-            continue
-        if key.is_spending_account is False:
-            continue
-        return key
+        if key.address == wanted and key.is_spending_account is not False:
+            return key
     return None
 
 
@@ -4532,7 +4530,9 @@ class SignerClient:
                 ]
 
             key_info = KeyInfo(
-                address=k["address"],
+                # Held in canonical form, once, so every lookup compares
+                # canonical spellings whatever spelling the signer used.
+                address=_address_key(k["address"]),
                 key_type=k["key_type"],
                 public_key_hex=k.get("public_key_hex", ""),
                 authorization_kind=k.get("authorization_kind", ""),

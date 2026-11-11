@@ -864,12 +864,20 @@ class TestAddressSpellings:
         rotated = client.resolve_auth_address(sender, lambda _: alternate_spelling(stage))
         assert rotated.auth_address == sender and rotated.chain_auth_address == stage
 
-    def test_a_key_record_is_found_by_any_spelling_the_signer_uses(self):
-        from aplanesdk.signer import KeyInfo, _find_spendable_key
+    def test_a_key_record_is_found_by_any_spelling_the_signer_uses(self, fakes):
+        # The key list is held in canonical form, so a rotating record the
+        # signer spells otherwise is still found: an ordinary key it names
+        # cannot sign for the account without the chain check.
+        txn = fake_signer.payment(41, 42)
+        holder = fake_signer.account(45)
+        keys = [key(alternate_spelling(txn.sender), SIGNING_FLOW_ROTATING1), key(holder)]
+        signer, node, client = make(fakes, SendSigner(keys))
+        assert [record.address for record in client.list_keys()] == [txn.sender, holder]
 
-        address = fake_signer.account(41)
-        record = KeyInfo(address=alternate_spelling(address), key_type="ed25519")
-        assert _find_spendable_key([record], address) is record
+        group = PreparedGroup([PreparedTransaction(transaction=txn, auth_address=holder)])
+        with pytest.raises(UnsupportedGroupError, match="is not rekeyed to it"):
+            client.send_prepared(node.client, group)
+        assert signer.count("/sign") == 0 and node.submissions() == []
 
     def test_a_sign_request_names_its_auth_address_canonically(self, fakes):
         txn = fake_signer.payment(41, 42)
