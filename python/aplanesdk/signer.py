@@ -3392,8 +3392,8 @@ def _extract_auth_address(account_info: Any) -> str:
 
 def _find_spendable_key(keys: List[KeyInfo], address: str) -> Optional[KeyInfo]:
     """The spendable key the signer lists for address. Addresses are compared
-    in canonical form: list_keys holds each key's address canonically, so
-    only address is canonicalised here."""
+    in canonical form: list_keys refuses a list holding an address spelled
+    otherwise, so only address is canonicalised here."""
     wanted = _address_key(address)
     for key in keys:
         if key.address == wanted and key.is_spending_account is not False:
@@ -4727,11 +4727,23 @@ class SignerClient:
             raise self._signer_http_error(resp, f"Failed to list keys: HTTP {resp.status_code}")
 
         data = _read_answer(resp, _KEYS_RESPONSE_SHAPE, "keys")
+        for index, k in enumerate(data["keys"]):
+            # An address spelled other than canonically would be another
+            # account to every lookup, so a list holding one is refused, as
+            # the Go and TypeScript SDKs refuse it. Every other string is kept
+            # exactly as sent: a witness key's record carries its Witness Key
+            # ID there, which is not an address, and is only ever matched by
+            # an exact lookup.
+            address = k.get("address", "")
+            canonical = _canonical_address(address)
+            if canonical is not None and canonical != address:
+                raise SignerError(
+                    f"signer key list refused: key {index} address {address} is not the "
+                    f"canonical spelling of {canonical}"
+                )
         records = [
             KeyInfo(
-                # Held in canonical form, once, so every lookup compares
-                # canonical spellings whatever spelling the signer used.
-                address=_address_key(k.get("address", "")),
+                address=k.get("address", ""),
                 key_type=k.get("key_type", ""),
                 public_key_hex=k.get("public_key_hex", ""),
                 authorization_kind=k.get("authorization_kind", ""),

@@ -890,20 +890,50 @@ class TestAddressSpellings:
         rotated = client.resolve_auth_address(sender, lambda _: alternate_spelling(stage))
         assert rotated.auth_address == sender and rotated.chain_auth_address == stage
 
-    def test_a_key_record_is_found_by_any_spelling_the_signer_uses(self, fakes):
-        # The key list is held in canonical form, so a rotating record the
-        # signer spells otherwise is still found: an ordinary key it names
-        # cannot sign for the account without the chain check.
+    def test_a_key_list_with_an_address_spelled_otherwise_is_refused(self, fakes):
+        # Compared as written, a rotating record the signer spells otherwise
+        # would not be found, and an ordinary key it names would sign for the
+        # account without the chain check. The whole list is refused instead,
+        # as the Go and TypeScript SDKs refuse it, and nothing is signed.
         txn = fake_signer.payment(41, 42)
         holder = fake_signer.account(45)
-        keys = [key(alternate_spelling(txn.sender), SIGNING_FLOW_ROTATING1), key(holder)]
+        respelled = alternate_spelling(txn.sender)
+        keys = [key(holder), key(respelled, SIGNING_FLOW_ROTATING1)]
         signer, node, client = make(fakes, SendSigner(keys))
-        assert [record.address for record in client.list_keys()] == [txn.sender, holder]
+        with pytest.raises(SignerError, match=f"key 1 address {respelled} is not the canonical"):
+            client.list_keys()
 
         group = PreparedGroup([PreparedTransaction(transaction=txn, auth_address=holder)])
-        with pytest.raises(UnsupportedGroupError, match="is not rekeyed to it"):
+        with pytest.raises(SignerError, match="signer key list refused") as excinfo:
             client.send_prepared(node.client, group)
+        assert type(excinfo.value) is SignerError
         assert signer.count("/sign") == 0 and node.submissions() == []
+
+    def test_a_key_address_that_is_not_an_address_is_kept_as_sent(self, fakes):
+        # A witness key's record carries its 52-character Witness Key ID; any
+        # string that is not an address is kept exactly, and matched only by
+        # an exact lookup.
+        txn = fake_signer.payment(41, 42)
+        witness_id = "ROGAFDACF7ASC3EMZRWNKVM73NXHO4P6O4EB7ZXWER37SM63BMFQ"
+        keys = [
+            key(
+                witness_id,
+                key_type=KEY_TYPE_WITNESS_FALCON1024,
+                is_witness_key=True,
+                is_spending_account=False,
+            ),
+            key("PLACEHOLDER"),
+            key(""),
+            key(txn.sender.lower()),
+            key(txn.sender),
+        ]
+        signer, node, client = make(fakes, SendSigner(keys))
+        listed = [record.address for record in client.list_keys()]
+        assert listed == [witness_id, "PLACEHOLDER", "", txn.sender.lower(), txn.sender]
+        assert client.get_key_info(witness_id).is_witness_key is True
+
+        result = client.send_prepared(node.client, prepared_for(txn))
+        assert result.tx_ids == [txn.get_txid()]
 
     def test_a_sign_request_names_its_auth_address_canonically(self, fakes):
         txn = fake_signer.payment(41, 42)
