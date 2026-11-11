@@ -1144,3 +1144,70 @@ func TestSendPreparedRoutesAnAccountThatLeftRotationByItsKey(t *testing.T) {
 		t.Fatalf("ResolveAuthAddress() = %+v, %v; want the held key", resolved, err)
 	}
 }
+
+// The cancel a send makes when its context ends during approval is best
+// effort: whatever the cancel's own answer, the send reports the signing
+// exchange that ended with no answer, not the cancel.
+func TestSendPreparedCancelFailureDoesNotMaskTheSend(t *testing.T) {
+	txn := verifyTestPayment(t, 41, 42, 1)
+	answers := map[string]func(http.ResponseWriter){
+		"unreadable": func(w http.ResponseWriter) { w.Write([]byte(`{"succ`)) },
+		"null":       func(w http.ResponseWriter) { w.Write([]byte(`null`)) },
+		"an error":   func(w http.ResponseWriter) { w.Write([]byte(`{"success":false,"error":"cancel broke"}`)) },
+		"a 500": func(w http.ResponseWriter) {
+			writeCodedError(w, http.StatusInternalServerError, ErrCodeInternal, "cancel broke")
+		},
+		"no answer": func(w http.ResponseWriter) {
+			if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+				conn.Close()
+			}
+		},
+	}
+	for name, answer := range answers {
+		t.Run("cancel answers "+name, func(t *testing.T) {
+			signStarted := make(chan struct{})
+			canceled := make(chan struct{}, 1)
+			signer := &sendSigner{keys: []KeyInfo{ordinaryKey(txn)}, sign: func(w http.ResponseWriter, r *http.Request) {
+				// The server notices the client leave only once the body is read.
+				io.Copy(io.Discard, r.Body)
+				close(signStarted)
+				<-r.Context().Done()
+			}}
+			signer.t = t
+			client, signerServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/sign/cancel" {
+					canceled <- struct{}{}
+					answer(w)
+					return
+				}
+				signer.handle(w, r)
+			})
+			defer signerServer.Close()
+			node := &sendAlgod{t: t}
+			algodClient, closeAlgod := makeSimulationAlgodClient(t, node.handle)
+			defer closeAlgod()
+
+			ctx, cancel := context.WithCancel(context.Background())
+			go func() {
+				<-signStarted
+				cancel()
+			}()
+			_, err := client.SendPrepared(ctx, algodClient, preparedFor(txn), nil)
+			var unknown *SignOutcomeUnknownError
+			if !errors.As(err, &unknown) || !errors.Is(err, context.Canceled) || unknown.RequestID == "" {
+				t.Fatalf("error = %v, want the unknown outcome of the canceled sign request", err)
+			}
+			if strings.Contains(err.Error(), "cancel broke") || strings.Contains(err.Error(), "sign cancel") {
+				t.Fatalf("error = %v names the cancel", err)
+			}
+			select {
+			case <-canceled:
+			default:
+				t.Fatal("no /sign/cancel was sent")
+			}
+			if len(node.submissions()) != 0 {
+				t.Fatal("submitted")
+			}
+		})
+	}
+}
