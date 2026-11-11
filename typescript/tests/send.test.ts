@@ -32,13 +32,14 @@ import { describeSignedGroup, submitAndTrack, type SendResult } from "../src/sen
 import { SignerError, isLostAnswer, lostAnswerRequestId, markLostAnswer } from "../src/errors.js";
 import { bytesToBase64, encodeTransaction, hexToBytes } from "../src/encoding.js";
 import { readAnswer, type AnswerShape } from "../src/answers.js";
-import { fakeAccount, fakeAddress, fakePayment, planResponse, signEntries, signedHex } from "./fakeSigner.js";
+import { fakeAccount, fakeAddress, fakePayment, planResponse, signEntries, signResponse, signedHex } from "./fakeSigner.js";
 import {
   FakeAlgod,
   SendSigner,
   alternateSpellings,
   algodHttpError,
   blobHex,
+  faultOnce,
   installSigners,
   signedHexOf,
   statusBody,
@@ -1060,6 +1061,119 @@ describe("sendPrepared with a cosigned account", () => {
       },
     );
     assert.equal(node.submitted.length, 0);
+  });
+});
+
+// After an approval-bearing request answered 200, a fault (an error that is
+// not the SDK's own) while its answer is checked, decoded or described is not
+// a refusal: the signature may be out, so the outcome is unknown, with the
+// request's ID. A check that refuses the answer stays a plain error.
+describe("a fault after a signed answer", () => {
+  const txn = fakePayment(41, 42, 1);
+  let fault: ReturnType<typeof faultOnce> | undefined;
+  afterEach(() => {
+    fault?.restore();
+    fault = undefined;
+  });
+  /** A signer that arms fault once it has answered /sign, and the ID it was asked under. */
+  const armingSigner = () => {
+    const signer = new SendSigner([ordinaryKey(txn)]);
+    const asked = { requestId: "" };
+    signer.sign = (body) => {
+      asked.requestId = body.request_id;
+      const reply = { body: signResponse(body.requests) };
+      fault?.arm();
+      return reply;
+    };
+    return { signer, asked };
+  };
+  const unknownFrom = (asked: { requestId: string }, requests = true) => (error: unknown) => {
+    assert.ok(error instanceof SignOutcomeUnknownError, String(error));
+    assert.ok(fault?.fired(), "the fault was not injected");
+    assert.notEqual(asked.requestId, "");
+    assert.equal(error.requestId, asked.requestId);
+    if (requests) assert.equal(error.requests?.length, 1);
+    assert.match(errorText(error), /injected fault/);
+    return true;
+  };
+
+  it("in checking the /sign answer is an unknown outcome", async () => {
+    fault = faultOnce(algosdk.Transaction.prototype, "toByte");
+    const { signer, asked } = armingSigner();
+    const { client, algod, node } = fixture(signer);
+    await assert.rejects(client.sendPrepared(algod, preparedFor(txn)), unknownFrom(asked));
+    assert.equal(node.submitted.length, 0);
+  });
+
+  it("in checking the /sign answer keeps its class and message below the send, marked", async () => {
+    fault = faultOnce(algosdk.Transaction.prototype, "toByte");
+    const { signer, asked } = armingSigner();
+    const { client } = fixture(signer);
+    await assert.rejects(client.signRequests(signEntries(txn)), (error: unknown) => {
+      assert.ok(error instanceof SignerError && !(error instanceof SignOutcomeUnknownError), String(error));
+      assert.match(errorText(error), /^verify signer response: .*injected fault in toByte/);
+      assert.ok(isLostAnswer(error), "a fault after the answer is not marked as a lost answer");
+      assert.equal(lostAnswerRequestId(error), asked.requestId);
+      return true;
+    });
+  });
+
+  it("in describing the signed group is an unknown outcome", async () => {
+    fault = faultOnce(algosdk.Transaction.prototype, "txID");
+    const { signer, asked } = armingSigner();
+    const { client, algod, node } = fixture(signer);
+    await assert.rejects(client.sendPrepared(algod, preparedFor(txn)), unknownFrom(asked));
+    assert.equal(node.submitted.length, 0);
+  });
+
+  it("does not turn a refusal of the answer into an unknown outcome", async () => {
+    const altered = fakePayment(41, 42, 999);
+    const signer = new SendSigner([ordinaryKey(txn)], { sign: () => ({ body: { signed: [signedHex(altered)] } }) });
+    const { client, algod } = fixture(signer);
+    await assert.rejects(client.sendPrepared(algod, preparedFor(txn)), (error: unknown) => {
+      assert.ok(!(error instanceof SignOutcomeUnknownError), String(error));
+      assert.equal(isLostAnswer(error), false);
+      assert.match(errorText(error), /^verify signer response: /);
+      return true;
+    });
+  });
+
+  describe("in the cosigned sequence", () => {
+    const cases: Array<[string, string, () => ReturnType<typeof faultOnce>, string]> = [
+      // A check of the component answer.
+      ["checking the component answer", "/sign/component", () => faultOnce(Number, "isInteger"), "/sign/component"],
+      // signedTransactionMatchesCanonical encodes the assembled transaction.
+      ["checking the assembled group", "/sign/assemble", () => faultOnce(algosdk.Transaction.prototype, "toByte"), "/sign/assemble"],
+      ["describing the assembled group", "/sign/assemble", () => faultOnce(algosdk.Transaction.prototype, "txID"), "/sign/assemble"],
+    ];
+    for (const [name, armAt, inject, named] of cases) {
+      it(`a fault in ${name} is an unknown outcome naming ${named}`, async () => {
+        fault = inject();
+        const { userClient, cosignerClient, algod, node, txn: spend, requestIds } = cosignedFixture("", "", {
+          user: (path) => {
+            if (path === armAt) fault?.arm();
+          },
+        });
+        await assert.rejects(
+          userClient.sendPrepared(algod, preparedFor(spend), {
+            cosignerClient,
+            cosignerComponentKey: "COSIGNER_COMPONENT",
+          }),
+          (error: unknown) => unknownFrom({ requestId: requestIds[named] }, false)(error),
+        );
+        assert.equal(node.submitted.length, 0);
+      });
+    }
+
+    it("a refusal after the component answer stays a plain error", async () => {
+      // No cosigner is named, which only shows once the base component is in.
+      const { userClient, algod, txn: spend, userPaths } = cosignedFixture("");
+      await assert.rejects(userClient.sendPrepared(algod, preparedFor(spend)), (error: unknown) => {
+        assert.ok(!(error instanceof SignOutcomeUnknownError), String(error));
+        return true;
+      });
+      assert.ok(userPaths.includes("/sign/component"), `asked ${userPaths.join(", ")}`);
+    });
   });
 });
 

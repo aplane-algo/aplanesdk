@@ -201,8 +201,10 @@ export class UnsupportedGroupError extends SignerError {
 
 /**
  * A signing exchange ended with no usable answer: a /sign request, or an
- * approval-bearing step of the cosigned or rotating sequence. The signer may
- * or may not have released a signature. Nothing was submitted by this call.
+ * approval-bearing step of the cosigned or rotating sequence, got no answer,
+ * an answer that could not be read, or one the SDK failed while checking
+ * (a fault in the SDK, not a refusal by its checks). The signer may or may
+ * not have released a signature. Nothing was submitted by this call.
  *
  * `requestId` is the request whose answer was lost: the /sign request of the
  * ordinary flow, the rotating sign request, or the cosigned sequence's

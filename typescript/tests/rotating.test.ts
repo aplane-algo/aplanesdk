@@ -44,6 +44,7 @@ import {
   FakeAlgod,
   alternateSpellings,
   blobHex,
+  faultOnce,
   installSigners,
   passingGroupResult,
   statusBody,
@@ -1313,6 +1314,61 @@ describe("rotating stops before signing", () => {
     const prepared = await client.prepareRotating(txn);
     const simulation = await client.simulatePreparedRotating(algod, prepared);
     assert.equal(simulation.failed, true);
+  });
+});
+
+// After the rotating sign request answered 200, a fault (an error that is
+// not the SDK's own) while the signed group is checked or described is not a
+// refusal: the stage's signature is out, so the outcome is unknown, with the
+// request's ID and the prepared group.
+describe("a fault after the rotating sign answer", () => {
+  let fault: ReturnType<typeof faultOnce> | undefined;
+  afterEach(() => {
+    fault?.restore();
+    fault = undefined;
+  });
+  const unknownWithPrepared = (signer: RotatingSigner, prepared?: PreparedRotating) => (error: unknown) => {
+    assert.ok(error instanceof SignOutcomeUnknownError, String(error));
+    assert.ok(fault?.fired(), "the fault was not injected");
+    assert.equal(error.requestId, signer.signRequests[0]?.request_id);
+    assert.ok(error.rotating instanceof PreparedRotating, "want the prepared group");
+    if (prepared) assert.equal(error.rotating, prepared);
+    assert.match(errorText(error), /injected fault in txID/);
+    return true;
+  };
+
+  // verifySigned computes the spend's ID; describing the signed group
+  // computes it again.
+  for (const [name, skip] of [["checking", 0], ["describing", 1]] as Array<[string, number]>) {
+    it(`in ${name} the signed group ends the send as an unknown outcome`, async () => {
+      fault = faultOnce(algosdk.Transaction.prototype, "txID", skip);
+      const { signer, node, algod, client, txn } = rotatingFixture();
+      signer.alterSign = () => fault?.arm();
+      await assert.rejects(client.sendPrepared(algod, rotatingGroup(txn)), unknownWithPrepared(signer));
+      assert.equal(signer.signRequests.length, 1, "the send asked to sign again");
+      assert.equal(node.submitted.length, 0);
+    });
+  }
+
+  it("in checking the signed group is an unknown outcome from signPreparedRotating", async () => {
+    fault = faultOnce(algosdk.Transaction.prototype, "txID");
+    const { signer, client, txn } = rotatingFixture();
+    const prepared = await client.prepareRotating(txn);
+    signer.alterSign = () => fault?.arm();
+    await assert.rejects(client.signPreparedRotating(prepared), unknownWithPrepared(signer, prepared));
+  });
+
+  it("a refusal of the signed group stays a plain error", async () => {
+    const { signer, client, txn } = rotatingFixture();
+    const prepared = await client.prepareRotating(txn);
+    signer.alterSign = (response) => {
+      response.txid = "SOMEOTHERID";
+    };
+    await assert.rejects(client.signPreparedRotating(prepared), (error: unknown) => {
+      assert.ok(!(error instanceof SignOutcomeUnknownError), String(error));
+      assert.match(errorText(error), /^verify signer response: signer reports transaction ID SOMEOTHERID/);
+      return true;
+    });
   });
 });
 

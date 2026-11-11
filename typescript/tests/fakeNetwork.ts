@@ -282,3 +282,36 @@ export function alternateSpellings(address: string): string[] {
   }
   return spellings;
 }
+
+/**
+ * Make target[method] throw a TypeError, a fault in the SDK and not a
+ * refusal, on the first call after skip further calls once it is armed.
+ * restore puts the method back.
+ */
+export function faultOnce(target: any, method: string, skip = 0) {
+  const original = target[method];
+  let armed = false;
+  let left = skip;
+  let fired = false;
+  target[method] = function (this: unknown, ...args: unknown[]) {
+    if (armed) {
+      if (left > 0) {
+        left--;
+      } else {
+        armed = false;
+        fired = true;
+        throw new TypeError(`injected fault in ${method}`);
+      }
+    }
+    return original.apply(this, args);
+  };
+  return {
+    arm: () => {
+      armed = true;
+    },
+    fired: () => fired,
+    restore: () => {
+      target[method] = original;
+    },
+  };
+}

@@ -683,16 +683,20 @@ export function validateSignResponse(
       }
       return slot.txn;
     }
+    // A check's refusal is reworded with the position; anything else thrown
+    // is a fault in the SDK, not a refusal, and is left as it is.
     let decoded: algosdk.SignedTransaction;
     try {
       decoded = decodeCanonicalSignedTransaction(raw);
     } catch (error) {
+      if (!(error instanceof SignerError)) throw error;
       throw new SignerError(`signed transaction ${position}: ${errorText(error)}`);
     }
     if (slot) {
       try {
         validateAuthorization(decoded, slot.auth as string);
       } catch (error) {
+        if (!(error instanceof SignerError)) throw error;
         throw new SignerError(`signed transaction ${position} ${errorText(error)}`);
       }
     }
@@ -755,6 +759,8 @@ export function signedTransactionMatchesCanonical(
   try {
     signed = decodeCanonicalSignedTransaction(decodeHex(signedHex, "signed transaction"));
   } catch (error) {
+    // Anything but a refusal is a fault in the SDK, left as it is.
+    if (!(error instanceof SignerError)) throw error;
     throw new SignerError(`${label} ${index}: ${errorText(error)}`);
   }
   if (encodeTransaction(signed.txn)[0] !== canonicalHex.toLowerCase()) {

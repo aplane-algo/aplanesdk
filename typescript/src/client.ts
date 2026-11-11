@@ -410,9 +410,9 @@ async function requestBoundedPrimaryPassthrough(
   targetResources: Map<number, LogicSigResourceUsage | undefined>,
   primaryTargets: CosignedPrimarySignTarget[],
   signal?: AbortSignal,
-): Promise<{ response?: GroupSignResponse; passthrough: CosignedPassthroughItem[] }> {
+): Promise<{ response?: GroupSignResponse; passthrough: CosignedPassthroughItem[]; requestId: string }> {
   if (primaryTargets.length === 0) {
-    return { passthrough: [] };
+    return { passthrough: [], requestId: "" };
   }
   const primaryByIndex = new Map(primaryTargets.map((target) => [target.targetIndex, target]));
   const requests: SignRequest[] = groupBytesHex.map((txnHex, index) => {
@@ -440,21 +440,58 @@ async function requestBoundedPrimaryPassthrough(
       app_call_info: target.appCallInfo,
     };
   });
-  const response = await userClient.signRequests(requests, { signal });
+  const requestId = newSignRequestId();
+  const response = await userClient.signRequests(requests, { requestId, signal });
   const passthrough: CosignedPassthroughItem[] = [];
-  for (const index of Array.from(primaryByIndex.keys()).sort((a, b) => a - b)) {
-    if (!response.signed?.[index]) {
-      throw new SignerError(`primary signer returned no signed transaction for target ${index}`);
+  try {
+    for (const index of Array.from(primaryByIndex.keys()).sort((a, b) => a - b)) {
+      if (!response.signed?.[index]) {
+        throw new SignerError(`primary signer returned no signed transaction for target ${index}`);
+      }
+      signedTransactionMatchesCanonical(
+        "primary passthrough",
+        index,
+        response.signed[index],
+        groupBytesHex[index],
+      );
+      passthrough.push({ target_index: index, signed_txn_hex: response.signed[index] });
     }
-    signedTransactionMatchesCanonical(
-      "primary passthrough",
-      index,
-      response.signed[index],
-      groupBytesHex[index],
-    );
-    passthrough.push({ target_index: index, signed_txn_hex: response.signed[index] });
+  } catch (error) {
+    throw faultAfterAnswer(error, requestId);
   }
-  return { response, passthrough };
+  return { response, passthrough, requestId };
+}
+
+/**
+ * A fault raised after the approval-bearing request requestId answered 200:
+ * an error that is not the SDK's own, thrown while the answer was checked,
+ * decoded or described. It is not a refusal, because a signature may be out,
+ * so it is marked as the request's lost answer, keeping its class and
+ * message. The SDK's own error (a refusal), an error already marked, and any
+ * error before a request has answered (requestId "") pass as they are.
+ */
+function faultAfterAnswer(error: unknown, requestId: string): unknown {
+  if (requestId === "" || error instanceof SignerError || isLostAnswer(error)) {
+    return error;
+  }
+  markLostAnswer(error, requestId);
+  if (isLostAnswer(error)) {
+    return error;
+  }
+  // A value that cannot carry the mark is carried by an error that can.
+  const carrier = new SignerError(`checking the signer's answer failed: ${errorText(error)}`);
+  (carrier as { cause?: unknown }).cause = error;
+  return markLostAnswer(carrier, requestId);
+}
+
+/**
+ * A failed check of an approval-bearing request's answer, worded by wrap. A
+ * refusal (the SDK's own error) is a plain error; a fault is marked as the
+ * request's lost answer, since the signer did answer.
+ */
+function answerCheckError(error: unknown, requestId: string, wrap: (error: unknown) => SignerError): SignerError {
+  const worded = wrap(error);
+  return error instanceof SignerError ? worded : markLostAnswer(worded, requestId);
 }
 
 /**
@@ -566,6 +603,9 @@ export async function signPreparedCosignedGroup(
   // canonical resource dummies after them.
   validateBoundedTargetFees(planned, targetMaxFees);
   const targetIndices = new Set(targets.map((target) => target.targetIndex));
+  // The ID of the last approval-bearing request that answered. A fault in
+  // the SDK after an answer arrived is not a refusal: a signature may be out.
+  let answered = "";
   const componentResponse = await options.userClient.requestComponents(
     {
       group_bytes_hex: frozenGroup,
@@ -589,41 +629,48 @@ export async function signPreparedCosignedGroup(
     },
     { signal: options.signal },
   );
+  answered = componentResponse.request_id;
   const targetsByIndex = new Map(targets.map((target) => [target.targetIndex, target]));
   const components = new Map<number, (typeof componentResponse.components)[number]>();
-  for (const component of componentResponse.components) {
-    const target = targetsByIndex.get(component.target_index);
-    if (!target || component.kind !== "bounded-base" ||
-        component.auth_address !== target.cosignedAccount) {
-      throw new SignerError(`signer returned unexpected bounded component target ${component.target_index}`);
+  let primary: Awaited<ReturnType<typeof requestBoundedPrimaryPassthrough>>;
+  try {
+    for (const component of componentResponse.components) {
+      const target = targetsByIndex.get(component.target_index);
+      if (!target || component.kind !== "bounded-base" ||
+          component.auth_address !== target.cosignedAccount) {
+        throw new SignerError(`signer returned unexpected bounded component target ${component.target_index}`);
+      }
+      if (components.has(component.target_index)) {
+        throw new SignerError(`signer returned duplicate bounded component target ${component.target_index}`);
+      }
+      components.set(component.target_index, component);
     }
-    if (components.has(component.target_index)) {
-      throw new SignerError(`signer returned duplicate bounded component target ${component.target_index}`);
+    for (const target of targets) {
+      const component = components.get(target.targetIndex);
+      if (!component) {
+        throw new SignerError(`signer returned no bounded component for target index ${target.targetIndex}`);
+      }
+      // Budget the position on the path the signer named, which only the signer
+      // can choose: whether a rekey target is listed is not public.
+      targetResources.set(
+        target.targetIndex,
+        componentPathResources(targetKeys.get(target.targetIndex), component.path, `prepared transaction ${target.targetIndex}`),
+      );
     }
-    components.set(component.target_index, component);
-  }
-  for (const target of targets) {
-    const component = components.get(target.targetIndex);
-    if (!component) {
-      throw new SignerError(`signer returned no bounded component for target index ${target.targetIndex}`);
-    }
-    // Budget the position on the path the signer named, which only the signer
-    // can choose: whether a rekey target is listed is not public.
-    targetResources.set(
-      target.targetIndex,
-      componentPathResources(targetKeys.get(target.targetIndex), component.path, `prepared transaction ${target.targetIndex}`),
-    );
-  }
 
-  const primary = await requestBoundedPrimaryPassthrough(
-    options.userClient,
-    frozenGroup,
-    prepared.length,
-    new Set(targetsByIndex.keys()),
-    targetResources,
-    primaryTargets,
-    options.signal,
-  );
+    primary = await requestBoundedPrimaryPassthrough(
+      options.userClient,
+      frozenGroup,
+      prepared.length,
+      new Set(targetsByIndex.keys()),
+      targetResources,
+      primaryTargets,
+      options.signal,
+    );
+  } catch (error) {
+    throw faultAfterAnswer(error, answered);
+  }
+  if (primary.requestId !== "") answered = primary.requestId;
 
   // The user side is complete, including ordinary primary positions. Only
   // now may the SDK disclose the frozen group to the cosigner endpoint, and
@@ -643,84 +690,90 @@ export async function signPreparedCosignedGroup(
     }
     group.indices.push(target.targetIndex);
   }
-  const cosignerComponentResponses: ComponentResponse[] = [];
-  const cosignerSignatures: ComponentSignatureByIndex = new Map();
-  // Every original position's app call description, as the caller gave it: a
-  // primary slot's /plan request does not carry it.
-  const appCallInfo = new Map<number, AppCallInfo | undefined>(
-    prepared.map((item, index) => [index, item.appCallInfo]),
-  );
-  const cosignerSchemes = new Map(
-    targets.map((target) => [target.targetIndex, target.cosignerComponentKeyType || ""]),
-  );
-  for (const group of cosignerGroups) {
-    const response = await group.client.requestComponents(
-      componentRequestForIndices(
-        frozenGroup,
-        group.indices.sort((a, b) => a - b),
-        group.componentKey,
-        frozenGroup.slice(prepared.length).map((_, offset) => prepared.length + offset),
-        appCallInfo,
-      ),
-      { signal: options.signal },
+  try {
+    const cosignerComponentResponses: ComponentResponse[] = [];
+    const cosignerSignatures: ComponentSignatureByIndex = new Map();
+    // Every original position's app call description, as the caller gave it: a
+    // primary slot's /plan request does not carry it.
+    const appCallInfo = new Map<number, AppCallInfo | undefined>(
+      prepared.map((item, index) => [index, item.appCallInfo]),
     );
-    cosignerComponentResponses.push(response);
-    for (const [index, signature] of componentSignaturesByIndex(response, cosignerSchemes)) {
-      cosignerSignatures.set(index, signature);
-    }
-  }
-
-  const passthrough = [
-    ...primary.passthrough,
-    ...signCosignedDummies(
-      prepared[0].transaction as Transaction,
-      groupIDBytes(planned[0]),
-      planned.slice(prepared.length),
-      prepared.length,
-    ),
-  ];
-  const assemblyTargets: AssemblyTarget[] = targets.map((target) => {
-    const component = components.get(target.targetIndex);
-    if (!component) {
-      throw new SignerError(`missing bounded base component for target ${target.targetIndex}`);
-    }
-    const assemblyTarget: AssemblyTarget = {
-      target_index: target.targetIndex,
-      kind: "bounded-cosigner",
-      auth_address: component.auth_address || "",
-      base_signatures: [...(component.base_signatures || [])],
-      bounded_runtime_args: component.runtime_args ? { ...component.runtime_args } : undefined,
-      assembly_receipt: component.assembly_receipt || "",
-      base_source_request_id: componentResponse.request_id,
-    };
-    if (componentNeedsCosigner(component)) {
-      const cosigner = cosignerSignatures.get(target.targetIndex);
-      if (!cosigner) {
-        throw new SignerError(`missing cosigner component signature for target ${target.targetIndex}`);
+    const cosignerSchemes = new Map(
+      targets.map((target) => [target.targetIndex, target.cosignerComponentKeyType || ""]),
+    );
+    for (const group of cosignerGroups) {
+      const response = await group.client.requestComponents(
+        componentRequestForIndices(
+          frozenGroup,
+          group.indices.sort((a, b) => a - b),
+          group.componentKey,
+          frozenGroup.slice(prepared.length).map((_, offset) => prepared.length + offset),
+          appCallInfo,
+        ),
+        { signal: options.signal },
+      );
+      answered = response.request_id;
+      cosignerComponentResponses.push(response);
+      for (const [index, signature] of componentSignaturesByIndex(response, cosignerSchemes)) {
+        cosignerSignatures.set(index, signature);
       }
-      assemblyTarget.cosigner_signature = cosigner.signature;
-      assemblyTarget.cosigner_source_request_id = cosigner.requestId;
     }
-    return assemblyTarget;
-  });
-  const assemblyResponse = await options.userClient.requestAssemble({
-    request_id: options.assemblyRequestId,
-    group_bytes_hex: [...frozenGroup],
-    targets: assemblyTargets,
-    passthrough,
-  }, { signal: options.signal });
-  verifyBoundedAssembledGroup(
-    frozenGroup,
-    assemblyResponse.signed_group,
-  );
-  return {
-    signedGroup: [...assemblyResponse.signed_group],
-    cosignerComponentResponses,
-    primarySignResponse: primary.response,
-    boundedComponentResponse: componentResponse,
-    boundedAssemblyResponse: assemblyResponse,
-    planMutations: planResponse.mutations,
-  };
+
+    const passthrough = [
+      ...primary.passthrough,
+      ...signCosignedDummies(
+        prepared[0].transaction as Transaction,
+        groupIDBytes(planned[0]),
+        planned.slice(prepared.length),
+        prepared.length,
+      ),
+    ];
+    const assemblyTargets: AssemblyTarget[] = targets.map((target) => {
+      const component = components.get(target.targetIndex);
+      if (!component) {
+        throw new SignerError(`missing bounded base component for target ${target.targetIndex}`);
+      }
+      const assemblyTarget: AssemblyTarget = {
+        target_index: target.targetIndex,
+        kind: "bounded-cosigner",
+        auth_address: component.auth_address || "",
+        base_signatures: [...(component.base_signatures || [])],
+        bounded_runtime_args: component.runtime_args ? { ...component.runtime_args } : undefined,
+        assembly_receipt: component.assembly_receipt || "",
+        base_source_request_id: componentResponse.request_id,
+      };
+      if (componentNeedsCosigner(component)) {
+        const cosigner = cosignerSignatures.get(target.targetIndex);
+        if (!cosigner) {
+          throw new SignerError(`missing cosigner component signature for target ${target.targetIndex}`);
+        }
+        assemblyTarget.cosigner_signature = cosigner.signature;
+        assemblyTarget.cosigner_source_request_id = cosigner.requestId;
+      }
+      return assemblyTarget;
+    });
+    const assemblyResponse = await options.userClient.requestAssemble({
+      request_id: options.assemblyRequestId,
+      group_bytes_hex: [...frozenGroup],
+      targets: assemblyTargets,
+      passthrough,
+    }, { signal: options.signal });
+    answered = assemblyResponse.request_id;
+    verifyBoundedAssembledGroup(
+      frozenGroup,
+      assemblyResponse.signed_group,
+    );
+    return {
+      signedGroup: [...assemblyResponse.signed_group],
+      cosignerComponentResponses,
+      primarySignResponse: primary.response,
+      boundedComponentResponse: componentResponse,
+      boundedAssemblyResponse: assemblyResponse,
+      planMutations: planResponse.mutations,
+    };
+  } catch (error) {
+    throw faultAfterAnswer(error, answered);
+  }
 }
 
 /**
@@ -3868,18 +3921,21 @@ export class SignerClient {
       requestBody.request_id || "",
     );
     if (data.error) throw new SignerError(data.error);
+    const requestId = requestBody.request_id || "";
     try {
       validateComponentResponse(data, requestBody);
     } catch (error) {
-      throw new SignerError(
-        `invalid component response: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      throw answerCheckError(error, requestId, (cause) => new SignerError(`invalid component response: ${errorText(cause)}`));
     }
-    if (data.request_id !== requestBody.request_id) throw new SignerError("component response request_id does not match request");
-    const expected = new Map(requestBody.targets.map((target) => [target.target_index, target.kind]));
-    const actual = new Map(data.components.map((component) => [component.target_index, component.kind]));
-    if (expected.size !== actual.size || [...expected].some(([index, kind]) => actual.get(index) !== kind)) {
-      throw new SignerError("component response target indices or kinds do not match request");
+    try {
+      if (data.request_id !== requestBody.request_id) throw new SignerError("component response request_id does not match request");
+      const expected = new Map(requestBody.targets.map((target) => [target.target_index, target.kind]));
+      const actual = new Map(data.components.map((component) => [component.target_index, component.kind]));
+      if (expected.size !== actual.size || [...expected].some(([index, kind]) => actual.get(index) !== kind)) {
+        throw new SignerError("component response target indices or kinds do not match request");
+      }
+    } catch (error) {
+      throw faultAfterAnswer(error, requestId);
     }
     return data;
   }
@@ -3959,8 +4015,10 @@ export class SignerClient {
         );
       }
     } catch (error) {
-      throw new SignerError(
-        `invalid assembly response: ${error instanceof Error ? error.message : String(error)}`
+      throw answerCheckError(
+        error,
+        requestBody.request_id || "",
+        (cause) => new SignerError(`invalid assembly response: ${errorText(cause)}`),
       );
     }
 
@@ -4253,11 +4311,13 @@ export class SignerClient {
       : data;
 
     // Every sign path goes through here, so a truncated, altered or padded
-    // group can never be returned for submission or simulation.
+    // group can never be returned for submission or simulation. A check that
+    // refuses the answer is a plain error; a fault in it is the signer's
+    // answer lost, since a signature may be out.
     try {
       validateSignResponse(slots, result.signed ?? [], result.mutations, maxFeeIncrease);
     } catch (error) {
-      throw verificationError("verify signer response: ", error);
+      throw answerCheckError(error, requestId, (cause) => verificationError("verify signer response: ", cause));
     }
 
     return result;
@@ -4380,7 +4440,8 @@ export class SignerClient {
    * A refusal by the signer, and an answer of the signer's that the SDK
    * refuses, come back as the signing call's own error; nothing was
    * submitted. The other failures are typed: SignOutcomeUnknownError (an
-   * approval-bearing request ended with no answer), SubmissionRejectedError
+   * approval-bearing request ended with no usable answer, or the SDK failed
+   * while checking or describing one), SubmissionRejectedError
    * and SubmissionUncertainError (the group was signed, and the error keeps
    * the signed bytes and their IDs), RotatingPreflightError,
    * UnsupportedSigningFlowError and UnsupportedGroupError. A rotating send
@@ -4455,6 +4516,9 @@ export class SignerClient {
     }
 
     const result = emptySendResult(flow, group.transactions.length);
+    // The approval-bearing request whose answer released the group, for a
+    // fault in describing what it signed.
+    let released: { requestId: string; requests?: SignRequest[] };
     if (flow === SIGNING_FLOW_COSIGNED1) {
       let signed: CosignedSignResult;
       try {
@@ -4478,16 +4542,23 @@ export class SignerClient {
       result.signedGroup = [...signed.signedGroup];
       result.mutations = signed.planMutations;
       result.cosigned = signed;
+      released = { requestId: signed.boundedAssemblyResponse?.request_id ?? "" };
     } else {
-      const response = await this.signForSend(group, signal);
+      const { response, requestId, requests } = await this.signForSend(group, signal);
       result.signedGroup = [...(response.signed ?? [])];
       result.mutations = response.mutations;
+      released = { requestId, requests };
     }
 
     let raw: Uint8Array[];
     try {
       raw = describeSignedGroup(result);
     } catch (error) {
+      // A fault in describing a signed group is not a refusal of it: the
+      // signature is out.
+      if (!(error instanceof SignerError)) {
+        throw new SignOutcomeUnknownError({ ...released, cause: error });
+      }
       throw new SignerError(`verify signed group: ${errorText(error)}`);
     }
     await submitAndTrack(algodClient, raw, result, checked);
@@ -4587,11 +4658,14 @@ export class SignerClient {
    * The ordinary /sign flow for a send: signRequests, with an exchange that
    * ended with no usable answer told apart from a refusal.
    */
-  private async signForSend(group: PreparedGroup, signal?: AbortSignal): Promise<GroupSignResponse> {
+  private async signForSend(
+    group: PreparedGroup,
+    signal?: AbortSignal,
+  ): Promise<{ response: GroupSignResponse; requestId: string; requests: SignRequest[] }> {
     const requests = preparedGroupToSignRequests(group);
     const requestId = newSignRequestId();
     try {
-      return await this.signRequests(requests, { requestId, signal });
+      return { response: await this.signRequests(requests, { requestId, signal }), requestId, requests };
     } catch (error) {
       if (isLostAnswer(error)) {
         throw new SignOutcomeUnknownError({ requestId, requests, cause: error });
@@ -4726,8 +4800,10 @@ export class SignerClient {
    * approval, and check the signed group against the prepared one. It does
    * not submit.
    *
-   * If the answer never arrives it throws a SignOutcomeUnknownError that
-   * carries the prepared group. Calling signPreparedRotating again with that
+   * If the answer never arrives, or cannot be read, or the SDK fails (a
+   * fault, not a refusal) while checking it, it throws a
+   * SignOutcomeUnknownError that carries the request ID and the prepared
+   * group. Calling signPreparedRotating again with that
    * same prepared group is the safe recovery: it asks for the same
    * transaction, with the same IDs, and builds no second spend. It needs
    * approval again, and it succeeds only while the stage is still live and
@@ -4774,6 +4850,11 @@ export class SignerClient {
     try {
       result = prepared.verifySigned(data);
     } catch (error) {
+      // A check that refuses the signed group is a plain error. A fault in
+      // checking it is not: the signer answered, and the signature is out.
+      if (!(error instanceof SignerError)) {
+        throw new SignOutcomeUnknownError({ requestId, rotating: prepared, cause: error });
+      }
       throw verificationError("verify signer response: ", error);
     }
     result.requestId = requestId;
@@ -4888,20 +4969,24 @@ export class SignerClient {
       }
 
       const result = emptySendResult(SIGNING_FLOW_ROTATING1, 1);
-      result.signedGroup = [...signed.signedGroup];
-      result.mutations = prepared.mutations();
-      result.rotating = {
-        stage: signed.stage,
-        target: signed.target,
-        rekeyTo: prepared.rekeyTo,
-        attempts: attempt,
-        transaction: cloneTransaction(txn),
-        requestId: signed.requestId,
-      };
       let raw: Uint8Array[];
       try {
+        result.signedGroup = [...signed.signedGroup];
+        result.mutations = prepared.mutations();
+        result.rotating = {
+          stage: signed.stage,
+          target: signed.target,
+          rekeyTo: prepared.rekeyTo,
+          attempts: attempt,
+          transaction: cloneTransaction(txn),
+          requestId: signed.requestId,
+        };
         raw = describeSignedGroup(result);
       } catch (error) {
+        // A fault in describing the signed group is not a refusal of it.
+        if (!(error instanceof SignerError)) {
+          throw new SignOutcomeUnknownError({ requestId: signed.requestId, rotating: prepared, cause: error });
+        }
         throw new SignerError(`verify signed group: ${errorText(error)}`);
       }
       await submitAndTrack(algodClient, raw, result, checked);

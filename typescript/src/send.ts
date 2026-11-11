@@ -208,6 +208,8 @@ export function decodeExecutableSignedGroup(signedGroup: string[]): {
       raw.push(bytes);
       return decodeCanonicalSignedTransaction(bytes);
     } catch (error) {
+      // Anything but a refusal is a fault in the SDK, left as it is.
+      if (!(error instanceof SignerError)) throw error;
       throw new SignerError(`signed group position ${index + 1}: ${errorText(error)}`);
     }
   });

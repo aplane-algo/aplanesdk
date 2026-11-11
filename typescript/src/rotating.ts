@@ -371,10 +371,13 @@ export class PreparedRotating {
     signed.forEach((signedHex, index) => {
       const position = index + 1;
       const raw = decodeHex(signedHex, `signed transaction ${position}`);
+      // A check's refusal is reworded; anything else thrown is a fault in
+      // the SDK, not a refusal, and is left as it is.
       let stxn: algosdk.SignedTransaction;
       try {
         stxn = decodeCanonicalSignedTransaction(raw);
       } catch (error) {
+        if (!(error instanceof SignerError)) throw error;
         throw new SignerError(`signed transaction ${position}: ${errorText(error)}`);
       }
       if (!byteArraysEqual(stxn.txn.toByte(), txns[index].toByte())) {
@@ -398,6 +401,7 @@ export class PreparedRotating {
       try {
         validateAuthorization(stxn, stageAddress);
       } catch (error) {
+        if (!(error instanceof SignerError)) throw error;
         throw new SignerError(`spend ${errorText(error)}`);
       }
       if ((stageAddress === spend.sender.toString()) !== (this.#stage === 0)) {
