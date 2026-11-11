@@ -14,10 +14,18 @@ type AccountAuthLookup func(ctx context.Context, address string) (string, error)
 
 // ResolvedAuthAddress describes the effective signer for one account.
 type ResolvedAuthAddress struct {
-	Address     string
+	Address string
+	// AuthAddress is the account whose key signs: the address itself, the
+	// address it is rekeyed to, or, for a rotating account, the account
+	// itself at every stage.
 	AuthAddress string
 	IsRekeyed   bool
-	KeyInfo     KeyInfo
+	// ChainAuthAddress is the auth address the chain reports, empty when the
+	// account signs for itself. For a rotating account that has rotated it
+	// is the current stage's address, which the signer does not list as a
+	// key; AuthAddress stays the account.
+	ChainAuthAddress string
+	KeyInfo          KeyInfo
 }
 
 // ListKeysIfKeysetChanged returns cached keys when /status reports the same
@@ -77,6 +85,22 @@ func (c *SignerClient) ResolveAuthAddress(ctx context.Context, address string, l
 		return nil, err
 	}
 
+	// A rotating account is authorized by its current stage, which the
+	// signer derives from the account's key and never lists. The signer holds
+	// the account itself and signs for it at any stage.
+	// One exception: a rotating account rekeyed to an ordinary key the signer
+	// holds has left rotation, and that key signs for it like any rekey.
+	own, isOwn := findSpendableKey(keys, address)
+	_, authHeld := findSpendableKey(keys, signingAddr)
+	leftRotation := signingAddr != address && authHeld
+	if isOwn && own.SigningFlow == SigningFlowRotating1 && !leftRotation {
+		chainAuth := ""
+		if authAddr != address {
+			chainAuth = authAddr
+		}
+		return &ResolvedAuthAddress{Address: address, AuthAddress: address, ChainAuthAddress: chainAuth, KeyInfo: own}, nil
+	}
+
 	key, ok := findSpendableKey(keys, signingAddr)
 	if !ok {
 		if signingAddr == address {
@@ -85,11 +109,16 @@ func (c *SignerClient) ResolveAuthAddress(ctx context.Context, address string, l
 		return nil, fmt.Errorf("%w: account is rekeyed to %s but that address is not signable", ErrKeyNotFound, authAddr)
 	}
 
+	chainAuth := ""
+	if signingAddr != address {
+		chainAuth = signingAddr
+	}
 	return &ResolvedAuthAddress{
-		Address:     address,
-		AuthAddress: signingAddr,
-		IsRekeyed:   signingAddr != address,
-		KeyInfo:     key,
+		Address:          address,
+		AuthAddress:      signingAddr,
+		IsRekeyed:        signingAddr != address,
+		ChainAuthAddress: chainAuth,
+		KeyInfo:          key,
 	}, nil
 }
 

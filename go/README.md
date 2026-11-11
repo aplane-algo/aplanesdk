@@ -287,6 +287,12 @@ Fetch the raw `/keys` response plus local locked-state reporting. `Locked` is
 derived from a locked-signer HTTP response and is not part of the `/keys` JSON
 payload.
 
+Each key's `address` is kept exactly as the signer sent it and is matched by
+its exact text. A witness key's row carries its Witness Key ID there, not an
+Algorand address. An answer that spells an Algorand address non-canonically
+(the same 36 bytes and checksum, other text) is refused whole, since a lookup
+by the canonical address would never find that key.
+
 ```go
 keysResp, err := client.GetKeysResponseWithContext(ctx)
 if err != nil {
@@ -337,15 +343,19 @@ Go is the reference SDK shape for caller-initiated synchronous cancellation:
 pass a cancelable `context.Context` to `SignRequestsWithContext` or
 `SignGroupWithContext`. If that context is canceled before apsigner responds,
 the SDK sends best-effort `/sign/cancel` for the generated or supplied
-`request_id`.
+`request_id`. That cancel's own failure, or an answer to it the SDK cannot
+read, never fails the call or replaces its error; only
+`CancelSignRequestWithContext` reports a cancel's outcome. A context that has
+already ended when a call starts sends nothing, so it is a plain error, not
+an unknown outcome.
 
 #### `SendPrepared(ctx, algodClient, group, opts) (*SendResult, error)`
 
 Sign a prepared transaction or group, check the signed result against what was
 prepared, submit exactly those bytes, and wait for confirmation. The SDK picks
 the signing flow from the signer's record of each key, so the same call works
-for Ed25519, native Falcon, LogicSig, bounded and cosigned accounts, and for a
-rekeyed sender.
+for Ed25519, native Falcon, LogicSig, bounded, cosigned and rotating accounts,
+and for a rekeyed sender.
 
 ```go
 prepared, err := client.PreparePayment(ctx, algodClient, aplane.PaymentPrepParams{
@@ -365,25 +375,44 @@ payment.
   the IDs of the transactions you prepared.
 - **Options.** `NoWait` returns once the node accepts the group, with outcome
   `submitted`. `WaitRounds` is how many further rounds to wait for
-  confirmation (default 10). A cosigned
-  account needs `CosignerClient` with `CosignerComponentKey`, or a
+  confirmation (default 10). A cosigned account needs `CosignerClient` with `CosignerComponentKey`, or a
   `CosignerResolver`; the SDK does not close a cosigner client you pass.
-- **Refused before signing:** a rotating account or an unknown signing flow
+- **Refused before signing:** an unknown signing flow
   (`ErrUnsupportedSigningFlow`), and a pre-signed or foreign position
   (`ErrUnsupportedGroup`). Use the lower-level signing calls for those groups.
-  Rotating accounts are not supported by this SDK version; one that has
-  already rotated is refused earlier, by the `Prepare*` helper, with
-  `ErrKeyNotFound`.
-- **It never signs twice,** and never builds a replacement transaction.
+- **No replacement spends.** The call never builds a second transaction for
+  one whose outcome is unknown. A rotating send may prepare and seek approval
+  again when the signer says an attempt released no signature.
 
 Failures:
 
 | Error | Meaning | What to do |
 |---|---|---|
 | The signing call's own error | The signer refused (policy, operator, locked), or the SDK refused the signer's answer (`verify signer response: ...`, `ErrMaxFeeIncreaseExceeded`). Nothing was submitted. | Read the reason. If the SDK refused a sign answer, the signer did sign and the SDK discarded the result. |
-| `*SignOutcomeUnknownError` | A signing exchange ended with no answer. A signature may have been released; nothing was submitted. | Check with the operator or the audit log before signing again. For the ordinary flow the error carries the request ID. |
+| `*SignOutcomeUnknownError` | A signing exchange ended with no answer, or with a 200 answer that could not be read (not one JSON object of the expected shape). A signature may have been released; nothing was submitted. | Check with the operator or the audit log before signing again. The error carries the ID of the request whose answer was lost (for a cosigned account, the step's `/sign/component`, `/sign/assemble` or `/sign` request); for a rotating account it also carries the prepared group (see below). |
 | `*SubmissionRejectedError` | The node refused the group or dropped it from its pool. | Read the reason. The signed bytes and IDs are in the error. |
 | `*SubmissionUncertainError` | `Stage` says where it stopped: `unsent` (signed, never sent: your context ended), `submit` (the submission's answer never arrived), or `confirm` (not confirmed within the wait). Except for `unsent`, it may still confirm. | Look up `TxIDs`, or submit the same `SignedGroup` again. Do not sign a replacement until the outcome is known: both could execute. |
+
+Every 200 answer from the signer, the key list included, is read as exactly
+one non-null JSON value: a `null` body or anything after the value is an
+error, never an empty answer. A field left out or `null`, at any depth, reads
+as its zero value. An answer whose `error` field is set (component, assembly,
+key generation and key deletion answers as well as `/sign` and `/plan`) is a
+refusal; a key generation answer that names no address is refused too.
+
+The three SDKs' JSON readers differ in known ways that a real signer never
+reaches:
+
+- Go matches keys case-insensitively, so of two keys that differ only in case
+  (`signed` and `Signed`) the later one wins where TypeScript and Python read
+  only the exact name.
+- Go refuses `-0` for an unsigned field where the others read it as 0.
+- Of a key given twice, the later value is read, except that a later `null`
+  leaves Go's earlier string, number or boolean in place (a list, object or
+  pointer it does empty); the others read that `null` as zero.
+- A body that starts with a UTF-8 byte order mark is readable in TypeScript
+  only.
+- An integer of more than 4300 digits is unreadable in Python only.
 
 A node that answers "already in ledger" has a transaction with the same ID
 from an earlier submission of the group. The SDK treats that as submitted and
@@ -391,7 +420,104 @@ looks for the outcome; it is not a rejection. A committed transaction that
 carries a lease is the exception: the node refuses it for its lease, and the
 SDK reports a rejection.
 
-The existing `Sign*` and `Simulate*` calls are unchanged.
+The existing `Sign*` and `Simulate*` calls are unchanged. A `Simulate*`
+result is `Failed` unless the node returned exactly one group result, that
+result reports no failure (no `failure-message` and no `failed-at`), and it
+holds one transaction result per transaction simulated: an answer without
+exactly one result, or with the wrong count of transaction results, checked
+less than the group. `FailureMessage` says why: the node's `failure-message`
+when it gave one, otherwise one of "the node returned no result for the
+group", "the node returned N results for one group", "the node reported a
+failure without a message" or "the node returned M transaction results for N
+transactions". Go's algod client reads a `null` group result as an empty one,
+so it fails on its count of transaction results.
+
+#### Rotating accounts
+
+A rotating account (`signing_flow` `rotating1`) hands itself to a fresh stage
+on every spend, so the signer adds a rekey to the transaction. `SendPrepared`
+and `SendPayment` run the whole sequence:
+
+1. **Prepare.** The signer returns the exact group it will sign: your
+   transaction with the rekey to the next stage, its fee raised, and any
+   resource dummies.
+2. **Check.** The SDK refuses the group unless the only changes are that
+   rekey, a reported fee raise within your max fee increase, the group ID and
+   canonical dummies.
+3. **Simulate, unsigned,** through your algod. A group that fails returns
+   `*RotatingPreflightError`, as does an answer without exactly one result
+   for the group, or with the wrong count of transaction results; a
+   simulation that cannot be run returns a plain error. Either way no
+   one-time key has been used.
+4. **Sign,** with operator approval, then check the signed group is exactly
+   the prepared one.
+5. **Submit at once** and wait for confirmation. `SendResult.Rotating` reports
+   the stage that signed and the stage that now controls the account.
+
+What to know:
+
+- **One transaction, alone.** A rotating account's transaction must be
+  ungrouped, set no `RekeyTo`, not close the account, and take no LogicSig
+  arguments. It cannot share a group with other transactions.
+- **Short validity window.** The window is at most 100 rounds, and the signer
+  signs only while `FirstValid` is at most 2 rounds ahead and at least 10
+  rounds remain. Every `Prepare*` helper builds such a window when the sender
+  is a rotating account. A transaction whose rounds are not current is
+  refused before the operator is asked, and that includes one a helper built
+  that has since gone stale: only `SendPayment` rebuilds rounds without the
+  option. For a transaction you built yourself,
+  set `SendOptions.RefreshValidity` to let the SDK rebuild the rounds; that
+  changes the transaction ID, so leave it off if anything outside the
+  transaction binds its rounds.
+- **App calls carry the rekey.** A contract that requires a zero `RekeyTo`
+  fails the simulation in step 3.
+- **Bounded retries.** When the signer says an attempt released no signature
+  (`rotating_stage_unproven`, `rotating_stage_changed`,
+  `rotating_window_not_current`), the send prepares again, up to three
+  attempts. Each attempt needs approval again. A timing refusal is retried
+  only when the rounds may be rebuilt, and the retry uses the longest window
+  to give the operator time.
+- **`ResolveAuthAddress` returns the account itself** as the `AuthAddress` of
+  a rotating account at every stage; the stage address the chain reports is
+  in `ChainAuthAddress`. The `Prepare*` helpers use it.
+- **The SDK cannot derive stage addresses.** It binds the next stage's
+  address the signer reports to the prepared transaction; the signer derives
+  it again from the seed before it signs.
+- **Unsigned simulation checks effects, not signatures.** The node runs the
+  stage program only on the signed group.
+- **Two sends in a row** work once the first has confirmed, which the default
+  wait ensures. Two spends prepared from the same stage cannot both land; the
+  SDK does not serialize other clients or processes.
+
+The steps are also available one at a time. None of them submits:
+
+```go
+prepared, err := client.PrepareRotating(ctx, txn, nil)              // nothing signed
+simulation, err := client.SimulatePreparedRotating(ctx, algodClient, prepared) // never signs
+signed, err := client.SignPreparedRotating(ctx, prepared, nil)       // waits for approval
+result, err := client.SubmitSignedGroup(ctx, algodClient, signed.SignedGroup, nil)
+```
+
+Submit a signed rotating group promptly: the stage's one-time keys are
+revealed until that transaction or a later rotation confirms.
+
+**If a sign answer is lost** (`*SignOutcomeUnknownError`, whose `Rotating`
+field holds the prepared group), call `SignPreparedRotating` again with that
+same prepared group. It asks for the same transaction with the same IDs and
+builds no second spend. It needs approval again and succeeds only while the
+stage is still live and the window still acceptable. If the retry is refused,
+do not prepare a replacement until the first attempt's outcome is known:
+`rotating_stage_changed` means a transaction from that stage has confirmed.
+
+`SubmitSignedGroup` also submits again the `SignedGroup` kept by a
+`*SubmissionUncertainError`; the same bytes can execute only once.
+
+A rotating account that was rekeyed to an ordinary key the signer holds has
+left rotation. The `Prepare*` helpers name that key as its `AuthAddress`, and
+it is then signed like any rekeyed account. `SendPrepared` confirms the rekey
+on the chain first, so an ordinary key is never asked to sign for an account
+that is still rotating. Recovery of an unknown stage is an
+operator action (`rotate recover` in apshell).
 
 ### Config Helpers
 

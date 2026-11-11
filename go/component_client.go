@@ -32,10 +32,28 @@ func (c *SignerClient) RequestComponentsWithContext(ctx context.Context, reqBody
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal component request: %w", err)
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// A context that has already ended sends nothing, as in postApproval.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	approvalBearing := reqBody.TargetKind() != ComponentTargetKindCosigner
 	timeout := c.componentRequestTimeout(ctx, approvalBearing)
 	reqCtx, cancel := c.requestContext(ctx, timeout)
 	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, c.baseURL+"/sign/component", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	// Checked again before the cancel watcher starts: a watcher started on an
+	// ended context could cancel a request that was never posted.
+	if err := reqCtx.Err(); err != nil {
+		return nil, err
+	}
 
 	var cancelOnce sync.Once
 	sendCancel := func() {
@@ -63,19 +81,13 @@ func (c *SignerClient) RequestComponentsWithContext(ctx context.Context, reqBody
 			}
 		}()
 	}
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, c.baseURL+"/sign/component", bytes.NewReader(body))
-	if err != nil {
-		close(done)
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.client.Do(req)
 	close(done)
 	if err != nil {
 		if reqCtx.Err() != nil {
 			sendCancel()
 		}
-		return nil, fmt.Errorf("failed to make request to Signer: %w", &lostAnswer{err: err})
+		return nil, fmt.Errorf("failed to make request to Signer: %w", &lostAnswer{requestID: reqBody.RequestID, err: err})
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusUnauthorized {
@@ -91,8 +103,11 @@ func (c *SignerClient) RequestComponentsWithContext(ctx context.Context, reqBody
 		return nil, signerHTTPError(resp)
 	}
 	var result ComponentResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("failed to decode component response: %w", &lostAnswer{err: err})
+	if err := readAnswer(resp.Body, &result); err != nil {
+		return nil, fmt.Errorf("failed to decode component response: %w", &lostAnswer{requestID: reqBody.RequestID, err: err})
+	}
+	if result.Error != "" {
+		return nil, fmt.Errorf("component signing failed: %s", result.Error)
 	}
 	if err := result.ValidateForRequest(reqBody); err != nil {
 		return nil, fmt.Errorf("invalid component response: %w", err)

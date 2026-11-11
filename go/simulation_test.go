@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -89,6 +90,7 @@ func TestSimulatePreparedGroupUsesOrdinarySignThenClientAlgod(t *testing.T) {
 			Version:   2,
 			TxnGroups: []models.SimulateTransactionGroupResult{{
 				FailureMessage: "logic eval error",
+				TxnResults:     make([]models.SimulateTransactionResult, 1),
 			}},
 		})
 	})
@@ -112,6 +114,68 @@ func TestSimulatePreparedGroupUsesOrdinarySignThenClientAlgod(t *testing.T) {
 	}
 	if result.Mutations == nil || result.Mutations.FinalCount != 1 {
 		t.Fatalf("mutations = %+v", result.Mutations)
+	}
+}
+
+// simulationVerdicts are raw node answers for a group of submitted
+// transactions and how the classifier reads each, word for word as in the
+// other SDKs. A result passes only as one group result with no failure
+// message, no failed-at and one transaction result per transaction.
+func simulationVerdicts(submitted int) []struct{ name, body, message string } {
+	results := func(n int) string {
+		return "[" + strings.TrimSuffix(strings.Repeat(`{"txn-result":{"pool-error":""}},`, n), ",") + "]"
+	}
+	group := func(fields string) string {
+		return `{"last-round":7,"version":2,"txn-groups":[` + fields + `]}`
+	}
+	return []struct{ name, body, message string }{
+		{"one result per transaction", group(`{"txn-results":` + results(submitted) + `}`), ""},
+		{"no group result", `{"last-round":7,"version":2}`, "the node returned no result for the group"},
+		{"an empty list of group results", group(``), "the node returned no result for the group"},
+		{"two group results", group(`{"txn-results":` + results(submitted) + `},{"txn-results":` + results(submitted) + `}`), "the node returned 2 results for one group"},
+		// The decoder reads a null group result as an empty one.
+		{"a null group result", group(`null`), fmt.Sprintf("the node returned 0 transaction results for %d transactions", submitted)},
+		{"an empty group result", group(`{}`), fmt.Sprintf("the node returned 0 transaction results for %d transactions", submitted)},
+		{"one transaction result too many", group(`{"txn-results":` + results(submitted+1) + `}`), fmt.Sprintf("the node returned %d transaction results for %d transactions", submitted+1, submitted)},
+		{"a failure message", group(`{"failure-message":"logic eval error","failed-at":[0],"txn-results":` + results(submitted) + `}`), "logic eval error"},
+		{"a failure message and no transaction results", group(`{"failure-message":"logic eval error"}`), "logic eval error"},
+		{"failed-at without a message", group(`{"failed-at":[0],"txn-results":` + results(submitted) + `}`), "the node reported a failure without a message"},
+		{"an empty failed-at", group(`{"failed-at":[],"txn-results":` + results(submitted) + `}`), ""},
+	}
+}
+
+// A signed simulation fails unless the node's answer covers the whole group.
+func TestSimulatePreparedGroupClassifiesTheNodesAnswer(t *testing.T) {
+	txn := verifyTestPayment(t, 41, 42, 1)
+	for _, tc := range simulationVerdicts(1) {
+		t.Run(tc.name, func(t *testing.T) {
+			signer, signerServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/status":
+					json.NewEncoder(w).Encode(StatusResponse{State: "unlocked"})
+				case "/sign":
+					json.NewEncoder(w).Encode(GroupSignResponse{Signed: []string{fakeSignedTxnHex(txn)}})
+				default:
+					t.Errorf("unexpected signer path %s", r.URL.Path)
+				}
+			})
+			defer signerServer.Close()
+			algodClient, closeAlgod := makeSimulationAlgodClient(t, func(w http.ResponseWriter, r *http.Request) {
+				w.Write([]byte(tc.body))
+			})
+			defer closeAlgod()
+
+			result, err := signer.SimulatePreparedGroup(context.Background(), algodClient, NewPreparedGroup(PreparedTransaction{
+				Transaction: &txn,
+				AuthAddress: txn.Sender.String(),
+			}))
+			if err != nil {
+				t.Fatalf("SimulatePreparedGroup() error = %v", err)
+			}
+			if result.Failed != (tc.message != "") || result.FailureMessage != tc.message {
+				t.Fatalf("Failed = %v, FailureMessage = %q; want %q", result.Failed, result.FailureMessage, tc.message)
+			}
+		})
 	}
 }
 

@@ -2,10 +2,13 @@
 // Copyright (C) 2026 APlane Project LLC
 
 /*
-Minimal validation transaction example.
+Send a payment from any account the signer holds.
 
-Sends a 0 ALGO self-payment to validate that signing works.
-Works with any key type (Ed25519, Falcon, etc.).
+SendPayment builds the payment, signs it through the flow the sender's key
+needs, checks the signed result, submits it and waits for confirmation. The
+same call works for an Ed25519, native Falcon, LogicSig, bounded or rotating
+account, and for a rekeyed sender. A cosigned account also needs its cosigner:
+set SendOptions.CosignerClient and CosignerComponentKey.
 
 Setup:
 
@@ -28,17 +31,20 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 
 	"github.com/algorand/go-algorand-sdk/v2/client/v2/algod"
-	"github.com/algorand/go-algorand-sdk/v2/transaction"
 	"github.com/aplane-algo/aplanesdk/go"
 )
 
-// The address to validate (must exist in apsigner keystore)
-// Replace with your actual address
-const sender = "ED255ACCOUNTEXAMPLE77777777777777777777777777777777777777777"
+// The account to pay from (the signer must hold its key) and the account
+// to pay. Replace both.
+const (
+	sender   = "ED255ACCOUNTEXAMPLE77777777777777777777777777777777777777777"
+	receiver = "ED255ACCOUNTEXAMPLE77777777777777777777777777777777777777777"
+)
 
 func main() {
 	// Connect using config from $APCLIENT_DATA
@@ -53,49 +59,35 @@ func main() {
 		log.Fatalf("Failed to create algod client: %v", err)
 	}
 
-	// Build 0-ALGO self-send (validation transaction)
-	params, err := algodClient.SuggestedParams().Do(context.Background())
+	// 1 ALGO, in microAlgos.
+	result, err := signer.SendPayment(context.Background(), algodClient, aplane.PaymentPrepParams{
+		Sender: sender, Receiver: receiver, Amount: 1_000_000,
+	}, nil)
 	if err != nil {
-		log.Fatalf("Failed to get params: %v", err)
+		// A group that was signed keeps its bytes and IDs in the error. Never
+		// send again until its outcome is known: both could execute.
+		var uncertain *aplane.SubmissionUncertainError
+		if errors.As(err, &uncertain) {
+			log.Fatalf("Outcome unknown for %v (%s); look it up before sending again: %v", uncertain.TxIDs, uncertain.Stage, err)
+		}
+		// The sign answer was lost, so the signer may have released a
+		// signature. Do not build and sign a replacement: both could execute.
+		// Sign the same prepared group again (a rotating account's is in
+		// Rotating, for SignPreparedRotating), or check the chain first.
+		var unknown *aplane.SignOutcomeUnknownError
+		if errors.As(err, &unknown) {
+			if unknown.Rotating != nil {
+				log.Printf("Prepared rotating group: %v", unknown.Rotating.TxIDs())
+			}
+			log.Fatalf("Sign outcome unknown (request %q); re-sign the same group or check the chain, never sign a replacement: %v", unknown.RequestID, err)
+		}
+		log.Fatalf("Failed to send: %v", err)
 	}
 
-	txn, err := transaction.MakePaymentTxn(sender, sender, 0, nil, "", params)
-	if err != nil {
-		log.Fatalf("Failed to create transaction: %v", err)
+	// The signer may raise the fee or add transactions, so the ID comes from
+	// the signed group, not from the payment as it was built.
+	fmt.Printf("Confirmed %s in round %d, fee %d microAlgos\n", result.TxIDs[0], result.ConfirmedRound, result.Fees[0])
+	if result.Rotating != nil {
+		fmt.Printf("Rotated from stage %d to stage %d\n", result.Rotating.Stage, result.Rotating.Target)
 	}
-
-	// Resolve auth address (handles rekeyed accounts)
-	acctInfo, err := algodClient.AccountInformation(sender).Do(context.Background())
-	if err != nil {
-		log.Fatalf("Failed to get account info: %v", err)
-	}
-	authAddr := acctInfo.AuthAddr
-	if authAddr == "" {
-		authAddr = sender
-	}
-
-	// Sign (server handles fee pooling automatically)
-	fmt.Printf("Signing validation txn for %s...\n", sender[:12])
-	signed, err := signer.SignTransaction(txn, authAddr, nil)
-	if err != nil {
-		log.Fatalf("Failed to sign: %v", err)
-	}
-
-	// Submit using standard go-algorand-sdk (signed is base64)
-	signedBytes, err := aplane.Base64ToBytes(signed)
-	if err != nil {
-		log.Fatalf("Failed to decode signed txn: %v", err)
-	}
-	txid, err := algodClient.SendRawTransaction(signedBytes).Do(context.Background())
-	if err != nil {
-		log.Fatalf("Failed to submit: %v", err)
-	}
-	fmt.Printf("Submitted: %s\n", txid)
-
-	// Wait for confirmation
-	result, err := transaction.WaitForConfirmation(algodClient, txid, 4, context.Background())
-	if err != nil {
-		log.Fatalf("Failed to confirm: %v", err)
-	}
-	fmt.Printf("Confirmed in round %d\n", result.ConfirmedRound)
 }

@@ -169,6 +169,7 @@ func TestGoSDKContractFixturesRoundTrip(t *testing.T) {
 		{"admin_generate_request_generic.json", assertSDKContractRoundTrip[generateRequest]},
 		{"admin_generate_response_generic.json", assertSDKContractRoundTrip[GenerateResult]},
 		{"admin_generate_response_component.json", assertSDKContractRoundTrip[GenerateResult]},
+		{"admin_delete_response_success.json", assertSDKContractRoundTrip[deleteKeyResponse]},
 		{"cancel_sign_request.json", assertSDKContractRoundTrip[CancelSignRequest]},
 		{"cancel_sign_response_not_found.json", assertSDKContractRoundTrip[CancelSignResponse]},
 		{"cancel_sign_response_success.json", assertSDKContractRoundTrip[CancelSignResponse]},

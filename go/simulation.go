@@ -16,13 +16,20 @@ import (
 
 // SimulationResult contains the executable signed group released through the
 // ordinary signing flow and the response returned by the caller's algod.
+//
+// Failed is true unless the node returned exactly one group result, that
+// result reports no failure (no failure-message and no failed-at), and it
+// holds one transaction result per transaction simulated: any other answer
+// checked less than the group. FailureMessage says why, and is empty when
+// Failed is false: the node's own failure-message, or which of those it was.
 type SimulationResult struct {
-	TxIDs        []string
-	Transactions []string
-	SignedGroup  []string
-	Mutations    *MutationReport
-	Response     *models.SimulateResponse
-	Failed       bool
+	TxIDs          []string
+	Transactions   []string
+	SignedGroup    []string
+	Mutations      *MutationReport
+	Response       *models.SimulateResponse
+	Failed         bool
+	FailureMessage string
 }
 
 // CosignedSimulationResult contains both the complete cosigned signing result
@@ -150,35 +157,51 @@ func simulateSignedGroupWithContext(
 		return nil, err
 	}
 
-	request := models.SimulateRequest{
-		TxnGroups:            []models.SimulateRequestTransactionGroup{{Txns: decoded}},
-		AllowEmptySignatures: false,
-		FixSigners:           false,
-		AllowMoreLogging:     true,
-		ExecTraceConfig: models.SimulateTraceConfig{
-			Enable:      true,
-			StateChange: true,
-		},
-	}
-	response, err := algodClient.SimulateTransaction(request).Do(ctx)
+	response, err := runSimulation(ctx, algodClient, decoded, false)
 	if err != nil {
-		request.ExecTraceConfig = models.SimulateTraceConfig{}
-		request.AllowMoreLogging = false
-		response, err = algodClient.SimulateTransaction(request).Do(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("simulation API call failed: %w", err)
-		}
+		return nil, err
 	}
 
-	failed := len(response.TxnGroups) > 0 && response.TxnGroups[0].FailureMessage != ""
+	failure := simulationFailure(response, len(decoded))
 	return &SimulationResult{
-		TxIDs:        txIDs,
-		Transactions: transactions,
-		SignedGroup:  append([]string(nil), signedGroup...),
-		Mutations:    mutations,
-		Response:     &response,
-		Failed:       failed,
+		TxIDs:          txIDs,
+		Transactions:   transactions,
+		SignedGroup:    append([]string(nil), signedGroup...),
+		Mutations:      mutations,
+		Response:       response,
+		Failed:         failure != "",
+		FailureMessage: failure,
 	}, nil
+}
+
+// simulationFailure says why a simulation of one group of submitted
+// transactions did anything but pass, or is empty when it passed. It passes
+// only when the node returned exactly one group result, with no failure
+// message and no failed-at, holding one transaction result per transaction
+// submitted: anything else checked less than the group, so it is a failure.
+// The reason is the node's own failure message, or which of those it was.
+//
+// The node's answer is decoded before it is seen here, and the decoder reads
+// a null group result as an empty one, so a result that is not an object
+// fails on its count of transaction results.
+func simulationFailure(response *models.SimulateResponse, submitted int) string {
+	if response == nil || len(response.TxnGroups) == 0 {
+		return "the node returned no result for the group"
+	}
+	if len(response.TxnGroups) != 1 {
+		return fmt.Sprintf("the node returned %d results for one group", len(response.TxnGroups))
+	}
+	group := response.TxnGroups[0]
+	if group.FailureMessage != "" {
+		return group.FailureMessage
+	}
+	if len(group.FailedAt) > 0 {
+		return "the node reported a failure without a message"
+	}
+	if len(group.TxnResults) != submitted {
+		return fmt.Sprintf("the node returned %d transaction results for %d transactions", len(group.TxnResults), submitted)
+	}
+	return ""
 }
 
 func decodeExecutableSignedGroup(signedGroup []string) ([]types.SignedTxn, []string, []string, error) {
@@ -206,4 +229,34 @@ func decodeExecutableSignedGroup(signedGroup []string) ([]types.SignedTxn, []str
 		transactions[i] = hex.EncodeToString(encodeTxn(decoded[i].Txn))
 	}
 	return decoded, txIDs, transactions, nil
+}
+
+// runSimulation sends one group to the node's simulate endpoint, with
+// execution traces when the node allows them. allowEmptySignatures simulates
+// an unsigned group; signed simulation leaves it off so the node checks every
+// signature.
+func runSimulation(ctx context.Context, algodClient *algod.Client, group []types.SignedTxn, allowEmptySignatures bool) (*models.SimulateResponse, error) {
+	request := models.SimulateRequest{
+		TxnGroups:            []models.SimulateRequestTransactionGroup{{Txns: group}},
+		AllowEmptySignatures: allowEmptySignatures,
+		// An unsigned transaction names no signer. FixSigners has the node
+		// take each sender's authorizer from the chain, which a rekeyed
+		// sender, such as a rotating account after its first spend, needs.
+		FixSigners:       allowEmptySignatures,
+		AllowMoreLogging: true,
+		ExecTraceConfig: models.SimulateTraceConfig{
+			Enable:      true,
+			StateChange: true,
+		},
+	}
+	response, err := algodClient.SimulateTransaction(request).Do(ctx)
+	if err != nil {
+		request.ExecTraceConfig = models.SimulateTraceConfig{}
+		request.AllowMoreLogging = false
+		response, err = algodClient.SimulateTransaction(request).Do(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("simulation API call failed: %w", err)
+		}
+	}
+	return &response, nil
 }
