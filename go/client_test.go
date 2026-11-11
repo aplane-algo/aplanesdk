@@ -698,6 +698,96 @@ func TestGetKeyInfo_NotFound(t *testing.T) {
 	}
 }
 
+// The key inventory a send routes on is read by the rule the signing answers
+// are: a null body or trailing data is an error, not an empty key list.
+func TestListKeysRefusesNullAndTrailingData(t *testing.T) {
+	key := `{"address":"` + sdkTestAddress(0xA3) + `","key_type":"ed25519","public_key_hex":"abcd"}`
+	for name, body := range map[string]string{
+		"null":          "null",
+		"spaced null":   " null\n",
+		"trailing data": `{"count":1,"keys":[` + key + `]}{"count":0,"keys":[]}`,
+		"trailing junk": `{"count":1,"keys":[` + key + `]} x`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+				w.Write([]byte(body))
+			})
+			defer server.Close()
+
+			if result, err := client.GetKeysResponseWithContext(context.Background()); err == nil || !strings.Contains(err.Error(), "failed to decode response") {
+				t.Fatalf("GetKeysResponseWithContext() = %+v, %v; want a decode error", result, err)
+			}
+			if keys, err := client.ListKeys(true); err == nil {
+				t.Fatalf("ListKeys() = %v, nil; want an error", keys)
+			}
+		})
+	}
+}
+
+// Every other 200 answer is read by the same rule.
+func TestSignerAnswersRefuseNullAndTrailingData(t *testing.T) {
+	txn := verifyTestPayment(t, 41, 42, 1)
+	requests := signRequestsFor(txn)
+	plan, err := json.Marshal(fakeSigner{}.plan(t, requests))
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoints := []struct {
+		path  string
+		valid string
+		call  func(*SignerClient) error
+	}{
+		{"/status", `{"state":"unlocked","keyset_revision":3}`, func(c *SignerClient) error {
+			_, err := c.GetStatusWithContext(context.Background())
+			return err
+		}},
+		{"/keytypes", `{"key_types":[{"key_type":"ed25519"}]}`, func(c *SignerClient) error {
+			_, err := c.ListKeyTypes()
+			return err
+		}},
+		{"/admin/generate", `{"address":"` + sdkTestAddress(0xA3) + `"}`, func(c *SignerClient) error {
+			_, err := c.GenerateKey("ed25519", nil)
+			return err
+		}},
+		{"/plan", string(plan), func(c *SignerClient) error {
+			_, err := c.PlanRequestsWithContext(context.Background(), requests)
+			return err
+		}},
+		{"/sign/cancel", `{"success":true,"state":"canceled"}`, func(c *SignerClient) error {
+			_, err := c.CancelSignRequestWithContext(context.Background(), "sdk-test")
+			return err
+		}},
+	}
+	for _, endpoint := range endpoints {
+		for name, body := range map[string]string{
+			"valid":         endpoint.valid,
+			"null":          "null",
+			"trailing data": endpoint.valid + endpoint.valid,
+		} {
+			t.Run(strings.TrimPrefix(endpoint.path, "/")+" "+name, func(t *testing.T) {
+				client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path != endpoint.path {
+						t.Errorf("path = %s, want %s", r.URL.Path, endpoint.path)
+					}
+					w.Write([]byte(body))
+				})
+				defer server.Close()
+
+				err := endpoint.call(client)
+				if name == "valid" {
+					if err != nil {
+						t.Fatalf("valid answer refused: %v", err)
+					}
+					return
+				}
+				if err == nil || !strings.Contains(err.Error(), "failed to decode response") {
+					t.Fatalf("error = %v, want a decode error", err)
+				}
+			})
+		}
+	}
+}
+
 // --- ListKeyTypes tests ---
 
 func TestListKeyTypes_Success(t *testing.T) {

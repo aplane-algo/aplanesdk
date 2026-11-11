@@ -398,7 +398,7 @@ func (c *SignerClient) GetStatusWithContext(ctx context.Context) (*StatusRespons
 	}
 
 	var statusResp StatusResponse
-	if err := json.NewDecoder(resp.Body).Decode(&statusResp); err != nil {
+	if err := readAnswer(resp.Body, &statusResp); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 	c.cacheApprovalWait(statusResp.ApprovalWaitSeconds)
@@ -575,7 +575,7 @@ func (c *SignerClient) GetKeysResponseWithContext(ctx context.Context) (*KeysRes
 	}
 
 	var keysResp keysResponse
-	if err := json.NewDecoder(resp.Body).Decode(&keysResp); err != nil {
+	if err := readAnswer(resp.Body, &keysResp); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
@@ -635,7 +635,7 @@ func (c *SignerClient) ListKeyTypes() ([]KeyTypeInfo, error) {
 	}
 
 	var ktResp keyTypesResponse
-	if err := json.NewDecoder(resp.Body).Decode(&ktResp); err != nil {
+	if err := readAnswer(resp.Body, &ktResp); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
@@ -676,7 +676,7 @@ func (c *SignerClient) GenerateKey(keyType string, parameters map[string]string)
 	}
 
 	var result GenerateResult
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := readAnswer(resp.Body, &result); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
@@ -841,7 +841,7 @@ func (c *SignerClient) PlanRequestsWithContext(ctx context.Context, requests []S
 	}
 
 	var planResp PlanGroupResponse
-	if err := json.NewDecoder(resp.Body).Decode(&planResp); err != nil {
+	if err := readAnswer(resp.Body, &planResp); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
@@ -1299,7 +1299,7 @@ func (c *SignerClient) CancelSignRequestWithContext(ctx context.Context, request
 	}
 
 	var cancelResp CancelSignResponse
-	if err := json.NewDecoder(resp.Body).Decode(&cancelResp); err != nil {
+	if err := readAnswer(resp.Body, &cancelResp); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 	if cancelResp.Error != "" {
