@@ -303,6 +303,22 @@ describe("IDs, counts and indexes everywhere", () => {
         client.prepareAppDeploy(noAlgod, { ...deploy, foreignAssets: [bad] }),
         isSignerError(/foreignAssets\[0\] must/),
       );
+      for (const count of [
+        "numLocalInts", "numLocalByteSlices", "numGlobalInts", "numGlobalByteSlices",
+      ]) {
+        await assert.rejects(
+          client.prepareAppDeploy(noAlgod, { ...deploy, [count]: bad }),
+          isSignerError(new RegExp(`${count} must`)),
+        );
+        await assert.rejects(
+          client.prepareAppCall(noAlgod, { sender, appId: 7, [count]: bad }),
+          isSignerError(new RegExp(`${count} must`)),
+        );
+      }
+      await assert.rejects(
+        client.prepareAppCall(noAlgod, { sender, appId: 7, extraPages: bad }),
+        isSignerError(/extraPages must/),
+      );
       const boxes = [{ appIndex: bad, name: new Uint8Array([1]) }];
       await assert.rejects(
         client.prepareAppDeploy(noAlgod, { ...deploy, boxes }),
@@ -328,6 +344,37 @@ describe("IDs, counts and indexes everywhere", () => {
       }
     });
   }
+
+  for (const bad of [1.9, "1", true, -1, 6, 1n] as any[]) {
+    it(`refuses onComplete ${String(bad)}${typeof bad === "bigint" ? "n" : ""}`, async () => {
+      await assert.rejects(
+        client.prepareAppCall(noAlgod, { sender, appId: 7, onComplete: bad }),
+        isSignerError(/invalid onComplete/),
+      );
+    });
+  }
+
+  it("refuses a boolean where an ABI method takes an integer", async () => {
+    await assert.rejects(
+      client.prepareAbiAppCall(noAlgod, {
+        sender, appId: 7, methodSignature: "f(uint64)void", args: [true],
+      }),
+    );
+  });
+
+  it("accepts whole-number schema counts and leaves unset ones at zero", async () => {
+    signerHolding(sender);
+    const algod = algodWith({ [sender]: { amount: 2_000_000, minBalance: 100_000 } });
+    const fresh = new SignerClient("http://localhost:11270");
+    const prepared = await fresh.prepareAppDeploy(algod, {
+      ...deploy, numGlobalInts: 2, numGlobalByteSlices: 3n, extraPages: 1, numLocalInts: undefined,
+    });
+    const call = (prepared.transaction as any).applicationCall;
+    assert.equal(Number(call.numGlobalInts), 2);
+    assert.equal(Number(call.numGlobalByteSlices), 3);
+    assert.equal(Number(call.numLocalInts), 0);
+    assert.equal(Number(call.extraPages), 1);
+  });
 
   it("accepts whole-number references, box indexes and reference arguments", async () => {
     signerHolding(sender);

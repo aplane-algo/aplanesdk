@@ -2537,45 +2537,110 @@ def _require_uint(
     positive: bool = False,
     error: type = ValueError,
 ) -> int:
-    """Require a plain integer for an ID, a count, an amount or a fee.
+    """Require an integer for an ID, a count, an amount or a fee; return it as an int.
 
     The one check for "a whole number, not something that converts to one".
     py-algorand-sdk and int() would turn 123.9 into 123 and accept "123"; a
-    float, a string or a bool is a mistake, not a number to be rounded.
-    ``error`` is ValueError for a value the caller passed and SignerError for
-    one the signer sent.
+    float, a string or a bool is a mistake, not a number to be rounded. Any
+    integral type is taken (operator.index), and the plain int returned is what
+    goes on to the transaction. ``error`` is ValueError for a value the caller
+    passed and SignerError for one the signer sent.
     """
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise error(f"{name} must be an integer, not {type(value).__name__}")
-    if value < 0:
+    if isinstance(value, bool):
+        raise error(f"{name} must be an integer, not bool")
+    try:
+        number = operator.index(value)
+    except TypeError:
+        raise error(f"{name} must be an integer, not {type(value).__name__}") from None
+    if number < 0:
         raise error(f"{name} must not be negative")
-    if positive and value == 0:
+    if positive and number == 0:
         raise error(f"{name} must be greater than zero")
-    if value >= _UINT64_LIMIT:
+    if number >= _UINT64_LIMIT:
         raise error(f"{name} must be below 2**64")
-    return cast(int, value)
+    return number
 
 
-def _require_box_references(boxes: Optional[List[Any]]) -> None:
-    """Require each box reference's app index to be a plain integer."""
-    for position, box in enumerate(boxes or []):
+def _require_state_schema(schema: Any, name: str) -> Optional[transaction.StateSchema]:
+    """Require a state schema's counts to be integers; None stays unset.
+
+    The schema is rebuilt from the checked counts, so what is encoded is what
+    was checked. A count left as None is the schema's own default, zero.
+    """
+    if schema is None:
+        return None
+    if not isinstance(schema, transaction.StateSchema):
+        raise ValueError(f"{name} must be a StateSchema, not {type(schema).__name__}")
+    counts = []
+    for member in ("num_uints", "num_byte_slices"):
+        count = getattr(schema, member)
+        counts.append(0 if count is None else _require_uint(count, f"{name}.{member}"))
+    return transaction.StateSchema(counts[0], counts[1])
+
+
+def _require_on_complete(on_complete: Any) -> transaction.OnComplete:
+    """Require on_complete to be one of the six on-completion values."""
+    number = _require_uint(on_complete, "on_complete")
+    if number > int(transaction.OnComplete.DeleteApplicationOC):
+        raise ValueError(f"invalid on_complete: {on_complete}")
+    return transaction.OnComplete(number)
+
+
+def _refuse_bool_for_abi_integer(abi_type: Any, value: Any, name: str) -> None:
+    """Refuse True or False where an ABI method takes an integer.
+
+    The ABI encoder checks integers with isinstance(value, int), which a bool
+    passes: True would be encoded as 1.
+    """
+    if isinstance(abi_type, (abi.UintType, abi.UfixedType, abi.ByteType)):
+        if isinstance(value, bool):
+            raise ValueError(f"{name} must be an integer, not bool")
+        return
+    if not isinstance(value, (list, tuple)):
+        return
+    if isinstance(abi_type, abi.TupleType):
+        for position, (child_type, child) in enumerate(zip(abi_type.child_types, value)):
+            _refuse_bool_for_abi_integer(child_type, child, f"{name}[{position}]")
+    elif isinstance(abi_type, (abi.ArrayStaticType, abi.ArrayDynamicType)):
+        for position, child in enumerate(value):
+            _refuse_bool_for_abi_integer(abi_type.child_type, child, f"{name}[{position}]")
+
+
+def _require_box_references(boxes: Optional[List[Any]]) -> Optional[List[Any]]:
+    """Require each box reference's app index to be an integer; return the checked list."""
+    if boxes is None:
+        return None
+    checked = []
+    for position, box in enumerate(boxes):
         if not isinstance(box, (tuple, list)) or len(box) != 2:
             raise ValueError(f"boxes[{position}] must be an (app index, name) pair")
-        _require_uint(box[0], f"boxes[{position}] app index")
         if not isinstance(box[1], (bytes, bytearray, str)):
             raise ValueError(f"boxes[{position}] name must be bytes or a string")
+        checked.append((_require_uint(box[0], f"boxes[{position}] app index"), box[1]))
+    return checked
 
 
 def _require_app_references(
     foreign_apps: Optional[List[Any]],
     foreign_assets: Optional[List[Any]],
     boxes: Optional[List[Any]],
-) -> None:
-    """Require every app, asset and box reference of an app call to be a plain integer."""
+) -> tuple[Optional[List[int]], Optional[List[int]], Optional[List[Any]]]:
+    """Require every app, asset and box reference of an app call to be an integer.
+
+    Returns the three lists as checked; one passed as None stays None.
+    """
+    checked: List[Optional[List[int]]] = []
     for name, references in (("foreign_apps", foreign_apps), ("foreign_assets", foreign_assets)):
-        for position, reference in enumerate(references or []):
-            _require_uint(reference, f"{name}[{position}]", positive=True)
-    _require_box_references(boxes)
+        if references is None:
+            checked.append(None)
+            continue
+        checked.append(
+            [
+                _require_uint(reference, f"{name}[{position}]", positive=True)
+                for position, reference in enumerate(references)
+            ]
+        )
+    return checked[0], checked[1], _require_box_references(boxes)
 
 
 def _apply_prep_fee(params: Any, fee: Optional[int]) -> None:
@@ -2585,8 +2650,7 @@ def _apply_prep_fee(params: Any, fee: Optional[int]) -> None:
     # pooling) is applied as a flat fee.
     if fee is None:
         return
-    _require_uint(fee, "fee")
-    params.fee = fee
+    params.fee = _require_uint(fee, "fee")
     params.flat_fee = True
 
 
@@ -2821,9 +2885,6 @@ def _validate_keyreg_params(
 ) -> None:
     if not mode:
         raise ValueError('mode is required: "online" or "offline"')
-    for field_name, number in (("votefst", votefst), ("votelst", votelst), ("votekd", votekd)):
-        if number is not None:
-            _require_uint(number, field_name)
     if mode == "offline":
         if incentive_eligible:
             raise ValueError("incentive eligibility needs an online keyreg")
@@ -3031,7 +3092,8 @@ def _encode_abi_method_args(
         basic_arg_values.append(tuple_values)
 
     encoded_args = [method.get_selector()]
-    for arg_type, arg_value in zip(basic_arg_types, basic_arg_values):
+    for position, (arg_type, arg_value) in enumerate(zip(basic_arg_types, basic_arg_values)):
+        _refuse_bool_for_abi_integer(arg_type, arg_value, f"ABI argument {position}")
         encoded_args.append(arg_type.encode(arg_value))
 
     return encoded_args, resolved_accounts, resolved_apps, resolved_assets
@@ -3897,7 +3959,7 @@ class SignerClient:
             raise ValueError("sender is required")
         if not receiver:
             raise ValueError("receiver is required")
-        _require_uint(amount, "amount")
+        amount = _require_uint(amount, "amount")
 
         params = algod_client.suggested_params()
         _apply_prep_fee(params, fee)
@@ -3957,8 +4019,8 @@ class SignerClient:
             raise ValueError("receiver is required")
         if asset_id is None:
             raise ValueError("asset_id is required")
-        _require_uint(asset_id, "asset_id", positive=True)
-        _require_uint(amount, "amount")
+        asset_id = _require_uint(asset_id, "asset_id", positive=True)
+        amount = _require_uint(amount, "amount")
 
         params = algod_client.suggested_params()
         _apply_prep_fee(params, fee)
@@ -4022,7 +4084,7 @@ class SignerClient:
             raise ValueError("sender is required")
         if asset_id is None:
             raise ValueError("asset_id is required")
-        _require_uint(asset_id, "asset_id", positive=True)
+        asset_id = _require_uint(asset_id, "asset_id", positive=True)
 
         params = algod_client.suggested_params()
         _apply_prep_fee(params, fee)
@@ -4067,7 +4129,7 @@ class SignerClient:
             raise ValueError("close_to must differ from sender")
         if asset_id is None:
             raise ValueError("asset_id is required")
-        _require_uint(asset_id, "asset_id", positive=True)
+        asset_id = _require_uint(asset_id, "asset_id", positive=True)
 
         params = algod_client.suggested_params()
         _apply_prep_fee(params, fee)
@@ -4211,6 +4273,10 @@ class SignerClient:
             raise ValueError("algod_client is required")
         if not sender:
             raise ValueError("sender is required")
+        votefst, votelst, votekd = (
+            None if number is None else _require_uint(number, field_name)
+            for field_name, number in (("votefst", votefst), ("votelst", votelst), ("votekd", votekd))
+        )
         _validate_keyreg_params(
             mode=mode,
             votekey=votekey,
@@ -4346,8 +4412,10 @@ class SignerClient:
         # as one and never reaches the encoder.
         if app_id is None:
             raise ValueError("app_id is required")
-        _require_uint(app_id, "app_id", positive=True)
-        _require_app_references(foreign_apps, foreign_assets, boxes)
+        app_id = _require_uint(app_id, "app_id", positive=True)
+        foreign_apps, foreign_assets, boxes = _require_app_references(
+            foreign_apps, foreign_assets, boxes
+        )
         method = abi.Method.from_signature(method_signature)
         app_args, resolved_accounts, resolved_apps, resolved_assets = _encode_abi_method_args(
             method,
@@ -4403,12 +4471,13 @@ class SignerClient:
             raise ValueError("sender is required")
         if app_id is None:
             raise ValueError("app_id is required")
-        _require_uint(app_id, "app_id", positive=True)
-        _require_app_references(foreign_apps, foreign_assets, boxes)
-        if int(on_complete) < 0 or int(on_complete) > int(
-            transaction.OnComplete.DeleteApplicationOC
-        ):
-            raise ValueError(f"invalid on_complete: {on_complete}")
+        app_id = _require_uint(app_id, "app_id", positive=True)
+        foreign_apps, foreign_assets, boxes = _require_app_references(
+            foreign_apps, foreign_assets, boxes
+        )
+        on_complete = _require_on_complete(on_complete)
+        local_schema = _require_state_schema(local_schema, "local_schema")
+        global_schema = _require_state_schema(global_schema, "global_schema")
 
         params = algod_client.suggested_params()
         _apply_prep_fee(params, fee)
@@ -4457,7 +4526,7 @@ class SignerClient:
         clear_program: bytes,
         global_schema: Optional[transaction.StateSchema] = None,
         local_schema: Optional[transaction.StateSchema] = None,
-        extra_pages: int = 0,
+        extra_pages: Optional[int] = 0,
         app_args: Optional[List[bytes]] = None,
         accounts: Optional[List[str]] = None,
         foreign_apps: Optional[List[int]] = None,
@@ -4476,8 +4545,13 @@ class SignerClient:
             raise ValueError("approval_program is required")
         if not clear_program:
             raise ValueError("clear_program is required")
-        _require_uint(extra_pages, "extra_pages")
-        _require_app_references(foreign_apps, foreign_assets, boxes)
+        # None is "the default", as for the schemas: no extra pages.
+        extra_pages = 0 if extra_pages is None else _require_uint(extra_pages, "extra_pages")
+        foreign_apps, foreign_assets, boxes = _require_app_references(
+            foreign_apps, foreign_assets, boxes
+        )
+        global_schema = _require_state_schema(global_schema, "global_schema")
+        local_schema = _require_state_schema(local_schema, "local_schema")
 
         params = algod_client.suggested_params()
         _apply_prep_fee(params, fee)

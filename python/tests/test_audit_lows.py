@@ -380,6 +380,162 @@ def test_every_prepare_helper_checks_its_ids_counts_and_indexes(bad):
     algod.suggested_params.assert_not_called()
 
 
+PROGRAM = b"\x06\x81\x01"
+DEPLOY = dict(sender=SENDER, approval_program=PROGRAM, clear_program=PROGRAM)
+
+
+@pytest.mark.parametrize("bad", [123.9, "123", True, -1, 2**64])
+def test_state_schema_counts_must_be_integers(bad):
+    """A caller-built StateSchema is checked member by member before algod is asked."""
+    client = make_client()
+    algod = MagicMock()
+    for prepare, extra in (
+        (client.prepare_app_deploy, DEPLOY),
+        (client.prepare_app_call, dict(sender=SENDER, app_id=7)),
+    ):
+        for name in ("global_schema", "local_schema"):
+            with pytest.raises(ValueError, match=f"{name}.num_uints must"):
+                prepare(algod, **{name: transaction.StateSchema(bad, 0)}, **extra)
+            with pytest.raises(ValueError, match=f"{name}.num_byte_slices must"):
+                prepare(algod, **{name: transaction.StateSchema(0, bad)}, **extra)
+    with pytest.raises(ValueError, match="global_schema must be a StateSchema, not tuple"):
+        client.prepare_app_deploy(algod, global_schema=(1, 1), **DEPLOY)
+    algod.suggested_params.assert_not_called()
+
+
+@pytest.mark.parametrize("bad", [1.9, 1.0, "1", True, -1, 6])
+def test_on_complete_must_be_one_of_the_on_completion_values(bad):
+    client = make_client()
+    algod = MagicMock()
+    with pytest.raises(ValueError, match="on_complete"):
+        client.prepare_app_call(algod, sender=SENDER, app_id=7, on_complete=bad)
+    algod.suggested_params.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "signature,args,message",
+    [
+        ("f(uint64)void", [True], "ABI argument 0 must be an integer, not bool"),
+        ("f(byte)void", [False], "ABI argument 0 must be an integer, not bool"),
+        ("f(bool,(uint8,uint16))void", [True, (1, True)], r"ABI argument 1\[1\] must"),
+        ("f(uint64[])void", [[1, True]], r"ABI argument 0\[1\] must"),
+    ],
+)
+def test_abi_integer_arguments_refuse_bools(signature, args, message):
+    client = make_client()
+    algod = MagicMock()
+    with pytest.raises(ValueError, match=message):
+        client.prepare_abi_app_call(
+            algod, sender=SENDER, app_id=7, method_signature=signature, args=args
+        )
+    algod.suggested_params.assert_not_called()
+
+
+class Whole:
+    """An integral type that is not int: it only defines __index__."""
+
+    def __init__(self, value):
+        self.value = value
+
+    def __index__(self):
+        return self.value
+
+
+def test_any_integral_type_is_an_integer():
+    """operator.index decides: an __index__ type is taken and goes on as a plain int."""
+    assert _require_uint(Whole(5), "x") == 5
+    assert type(_require_uint(Whole(5), "x")) is int
+    with pytest.raises(ValueError, match="x must not be negative"):
+        _require_uint(Whole(-1), "x")
+    with pytest.raises(ValueError, match="x must be below"):
+        _require_uint(Whole(2**64), "x")
+    with pytest.raises(ValueError, match="x must be greater than zero"):
+        _require_uint(Whole(0), "x", positive=True)
+    for bad in (True, False, 1.0, "1", b"1", None):
+        with pytest.raises(ValueError, match="x must be an integer, not"):
+            _require_uint(bad, "x")
+
+    client = make_client()
+    algod = Algod({SENDER: {"amount": 5_000_000, "min-balance": 100_000}})
+    with _signer(client, SENDER):
+        payment = client.prepare_payment(
+            algod, sender=SENDER, receiver=RECEIVER, amount=Whole(7), fee=Whole(2000)
+        ).transaction
+    assert (payment.amt, payment.fee) == (7, 2000)
+    assert type(payment.amt) is int and type(payment.fee) is int
+
+    client = make_client()
+    with _signer(client, SENDER):
+        deployed = client.prepare_app_deploy(
+            algod,
+            extra_pages=Whole(1),
+            global_schema=transaction.StateSchema(Whole(2), Whole(3)),
+            foreign_apps=[Whole(9)],
+            foreign_assets=[Whole(11)],
+            boxes=[(Whole(0), b"a")],
+            **DEPLOY,
+        ).transaction
+    assert deployed.extra_pages == 1 and type(deployed.extra_pages) is int
+    assert (deployed.global_schema.num_uints, deployed.global_schema.num_byte_slices) == (2, 3)
+    assert deployed.foreign_apps == [9] and type(deployed.foreign_apps[0]) is int
+    assert deployed.foreign_assets == [11]
+    # The transaction encodes: nothing but plain ints reached it.
+    assert deployed.get_txid()
+
+    client = make_client()
+    with _signer(client, SENDER):
+        call = client.prepare_abi_app_call(
+            algod,
+            sender=SENDER,
+            app_id=Whole(7),
+            method_signature="f(asset)void",
+            args=[Whole(1001)],
+            on_complete=Whole(0),
+        ).transaction
+    assert call.index == 7 and call.foreign_assets == [1001]
+    assert call.on_complete == transaction.OnComplete.NoOpOC
+    assert call.get_txid()
+
+
+def test_none_keeps_meaning_the_default():
+    """None is "not set" wherever a parameter took it before the integer checks."""
+    client = make_client()
+    algod = Algod({SENDER: {"amount": 5_000_000, "min-balance": 100_000}})
+    with _signer(client, SENDER):
+        deployed = client.prepare_app_deploy(
+            algod,
+            extra_pages=None,
+            global_schema=None,
+            local_schema=transaction.StateSchema(),
+            foreign_apps=None,
+            foreign_assets=None,
+            boxes=None,
+            fee=None,
+            **DEPLOY,
+        )
+    assert deployed.transaction.extra_pages == 0
+    assert deployed.checks[0].data["extra_pages"] == 0
+    # An all-zero schema is left out of the transaction.
+    assert deployed.transaction.global_schema is None
+    assert deployed.transaction.local_schema is None
+
+    client = make_client()
+    with _signer(client, SENDER):
+        call = client.prepare_app_call(
+            algod,
+            sender=SENDER,
+            app_id=7,
+            foreign_apps=None,
+            foreign_assets=None,
+            boxes=None,
+            local_schema=None,
+            global_schema=None,
+            fee=None,
+        ).transaction
+    assert call.local_schema is None and call.global_schema is None
+    assert call.fee == 1000
+
+
 def test_box_references_with_integer_indexes_are_accepted():
     client = make_client()
     algod = Algod({SENDER: {"amount": 2_000_000, "min-balance": 100_000}})

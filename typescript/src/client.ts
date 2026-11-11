@@ -1606,6 +1606,30 @@ function requireUint(value: unknown, name: string, positive = false): bigint {
   return big;
 }
 
+/**
+ * Require the state schema counts and extra pages of an app create to be whole
+ * numbers. One left undefined is unset and keeps algosdk's default, zero.
+ */
+function requireAppCreateCounts(params: {
+  numLocalInts?: unknown;
+  numLocalByteSlices?: unknown;
+  numGlobalInts?: unknown;
+  numGlobalByteSlices?: unknown;
+  extraPages?: unknown;
+}): void {
+  for (const name of [
+    "numLocalInts",
+    "numLocalByteSlices",
+    "numGlobalInts",
+    "numGlobalByteSlices",
+    "extraPages",
+  ] as const) {
+    if (params[name] !== undefined) {
+      requireUint(params[name], name);
+    }
+  }
+}
+
 /** Require each box reference's app index to be a whole number. */
 function requireBoxReferences(boxes: unknown): void {
   if (boxes === undefined || boxes === null) return;
@@ -3076,6 +3100,7 @@ export class SignerClient {
     }
     requireUint(params.appId, "appId", true);
     requireAppReferences(params);
+    requireAppCreateCounts(params);
     const onComplete = params.onComplete ?? algosdk.OnApplicationComplete.NoOpOC;
     if (!Number.isInteger(onComplete) || onComplete < 0 || onComplete > algosdk.OnApplicationComplete.DeleteApplicationOC) {
       throw new SignerError(`invalid onComplete: ${onComplete}`);
@@ -3133,9 +3158,7 @@ export class SignerClient {
     if (!params.clearProgram || params.clearProgram.length === 0) {
       throw new SignerError("clearProgram is required");
     }
-    if (params.extraPages !== undefined) {
-      requireUint(params.extraPages, "extraPages");
-    }
+    requireAppCreateCounts(params);
     requireAppReferences(params);
 
     const suggestedParams = await algodClient.getTransactionParams().do();
