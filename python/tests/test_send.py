@@ -36,6 +36,7 @@ from aplanesdk import (
     UnsupportedGroupError,
     UnsupportedSigningFlowError,
 )
+from aplanesdk import signer as signer_module
 from aplanesdk.signer import COSIGNED_DUMMY_PROGRAM, _UINT64_MAX
 from tests import fake_signer
 from tests.send_fakes import (
@@ -1063,6 +1064,26 @@ class TestAFaultAfterTheSignerAnswered:
             fixture.send(cosigner_resolver=_raises(LookupError("no cosigner for this account")))
         assert not isinstance(excinfo.value, SignerError)
         assert "/sign/component" in fixture.user.paths and fixture.cosigner_calls == 0
+
+    @pytest.mark.parametrize("rekey_path", ["", "spending_rekey"], ids=["up front", "late"])
+    def test_a_resolver_error_raised_from_a_lost_answer_is_its_own(self, fakes, rekey_path):
+        # What the resolver raises is never an unknown outcome, even when it
+        # was raised from one of the SDK's lost-answer marks; it comes back
+        # unchanged.
+        fixture = CosignedFixture(fakes, rekey_path=rekey_path)
+
+        def resolver(_target):
+            try:
+                raise signer_module._AnswerLostError("lost", request_id="other-request")
+            except signer_module._AnswerLostError as lost:
+                raise SignerError("cosigner lookup failed") from lost
+
+        with pytest.raises(SignerError, match="^cosigner lookup failed$") as excinfo:
+            fixture.send(cosigner_resolver=resolver)
+        assert type(excinfo.value) is SignerError
+        assert isinstance(excinfo.value.__cause__, signer_module._AnswerLostError)
+        assert fixture.cosigner_calls == 0
+        assert ("/sign/component" in fixture.user.paths) == bool(rekey_path)
 
     def test_an_interrupt_between_the_cosigned_requests_is_not_caught(self, fakes, monkeypatch):
         fixture = CosignedFixture(fakes)

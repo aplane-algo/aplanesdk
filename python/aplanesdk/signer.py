@@ -301,9 +301,14 @@ def _fault_after_answer(prefix: str, error: Exception, request_id: str) -> Optio
     described, or the next request was built. It is not a refusal, because a
     signature may be out, so it is that request's lost answer (_check_fault).
     None when the error passes as it is: a refusal (a SignerError), an error
-    already marked, or any error before a request has answered (request_id
-    empty)."""
-    if not request_id or isinstance(error, SignerError) or _answer_lost(error):
+    already marked, an error a cosigner resolver raised, or any error before
+    a request has answered (request_id empty)."""
+    if (
+        not request_id
+        or isinstance(error, SignerError)
+        or getattr(error, _RESOLVER_ERROR_MARK, False)
+        or _answer_lost(error)
+    ):
         return None
     return _check_fault(prefix, error, request_id)
 
@@ -611,11 +616,18 @@ class _AnswerUnreadError(SignerError):
         self.request_id = request_id
 
 
+# The attribute set on an error a cosigner resolver raised. Such an error is
+# the resolver's own, never an unknown outcome, whatever it was raised from.
+_RESOLVER_ERROR_MARK = "_aplane_cosigner_resolver_error"
+
+
 def _lost_answer(error: BaseException) -> Optional[SignerError]:
     """The mark of the approval-bearing request that ended with no usable
     answer, when error is it or was raised from it: a /sign, a component
     request, or an assembly. Planning and key listing release nothing and
-    never count."""
+    never count. An error a cosigner resolver raised never counts."""
+    if getattr(error, _RESOLVER_ERROR_MARK, False):
+        return None
     seen = set()
     current: Optional[BaseException] = error
     while current is not None and id(current) not in seen:
@@ -8626,7 +8638,14 @@ def _resolve_cosigner_for_target(
     ):
         cosigner_resolver = user_client._default_cosigner_resolver()
     if cosigner_resolver is not None:
-        resolved = cosigner_resolver(target)
+        try:
+            resolved = cosigner_resolver(target)
+        except Exception as e:
+            # The resolver's own error, which is never an unknown outcome,
+            # even when it was raised from one of the SDK's lost-answer
+            # marks: marked here, and otherwise passed on unchanged.
+            setattr(e, _RESOLVER_ERROR_MARK, True)
+            raise
         if isinstance(resolved, dict):
             client = resolved.get("client")
             component_key = resolved.get("component_key", "")
