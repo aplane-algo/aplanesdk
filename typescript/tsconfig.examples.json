@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "lib": ["ES2020", "DOM"],
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": { "aplanesdk": ["src/index.ts"] }
+  },
+  "include": ["examples/**/*.ts", "integration/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}

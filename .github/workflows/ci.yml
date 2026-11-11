@@ -32,6 +32,10 @@ jobs:
         working-directory: typescript
         run: npm ci
 
+      - name: Build Go packages and examples
+        working-directory: go
+        run: go vet ./...
+
       - name: Run Go tests
         working-directory: go
         run: go test ./...
@@ -43,3 +47,7 @@ jobs:
       - name: Run TypeScript tests
         working-directory: typescript
         run: npm test
+
+      - name: Type-check TypeScript examples and live tests
+        working-directory: typescript
+        run: npm run typecheck:examples
