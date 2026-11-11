@@ -15,7 +15,12 @@ The Python SDK is a user-facing integration surface for:
 - enrolling the client SSH key at a signer over the `enroll` flow,
 - connecting to `apsigner` over the standard SSH-backed product path,
 - listing signer keys and available key types,
-- planning and signing single transactions and groups,
+- sending a transaction or group in one call (sign, check, submit and wait
+  for confirmation) for every account type the signer holds,
+- finding a cosigned account's cosigner from `endpoints.yaml`,
+- saying where an uncertain outcome stands, from the node alone,
+- planning and signing single transactions and groups without submitting
+  them,
 - assembling multi-party group results,
 - submitting signed transactions with cleaner algod error mapping.
 
@@ -269,6 +274,283 @@ signed = client.sign_transaction(txn, request_id=request_id)
 client.cancel_sign_request(request_id)
 ```
 
+## Sending Transactions
+
+### Send A Payment Or A Prepared Group
+
+`send_payment()` and `send_prepared()` are the recommended way to send. One
+call signs a transaction or group, checks the signed result, submits exactly
+those bytes and waits for confirmation:
+
+```python
+result = client.send_payment(
+    algod_client, sender=sender, receiver=receiver, amount=1_000_000  # microAlgos
+)
+print(result.tx_ids[0], result.outcome, result.confirmed_round)
+```
+
+`send_payment()` builds the payment with `prepare_payment()` and sends it.
+`send_prepared()` sends what a `prepare_*` helper built: a `PreparedGroup`,
+or one `PreparedTransaction`:
+
+```python
+group = client.prepare_payment_group(
+    algod_client,
+    [
+        {"sender": sender, "receiver": receiver_a, "amount": 1_000_000},
+        {"sender": sender, "receiver": receiver_b, "amount": 2_000_000},
+    ],
+)
+result = client.send_prepared(algod_client, group)
+```
+
+The same call works for every account type: Ed25519, native Falcon, LogicSig,
+bounded, cosigned and rotating accounts, and a rekeyed sender. You do not
+look up the auth address or choose the signing flow:
+
+- the `prepare_*` helpers read each sender's auth address from the chain and
+  name the key that signs in `auth_address`;
+- the send reads the signer's own record of that key and picks the flow from
+  it: ordinary `/sign` for Ed25519, native Falcon, LogicSig and bounded
+  accounts, the cosigned sequence for an account with a cosigner, and the
+  rotating sequence for a rotating account;
+- it signs, with operator approval where the signer asks for it, and checks
+  the signed group against what was prepared, with the checks in
+  [What The SDK Checks Before Returning](#what-the-sdk-checks-before-returning);
+- it submits exactly those bytes and waits for confirmation.
+
+Every position must name, in `auth_address`, a key this signer holds, as the
+`prepare_*` helpers do.
+
+`SendResult` carries:
+
+- `signed_group`: the group as submitted, hex msgpack. The first
+  `original_count` entries are your transactions, in order; the rest are
+  resource dummies the signer appended.
+- `tx_ids`, `fees` (microAlgos) and `group_id`, computed from the signed
+  bytes. The signer may raise a fee or assign a group ID, so `tx_ids` can
+  differ from the IDs of the transactions you prepared.
+- `mutations`: the signer's report of what it changed (snake_case keys),
+  checked against the signed bytes; `None` when it changed nothing.
+- `outcome` (`SEND_OUTCOME_CONFIRMED`, or `SEND_OUTCOME_SUBMITTED` with
+  `no_wait=True`) and `confirmed_round`, 0 unless confirmed.
+- `flow`: `""` for the ordinary flow, `SIGNING_FLOW_COSIGNED1` or
+  `SIGNING_FLOW_ROTATING1`. `cosigned` holds a cosigned send's component
+  responses and `rotating` a rotating send's stages.
+
+Keyword arguments (all optional):
+
+- `no_wait=True`: return once the node accepts the group, with outcome
+  `"submitted"`.
+- `wait_rounds`: how many further rounds to wait for confirmation; 0 means
+  10.
+- `refresh_validity=True` (`send_prepared()` only): let a rotating account's
+  send rebuild the transaction's validity rounds; see
+  [Rotating Accounts](#rotating-accounts).
+- `cosigner_client` with `cosigner_component_key`, or `cosigner_resolver`: a
+  cosigned account's cosigner, when it is not found from `endpoints.yaml`;
+  see [Finding The Cosigner](#finding-the-cosigner). The send does not close
+  a cosigner client you pass.
+- `timeout`: a limit in seconds on the whole call; see
+  [Cancellation And Time Limits](#cancellation-and-time-limits).
+
+Refused before anything is signed:
+
+- `UnsupportedSigningFlowError`: a key needs a signing flow this SDK version
+  cannot run. Upgrade the SDK.
+- `UnsupportedGroupError`: a group the send does not cover, such as a
+  pre-signed or foreign position, or a rotating account's transaction in a
+  group.
+- `KeyNotFoundError`: a position names a key the signer does not hold.
+
+The `sign_*` and `plan_*` calls under [Common Tasks](#common-tasks) remain
+for callers who want signed bytes without the SDK submitting them: to submit
+through their own node or pipeline, to hold a signed group, or to sign a
+group the send does not take, such as a multi-party group with passthrough
+positions. They do not submit and do not wait.
+
+### Rotating Accounts
+
+A rotating account (signing flow `rotating1`) hands itself to a fresh stage
+on every spend, so the signer adds a rekey to the next stage to your
+transaction. Inside `send_prepared()` and `send_payment()` the SDK:
+
+1. asks the signer to prepare the exact group it will sign: your transaction
+   with the rekey, its fee raised, and any resource dummies;
+2. refuses that group unless the only changes are the rekey, a reported fee
+   raise within your max fee increase, the group ID and canonical dummies;
+3. simulates it, unsigned, through your algod. A failure raises
+   `RotatingPreflightError`, whose `message` says why, before any one-time
+   key is used;
+4. asks the signer to sign, with operator approval, and checks that the
+   signed group is exactly the prepared one;
+5. submits at once and waits for confirmation. `result.rotating` reports the
+   stage that signed (`stage`), the stage that now controls the account
+   (`target`), its address (`rekey_to`) and how many times the spend was
+   prepared (`attempts`).
+
+Limits:
+
+- **One transaction, alone.** It must be ungrouped, set no `rekey_to`, not
+  close the account, and take no LogicSig arguments. The send refuses
+  anything else with `UnsupportedGroupError` before it asks the signer.
+- **Short validity window.** At most `ROTATING_MAX_VALIDITY_WINDOW` (100)
+  rounds, and the signer signs only while `first_valid_round` is at most
+  `ROTATING_MAX_LEAD` (2) rounds ahead of the current round and at least
+  `ROTATING_MIN_REMAINING` (10) rounds remain. The `prepare_*` helpers build
+  such a window for a rotating sender. A transaction whose rounds are not
+  current is refused before the operator is asked.
+- **When the send rebuilds the rounds.** `send_payment()` builds its own
+  transaction, so it may rebuild stale rounds. For a transaction you prepared
+  or built, pass `refresh_validity=True` to allow it. That changes the
+  transaction ID, so leave it off when anything outside the transaction, such
+  as an app argument or a proof, binds its rounds.
+- **Bounded retries.** When the signer says an attempt released no signature
+  (`ERR_CODE_ROTATING_STAGE_UNPROVEN`, `ERR_CODE_ROTATING_STAGE_CHANGED`,
+  `ERR_CODE_ROTATING_WINDOW_NOT_CURRENT`, read from `SignerError.code`), the
+  send prepares again, up to three attempts, and each attempt needs approval
+  again. A window refusal is retried only when the rounds may be rebuilt,
+  with the longest window. This needs a signer that reports
+  `rotating_window_not_current`; see the
+  [compatibility note](COMPATIBILITY.md).
+- **App calls carry the rekey**, so a contract that requires a zero
+  `rekey_to` fails the simulation.
+- **Two sends in a row** work once the first has confirmed, which the default
+  wait ensures.
+
+The steps are also available one at a time, for callers who need them. None
+of them submits:
+
+```python
+prepared = client.prepare_rotating(txn)                                 # nothing signed
+simulation = client.simulate_prepared_rotating(algod_client, prepared)  # never signs
+signed = client.sign_prepared_rotating(prepared)                        # waits for approval
+result = client.submit_signed_group(algod_client, signed.signed_group)
+```
+
+Submit a signed rotating group promptly: the stage's one-time keys are
+revealed until that transaction or a later rotation confirms.
+
+If a sign answer is lost (a `SignOutcomeUnknownError` whose `rotating`
+attribute holds the prepared group), call `sign_prepared_rotating()` again
+with that same prepared group. It asks for the same transaction with the same
+IDs and builds no second spend. Do not call `send_payment()` or
+`send_prepared()` again until the first attempt's outcome is known: that
+prepares a new spend from the same stage.
+
+For a rotating account, `resolve_auth_address()` returns the account itself
+as `auth_address` at every stage; the stage address the chain reports is in
+`chain_auth_address`. A rotating account rekeyed to an ordinary key the
+signer holds has left rotation, and is sent like any rekeyed account once the
+chain confirms the rekey.
+
+### Send Failures
+
+| Exception | What it means | What to do |
+|---|---|---|
+| `SignOutcomeUnknownError` | A signing request ended with no answer, or with a 200 answer that could not be read, or the SDK failed while checking one. A signature may have been released. Nothing was submitted. | Do not send again. Call `resolve_outcome()` (below), or check `request_id` with the operator or the signer's audit log. |
+| `SubmissionUncertainError` | The group was signed and the call did not see it confirmed or refused. `stage` is `"unsent"` (the call's `timeout` passed before it was sent), `"submit"` (the submission's answer never arrived) or `"confirm"` (not confirmed within the wait). Except for `"unsent"`, it may still confirm. | Do not sign a replacement. Call `resolve_outcome()`, or submit the same `signed_group` again with `submit_signed_group()`. |
+| `SubmissionRejectedError` | The node refused the group or dropped it from its pool. `signed_group` and `tx_ids` are kept. | Read the reason. |
+| `RotatingPreflightError` | A rotating spend failed its unsigned simulation. Nothing was signed. | Read `message`. |
+| `UnsupportedSigningFlowError`, `UnsupportedGroupError`, `KeyNotFoundError`, `CosignerDiscoveryError`, `SendTimeoutError` | Refused, or out of time, before anything that can execute was signed. | Read the reason. |
+| Any other `SignerError` | The signer refused (policy, operator, locked), or the SDK refused its answer (`verify signer response: ...`, `MaxFeeIncreaseError`). Nothing was submitted. | Read the reason. When the SDK refused a sign answer, the signer did sign and the SDK discarded the result. |
+
+Two of these must not be answered by sending again:
+
+- `SignOutcomeUnknownError`: the signer may have released a signature that
+  never reached you. A replacement you build and sign, and that signature,
+  could both execute. Find out what happened, or wait until the error's
+  `last_valid` round has passed, first.
+- `SubmissionUncertainError`: the signed group may already be in a block or
+  in the node's pool, and a replacement could execute beside it. Submitting
+  the same `signed_group` again is safe: the same bytes execute at most once.
+
+Any other error, `SubmissionRejectedError` aside, means nothing that was
+signed can execute: the send was refused before signing, the signer refused,
+or the SDK refused the signer's answer and discarded it. It is safe to fix
+the cause and send again.
+
+### After An Uncertain Outcome
+
+`client.resolve_outcome(algod_client, error)` takes either uncertain error and
+says where things stand. It asks the node only: it never signs, never submits
+and never calls the signer. It rests on two facts: the signer never submits,
+and a transaction cannot execute after its last valid round, which the
+signer never changes. Both errors carry that round as `last_valid`. Any other
+error, or `None`, is refused with `SignerError` ("not an uncertain
+outcome"), and a node failure is raised, never turned into a state.
+
+```python
+try:
+    result = client.send_prepared(algod_client, prepared)
+except (SignOutcomeUnknownError, SubmissionUncertainError) as error:
+    report = client.resolve_outcome(algod_client, error)
+    print(report.state, report.advice)
+    if not report.safe_to_replace:
+        raise
+    # Nothing from the first attempt can execute: sending again is safe.
+```
+
+`OutcomeReport.state` is one of six values:
+
+| State | Meaning | `safe_to_replace` |
+|---|---|---|
+| `"confirmed"` (`OUTCOME_CONFIRMED`) | The group is in a block, in `confirmed_round`. Do not send it again. | `False` |
+| `"pending"` (`OUTCOME_PENDING`) | The group is in the node's pool. Wait. | `False` |
+| `"not_seen"` (`OUTCOME_NOT_SEEN`) | The node does not have the signed group, and it can still execute until `last_valid`. Submit the same `signed_group` again, or wait until `last_valid` has passed. | `False` |
+| `"signable"` (`OUTCOME_SIGNABLE`) | A signature may have been released, and it can still execute until `last_valid`. Wait until that round has passed before building a replacement; for a rotating account, sign the same prepared group again. | `False` |
+| `"expired"` (`OUTCOME_EXPIRED`) | Nothing from the request can execute any more. | `True` |
+| `"too_old"` (`OUTCOME_TOO_OLD`) | Its validity ended more than 500 rounds ago, and the node may no longer remember it. Look the transaction ID up on an indexer before sending again. | `False` |
+
+`advice` says what to do, in one sentence. The report also carries `tx_ids`
+(empty for an ordinary or cosigned sign outcome, whose transactions the
+signer may have changed), `last_valid`, `current_round`, and the error's
+`signed_group` or `rotating` group.
+
+`client.wait_for_outcome(algod_client, error, timeout=None)` checks once per
+round until the state is `"confirmed"`, `"expired"` or `"too_old"`.
+`timeout` is in seconds for the whole call; `None` sets no limit. When it
+passes, `SendTimeoutError` is raised with the last report as its `report`
+(`None` when none was made yet).
+
+### Cancellation And Time Limits
+
+`send_prepared()` and `send_payment()` take `timeout=` (seconds, for the
+whole call). `None`, the default, sets no limit of its own: each signing
+request waits as long as the signer's approval wait allows, unless the
+client was created with a shorter request `timeout`. Every HTTP
+request to a signer, a cosigner or the node is held to what remains, and the
+steps check it in between; it does not interrupt a call already blocked
+outside HTTP. Where it passes decides what you get:
+
+- before an approval-bearing request is posted (while keys, rounds or the
+  plan are read, or between steps): `SendTimeoutError` (a `SignerError`), not
+  an unknown outcome. Nothing more is sent, not even a `/sign/cancel`. During
+  cosigner discovery the error is both a `CosignerDiscoveryError` and a
+  `SendTimeoutError`.
+- while an approval-bearing request (`/sign`, `/sign/component`,
+  `/sign/assemble`, `/sign/rotating/sign`) is waiting: a best-effort
+  `/sign/cancel`, then `SignOutcomeUnknownError` whose `error` is the
+  `SendTimeoutError`.
+- after signing, before submission: `SubmissionUncertainError` with stage
+  `"unsent"` (`SEND_STAGE_UNSENT`). The node does not have the group;
+  `submit_signed_group()` submits it.
+- during submission or the confirmation wait: `SubmissionUncertainError`
+  with stage `"submit"` or `"confirm"`.
+
+`prepare_rotating()`, `sign_prepared_rotating()` and `wait_for_outcome()`
+take the same `timeout`.
+
+A `KeyboardInterrupt` is not turned into an SDK error: it still stops the
+program, and it says what was in flight. Raised while a sign, component or
+assembly request was pending, it carries the request's ID as
+`aplane_request_id` (after the best-effort `/sign/cancel` for a request
+awaiting approval), and for a rotating account the prepared group as
+`aplane_rotating`: treat it like a `SignOutcomeUnknownError`. Raised while the
+signed group was submitted or its confirmation awaited, it carries
+`aplane_signed_group` and `aplane_tx_ids`: treat it like a
+`SubmissionUncertainError`.
+
 ## Common Tasks
 
 ### Health Check
@@ -412,6 +694,11 @@ This is also an authenticated admin operation and requires an unlocked signer.
 
 ### Sign One Transaction
 
+The `sign_*` calls in this and the following sections return signed bytes
+and submit nothing. Use them when you want the signed transactions yourself;
+to send, use `send_payment()` or `send_prepared()` (see
+[Sending Transactions](#sending-transactions)).
+
 ```python
 from aplanesdk import SignerClient, send_raw_transaction
 from algosdk import transaction
@@ -433,7 +720,10 @@ txid = send_raw_transaction(algod_client, signed)
 print(txid)
 ```
 
-If you are signing for a rekeyed account, pass the auth address explicitly:
+For a rekeyed account, these calls take the auth address explicitly. (The
+`prepare_*` helpers read it from the chain for you, so `send_payment()` and
+`send_prepared()` need nothing extra; `resolve_auth_address()` does that
+lookup on its own.)
 
 ```python
 signed = client.sign_transaction(txn, auth_address="AUTH_ADDRESS")
@@ -494,8 +784,9 @@ Use `plan_group()` when you need:
 
 ## Transaction Semantics
 
-The Python SDK uses `py-algorand-sdk` transaction objects as input and returns
-base64-encoded signed payloads for submission.
+The Python SDK uses `py-algorand-sdk` transaction objects as input. The
+`sign_*` calls return base64-encoded signed payloads for you to submit;
+`send_prepared()` and `send_payment()` submit for you.
 
 Important behavior:
 
@@ -532,11 +823,17 @@ Important behavior:
   `/sign` response
 - for large LogicSigs, the signer may add dummy transactions for fee pooling
 - the high-level signing helpers convert the server’s hex response to base64
+- `send_prepared()` and `send_payment()` sign, submit and wait; their
+  `SendResult.signed_group` is hex msgpack, one entry per transaction
+- `submit_signed_group()` submits a signed hex group exactly as given (a
+  rotating group from `sign_prepared_rotating()`, or the `signed_group` a
+  `SubmissionUncertainError` kept) and waits for confirmation. It signs
+  nothing
 
 ### What The SDK Checks Before Returning
 
 Every `/sign` and `/plan` result is checked against the request before
-`sign_transaction()`, `sign_transactions()`/`sign_transactions_list()`, `sign_requests()`, `plan_group()`/`plan_requests()` or `simulate_prepared_group()` returns it. The
+`sign_transaction()`, `sign_transactions()`/`sign_transactions_list()`, `sign_requests()`, `plan_group()`/`plan_requests()` or `simulate_prepared_group()` returns it, and before `send_prepared()` submits anything. The
 signer may change a request in three ways, and must report each in
 `mutations`:
 
@@ -658,6 +955,19 @@ A passthrough transaction must round-trip through the SDK's Algorand
 library (`py-algorand-sdk`), so one that uses a field newer than that library is refused
 locally.
 
+#### How Signer Answers Are Read
+
+Every 200 answer from the signer is read strictly, as the Go SDK reads it: it
+must be exactly one JSON object of the answer's declared shape, a field left
+out or `null` reads as its zero value, and a field of the wrong type, a
+`null` body or anything after the object makes the answer unreadable. An
+answer whose `error` field is set is a refusal; an unreadable answer is a
+plain `SignerError` at a request that releases no signature, and at an
+approval-bearing request a lost answer, which a send reports as
+`SignOutcomeUnknownError`. The full rule and how the three SDKs' readers
+differ are in
+[`python/README.md`](../python/README.md#how-signer-answers-are-read).
+
 ### Foreign Entries
 
 Python follows the cross-SDK contract here:
@@ -707,6 +1017,9 @@ The signer checks the declared program and argument byte counts against each
 signed passthrough envelope. Omitting the declaration for a LogicSig
 passthrough is a client error.
 
+`send_prepared()` does not take passthrough positions, so a multi-party group
+is signed with these calls and you submit it.
+
 ### Cosigned Accounts
 
 Cosigned accounts (signing flow `cosigned1`) need component signatures from both
@@ -716,6 +1029,75 @@ one, such as Corridor. Either kind without a cosigner advertises `bounded1` and
 signs through ordinary `/sign`. Cosigner component selectors are public policy keys, not
 Algorand spending accounts, and must not be used as senders, receivers, auth
 addresses, or rekey targets.
+
+`send_prepared()` and `send_payment()` run the whole cosigned sequence and
+submit the result. `sign_prepared_cosigned_group()` runs the same sequence
+and returns the signed group without submitting it.
+
+#### Finding The Cosigner
+
+A client made with `SignerClient.from_env()` (or
+`from_env(data_dir=...)`) finds a cosigned account's cosigner in its own
+`endpoints.yaml`. List the cosigner node as an endpoint with role
+`cosigner`:
+
+```yaml
+schema_version: 2
+default: primary
+endpoints:
+  primary:
+    role: signer
+    url: ssh://signer.example.com:1127
+    identity_file: .ssh/id_ed25519
+    known_hosts_path: .ssh/known_hosts
+  cosigner:
+    role: cosigner
+    url: ssh://cosigner.example.com:1127
+    identity_file: .ssh/id_ed25519
+    known_hosts_path: .ssh/known_hosts
+```
+
+The key in `identity_file` must be enrolled at the cosigner too
+(`request_enrollment_from_env(endpoint="cosigner")`). When a send, or
+`sign_prepared_cosigned_group()`, is given no `cosigner_client` and no
+`cosigner_resolver`, the client then:
+
+- connects, on first use, to every `role: cosigner` endpoint (at most 12),
+  each with its own `identity_file` and `known_hosts_path` and with the
+  client's `timeout`, `trust_on_first_use` and `ssh_setup_timeout`, and reads
+  its `/keys`;
+- signs with the one endpoint that lists the account's witness key, under its
+  Witness Key ID;
+- keeps those connections, and closes them when you `close()` the client.
+
+An explicit `cosigner_client` (with `cosigner_component_key`) or
+`cosigner_resolver` always wins. A client made with
+`SignerClient.connect_ssh()` or the constructor has no endpoint registry, so
+it needs one of them; without one, a cosigned send is refused with
+"cosigner_client or cosigner_resolver is required".
+`EndpointCosignerResolver(data_dir=...)` builds the same resolver for you to
+pass as `cosigner_resolver`; it owns the connections it opens, so close it
+when done (it is a context manager).
+
+Every cosigner a position is sure to need is found before anything is asked
+to sign, so a cosigner that cannot be found fails the send with nothing
+signed. The error is a `CosignerDiscoveryError`, never an unknown outcome.
+Its message says why:
+
+- no endpoint lists the witness key: the message names every cosigner
+  endpoint with its state (`ok`, `unreachable`, `locked`,
+  `authentication failed`, `invalid cosigner metadata` or
+  `configuration invalid`);
+- more than one endpoint lists it;
+- `endpoints.yaml` lists no cosigner endpoint;
+- a cosigner endpoint's SSH host key differs from the pinned one.
+
+A rekey to an address on the account's rekey-to list needs no cosigner. For
+such a rekey the cosigner is looked up only after the user signer's base
+component, and only if that component says the rekey needs one, so a listed
+rekey works with no cosigner endpoint configured and with the cosigner down.
+
+#### Cosigner Policy
 
 Before signing, an operator must apply a policy document for the selected
 cosigner Witness Key ID using `apadmin policy check` and `apadmin policy apply`.
@@ -731,6 +1113,8 @@ If the cosigner holds the key but it is still on the deny-all default,
 raises `SigningRejectedError`, preserving the code and message, and the cosigned
 signing helper propagates that error. Apply the key's document before retrying.
 See the [compatibility note](COMPATIBILITY.md) for policy format and provisioning details.
+
+#### The Cosigned Sequence
 
 The helper reads each position's key (its signing flow, LogicSig resources
 and fee ceiling) from the user signer's `/keys` record, by the position's
@@ -759,16 +1143,19 @@ It checks a planned fee against the account's ceiling only on `bounded2`: a
 contract it doesn't know, a `bounded2` account without a ceiling, and a `plain1`
 account that advertises one.
 `sign_prepared_cosigned_group()` discovers the flow from signer inventory and
-performs the user-first sequence:
+performs the user-first sequence. With a client from `from_env()` the
+cosigner comes from `endpoints.yaml`:
 
 ```python
 result = sign_prepared_cosigned_group(
     user_client=user_client,
-    cosigner_resolver=cosigner_resolver,
     prepared_group=prepared_group,
 )
 signed_group = result.signed_group
 ```
+
+Pass `cosigner_client` and `cosigner_component_key`, or `cosigner_resolver`,
+to name the cosigner yourself.
 
 The sequence is `/plan`, user approval and base-component release through
 `request_components()` with a bounded-base target, signing of ordinary group
@@ -801,7 +1188,8 @@ simulation = user_client.simulate_prepared_group(
     prepared_group,
 )
 if simulation.failed:
-    # Inspect simulation.response for algod diagnostics.
+    # simulation.failure_message says why; simulation.response has the
+    # algod diagnostics.
     pass
 
 cosigned = simulate_prepared_cosigned_group(algod_client, **cosigned_options)
@@ -810,11 +1198,19 @@ cosigned = simulate_prepared_cosigned_group(algod_client, **cosigned_options)
 `SimulationResult.signed_group` contains fully executable signed transactions
 that remain submittable until expiry. Keep them confidential. The helper sends
 the exact signed group to the supplied algod with empty-signature overrides
-disabled. A missing algod client fails before any signing request. Algod
-execution failure sets `failed`; transport or decoding failures raise an error
-and never trigger another signing request automatically.
+disabled. A missing algod client fails before any signing request. A
+simulation is `failed` unless the node returned exactly one group result, an
+object that reports no failure and holds one transaction result per
+transaction simulated. `failure_message` says why: the node's own failure
+message, or which of the other cases it was. Transport or decoding failures
+raise an error and never trigger another signing request automatically.
 
 ## Error Handling
+
+A send's failures are described in [Send Failures](#send-failures). Every
+call raises the signer's refusals as `SignerError` subclasses; a
+`SignerError`'s `code` is the signer's stable error code when it sent one
+(such as `ERR_CODE_ROTATING_STAGE_CHANGED`).
 
 The SDK raises typed exceptions for the common signer-side failure cases:
 
@@ -826,6 +1222,17 @@ The SDK raises typed exceptions for the common signer-side failure cases:
 - `EnrollmentError`
 - `MaxFeeIncreaseError`: the signer raised fees by more than the client's
   `max_fee_increase`; carries `raised` and `limit`
+- `UnsupportedSigningFlowError` and `UnsupportedGroupError`: a send refused
+  the group before signing
+- `CosignerDiscoveryError`: a cosigned account's cosigner was not found in
+  `endpoints.yaml`
+- `SendTimeoutError`: a call's `timeout` passed
+- `SignOutcomeUnknownError`, `SubmissionUncertainError`,
+  `SubmissionRejectedError` and `RotatingPreflightError`: see
+  [Send Failures](#send-failures)
+
+From the `send_raw_transaction()` helper:
+
 - `TransactionRejectedError`
 - `LogicSigRejectedError`
 - `InsufficientFundsError`
@@ -836,13 +1243,24 @@ Typical pattern:
 ```python
 from aplanesdk import (
     AuthenticationError,
+    SignerError,
     SignerUnavailableError,
     SigningRejectedError,
-    SignerError,
+    SignOutcomeUnknownError,
+    SubmissionUncertainError,
 )
 
 try:
-    signed = client.sign_transaction(txn)
+    result = client.send_payment(algod_client, sender=sender, receiver=receiver, amount=1_000_000)
+    print(result.tx_ids[0])
+except (SignOutcomeUnknownError, SubmissionUncertainError) as err:
+    # Do not send again: ask the node where things stand.
+    try:
+        report = client.resolve_outcome(algod_client, err)
+        print(f"{report.state}: {report.advice}")
+    except SignerError:
+        pass
+    raise
 except AuthenticationError:
     print("Connection is not authenticated by an enrolled SSH key")
 except SigningRejectedError:
@@ -850,7 +1268,7 @@ except SigningRejectedError:
 except SignerUnavailableError:
     print("Signer unreachable, locked, or unavailable")
 except SignerError as err:
-    print(f"Signing failed: {err}")
+    print(f"Sending failed: {err}")
 ```
 
 `send_raw_transaction()` adds cleaner algod error mapping for common rejection
@@ -863,3 +1281,5 @@ cases such as LogicSig rejection, insufficient funds, and malformed groups.
 - main APlane repository `docs/USER_QUICKSTART.md`
 - main APlane repository `docs/ARCH_CONTRACTS.md`
 - [`python/README.md`](../python/README.md)
+- [compatibility note](COMPATIBILITY.md): read it before upgrading the SDK or
+  the signer
