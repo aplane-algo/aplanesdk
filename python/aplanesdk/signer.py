@@ -5923,10 +5923,10 @@ class SignerClient:
         data = _read_answer(resp, _GENERATE_RESULT_SHAPE, "key generation")
         if data["error"]:
             raise SignerError(data["error"])
+        # Only the address is required: the signer leaves key_type out when
+        # it is empty (omitempty), and the other SDKs accept that.
         if not data["address"]:
             raise SignerError("Key generation response missing address")
-        if not data["key_type"]:
-            raise SignerError("Key generation response missing key_type")
 
         return GenerateResult(
             address=data["address"],

@@ -726,6 +726,19 @@ class TestGenerateKey:
             with pytest.raises(SignerError, match="missing address"):
                 client.generate_key("ed25519")
 
+    @pytest.mark.parametrize("key_type", [None, "", "absent"])
+    def test_an_empty_key_type_is_accepted(self, key_type):
+        # The signer tags key_type omitempty; like the Go and TypeScript SDKs,
+        # only an empty address is refused.
+        client = make_client()
+        body = {"address": "NEWADDR123"}
+        if key_type != "absent":
+            body["key_type"] = key_type
+        with patch.object(client.session, "post", return_value=mock_response(200, body)):
+            result = client.generate_key("ed25519")
+        assert result.address == "NEWADDR123"
+        assert result.key_type == ""
+
     def test_uses_client_timeout(self):
         client = make_client()
         resp = mock_response(200, {"address": "NEWADDR123", "key_type": "ed25519"})
