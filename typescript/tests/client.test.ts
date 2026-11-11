@@ -4104,6 +4104,33 @@ describe("SignerClient", () => {
       await assert.rejects(client().getStatus(), plain);
     });
 
+    it("a 200 from /admin/generate or DELETE /admin/keys drops the key cache, whatever its body", async () => {
+      // The signer may have created or deleted the key even when its answer
+      // cannot be read or is refused, so the next listKeys() asks it again.
+      const keysAnswer = (address: string) => JSON.stringify({ count: 1, keys: [{ address, key_type: "ed25519" }] });
+      const mutations: Array<[string, (signer: SignerClient) => Promise<unknown>, string]> = [
+        ["/admin/generate", (signer) => signer.generateKey("ed25519"), ""],
+        ["/admin/generate", (signer) => signer.generateKey("ed25519"), '{"address":5}'],
+        ["/admin/generate", (signer) => signer.generateKey("ed25519"), '{"error":"refused"}'],
+        ["DELETE /admin/keys", (signer) => signer.deleteKey(fakeAddress(9)), ""],
+        ["DELETE /admin/keys", (signer) => signer.deleteKey(fakeAddress(9)), '{"success":"yes"}'],
+        ["DELETE /admin/keys", (signer) => signer.deleteKey(fakeAddress(9)), '{"error":"refused"}'],
+      ];
+      for (const [path, mutate, body] of mutations) {
+        const signer = client();
+        answerRaw(keysAnswer(fakeAccount(6)));
+        await signer.listKeys(true);
+        answerRaw(body);
+        await assert.rejects(mutate(signer), SignerError, `${path} answering ${JSON.stringify(body)} is refused`);
+        answerRaw(keysAnswer(fakeAccount(7)));
+        assert.deepEqual(
+          (await signer.listKeys()).map((key) => key.address),
+          [fakeAccount(7)],
+          `after ${path} answering ${JSON.stringify(body)}, listKeys() asks the signer again`,
+        );
+      }
+    });
+
     it("/admin/generate refuses an answer without an address", async () => {
       for (const body of ["{}", '{"key_type":"ed25519"}', '{"address":null,"key_type":"ed25519"}']) {
         answerRaw(body);

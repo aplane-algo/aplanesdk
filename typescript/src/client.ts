@@ -3778,16 +3778,15 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Key generation failed: HTTP ${response.status}`);
     }
 
+    // Invalidate key cache: the signer answered, so it may hold a new key
+    // even when its answer is unreadable or refused below.
+    this.keyCache.clear();
+    this.keyCacheRevision = undefined;
+
     const data = await readPlainAnswer<Record<string, any>>(response, GENERATE_ANSWER);
     if (data.error) {
       throw new SignerError(data.error);
     }
-
-    // Invalidate key cache: the signer may hold a new key even when its
-    // answer is refused below.
-    this.keyCache.clear();
-    this.keyCacheRevision = undefined;
-
     if (data.address === "") {
       throw new SignerError("Key generation response missing address");
     }
