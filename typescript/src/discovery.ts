@@ -120,13 +120,50 @@ interface RequiredWitnessKey {
   id: string;
 }
 
+const SHORT_ESCAPES: Readonly<Record<number, string>> = {
+  0x07: "\\a",
+  0x08: "\\b",
+  0x09: "\\t",
+  0x0a: "\\n",
+  0x0b: "\\v",
+  0x0c: "\\f",
+  0x0d: "\\r",
+  0x22: '\\"',
+  0x5c: "\\\\",
+};
+
+/**
+ * value in double quotes, as Go's %q writes it, so a discovery message is the
+ * same in every SDK: `"` and `\` escaped, control characters as Go's short
+ * escapes (\a \b \t \n \v \f \r), else \xNN (other C0 controls and DEL)
+ * or \u00NN (C1 controls); every other character as it is. Tests read it;
+ * it is not part of the package's exports.
+ */
+export function quoteLikeGo(value: string): string {
+  let quoted = '"';
+  for (const char of value) {
+    const code = char.codePointAt(0) as number;
+    const short = SHORT_ESCAPES[code];
+    if (short !== undefined) {
+      quoted += short;
+    } else if (code < 0x20 || code === 0x7f) {
+      quoted += `\\x${code.toString(16).padStart(2, "0")}`;
+    } else if (code >= 0x80 && code <= 0x9f) {
+      quoted += `\\u${code.toString(16).padStart(4, "0")}`;
+    } else {
+      quoted += char;
+    }
+  }
+  return `${quoted}"`;
+}
+
 /** The witness key a target needs, checked before anything is connected. */
 function requiredWitnessKey(target: CosignedSignTarget): RequiredWitnessKey {
   const keyType = target?.cosignerComponentKeyType ?? "";
   const publicKeyHex = target?.cosignerPublicKeyHex ?? "";
   if (typeof publicKeyHex !== "string" || publicKeyHex === "" || !HEX.test(publicKeyHex)) {
     throw new CosignerDiscoveryError(
-      `cosigner discovery: the account's cosigner public key ${JSON.stringify(String(publicKeyHex))} is not valid hex`,
+      `cosigner discovery: the account's cosigner public key ${quoteLikeGo(String(publicKeyHex))} is not valid hex`,
     );
   }
   if (typeof keyType !== "string" || keyType === "") {
@@ -336,7 +373,7 @@ export class EndpointCosignerResolver implements CosignedCosignerResolverObject 
     const label = `Witness Key ID ${required.id} (${required.keyType})`;
     if (matches.length > 1) {
       throw new CosignerDiscoveryError(
-        `cosigner discovery: ${label} is listed by endpoints ${matches.map(([alias]) => `"${alias}"`).join(", ")}; ` +
+        `cosigner discovery: ${label} is listed by endpoints ${matches.map(([alias]) => quoteLikeGo(alias)).join(", ")}; ` +
           "each witness key needs exactly one endpoint",
       );
     }
@@ -346,7 +383,7 @@ export class EndpointCosignerResolver implements CosignedCosignerResolverObject 
       return { client, componentKey: key.address };
     }
     const states = this.#endpoints
-      .map(([alias]) => `"${alias}" ${this.#listings?.get(alias)?.state ?? "unreachable"}`)
+      .map(([alias]) => `${quoteLikeGo(alias)} ${this.#listings?.get(alias)?.state ?? "unreachable"}`)
       .join(", ");
     throw new CosignerDiscoveryError(`cosigner discovery: no endpoint lists ${label}; endpoints: ${states}`);
   }
@@ -432,7 +469,7 @@ export class EndpointCosignerResolver implements CosignedCosignerResolverObject 
       const [alias] = mismatched;
       const error = results.get(alias)?.mismatch;
       await abandon();
-      throw new CosignerDiscoveryError(`cosigner discovery: endpoint "${alias}": ${errorText(error)}`, error);
+      throw new CosignerDiscoveryError(`cosigner discovery: endpoint ${quoteLikeGo(alias)}: ${errorText(error)}`, error);
     }
     // The caller's own end is not a finding about the endpoints.
     if (signal?.aborted) {

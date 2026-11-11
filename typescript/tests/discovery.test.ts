@@ -18,6 +18,7 @@ import {
   EndpointCosignerResolver,
   discoveryHooks,
   discoveryTiming,
+  quoteLikeGo,
   type EndpointCosignerResolverOptions,
 } from "../src/discovery.js";
 import { witnessKeyId } from "../src/witness.js";
@@ -199,6 +200,62 @@ describe("Witness Key ID", () => {
       const value = witnessKeyId(keyType, new Uint8Array(length).fill(3));
       assert.match(value, /^[A-Z2-7]{52}$/, `${keyType}/${length}: ${value}`);
     }
+  });
+});
+
+describe("quoting a value in a discovery message", () => {
+  it("quotes as Go's %q does", () => {
+    // Each expected text is what Go's fmt.Sprintf("%q", value) gives.
+    const cases: Array<[string, string]> = [
+      ["", '""'],
+      ["a1b", '"a1b"'],
+      ['a"b\\c', '"a\\"b\\\\c"'],
+      [
+        "a\"b\\c\x00\x07\x08\t\n\x0b\x0c\r\x1b\x1f\x7f \u00e9 \u0080\u0085\u009f z",
+        '"a\\"b\\\\c\\x00\\a\\b\\t\\n\\v\\f\\r\\x1b\\x1f\\x7f \u00e9 \\u0080\\u0085\\u009f z"',
+      ],
+    ];
+    for (const [value, want] of cases) {
+      assert.equal(quoteLikeGo(value), want, `quoting ${JSON.stringify(value)}`);
+    }
+  });
+
+  it("quotes a bad cosigner public key in the refusal", async () => {
+    const resolver = new EndpointCosignerResolver(registry("alpha"));
+    await assert.rejects(
+      resolver.resolve(target("a1\t\x7f\"")),
+      discoveryError('cosigner discovery: the account\'s cosigner public key "a1\\t\\x7f\\"" is not valid hex'),
+    );
+    await resolver.close();
+  });
+
+  it("quotes endpoint aliases in the messages that name them", async () => {
+    const net = new Network();
+    const odd = 'al"ph\\a\t1';
+    // The alias cannot be a host name: its endpoint has a plain URL, and its
+    // connection reaches a stand-in that lists the key.
+    net.add("odd-host", [witnessRecord(WITNESS_A)]);
+    net.behaviour.set(odd, async () => net.client("odd-host"));
+    net.add("beta", [witnessRecord(WITNESS_A)]);
+    net.install();
+    const reg = registry("beta");
+    reg.endpoints[odd] = endpointConfig(odd, "ssh://odd.example:1127");
+    const resolver = new EndpointCosignerResolver(reg);
+    await assert.rejects(
+      resolver.resolve(target(WITNESS_A)),
+      discoveryError(
+        `cosigner discovery: Witness Key ID ${id(WITNESS_A)} (${KEY_TYPE_WITNESS_FALCON1024}) is listed by endpoints ` +
+          '"al\\"ph\\\\a\\t1", "beta"; each witness key needs exactly one endpoint',
+      ),
+    );
+    await assert.rejects(
+      resolver.resolve(target(WITNESS_C)),
+      discoveryError(
+        `cosigner discovery: no endpoint lists Witness Key ID ${id(WITNESS_C)} (${KEY_TYPE_WITNESS_FALCON1024}); ` +
+          'endpoints: "al\\"ph\\\\a\\t1" ok, "beta" ok',
+      ),
+    );
+    await resolver.close();
   });
 });
 
