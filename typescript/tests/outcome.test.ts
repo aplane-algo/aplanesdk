@@ -269,6 +269,28 @@ describe("resolveOutcome after a SignOutcomeUnknownError", () => {
   }
 });
 
+describe("resolveOutcome after a SignOutcomeUnknownError whose prepared group has no IDs", () => {
+  // A stand-in built by hand: the SDK never makes a prepared group without
+  // transactions, but the error carries whatever it was given.
+  for (const [label, ids] of [["no IDs", [] as string[]], ["an empty first ID", ["", "TXIDTWO"]]] as const) {
+    const rows: Array<[string, bigint, Want]> = [
+      ["still valid", 200n, { state: "signable", safe: false, advice: SIGNABLE_ROTATING, lookups: 0 }],
+      ["500 rounds past", 700n, { state: "expired", safe: true, advice: SIGN_EXPIRED, lookups: 0 }],
+      ["501 rounds past", 701n, { state: "too_old", safe: false, advice: ROTATING_TOO_OLD, lookups: 0 }],
+    ];
+    for (const [name, round, want] of rows) {
+      it(`${label}, ${name}`, async () => {
+        const { client } = quietClient();
+        const node = new OutcomeNode(round, "confirmed");
+        const handBuilt = { txIds: () => [...ids] } as unknown as PreparedRotating;
+        const report = await client.resolveOutcome(node as any, signError(LAST_VALID, handBuilt));
+        check(report, node, want, `${label}, ${name}`);
+        assert.equal(report.rotating, handBuilt, "the report does not carry the prepared group");
+      });
+    }
+  }
+});
+
 describe("resolveOutcome refusals", () => {
   for (const [name, value] of [
     ["a plain SignerError", new SignerError("Bad request: nope")],

@@ -476,8 +476,8 @@ are no IDs and no lookup (`txIds` is empty):
 - the last round is at most `lastValid`: `signable`. A released signature can
   still execute: for a rotating account sign the same prepared group again,
   otherwise wait until `lastValid` has passed before building a replacement;
-- a rotating account, not found or dropped, more than 500 rounds past
-  `lastValid`: `too_old`. Signing the same prepared group again gives the
+- a rotating account, not found or dropped (or a hand-built prepared group
+  with no IDs to look up), more than 500 rounds past `lastValid`: `too_old`. Signing the same prepared group again gives the
   same transaction IDs, which may since have been submitted, and past that
   margin the node may no longer remember them: look the ID up on an indexer;
 - the last round is past `lastValid` (for a rotating account, by at most 500
