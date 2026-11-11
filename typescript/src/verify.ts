@@ -476,6 +476,29 @@ export function validateGroupMutations(
     feeModified.add(index);
   }
 
+  // A request that already carries a group ID is immutable to the signer: its
+  // planner raises no fee on it, appends no dummy to it and never regroups
+  // it, whatever the modes of its positions. A response that reports any of
+  // these could not be submitted, because positions the signer did not return
+  // stay bound to the original group.
+  if (slots.some((slot) => groupIDBytes(slot.txn) !== undefined)) {
+    if (groupIdChanged) {
+      throw new SignerError(
+        "signer reported a group ID change for a request that was already grouped",
+      );
+    }
+    if (feeModified.size > 0) {
+      throw new SignerError(
+        "signer reported a fee change for a request that was already grouped",
+      );
+    }
+    if (appended > 0) {
+      throw new SignerError(
+        `signer appended ${appended} transaction(s) to a request that was already grouped`,
+      );
+    }
+  }
+
   let assigned: Uint8Array | undefined;
   if (groupIdChanged) {
     const observed = returned.find((txn) => txn !== undefined);

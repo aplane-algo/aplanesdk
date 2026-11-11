@@ -96,8 +96,6 @@ import { preparedGroupToSignRequests, preparedTransactionToSignRequest } from ".
 import {
   DUMMY_PROGRAM as COSIGNED_DUMMY_PROGRAM,
   MAX_GROUP_SIZE,
-  byteArraysEqual,
-  cloneTransaction,
   decodeCanonicalSignedTransaction,
   decodeCanonicalTransaction,
   decodePassthroughSlot,
@@ -108,6 +106,7 @@ import {
   signCanonicalDummy,
   signedTransactionMatchesCanonical,
   validateCanonicalDummies,
+  validateCanonicalGroupID,
   validatePlanResponse,
   validateSignResponse,
 } from "./verify.js";
@@ -291,29 +290,7 @@ function decodeCanonicalGroup(groupBytesHex: string[]): Transaction[] {
     return txns;
   }
 
-  const groupID = groupIDBytes(txns[0]);
-  if (groupID === undefined) {
-    throw new SignerError("group transaction 0 has empty group ID");
-  }
-  txns.slice(1).forEach((txn, offset) => {
-    const current = groupIDBytes(txn);
-    const index = offset + 1;
-    if (current === undefined) {
-      throw new SignerError(`group transaction ${index} has empty group ID`);
-    }
-    if (!byteArraysEqual(current, groupID)) {
-      throw new SignerError(`group transaction ${index} has divergent group ID`);
-    }
-  });
-
-  const cleared = txns.map(cloneTransaction);
-  cleared.forEach((txn) => {
-    txn.group = undefined;
-  });
-  const computed = algosdk.computeGroupID(cleared);
-  if (!byteArraysEqual(computed, groupID)) {
-    throw new SignerError("group ID does not match decoded transactions");
-  }
+  validateCanonicalGroupID(txns);
   return txns;
 }
 
@@ -3545,7 +3522,7 @@ export class SignerClient {
       txns, authAddrs, lsigArgsMap, passthrough, lsigResources,
     );
 
-    return this.planWithSlots(requestBody.requests, requestBody.slots);
+    return this.planRequests(requestBody.requests);
   }
 
   /**
@@ -3553,19 +3530,10 @@ export class SignerClient {
    * address-keyed convenience API.
    */
   async planRequests(requests: SignRequest[]): Promise<PlanGroupResponse> {
-    return this.planWithSlots(requests);
-  }
-
-  /**
-   * planRequests for requests whose slots may already be decoded: requests
-   * the SDK built arrive with them, raw requests are decoded here.
-   */
-  private async planWithSlots(
-    requests: SignRequest[],
-    decoded?: RequestSlot[],
-  ): Promise<PlanGroupResponse> {
     validateSignRequests(requests);
-    const slots = decoded ?? decodeRequestSlots(requests);
+    // The slots the plan is checked against are decoded here, from the very
+    // entries that are sent.
+    const slots = decodeRequestSlots(requests);
 
     const response = await this.fetch("/plan", {
       method: "POST",
@@ -3774,22 +3742,12 @@ export class SignerClient {
     requests: SignRequest[],
     options?: SignOptions,
   ): Promise<GroupSignResponse> {
-    return this.signWithSlots(requests, undefined, options);
-  }
-
-  /**
-   * signRequests for requests whose slots may already be decoded: requests
-   * the SDK built arrive with them, raw requests are decoded here.
-   */
-  private async signWithSlots(
-    requests: SignRequest[],
-    decoded: RequestSlot[] | undefined,
-    options?: SignOptions,
-  ): Promise<GroupSignResponse> {
     const requestId = options?.requestId ?? newSignRequestId();
     validateSignRequestId(requestId, true);
     validateSignRequests(requests);
-    const slots = decoded ?? decodeRequestSlots(requests);
+    // The slots the response is checked against are decoded here, from the
+    // very entries that are sent.
+    const slots = decodeRequestSlots(requests);
     const signBody: GroupSignRequest = { request_id: requestId, requests };
 
     await this.discoverApprovalWait();
@@ -3900,7 +3858,7 @@ export class SignerClient {
     passthrough?: Record<number, string>,
     lsigResources?: Record<number, LogicSigResourceUsage>,
     allowForeign = true,
-  ): { requests: SignRequest[]; slots: RequestSlot[] } {
+  ): { requests: SignRequest[] } {
     if (txns.length === 0) {
       throw new SignerError("transactions must not be empty");
     }
@@ -3918,15 +3876,14 @@ export class SignerClient {
     }
 
     const signRequests: SignRequest[] = [];
-    const slots: RequestSlot[] = [];
     const matchedLsigArgs = new Set<string>();
     for (let i = 0; i < txns.length; i++) {
       const txn = txns[i];
       const authAddr = authAddresses[i];
 
       // Passthrough: include pre-signed transaction as-is. It is decoded
-      // once, strictly, and both its request and its part in matching the
-      // LogicSig args come from that.
+      // strictly here to refuse a malformed one early and to match the
+      // LogicSig args; what is decoded goes no further.
       const passthroughEntry = passthroughByIndex.get(i);
       if (passthroughEntry !== undefined) {
         const signedBytes = Buffer.from(passthroughEntry, "base64");
@@ -3947,7 +3904,6 @@ export class SignerClient {
           request.lsig_resources = wireLogicSigResources(resources);
         }
         signRequests.push(request);
-        slots.push(slot);
         continue;
       }
 
@@ -3982,7 +3938,6 @@ export class SignerClient {
           req.lsig_resources = wireLogicSigResources(resources);
         }
         signRequests.push(req);
-        slots.push({ mode: "foreign", txn: cloneTransaction(txn) });
         continue;
       }
 
@@ -3990,7 +3945,7 @@ export class SignerClient {
         throw new SignerError(`transaction is required for sign-mode entry at index ${i}`);
       }
       try {
-        slots.push(signSlot(cloneTransaction(txn), authAddr));
+        signSlot(txn, authAddr);
       } catch (error) {
         throw new SignerError(`transaction ${i + 1}: ${errorText(error)}`);
       }
@@ -4027,7 +3982,7 @@ export class SignerClient {
       );
     }
 
-    return { requests: signRequests, slots };
+    return { requests: signRequests };
   }
 
   /**
@@ -4045,7 +4000,7 @@ export class SignerClient {
     const requestBody = this.buildSignRequestBody(
       txns, authAddresses, lsigArgsMap, passthrough, lsigResources, false,
     );
-    const data = await this.signWithSlots(requestBody.requests, requestBody.slots, options);
+    const data = await this.signRequests(requestBody.requests, options);
 
     // Return hex-encoded signed transactions
     const signedHexes = data.signed || [];
