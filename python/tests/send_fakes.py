@@ -179,10 +179,10 @@ class FakeNode:
     ``submit`` answers a submission given its bytes; None accepts the group
     and reports its first transaction's ID. ``pending`` answers the pending
     transaction lookup; None confirms in round 12. ``simulate`` answers the
-    simulate endpoint; None reports success, with a result per transaction. ``auth_addrs`` is the chain's
-    auth address per account. ``round`` is the node's current round, and
-    ``wait_round`` the round a wait for the next block answers with, when it
-    is not that.
+    simulate endpoint; None reports success, with one transaction result per
+    transaction. ``auth_addrs`` is the chain's auth address per account.
+    ``round`` is the node's current round, and ``wait_round`` the round a
+    wait for the next block answers with, when it is not that.
     """
 
     def __init__(

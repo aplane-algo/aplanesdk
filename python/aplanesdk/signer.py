@@ -3445,7 +3445,9 @@ def _checked_assembly_response(
         raise SignerError(f"invalid assembly response: {e}") from e
     if data["request_id"] != request_body["request_id"]:
         raise SignerError("assembly response request_id does not match request")
-    return AssemblyResponse(request_id=data["request_id"], signed_group=data.get("signed_group", []))
+    return AssemblyResponse(
+        request_id=data["request_id"], signed_group=data.get("signed_group", [])
+    )
 
 
 def _extract_auth_address(account_info: Any) -> str:
@@ -6685,7 +6687,9 @@ class SignerClient:
             raise SignerError(data["error"])
 
         try:
-            _validate_plan_response(slots, data["transactions"], data["mutations"], max_fee_increase)
+            _validate_plan_response(
+                slots, data["transactions"], data["mutations"], max_fee_increase
+            )
         except Exception as e:
             raise _verification_error("verify signer plan: ", e) from e
 
