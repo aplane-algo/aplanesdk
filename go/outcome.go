@@ -77,7 +77,8 @@ type OutcomeReport struct {
 
 // WaitOutcomeOptions configures WaitForOutcome.
 type WaitOutcomeOptions struct {
-	// Timeout bounds the whole wait. Zero means no limit beyond the context.
+	// Timeout bounds the whole wait. Zero means no limit beyond the context;
+	// a negative Timeout is refused.
 	Timeout time.Duration
 }
 
@@ -158,7 +159,17 @@ func (o uncertainOutcome) resolve(ctx context.Context, algodClient *algod.Client
 // expired or too old. If the context ends or the timeout passes first, it
 // returns the last report (nil if there was none yet) together with the
 // context's error. It never signs, never submits, and never calls the signer.
+//
+// It refuses what ResolveOutcome refuses before it looks at the context, so a
+// refusal is never hidden behind an ended context; then a negative Timeout.
 func (c *SignerClient) WaitForOutcome(ctx context.Context, algodClient *algod.Client, err error, opts *WaitOutcomeOptions) (*OutcomeReport, error) {
+	outcome, refusal := checkUncertainOutcome(algodClient, err)
+	if refusal != nil {
+		return nil, refusal
+	}
+	if opts != nil && opts.Timeout < 0 {
+		return nil, errors.New("timeout must not be negative")
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -169,7 +180,7 @@ func (c *SignerClient) WaitForOutcome(ctx context.Context, algodClient *algod.Cl
 	}
 	var last *OutcomeReport
 	for {
-		report, resolveErr := c.ResolveOutcome(ctx, algodClient, err)
+		report, resolveErr := outcome.resolve(ctx, algodClient)
 		if resolveErr != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return last, ctxErr

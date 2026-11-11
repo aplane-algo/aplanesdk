@@ -449,7 +449,10 @@ calls the signer; a node failure is returned as an error, not a state.
 `WaitForOutcome(ctx, algodClient, err, opts)` checks once per round until the
 state is `confirmed`, `expired` or `too_old`, and when the context or
 `WaitOutcomeOptions.Timeout` ends first returns the last report with that
-error.
+error. A zero `Timeout` means no limit beyond the context; a negative one is
+refused (`timeout must not be negative`). It refuses what `ResolveOutcome`
+refuses first, then a negative `Timeout`, and only then looks at the context,
+so an ended context never hides a refusal.
 
 The signer never changes validity rounds, so after `LastValid` nothing from
 the request can execute. For a signed group (`*SubmissionUncertainError`):

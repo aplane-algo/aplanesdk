@@ -367,6 +367,58 @@ func TestResolveOutcomeRefusesAnIncompleteError(t *testing.T) {
 	}
 }
 
+// WaitForOutcome refuses what ResolveOutcome refuses before it looks at the
+// context, so an ended context never hides a refusal; a negative timeout is
+// refused after those, and nothing is asked of the node.
+func TestWaitForOutcomeRefusesBeforeTheContext(t *testing.T) {
+	noIDs := uncertainSubmission()
+	noIDs.TxIDs = nil
+	ended, cancel := context.WithCancel(context.Background())
+	cancel()
+	negative := &WaitOutcomeOptions{Timeout: -time.Second}
+	cases := map[string]struct {
+		err      error
+		noAlgod  bool
+		opts     *WaitOutcomeOptions
+		text     string
+		sentinel bool
+		ctxEnded bool
+	}{
+		"another type, context ended":        {err: errors.New("signing failed"), ctxEnded: true, text: "not an uncertain outcome", sentinel: true},
+		"nil sign outcome, context ended":    {err: (*SignOutcomeUnknownError)(nil), ctxEnded: true, text: "not an uncertain outcome", sentinel: true},
+		"no last valid, context ended":       {err: &SignOutcomeUnknownError{RequestID: "sdk-1"}, ctxEnded: true, text: "the error carries no last valid round"},
+		"no transaction IDs, context ended":  {err: noIDs, ctxEnded: true, text: "the error carries no transaction IDs"},
+		"no algod client, context ended":     {err: uncertainSubmission(), noAlgod: true, ctxEnded: true, text: "algod client is required"},
+		"another type, negative timeout":     {err: errors.New("signing failed"), opts: negative, text: "not an uncertain outcome", sentinel: true},
+		"no last valid, negative timeout":    {err: &SignOutcomeUnknownError{}, opts: negative, text: "the error carries no last valid round"},
+		"no transaction IDs, negative":       {err: noIDs, opts: negative, text: "the error carries no transaction IDs"},
+		"no algod client, negative timeout":  {err: uncertainSubmission(), noAlgod: true, opts: negative, text: "algod client is required"},
+		"negative timeout":                   {err: uncertainSubmission(), opts: negative, text: "timeout must not be negative"},
+		"negative timeout, context ended":    {err: &SignOutcomeUnknownError{LastValid: outcomeLastValid}, opts: negative, ctxEnded: true, text: "timeout must not be negative"},
+		"a minimal negative timeout refused": {err: uncertainSubmission(), opts: &WaitOutcomeOptions{Timeout: -1}, text: "timeout must not be negative"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			node := &outcomeNode{round: 1600}
+			client, algodClient := outcomeFixture(t, node)
+			if tc.noAlgod {
+				algodClient = nil
+			}
+			ctx := context.Background()
+			if tc.ctxEnded {
+				ctx = ended
+			}
+			report, err := client.WaitForOutcome(ctx, algodClient, tc.err, tc.opts)
+			if report != nil || err == nil || err.Error() != tc.text || errors.Is(err, context.Canceled) || errors.Is(err, ErrNotUncertainOutcome) != tc.sentinel {
+				t.Fatalf("WaitForOutcome() = %+v, %v; want %q", report, err, tc.text)
+			}
+			if calls := node.requests(); len(calls) != 0 {
+				t.Fatalf("node calls = %v, want none", calls)
+			}
+		})
+	}
+}
+
 func TestWaitForOutcomePollsOncePerRoundUntilSettled(t *testing.T) {
 	t.Run("an unknown sign outcome waits out its validity", func(t *testing.T) {
 		node := &outcomeNode{round: 997, step: 1}
