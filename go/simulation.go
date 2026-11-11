@@ -150,24 +150,9 @@ func simulateSignedGroupWithContext(
 		return nil, err
 	}
 
-	request := models.SimulateRequest{
-		TxnGroups:            []models.SimulateRequestTransactionGroup{{Txns: decoded}},
-		AllowEmptySignatures: false,
-		FixSigners:           false,
-		AllowMoreLogging:     true,
-		ExecTraceConfig: models.SimulateTraceConfig{
-			Enable:      true,
-			StateChange: true,
-		},
-	}
-	response, err := algodClient.SimulateTransaction(request).Do(ctx)
+	response, err := runSimulation(ctx, algodClient, decoded, false)
 	if err != nil {
-		request.ExecTraceConfig = models.SimulateTraceConfig{}
-		request.AllowMoreLogging = false
-		response, err = algodClient.SimulateTransaction(request).Do(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("simulation API call failed: %w", err)
-		}
+		return nil, err
 	}
 
 	failed := len(response.TxnGroups) > 0 && response.TxnGroups[0].FailureMessage != ""
@@ -176,7 +161,7 @@ func simulateSignedGroupWithContext(
 		Transactions: transactions,
 		SignedGroup:  append([]string(nil), signedGroup...),
 		Mutations:    mutations,
-		Response:     &response,
+		Response:     response,
 		Failed:       failed,
 	}, nil
 }
@@ -206,4 +191,31 @@ func decodeExecutableSignedGroup(signedGroup []string) ([]types.SignedTxn, []str
 		transactions[i] = hex.EncodeToString(encodeTxn(decoded[i].Txn))
 	}
 	return decoded, txIDs, transactions, nil
+}
+
+// runSimulation sends one group to the node's simulate endpoint, with
+// execution traces when the node allows them. allowEmptySignatures simulates
+// an unsigned group; signed simulation leaves it off so the node checks every
+// signature.
+func runSimulation(ctx context.Context, algodClient *algod.Client, group []types.SignedTxn, allowEmptySignatures bool) (*models.SimulateResponse, error) {
+	request := models.SimulateRequest{
+		TxnGroups:            []models.SimulateRequestTransactionGroup{{Txns: group}},
+		AllowEmptySignatures: allowEmptySignatures,
+		FixSigners:           false,
+		AllowMoreLogging:     true,
+		ExecTraceConfig: models.SimulateTraceConfig{
+			Enable:      true,
+			StateChange: true,
+		},
+	}
+	response, err := algodClient.SimulateTransaction(request).Do(ctx)
+	if err != nil {
+		request.ExecTraceConfig = models.SimulateTraceConfig{}
+		request.AllowMoreLogging = false
+		response, err = algodClient.SimulateTransaction(request).Do(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("simulation API call failed: %w", err)
+		}
+	}
+	return &response, nil
 }

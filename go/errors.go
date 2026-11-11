@@ -87,8 +87,8 @@ const (
 	// one to an address on its rekey-to list, and the target is not on it.
 	ErrCodeBoundedRekeyTargetNotListed = "bounded_rekey_target_not_listed"
 	// ErrCodeRotatingSigningRequired: a rotating account (signing_flow
-	// rotating1) was sent to an ordinary signing endpoint. The SDK does not
-	// implement the rotating flow.
+	// rotating1) was sent to an ordinary signing endpoint. Use SendPrepared
+	// or the PrepareRotating and SignPreparedRotating calls.
 	ErrCodeRotatingSigningRequired = "rotating_signing_required"
 	// ErrCodeRotatingStageUnproven (409, temporary): the signer has not yet
 	// found the rotating account's live stage; a retry usually succeeds.
@@ -96,6 +96,10 @@ const (
 	// ErrCodeRotatingStageChanged (409): the account's authorizer moved
 	// between prepare and sign; nothing was signed.
 	ErrCodeRotatingStageChanged = "rotating_stage_changed"
+	// ErrCodeRotatingWindowNotCurrent (409): the spend's validity window is
+	// not acceptable at the round the signer read. This attempt released no
+	// signature; rebuild the validity rounds and prepare again.
+	ErrCodeRotatingWindowNotCurrent = "rotating_window_not_current"
 )
 
 // APIError preserves the HTTP status, stable wire error code, and message of

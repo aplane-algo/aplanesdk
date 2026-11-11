@@ -344,8 +344,8 @@ the SDK sends best-effort `/sign/cancel` for the generated or supplied
 Sign a prepared transaction or group, check the signed result against what was
 prepared, submit exactly those bytes, and wait for confirmation. The SDK picks
 the signing flow from the signer's record of each key, so the same call works
-for Ed25519, native Falcon, LogicSig, bounded and cosigned accounts, and for a
-rekeyed sender.
+for Ed25519, native Falcon, LogicSig, bounded, cosigned and rotating accounts,
+and for a rekeyed sender.
 
 ```go
 prepared, err := client.PreparePayment(ctx, algodClient, aplane.PaymentPrepParams{
@@ -365,23 +365,21 @@ payment.
   the IDs of the transactions you prepared.
 - **Options.** `NoWait` returns once the node accepts the group, with outcome
   `submitted`. `WaitRounds` is how many further rounds to wait for
-  confirmation (default 10). A cosigned
-  account needs `CosignerClient` with `CosignerComponentKey`, or a
+  confirmation (default 10). A cosigned account needs `CosignerClient` with `CosignerComponentKey`, or a
   `CosignerResolver`; the SDK does not close a cosigner client you pass.
-- **Refused before signing:** a rotating account or an unknown signing flow
+- **Refused before signing:** an unknown signing flow
   (`ErrUnsupportedSigningFlow`), and a pre-signed or foreign position
   (`ErrUnsupportedGroup`). Use the lower-level signing calls for those groups.
-  Rotating accounts are not supported by this SDK version; one that has
-  already rotated is refused earlier, by the `Prepare*` helper, with
-  `ErrKeyNotFound`.
-- **It never signs twice,** and never builds a replacement transaction.
+- **No replacement spends.** The call never builds a second transaction for
+  one whose outcome is unknown. A rotating send may prepare and seek approval
+  again when the signer says an attempt released no signature.
 
 Failures:
 
 | Error | Meaning | What to do |
 |---|---|---|
 | The signing call's own error | The signer refused (policy, operator, locked), or the SDK refused the signer's answer (`verify signer response: ...`, `ErrMaxFeeIncreaseExceeded`). Nothing was submitted. | Read the reason. If the SDK refused a sign answer, the signer did sign and the SDK discarded the result. |
-| `*SignOutcomeUnknownError` | A signing exchange ended with no answer. A signature may have been released; nothing was submitted. | Check with the operator or the audit log before signing again. For the ordinary flow the error carries the request ID. |
+| `*SignOutcomeUnknownError` | A signing exchange ended with no answer. A signature may have been released; nothing was submitted. | Check with the operator or the audit log before signing again. For the ordinary flow the error carries the request ID; for a rotating account it carries the prepared group (see below). |
 | `*SubmissionRejectedError` | The node refused the group or dropped it from its pool. | Read the reason. The signed bytes and IDs are in the error. |
 | `*SubmissionUncertainError` | `Stage` says where it stopped: `unsent` (signed, never sent: your context ended), `submit` (the submission's answer never arrived), or `confirm` (not confirmed within the wait). Except for `unsent`, it may still confirm. | Look up `TxIDs`, or submit the same `SignedGroup` again. Do not sign a replacement until the outcome is known: both could execute. |
 
@@ -392,6 +390,81 @@ carries a lease is the exception: the node refuses it for its lease, and the
 SDK reports a rejection.
 
 The existing `Sign*` and `Simulate*` calls are unchanged.
+
+#### Rotating accounts
+
+A rotating account (`signing_flow` `rotating1`) hands itself to a fresh stage
+on every spend, so the signer adds a rekey to the transaction. `SendPrepared`
+and `SendPayment` run the whole sequence:
+
+1. **Prepare.** The signer returns the exact group it will sign: your
+   transaction with the rekey to the next stage, its fee raised, and any
+   resource dummies.
+2. **Check.** The SDK refuses the group unless the only changes are that
+   rekey, a reported fee raise within your max fee increase, the group ID and
+   canonical dummies.
+3. **Simulate, unsigned,** through your algod. A failure here returns
+   `*RotatingPreflightError`, and no one-time key has been used.
+4. **Sign,** with operator approval, then check the signed group is exactly
+   the prepared one.
+5. **Submit at once** and wait for confirmation. `SendResult.Rotating` reports
+   the stage that signed and the stage that now controls the account.
+
+What to know:
+
+- **One transaction, alone.** A rotating account's transaction must be
+  ungrouped, set no `RekeyTo`, not close the account, and take no LogicSig
+  arguments. It cannot share a group with other transactions.
+- **Short validity window.** The window is at most 100 rounds, and the signer
+  signs only while `FirstValid` is at most 2 rounds ahead and at least 10
+  rounds remain. Every `Prepare*` helper builds such a window when the sender
+  is a rotating account. For a transaction you built yourself, set
+  `SendOptions.RefreshValidity` to let the SDK rebuild the rounds; that
+  changes the transaction ID, so leave it off if anything outside the
+  transaction binds its rounds.
+- **App calls carry the rekey.** A contract that requires a zero `RekeyTo`
+  fails the simulation in step 3.
+- **Bounded retries.** When the signer says an attempt released no signature
+  (`rotating_stage_unproven`, `rotating_stage_changed`,
+  `rotating_window_not_current`), the send prepares again, up to three
+  attempts. Each attempt needs approval again. A timing refusal is retried
+  only when the rounds may be rebuilt.
+- **The SDK cannot derive stage addresses.** It binds the next stage's
+  address the signer reports to the prepared transaction; the signer derives
+  it again from the seed before it signs.
+- **Unsigned simulation checks effects, not signatures.** The node runs the
+  stage program only on the signed group.
+- **Two sends in a row** work once the first has confirmed, which the default
+  wait ensures. Two spends prepared from the same stage cannot both land; the
+  SDK does not serialize other clients or processes.
+
+The steps are also available one at a time. None of them submits:
+
+```go
+prepared, err := client.PrepareRotating(ctx, txn, nil)              // nothing signed
+simulation, err := client.SimulatePreparedRotating(ctx, algodClient, prepared) // never signs
+signed, err := client.SignPreparedRotating(ctx, prepared, nil)       // waits for approval
+result, err := client.SubmitSignedGroup(ctx, algodClient, signed.SignedGroup, nil)
+```
+
+Submit a signed rotating group promptly: the stage's one-time keys are
+revealed until that transaction or a later rotation confirms.
+
+**If a sign answer is lost** (`*SignOutcomeUnknownError`, whose `Rotating`
+field holds the prepared group), call `SignPreparedRotating` again with that
+same prepared group. It asks for the same transaction with the same IDs and
+builds no second spend. It needs approval again and succeeds only while the
+stage is still live and the window still acceptable. If the retry is refused,
+do not prepare a replacement until the first attempt's outcome is known:
+`rotating_stage_changed` means a transaction from that stage has confirmed.
+
+`SubmitSignedGroup` also submits again the `SignedGroup` kept by a
+`*SubmissionUncertainError`; the same bytes can execute only once.
+
+Not covered: a rotating account that was rekeyed to an ordinary key the signer
+holds. The signer refuses it with a message naming that key; sign through
+that key with the lower-level calls. Recovery of an unknown stage is an
+operator action (`rotate recover` in apshell).
 
 ### Config Helpers
 

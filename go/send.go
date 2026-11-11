@@ -42,6 +42,15 @@ type SendOptions struct {
 	// WaitRounds is how many rounds to wait for confirmation. Zero means 10.
 	WaitRounds uint64
 
+	// RefreshValidity lets a send rebuild the validity rounds of a rotating
+	// account's transaction when they are stale or the window is too long.
+	// That changes the transaction's ID, so it is off by default for a
+	// transaction the caller supplies. Do not set it when something outside
+	// the transaction, such as an app argument or a proof, binds its rounds.
+	// SendPayment builds its own transaction and always may. Other accounts
+	// ignore it.
+	RefreshValidity bool
+
 	// A cosigned account's cosigner, used only when the group has a position
 	// that needs one. Give a client, with the Witness Key ID it signs under,
 	// or a resolver. The caller owns these clients; a send never closes them.
@@ -54,7 +63,7 @@ type SendOptions struct {
 // computed from the signed bytes, after they were checked against the request.
 type SendResult struct {
 	// Flow is the signing flow the group took: empty for the ordinary /sign
-	// flow, or SigningFlowCosigned1.
+	// flow, SigningFlowCosigned1 or SigningFlowRotating1.
 	Flow string
 	// SignedGroup is the exact group submitted, hex msgpack, in order. The
 	// first OriginalCount entries are the caller's transactions, in the order
@@ -78,6 +87,25 @@ type SendResult struct {
 	ConfirmedRound uint64
 	// Cosigned carries the component responses of a cosigned send.
 	Cosigned *CosignedSignResult
+	// Rotating carries the rotation a rotating account's send performed.
+	Rotating *RotatingSendDetails
+}
+
+// RotatingSendDetails describes the rotation a rotating account's send
+// performed.
+type RotatingSendDetails struct {
+	// Stage signed the spend and Target, Stage + 1, now controls the account.
+	Stage  uint64
+	Target uint64
+	// RekeyTo is Target's address, as the signer reported it.
+	RekeyTo string
+	// Attempts is how many times the spend was prepared.
+	Attempts int
+	// Transaction is the transaction that was prepared: the one supplied,
+	// with its validity rounds rebuilt if the send was allowed to.
+	Transaction types.Transaction
+	// RequestID is the sign request that released the signature.
+	RequestID string
 }
 
 // Errors a send returns before any signature is requested.
@@ -100,8 +128,12 @@ var (
 type SignOutcomeUnknownError struct {
 	// RequestID is the sign request's ID, as the signer's audit log records it.
 	RequestID string
-	// Requests is what was sent to be signed.
+	// Requests is what was sent to be signed, for the ordinary flow.
 	Requests []SignRequest
+	// Rotating is the prepared group that was sent to be signed, for a
+	// rotating account. Calling SignPreparedRotating with it again asks for
+	// the same transaction and is the safe recovery.
+	Rotating *PreparedRotating
 	Err      error
 }
 
@@ -176,7 +208,7 @@ func (c *SignerClient) SendPayment(ctx context.Context, algodClient *algod.Clien
 	if err != nil {
 		return nil, err
 	}
-	return c.SendPrepared(ctx, algodClient, NewPreparedGroup(*prepared), opts)
+	return c.sendPrepared(ctx, algodClient, NewPreparedGroup(*prepared), opts, true)
 }
 
 // SendPrepared signs a prepared transaction or group with the signing flow
@@ -187,8 +219,10 @@ func (c *SignerClient) SendPayment(ctx context.Context, algodClient *algod.Clien
 // the caller. A group of ordinary and bounded accounts goes through /sign; a
 // group with a cosigned account goes through the cosigned sequence, which
 // needs the cosigner named in opts when a position requires its signature.
-// A rotating account, an unknown flow, or a pre-signed or foreign position is
-// refused before anything is signed.
+// A rotating account's transaction, which must be alone and ungrouped, goes
+// through the rotating sequence: prepare, check, simulate unsigned, then
+// sign. An unknown flow, or a pre-signed or foreign position, is refused
+// before anything is signed.
 //
 // Every position must be one whose key this signer holds, and must name it in
 // AuthAddress, as the Prepare* helpers do.
@@ -198,8 +232,17 @@ func (c *SignerClient) SendPayment(ctx context.Context, algodClient *algod.Clien
 // The other failures are typed. *SignOutcomeUnknownError: an approval-bearing
 // request ended with no answer. *SubmissionRejectedError and
 // *SubmissionUncertainError: the group was signed, and the error keeps the
-// signed bytes and their IDs. This call never signs a second time.
+// signed bytes and their IDs. A rotating send may prepare and seek approval
+// again, a bounded number of times, when the signer says an attempt released
+// no signature. No send ever builds a replacement for a transaction whose
+// outcome is unknown.
 func (c *SignerClient) SendPrepared(ctx context.Context, algodClient *algod.Client, group PreparedGroup, opts *SendOptions) (*SendResult, error) {
+	return c.sendPrepared(ctx, algodClient, group, opts, false)
+}
+
+// sendPrepared is SendPrepared. intentBuilt says the SDK built the group's
+// transactions itself, so it may rebuild their validity rounds.
+func (c *SignerClient) sendPrepared(ctx context.Context, algodClient *algod.Client, group PreparedGroup, opts *SendOptions, intentBuilt bool) (*SendResult, error) {
 	if algodClient == nil {
 		return nil, fmt.Errorf("algod client is required")
 	}
@@ -214,6 +257,10 @@ func (c *SignerClient) SendPrepared(ctx context.Context, algodClient *algod.Clie
 	// plain stop, not an unknown outcome.
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+
+	if flow == SigningFlowRotating1 {
+		return c.sendRotating(ctx, algodClient, group.Transactions[0], opts, intentBuilt || opts.RefreshValidity)
 	}
 
 	result := &SendResult{Flow: flow, OriginalCount: len(group.Transactions)}
@@ -291,10 +338,16 @@ func (c *SignerClient) classifySend(ctx context.Context, group PreparedGroup) (s
 		}
 		// A rotating account is recognised by its own record: once it has
 		// rotated, its on-chain authorizer is a stage address the signer
-		// does not list.
+		// does not list. It signs alone, and as itself.
 		sender := item.Transaction.Sender.String()
 		if own, ok := findSpendableKey(keys, sender); ok && own.SigningFlow == SigningFlowRotating1 {
-			return "", rotatingNotSupported(i, sender)
+			if len(group.Transactions) != 1 {
+				return "", fmt.Errorf("prepared transaction %d: %w: %s is a rotating account, which sends one transaction alone; the signer forms its group", i, ErrUnsupportedGroup, sender)
+			}
+			if item.AuthAddress != sender {
+				return "", fmt.Errorf("prepared transaction %d: %w: it names auth address %s, but %s is a rotating account and signs as itself", i, ErrUnsupportedGroup, item.AuthAddress, sender)
+			}
+			return SigningFlowRotating1, nil
 		}
 		key, ok := findSpendableKey(keys, item.AuthAddress)
 		if !ok {
@@ -305,16 +358,12 @@ func (c *SignerClient) classifySend(ctx context.Context, group PreparedGroup) (s
 		case SigningFlowCosigned1:
 			flow = SigningFlowCosigned1
 		case SigningFlowRotating1:
-			return "", rotatingNotSupported(i, item.AuthAddress)
+			return "", fmt.Errorf("prepared transaction %d: %w: it names rotating account %s as the auth address of another sender; a rotating account signs only its own transactions", i, ErrUnsupportedGroup, item.AuthAddress)
 		default:
 			return "", fmt.Errorf("prepared transaction %d: %w: key %s requires signing flow %q; upgrade the SDK", i, ErrUnsupportedSigningFlow, item.AuthAddress, key.SigningFlow)
 		}
 	}
 	return flow, nil
-}
-
-func rotatingNotSupported(index int, account string) error {
-	return fmt.Errorf("prepared transaction %d: %w: %s is a rotating account (%s), which this SDK version cannot sign for", index, ErrUnsupportedSigningFlow, account, SigningFlowRotating1)
 }
 
 // signForSend runs the ordinary /sign flow for a send. It is postSign with
@@ -492,4 +541,29 @@ func alreadyKnownToNode(err error) bool {
 		return false
 	}
 	return strings.Contains(strings.ToLower(err.Error()), "already in ledger")
+}
+
+// SubmitSignedGroup submits a signed group exactly as given and, unless told
+// not to, waits for confirmation. It signs nothing. Use it to submit a group
+// from SignPreparedRotating, or to submit again the SignedGroup a
+// *SubmissionUncertainError kept: the same bytes can execute only once.
+//
+// Each entry must be one canonically encoded signed transaction, hex msgpack,
+// and a group of several must carry the group ID computed over itself.
+func (c *SignerClient) SubmitSignedGroup(ctx context.Context, algodClient *algod.Client, signedGroup []string, opts *SendOptions) (*SendResult, error) {
+	if algodClient == nil {
+		return nil, fmt.Errorf("algod client is required")
+	}
+	if opts == nil {
+		opts = &SendOptions{}
+	}
+	result := &SendResult{SignedGroup: append([]string(nil), signedGroup...), OriginalCount: len(signedGroup)}
+	raw, err := describeSignedGroup(result)
+	if err != nil {
+		return nil, fmt.Errorf("verify signed group: %w", err)
+	}
+	if err := submitAndTrack(ctx, algodClient, raw, result, opts); err != nil {
+		return nil, err
+	}
+	return result, nil
 }

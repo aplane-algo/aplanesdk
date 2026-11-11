@@ -82,11 +82,32 @@ type sendAlgod struct {
 	// pending answers the pending-transaction lookup; nil confirms in round 12.
 	pending func() models.PendingTransactionInfoResponse
 
+	// simulate answers the simulate endpoint; nil reports success.
+	simulate func(w http.ResponseWriter)
+	// round is the node's current round; zero means 10.
+	round uint64
+
 	mu        sync.Mutex
 	submitted [][]byte
+	simulated []models.SimulateRequest
 	lookups   int
 	// waits are the rounds each wait-for-block call asked to follow.
 	waits []string
+}
+
+func (a *sendAlgod) currentRound() uint64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.round == 0 {
+		return 10
+	}
+	return a.round
+}
+
+func (a *sendAlgod) simulations() []models.SimulateRequest {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]models.SimulateRequest(nil), a.simulated...)
 }
 
 func (a *sendAlgod) submissions() [][]byte {
@@ -120,9 +141,35 @@ func (a *sendAlgod) handle(w http.ResponseWriter, r *http.Request) {
 		a.mu.Lock()
 		a.waits = append(a.waits, strings.TrimPrefix(r.URL.Path, "/v2/status/wait-for-block-after/"))
 		a.mu.Unlock()
-		json.NewEncoder(w).Encode(map[string]uint64{"last-round": 10})
+		json.NewEncoder(w).Encode(map[string]uint64{"last-round": a.currentRound()})
 	case r.URL.Path == "/v2/status":
-		json.NewEncoder(w).Encode(map[string]uint64{"last-round": 10})
+		json.NewEncoder(w).Encode(map[string]uint64{"last-round": a.currentRound()})
+	case r.URL.Path == "/v2/transactions/params":
+		var genesisHash types.Digest
+		genesisHash[0] = 7
+		json.NewEncoder(w).Encode(map[string]any{
+			"fee": 0, "min-fee": 1000, "last-round": a.currentRound(), "genesis-id": "testnet-v1.0",
+			"genesis-hash": genesisHash[:], "consensus-version": "test",
+		})
+	case r.Method == http.MethodPost && r.URL.Path == "/v2/transactions/simulate":
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			a.t.Errorf("read simulate request: %v", err)
+			return
+		}
+		var request models.SimulateRequest
+		if err := msgpack.Decode(raw, &request); err != nil {
+			a.t.Errorf("decode simulate request: %v", err)
+			return
+		}
+		a.mu.Lock()
+		a.simulated = append(a.simulated, request)
+		a.mu.Unlock()
+		if a.simulate != nil {
+			a.simulate(w)
+			return
+		}
+		json.NewEncoder(w).Encode(models.SimulateResponse{LastRound: a.currentRound(), Version: 2, TxnGroups: []models.SimulateTransactionGroupResult{{}}})
 	case strings.HasPrefix(r.URL.Path, "/v2/transactions/pending/"):
 		a.mu.Lock()
 		a.lookups++
@@ -254,11 +301,14 @@ func TestSendPreparedRefusesBeforeSigning(t *testing.T) {
 		text  string
 	}{
 		{
-			name:  "rotating sender",
-			keys:  []KeyInfo{{Address: sender, SigningFlow: SigningFlowRotating1}},
-			group: preparedFor(txn),
-			want:  ErrUnsupportedSigningFlow,
-			text:  "rotating account",
+			name: "rotating sender in a group",
+			keys: []KeyInfo{{Address: sender, SigningFlow: SigningFlowRotating1}, {Address: holder}},
+			group: NewPreparedGroup(
+				PreparedTransaction{Transaction: &txn, AuthAddress: sender},
+				PreparedTransaction{Transaction: &other, AuthAddress: holder},
+			),
+			want: ErrUnsupportedGroup,
+			text: "sends one transaction alone",
 		},
 		{
 			// After a rotation the chain names a stage address, so a caller
@@ -266,15 +316,15 @@ func TestSendPreparedRefusesBeforeSigning(t *testing.T) {
 			name:  "rotating sender bound to another key",
 			keys:  []KeyInfo{{Address: sender, SigningFlow: SigningFlowRotating1}, {Address: holder}},
 			group: NewPreparedGroup(PreparedTransaction{Transaction: &txn, AuthAddress: holder}),
-			want:  ErrUnsupportedSigningFlow,
-			text:  "rotating account",
+			want:  ErrUnsupportedGroup,
+			text:  "signs as itself",
 		},
 		{
 			name:  "rekeyed to a rotating account",
 			keys:  []KeyInfo{{Address: holder, SigningFlow: SigningFlowRotating1}},
 			group: NewPreparedGroup(PreparedTransaction{Transaction: &txn, AuthAddress: holder}),
-			want:  ErrUnsupportedSigningFlow,
-			text:  "rotating account",
+			want:  ErrUnsupportedGroup,
+			text:  "signs only its own transactions",
 		},
 		{
 			name:  "unknown flow",

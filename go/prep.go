@@ -189,7 +189,7 @@ func (c *SignerClient) PreparePayment(ctx context.Context, algodClient *algod.Cl
 		return nil, fmt.Errorf("receiver is required")
 	}
 
-	suggested, err := algodClient.SuggestedParams().Do(ctx)
+	suggested, err := c.prepSuggestedParams(ctx, algodClient, params.Sender)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get suggested params: %w", err)
 	}
@@ -245,7 +245,7 @@ func (c *SignerClient) PrepareAsaTransfer(ctx context.Context, algodClient *algo
 		return nil, fmt.Errorf("asset_id is required")
 	}
 
-	suggested, err := algodClient.SuggestedParams().Do(ctx)
+	suggested, err := c.prepSuggestedParams(ctx, algodClient, params.Sender)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get suggested params: %w", err)
 	}
@@ -303,7 +303,7 @@ func (c *SignerClient) PrepareAsaOptIn(ctx context.Context, algodClient *algod.C
 		return nil, fmt.Errorf("asset_id is required")
 	}
 
-	suggested, err := algodClient.SuggestedParams().Do(ctx)
+	suggested, err := c.prepSuggestedParams(ctx, algodClient, params.Sender)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get suggested params: %w", err)
 	}
@@ -356,7 +356,7 @@ func (c *SignerClient) PrepareAsaOptOut(ctx context.Context, algodClient *algod.
 		return nil, fmt.Errorf("close_to must differ from sender")
 	}
 
-	suggested, err := algodClient.SuggestedParams().Do(ctx)
+	suggested, err := c.prepSuggestedParams(ctx, algodClient, params.Sender)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get suggested params: %w", err)
 	}
@@ -437,7 +437,7 @@ func (c *SignerClient) PrepareAccountClose(ctx context.Context, algodClient *alg
 		return nil, fmt.Errorf("close_to must differ from sender")
 	}
 
-	suggested, err := algodClient.SuggestedParams().Do(ctx)
+	suggested, err := c.prepSuggestedParams(ctx, algodClient, params.Sender)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get suggested params: %w", err)
 	}
@@ -484,7 +484,7 @@ func (c *SignerClient) PrepareRekey(ctx context.Context, algodClient *algod.Clie
 		return nil, fmt.Errorf("rekey_to is required")
 	}
 
-	suggested, err := algodClient.SuggestedParams().Do(ctx)
+	suggested, err := c.prepSuggestedParams(ctx, algodClient, params.Sender)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get suggested params: %w", err)
 	}
@@ -552,7 +552,7 @@ func (c *SignerClient) PrepareKeyReg(ctx context.Context, algodClient *algod.Cli
 		return nil, err
 	}
 
-	suggested, err := algodClient.SuggestedParams().Do(ctx)
+	suggested, err := c.prepSuggestedParams(ctx, algodClient, params.Sender)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get suggested params: %w", err)
 	}
@@ -628,7 +628,7 @@ func (c *SignerClient) PrepareAppDeploy(ctx context.Context, algodClient *algod.
 		return nil, err
 	}
 
-	suggested, err := algodClient.SuggestedParams().Do(ctx)
+	suggested, err := c.prepSuggestedParams(ctx, algodClient, params.Sender)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get suggested params: %w", err)
 	}
@@ -840,7 +840,7 @@ func (c *SignerClient) prepareAppCallWithInfo(ctx context.Context, algodClient *
 		return nil, fmt.Errorf("invalid on_completion: %d", params.OnCompletion)
 	}
 
-	suggested, err := algodClient.SuggestedParams().Do(ctx)
+	suggested, err := c.prepSuggestedParams(ctx, algodClient, params.Sender)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get suggested params: %w", err)
 	}

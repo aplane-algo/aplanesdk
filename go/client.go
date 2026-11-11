@@ -1159,6 +1159,29 @@ func (c *SignerClient) postSign(ctx context.Context, groupReq GroupSignRequest) 
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
+	var groupResp GroupSignResponse
+	if err := c.postApproval(ctx, "/sign", groupReq.RequestID, jsonBody, &groupResp); err != nil {
+		return nil, err
+	}
+
+	if groupResp.Error != "" {
+		return nil, &signBodyError{message: groupResp.Error}
+	}
+
+	if err := validateSignResponse(slots, groupResp.Signed, groupResp.Mutations, ceiling); err != nil {
+		return nil, fmt.Errorf("verify signer response: %w", err)
+	}
+
+	return &groupResp, nil
+}
+
+// postApproval posts an approval-bearing request and decodes its 200 answer
+// into out. It waits as long as the signer's approval wait allows, and
+// cancels the pending approval when the deadline or the caller's context ends
+// first. A non-200 answer comes back as an *APIError, a failed exchange as a
+// *signTransportError, and a 200 whose body could not be read as a
+// *signUnreadError.
+func (c *SignerClient) postApproval(ctx context.Context, path, requestID string, jsonBody []byte, out any) error {
 	c.discoverApprovalWait(ctx)
 
 	reqCtx, cancel := c.requestContext(ctx, c.signRequestTimeout())
@@ -1169,7 +1192,7 @@ func (c *SignerClient) postSign(ctx context.Context, groupReq GroupSignRequest) 
 		cancelOnce.Do(func() {
 			cancelCtx, cancel := context.WithTimeout(context.Background(), signCancelTimeout)
 			defer cancel()
-			_, _ = c.CancelSignRequestWithContext(cancelCtx, groupReq.RequestID)
+			_, _ = c.CancelSignRequestWithContext(cancelCtx, requestID)
 		})
 	}
 	// done is closed the moment the request returns so a deadline landing in
@@ -1190,10 +1213,10 @@ func (c *SignerClient) postSign(ctx context.Context, groupReq GroupSignRequest) 
 		}
 	}()
 
-	req, err := http.NewRequestWithContext(reqCtx, "POST", c.baseURL+"/sign", bytes.NewBuffer(jsonBody))
+	req, err := http.NewRequestWithContext(reqCtx, "POST", c.baseURL+path, bytes.NewBuffer(jsonBody))
 	if err != nil {
 		close(done)
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
@@ -1203,28 +1226,17 @@ func (c *SignerClient) postSign(ctx context.Context, groupReq GroupSignRequest) 
 		if reqCtx.Err() != nil {
 			sendCancel()
 		}
-		return nil, &signTransportError{err: err}
+		return &signTransportError{err: err}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, signerHTTPError(resp)
+		return signerHTTPError(resp)
 	}
-
-	var groupResp GroupSignResponse
-	if err := json.NewDecoder(resp.Body).Decode(&groupResp); err != nil {
-		return nil, &signUnreadError{err: err}
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return &signUnreadError{err: err}
 	}
-
-	if groupResp.Error != "" {
-		return nil, &signBodyError{message: groupResp.Error}
-	}
-
-	if err := validateSignResponse(slots, groupResp.Signed, groupResp.Mutations, ceiling); err != nil {
-		return nil, fmt.Errorf("verify signer response: %w", err)
-	}
-
-	return &groupResp, nil
+	return nil
 }
 
 // CancelSignRequest asks apsigner to cancel a pending manual approval request.
