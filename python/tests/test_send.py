@@ -1156,8 +1156,12 @@ class TestAddressSpellings:
         respelled = alternate_spelling(txn.sender)
         keys = [key(holder), key(respelled, SIGNING_FLOW_ROTATING1)]
         signer, node, client = make(fakes, SendSigner(keys))
-        with pytest.raises(SignerError, match=f"key 1 address {respelled} is not the canonical"):
+        with pytest.raises(SignerError) as refused:
             client.list_keys()
+        assert str(refused.value) == (
+            f'signer key list refused: key 1 address "{respelled}" is a non-canonical '
+            f"spelling of address {txn.sender}"
+        )
 
         group = PreparedGroup([PreparedTransaction(transaction=txn, auth_address=holder)])
         with pytest.raises(SignerError, match="signer key list refused") as excinfo:

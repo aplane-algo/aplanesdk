@@ -4833,8 +4833,8 @@ class SignerClient:
             canonical = _canonical_address(address)
             if canonical is not None and canonical != address:
                 raise SignerError(
-                    f"signer key list refused: key {index} address {address} is not the "
-                    f"canonical spelling of {canonical}"
+                    f'signer key list refused: key {index} address "{address}" is a '
+                    f"non-canonical spelling of address {canonical}"
                 )
         records = [
             KeyInfo(
