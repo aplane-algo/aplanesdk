@@ -406,11 +406,13 @@ refusal; a key generation answer that names no address is refused too.
 The three SDKs' JSON readers differ in known ways that a real signer never
 reaches:
 
-- Go matches keys case-insensitively, so of two keys that differ only in case
-  (`signed` and `Signed`) the later one wins where TypeScript and Python read
-  only the exact name.
+- Go matches answer field names case-insensitively, so of two fields whose
+  names differ only in case (`signed` and `Signed`) the later one wins where
+  TypeScript and Python read only the exact name. This holds for the `/keys`
+  records cosigner discovery reads too: Go reads `IS_WITNESS_KEY` as
+  `is_witness_key`.
 - Go refuses `-0` for an unsigned field where the others read it as 0.
-- Of a key given twice, the later value is read, except that a later `null`
+- Of a field given twice, the later value is read, except that a later `null`
   leaves Go's earlier string, number or boolean in place (a list, object or
   pointer it does empty); the others read that `null` as zero.
 - A body that starts with a UTF-8 byte order mark is readable in TypeScript
