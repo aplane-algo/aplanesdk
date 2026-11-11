@@ -220,15 +220,89 @@ describe("group ALGO balance", () => {
     );
   });
 
-  it("checks a sender that has only an asset transfer", async () => {
+  it("checks a sender that has only asset transfers", async () => {
     holdingBoth();
     const otherTransfer = { sender: receiver, receiver: sender, assetId: 1001, amount: 1 };
-    await sweep(2_000_000, { asaTransfers: [otherTransfer], payments: [payment] }, 101_000);
+    const both = [otherTransfer, otherTransfer];
+    await sweep(2_000_000, { asaTransfers: both, payments: [payment] }, 102_000);
     await assert.rejects(
-      sweep(2_000_000, { asaTransfers: [otherTransfer], payments: [payment] }, 100_999),
+      sweep(2_000_000, { asaTransfers: both, payments: [payment] }, 101_999),
       new RegExp(`group insufficient funds for ${receiver}`),
     );
   });
+
+  // An asset transfer's own check compares its fee with the sender's
+  // spendable ALGO, so a single transfer and a group of one agree.
+  it("checks an asset transfer's fee in the transfer's own check", async () => {
+    holdingBoth();
+    const single = (balance: number) =>
+      new SignerClient("http://localhost:11270").prepareAsaTransfer(
+        algodWith(accounts(balance)), transfer,
+      );
+    const group = (balance: number) =>
+      new SignerClient("http://localhost:11270").prepareAsaTransferGroup(
+        algodWith(accounts(balance)), [transfer],
+      );
+    const prepared = await single(2_000_000);
+    // The two checks, and the data all three SDKs record.
+    assert.deepEqual(prepared.checks?.map((check) => check.name), ["asa_transfer", "spendable_algo"]);
+    assert.deepEqual(prepared.checks?.[0].data, { assetId: 1001, amount: 5, balance: 25n, fee: 1000n });
+    assert.deepEqual(prepared.checks?.[1].data, { available: 1_900_000n });
+
+    // Exactly the fee above the 100,000 minimum is enough.
+    await single(101_000);
+    await group(101_000);
+    // One microAlgo short: the single helper and both group helpers refuse
+    // with the transfer's own message.
+    const message = /insufficient funds for asset transfer fee: available 999, fee 1000/;
+    await assert.rejects(single(100_999), message);
+    await assert.rejects(group(100_999), message);
+    await assert.rejects(sweep(100_999, { asaTransfers: [transfer] }), message);
+    // An account below its minimum has nothing to spend, not a negative amount.
+    await assert.rejects(single(50_000), /available 0, fee 1000/);
+  });
+
+  // The group check's balance comes from the spendable_algo check and nowhere
+  // else. A position without it, or with a value that is not a whole number,
+  // is refused, not passed, even beside a position of the same sender that
+  // has one.
+  const tampered: Array<[string, () => any[], RegExp]> = [
+    ["no check", () => [], /no ALGO balance on record/],
+    [
+      "available under another name",
+      () => [{ name: "payment_balance", status: "ok", data: { available: 5000n } }],
+      /no ALGO balance on record/,
+    ],
+    ["no available amount", () => [{ name: "spendable_algo", status: "ok", data: { balance: 5000n } }], /has no available amount/],
+    ["no data", () => [{ name: "spendable_algo", status: "ok" }], /has no available amount/],
+    ["a null amount", () => [{ name: "spendable_algo", status: "ok", data: { available: null } }], /available amount must be/],
+    ["a string amount", () => [{ name: "spendable_algo", status: "ok", data: { available: "5000" } }], /available amount must be/],
+    ["a fractional amount", () => [{ name: "spendable_algo", status: "ok", data: { available: 5000.5 } }], /available amount must be/],
+    ["a negative amount", () => [{ name: "spendable_algo", status: "ok", data: { available: -1n } }], /available amount must be/],
+  ];
+  for (const [name, change, message] of tampered) {
+    it(`refuses a group position with ${name} for its spendable ALGO`, async () => {
+      holdingBoth();
+      const client = new SignerClient("http://localhost:11270");
+      const real = client.prepareAsaTransfer.bind(client);
+      let calls = 0;
+      // The second position's checks are replaced; the first keeps its own.
+      (client as any).prepareAsaTransfer = async (algod: any, params: any) => {
+        const prepared = await real(algod, params);
+        const own = (prepared.checks || []).filter((check) => check.name !== "spendable_algo");
+        return ++calls === 2 ? { ...prepared, checks: [...own, ...change()] } : prepared;
+      };
+      await assert.rejects(
+        client.prepareAsaTransferGroup(algodWith(accounts(2_000_000)), [transfer, transfer]),
+        (error: unknown) => {
+          assert.ok(error instanceof sdk.SignerError);
+          assert.match(error.message, /group transaction 1, sender /);
+          assert.match(error.message, message);
+          return true;
+        },
+      );
+    });
+  }
 
   it("makes the same check in the ASA transfer group helper", async () => {
     holdingBoth();

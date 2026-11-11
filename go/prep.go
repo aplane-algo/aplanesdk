@@ -272,7 +272,7 @@ func (c *SignerClient) PrepareAsaTransfer(ctx context.Context, algodClient *algo
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ASA transfer transaction: %w", err)
 	}
-	checks, err := asaTransferChecks(senderAcct, receiverAcct, params.AssetID, params.Amount)
+	checks, err := asaTransferChecks(senderAcct, receiverAcct, params.AssetID, params.Amount, uint64(txn.Fee))
 	if err != nil {
 		return nil, err
 	}
@@ -919,6 +919,39 @@ func spendableBalance(account models.Account) uint64 {
 	return 0
 }
 
+// spendableAlgoCheckName names the check that records what a position's sender
+// can spend in ALGO. A group's ALGO check reads it by this name and no other.
+const spendableAlgoCheckName = "spendable_algo"
+
+func spendableAlgoCheck(sender models.Account) PreparedCheck {
+	return PreparedCheck{
+		Name:   spendableAlgoCheckName,
+		Status: "ok",
+		Data:   map[string]any{"available": spendableBalance(sender)},
+	}
+}
+
+// recordedSpendableAlgo reads a position's spendable_algo check. A position
+// without one, or with a value that is not a uint64, is an error: the group
+// check never guesses a balance and never skips a sender.
+func recordedSpendableAlgo(item PreparedTransaction) (uint64, error) {
+	for _, check := range item.Checks {
+		if check.Name != spendableAlgoCheckName {
+			continue
+		}
+		value, present := check.Data["available"]
+		if !present {
+			return 0, fmt.Errorf("the %s check has no available amount", spendableAlgoCheckName)
+		}
+		available, ok := value.(uint64)
+		if !ok {
+			return 0, fmt.Errorf("the %s check's available amount must be a uint64, not %T", spendableAlgoCheckName, value)
+		}
+		return available, nil
+	}
+	return 0, fmt.Errorf("no ALGO balance on record (a %s check)", spendableAlgoCheckName)
+}
+
 func paymentChecks(sender models.Account, amount uint64, fee uint64) ([]PreparedCheck, error) {
 	required, ok := addChecked(amount, fee)
 	if !ok {
@@ -938,10 +971,10 @@ func paymentChecks(sender models.Account, amount uint64, fee uint64) ([]Prepared
 			"balance":     sender.Amount,
 			"available":   available,
 		},
-	}}, nil
+	}, spendableAlgoCheck(sender)}, nil
 }
 
-func asaTransferChecks(sender models.Account, receiver models.Account, assetID uint64, amount uint64) ([]PreparedCheck, error) {
+func asaTransferChecks(sender models.Account, receiver models.Account, assetID uint64, amount uint64, fee uint64) ([]PreparedCheck, error) {
 	senderHolding, ok := accountAssetHolding(sender, assetID)
 	if !ok {
 		return nil, fmt.Errorf("sender is not opted into asset %d", assetID)
@@ -952,6 +985,10 @@ func asaTransferChecks(sender models.Account, receiver models.Account, assetID u
 	if _, ok := accountAssetHolding(receiver, assetID); !ok {
 		return nil, fmt.Errorf("receiver is not opted into asset %d", assetID)
 	}
+	// An asset transfer moves no ALGO but pays its fee from the sender's.
+	if available := spendableBalance(sender); available < fee {
+		return nil, fmt.Errorf("insufficient funds for asset transfer fee: available %d, fee %d", available, fee)
+	}
 	return []PreparedCheck{{
 		Name:   "asa_transfer",
 		Status: "ok",
@@ -959,10 +996,9 @@ func asaTransferChecks(sender models.Account, receiver models.Account, assetID u
 			"asset_id": assetID,
 			"amount":   amount,
 			"balance":  senderHolding.Amount,
-			// What the sender can spend in ALGO, for the fee.
-			"available": spendableBalance(sender),
+			"fee":      fee,
 		},
-	}}, nil
+	}, spendableAlgoCheck(sender)}, nil
 }
 
 func asaOptInChecks(sender models.Account, assetID uint64, fee uint64) ([]PreparedCheck, error) {
@@ -1189,15 +1225,15 @@ func addChecked(total, value uint64) (uint64, bool) {
 // across the group. A sender's total is the ALGO it sends plus the fee of
 // every position it sends, whatever the position's kind: an asset transfer
 // moves no ALGO but still pays a fee. The total is checked against the
-// sender's spendable ALGO, which each position's own check records.
+// sender's spendable ALGO, which each position records in its spendable_algo
+// check. A position without that record is refused.
 func groupAlgoBalanceCheck(items []PreparedTransaction) (PreparedCheck, error) {
 	type totals struct {
-		available    uint64
-		hasAvailable bool
-		required     uint64
+		available uint64
+		required  uint64
 	}
 	bySender := map[string]*totals{}
-	for _, item := range items {
+	for index, item := range items {
 		if item.Transaction == nil {
 			return PreparedCheck{}, fmt.Errorf("group transaction is required")
 		}
@@ -1218,16 +1254,13 @@ func groupAlgoBalanceCheck(items []PreparedTransaction) (PreparedCheck, error) {
 		if !ok {
 			return PreparedCheck{}, fmt.Errorf("group total for %s overflows uint64", sender)
 		}
-		for _, check := range item.Checks {
-			if available, ok := check.Data["available"].(uint64); ok {
-				total.available, total.hasAvailable = available, true
-			}
+		available, err := recordedSpendableAlgo(item)
+		if err != nil {
+			return PreparedCheck{}, fmt.Errorf("group transaction %d, sender %s: %w", index, sender, err)
 		}
+		total.available = available
 	}
 	for sender, total := range bySender {
-		if !total.hasAvailable {
-			return PreparedCheck{}, fmt.Errorf("group has no ALGO balance on record for sender %s", sender)
-		}
 		if total.available < total.required {
 			return PreparedCheck{}, fmt.Errorf("group insufficient funds for %s: available %d, required %d", sender, total.available, total.required)
 		}

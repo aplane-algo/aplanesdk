@@ -113,7 +113,7 @@ func TestPreparePayment(t *testing.T) {
 	if uint64(prepared.Transaction.Fee) != 1000 {
 		t.Fatalf("fee = %d, want 1000", prepared.Transaction.Fee)
 	}
-	if len(prepared.Checks) != 1 || prepared.Checks[0].Name != "payment_balance" {
+	if len(prepared.Checks) != 2 || prepared.Checks[0].Name != "payment_balance" || prepared.Checks[1].Name != spendableAlgoCheckName {
 		t.Fatalf("checks mismatch: %#v", prepared.Checks)
 	}
 }

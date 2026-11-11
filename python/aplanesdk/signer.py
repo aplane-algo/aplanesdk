@@ -2933,33 +2933,68 @@ def _account_incentive_eligible(account_info: Any) -> bool:
     )
 
 
+# The check that records what a position's sender can spend in ALGO. A
+# group's ALGO check reads it by this name and no other.
+_SPENDABLE_ALGO_CHECK = "spendable_algo"
+
+
+def _spendable_algo(account_info: Any) -> int:
+    return max(_account_amount(account_info) - _account_min_balance(account_info), 0)
+
+
+def _spendable_algo_check(account_info: Any) -> PreparedCheck:
+    return PreparedCheck(
+        name=_SPENDABLE_ALGO_CHECK,
+        status="ok",
+        data={"available": _spendable_algo(account_info)},
+    )
+
+
+def _recorded_spendable_algo(item: PreparedTransaction) -> int:
+    """Read a position's spendable_algo check.
+
+    A position without one, or with a value that is not a non-negative
+    integer, is an error: the group check never guesses a balance and never
+    skips a sender.
+    """
+    for check in item.checks or []:
+        if check.name != _SPENDABLE_ALGO_CHECK:
+            continue
+        if not isinstance(check.data, dict) or "available" not in check.data:
+            raise SignerError(f"the {_SPENDABLE_ALGO_CHECK} check has no available amount")
+        return _require_uint(
+            check.data["available"],
+            f"the {_SPENDABLE_ALGO_CHECK} check's available amount",
+            error=SignerError,
+        )
+    raise SignerError(f"no ALGO balance on record (a {_SPENDABLE_ALGO_CHECK} check)")
+
+
 def _validate_group_algo_balance(transactions: List[PreparedTransaction]) -> PreparedCheck:
     """Check each sender can cover everything it pays across the group.
 
     A sender's total is the ALGO it sends plus the fee of every position it
     sends, whatever the position's kind: an asset transfer moves no ALGO but
     still pays a fee. The total is checked against the sender's spendable
-    ALGO, which each position's own check records.
+    ALGO, which each position records in its spendable_algo check. A position
+    without that record is refused.
     """
-    totals: Dict[str, Dict[str, Optional[int]]] = {}
-    for item in transactions:
+    totals: Dict[str, Dict[str, int]] = {}
+    for index, item in enumerate(transactions):
         if item.transaction is None:
             raise ValueError("group transaction is required")
         sender = item.transaction.sender
-        total = totals.setdefault(sender, {"available": None, "required": 0})
+        total = totals.setdefault(sender, {"available": 0, "required": 0})
         amount = 0
         if isinstance(item.transaction, transaction.PaymentTxn):
             amount = int(item.transaction.amt)
-        total["required"] = (
-            cast(int, total["required"]) + amount + int(getattr(item.transaction, "fee", 0))
-        )
-        for check in item.checks or []:
-            if check.data and check.data.get("available") is not None:
-                total["available"] = int(check.data["available"])
+        total["required"] += amount + int(getattr(item.transaction, "fee", 0))
+        try:
+            total["available"] = _recorded_spendable_algo(item)
+        except SignerError as e:
+            raise SignerError(f"group transaction {index}, sender {sender}: {e}") from None
     for sender, total in totals.items():
-        if total["available"] is None:
-            raise SignerError(f"group has no ALGO balance on record for sender {sender}")
-        if total["available"] < cast(int, total["required"]):
+        if total["available"] < total["required"]:
             raise SignerError(
                 f"group insufficient funds for {sender}: "
                 f"available {total['available']}, required {total['required']}"
@@ -3991,7 +4026,8 @@ class SignerClient:
                         "fee": txn_fee,
                         "available": available,
                     },
-                )
+                ),
+                _spendable_algo_check(sender_info),
             ],
         )
 
@@ -4047,6 +4083,14 @@ class SignerClient:
             note=note,
         )
 
+        # An asset transfer moves no ALGO but pays its fee from the sender's.
+        txn_fee = int(txn.fee)
+        available = _spendable_algo(sender_info)
+        if available < txn_fee:
+            raise SignerError(
+                f"insufficient funds for asset transfer fee: available {available}, fee {txn_fee}"
+            )
+
         resolved = self.resolve_auth_address(sender, lambda _: sender_info)
         return PreparedTransaction(
             transaction=txn,
@@ -4059,12 +4103,10 @@ class SignerClient:
                         "asset_id": asset_id,
                         "amount": amount,
                         "balance": sender_amount,
-                        # What the sender can spend in ALGO, for the fee.
-                        "available": _account_amount(sender_info)
-                        - _account_min_balance(sender_info),
-                        "fee": int(txn.fee),
+                        "fee": txn_fee,
                     },
-                )
+                ),
+                _spendable_algo_check(sender_info),
             ],
         )
 

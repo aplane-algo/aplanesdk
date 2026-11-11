@@ -14,6 +14,8 @@ import aplanesdk
 from aplanesdk import PreparedGroup, PreparedTransaction, SignerClient, SignerError
 from aplanesdk.signer import (
     KeyInfo,
+    PreparedCheck,
+    _validate_group_algo_balance,
     KeyNotFoundError,
     _parse_lsig_resource_usage,
     _require_uint,
@@ -240,17 +242,94 @@ def test_group_checks_every_sender_against_everything_it_pays():
     with pytest.raises(SignerError, match="available 1999, required 2000"):
         sweep(101_999, asa_transfers=[transfer, transfer], payments=[])
 
-    # A sender with only an asset transfer is checked beside one that pays.
+    # A sender with only asset transfers is checked beside one that pays.
     other_transfer = {"sender": RECEIVER, "receiver": SENDER, "asset_id": 1001, "amount": 1}
-    sweep(2_000_000, asa_transfers=[other_transfer], payments=[payment], other_balance=101_000)
+    both = [other_transfer, other_transfer]
+    sweep(2_000_000, asa_transfers=both, payments=[payment], other_balance=102_000)
     with pytest.raises(SignerError, match=f"group insufficient funds for {RECEIVER}"):
-        sweep(2_000_000, asa_transfers=[other_transfer], payments=[payment], other_balance=100_999)
+        sweep(2_000_000, asa_transfers=both, payments=[payment], other_balance=101_999)
 
     # The ASA transfer group helper makes the same check.
     client = make_client()
     with _signer_for_both(client):
         with pytest.raises(SignerError, match="available 1999, required 2000"):
             client.prepare_asa_transfer_group(Algod(_sweep_accounts(101_999)), [transfer, transfer])
+
+
+def test_asa_transfer_checks_its_fee_against_spendable_algo():
+    """An asset transfer's own check compares its fee with the sender's spendable ALGO.
+
+    A single transfer and a group of one therefore agree.
+    """
+    transfer = {"sender": SENDER, "receiver": RECEIVER, "asset_id": 1001, "amount": 5}
+
+    def single(balance):
+        client = make_client()
+        with _signer_for_both(client):
+            return client.prepare_asa_transfer(Algod(_sweep_accounts(balance)), **transfer)
+
+    prepared = single(2_000_000)
+    # The two checks, and the data all three SDKs record.
+    assert [check.name for check in prepared.checks] == ["asa_transfer", "spendable_algo"]
+    assert prepared.checks[0].data == {"asset_id": 1001, "amount": 5, "balance": 25, "fee": 1000}
+    assert prepared.checks[1].data == {"available": 1_900_000}
+
+    # Exactly the fee above the 100,000 minimum is enough.
+    single(101_000)
+    client = make_client()
+    with _signer_for_both(client):
+        client.prepare_asa_transfer_group(Algod(_sweep_accounts(101_000)), [transfer])
+
+    # One microAlgo short: the single helper and both group helpers refuse
+    # with the transfer's own message.
+    message = "insufficient funds for asset transfer fee: available 999, fee 1000"
+    with pytest.raises(SignerError, match=message):
+        single(100_999)
+    client = make_client()
+    with _signer_for_both(client):
+        with pytest.raises(SignerError, match=message):
+            client.prepare_asa_transfer_group(Algod(_sweep_accounts(100_999)), [transfer])
+        with pytest.raises(SignerError, match=message):
+            client.prepare_sweep_group(Algod(_sweep_accounts(100_999)), asa_transfers=[transfer])
+    # An account below its minimum has nothing to spend, not a negative amount.
+    with pytest.raises(SignerError, match="available 0, fee 1000"):
+        single(50_000)
+
+
+def test_group_reads_spendable_algo_from_its_own_check():
+    """The group check's balance comes from the spendable_algo check and nowhere else.
+
+    A position without it, or with a value that is not an integer, is refused,
+    not passed, even beside a position of the same sender that has one.
+    """
+
+    def position(checks):
+        return PreparedTransaction(
+            transaction=fake_signer.payment(amount=1),
+            checks=checks,
+        )
+
+    def spendable(data):
+        return [PreparedCheck(name="spendable_algo", status="ok", data=data)]
+
+    good = position(spendable({"available": 5000}))
+    assert _validate_group_algo_balance([good, good]).data == {"sender_count": 1}
+    for checks, message in (
+        ([], "no ALGO balance on record"),
+        (
+            [PreparedCheck(name="payment_balance", status="ok", data={"available": 5000})],
+            "no ALGO balance on record",
+        ),
+        (spendable({"balance": 5000}), "has no available amount"),
+        (spendable(None), "has no available amount"),
+        (spendable({"available": None}), "available amount must be an integer, not NoneType"),
+        (spendable({"available": "5000"}), "available amount must be an integer, not str"),
+        (spendable({"available": 5000.0}), "available amount must be an integer, not float"),
+        (spendable({"available": True}), "available amount must be an integer, not bool"),
+        (spendable({"available": -1}), "available amount must not be negative"),
+    ):
+        with pytest.raises(SignerError, match=f"group transaction 1, sender .*: .*{message}"):
+            _validate_group_algo_balance([good, position(checks)])
 
 
 def test_lsig_resource_numbers_are_not_coerced():

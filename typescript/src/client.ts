@@ -1481,6 +1481,42 @@ function findSpendableKey(keys: KeyInfo[], address: string): KeyInfo | undefined
   ));
 }
 
+/**
+ * The check that records what a position's sender can spend in ALGO. A
+ * group's ALGO check reads it by this name and no other.
+ */
+const SPENDABLE_ALGO_CHECK = "spendable_algo";
+
+function spendableAlgo(accountInfo: AccountInfoResult | Record<string, any>): bigint {
+  const spendable = accountAmountBig(accountInfo) - accountMinBalanceBig(accountInfo);
+  return spendable > 0n ? spendable : 0n;
+}
+
+function spendableAlgoCheck(accountInfo: AccountInfoResult | Record<string, any>): PreparedCheck {
+  return {
+    name: SPENDABLE_ALGO_CHECK,
+    status: "ok",
+    data: { available: spendableAlgo(accountInfo) },
+  };
+}
+
+/**
+ * Read a position's spendable_algo check. A position without one, or with a
+ * value that is not a whole number, is an error: the group check never guesses
+ * a balance and never skips a sender.
+ */
+function recordedSpendableAlgo(item: PreparedTransaction): bigint {
+  const check = (item.checks || []).find((entry) => entry.name === SPENDABLE_ALGO_CHECK);
+  if (!check) {
+    throw new SignerError(`no ALGO balance on record (a ${SPENDABLE_ALGO_CHECK} check)`);
+  }
+  const data = check.data;
+  if (!data || typeof data !== "object" || !Object.prototype.hasOwnProperty.call(data, "available")) {
+    throw new SignerError(`the ${SPENDABLE_ALGO_CHECK} check has no available amount`);
+  }
+  return requireUint(data.available, `the ${SPENDABLE_ALGO_CHECK} check's available amount`);
+}
+
 function accountAmount(accountInfo: AccountInfoResult | Record<string, any>): number {
   if (!accountInfo || typeof accountInfo === "string") {
     return 0;
@@ -1872,30 +1908,29 @@ function validateKeyregParams(params: KeyregPrepParams): void {
  * total is the ALGO it sends plus the fee of every position it sends,
  * whatever the position's kind: an asset transfer moves no ALGO but still
  * pays a fee. The total is checked against the sender's spendable ALGO, which
- * each position's own check records.
+ * each position records in its spendable_algo check. A position without that
+ * record is refused.
  */
 function validateGroupAlgoBalance(transactions: PreparedTransaction[]): PreparedCheck {
-  const totals = new Map<string, { available?: bigint; required: bigint }>();
-  for (const item of transactions) {
+  const totals = new Map<string, { available: bigint; required: bigint }>();
+  transactions.forEach((item, index) => {
     if (!item.transaction) {
       throw new SignerError("group transaction is required");
     }
     const txn = item.transaction as any;
     const sender = txn.sender.toString();
-    const total = totals.get(sender) || { required: 0n };
+    const total = totals.get(sender) || { available: 0n, required: 0n };
     total.required += BigInt(txn.payment?.amount || 0) + BigInt(txn.fee || 0);
-    for (const check of item.checks || []) {
-      const available = check.data?.available as number | bigint | undefined;
-      if (available !== undefined && available !== null) {
-        total.available = BigInt(available);
-      }
+    try {
+      total.available = recordedSpendableAlgo(item);
+    } catch (error) {
+      throw new SignerError(
+        `group transaction ${index}, sender ${sender}: ${(error as Error).message}`,
+      );
     }
     totals.set(sender, total);
-  }
+  });
   for (const [sender, total] of totals) {
-    if (total.available === undefined) {
-      throw new SignerError(`group has no ALGO balance on record for sender ${sender}`);
-    }
     if (total.available < total.required) {
       throw new SignerError(
         `group insufficient funds for ${sender}: available ${total.available}, required ${total.required}`,
@@ -2701,7 +2736,7 @@ export class SignerClient {
           fee,
           available,
         },
-      }],
+      }, spendableAlgoCheck(senderInfo)],
     };
   }
 
@@ -2755,6 +2790,15 @@ export class SignerClient {
       suggestedParams,
     });
 
+    // An asset transfer moves no ALGO but pays its fee from the sender's.
+    const fee = BigInt((txn as any).fee ?? 0);
+    const available = spendableAlgo(senderInfo);
+    if (available < fee) {
+      throw new SignerError(
+        `insufficient funds for asset transfer fee: available ${available}, fee ${fee}`,
+      );
+    }
+
     const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
     return {
       transaction: txn,
@@ -2766,10 +2810,9 @@ export class SignerClient {
           assetId: params.assetId,
           amount: params.amount,
           balance: senderAmount,
-          // What the sender can spend in ALGO, for the fee.
-          available: accountAmountBig(senderInfo) - accountMinBalanceBig(senderInfo),
+          fee,
         },
-      }],
+      }, spendableAlgoCheck(senderInfo)],
     };
   }
 

@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"net/http"
 	"os"
@@ -116,7 +117,7 @@ func TestGroupBalanceSumsDoNotWrap(t *testing.T) {
 		txn.Amount = types.MicroAlgos(amount)
 		return PreparedTransaction{
 			Transaction: &txn,
-			Checks:      []PreparedCheck{{Name: "payment_balance", Data: map[string]any{"available": uint64(5000)}}},
+			Checks:      []PreparedCheck{{Name: spendableAlgoCheckName, Data: map[string]any{"available": uint64(5000)}}},
 		}
 	}
 	// Two amounts that wrap to a small total, and a fee that wraps it.
@@ -135,11 +136,28 @@ func TestGroupBalanceSumsDoNotWrap(t *testing.T) {
 		!strings.Contains(err.Error(), "available 5000, required 5001") {
 		t.Fatalf("groupAlgoBalanceCheck() one over: error = %v", err)
 	}
-	// A position with no balance on record is refused, not passed.
-	bare := payment(1, 1)
-	bare.Checks = nil
-	if _, err := groupAlgoBalanceCheck([]PreparedTransaction{bare}); err == nil || !strings.Contains(err.Error(), "no ALGO balance on record") {
-		t.Fatalf("groupAlgoBalanceCheck() with no balance: error = %v", err)
+	// The spendable balance comes from the spendable_algo check and nowhere
+	// else. A position without it, or with a value of another type, is
+	// refused, not passed, even beside a position of the same sender that has
+	// one.
+	for name, tc := range map[string]struct {
+		checks []PreparedCheck
+		want   string
+	}{
+		"no checks":                    {nil, "no ALGO balance on record"},
+		"available under another name": {[]PreparedCheck{{Name: "payment_balance", Data: map[string]any{"available": uint64(5000)}}}, "no ALGO balance on record"},
+		"no available amount":          {[]PreparedCheck{{Name: spendableAlgoCheckName, Data: map[string]any{"balance": uint64(5000)}}}, "has no available amount"},
+		"nil data":                     {[]PreparedCheck{{Name: spendableAlgoCheckName}}, "has no available amount"},
+		"an int":                       {[]PreparedCheck{{Name: spendableAlgoCheckName, Data: map[string]any{"available": 5000}}}, "must be a uint64, not int"},
+		"a string":                     {[]PreparedCheck{{Name: spendableAlgoCheckName, Data: map[string]any{"available": "5000"}}}, "must be a uint64, not string"},
+		"a float":                      {[]PreparedCheck{{Name: spendableAlgoCheckName, Data: map[string]any{"available": 5000.0}}}, "must be a uint64, not float64"},
+	} {
+		bare := payment(1, 1)
+		bare.Checks = tc.checks
+		_, err := groupAlgoBalanceCheck([]PreparedTransaction{payment(1, 1), bare})
+		if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "group transaction 1, sender ") {
+			t.Fatalf("groupAlgoBalanceCheck() with %s: error = %v, want %q", name, err, tc.want)
+		}
 	}
 	if sum, ok := addChecked(math.MaxUint64, 1); ok {
 		t.Fatalf("addChecked() = %d, true for a sum that wraps", sum)
@@ -357,6 +375,62 @@ func TestGroupChecksEverySenderAgainstEverythingItPays(t *testing.T) {
 	if _, err := short.PrepareAsaTransferGroup(ctx, algodClient, transfers); err == nil ||
 		!strings.Contains(err.Error(), "group insufficient funds for "+sender) {
 		t.Fatalf("PrepareAsaTransferGroup() one microAlgo short: error = %v", err)
+	}
+}
+
+// An asset transfer moves no ALGO but pays a fee, and the transfer's own check
+// compares that fee with what the sender can spend. A single transfer and a
+// group of one therefore agree.
+func TestAsaTransferChecksItsFeeAgainstSpendableAlgo(t *testing.T) {
+	sender := sdkTestAddress(1)
+	receiver := sdkTestAddress(2)
+	ctx := context.Background()
+	transfer := AsaTransferPrepParams{Sender: sender, Receiver: receiver, AssetID: 1001, Amount: 5}
+
+	rich, algodClient, cleanup := newPrepTestClients(t, sender, receiver, 2_000_000, 25, true)
+	prepared, err := rich.PrepareAsaTransfer(ctx, algodClient, transfer)
+	cleanup()
+	if err != nil {
+		t.Fatalf("PrepareAsaTransfer() error = %v", err)
+	}
+	fee := uint64(prepared.Transaction.Fee)
+	// The two checks, and the data all three SDKs record.
+	if len(prepared.Checks) != 2 || prepared.Checks[0].Name != "asa_transfer" || prepared.Checks[1].Name != spendableAlgoCheckName {
+		t.Fatalf("checks = %#v, want asa_transfer then %s", prepared.Checks, spendableAlgoCheckName)
+	}
+	if got := prepared.Checks[0].Data["fee"]; got != fee {
+		t.Fatalf("asa_transfer fee = %#v, want %d", got, fee)
+	}
+	if _, has := prepared.Checks[0].Data["available"]; has {
+		t.Fatal("asa_transfer still records an available amount; spendable_algo is its one source")
+	}
+	if got := prepared.Checks[1].Data["available"]; got != uint64(1_900_000) {
+		t.Fatalf("spendable_algo available = %#v, want 1900000", got)
+	}
+
+	// The mock's minimum balance is 100,000. Exactly the fee is enough.
+	exact, algodClient, cleanup := newPrepTestClients(t, sender, receiver, 100_000+fee, 25, true)
+	if _, err := exact.PrepareAsaTransfer(ctx, algodClient, transfer); err != nil {
+		t.Fatalf("PrepareAsaTransfer() with exactly the fee: %v", err)
+	}
+	if _, err := exact.PrepareAsaTransferGroup(ctx, algodClient, []AsaTransferPrepParams{transfer}); err != nil {
+		t.Fatalf("PrepareAsaTransferGroup() with exactly the fee: %v", err)
+	}
+	cleanup()
+
+	// One microAlgo short: the single helper and both group helpers refuse
+	// with the transfer's own message.
+	short, algodClient, cleanup := newPrepTestClients(t, sender, receiver, 100_000+fee-1, 25, true)
+	defer cleanup()
+	want := fmt.Sprintf("insufficient funds for asset transfer fee: available %d, fee %d", fee-1, fee)
+	if _, err := short.PrepareAsaTransfer(ctx, algodClient, transfer); err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("PrepareAsaTransfer() one microAlgo short: error = %v, want %q", err, want)
+	}
+	if _, err := short.PrepareAsaTransferGroup(ctx, algodClient, []AsaTransferPrepParams{transfer}); err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("PrepareAsaTransferGroup() one microAlgo short: error = %v, want %q", err, want)
+	}
+	if _, err := short.PrepareSweepGroup(ctx, algodClient, SweepPrepParams{AsaTransfers: []AsaTransferPrepParams{transfer}}); err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("PrepareSweepGroup() one microAlgo short: error = %v, want %q", err, want)
 	}
 }
 
