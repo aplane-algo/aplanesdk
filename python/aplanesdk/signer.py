@@ -920,6 +920,19 @@ _DELETE_KEY_RESPONSE_SHAPE: Dict[str, Any] = {
 }
 
 
+_JSON_HEADERS = {"Content-Type": "application/json"}
+
+
+def _encode_request_body(body: Dict[str, Any], what: str) -> bytes:
+    """The bytes an approval-bearing request is posted with, encoded before
+    anything is sent. A body that cannot be encoded was provably never
+    posted, so it is a plain error: nothing to cancel, nothing unknown."""
+    try:
+        return json.dumps(body, allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError, RecursionError) as e:
+        raise ValueError(f"failed to encode {what}: {e}") from e
+
+
 def _read_answer(resp: requests.Response, shape: Dict[str, Any], what: str) -> Dict[str, Any]:
     """Read the 200 answer of a request that releases no signature, by the
     rule every answer is read by (see _approval_answer), as its shape's
@@ -5999,6 +6012,7 @@ class SignerClient:
         except ValueError as e:
             raise ValueError(f"invalid component request: {e}") from e
         kind = request_body["targets"][0]["kind"]
+        encoded = _encode_request_body(request_body, "component request")
         timeout = self._timeout_for(COMPONENT_SIGN_TIMEOUT)
         if kind != COMPONENT_TARGET_KIND_COSIGNER:
             self._discover_approval_wait()
@@ -6006,7 +6020,8 @@ class SignerClient:
         try:
             resp = self.session.post(
                 f"{self.base_url}/sign/component",
-                json=request_body,
+                data=encoded,
+                headers=_JSON_HEADERS,
                 timeout=timeout,
             )
         except requests.RequestException as e:
@@ -6084,11 +6099,13 @@ class SignerClient:
             _validate_assembly_request(request_body)
         except ValueError as e:
             raise ValueError(f"invalid assembly request: {e}") from e
+        encoded = _encode_request_body(request_body, "assembly request")
 
         try:
             resp = self.session.post(
                 f"{self.base_url}/sign/assemble",
-                json=request_body,
+                data=encoded,
+                headers=_JSON_HEADERS,
                 timeout=self._timeout_for(COSIGNED_ASSEMBLY_TIMEOUT),
             )
         except requests.RequestException as e:
@@ -6148,12 +6165,17 @@ class SignerClient:
         It waits as long as the signer's approval wait allows. When the
         exchange fails, timing out included, it sends a best-effort
         /sign/cancel for request_id and raises _AnswerLostError: the signer
-        may have acted on the request.
+        may have acted on the request. A body that cannot be encoded is a
+        plain ValueError, raised before anything is sent.
         """
+        encoded = _encode_request_body(body, "sign request")
         self._discover_approval_wait()
         try:
             return self.session.post(
-                f"{self.base_url}{path}", json=body, timeout=self._sign_request_timeout()
+                f"{self.base_url}{path}",
+                data=encoded,
+                headers=_JSON_HEADERS,
+                timeout=self._sign_request_timeout(),
             )
         except requests.RequestException as e:
             self._best_effort_cancel_sign_request(request_id)

@@ -1218,7 +1218,7 @@ def test_an_interrupt_during_a_rotating_send_carries_the_prepared_group(fakes):
 
     def post(url, **kwargs):
         if url.endswith("/sign/rotating/sign") and not interrupted:
-            interrupted.append(kwargs["json"]["request_id"])
+            interrupted.append(fake_signer.posted_json(kwargs)["request_id"])
             raise KeyboardInterrupt
         return real_post(url, **kwargs)
 

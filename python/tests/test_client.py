@@ -916,7 +916,7 @@ class TestSpecializedLowLevelEndpoints:
 
         assert result.components[0]["signature"] == "aabb"
         assert mock_post.call_args.args[0] == "http://localhost:11270/sign/component"
-        body = mock_post.call_args.kwargs["json"]
+        body = fake_signer.posted_json(mock_post.call_args.kwargs)
         assert body["request_id"].startswith("sdk-")
         assert body["targets"][0]["kind"] == "cosigner"
         assert body["targets"][0]["component_key"] == "COMPONENT"
@@ -1046,7 +1046,7 @@ class TestSpecializedLowLevelEndpoints:
 
         assert result.signed_group == ["ccdd"]
         assert mock_post.call_args.args[0] == "http://localhost:11270/sign/assemble"
-        body = mock_post.call_args.kwargs["json"]
+        body = fake_signer.posted_json(mock_post.call_args.kwargs)
         assert body["request_id"].startswith("sdk-")
         assert body["targets"][0]["kind"] == "bounded-cosigner"
         assert body["targets"][0]["auth_address"] == "BOUNDED"
@@ -2238,7 +2238,7 @@ class TestClientSideSignedSimulation:
             )
 
         assert mock_post.call_args.args[0] == "http://localhost:11270/sign"
-        assert mock_post.call_args.kwargs["json"]["request_id"] == "simulate-id"
+        assert fake_signer.posted_json(mock_post.call_args.kwargs)["request_id"] == "simulate-id"
         assert algod_client.simulate_transactions.call_count == 1
         simulate_request = algod_client.simulate_transactions.call_args.args[0]
         assert simulate_request.allow_empty_signatures is False
@@ -2475,7 +2475,7 @@ class TestSigningErrors:
                 client.sign_transaction(self._make_mock_txn())
 
         assert mock_post.call_args_list[0].args[0] == "http://localhost:11270/sign"
-        assert mock_post.call_args_list[0].kwargs["json"]["request_id"] == "sdk-test"
+        assert fake_signer.posted_json(mock_post.call_args_list[0].kwargs)["request_id"] == "sdk-test"
         assert mock_post.call_args_list[1].args[0] == "http://localhost:11270/sign/cancel"
         assert mock_post.call_args_list[1].kwargs["json"] == {"request_id": "sdk-test"}
 
@@ -2485,7 +2485,7 @@ class TestSigningErrors:
              patch.object(client.session, "post", side_effect=fake_signer.signer_post()) as mock_post:
             client.sign_transaction(self._make_mock_txn(), request_id="app-owned-id")
 
-        assert mock_post.call_args.kwargs["json"]["request_id"] == "app-owned-id"
+        assert fake_signer.posted_json(mock_post.call_args.kwargs)["request_id"] == "app-owned-id"
 
     def test_sign_transaction_validates_caller_request_id(self):
         client = make_client()
@@ -2531,7 +2531,7 @@ class TestSignRequests:
 
         assert result.signed == [fake_signer.signed_hex(txn)]
         assert mock_post.call_args.args[0] == "http://localhost:11270/sign"
-        assert mock_post.call_args.kwargs["json"] == {
+        assert fake_signer.posted_json(mock_post.call_args.kwargs) == {
             "request_id": "raw-requests-id",
             "requests": [entry],
         }
@@ -2661,7 +2661,7 @@ class TestBuildSignRequests:
             client.sign_transaction(txn, auth_address=fake_signer.account(50))
 
         call_kwargs = mock_post.call_args
-        body = call_kwargs[1]["json"]
+        body = fake_signer.posted_json(call_kwargs[1])
         assert body["request_id"]
         assert len(body["requests"]) == 1
         assert body["requests"][0]["auth_address"] == fake_signer.account(50)
@@ -2675,7 +2675,7 @@ class TestBuildSignRequests:
             client.sign_transaction(self._make_mock_txn(sender=sender))
 
         call_kwargs = mock_post.call_args
-        body = call_kwargs[1]["json"]
+        body = fake_signer.posted_json(call_kwargs[1])
         assert body["requests"][0]["auth_address"] == sender
 
     def test_includes_lsig_args_as_hex(self):
@@ -2690,7 +2690,7 @@ class TestBuildSignRequests:
             )
 
         call_kwargs = mock_post.call_args
-        body = call_kwargs[1]["json"]
+        body = fake_signer.posted_json(call_kwargs[1])
         assert body["requests"][0]["lsig_args"] is not None
         assert body["requests"][0]["lsig_args"]["preimage"] == "736563726574"
 
@@ -2702,7 +2702,7 @@ class TestBuildSignRequests:
              patch.object(client.session, "post", side_effect=fake_signer.signer_post()) as mock_post:
             client.sign_transaction(txn, auth_address=auth_address, lsig_args={"preimage": b"secret"})
 
-        request = mock_post.call_args[1]["json"]["requests"][0]
+        request = fake_signer.posted_json(mock_post.call_args[1])["requests"][0]
         assert request["auth_address"] == txn.sender
         assert request["lsig_args"] == {"preimage": "736563726574"}
 

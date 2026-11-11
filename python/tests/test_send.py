@@ -278,6 +278,78 @@ def test_send_prepared_requires_algod_before_signer(fakes):
     assert signer.paths == []
 
 
+class _Recorder:
+    """A signer that records the paths it is asked for and answers any of
+    them, so a test can tell what was posted."""
+
+    def __init__(self):
+        self.paths = []
+        self.http = HTTPFake(self.app)
+
+    def app(self, method, path, body):
+        self.paths.append(path)
+        if path == "/status":
+            return reply(200, status_body())
+        return reply(200, {"success": True, "state": "canceled"})
+
+
+class TestABodyThatCannotBeEncoded:
+    """A request whose body cannot be encoded was provably never posted: it
+    is a plain error, with no /sign/cancel and no unknown outcome."""
+
+    def test_a_send(self, fakes):
+        txn = fake_signer.payment(41, 42)
+        signer, node, client = make(fakes, SendSigner([ordinary_key(txn)]))
+        group = PreparedGroup(
+            [
+                PreparedTransaction(
+                    transaction=txn, auth_address=txn.sender, app_call_info={"m": float("nan")}
+                )
+            ]
+        )
+        with pytest.raises(ValueError, match="failed to encode sign request") as excinfo:
+            client.send_prepared(node.client, group)
+        assert not isinstance(excinfo.value, SignerError)
+        assert signer.count("/sign") == 0 and signer.count("/sign/cancel") == 0
+
+    def test_a_sign_request(self, fakes):
+        recorder = fakes(_Recorder())
+        client = signer_client(recorder.http.url)
+        entries = fake_signer.sign_entries(fake_signer.payment(41, 42))
+        entries[0]["app_call_info"] = {"method": float("inf")}
+        with pytest.raises(ValueError, match="failed to encode sign request"):
+            client.sign_requests(entries)
+        assert "/sign" not in recorder.paths and "/sign/cancel" not in recorder.paths
+
+    def test_a_component_request(self, fakes):
+        recorder = fakes(_Recorder())
+        client = signer_client(recorder.http.url)
+        target = {
+            "target_index": 0,
+            "kind": "bounded-base",
+            "auth_address": fake_signer.account(41),
+            "app_call_info": {"method": float("nan")},
+        }
+        with pytest.raises(ValueError, match="failed to encode component request"):
+            client.request_components({"group_bytes_hex": ["5458aa"], "targets": [target]})
+        assert "/sign/component" not in recorder.paths and "/sign/cancel" not in recorder.paths
+
+    def test_an_assembly_request(self, fakes):
+        recorder = fakes(_Recorder())
+        client = signer_client(recorder.http.url)
+        target = {
+            "target_index": 0,
+            "kind": "bounded-cosigner",
+            "auth_address": fake_signer.account(41),
+            "base_signatures": ["aa"],
+            "assembly_receipt": "bb",
+            "bounded_runtime_args": {"a": float("nan")},
+        }
+        with pytest.raises(ValueError, match="failed to encode assembly request"):
+            client.request_assemble({"group_bytes_hex": ["5458aa"], "targets": [target]})
+        assert recorder.paths == []
+
+
 class TestSendPreparedSignFailures:
     def test_no_answer_is_an_unknown_outcome(self, fakes):
         txn = fake_signer.payment(41, 42)
@@ -1081,7 +1153,7 @@ def test_an_interrupt_while_an_assembly_is_pending_names_it(fakes):
 
     def post(url, **kwargs):
         if url.endswith("/sign/assemble"):
-            assembled.append(kwargs["json"]["request_id"])
+            assembled.append(fake_signer.posted_json(kwargs)["request_id"])
             raise KeyboardInterrupt
         if url.endswith("/sign/cancel"):
             cancels.append(kwargs["json"]["request_id"])
