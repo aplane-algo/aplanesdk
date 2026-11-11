@@ -195,6 +195,8 @@ finally:
 This path:
 
 - resolves the client data dir,
+- refuses a `config.yaml` whose `network` is not in its `networks_allowed`,
+  when that list is set
 - validates `config.yaml` contains no obsolete routing,
 - loads and selects an endpoint from `endpoints.yaml`,
 - resolves SSH paths relative to the client data dir,
@@ -498,6 +500,14 @@ Important behavior:
 - `sign_transactions()` returns one base64 string containing the concatenated
   signed group
 - `sign_transactions_list()` returns one base64 string per slot
+- these simple sign calls return only the signed transactions; to read what
+  the signer changed (the fee it added, the group ID, appended dummies), call
+  `sign_requests()`, whose `mutations` is the mutation report, already checked
+  against the request
+- amounts and fees given to the `prepare_*` helpers are in microAlgos; an
+  asset amount is in the asset's base units, not adjusted for its decimals.
+  IDs, amounts and fees must be plain integers: a float, a numeric string or a
+  bool raises `ValueError`
 - `sign_requests()` accepts one or more raw `/sign` request entries and returns the raw
   `/sign` response
 - for large LogicSigs, the signer may add dummy transactions for fee pooling
@@ -673,18 +683,6 @@ The signer checks the declared program and argument byte counts against each
 signed passthrough envelope. Omitting the declaration for a LogicSig
 passthrough is a client error.
 
-`assemble_group()` is a lower-level utility for workflows that already have
-partial list-per-slot outputs where unsigned slots are represented by empty
-strings:
-
-```python
-from aplanesdk import assemble_group
-
-combined = assemble_group([alice_signed_list, bob_signed_list])
-```
-
-Each slot must have exactly one non-empty signed entry across the input lists.
-
 ### Cosigned Accounts
 
 Cosigned accounts (signing flow `cosigned1`) need component signatures from both
@@ -714,8 +712,7 @@ For manual orchestration, use `request_components()` on the user client with a
 bounded-base target and on the cosigner client, then `request_assemble()` on the
 user client. Finish the user side (the base components and any ordinary-position
 signing) before requesting cosigner components, so a cosigner never sees a group
-the user signer rejects. `assemble_group()` remains only the local multi-party
-concatenation helper.
+the user signer rejects.
 
 A cosigned account's LogicSig contract is `plain1` on a plain host, or
 `bounded2` on a bounded account such as Corridor, and its online signing flow is

@@ -3815,7 +3815,11 @@ class SignerClient:
         note: Optional[bytes] = None,
         fee: Optional[int] = None,
     ) -> PreparedTransaction:
-        """Build a prepared ALGO payment transaction."""
+        """Build a prepared ALGO payment transaction.
+
+        ``amount`` and ``fee`` are in microAlgos. A set ``fee`` is the flat fee
+        the transaction pays.
+        """
         if algod_client is None:
             raise ValueError("algod_client is required")
         if not sender:
@@ -3870,7 +3874,11 @@ class SignerClient:
         note: Optional[bytes] = None,
         fee: Optional[int] = None,
     ) -> PreparedTransaction:
-        """Build a prepared ASA transfer transaction."""
+        """Build a prepared ASA transfer transaction.
+
+        ``amount`` is in the asset's base units, not adjusted for its
+        decimals. ``fee`` is in microAlgos.
+        """
         if algod_client is None:
             raise ValueError("algod_client is required")
         if not sender:

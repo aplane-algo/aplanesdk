@@ -942,8 +942,10 @@ export interface PreparedGroup {
 export interface PaymentPrepParams {
   sender: string;
   receiver: string;
+  /** Amount to pay, in microAlgos. A whole number: a safe integer or a bigint. */
   amount: number | bigint;
   note?: Uint8Array;
+  /** Flat fee for the transaction, in microAlgos. Unset keeps the suggested fee. */
   fee?: number;
 }
 
@@ -954,8 +956,13 @@ export interface AsaTransferPrepParams {
   sender: string;
   receiver: string;
   assetId: number | bigint;
+  /**
+   * Amount to transfer, in the asset's base units (not adjusted for its
+   * decimals). A whole number: a safe integer or a bigint.
+   */
   amount: number | bigint;
   note?: Uint8Array;
+  /** Flat fee for the transaction, in microAlgos. Unset keeps the suggested fee. */
   fee?: number;
 }
 

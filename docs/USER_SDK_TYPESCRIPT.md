@@ -202,6 +202,8 @@ try {
 This path:
 
 - resolves the client data dir
+- refuses a `config.yaml` whose `network` is not in its `networks_allowed`,
+  when that list is set
 - validates `config.yaml` contains no obsolete routing
 - loads and selects an endpoint from `endpoints.yaml`
 - resolves SSH paths relative to the client data dir
@@ -490,17 +492,28 @@ address-keyed `planGroup()` convenience form when two transactions use the
 same authorization address with different LogicSig arguments or app-call
 metadata.
 
-`assembleGroup()` is a lower-level utility for workflows that already have
-partial list-per-slot outputs where unsigned slots are represented by empty
-strings:
+A group that another party also signs goes through the signer in two steps:
+
+1. Plan it with `planGroup()`, leaving the other party's positions foreign (a
+   `null` auth address) and declaring `lsigResources` for any that are
+   LogicSigs. The plan is the final group: its group ID, and any fees and
+   dummies the signer adds.
+2. The other party signs its transaction from the planned group. Sign the
+   planned group with `signTransactions()`, passing that signed transaction as
+   a passthrough position and repeating the same `lsigResources`.
 
 ```ts
-import { assembleGroup } from "aplanesdk";
-
-const aliceSigned = await aliceClient.signTransactionsList(...);
-const bobSigned = await bobClient.signTransactionsList(...);
-const combined = assembleGroup([aliceSigned, bobSigned]);
+const signedGroup = await client.signTransactions(
+  plannedTxns,
+  authAddresses,
+  undefined,
+  { 1: otherPartySignedBase64 },
+);
 ```
+
+Passthrough values are standard base64 with padding. A string that is not
+(URL-safe characters, whitespace, missing padding, data after the padding) is
+refused, as the Go and Python SDKs refuse it.
 
 The high-level final-signing helpers reject foreign slots for `/sign`; foreign
 slots are accepted by `planGroup()` only.
@@ -534,8 +547,7 @@ For manual orchestration, use `requestComponents()` on the user client with a
 bounded-base target and on the cosigner client, then `requestAssemble()` on the
 user client. Finish the user side (the base components and any ordinary-position
 signing) before requesting cosigner components, so a cosigner never sees a group
-the user signer rejects. `assembleGroup()` remains only the local multi-party
-concatenation helper.
+the user signer rejects.
 
 A cosigned account's LogicSig contract is `plain1` on a plain host, or
 `bounded2` on a bounded account such as Corridor, and its online signing flow is
@@ -610,6 +622,14 @@ never trigger another signing request automatically.
   signed group.
 - `signTransactionsList()` returns per-slot base64 strings; it also rejects
   foreign slots for `/sign`.
+- These simple sign calls return only the signed transactions. To read what
+  the signer changed (the fee it added, the group ID, appended dummies), call
+  `signRequests()`, whose `mutations` is the mutation report, already checked
+  against the request.
+- Amounts and fees in the `*PrepParams` types are in microAlgos; an asset
+  amount is in the asset's base units, not adjusted for its decimals. IDs,
+  amounts and fees must be whole numbers (a safe integer or a bigint): a
+  fraction, a numeric string or a boolean is refused.
 - `signRequests()` accepts one or more raw `/sign` request entries and returns the
   `/sign` response, with its mutation report in the typed camelCase
   `MutationReport` form.

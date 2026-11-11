@@ -396,9 +396,6 @@ receivers, auth addresses, or rekey targets. A cosigned account (signing flow
 the low-level calls that helper makes, for applications that own the
 orchestration.
 
-`AssembleGroup` is still the local multi-party concatenation helper. It is not
-the same operation as server-side `RequestAssemble`.
-
 ### Bounded Cosigner Accounts
 
 Corridor uses the bounded contract `bounded2`, and a cosigned plain host

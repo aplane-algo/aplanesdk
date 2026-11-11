@@ -508,26 +508,35 @@ For actual signing with passthrough slots, use:
 Foreign slots are only supported on `/plan`; they must be resubmitted as
 passthrough for final signing.
 
-### Multi-Party Group Assembly
+### Multi-Party Groups
 
-Use `AssembleGroup(...)` on the results of
-`SignTransactionsListWithOptions(...)`:
+A group that another party also signs goes through the signer in two steps:
+
+1. Plan it with `PlanGroup(...)`, leaving the other party's positions foreign
+   (an empty auth address) and declaring `SignOptions.LsigResources` for any
+   that are LogicSigs. The plan is the final group: its group ID, and any fees
+   and dummies the signer adds.
+2. The other party signs its transaction from the planned group. Sign the
+   planned group with `SignTransactionsWithOptions(...)`, passing that signed
+   transaction as a passthrough position in `SignOptions.Passthrough` and
+   repeating the same `LsigResources`.
+
+The result is the complete signed group, ready to submit:
 
 ```go
-combined, err := aplane.AssembleGroup([][]string{
-	aliceSigned,
-	bobSigned,
+signed, err := client.SignTransactionsWithOptions(plannedTxns, authAddresses, nil, &aplane.SignOptions{
+	Passthrough: map[int]string{1: otherPartySignedBase64},
 })
 if err != nil {
 	return err
 }
 
-combinedBytes, err := aplane.Base64ToBytes(combined)
+signedBytes, err := aplane.Base64ToBytes(signed)
 if err != nil {
 	return err
 }
 
-txid, err := algodClient.SendRawTransaction(combinedBytes).Do(ctx)
+txid, err := algodClient.SendRawTransaction(signedBytes).Do(ctx)
 ```
 
 ### Cosigned Accounts
@@ -559,8 +568,7 @@ For manual orchestration, use `RequestComponents` on the user client with a
 bounded-base target and on the cosigner client, then `RequestAssemble` on the
 user client. Finish the user side (the base components and any ordinary-position
 signing) before requesting cosigner components, so a cosigner never sees a group
-the user signer rejects. `AssembleGroup` remains only the local multi-party
-concatenation helper.
+the user signer rejects.
 
 A cosigned account's LogicSig contract is `plain1` on a plain host, or
 `bounded2` on a bounded account such as Corridor, and its online signing flow is
@@ -638,6 +646,12 @@ error and never trigger another signing request automatically.
 - `SignTransactions(...)` returns one concatenated base64 string for the full
   signed group.
 - `SignTransactionsList(...)` returns per-slot base64 strings.
+- These simple sign calls return only the signed transactions. To read what
+  the signer changed (the fee it added, the group ID, appended dummies), call
+  `SignRequestsWithContext(...)`, whose `GroupSignResponse.Mutations` is the
+  mutation report, already checked against the request.
+- Amounts and fees in the `*PrepParams` types are in microAlgos; an asset
+  amount is in the asset's base units, not adjusted for its decimals.
 - `PlanGroup(...)` returns unsigned `TX`-prefixed hex transactions plus a
   mutation report.
 - `SimulateGroup(...)` and `SimulatePreparedGroup(...)` perform ordinary
@@ -816,7 +830,10 @@ if err != nil {
 ## Advanced Notes
 
 - `LoadConfig(...)` also understands client-side `algod` configuration and can
-  build an `algod` client with `Config.NewAlgodClient(...)`.
+  build an `algod` client with `Config.NewAlgodClient(...)`. When
+  `networks_allowed` is set in `config.yaml`, `NewAlgodClient` refuses a network
+  that is not on it, and loading the config refuses a default network that is
+  not on it.
 - `ResolveDataDir(...)`,
   `ResolvePath(...)`, `Base64ToBytes(...)`, `BytesToBase64(...)`,
   `HexToBytes(...)`, and `BytesToHex(...)` are exported for integration code.

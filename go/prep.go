@@ -20,21 +20,26 @@ const appCallMethodArgsTupleThreshold = appCallMaxAppArgs - 2
 
 // PaymentPrepParams describes a payment transaction intent.
 type PaymentPrepParams struct {
-	Sender     string
-	Receiver   string
-	Amount     uint64
-	Note       []byte
+	Sender   string
+	Receiver string
+	// Amount is in microAlgos.
+	Amount uint64
+	Note   []byte
+	// Fee is the flat fee in microAlgos, applied when UseFlatFee is set or
+	// Fee is non-zero.
 	Fee        uint64
 	UseFlatFee bool
 }
 
 // AsaTransferPrepParams describes an ASA transfer transaction intent.
 type AsaTransferPrepParams struct {
-	Sender     string
-	Receiver   string
-	AssetID    uint64
-	Amount     uint64
-	Note       []byte
+	Sender   string
+	Receiver string
+	AssetID  uint64
+	// Amount is in the asset's base units, not adjusted for its decimals.
+	Amount uint64
+	Note   []byte
+	// Fee is the flat fee in microAlgos; see PaymentPrepParams.
 	Fee        uint64
 	UseFlatFee bool
 }
