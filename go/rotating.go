@@ -506,15 +506,19 @@ func rotatingWindowCurrent(txn types.Transaction, round uint64) bool {
 
 // refreshRotatingValidity rebuilds txn's validity rounds from current
 // suggested parameters, keeping everything else. The window keeps its length
-// unless that is zero or over the rotating limit.
+// unless that is over the rotating limit or too short to ever be signed.
 func refreshRotatingValidity(ctx context.Context, algodClient *algod.Client, txn types.Transaction) (types.Transaction, error) {
 	sp, err := algodClient.SuggestedParams().Do(ctx)
 	if err != nil {
 		return txn, fmt.Errorf("failed to get suggested params: %w", err)
 	}
+	// A window shorter than the rounds that must remain can never be signed,
+	// so it is not kept either.
 	window := uint64(RotatingMaxValidityWindow)
-	if txn.LastValid > txn.FirstValid && uint64(txn.LastValid-txn.FirstValid) < window {
-		window = uint64(txn.LastValid - txn.FirstValid)
+	if txn.LastValid > txn.FirstValid {
+		if length := uint64(txn.LastValid - txn.FirstValid); length >= RotatingMinRemaining && length < window {
+			window = length
+		}
 	}
 	first := uint64(sp.FirstRoundValid)
 	if first > math.MaxUint64-window {
@@ -559,15 +563,22 @@ func (c *SignerClient) sendRotating(ctx context.Context, algodClient *algod.Clie
 
 	for attempt := 1; ; attempt++ {
 		last := attempt == rotatingSendAttempts
-		if refresh {
-			status, err := algodClient.Status().Do(ctx)
-			if err != nil {
-				return nil, fmt.Errorf("read current round: %w", err)
-			}
-			if !rotatingWindowCurrent(txn, status.LastRound) {
-				if txn, err = refreshRotatingValidity(ctx, algodClient, txn); err != nil {
-					return nil, err
+		// The signer signs only while the window is current. Checking here
+		// saves the operator an approval that could not lead to a signature.
+		status, err := algodClient.Status().Do(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("read current round: %w", err)
+		}
+		if !rotatingWindowCurrent(txn, status.LastRound) {
+			if !refresh {
+				if windowErr := checkRotatingWindow(txn); windowErr != nil {
+					return nil, windowErr
 				}
+				return nil, fmt.Errorf("validity rounds %d-%d are not current at round %d: a rotating account signs only while first valid is at most %d rounds ahead and at least %d rounds remain (rebuild the transaction, or set RefreshValidity)",
+					txn.FirstValid, txn.LastValid, status.LastRound, RotatingMaxLead, RotatingMinRemaining)
+			}
+			if txn, err = refreshRotatingValidity(ctx, algodClient, txn); err != nil {
+				return nil, err
 			}
 		}
 
@@ -588,6 +599,14 @@ func (c *SignerClient) sendRotating(ctx context.Context, algodClient *algod.Clie
 		}
 		if simulation.Failed {
 			return nil, &RotatingPreflightError{Prepared: prepared, Message: simulationFailure(simulation.Response)}
+		}
+		if len(simulation.Response.TxnGroups) != 1 {
+			return nil, fmt.Errorf("simulation returned %d group results for one group; nothing was signed", len(simulation.Response.TxnGroups))
+		}
+		// Nothing has been asked to sign yet, so an ended context is a plain
+		// stop, not an unknown outcome.
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 
 		signed, err := c.SignPreparedRotating(ctx, prepared, nil)
@@ -664,10 +683,9 @@ func (c *SignerClient) prepSuggestedParams(ctx context.Context, algodClient *alg
 	if err != nil {
 		return suggested, err
 	}
-	rotating, err := c.isRotatingAccount(ctx, sender)
-	if err != nil {
-		return suggested, err
-	}
+	// A signer that cannot be asked is not reported here: the helper's own
+	// key resolution asks it next and reports the failure in its usual form.
+	rotating, _ := c.isRotatingAccount(ctx, sender)
 	if rotating && uint64(suggested.LastRoundValid-suggested.FirstRoundValid) > RotatingMaxValidityWindow {
 		suggested.LastRoundValid = suggested.FirstRoundValid + RotatingMaxValidityWindow
 	}

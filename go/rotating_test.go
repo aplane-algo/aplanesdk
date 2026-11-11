@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -302,8 +303,10 @@ func TestSendPreparedRotatingPreparesSimulatesSignsSubmits(t *testing.T) {
 	}
 	// The group was simulated once, unsigned, exactly as prepared.
 	simulations := node.simulations()
-	if len(simulations) != 1 || !simulations[0].AllowEmptySignatures || simulations[0].FixSigners {
-		t.Fatalf("simulations = %+v", simulations)
+	// FixSigners has the node take the sender's authorizer from the chain;
+	// without it an account that has rotated fails its own simulation.
+	if len(simulations) != 1 || !simulations[0].AllowEmptySignatures || !simulations[0].FixSigners {
+		t.Fatalf("%d simulation(s); want one, unsigned, with the node fixing signers", len(simulations))
 	}
 	prepared := signer.signRequests[0].Transactions
 	simulated := simulations[0].TxnGroups[0].Txns
@@ -1054,5 +1057,209 @@ func TestSignPreparedRotatingChecksTheBindingAgain(t *testing.T) {
 	}
 	if signer.count("/sign/rotating/sign") != 0 || len(node.simulations()) != 0 {
 		t.Fatalf("an altered prepared group reached the signer or the node")
+	}
+}
+
+func TestSendPreparedRotatingRetryBounds(t *testing.T) {
+	oldBackoff := rotatingUnprovenBackoff
+	rotatingUnprovenBackoff = time.Millisecond
+	defer func() { rotatingUnprovenBackoff = oldBackoff }()
+	repeat := func(refusal *ErrorResponse) []*ErrorResponse {
+		return []*ErrorResponse{refusal, refusal, refusal, refusal, refusal, refusal}
+	}
+
+	t.Run("a stage that is never found ends after three prepares", func(t *testing.T) {
+		signer, _, client, algodClient, txn := newRotatingFixture(t)
+		signer.prepareErrors = repeat(rotatingRefusal(ErrCodeRotatingStageUnproven, "not found yet"))
+		_, err := client.SendPrepared(context.Background(), algodClient, rotatingGroup(txn), nil)
+		if apiErrorCode(err) != ErrCodeRotatingStageUnproven || signer.count("/sign/rotating/prepare") != 3 || signer.count("/sign/rotating/sign") != 0 {
+			t.Fatalf("error = %v after %d prepares", err, signer.count("/sign/rotating/prepare"))
+		}
+	})
+
+	t.Run("a window that is never current ends after three signs", func(t *testing.T) {
+		signer, node, client, algodClient, txn := newRotatingFixture(t)
+		signer.signErrors = repeat(rotatingRefusal(ErrCodeRotatingWindowNotCurrent, "too few rounds remain"))
+		_, err := client.SendPrepared(context.Background(), algodClient, rotatingGroup(txn), &SendOptions{RefreshValidity: true})
+		if apiErrorCode(err) != ErrCodeRotatingWindowNotCurrent || signer.count("/sign/rotating/sign") != 3 || len(node.submissions()) != 0 {
+			t.Fatalf("error = %v after %d signs", err, signer.count("/sign/rotating/sign"))
+		}
+	})
+
+	t.Run("the wait to retry honors the context", func(t *testing.T) {
+		rotatingUnprovenBackoff = time.Hour
+		defer func() { rotatingUnprovenBackoff = time.Millisecond }()
+		signer, _, client, algodClient, txn := newRotatingFixture(t)
+		signer.prepareErrors = repeat(rotatingRefusal(ErrCodeRotatingStageUnproven, "not found yet"))
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		_, err := client.SendPrepared(ctx, algodClient, rotatingGroup(txn), nil)
+		if apiErrorCode(err) != ErrCodeRotatingStageUnproven || signer.count("/sign/rotating/prepare") != 1 {
+			t.Fatalf("error = %v after %d prepares; want the refusal after one", err, signer.count("/sign/rotating/prepare"))
+		}
+	})
+}
+
+func TestSendPaymentMayRebuildARotatingWindow(t *testing.T) {
+	signer, node, client, _, _ := newRotatingFixture(t)
+	signer.signErrors = []*ErrorResponse{rotatingRefusal(ErrCodeRotatingWindowNotCurrent, "too few rounds remain")}
+	algodClient, closeAlgod := makeSimulationAlgodClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v2/accounts/"+signer.account {
+			json.NewEncoder(w).Encode(map[string]any{"address": signer.account, "amount": 5_000_000, "min-balance": 100_000, "auth-addr": rotatingStageAddress(rotatingTestProgram).String()})
+			return
+		}
+		node.handle(w, r)
+	})
+	defer closeAlgod()
+
+	// SendPayment built the transaction, so it may rebuild its rounds with no
+	// option set; and the helper gave a rotated account a window it can use.
+	result, err := client.SendPayment(context.Background(), algodClient, PaymentPrepParams{Sender: signer.account, Receiver: sdkTestAddress(42), Amount: 5000}, nil)
+	if err != nil || result.Rotating == nil || result.Rotating.Attempts != 2 {
+		t.Fatalf("SendPayment() = %+v, %v", result, err)
+	}
+	if sent := signer.prepareSeen[0]; sent.LastValid-sent.FirstValid != RotatingMaxValidityWindow {
+		t.Fatalf("window = %d rounds", sent.LastValid-sent.FirstValid)
+	}
+}
+
+func TestSendPreparedRotatingChecksTheRoundBeforeTheOperatorIsAsked(t *testing.T) {
+	t.Run("stale rounds are refused when they may not be rebuilt", func(t *testing.T) {
+		signer, node, client, algodClient, _ := newRotatingFixture(t)
+		node.round = 105 // fewer than 10 rounds left of 10-110
+		_, err := client.SendPrepared(context.Background(), algodClient, rotatingGroup(rotatingPayment(t, signer.account, 10, 110)), nil)
+		if err == nil || !strings.Contains(err.Error(), "are not current at round 105") {
+			t.Fatalf("error = %v", err)
+		}
+		if signer.count("/sign/rotating/prepare") != 0 {
+			t.Fatalf("stale rounds reached the signer")
+		}
+	})
+	t.Run("a window too short to sign is not kept when rebuilding", func(t *testing.T) {
+		signer, node, client, algodClient, _ := newRotatingFixture(t)
+		node.round = 40
+		if _, err := client.SendPrepared(context.Background(), algodClient, rotatingGroup(rotatingPayment(t, signer.account, 40, 45)), &SendOptions{RefreshValidity: true}); err != nil {
+			t.Fatalf("SendPrepared() error = %v", err)
+		}
+		if sent := signer.prepareSeen[0]; sent.FirstValid != 40 || sent.LastValid != 40+RotatingMaxValidityWindow {
+			t.Fatalf("a 5-round window was rebuilt to %d-%d", sent.FirstValid, sent.LastValid)
+		}
+	})
+}
+
+func TestSendPreparedRotatingStopsBeforeSigning(t *testing.T) {
+	t.Run("simulation reports no group", func(t *testing.T) {
+		signer, node, client, algodClient, txn := newRotatingFixture(t)
+		node.simulate = func(w http.ResponseWriter) { w.Write([]byte(`{"last-round":10,"version":2}`)) }
+		_, err := client.SendPrepared(context.Background(), algodClient, rotatingGroup(txn), nil)
+		if err == nil || !strings.Contains(err.Error(), "nothing was signed") || signer.count("/sign/rotating/sign") != 0 {
+			t.Fatalf("error = %v, sign calls %d", err, signer.count("/sign/rotating/sign"))
+		}
+	})
+	t.Run("context ended after simulation", func(t *testing.T) {
+		signer, node, client, algodClient, txn := newRotatingFixture(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		node.simulate = func(w http.ResponseWriter) {
+			json.NewEncoder(w).Encode(map[string]any{"last-round": 10, "version": 2, "txn-groups": []map[string]any{{}}})
+			w.(http.Flusher).Flush()
+			time.Sleep(20 * time.Millisecond) // let the client read the answer
+			cancel()
+		}
+		_, err := client.SendPrepared(ctx, algodClient, rotatingGroup(txn), nil)
+		var unknown *SignOutcomeUnknownError
+		if err == nil || errors.As(err, &unknown) {
+			t.Fatalf("error = %v, want a plain stop, not an unknown sign outcome", err)
+		}
+		if signer.count("/sign/rotating/sign") != 0 {
+			t.Fatalf("a sign request went out after the context ended")
+		}
+	})
+}
+
+func TestSignPreparedRotatingAnswerClassification(t *testing.T) {
+	t.Run("an unreadable answer is an unknown outcome", func(t *testing.T) {
+		signer, _, client, _, txn := newRotatingFixture(t)
+		prepared, err := client.PrepareRotating(context.Background(), txn, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		signer.alterSign = nil
+		signer.signErrors = nil
+		handler := signer.handle
+		truncating, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/sign/rotating/sign" {
+				w.Write([]byte(`{"signed": ["ab`))
+				return
+			}
+			handler(w, r)
+		})
+		defer server.Close()
+		_, err = truncating.SignPreparedRotating(context.Background(), prepared, nil)
+		var unknown *SignOutcomeUnknownError
+		if !errors.As(err, &unknown) || unknown.Rotating != prepared {
+			t.Fatalf("error = %v, want *SignOutcomeUnknownError carrying the prepared group", err)
+		}
+	})
+	t.Run("an unauthenticated connection is ErrAuthentication", func(t *testing.T) {
+		signer, _, client, _, txn := newRotatingFixture(t)
+		signer.errorStatus = http.StatusUnauthorized
+		signer.prepareErrors = []*ErrorResponse{rotatingRefusal(ErrCodeUnauthorized, "no")}
+		if _, err := client.PrepareRotating(context.Background(), txn, nil); !errors.Is(err, ErrAuthentication) {
+			t.Fatalf("error = %v, want ErrAuthentication", err)
+		}
+	})
+}
+
+func TestPrepareHelpersAllUseTheSenderAwareParameters(t *testing.T) {
+	// Every Prepare* helper must fetch its parameters through
+	// prepSuggestedParams, which fits a rotating sender's window. A direct
+	// fetch in prep.go would build a transaction a rotating account can't send.
+	source, err := os.ReadFile("prep.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(source), "SuggestedParams().Do(") {
+		t.Fatalf("prep.go fetches suggested parameters directly; use prepSuggestedParams")
+	}
+	if n := strings.Count(string(source), "c.prepSuggestedParams(ctx, algodClient, params.Sender)"); n != 9 {
+		t.Fatalf("prep.go has %d sender-aware parameter fetches, want 9", n)
+	}
+}
+
+func TestPrepSuggestedParamsDoesNotReportSignerFailures(t *testing.T) {
+	// A locked or unreachable signer is reported by the helper's key
+	// resolution, in its usual form, not by the parameter fetch.
+	client, signerServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+	defer signerServer.Close()
+	node := &sendAlgod{t: t}
+	algodClient, closeAlgod := makeSimulationAlgodClient(t, node.handle)
+	defer closeAlgod()
+	params, err := client.prepSuggestedParams(context.Background(), algodClient, fakeAccount(41))
+	if err != nil || params.LastRoundValid-params.FirstRoundValid != 1000 {
+		t.Fatalf("prepSuggestedParams() = %d rounds, %v", params.LastRoundValid-params.FirstRoundValid, err)
+	}
+}
+
+func TestResolveAuthAddressReportsTheChainAuthorizer(t *testing.T) {
+	sender, holder := fakeAccount(41), fakeAccount(45)
+	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/status":
+			json.NewEncoder(w).Encode(StatusResponse{State: "unlocked"})
+		case "/keys":
+			json.NewEncoder(w).Encode(KeysResponse{Count: 2, Keys: []KeyInfo{{Address: sender}, {Address: holder}}})
+		}
+	})
+	defer server.Close()
+	rekeyed, err := client.ResolveAuthAddress(context.Background(), sender, func(context.Context, string) (string, error) { return holder, nil })
+	if err != nil || rekeyed.ChainAuthAddress != holder || rekeyed.AuthAddress != holder || !rekeyed.IsRekeyed {
+		t.Fatalf("rekeyed = %+v, %v", rekeyed, err)
+	}
+	own, err := client.ResolveAuthAddress(context.Background(), sender, func(context.Context, string) (string, error) { return "", nil })
+	if err != nil || own.ChainAuthAddress != "" || own.AuthAddress != sender || own.IsRekeyed {
+		t.Fatalf("self-signing = %+v, %v", own, err)
 	}
 }

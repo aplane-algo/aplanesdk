@@ -201,8 +201,11 @@ func runSimulation(ctx context.Context, algodClient *algod.Client, group []types
 	request := models.SimulateRequest{
 		TxnGroups:            []models.SimulateRequestTransactionGroup{{Txns: group}},
 		AllowEmptySignatures: allowEmptySignatures,
-		FixSigners:           false,
-		AllowMoreLogging:     true,
+		// An unsigned transaction names no signer. FixSigners has the node
+		// take each sender's authorizer from the chain, which a rekeyed
+		// sender, such as a rotating account after its first spend, needs.
+		FixSigners:       allowEmptySignatures,
+		AllowMoreLogging: true,
 		ExecTraceConfig: models.SimulateTraceConfig{
 			Enable:      true,
 			StateChange: true,

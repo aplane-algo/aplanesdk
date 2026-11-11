@@ -340,7 +340,12 @@ func (c *SignerClient) classifySend(ctx context.Context, group PreparedGroup) (s
 		// rotated, its on-chain authorizer is a stage address the signer
 		// does not list. It signs alone, and as itself.
 		sender := item.Transaction.Sender.String()
-		if own, ok := findSpendableKey(keys, sender); ok && own.SigningFlow == SigningFlowRotating1 {
+		// A position that names another key the signer holds says the
+		// account left rotation for that key; it is routed by that key, and
+		// the network refuses it if the account is still rotating.
+		_, namesHeldKey := findSpendableKey(keys, item.AuthAddress)
+		leftRotation := item.AuthAddress != sender && namesHeldKey
+		if own, ok := findSpendableKey(keys, sender); ok && own.SigningFlow == SigningFlowRotating1 && !leftRotation {
 			if len(group.Transactions) != 1 {
 				return "", fmt.Errorf("prepared transaction %d: %w: %s is a rotating account, which sends one transaction alone; the signer forms its group", i, ErrUnsupportedGroup, sender)
 			}

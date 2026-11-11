@@ -311,10 +311,10 @@ func TestSendPreparedRefusesBeforeSigning(t *testing.T) {
 			text: "sends one transaction alone",
 		},
 		{
-			// After a rotation the chain names a stage address, so a caller
-			// may bind another key; the sender's own record still decides.
-			name:  "rotating sender bound to another key",
-			keys:  []KeyInfo{{Address: sender, SigningFlow: SigningFlowRotating1}, {Address: holder}},
+			// After a rotation the chain names a stage address, which the
+			// signer does not hold; the sender's own record decides.
+			name:  "rotating sender bound to a key the signer does not hold",
+			keys:  []KeyInfo{{Address: sender, SigningFlow: SigningFlowRotating1}},
 			group: NewPreparedGroup(PreparedTransaction{Transaction: &txn, AuthAddress: holder}),
 			want:  ErrUnsupportedGroup,
 			text:  "signs as itself",
@@ -949,5 +949,32 @@ func TestSendPreparedCosignedLostAnswers(t *testing.T) {
 				t.Fatalf("submitted after a failed signing step")
 			}
 		})
+	}
+}
+
+// A rotating account rekeyed to an ordinary key the signer holds has left
+// rotation: that key signs for it through the ordinary flow.
+func TestSendPreparedRoutesAnAccountThatLeftRotationByItsKey(t *testing.T) {
+	txn := verifyTestPayment(t, 41, 42, 1)
+	holder := fakeAccount(45)
+	signer := &sendSigner{keys: []KeyInfo{{Address: txn.Sender.String(), SigningFlow: SigningFlowRotating1}, {Address: holder, KeyType: "ed25519"}}}
+	node := &sendAlgod{}
+	client, algodClient := newSendFixture(t, signer, node)
+
+	result, err := client.SendPrepared(context.Background(), algodClient, NewPreparedGroup(PreparedTransaction{Transaction: &txn, AuthAddress: holder}), nil)
+	if err != nil || result.Flow != "" || signer.count("/sign") != 1 {
+		t.Fatalf("SendPrepared() = %+v, %v; want the ordinary flow", result, err)
+	}
+	var sent types.SignedTxn
+	if err := msgpack.Decode(node.submissions()[0], &sent); err != nil {
+		t.Fatal(err)
+	}
+	if sent.AuthAddr.String() != holder {
+		t.Fatalf("signed by %s, want the key the position named", sent.AuthAddr)
+	}
+
+	resolved, err := client.ResolveAuthAddress(context.Background(), txn.Sender.String(), func(context.Context, string) (string, error) { return holder, nil })
+	if err != nil || resolved.AuthAddress != holder || !resolved.IsRekeyed || resolved.ChainAuthAddress != holder {
+		t.Fatalf("ResolveAuthAddress() = %+v, %v; want the held key", resolved, err)
 	}
 }

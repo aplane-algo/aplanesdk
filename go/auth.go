@@ -88,7 +88,12 @@ func (c *SignerClient) ResolveAuthAddress(ctx context.Context, address string, l
 	// A rotating account is authorized by its current stage, which the
 	// signer derives from the account's key and never lists. The signer holds
 	// the account itself and signs for it at any stage.
-	if own, ok := findSpendableKey(keys, address); ok && own.SigningFlow == SigningFlowRotating1 {
+	// One exception: a rotating account rekeyed to an ordinary key the signer
+	// holds has left rotation, and that key signs for it like any rekey.
+	own, isOwn := findSpendableKey(keys, address)
+	_, authHeld := findSpendableKey(keys, signingAddr)
+	leftRotation := signingAddr != address && authHeld
+	if isOwn && own.SigningFlow == SigningFlowRotating1 && !leftRotation {
 		chainAuth := ""
 		if authAddr != address {
 			chainAuth = authAddr

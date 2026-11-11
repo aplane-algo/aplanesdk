@@ -403,8 +403,9 @@ and `SendPayment` run the whole sequence:
 2. **Check.** The SDK refuses the group unless the only changes are that
    rekey, a reported fee raise within your max fee increase, the group ID and
    canonical dummies.
-3. **Simulate, unsigned,** through your algod. A failure here returns
-   `*RotatingPreflightError`, and no one-time key has been used.
+3. **Simulate, unsigned,** through your algod. A group that fails returns
+   `*RotatingPreflightError`; a simulation that cannot be run returns a plain
+   error. Either way no one-time key has been used.
 4. **Sign,** with operator approval, then check the signed group is exactly
    the prepared one.
 5. **Submit at once** and wait for confirmation. `SendResult.Rotating` reports
@@ -418,8 +419,9 @@ What to know:
 - **Short validity window.** The window is at most 100 rounds, and the signer
   signs only while `FirstValid` is at most 2 rounds ahead and at least 10
   rounds remain. Every `Prepare*` helper builds such a window when the sender
-  is a rotating account. For a transaction you built yourself, set
-  `SendOptions.RefreshValidity` to let the SDK rebuild the rounds; that
+  is a rotating account. A transaction whose rounds are not current is
+  refused before the operator is asked. For a transaction you built yourself,
+  set `SendOptions.RefreshValidity` to let the SDK rebuild the rounds; that
   changes the transaction ID, so leave it off if anything outside the
   transaction binds its rounds.
 - **App calls carry the rekey.** A contract that requires a zero `RekeyTo`
@@ -461,9 +463,9 @@ do not prepare a replacement until the first attempt's outcome is known:
 `SubmitSignedGroup` also submits again the `SignedGroup` kept by a
 `*SubmissionUncertainError`; the same bytes can execute only once.
 
-Not covered: a rotating account that was rekeyed to an ordinary key the signer
-holds. The signer refuses it with a message naming that key; sign through
-that key with the lower-level calls. Recovery of an unknown stage is an
+A rotating account that was rekeyed to an ordinary key the signer holds has
+left rotation. The `Prepare*` helpers name that key as its `AuthAddress`, and
+it is then signed like any rekeyed account. Recovery of an unknown stage is an
 operator action (`rotate recover` in apshell).
 
 ### Config Helpers
