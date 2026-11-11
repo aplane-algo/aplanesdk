@@ -7,6 +7,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha512"
+	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -581,6 +583,14 @@ func (c *SignerClient) GetKeysResponseWithContext(ctx context.Context) (*KeysRes
 	if err := readAnswer(resp.Body, &keysResp); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
+	// An address is looked up by its exact text, so an Algorand address the
+	// signer spelled another way would never match the key's account. Any
+	// other text, such as a witness key's ID, is kept as sent.
+	for i, key := range keysResp.Keys {
+		if canonical, ok := alternateAddressSpelling(key.Address); ok {
+			return nil, fmt.Errorf("failed to decode response: key %d address %q is a non-canonical spelling of address %s", i, key.Address, canonical)
+		}
+	}
 
 	cache := make(map[string]*KeyInfo, len(keysResp.Keys))
 	for i := range keysResp.Keys {
@@ -606,6 +616,29 @@ func (c *SignerClient) GetKeysResponseWithContext(ctx context.Context) (*KeysRes
 			Keys:  keysResp.Keys,
 		},
 	}, nil
+}
+
+// alternateAddressSpelling reports whether text is an Algorand address spelled
+// other than canonically, and returns the canonical spelling: 58 characters
+// that decode, as base32 without padding, to 36 bytes whose last 4 are the
+// checksum of the first 32, but that do not re-encode to text. DecodeAddress
+// refuses such text, so it cannot tell it from text that is no address.
+func alternateAddressSpelling(text string) (string, bool) {
+	if len(text) != 58 {
+		return "", false
+	}
+	decoded, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(text)
+	if err != nil || len(decoded) != 36 {
+		return "", false
+	}
+	checksum := sha512.Sum512_256(decoded[:32])
+	if !bytes.Equal(checksum[len(checksum)-4:], decoded[32:]) {
+		return "", false
+	}
+	var address types.Address
+	copy(address[:], decoded[:32])
+	canonical := address.String()
+	return canonical, canonical != text
 }
 
 // ListKeyTypes returns available key types and their creation parameters.

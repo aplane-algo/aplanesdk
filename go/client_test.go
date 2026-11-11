@@ -838,6 +838,98 @@ func TestListKeysRefusesNullAndTrailingData(t *testing.T) {
 	}
 }
 
+// otherSpelling is address with a padding bit of its last character set: the
+// same 36 bytes, checksum and all, spelled another way.
+func otherSpelling(t *testing.T, address string) string {
+	t.Helper()
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+	last := strings.IndexByte(alphabet, address[len(address)-1])
+	other := address[:len(address)-1] + string(alphabet[last^1])
+	if _, err := types.DecodeAddress(other); err == nil {
+		t.Fatalf("%s decodes as an address", other)
+	}
+	return other
+}
+
+// A /keys answer that lists an Algorand address spelled another way is
+// refused whole: a lookup by the canonical address would never find the key.
+// Text that is not an Algorand address, such as a witness key's ID, is kept
+// exactly as sent.
+func TestListKeysRefusesAnAddressSpelledAnotherWay(t *testing.T) {
+	canonical := sdkTestAddress(0xA3)
+	other := otherSpelling(t, canonical)
+	badChecksum := canonical[:len(canonical)-2] + "AA"
+	if canonical[len(canonical)-2:] == "AA" {
+		badChecksum = canonical[:len(canonical)-2] + "BA"
+	}
+	answer := func(addresses ...string) func(http.ResponseWriter, *http.Request) {
+		return func(w http.ResponseWriter, r *http.Request) {
+			keys := make([]KeyInfo, len(addresses))
+			for i, address := range addresses {
+				keys[i] = KeyInfo{Address: address, KeyType: "ed25519"}
+			}
+			json.NewEncoder(w).Encode(KeysResponse{Count: len(keys), Keys: keys})
+		}
+	}
+
+	t.Run("an alternate spelling", func(t *testing.T) {
+		client, server := newTestClient(answer(sdkTestAddress(0xA4), other))
+		defer server.Close()
+		result, err := client.GetKeysResponseWithContext(context.Background())
+		want := fmt.Sprintf("failed to decode response: key 1 address %q is a non-canonical spelling of address %s", other, canonical)
+		if result != nil || err == nil || err.Error() != want {
+			t.Fatalf("GetKeysResponseWithContext() = %+v, %v; want %q", result, err, want)
+		}
+		if client.cachedKeys() != nil {
+			t.Fatal("a refused answer was cached")
+		}
+		if _, err := client.ListKeys(true); err == nil {
+			t.Fatal("ListKeys() accepted the answer")
+		}
+	})
+
+	witnessID := "ROGAFDACF7ASC3EMZRWNKVM73NXHO4P6O4EB7ZXWER37SM63BMFQ"
+	kept := []string{canonical, witnessID, "BOUNDEDADDR000000000000000000000000000000000000000000000", strings.ToLower(canonical), badChecksum, ""}
+	t.Run("anything else is kept as sent", func(t *testing.T) {
+		client, server := newTestClient(answer(kept...))
+		defer server.Close()
+		result, err := client.GetKeysResponseWithContext(context.Background())
+		if err != nil {
+			t.Fatalf("GetKeysResponseWithContext() error = %v", err)
+		}
+		for i, address := range kept {
+			if result.Keys[i].Address != address {
+				t.Fatalf("key %d address = %q, want %q as sent", i, result.Keys[i].Address, address)
+			}
+			if info, err := client.GetKeyInfo(address); err != nil || info.Address != address {
+				t.Fatalf("GetKeyInfo(%q) = %+v, %v", address, info, err)
+			}
+		}
+	})
+}
+
+// Every /keys contract fixture is an answer the client reads.
+func TestListKeysReadsTheContractFixtures(t *testing.T) {
+	matches, err := filepath.Glob(sdkContractFixturePath(t, "keys_response_*.json"))
+	if err != nil || len(matches) == 0 {
+		t.Fatalf("keys fixtures = %v, %v", matches, err)
+	}
+	for _, path := range matches {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) { w.Write(raw) })
+			defer server.Close()
+			result, err := client.GetKeysResponseWithContext(context.Background())
+			if err != nil || len(result.Keys) == 0 {
+				t.Fatalf("GetKeysResponseWithContext() = %+v, %v", result, err)
+			}
+		})
+	}
+}
+
 // Every other 200 answer is read by the same rule.
 func TestSignerAnswersRefuseNullAndTrailingData(t *testing.T) {
 	txn := verifyTestPayment(t, 41, 42, 1)
