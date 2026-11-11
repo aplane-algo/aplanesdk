@@ -395,7 +395,18 @@ except KeyboardInterrupt as e:
     raise
 ```
 
-The existing `sign_*` and `simulate_*` calls are unchanged.
+The existing `sign_*` and `simulate_*` calls are unchanged. A `simulate_*`
+result is `failed` unless the node returned exactly one group result, that
+result reports no failure (no `failure-message` and no `failed-at`), and it
+holds one transaction result per transaction simulated: an answer without
+exactly one result, or with the wrong count of transaction results, checked
+less than the group. `failure_message` says why: the node's `failure-message`
+when it gave one, otherwise one of "the node returned no result for the
+group", "the node returned N results for one group", "the node's result for
+the group is not an object", "the node reported a failure without a message"
+or "the node returned M transaction results for N transactions". Each field
+is chosen by presence: `txn-groups` is read when present, even empty, and
+`txn_groups` only when it is not, and so for the failure message.
 
 #### Rotating accounts
 
@@ -410,8 +421,9 @@ and `send_payment` run the whole sequence:
    rekey, a reported fee raise within your max fee increase, the group ID and
    canonical dummies.
 3. **Simulate, unsigned,** through your algod. A group that fails raises
-   `RotatingPreflightError`, as does an answer with no result for the group;
-   a simulation that cannot be run raises a plain `SignerError`. Either way no
+   `RotatingPreflightError`, as does an answer without exactly one result
+   for the group, or with the wrong count of transaction results; a
+   simulation that cannot be run raises a plain `SignerError`. Either way no
    one-time key has been used.
 4. **Sign,** with operator approval, then check the signed group is exactly
    the prepared one.

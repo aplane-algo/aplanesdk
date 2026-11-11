@@ -476,12 +476,17 @@ class SubmissionUncertainError(SignerError):
 
 
 class RotatingPreflightError(SignerError):
-    """A prepared rotating group failed its unsigned simulation, or the node
-    returned no result for it. Nothing was signed.
+    """A prepared rotating group failed its unsigned simulation. Nothing was
+    signed. The simulation fails on the node's own failure message, and on
+    an answer that does not cover the group: without exactly one result
+    (none, or more than one), a result that is not an object, a result
+    reporting failed-at without a message, or one whose count of transaction
+    results is not the number of transactions simulated.
 
     Attributes:
         prepared: the PreparedRotating that was simulated
-        message: the node's failure message
+        message: why, as SimulationResult.failure_message says it: the
+            node's failure message, or which of the other failures it was
     """
 
     def __init__(self, prepared: "PreparedRotating", message: str):
@@ -1397,10 +1402,12 @@ class GroupSignResponse:
 class SimulationResult:
     """Result of ordinary signing followed by client-side algod simulation.
 
-    ``failed`` is set when the group failed, and when the node's answer did
-    not hold exactly one group result, which checked nothing.
-    ``failure_message`` says why: the node's failure message, or what was
-    wrong with its answer. It is empty when the group passed.
+    ``failed`` is set unless the node returned exactly one group result,
+    an object, that reports no failure (no failure-message and no
+    failed-at) and holds one transaction result per transaction simulated:
+    any other answer checked less than the group. ``failure_message`` says
+    why: the node's failure-message, or what was wrong with its answer. It is
+    empty when the group passed.
     """
 
     tx_ids: List[str]
@@ -2091,7 +2098,7 @@ def _simulate_signed_group(
         raise ValueError("algod_client is required")
     signed_transactions = _decode_executable_signed_group(signed_group)
     response = _run_simulation(algod_client, signed_transactions, allow_empty_signatures=False)
-    failure = _simulation_failure(response)
+    failure = _simulation_failure(response, len(signed_transactions))
     return SimulationResult(
         tx_ids=[signed.get_txid() for signed in signed_transactions],
         transactions=[encode_transaction(signed.transaction)[0] for signed in signed_transactions],
@@ -7258,8 +7265,8 @@ class SignerClient:
         """Simulate a prepared rotating group, unsigned, through the caller's
         algod, with the node taking each signer from the chain. It never
         signs. A failed simulation, and an answer without exactly one group
-        result, is reported in the result's ``failed`` and ``failure_message``
-        fields, not raised.
+        result or with the wrong count of transaction results, is reported in
+        the result's ``failed`` and ``failure_message`` fields, not raised.
 
         It checks the group's effects. It does not prove the stage's
         signatures will pass: the node runs the stage program only on the
@@ -7276,7 +7283,7 @@ class SignerClient:
         txns = prepared._decoded()
         unsigned = [transaction.SignedTransaction(txn, None) for txn in txns]
         response = _run_simulation(algod_client, unsigned, allow_empty_signatures=True)
-        failure = _simulation_failure(response)
+        failure = _simulation_failure(response, len(unsigned))
         return SimulationResult(
             tx_ids=[txn.get_txid() for txn in txns],
             transactions=prepared.transactions,
@@ -8461,25 +8468,42 @@ def _refresh_rotating_validity(
     return rebuilt
 
 
-def _simulation_groups(response: Any) -> Optional[List[Any]]:
-    if not isinstance(response, dict):
-        return None
-    groups = response.get("txn-groups") or response.get("txn_groups")
-    return groups if isinstance(groups, list) else None
+def _present(value: Dict[str, Any], *names: str) -> Any:
+    """The value of the first of names the object holds, chosen by presence:
+    a key that is present is the one read, even when its value is empty."""
+    for name in names:
+        if name in value:
+            return value[name]
+    return None
 
 
-def _simulation_failure(response: Any) -> str:
-    """Why a simulation of one group did anything but pass, or "" when it
-    passed. Signed or not, an answer without exactly one group result checked
-    nothing, and counts as failed."""
-    groups = _simulation_groups(response)
-    if not groups:
+def _simulation_failure(response: Any, submitted: int) -> str:
+    """Why a simulation of one group of ``submitted`` transactions did
+    anything but pass, or "" when it passed. It passes only when the node
+    returned exactly one group result, an object, with no failure message
+    and no failed-at, holding one transaction result per transaction
+    submitted: anything else checked less than the group, so it is a
+    failure. The reason is the node's own failure message, or which of those
+    it was. Signed or not, the rule is the same."""
+    groups = _present(response, "txn-groups", "txn_groups") if isinstance(response, dict) else None
+    if not isinstance(groups, list) or not groups:
         return "the node returned no result for the group"
     if len(groups) != 1:
-        return f"the node returned {len(groups)} group results for one group"
-    if not isinstance(groups[0], dict):
-        return "the node returned a group result that is not an object"
-    return str(groups[0].get("failure-message") or groups[0].get("failure_message") or "")
+        return f"the node returned {len(groups)} results for one group"
+    group = groups[0]
+    if not isinstance(group, dict):
+        return "the node's result for the group is not an object"
+    message = _present(group, "failure-message", "failure_message")
+    if message is not None and message != "":
+        return message if isinstance(message, str) else str(message)
+    failed_at = _present(group, "failed-at", "failed_at")
+    if failed_at is not None and failed_at != []:
+        return "the node reported a failure without a message"
+    results = _present(group, "txn-results", "txn_results")
+    count = len(results) if isinstance(results, list) else 0
+    if count != submitted:
+        return f"the node returned {count} transaction results for {submitted} transactions"
+    return ""
 
 
 def _last_round(status: Any) -> int:

@@ -179,7 +179,7 @@ class FakeNode:
     ``submit`` answers a submission given its bytes; None accepts the group
     and reports its first transaction's ID. ``pending`` answers the pending
     transaction lookup; None confirms in round 12. ``simulate`` answers the
-    simulate endpoint; None reports success. ``auth_addrs`` is the chain's
+    simulate endpoint; None reports success, with a result per transaction. ``auth_addrs`` is the chain's
     auth address per account. ``round`` is the node's current round, and
     ``wait_round`` the round a wait for the next block answers with, when it
     is not that.
@@ -261,7 +261,11 @@ class FakeNode:
                 self.simulated.append(request)
             if self.simulate is not None:
                 return self.simulate()
-            return reply(200, {"last-round": self.round, "version": 2, "txn-groups": [{}]})
+            # A passing group: one result, with one transaction result per
+            # transaction simulated.
+            txns = request.get("txn-groups", [{}])[0].get("txns", [])
+            group = {"txn-results": [{} for _ in txns]}
+            return reply(200, {"last-round": self.round, "version": 2, "txn-groups": [group]})
         if path.startswith("/v2/transactions/pending/"):
             with self.lock:
                 self.lookups += 1

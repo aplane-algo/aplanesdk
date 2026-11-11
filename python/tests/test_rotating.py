@@ -819,6 +819,28 @@ class TestStopsBeforeSigning:
         prepared = f.client.prepare_rotating(f.txn)
         assert f.client.simulate_prepared_rotating(f.node.client, prepared).failed
 
+    @pytest.mark.parametrize(
+        "groups,message",
+        [
+            ([{"txn-results": [{}, {}]}] * 2, "the node returned 2 results for one group"),
+            ([{"txn-results": [{}]}], "the node returned 1 transaction results for 2 transactions"),
+            ([{}], "the node returned 0 transaction results for 2 transactions"),
+            (
+                [{"failed-at": [1], "txn-results": [{}, {}]}],
+                "the node reported a failure without a message",
+            ),
+            ([None], "the node's result for the group is not an object"),
+        ],
+    )
+    def test_an_answer_that_checked_less_than_the_group(self, fakes, groups, message):
+        # The prepared group is the spend and one dummy: two transactions.
+        f = Fixture(fakes)
+        f.node.simulate = lambda: reply(200, {"last-round": 10, "version": 2, "txn-groups": groups})
+        with pytest.raises(RotatingPreflightError) as excinfo:
+            f.send()
+        assert excinfo.value.message == message
+        assert f.signer.count("/sign/rotating/sign") == 0 and f.node.submissions() == []
+
 
 # -----------------------------------------------------------------------------
 # Retries

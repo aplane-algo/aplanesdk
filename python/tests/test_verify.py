@@ -596,7 +596,9 @@ def test_max_fee_increase(limit, fee_raise, count, refused):
         [PreparedTransaction(transaction=txn, auth_address=txn.sender) for txn in txns]
     )
     algod_client = MagicMock()
-    algod_client.simulate_transactions.return_value = {"txn-groups": [{}]}
+    algod_client.simulate_transactions.return_value = {
+        "txn-groups": [{"txn-results": [{}] * count}]
+    }
     calls = [
         ("response", lambda: client.sign_transactions(txns)),
         ("response", lambda: client.sign_transactions_list(txns)),

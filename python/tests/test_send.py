@@ -1400,33 +1400,66 @@ def test_signed_simulation_leaves_the_signers_to_the_signatures(fakes):
     assert "fix-signers" not in request and "allow-empty-signatures" not in request
 
 
+ONE_RESULT = [{}]
+
+
 @pytest.mark.parametrize(
-    "groups,message",
+    "answer,message",
     [
-        (None, "returned no result for the group"),
-        ([], "returned no result for the group"),
-        ([{}, {}], "returned 2 group results for one group"),
-        ([{"failure-message": "logic eval error"}], "logic eval error"),
-        ([{}], ""),
+        ({}, "the node returned no result for the group"),
+        ({"txn-groups": None}, "the node returned no result for the group"),
+        ({"txn-groups": []}, "the node returned no result for the group"),
+        ({"txn-groups": {}}, "the node returned no result for the group"),
+        # The field is chosen by presence: an empty txn-groups is not
+        # replaced by a txn_groups beside it.
+        (
+            {"txn-groups": [], "txn_groups": [{"txn-results": ONE_RESULT}]},
+            "the node returned no result for the group",
+        ),
+        (
+            {"txn-groups": [{"txn-results": ONE_RESULT}, {"txn-results": ONE_RESULT}]},
+            "the node returned 2 results for one group",
+        ),
+        ({"txn-groups": [None]}, "the node's result for the group is not an object"),
+        ({"txn-groups": [7]}, "the node's result for the group is not an object"),
+        (
+            {"txn-groups": [{"failure-message": "logic eval error", "txn-results": ONE_RESULT}]},
+            "logic eval error",
+        ),
+        # A failure message is chosen by presence, and any value but empty
+        # is a failure.
+        (
+            {"txn-groups": [{"failure-message": "", "failure_message": "x", "txn-results": ONE_RESULT}]},
+            "",
+        ),
+        ({"txn-groups": [{"failure-message": 0, "txn-results": ONE_RESULT}]}, "0"),
+        ({"txn-groups": [{"failure-message": False, "txn-results": ONE_RESULT}]}, "False"),
+        (
+            {"txn-groups": [{"failed-at": [0], "txn-results": ONE_RESULT}]},
+            "the node reported a failure without a message",
+        ),
+        ({"txn-groups": [{}]}, "the node returned 0 transaction results for 1 transactions"),
+        (
+            {"txn-groups": [{"txn-results": [{}, {}]}]},
+            "the node returned 2 transaction results for 1 transactions",
+        ),
+        ({"txn-groups": [{"txn-results": ONE_RESULT, "failed-at": []}]}, ""),
+        ({"txn_groups": [{"txn_results": ONE_RESULT}]}, ""),
+        ({"txn-groups": [{"txn-results": ONE_RESULT}]}, ""),
     ],
-    ids=["no groups field", "zero results", "two results", "failed", "passed"],
 )
-def test_a_signed_simulation_needs_exactly_one_group_result(fakes, groups, message):
-    # As in the rotating preflight, an answer without exactly one group
-    # result checked nothing: it is a failure, not a pass.
+def test_a_signed_simulation_passes_only_with_one_full_group_result(fakes, answer, message):
+    # An answer that checked less than the group is a failure, not a pass:
+    # exactly one group result, an object, with no failure message and no
+    # failed-at, holding one transaction result per transaction submitted.
     txn = fake_signer.payment(41, 42)
-    answer = {"last-round": 10, "version": 2}
-    if groups is not None:
-        answer["txn-groups"] = groups
+    answer = dict(answer, **{"last-round": 10, "version": 2})
     signer, node, client = make(
         fakes, SendSigner([ordinary_key(txn)]), FakeNode(simulate=lambda: reply(200, answer))
     )
     result = client.simulate_prepared_group(node.client, prepared_for(txn))
+    assert result.failure_message == message
     assert result.failed is bool(message)
-    if message:
-        assert message in result.failure_message
-    else:
-        assert result.failure_message == ""
 
 
 def test_the_confirmation_wait_follows_a_node_that_jumps_ahead(fakes):

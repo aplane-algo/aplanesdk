@@ -2279,7 +2279,7 @@ class TestClientSideSignedSimulation:
         })
         algod_client = MagicMock()
         algod_client.simulate_transactions.return_value = {
-            "last-round": 7, "version": 2, "txn-groups": [{}],
+            "last-round": 7, "version": 2, "txn-groups": [{"txn-results": [{}]}],
         }
         with patch.object(client, "_discover_approval_wait"), \
              patch.object(client.session, "post", return_value=sign_response):
@@ -2289,6 +2289,7 @@ class TestClientSideSignedSimulation:
             )
 
         simulated = algod_client.simulate_transactions.call_args.args[0].txn_groups[0].txns[0]
+        assert not result.failed
         assert isinstance(simulated, transaction.PQSignedTransaction)
         assert algo_encoding.msgpack_encode(simulated) == signed_b64
         assert result.signed_group == [signed_hex]
