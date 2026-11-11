@@ -288,6 +288,32 @@ describe("sendPrepared", () => {
       assert.equal(node.submitted.length, 0);
     });
 
+    // The cancel a send makes after a lost answer is best-effort: its own
+    // failure, or an answer that cannot be read, neither fails the send in
+    // its place nor hides the lost answer.
+    for (const [name, cancel] of [
+      ["an unreadable cancel answer", { raw: "null" }],
+      ["a cancel answer of the wrong shape", { raw: '{"success":"yes"}' }],
+      ["a refused cancel", { status: 500, body: { error: "boom", code: "internal" } }],
+      ["a dropped cancel", "drop"],
+    ] as Array<[string, FakeReply]>) {
+      it(`a lost answer stays the outcome after ${name}`, async () => {
+        const signer = new SendSigner([ordinaryKey(txn)], { sign: () => "drop" });
+        const { client, algod, node } = fixture(signer);
+        restore?.();
+        restore = installSigners({
+          [SIGNER]: (path, body) => (path === "/sign/cancel" ? (signer.paths.push(path), cancel) : signer.handle(path, body)),
+        });
+        await assert.rejects(client.sendPrepared(algod, preparedFor(txn)), (error: unknown) => {
+          assert.ok(error instanceof SignOutcomeUnknownError, String(error));
+          assert.match(errorText(error.cause), /connection closed/, "the cause is the lost /sign answer");
+          return true;
+        });
+        assert.equal(signer.count("/sign/cancel"), 1);
+        assert.equal(node.submitted.length, 0);
+      });
+    }
+
     it("an unreadable answer is an unknown outcome", async () => {
       const signer = new SendSigner([ordinaryKey(txn)], { sign: () => ({ raw: '{"signed": ["ab' }) });
       const { client, algod, node } = fixture(signer);

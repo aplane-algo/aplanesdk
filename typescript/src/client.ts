@@ -4025,6 +4025,11 @@ export class SignerClient {
     return data;
   }
 
+  /**
+   * Cancel a request whose answer was lost, best-effort: a cancel that fails,
+   * or whose answer cannot be read, neither fails the request in its place
+   * nor replaces its error. Only the public cancelSignRequest reports one.
+   */
   private async bestEffortCancelSignRequest(requestId: string): Promise<void> {
     try {
       await this.cancelSignRequest(requestId);
