@@ -8,7 +8,7 @@ import dataclasses
 from unittest.mock import MagicMock, patch
 
 import pytest
-from algosdk import transaction
+from algosdk import abi, transaction
 
 import aplanesdk
 from aplanesdk import PreparedGroup, PreparedTransaction, SignerClient, SignerError
@@ -18,6 +18,7 @@ from aplanesdk.signer import (
     _validate_group_algo_balance,
     KeyNotFoundError,
     _parse_lsig_resource_usage,
+    _encode_abi_method_args,
     _require_uint,
     _strict_base64,
     send_raw_transaction,
@@ -657,11 +658,20 @@ def test_cosigned_group_takes_the_spendable_key_from_the_signer():
     assert "signer_key" not in {field.name for field in dataclasses.fields(PreparedTransaction)}
     txn = fake_signer.payment()
     sender = txn.sender
-    # Two rows for one address, the non-spending one last.
+    # Two rows for one address, the non-spending one last. A second spendable
+    # row follows as well: the first one is the one chosen, from the fresh
+    # list and from the cache alike.
     signer = _KeysetSigner(
         1,
         [
+            {
+                "address": sender,
+                "key_type": "aplane.witness-falcon1024.v1",
+                "is_spending_account": False,
+                "signing_flow": "witness8",
+            },
             {"address": sender, "key_type": "ed25519", "signing_flow": "cosigner9"},
+            {"address": sender, "key_type": "ed25519", "signing_flow": "cosigner11"},
             {
                 "address": sender,
                 "key_type": "aplane.witness-falcon1024.v1",
@@ -833,3 +843,115 @@ def test_send_raw_transaction_submits_valid_base64():
     algod.send_raw_transaction.return_value = "TXID"
     assert send_raw_transaction(algod, "QUJD") == "TXID"
     algod.send_raw_transaction.assert_called_once_with("QUJD")
+
+
+# Whole config files the Go and TypeScript suites load too. A YAML alias is
+# read as the value it stands for, and the default network must be text like
+# the allowlist's entries.
+
+
+@pytest.mark.parametrize(
+    ("content", "network", "allowed"),
+    [
+        ("nets: &nets [testnet]\nnetworks_allowed: *nets\n", "testnet", ["testnet"]),
+        (
+            "name: &name testnet\nnetworks_allowed: [*name, mainnet]\n",
+            "testnet",
+            ["testnet", "mainnet"],
+        ),
+        ("name: &name mainnet\nnetwork: *name\n", "mainnet", []),
+        ("network: ~\n", "testnet", []),
+        ('network: "1"\n', "1", []),
+        ('network: "1"\nnetworks_allowed: ["1"]\n', "1", ["1"]),
+    ],
+)
+def test_config_reads_aliases_and_a_text_network(tmp_path, content, network, allowed):
+    (tmp_path / "config.yaml").write_text(content)
+    config = load_config(str(tmp_path))
+    assert (config.network, config.networks_allowed) == (network, allowed)
+
+
+@pytest.mark.parametrize(
+    ("content", "message"),
+    [
+        ("n: &n 1\nnetworks_allowed: [*n]\n", "networks_allowed"),
+        ("n: &n {a: b}\nnetworks_allowed: *n\n", "networks_allowed"),
+        ("network: 1\n", "invalid network in config.yaml"),
+        ("network: 1\nnetworks_allowed: [testnet]\n", "invalid network in config.yaml"),
+        ("network: true\n", "invalid network in config.yaml"),
+        ("network: 1.5\n", "invalid network in config.yaml"),
+        ("network: [a]\n", "invalid network in config.yaml"),
+        ("network: Mainnet\n", "invalid network in config.yaml"),
+        ("n: &n 1\nnetwork: *n\n", "invalid network in config.yaml"),
+    ],
+)
+def test_config_refuses_a_network_that_is_not_text(tmp_path, content, message):
+    (tmp_path / "config.yaml").write_text(content)
+    with pytest.raises(SignerError, match=message):
+        load_config(str(tmp_path))
+
+
+@pytest.mark.parametrize("recorded", [(5000, 1999), (1999, 5000)])
+def test_group_balance_uses_the_lowest_recorded_spendable_algo(recorded):
+    """Positions of one sender each read its balance; the lowest value is checked."""
+
+    def position(available):
+        return PreparedTransaction(
+            transaction=fake_signer.payment(amount=0),
+            checks=[
+                PreparedCheck(name="spendable_algo", status="ok", data={"available": available})
+            ],
+        )
+
+    with pytest.raises(SignerError, match="available 1999, required 2000"):
+        _validate_group_algo_balance([position(value) for value in recorded])
+    _validate_group_algo_balance([position(5000), position(2000)])
+    _validate_group_algo_balance([position(2000), position(5000)])
+
+
+def test_abi_bool_refusal_names_the_methods_own_argument():
+    """The error gives the argument's index in the method, and its name if it has one.
+
+    Past 15 arguments the tail is packed into one tuple, and a reference
+    argument is encoded as an index; neither moves the label.
+    """
+    client = make_client()
+    algod = MagicMock()
+    # 17 arguments: the last three are packed into a tuple for encoding.
+    many = "f(" + ",".join(["uint64"] * 17) + ")void"
+    with pytest.raises(ValueError, match="ABI argument 16 must be an integer, not bool"):
+        client.prepare_abi_app_call(
+            algod, sender=SENDER, app_id=7, method_signature=many, args=[1] * 16 + [True]
+        )
+    with pytest.raises(ValueError, match=r"ABI argument 15\[1\] must be an integer, not bool"):
+        client.prepare_abi_app_call(
+            algod,
+            sender=SENDER,
+            app_id=7,
+            method_signature="f(" + ",".join(["uint64"] * 15) + ",(uint8,uint8),uint64)void",
+            args=[1] * 15 + [(1, False), 1],
+        )
+    # Reference arguments before the integer.
+    with pytest.raises(ValueError, match="ABI argument 2 must be an integer, not bool"):
+        client.prepare_abi_app_call(
+            algod,
+            sender=SENDER,
+            app_id=7,
+            method_signature="f(asset,account,uint64)void",
+            args=[1001, RECEIVER, True],
+        )
+    # A transaction argument is refused outright, so it cannot shift a label.
+    with pytest.raises(ValueError, match="ABI transaction arguments are not supported"):
+        client.prepare_abi_app_call(
+            algod, sender=SENDER, app_id=7, method_signature="f(pay,uint64)void", args=[None, True]
+        )
+    algod.suggested_params.assert_not_called()
+
+    # A method that names its arguments has the name in the message.
+    named = abi.Method(
+        "f",
+        [abi.Argument("asset", name="token"), abi.Argument("uint64", name="amount")],
+        abi.Returns("void"),
+    )
+    with pytest.raises(ValueError, match=r"ABI argument 1 \(amount\) must be an integer, not bool"):
+        _encode_abi_method_args(named, [1001, True], SENDER, 7, None, None, None)

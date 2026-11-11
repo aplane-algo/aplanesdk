@@ -1053,8 +1053,20 @@ def load_config(data_dir: str) -> ClientConfig:
                 f'unsupported client routing in config.yaml: remove "{field}" '
                 "and configure endpoints.yaml"
             )
-    if isinstance(data.get("network"), str):
-        config.network = data["network"]
+    network = data.get("network")
+    if network is not None:
+        # The rule of the networks_allowed entries: text, and a network ID.
+        if not isinstance(network, str):
+            raise SignerError(
+                f"invalid network in config.yaml: {network!r} is not text "
+                "(quote it if it is a network ID)"
+            )
+        if _NETWORK_ID.fullmatch(network) is None:
+            raise SignerError(
+                f"invalid network in config.yaml: {network!r} (use lowercase letters, "
+                "digits, '_' or '-', starting with a letter or digit)"
+            )
+        config.network = network
     config.networks_allowed = _parse_networks_allowed(data.get("networks_allowed"))
     if isinstance(data.get("theme"), str) and data["theme"]:
         config.theme = data["theme"]
@@ -2999,13 +3011,17 @@ def _validate_group_algo_balance(transactions: List[PreparedTransaction]) -> Pre
         if item.transaction is None:
             raise ValueError("group transaction is required")
         sender = item.transaction.sender
-        total = totals.setdefault(sender, {"available": 0, "required": 0})
+        total = totals.setdefault(sender, {"required": 0})
         amount = 0
         if isinstance(item.transaction, transaction.PaymentTxn):
             amount = int(item.transaction.amt)
         total["required"] += amount + int(getattr(item.transaction, "fee", 0))
         try:
-            total["available"] = _recorded_spendable_algo(item)
+            # The lowest value recorded for the sender: each position read the
+            # balance on its own, and the check must not depend on their order.
+            total["available"] = min(
+                _recorded_spendable_algo(item), total.get("available", _UINT64_LIMIT)
+            )
         except SignerError as e:
             raise SignerError(f"group transaction {index}, sender {sender}: {e}") from None
     for sender, total in totals.items():
@@ -3105,10 +3121,15 @@ def _encode_abi_method_args(
             ref_arg_types.append(arg_type)
             ref_arg_values.append(arg_value)
             abi_type = abi.ABIType.from_string("uint8")
-        elif isinstance(arg_type, str):
-            abi_type = abi.ABIType.from_string(arg_type)
         else:
-            abi_type = arg_type
+            abi_type = abi.ABIType.from_string(arg_type) if isinstance(arg_type, str) else arg_type
+            # Checked here, against the method's own argument list, so the
+            # error names the argument the caller passed and not a position
+            # in the list as it is packed for encoding.
+            label = f"ABI argument {index}"
+            if getattr(method_arg, "name", None):
+                label += f" ({method_arg.name})"
+            _refuse_bool_for_abi_integer(abi_type, arg_value, label)
 
         basic_arg_types.append(abi_type)
         basic_arg_values.append(arg_value)
@@ -3142,8 +3163,7 @@ def _encode_abi_method_args(
         basic_arg_values.append(tuple_values)
 
     encoded_args = [method.get_selector()]
-    for position, (arg_type, arg_value) in enumerate(zip(basic_arg_types, basic_arg_values)):
-        _refuse_bool_for_abi_integer(arg_type, arg_value, f"ABI argument {position}")
+    for arg_type, arg_value in zip(basic_arg_types, basic_arg_values):
         encoded_args.append(arg_type.encode(arg_value))
 
     return encoded_args, resolved_accounts, resolved_apps, resolved_assets
@@ -3898,12 +3918,12 @@ class SignerClient:
             )
             keys.append(key_info)
             # One record per address. Should the signer list an address
-            # twice, the spendable row is the one kept.
+            # twice, the first spendable row is the one kept, the row
+            # _find_spendable_key picks from the list itself, so a lookup
+            # answers the same from a fresh list and from the cache.
             kept = self._key_cache.get(key_info.address)
-            if (
-                kept is not None
-                and kept.is_spending_account is not False
-                and key_info.is_spending_account is False
+            if kept is not None and (
+                kept.is_spending_account is not False or key_info.is_spending_account is False
             ):
                 continue
             self._key_cache[key_info.address] = key_info

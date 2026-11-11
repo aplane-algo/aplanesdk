@@ -7,7 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
-	"regexp"
+	"strings"
 
 	"github.com/algorand/go-algorand-sdk/v2/encoding/msgpack"
 	"github.com/algorand/go-algorand-sdk/v2/types"
@@ -50,20 +50,22 @@ func BytesToHex(b []byte) string {
 	return hex.EncodeToString(b)
 }
 
-// strictBase64 is standard base64 and nothing else: the standard alphabet in
-// groups of four, padded.
-var strictBase64 = regexp.MustCompile(`^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$`)
-
 // Base64ToBytes converts a standard, padded base64 string to bytes. It is the
 // SDK's one base64 decoder. base64.StdEncoding alone skips carriage returns
 // and line feeds, so it takes strings the Python and TypeScript SDKs refuse;
 // here a line break, like any other character outside the alphabet, is an
 // error.
 func Base64ToBytes(s string) ([]byte, error) {
-	if !strictBase64.MatchString(s) {
+	// The decoder refuses everything else that is not standard padded base64;
+	// the two line-break characters are the ones it skips.
+	if strings.ContainsAny(s, "\r\n") {
 		return nil, fmt.Errorf("not valid base64")
 	}
-	return base64.StdEncoding.DecodeString(s)
+	decoded, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return nil, fmt.Errorf("not valid base64")
+	}
+	return decoded, nil
 }
 
 // BytesToBase64 converts bytes to base64 string.

@@ -114,6 +114,7 @@ import {
   validateCanonicalGroupID,
   validatePlanResponse,
   validateSignResponse,
+  wholeNumber,
 } from "./verify.js";
 import {
   SSH_USERNAME,
@@ -307,10 +308,11 @@ function validateBoundedTargetFees(
     if (index < 0 || index >= planned.length) {
       throw new SignerError(`bounded target index ${index} is outside planned group`);
     }
-    if (!Number.isSafeInteger(maxFee) || maxFee < 0) {
+    const ceiling = wholeNumber(maxFee);
+    if (ceiling === undefined || ceiling < 0n) {
       throw new SignerError(`bounded target ${index} has invalid advertised max_fee`);
     }
-    if (planned[index].fee > BigInt(maxFee)) {
+    if (planned[index].fee > ceiling) {
       throw new SignerError(
         `bounded target ${index} fee ${planned[index].fee} exceeds advertised max_fee ${maxFee}`,
       );
@@ -1624,16 +1626,14 @@ const UINT64_LIMIT = 1n << 64n;
  * mistake in the caller, not a number to be converted.
  */
 function requireUint(value: unknown, name: string, positive = false): bigint {
-  const whole =
-    typeof value === "bigint" || (typeof value === "number" && Number.isSafeInteger(value));
-  if (!whole) {
+  const big = wholeNumber(value);
+  if (big === undefined) {
     throw new SignerError(
       `${name} must be a whole number (a safe integer or a bigint), not ${
         typeof value === "number" ? value : typeof value
       }`,
     );
   }
-  const big = BigInt(value as number | bigint);
   if (big < 0n || big >= UINT64_LIMIT || (positive && big === 0n)) {
     throw new SignerError(
       `${name} must be ${positive ? "a positive" : "a non-negative"} whole number below 2**64`,
@@ -1912,17 +1912,23 @@ function validateKeyregParams(params: KeyregPrepParams): void {
  * record is refused.
  */
 function validateGroupAlgoBalance(transactions: PreparedTransaction[]): PreparedCheck {
-  const totals = new Map<string, { available: bigint; required: bigint }>();
+  const totals = new Map<string, { available?: bigint; required: bigint }>();
   transactions.forEach((item, index) => {
     if (!item.transaction) {
       throw new SignerError("group transaction is required");
     }
     const txn = item.transaction as any;
     const sender = txn.sender.toString();
-    const total = totals.get(sender) || { available: 0n, required: 0n };
+    const total: { available?: bigint; required: bigint } =
+      totals.get(sender) || { required: 0n };
     total.required += BigInt(txn.payment?.amount || 0) + BigInt(txn.fee || 0);
     try {
-      total.available = recordedSpendableAlgo(item);
+      // The lowest value recorded for the sender: each position read the
+      // balance on its own, and the check must not depend on their order.
+      const available = recordedSpendableAlgo(item);
+      if (total.available === undefined || available < total.available) {
+        total.available = available;
+      }
     } catch (error) {
       throw new SignerError(
         `group transaction ${index}, sender ${sender}: ${(error as Error).message}`,
@@ -1931,7 +1937,7 @@ function validateGroupAlgoBalance(transactions: PreparedTransaction[]): Prepared
     totals.set(sender, total);
   });
   for (const [sender, total] of totals) {
-    if (total.available < total.required) {
+    if ((total.available ?? 0n) < total.required) {
       throw new SignerError(
         `group insufficient funds for ${sender}: available ${total.available}, required ${total.required}`,
       );
@@ -2600,9 +2606,11 @@ export class SignerClient {
       };
       keys.push(keyInfo);
       // One record per address. Should the signer list an address twice, the
-      // spendable row is the one kept.
+      // first spendable row is the one kept, the row findSpendableKey picks
+      // from the list itself, so a lookup answers the same from a fresh list
+      // and from the cache.
       const kept = this.keyCache.get(keyInfo.address);
-      if (kept && kept.isSpendingAccount !== false && keyInfo.isSpendingAccount === false) {
+      if (kept && (kept.isSpendingAccount !== false || keyInfo.isSpendingAccount === false)) {
         continue;
       }
       this.keyCache.set(keyInfo.address, keyInfo);

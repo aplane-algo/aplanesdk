@@ -1230,6 +1230,7 @@ func addChecked(total, value uint64) (uint64, bool) {
 func groupAlgoBalanceCheck(items []PreparedTransaction) (PreparedCheck, error) {
 	type totals struct {
 		available uint64
+		recorded  bool
 		required  uint64
 	}
 	bySender := map[string]*totals{}
@@ -1258,7 +1259,11 @@ func groupAlgoBalanceCheck(items []PreparedTransaction) (PreparedCheck, error) {
 		if err != nil {
 			return PreparedCheck{}, fmt.Errorf("group transaction %d, sender %s: %w", index, sender, err)
 		}
-		total.available = available
+		// The lowest value recorded for the sender: each position read the
+		// balance on its own, and the check must not depend on their order.
+		if !total.recorded || available < total.available {
+			total.available, total.recorded = available, true
+		}
 	}
 	for sender, total := range bySender {
 		if total.available < total.required {

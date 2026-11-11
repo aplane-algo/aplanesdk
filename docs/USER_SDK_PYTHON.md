@@ -199,7 +199,7 @@ This path:
   when that list is set, and one whose `networks_allowed` is not a list of
   network IDs written as text (a malformed list is an error, never an empty
   one; a bare number, `true`/`false` or an empty entry is refused, so quote a
-  name such as `"1"`). Quote a network name that YAML could read as a boolean, such as `"on"`, `"yes"` or `"no"`.
+  name such as `"1"`). Quote a network name that YAML could read as a boolean, such as `"on"`, `"yes"` or `"no"`. The `network` value follows the same rule: it must be text and a network ID, and a bare number or `true`/`false` is refused.
 - validates `config.yaml` contains no obsolete routing,
 - loads and selects an endpoint from `endpoints.yaml`,
 - resolves SSH paths relative to the client data dir,
@@ -522,7 +522,8 @@ Important behavior:
   group: the ALGO it sends plus the fee of every position it sends, asset
   transfers included. The check is named `group_algo_balance`. It reads each
   sender's spendable ALGO from the `spendable_algo` check that the payment and
-  asset-transfer helpers record on every position, and refuses a position
+  asset-transfer helpers record on every position (the lowest value, when a
+  sender has several positions), and refuses a position
   that lacks that check or whose `available` value is not a non-negative integer
 - `prepare_asa_transfer()` checks the transfer's fee against the sender's spendable ALGO
   itself, so one transfer is refused alone exactly as it is in a group. Its

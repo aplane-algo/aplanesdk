@@ -24,6 +24,17 @@ export const DUMMY_PROGRAM = new Uint8Array([0x03, 0x31, 0x20, 0x32, 0x03, 0x12]
 const UINT64_MAX = (1n << 64n) - 1n;
 
 /**
+ * The SDK's one whole-number check: a bigint, or a number that is a safe
+ * integer, as a bigint. Anything else (a fraction, NaN, a string, a boolean)
+ * is undefined. Callers add their own bounds and error text.
+ */
+export function wholeNumber(value: unknown): bigint | undefined {
+  if (typeof value === "bigint") return value;
+  if (typeof value === "number" && Number.isSafeInteger(value)) return BigInt(value);
+  return undefined;
+}
+
+/**
  * Validate a max fee increase setting: unset, or a non-negative whole number
  * of microAlgos. The value is returned as given, so a caller reads back what
  * it set; null is treated as unset.
@@ -34,7 +45,8 @@ export function checkMaxFeeIncrease(
   if (value === undefined || value === null) {
     return undefined;
   }
-  if (typeof value === "bigint" ? value >= 0n : Number.isSafeInteger(value) && value >= 0) {
+  const whole = wholeNumber(value);
+  if (whole !== undefined && whole >= 0n) {
     return value;
   }
   throw new SignerError(

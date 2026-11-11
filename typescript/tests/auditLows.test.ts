@@ -280,6 +280,29 @@ describe("group ALGO balance", () => {
     ["a fractional amount", () => [{ name: "spendable_algo", status: "ok", data: { available: 5000.5 } }], /available amount must be/],
     ["a negative amount", () => [{ name: "spendable_algo", status: "ok", data: { available: -1n } }], /available amount must be/],
   ];
+  // Positions of one sender each read its balance on their own. The group
+  // check takes the lowest value recorded, whatever their order.
+  for (const recorded of [[5000n, 1999n], [1999n, 5000n], [5000n, 2000n], [2000n, 5000n]]) {
+    it(`checks the lowest spendable ALGO recorded for a sender (${recorded.join(", ")})`, async () => {
+      holdingBoth();
+      const client = new SignerClient("http://localhost:11270");
+      const real = client.prepareAsaTransfer.bind(client);
+      let calls = 0;
+      (client as any).prepareAsaTransfer = async (algod: any, params: any) => {
+        const prepared = await real(algod, params);
+        const own = (prepared.checks || []).filter((check) => check.name !== "spendable_algo");
+        const spendable = { name: "spendable_algo", status: "ok", data: { available: recorded[calls++] } };
+        return { ...prepared, checks: [...own, spendable] };
+      };
+      const group = client.prepareAsaTransferGroup(algodWith(accounts(2_000_000)), [transfer, transfer]);
+      if (recorded.includes(1999n)) {
+        await assert.rejects(group, /available 1999, required 2000/);
+      } else {
+        await group;
+      }
+    });
+  }
+
   for (const [name, change, message] of tampered) {
     it(`refuses a group position with ${name} for its spendable ALGO`, async () => {
       holdingBoth();
@@ -480,11 +503,15 @@ describe("cosigned group key record", () => {
     const sender = txn.sender.toString();
     const userClient = new SignerClient("http://localhost:11270");
     const witness = { address: sender, key_type: "aplane.witness-falcon1024.v1", is_spending_account: false };
-    // Two rows for one address, the non-spending one last.
+    // Two rows for one address, the non-spending one last. A second spendable
+    // row follows as well: the first one is the one chosen, from the fresh
+    // list and from the cache alike.
     const signer = {
       revision: 1,
       keys: [
+        { ...witness, signing_flow: "witness8" },
         { address: sender, key_type: "ed25519", signing_flow: "cosigner9" },
+        { address: sender, key_type: "ed25519", signing_flow: "cosigner11" },
         { ...witness, signing_flow: "witness9" },
       ] as Record<string, unknown>[],
       fetches: 0,
@@ -645,6 +672,55 @@ describe("networks_allowed", () => {
       const dir = write(`network: testnet\nnetworks_allowed: ${value}\n`);
       try {
         assert.deepEqual(loadConfig(dir).networksAllowed, allowed);
+      } finally {
+        fs.rmSync(dir, { recursive: true });
+      }
+    });
+  }
+
+  // Whole config files the Go and Python suites load too. A YAML alias is
+  // read as the value it stands for, and the default network must be text
+  // like the allowlist's entries.
+  const loadable: Array<[string, string, string[]]> = [
+    ["nets: &nets [testnet]\nnetworks_allowed: *nets\n", "testnet", ["testnet"]],
+    ["name: &name testnet\nnetworks_allowed: [*name, mainnet]\n", "testnet", ["testnet", "mainnet"]],
+    ["name: &name mainnet\nnetwork: *name\n", "mainnet", []],
+    ["network: ~\n", "testnet", []],
+    ["network: \"1\"\n", "1", []],
+    ["network: \"1\"\nnetworks_allowed: [\"1\"]\n", "1", ["1"]],
+  ];
+  for (const [content, network, allowed] of loadable) {
+    it(`loads ${JSON.stringify(content)}`, () => {
+      const dir = write(content);
+      try {
+        const config = loadConfig(dir);
+        assert.equal(config.network, network);
+        assert.deepEqual(config.networksAllowed, allowed);
+      } finally {
+        fs.rmSync(dir, { recursive: true });
+      }
+    });
+  }
+  const refusedFiles: Array<[string, RegExp]> = [
+    ["n: &n 1\nnetworks_allowed: [*n]\n", /networks_allowed/],
+    ["n: &n {a: b}\nnetworks_allowed: *n\n", /networks_allowed/],
+    ["network: 1\n", /invalid network in config.yaml/],
+    ["network: 1\nnetworks_allowed: [testnet]\n", /invalid network in config.yaml/],
+    ["network: true\n", /invalid network in config.yaml/],
+    ["network: 1.5\n", /invalid network in config.yaml/],
+    ["network: [a]\n", /invalid network in config.yaml/],
+    ["network: Mainnet\n", /invalid network in config.yaml/],
+    ["n: &n 1\nnetwork: *n\n", /invalid network in config.yaml/],
+  ];
+  for (const [content, message] of refusedFiles) {
+    it(`refuses ${JSON.stringify(content)}`, () => {
+      const dir = write(content);
+      try {
+        assert.throws(() => loadConfig(dir), (error: unknown) => {
+          assert.ok(error instanceof sdk.SignerError);
+          assert.match(error.message, message);
+          return true;
+        });
       } finally {
         fs.rmSync(dir, { recursive: true });
       }

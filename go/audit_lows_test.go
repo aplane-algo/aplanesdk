@@ -281,8 +281,12 @@ func TestCosignedGroupTakesTheSpendableKeyFromTheSigner(t *testing.T) {
 
 	// Two rows for one address, the non-spending one last. The spendable row
 	// decides the flow, on the fresh read and again from the cache.
+	// A second spendable row follows as well: the first one is the one
+	// chosen, from the fresh list and from the cache alike.
 	signer := &keysetSigner{revision: 1, keys: []KeyInfo{
+		{Address: sender, KeyType: KeyTypeWitnessFalcon1024, IsSpendingAccount: &notSpending, SigningFlow: "witness8"},
 		{Address: sender, KeyType: "ed25519", SigningFlow: "cosigner9"},
+		{Address: sender, KeyType: "ed25519", SigningFlow: "cosigner11"},
 		{Address: sender, KeyType: KeyTypeWitnessFalcon1024, IsSpendingAccount: &notSpending, SigningFlow: "witness9"},
 	}}
 	client, closeServer := signer.client(t)
@@ -618,6 +622,83 @@ func TestBase64IsStrictAtEverySite(t *testing.T) {
 		_, err = client.SignTransactionsWithOptions([]types.Transaction{txn}, []string{""}, nil, &SignOptions{Passthrough: map[int]string{0: bad}})
 		if err == nil || !strings.Contains(err.Error(), "invalid passthrough transaction 1: invalid base64: not valid base64") {
 			t.Fatalf("passthrough %q: error = %v, want a refusal", bad, err)
+		}
+	}
+}
+
+// Whole config files the Python and TypeScript suites load too. A YAML alias
+// is read as the value it stands for, for the list and for an entry, and the
+// default network must be text like the allowlist's entries: yaml.v3 alone
+// would read a bare 1 or true into the string field as "1" or "true".
+func TestLoadConfigNetworkAliasesAndTextNetwork(t *testing.T) {
+	load := func(content string) (*Config, error) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return LoadConfig(dir)
+	}
+	for _, tc := range []struct {
+		content string
+		network string
+		allowed []string
+	}{
+		{"nets: &nets [testnet]\nnetworks_allowed: *nets\n", "testnet", []string{"testnet"}},
+		{"name: &name testnet\nnetworks_allowed: [*name, mainnet]\n", "testnet", []string{"testnet", "mainnet"}},
+		{"name: &name mainnet\nnetwork: *name\n", "mainnet", []string{}},
+		{"network: ~\n", "testnet", []string{}},
+		{"network: \"1\"\n", "1", []string{}},
+		{"network: \"1\"\nnetworks_allowed: [\"1\"]\n", "1", []string{"1"}},
+	} {
+		config, err := load(tc.content)
+		if err != nil {
+			t.Fatalf("%q: error = %v", tc.content, err)
+		}
+		if config.Network != tc.network || strings.Join(config.NetworksAllowed, ",") != strings.Join(tc.allowed, ",") {
+			t.Fatalf("%q: network = %q, allowed = %q, want %q, %q", tc.content, config.Network, config.NetworksAllowed, tc.network, tc.allowed)
+		}
+	}
+	for _, tc := range []struct{ content, want string }{
+		{"n: &n 1\nnetworks_allowed: [*n]\n", "networks_allowed"},
+		{"n: &n {a: b}\nnetworks_allowed: *n\n", "networks_allowed"},
+		{"network: 1\n", "invalid network in config.yaml"},
+		{"network: 1\nnetworks_allowed: [testnet]\n", "invalid network in config.yaml"},
+		{"network: true\n", "invalid network in config.yaml"},
+		{"network: 1.5\n", "invalid network in config.yaml"},
+		{"network: [a]\n", "invalid network in config.yaml"},
+		{"network: Mainnet\n", "invalid network in config.yaml"},
+		{"n: &n 1\nnetwork: *n\n", "invalid network in config.yaml"},
+	} {
+		if _, err := load(tc.content); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%q: error = %v, want a refusal naming %q", tc.content, err, tc.want)
+		}
+	}
+}
+
+// Several positions of one sender each read its balance on their own. The
+// group check takes the lowest value recorded, whatever their order.
+func TestGroupBalanceUsesTheLowestRecordedSpendableAlgo(t *testing.T) {
+	sender, err := types.DecodeAddress(sdkTestAddress(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	position := func(available uint64) PreparedTransaction {
+		txn := types.Transaction{Type: types.PaymentTx, Header: types.Header{Sender: sender, Fee: 1000}}
+		return PreparedTransaction{
+			Transaction: &txn,
+			Checks:      []PreparedCheck{{Name: spendableAlgoCheckName, Data: map[string]any{"available": available}}},
+		}
+	}
+	for _, order := range [][]uint64{{5000, 1999}, {1999, 5000}} {
+		_, err := groupAlgoBalanceCheck([]PreparedTransaction{position(order[0]), position(order[1])})
+		if err == nil || !strings.Contains(err.Error(), "available 1999, required 2000") {
+			t.Fatalf("recorded %v: error = %v, want the lowest value checked", order, err)
+		}
+	}
+	for _, order := range [][]uint64{{5000, 2000}, {2000, 5000}, {0, 0}} {
+		_, err := groupAlgoBalanceCheck([]PreparedTransaction{position(order[0]), position(order[1])})
+		if (order[0] == 0) != (err != nil) {
+			t.Fatalf("recorded %v: error = %v", order, err)
 		}
 	}
 }

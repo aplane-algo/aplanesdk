@@ -107,7 +107,20 @@ export function loadConfig(dataDir: string): ClientConfig {
         );
       }
     }
-    if (typeof data.network === "string") config.network = data.network;
+    if (data.network !== undefined && data.network !== null) {
+      // The rule of the networks_allowed entries: text, and a network ID.
+      if (typeof data.network !== "string") {
+        throw new SignerError(
+          `invalid network in config.yaml: ${JSON.stringify(data.network)} is not text (quote it if it is a network ID)`,
+        );
+      }
+      if (!NETWORK_ID.test(data.network)) {
+        throw new SignerError(
+          `invalid network in config.yaml: ${JSON.stringify(data.network)} (use lowercase letters, digits, '_' or '-', starting with a letter or digit)`,
+        );
+      }
+      config.network = data.network;
+    }
     config.networksAllowed = parseNetworksAllowed(data.networks_allowed);
     if (typeof data.theme === "string" && data.theme) config.theme = data.theme;
     if (!isNetworkAllowed(config, config.network)) {
