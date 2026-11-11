@@ -1213,6 +1213,12 @@ export const ErrorCodes = {
   RotatingStageUnproven: "rotating_stage_unproven",
   /** 409: the account's authorizer moved between prepare and sign; nothing was signed. */
   RotatingStageChanged: "rotating_stage_changed",
+  /**
+   * 409: the rotating spend's validity window is not acceptable at the round
+   * the signer read. This attempt released no signature; rebuild the validity
+   * rounds and prepare again.
+   */
+  RotatingWindowNotCurrent: "rotating_window_not_current",
   Internal: "internal",
 } as const;
 

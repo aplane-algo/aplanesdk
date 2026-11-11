@@ -179,6 +179,10 @@ ERR_CODE_ROTATING_SIGNING_REQUIRED = "rotating_signing_required"
 ERR_CODE_ROTATING_STAGE_UNPROVEN = "rotating_stage_unproven"
 # 409: the account's authorizer moved between prepare and sign; nothing was signed.
 ERR_CODE_ROTATING_STAGE_CHANGED = "rotating_stage_changed"
+# 409: the rotating spend's validity window is not acceptable at the round the
+# signer read. This attempt released no signature; rebuild the validity rounds
+# and prepare again.
+ERR_CODE_ROTATING_WINDOW_NOT_CURRENT = "rotating_window_not_current"
 
 
 class SignerError(Exception):

@@ -96,6 +96,11 @@ const (
 	// ErrCodeRotatingStageChanged (409): the account's authorizer moved
 	// between prepare and sign; nothing was signed.
 	ErrCodeRotatingStageChanged = "rotating_stage_changed"
+	// ErrCodeRotatingWindowNotCurrent (409): the rotating spend's validity
+	// window is not acceptable at the round the signer read: its first valid
+	// round is too far ahead, or too few rounds remain. This attempt released
+	// no signature; rebuild the validity rounds and prepare again.
+	ErrCodeRotatingWindowNotCurrent = "rotating_window_not_current"
 )
 
 // APIError preserves the HTTP status, stable wire error code, and message of
