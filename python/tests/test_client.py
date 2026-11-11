@@ -877,6 +877,32 @@ class TestSpecializedLowLevelEndpoints:
                     target_indices=[0],
                 ))
 
+    def test_request_components_reads_a_null_field_in_a_component_as_zero(self):
+        # Null means zero at every depth, as the Go SDK decodes it: a null
+        # target_index is position 0, and a null path is no path.
+        client = make_client()
+        resp = mock_response(200, {
+            "request_id": "sdk-component",
+            "components": [{
+                "target_index": None,
+                "kind": "cosigner",
+                "signature": "aabb",
+                "signature_scheme": KEY_TYPE_WITNESS_FALCON1024,
+                "path": None,
+            }],
+        })
+
+        with patch.object(client.session, "post", return_value=resp):
+            result = client.request_components(component_request(
+                request_id="sdk-component",
+                role=TEST_COMPONENT_KIND_COSIGNER,
+                group_bytes_hex=["5458aa"],
+                target_indices=[0],
+            ))
+
+        assert result.components[0]["target_index"] == 0
+        assert result.components[0]["path"] == ""
+
     def test_request_assemble_posts_to_assemble_endpoint(self):
         client = make_client()
         resp = mock_response(200, {
@@ -2145,6 +2171,29 @@ class TestClientSideSignedSimulation:
         assert isinstance(simulated, transaction.PQSignedTransaction)
         assert algo_encoding.msgpack_encode(simulated) == signed_b64
         assert result.signed_group == [signed_hex]
+
+    def test_a_null_count_in_the_mutation_report_reads_as_zero(self):
+        # A null foreign_count is zero foreign positions, as the Go SDK reads
+        # it, not a crash after the signer has signed.
+        txn = fake_signer.payment(41, 42)
+        client = make_client()
+        sign_response = mock_response(200, {
+            "signed": [fake_signer.signed_hex(txn)],
+            "mutations": {"original_count": 1, "final_count": 1, "foreign_count": None},
+        })
+        algod_client = MagicMock()
+        algod_client.simulate_transactions.return_value = {
+            "txn-groups": [{"txn-results": [{}]}],
+        }
+        with patch.object(client, "_discover_approval_wait"), \
+             patch.object(client.session, "post", return_value=sign_response):
+            result = client.simulate_prepared_group(
+                algod_client,
+                PreparedGroup([PreparedTransaction(transaction=txn, auth_address=txn.sender)]),
+            )
+
+        assert result.mutations["foreign_count"] == 0
+        assert result.signed_group == [fake_signer.signed_hex(txn)]
 
     def test_requires_algod_before_contacting_signer(self):
         client = make_client()

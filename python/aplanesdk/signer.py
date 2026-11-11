@@ -599,6 +599,8 @@ def _check_wire_value(value: Any, kind: Any, label: str) -> Any:
             raise _WireShapeError(f"{label} is not an object")
         _check_wire_shape(value, kind, label)
         return value
+    if isinstance(kind, tuple) and kind[0] == "ptr":  # ("ptr", kind): null is None
+        return _check_wire_value(value, kind[1], label)
     if isinstance(kind, tuple):  # ("list", element object shape)
         if not isinstance(value, list):
             raise _WireShapeError(f"{label} is not a list")
@@ -652,10 +654,17 @@ _WIRE_TYPE_NAMES = {
 
 def _check_wire_shape(data: Dict[str, Any], shape: Dict[str, Any], label: str) -> None:
     """Check an object's known fields; absent and null fields take their
-    zero values, and unknown fields are ignored, as in Go's decoding."""
+    zero values, and unknown fields are ignored, as in Go's decoding. A field
+    sent as null is replaced by its zero value, at every depth, so a null
+    inside a nested object or list entry reads as Go reads it; one left out
+    stays out."""
     for name, kind in shape.items():
-        value = data.get(name)
-        if value is not None:
+        if name not in data:
+            continue
+        value = data[name]
+        if value is None:
+            data[name] = _wire_zero(kind)
+        else:
             data[name] = _check_wire_value(value, kind, f"{label} field {name}")
 
 
@@ -720,8 +729,10 @@ _ASSEMBLY_RESPONSE_SHAPE: Dict[str, Any] = {
 
 def _wire_zero(kind: Any) -> Any:
     """The zero value of a wire type: None for an object, which Go holds by
-    pointer."""
+    pointer, and for a value Go holds by pointer."""
     if isinstance(kind, dict):
+        return None
+    if isinstance(kind, tuple) and kind[0] == "ptr":
         return None
     if isinstance(kind, tuple) or kind in ("strs", "ints"):
         return []
