@@ -15,13 +15,19 @@ import (
 
 var cosignedDummyProgram = []byte{0x03, 0x31, 0x20, 0x32, 0x03, 0x12}
 
+// cosignedDummyOpcodeCost is the opcode cost of one run of cosignedDummyProgram:
+// txn RekeyTo, global ZeroAddress and ==, three opcodes costing 1 each, with no
+// branch. It matches apsigner's signing.DummyOpcodeCost. A test derives it from
+// the program bytes.
+const cosignedDummyOpcodeCost uint64 = 3
+
 // cosignedDummyLogicSigResources must exactly mirror apsigner's canonical
 // dummy lsigresource.Usage. /plan and /sign must see the same declaration to
 // keep fee planning idempotent across cosigned assembly.
 func cosignedDummyLogicSigResources() *LogicSigResourceUsage {
 	return &LogicSigResourceUsage{
 		ProgramBytes:  uint64(len(cosignedDummyProgram)),
-		MaxOpcodeCost: 1,
+		MaxOpcodeCost: cosignedDummyOpcodeCost,
 	}
 }
 

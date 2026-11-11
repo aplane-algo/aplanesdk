@@ -7,9 +7,11 @@ import algosdk from "algosdk";
 import {
   SignerClient,
   boundedFeeCeiling,
+  cosignedDummyLogicSigResources,
   signPreparedCosignedGroup,
   simulatePreparedCosignedGroup,
 } from "../src/client.js";
+import { DUMMY_OPCODE_COST, DUMMY_PROGRAM } from "../src/verify.js";
 import {
   KEY_TYPE_WITNESS_FALCON1024,
   SIGNING_FLOW_COSIGNED1,
@@ -4848,5 +4850,64 @@ describe("boundedFeeCeiling", () => {
     assert.throws(() => boundedFeeCeiling(info("bounded2")), /has no max_fee/);
     assert.throws(() => boundedFeeCeiling(info("plain1", 0)), /never has/);
     assert.throws(() => boundedFeeCeiling(info("bounded3", 1)), /not supported/);
+  });
+});
+
+describe("resource dummy opcode cost", () => {
+  // Exactly the opcodes the dummy program uses: the immediate bytes each takes
+  // and its cost, which is 1 in every AVM version. None branches, so a program
+  // built only from them is straight-line and the sum of its opcode costs is
+  // the cost of every run. An opcode missing here fails the test rather than
+  // being guessed at.
+  const opcodes = new Map<number, { name: string; immediates: number; cost: number; fields?: Map<number, string> }>([
+    [0x12, { name: "==", immediates: 0, cost: 1 }],
+    [0x31, { name: "txn", immediates: 1, cost: 1, fields: new Map([[32, "RekeyTo"]]) }],
+    [0x32, { name: "global", immediates: 1, cost: 1, fields: new Map([[3, "ZeroAddress"]]) }],
+  ]);
+
+  it("is derived from the program bytes", () => {
+    // A version below 128 is a one-byte varuint.
+    assert.equal(DUMMY_PROGRAM[0], 3, "dummy program version");
+    let cost = 0;
+    const listing: string[] = [];
+    for (let pc = 1; pc < DUMMY_PROGRAM.length; ) {
+      const op = opcodes.get(DUMMY_PROGRAM[pc]);
+      assert.ok(op, `dummy program opcode 0x${DUMMY_PROGRAM[pc].toString(16)} at pc ${pc} has no cost in this test's table`);
+      assert.ok(pc + 1 + op.immediates <= DUMMY_PROGRAM.length, `dummy program opcode ${op.name} at pc ${pc} is truncated`);
+      let text = op.name;
+      if (op.immediates === 1) {
+        const field = op.fields?.get(DUMMY_PROGRAM[pc + 1]);
+        assert.ok(field, `dummy program ${op.name} field ${DUMMY_PROGRAM[pc + 1]} at pc ${pc} is not in this test's table`);
+        text += ` ${field}`;
+      }
+      listing.push(text);
+      cost += op.cost;
+      pc += 1 + op.immediates;
+    }
+    assert.equal(listing.join("; "), "txn RekeyTo; global ZeroAddress; ==");
+    assert.equal(cost, DUMMY_OPCODE_COST);
+  });
+
+  // The signer plans one LogicSig declaring 39,999 with two dummies, not one:
+  // counted at the program's real 3, one dummy leaves the group at 40,002,
+  // over two transactions' 40,000, and two give 40,005 within three
+  // transactions' 60,000. apsigner's planner tests pin the same case. The SDK
+  // declares each dummy it hands back at /sign the same way, so the signer
+  // re-plans the frozen group at the size it planned it.
+  it("is what the cosigned dummy declaration counts", () => {
+    const dummy = cosignedDummyLogicSigResources();
+    assert.deepEqual(dummy, {
+      programBytes: DUMMY_PROGRAM.length,
+      argumentBytes: 0,
+      maxOpcodeCost: DUMMY_OPCODE_COST,
+    });
+    const target = 39_999;
+    const perTransaction = 20_000;
+    const oneDummy = target + dummy.maxOpcodeCost;
+    assert.equal(oneDummy, 40_002);
+    assert.ok(oneDummy > 2 * perTransaction, "one dummy must be over two transactions' budget");
+    const twoDummies = target + 2 * dummy.maxOpcodeCost;
+    assert.equal(twoDummies, 40_005);
+    assert.ok(twoDummies <= 3 * perTransaction, "two dummies must fit three transactions' budget");
   });
 });
