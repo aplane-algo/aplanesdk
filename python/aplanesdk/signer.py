@@ -2825,9 +2825,9 @@ def _validate_keyreg_params(
 ) -> None:
     if not mode:
         raise ValueError('mode is required: "online" or "offline"')
-    for name, value in (("votefst", votefst), ("votelst", votelst), ("votekd", votekd)):
-        if value is not None:
-            _require_uint(value, name)
+    for field_name, number in (("votefst", votefst), ("votelst", votelst), ("votekd", votekd)):
+        if number is not None:
+            _require_uint(number, field_name)
     if mode == "offline":
         if incentive_eligible:
             raise ValueError("incentive eligibility needs an online keyreg")
