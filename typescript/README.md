@@ -12,6 +12,9 @@ The native-Falcon SDK release line requires an APlane signer release after
 
 ## Installation
 
+Requires Node.js 22 or newer and `algosdk` 3.9.0 or newer (a peer dependency,
+which itself requires Node.js 22).
+
 ```bash
 npm install aplanesdk algosdk
 ```

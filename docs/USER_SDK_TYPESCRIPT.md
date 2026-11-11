@@ -27,7 +27,7 @@ Go, Python, and TypeScript SDK package versions will always match.
 
 ## Requirements
 
-- Node.js `>=18`
+- Node.js `>=22`, the floor `algosdk` 3.9 sets
 - npm, pnpm, or yarn
 - an APlane signer you can reach over the standard SSH-backed client path
 - either:
@@ -37,9 +37,10 @@ Go, Python, and TypeScript SDK package versions will always match.
 
 The SDK expects:
 
-- `algosdk` 3.7.0 or later as a peer dependency. Earlier releases drop a native
-  post-quantum signature (`pqsig`) when they decode a signed transaction, which breaks
-  simulation for native Falcon keys
+- `algosdk` 3.9.0 or later as a peer dependency. Releases before 3.7.0 drop a
+  native post-quantum signature (`pqsig`) when they decode a signed transaction,
+  which breaks simulation for native Falcon keys; 3.9.0 is the release the SDK
+  is tested against, and it requires Node.js 22
 - `ssh2` for the SSH-backed runtime path
 
 In a normal package-manager install, `ssh2` is brought in via `aplanesdk`'s

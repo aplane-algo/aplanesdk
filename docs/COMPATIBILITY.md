@@ -87,6 +87,19 @@ ignores fields it does not declare inside `/status` rotating entries, their
 recovery state and `protocol_version`, and leaves `preparation` empty when the
 signer does not report it.
 
+Runtime floors follow the upstream Algorand SDKs, as of November 2026:
+
+| SDK | Requires | Algorand SDK | Its own floor |
+| --- | --- | --- | --- |
+| TypeScript | Node.js 22 or newer | `algosdk` 3.9.0 or newer (peer dependency) | Node.js 22 |
+| Python | Python 3.10 or newer | `py-algorand-sdk` 2.12.0 or newer | Python 3.10 |
+| Go | Go 1.26 or newer | `go-algorand-sdk/v2` v2.14.0 | Go 1.25 |
+
+The TypeScript SDK moved from Node.js 18 and `algosdk` 3.7.0 to these: `algosdk`
+3.9.0 requires Node.js 22, and Node.js 18 and 20 are past end of life. On an
+older Node.js, npm warns at install and the SDK is not tested. Python and Go
+already matched the newest upstream release.
+
 The one-call send (`SendPrepared`/`SendPayment` in Go, `sendPrepared`/
 `sendPayment` in TypeScript, `send_prepared`/`send_payment` in Python) is new.
 When upgrading to the release that adds it, know what it needs from the
