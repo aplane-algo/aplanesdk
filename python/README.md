@@ -427,10 +427,12 @@ What to know:
   signs only while `first_valid_round` is at most 2 rounds ahead and at least
   10 rounds remain. Every `prepare_*` helper builds such a window when the
   sender is a rotating account. A transaction whose rounds are not current is
-  refused before the operator is asked. For a transaction you built yourself,
-  pass `refresh_validity=True` to let the SDK rebuild the rounds; that
-  changes the transaction ID, so leave it off if anything outside the
-  transaction binds its rounds.
+  refused before the operator is asked, and that includes one a helper built
+  that has since gone stale: only `send_payment` rebuilds rounds without
+  `refresh_validity`. For any other transaction, pass
+  `refresh_validity=True` to let the SDK rebuild the rounds; that changes the
+  transaction ID, so leave it off if anything outside the transaction binds
+  its rounds.
 - **App calls carry the rekey.** A contract that requires a zero `rekey_to`
   fails the simulation in step 3.
 - **Bounded retries.** When the signer says an attempt released no signature
