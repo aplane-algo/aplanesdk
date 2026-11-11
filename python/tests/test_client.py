@@ -27,7 +27,6 @@ from aplanesdk.signer import (
     SignerError,
     KeyNotFoundError,
     KeyDeletionError,
-    assemble_group,
     sign_prepared_cosigned_group,
     simulate_prepared_cosigned_group,
     load_config,
@@ -2428,7 +2427,7 @@ class TestSignTransactionsForeign:
 
 
 # ---------------------------------------------------------------------------
-# assemble_group
+# request building
 # ---------------------------------------------------------------------------
 
 class TestBuildSignRequests:
@@ -3554,40 +3553,6 @@ class TestRequestEnrollmentFromEnv:
         )
         # Nothing is stored on the client: the key is its credential.
         assert sorted(p.name for p in tmp_path.iterdir()) == [".ssh", "endpoints.yaml"]
-
-
-class TestAssembleGroup:
-    def test_merges_two_signers(self):
-        alice_signed = [
-            base64.b64encode(bytes([1, 2])).decode(),
-            "",
-            base64.b64encode(bytes([5, 6])).decode(),
-        ]
-        bob_signed = [
-            "",
-            base64.b64encode(bytes([3, 4])).decode(),
-            "",
-        ]
-
-        result = assemble_group([alice_signed, bob_signed])
-        expected = base64.b64encode(bytes([1, 2, 3, 4, 5, 6])).decode()
-        assert result == expected
-
-    def test_empty_input(self):
-        with pytest.raises(ValueError, match="must not be empty"):
-            assemble_group([])
-
-    def test_mismatched_lengths(self):
-        with pytest.raises(ValueError, match="expected 2"):
-            assemble_group([["a", "b"], ["c"]])
-
-    def test_no_signer_for_slot(self):
-        with pytest.raises(ValueError, match="slot 1: no signer"):
-            assemble_group([["a", ""], ["", ""]])
-
-    def test_multiple_signers_for_slot(self):
-        with pytest.raises(ValueError, match="slot 0: multiple signers"):
-            assemble_group([["a", "b"], ["c", "d"]])
 
 
 # ---------------------------------------------------------------------------

@@ -27,7 +27,6 @@ from .signer import (
 
     # Submission helpers
     send_raw_transaction,
-    assemble_group,
     sign_prepared_cosigned_group,
     simulate_prepared_cosigned_group,
 
@@ -139,7 +138,6 @@ __all__ = [
 
     # Submission helpers
     "send_raw_transaction",
-    "assemble_group",
     "sign_prepared_cosigned_group",
     "simulate_prepared_cosigned_group",
 
