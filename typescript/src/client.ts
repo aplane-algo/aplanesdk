@@ -109,6 +109,7 @@ import {
 } from "./encoding.js";
 import { preparedGroupToSignRequests, preparedTransactionToSignRequest } from "./prepared.js";
 import {
+  DUMMY_OPCODE_COST,
   DUMMY_PROGRAM as COSIGNED_DUMMY_PROGRAM,
   MAX_GROUP_SIZE,
   checkMaxFeeIncrease,
@@ -193,11 +194,11 @@ const APP_CALL_METHOD_ARGS_TUPLE_THRESHOLD = APP_CALL_MAX_APP_ARGS - 2;
 
 // This must exactly mirror apsigner's canonical dummy lsigresource.Usage.
 // /plan and /sign must see the same declaration to keep fee planning idempotent.
-function cosignedDummyLogicSigResources(): LogicSigResourceUsage {
+export function cosignedDummyLogicSigResources(): LogicSigResourceUsage {
   return {
     programBytes: COSIGNED_DUMMY_PROGRAM.length,
     argumentBytes: 0,
-    maxOpcodeCost: 1,
+    maxOpcodeCost: DUMMY_OPCODE_COST,
   };
 }
 function newSignRequestId(): string {

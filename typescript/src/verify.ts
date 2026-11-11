@@ -20,6 +20,12 @@ import { encodeTransaction, hexToBytes } from "./encoding.js";
 /** Algorand's maximum transaction group size. */
 export const MAX_GROUP_SIZE = 16;
 export const DUMMY_PROGRAM = new Uint8Array([0x03, 0x31, 0x20, 0x32, 0x03, 0x12]);
+/**
+ * Opcode cost of one run of DUMMY_PROGRAM: txn RekeyTo, global ZeroAddress and
+ * ==, three opcodes costing 1 each, with no branch. It matches apsigner's
+ * signing.DummyOpcodeCost. A test derives it from the program bytes.
+ */
+export const DUMMY_OPCODE_COST = 3;
 
 const UINT64_MAX = (1n << 64n) - 1n;
 
