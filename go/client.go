@@ -1119,6 +1119,13 @@ type signTransportError struct{ err error }
 func (e *signTransportError) Error() string { return e.err.Error() }
 func (e *signTransportError) Unwrap() error { return e.err }
 
+// signUnreadError is postSign's report that the signer answered 200 and the
+// body could not be read. The signer may have released a signature.
+type signUnreadError struct{ err error }
+
+func (e *signUnreadError) Error() string { return "failed to decode response: " + e.err.Error() }
+func (e *signUnreadError) Unwrap() error { return e.err }
+
 // signBodyError is postSign's report of an error carried in a 200 body, a
 // legacy field the current server never sets.
 type signBodyError struct{ message string }
@@ -1198,7 +1205,7 @@ func (c *SignerClient) postSign(ctx context.Context, groupReq GroupSignRequest) 
 
 	var groupResp GroupSignResponse
 	if err := json.NewDecoder(resp.Body).Decode(&groupResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
+		return nil, &signUnreadError{err: err}
 	}
 
 	if groupResp.Error != "" {

@@ -339,6 +339,52 @@ pass a cancelable `context.Context` to `SignRequestsWithContext` or
 the SDK sends best-effort `/sign/cancel` for the generated or supplied
 `request_id`.
 
+#### `SendPrepared(ctx, algodClient, group, opts) (*SendResult, error)`
+
+Sign a prepared transaction or group, check the signed result against what was
+prepared, submit exactly those bytes, and wait for confirmation. The SDK picks
+the signing flow from the signer's record of each key, so the same call works
+for Ed25519, native Falcon, LogicSig, bounded and cosigned accounts, and for a
+rekeyed sender.
+
+```go
+prepared, err := client.PreparePayment(ctx, algodClient, aplane.PaymentPrepParams{
+	Sender: sender, Receiver: receiver, Amount: 1_000_000, // microAlgos
+})
+result, err := client.SendPrepared(ctx, algodClient, aplane.NewPreparedGroup(*prepared), nil)
+fmt.Println(result.TxIDs[0], result.Outcome, result.ConfirmedRound)
+```
+
+`SendPayment(ctx, algodClient, params, opts)` does both steps for an ALGO
+payment.
+
+- **Result.** `SignedGroup` is the group as submitted; the first
+  `OriginalCount` entries are yours and the rest are resource dummies the
+  signer appended. `TxIDs`, `Fees` and `GroupID` are computed from the signed
+  bytes. A signer may raise a fee or assign a group, so `TxIDs` can differ from
+  the IDs of the transactions you prepared.
+- **Options.** `NoWait` returns once the node accepts the group, with outcome
+  `submitted`. `WaitRounds` sets the confirmation wait (default 10). A cosigned
+  account needs `CosignerClient` with `CosignerComponentKey`, or a
+  `CosignerResolver`; the SDK does not close a cosigner client you pass.
+- **Refused before signing:** a rotating account or an unknown signing flow
+  (`ErrUnsupportedSigningFlow`), and a pre-signed or foreign position
+  (`ErrUnsupportedGroup`). Use the lower-level signing calls for those groups.
+  Rotating accounts are not supported by this SDK version.
+- **It never signs twice.** After a sign request is sent, a failure is one of
+  three types. Use `errors.As`:
+
+| Error | Meaning | What to do |
+|---|---|---|
+| `*SignOutcomeUnknownError` | The signer's answer never arrived. A signature may have been released; nothing was submitted. | Check the request ID with the operator or the audit log before signing again. |
+| `*SubmissionRejectedError` | The node refused the group or dropped it from its pool. | Read the reason. The signed bytes and IDs are in the error. |
+| `*SubmissionUncertainError` | The submission's answer never arrived (`Stage` `submit`), or the group did not confirm within the wait (`confirm`). It may still confirm. | Look up `TxIDs`, or submit the same `SignedGroup` again. Do not sign a replacement until the outcome is known: both could execute. |
+
+A refusal by the signer (policy, operator, locked) comes back as the signing
+call's own error, as it does from `SignTransaction`.
+
+The existing `Sign*` and `Simulate*` calls are unchanged.
+
 ### Config Helpers
 
 #### `LoadConfig(dataDir) (*Config, error)`
