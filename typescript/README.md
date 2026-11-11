@@ -425,8 +425,9 @@ other address string, such as a witness key's Witness Key ID, is kept exactly
 as sent. The addresses you pass in are held to the same spelling: a sign
 request's `auth_address`, the prepare helpers' address parameters, an app
 call's `accounts` and its ABI account arguments (which also take an algosdk
-`Address` or a 32-byte public key) must be canonically spelled address
-strings, and anything else is refused before a request is sent.
+`Address`, from this or any other copy of algosdk, or a 32-byte public key)
+must be canonically spelled address strings, and anything else is refused
+before a request is sent.
 
 Known limits of the reader, beside the Go and Python SDKs:
 
