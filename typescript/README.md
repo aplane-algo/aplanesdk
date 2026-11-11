@@ -101,7 +101,9 @@ the same controls as `setupTimeout` and `signal`.
 
 **Note**: SSH uses the fixed non-secret username `aplane` and public-key
 authentication only; the enrolled key is the client's only credential. A key
-the signer has not enrolled fails the handshake. Remember to close when done:
+the signer has not enrolled fails the handshake. A key file that cannot be
+parsed, holds no private key, or needs a passphrase fails at once, before
+anything is connected, with a `SignerError`. Remember to close when done:
 
 ```typescript
 await client.close();
@@ -737,7 +739,8 @@ with its state: `ok`, `unreachable` (connection, transport or 5xx failure,
 or out of time), `locked`, `authentication failed` (401, a 403 that is not
 locked, or a key that is not enrolled), `invalid cosigner metadata` (an
 unreadable `/keys` answer or a bad record), or `configuration invalid` (a bad
-URL, an unreadable identity or known_hosts file, an unknown host key without
+URL, an identity file that cannot be read or parsed or that needs a
+passphrase, an unreadable known_hosts file, an unknown host key without
 trust-on-first-use, or any other 4xx). An SSH host key that differs from the
 pinned one at any cosigner endpoint aborts the whole discovery, needed or not.
 The sweep's result is kept; a witness key it does not route triggers one fresh

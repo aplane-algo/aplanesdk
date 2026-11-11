@@ -6,7 +6,7 @@ import * as path from "path";
 import * as net from "net";
 import { randomBytes } from "crypto";
 import algosdk, { type Algodv2, type Transaction } from "algosdk";
-import type { Client as SSHClient, ClientChannel } from "ssh2";
+import type { Client as SSHClient, ClientChannel, ConnectConfig } from "ssh2";
 import type {
   KeyInfo,
   AccountInfoLookup,
@@ -1397,8 +1397,12 @@ class SSHTunnel {
       ), "known-hosts");
     }
 
-    // Dynamically import ssh2
-    const { Client } = await import("ssh2");
+    // Dynamically import ssh2. It is CommonJS, and Node's ESM loader does not
+    // see every name it exports (utils among them): read those from its
+    // module object.
+    const ssh2 = await import("ssh2");
+    const { Client } = ssh2;
+    const { utils } = ssh2.default ?? ssh2;
 
     let privateKey: string;
     try {
@@ -1406,6 +1410,22 @@ class SSHTunnel {
     } catch (error) {
       throw markSshSetupFailure(
         new SignerError(`cannot read SSH key ${options.privateKeyPath}: ${errorText(error)}`),
+        "identity",
+      );
+    }
+    // A key that cannot be parsed, or that needs a passphrase, is the
+    // client's own configuration: it fails here, before any connection.
+    const parsedKey = utils.parseKey(privateKey);
+    if (parsedKey instanceof Error) {
+      throw markSshSetupFailure(
+        new SignerError(`cannot parse SSH key ${options.privateKeyPath}: ${parsedKey.message}`),
+        "identity",
+      );
+    }
+    const firstKey = Array.isArray(parsedKey) ? parsedKey[0] : parsedKey;
+    if (!firstKey || firstKey.getPrivatePEM() === null) {
+      throw markSshSetupFailure(
+        new SignerError(`cannot parse SSH key ${options.privateKeyPath}: it holds no private key`),
         "identity",
       );
     }
@@ -1421,7 +1441,9 @@ class SSHTunnel {
 
     const connection = new Promise<void>((resolve, reject) => {
       this.sshClient = new Client();
-      this.sshClosed = false;
+      // Closed until connect() has opened a socket: before that, ssh2 never
+      // emits close, so close() must not wait for it.
+      this.sshClosed = true;
       // ssh2 reports a peer that disconnects mid-handshake with close alone
       // and clears readyTimeout, so an unsettled setup must fail here.
       this.sshClient.once("close", () => {
@@ -1499,7 +1521,7 @@ class SSHTunnel {
 
       // The enrolled key is the only credential: public-key authentication
       // under the fixed client username, nothing else.
-      this.sshClient.connect({
+      const connectOptions: ConnectConfig = {
         host: options.host,
         port: options.sshPort,
         username: SSH_USERNAME,
@@ -1548,7 +1570,19 @@ class SSHTunnel {
           hostKeyFailure = "host-key-mismatch";
           return false;
         },
-      });
+      };
+      try {
+        this.sshClient.connect(connectOptions);
+      } catch (error) {
+        // ssh2 refuses options it cannot use by throwing, before a socket
+        // exists: no event follows, so the setup fails here.
+        failSetup(markSshSetupFailure(
+          new SignerError(`cannot set up the SSH connection: ${errorText(error)}`),
+          "options",
+        ));
+        return;
+      }
+      if (!settled) this.sshClosed = false;
     });
 
     await connection;
