@@ -486,7 +486,10 @@ status-after-block call) until the state is `confirmed`, `expired` or
 `too_old`. If the signal is aborted, `timeoutMs` passes or the node fails
 first, it throws a `WaitForOutcomeError` whose `report` is the last report
 (none if the wait ended before the first check) and whose `cause` says why.
-It never signs or submits anything.
+It never signs or submits anything. `timeoutMs` unset or 0 means no limit; a
+negative, non-finite or non-number value, or one above 2^31-1 ms, is
+refused. The error refusals above come first: an error `resolveOutcome`
+would refuse is refused for that reason, whatever `timeoutMs` is.
 
 A node that answers "already in ledger" has a transaction with the same ID
 from an earlier submission of the group. The SDK treats that as submitted and

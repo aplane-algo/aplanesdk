@@ -528,4 +528,26 @@ describe("waitForOutcome", () => {
     }
     assert.deepEqual(node.calls, [], "the node was asked something");
   });
+
+  it("refuses the error before it reads the time limit", async () => {
+    const { client } = quietClient();
+    const node = new OutcomeNode(150n);
+    const cases: Array<[any, unknown, string]> = [
+      [node, new Error("boom"), "not an uncertain outcome"],
+      [node, null, "not an uncertain outcome"],
+      [node, submissionError(0n), "the error carries no last valid round"],
+      [node, submissionError(LAST_VALID, []), "the error carries no transaction IDs"],
+      [undefined, signError(), "algod client is required"],
+    ];
+    for (const [algod, error, text] of cases) {
+      for (const timeoutMs of [-1, Number.NaN, 2 ** 31]) {
+        await assert.rejects(client.waitForOutcome(algod, error, { timeoutMs }), (refusal: unknown) => {
+          assert.ok(refusal instanceof SignerError, `refusal is ${String(refusal)}`);
+          assert.equal(errorText(refusal), text, `refusal text with timeoutMs ${timeoutMs}`);
+          return true;
+        });
+      }
+    }
+    assert.deepEqual(node.calls, [], "the node was asked something");
+  });
 });
