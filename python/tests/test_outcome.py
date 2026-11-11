@@ -418,9 +418,25 @@ class TestWaitForOutcome:
 
     def test_a_bad_time_limit_is_refused(self, node):
         algod = node(900)
-        for bad in (0, -1, float("nan"), "5", True):
-            with pytest.raises(ValueError):
+        for bad in (0, -1, float("nan"), float("inf"), "5", True):
+            with pytest.raises(ValueError, match="^timeout must be a positive number"):
                 client().wait_for_outcome(algod.client, sign_error(), timeout=bad)
+        assert algod.calls == []
+
+    @pytest.mark.parametrize("bad", [0, -1, float("nan")])
+    def test_the_refusals_come_before_the_time_limit_is_checked(self, node, bad):
+        algod = node(900)
+        refusals = [
+            (algod.client, None, SignerError, "^not an uncertain outcome$"),
+            (algod.client, ValueError("x"), SignerError, "^not an uncertain outcome$"),
+            (algod.client, sign_error(last_valid=0), SignerError, "no last valid round"),
+            (algod.client, submission_error(tx_ids=()), SignerError, "no transaction IDs"),
+            (None, sign_error(), ValueError, "^algod client is required$"),
+        ]
+        for algod_client, error, kind, message in refusals:
+            with pytest.raises(kind, match=message):
+                client().wait_for_outcome(algod_client, error, timeout=bad)
+        assert algod.calls == []
 
 
 # -----------------------------------------------------------------------------

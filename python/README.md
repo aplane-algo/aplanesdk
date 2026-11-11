@@ -503,8 +503,10 @@ lookup's "not found" is raised, never turned into a state.
 `client.wait_for_outcome(algod_client, error, timeout=None)` resolves once a
 round, waiting for each next round with the node's status-after-block call,
 until the state is `confirmed`, `expired` or `too_old`. `timeout` is in
-seconds; when it passes, `SendTimeoutError` is raised with the last report as
-its `report`.
+seconds, for the whole call: `None` (the default) sets no limit; 0, a
+negative or a non-finite number is refused with `ValueError`, but only after
+the refusals of the error above, which come first. When the limit passes,
+`SendTimeoutError` is raised with the last report as its `report`.
 
 ```python
 try:

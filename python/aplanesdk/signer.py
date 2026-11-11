@@ -7518,6 +7518,12 @@ class SignerClient:
         last report made as its ``report`` (None when none was made yet). A
         node failure is raised as a SignerError that carries the last report
         the same way.
+
+        Raises:
+            SignerError: the refusals of resolve_outcome, which come before
+                the timeout is checked
+            ValueError: no algod client; or a timeout that is 0, negative or
+                not finite
         """
         return _wait_for_outcome(algod_client, error, timeout)
 
@@ -9909,11 +9915,10 @@ def _look_up_outcome(algod_client: Any, txid: str) -> tuple:
     return _LOOKUP_IN_POOL, 0
 
 
-def _resolve_outcome(algod_client: Any, error: Any) -> OutcomeReport:
-    """SignerClient.resolve_outcome. The node's round is read before the
-    lookup: a group the lookup does not find was then not in a block by a
-    round at least that late, so a round past the group's validity means it
-    can never execute."""
+def _outcome_inputs(algod_client: Any, error: Any) -> tuple[int, List[str]]:
+    """The refusals of resolve_outcome, in order: the error's type, its last
+    valid round, a submission's transaction IDs, the algod client. Returns
+    the last valid round and the IDs to report. Makes no node call."""
     if not isinstance(error, (SignOutcomeUnknownError, SubmissionUncertainError)):
         raise SignerError("not an uncertain outcome")
     last_valid = getattr(error, "last_valid", 0)
@@ -9940,6 +9945,17 @@ def _resolve_outcome(algod_client: Any, error: Any) -> OutcomeReport:
         tx_ids = []
     if algod_client is None:
         raise ValueError("algod client is required")
+    return last_valid, tx_ids
+
+
+def _resolve_outcome(algod_client: Any, error: Any) -> OutcomeReport:
+    """SignerClient.resolve_outcome. The node's round is read before the
+    lookup: a group the lookup does not find was then not in a block by a
+    round at least that late, so a round past the group's validity means it
+    can never execute."""
+    last_valid, tx_ids = _outcome_inputs(algod_client, error)
+    submission = isinstance(error, SubmissionUncertainError)
+    rotating = None if submission else cast(SignOutcomeUnknownError, error).rotating
 
     current = _node_round(algod_client)
     report = OutcomeReport(
@@ -10001,6 +10017,9 @@ def _resolve_outcome(algod_client: Any, error: Any) -> OutcomeReport:
 def _wait_for_outcome(algod_client: Any, error: Any, timeout: Optional[float]) -> OutcomeReport:
     """SignerClient.wait_for_outcome. An error raised once a report has been
     made carries the last one as ``report``."""
+    # A refusal of the error comes before the time limit is read, so a bad
+    # error is never hidden behind a bad or passed limit.
+    _outcome_inputs(algod_client, error)
     with _time_limit(timeout):
         report: Optional[OutcomeReport] = None
         while True:
