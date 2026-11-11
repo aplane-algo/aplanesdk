@@ -53,12 +53,30 @@ def main():
             # released: never build a replacement until the outcome is
             # known, because both could execute. The node says where it
             # stands.
-            report = signer.resolve_outcome(algod_client, error)
-            print(f"Outcome unknown ({report.state}): {report.advice}")
+            print_outcome(signer, algod_client, error)
             raise
 
         # The signer may raise the fee, so the ID comes from the signed group.
         print(f"Confirmed {result.tx_ids[0]} in round {result.confirmed_round}")
+
+
+def print_outcome(signer, algod_client, error):
+    """Print an uncertain outcome and where the node says it stands. It signs
+    and submits nothing. When the node cannot be asked, the error still
+    stands, and is raised next as it was."""
+    if isinstance(error, SubmissionUncertainError):
+        print(f"Outcome unknown for {', '.join(error.tx_ids)} ({error.stage}): {error}")
+    else:
+        print(f"Sign outcome unknown (request {error.request_id or 'unnamed'}): {error}")
+    try:
+        report = signer.resolve_outcome(algod_client, error)
+    except Exception as check_error:
+        print(
+            f"Could not check the outcome ({check_error}); look the transaction up "
+            "before sending again."
+        )
+        return
+    print(f"{report.state}: {report.advice}")
 
 
 if __name__ == "__main__":
