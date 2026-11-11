@@ -333,8 +333,7 @@ func lostRequest(err error) (requestID string, lost bool) {
 	if errors.As(err, &mark) {
 		return mark.requestID, true
 	}
-	var unread *signUnreadError
-	return "", errors.As(err, &unread)
+	return "", false
 }
 
 // classifySend picks the one signing flow for the whole group from the
