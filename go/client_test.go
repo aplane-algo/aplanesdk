@@ -615,7 +615,8 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 // recordingClient is a client whose transport records every request handed
-// to it, whatever the request's context, and answers each with body.
+// to it, even one whose context has ended, which it then refuses as a real
+// transport would. It answers every other request with body.
 func recordingClient(body string) (*SignerClient, func() []string) {
 	var mu sync.Mutex
 	var paths []string
@@ -625,6 +626,9 @@ func recordingClient(body string) (*SignerClient, func() []string) {
 			mu.Lock()
 			paths = append(paths, r.URL.Path)
 			mu.Unlock()
+			if err := r.Context().Err(); err != nil {
+				return nil, err
+			}
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Header:     http.Header{"Content-Type": []string{"application/json"}},
@@ -640,32 +644,48 @@ func recordingClient(body string) (*SignerClient, func() []string) {
 	}
 }
 
-// A context that has ended before the call hands the transport nothing: no
-// status discovery, no approval request, and no /sign/cancel for a request
-// that was never posted.
-func TestSignRequestsWithEndedContextSendsNothing(t *testing.T) {
-	for _, waitKnown := range []bool{true, false} {
-		t.Run(fmt.Sprintf("approval wait known %v", waitKnown), func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				client, paths := recordingClient(`{"success":true,"state":"not_found"}`)
-				if waitKnown {
-					client.cacheApprovalWait(60)
-				}
-				ctx, cancel := context.WithCancel(context.Background())
-				cancel()
-
-				_, err := client.SignRequestsWithContext(ctx, signRequestsFor(verifyTestPayment(t, 41, 42, 1)))
-				var lost *lostAnswer
-				if !errors.Is(err, context.Canceled) || errors.As(err, &lost) {
-					t.Fatalf("SignRequestsWithContext() error = %v, want a plain context.Canceled", err)
-				}
-				// Every goroutine the call started has finished or blocked.
-				synctest.Wait()
-				if got := paths(); len(got) != 0 {
-					t.Fatalf("requests sent = %v, want none", got)
-				}
+// A context that has ended before an approval-bearing call hands the
+// transport nothing: no status discovery, no approval request, and no
+// /sign/cancel for a request that was never posted.
+func TestApprovalRequestWithEndedContextSendsNothing(t *testing.T) {
+	calls := map[string]func(context.Context, *SignerClient) error{
+		"sign": func(ctx context.Context, c *SignerClient) error {
+			_, err := c.SignRequestsWithContext(ctx, signRequestsFor(verifyTestPayment(t, 41, 42, 1)))
+			return err
+		},
+		"component": func(ctx context.Context, c *SignerClient) error {
+			_, err := c.RequestComponentsWithContext(ctx, ComponentRequest{
+				RequestID:     "ended-context-id",
+				GroupBytesHex: []string{"545801"},
+				Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindBoundedBase, AuthAddress: "AUTH"}},
 			})
-		})
+			return err
+		},
+	}
+	for name, call := range calls {
+		for _, waitKnown := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s, approval wait known %v", name, waitKnown), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					client, paths := recordingClient(`{"success":true,"state":"not_found"}`)
+					if waitKnown {
+						client.cacheApprovalWait(60)
+					}
+					ctx, cancel := context.WithCancel(context.Background())
+					cancel()
+
+					err := call(ctx, client)
+					var lost *lostAnswer
+					if !errors.Is(err, context.Canceled) || errors.As(err, &lost) {
+						t.Fatalf("error = %v, want a plain context.Canceled", err)
+					}
+					// Every goroutine the call started has finished or blocked.
+					synctest.Wait()
+					if got := paths(); len(got) != 0 {
+						t.Fatalf("requests sent = %v, want none", got)
+					}
+				})
+			})
+		}
 	}
 }
 
