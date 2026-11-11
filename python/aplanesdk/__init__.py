@@ -47,6 +47,16 @@ from .signer import (
     ROTATING_MAX_LEAD,
     ROTATING_MIN_REMAINING,
 
+    # After an uncertain outcome
+    OutcomeReport,
+    OUTCOME_CONFIRMED,
+    OUTCOME_PENDING,
+    OUTCOME_NOT_SEEN,
+    OUTCOME_SIGNABLE,
+    OUTCOME_EXPIRED,
+    OUTCOME_TOO_OLD,
+    OUTCOME_NODE_MEMORY_ROUNDS,
+
     # Enrollment
     request_enrollment,
     request_enrollment_from_env,
@@ -182,6 +192,16 @@ __all__ = [
     "ROTATING_MAX_VALIDITY_WINDOW",
     "ROTATING_MAX_LEAD",
     "ROTATING_MIN_REMAINING",
+
+    # After an uncertain outcome
+    "OutcomeReport",
+    "OUTCOME_CONFIRMED",
+    "OUTCOME_PENDING",
+    "OUTCOME_NOT_SEEN",
+    "OUTCOME_SIGNABLE",
+    "OUTCOME_EXPIRED",
+    "OUTCOME_TOO_OLD",
+    "OUTCOME_NODE_MEMORY_ROUNDS",
 
     # Enrollment
     "request_enrollment",

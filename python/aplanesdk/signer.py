@@ -412,6 +412,11 @@ class SignOutcomeUnknownError(SignerError):
         rotating: the PreparedRotating that was sent to be signed, for a
             rotating account. Calling sign_prepared_rotating with it again asks
             for the same transaction and is the safe recovery.
+        last_valid: the earliest last valid round among the transactions
+            that were sent to be signed (for a rotating account, of the
+            prepared group). The signer never changes validity rounds, so
+            after this round no signature released by that request can
+            execute. resolve_outcome and wait_for_outcome read it.
     """
 
     def __init__(
@@ -420,6 +425,7 @@ class SignOutcomeUnknownError(SignerError):
         request_id: str = "",
         requests: Optional[List[Dict[str, Any]]] = None,
         rotating: Optional["PreparedRotating"] = None,
+        last_valid: int = 0,
     ):
         if request_id:
             message = (
@@ -435,11 +441,15 @@ class SignOutcomeUnknownError(SignerError):
         self.request_id = request_id
         self.requests = requests
         self.rotating = rotating
+        self.last_valid = last_valid
 
     def __reduce__(self) -> tuple:
         # Exceptions pickle and copy by calling the class with the message
         # alone; this one is built from its fields.
-        return (self.__class__, (self.error, self.request_id, self.requests, self.rotating))
+        return (
+            self.__class__,
+            (self.error, self.request_id, self.requests, self.rotating, self.last_valid),
+        )
 
 
 def _first_or_empty(values: List[str]) -> str:
@@ -477,10 +487,18 @@ class SubmissionUncertainError(SignerError):
         signed_group: the signed bytes, hex msgpack, in group order
         tx_ids: their transaction IDs
         error: what ended the call
+        last_valid: the earliest last valid round in the signed group: after
+            it the group can no longer execute. resolve_outcome and
+            wait_for_outcome read it.
     """
 
     def __init__(
-        self, stage: str, signed_group: List[str], tx_ids: List[str], error: BaseException
+        self,
+        stage: str,
+        signed_group: List[str],
+        tx_ids: List[str],
+        error: BaseException,
+        last_valid: int = 0,
     ):
         super().__init__(
             f"outcome of transaction {_first_or_empty(tx_ids)} is unknown ({stage}): {error}"
@@ -489,9 +507,13 @@ class SubmissionUncertainError(SignerError):
         self.signed_group = list(signed_group)
         self.tx_ids = list(tx_ids)
         self.error = error
+        self.last_valid = last_valid
 
     def __reduce__(self) -> tuple:
-        return (self.__class__, (self.stage, self.signed_group, self.tx_ids, self.error))
+        return (
+            self.__class__,
+            (self.stage, self.signed_group, self.tx_ids, self.error, self.last_valid),
+        )
 
 
 class RotatingPreflightError(SignerError):
@@ -1827,6 +1849,55 @@ class SendResult:
     cosigned: Optional[CosignedSignResult] = None
     # The rotation a rotating account's send performed.
     rotating: Optional[RotatingSendDetails] = None
+
+
+# Where things stand after an uncertain outcome (OutcomeReport.state).
+# "confirmed": the group is in a block. "pending": it is in the node's pool.
+# "not_seen": the node does not have it, and it can still execute. "signable":
+# a signature may have been released and can still execute. "expired": no
+# signature that request released, and no signed group, can execute any more.
+# "too_old": the group's validity ended so long ago that the node may not
+# remember it.
+OUTCOME_CONFIRMED = "confirmed"
+OUTCOME_PENDING = "pending"
+OUTCOME_NOT_SEEN = "not_seen"
+OUTCOME_SIGNABLE = "signable"
+OUTCOME_EXPIRED = "expired"
+OUTCOME_TOO_OLD = "too_old"
+# How many rounds past its validity a node is taken to remember a confirmed
+# transaction. Past it, a group the node reports not found may have
+# confirmed, so the report is OUTCOME_TOO_OLD.
+OUTCOME_NODE_MEMORY_ROUNDS = 500
+
+
+@dataclass
+class OutcomeReport:
+    """Where an uncertain outcome stands (resolve_outcome).
+
+    Attributes:
+        state: OUTCOME_CONFIRMED, OUTCOME_PENDING, OUTCOME_NOT_SEEN,
+            OUTCOME_SIGNABLE, OUTCOME_EXPIRED or OUTCOME_TOO_OLD
+        confirmed_round: the round the group was confirmed in; 0 unless
+            confirmed
+        tx_ids: the transaction IDs looked up; empty when they are not known
+            (a sign outcome for an account that is not rotating)
+        last_valid: the error's last valid round
+        current_round: the node's last round when it was checked
+        safe_to_replace: whether building and signing a replacement is safe
+        signed_group: the signed group the error carried, if any
+        rotating: the prepared rotating group the error carried, if any
+        advice: what to do, in one sentence
+    """
+
+    state: str
+    confirmed_round: int = 0
+    tx_ids: List[str] = field(default_factory=list)
+    last_valid: int = 0
+    current_round: int = 0
+    safe_to_replace: bool = False
+    signed_group: Optional[List[str]] = None
+    rotating: Optional["PreparedRotating"] = None
+    advice: str = ""
 
 
 @dataclass
@@ -7318,6 +7389,45 @@ class SignerClient:
         _submit_and_track(algod_client, raw, result, options)
         return result
 
+    def resolve_outcome(self, algod_client: Any, error: Any) -> OutcomeReport:
+        """Say where things stand after a SignOutcomeUnknownError or a
+        SubmissionUncertainError, from the node alone. It never signs, never
+        submits and never calls the signer.
+
+        It reads the node's current round, then, when the transaction IDs
+        are known, looks the first one up (a group is atomic, so one is
+        enough). For a SubmissionUncertainError: "confirmed", "pending",
+        "not_seen" while the group can still execute (until its last valid
+        round), "expired" once it cannot (safe_to_replace) up to
+        OUTCOME_NODE_MEMORY_ROUNDS (500) rounds after, and "too_old" past
+        that, when the node may no longer remember it. For a
+        SignOutcomeUnknownError, which submitted nothing: a rotating
+        account's prepared group is looked up first ("confirmed" or
+        "pending"); otherwise "signable" until its last valid round has
+        passed, then "expired" (safe_to_replace). ``advice`` says what to do.
+
+        Raises:
+            SignerError: the error is of another type ("not an uncertain
+                outcome"), carries no last valid round or, for a submission,
+                no transaction IDs; or the node failed (other than not
+                finding the transaction).
+        """
+        return _resolve_outcome(algod_client, error)
+
+    def wait_for_outcome(
+        self, algod_client: Any, error: Any, timeout: Optional[float] = None
+    ) -> OutcomeReport:
+        """resolve_outcome once a round, waiting for each next round with
+        the node's status-after-block call, until the state is "confirmed",
+        "expired" or "too_old", and return that report. It never signs,
+        never submits and never calls the signer.
+
+        ``timeout`` is a limit in seconds on the whole call; None waits as
+        long as it takes. When it passes, SendTimeoutError is raised with the
+        last report made as its ``report`` (None when none was made yet).
+        """
+        return _wait_for_outcome(algod_client, error, timeout)
+
     def _send_prepared(
         self,
         algod_client: Any,
@@ -7380,7 +7490,9 @@ class SignerClient:
                 lost = _lost_answer(e)
                 if lost is not None:
                     raise SignOutcomeUnknownError(
-                        e, request_id=getattr(lost, "request_id", "")
+                        e,
+                        request_id=getattr(lost, "request_id", ""),
+                        last_valid=_group_last_valid(group),
                     ) from e
                 raise
             result.signed_group = list(signed.signed_group)
@@ -7409,6 +7521,7 @@ class SignerClient:
                 _verification_error("verify signed group: ", e),
                 request_id=released_by,
                 requests=sign_entries,
+                last_valid=_group_last_valid(group),
             ) from e
         _submit_and_track(algod_client, raw, result, options)
         return result
@@ -7512,7 +7625,10 @@ class SignerClient:
         except SignerError as e:
             if _answer_lost(e):
                 raise SignOutcomeUnknownError(
-                    e, request_id=request_id, requests=sign_entries
+                    e,
+                    request_id=request_id,
+                    requests=sign_entries,
+                    last_valid=_group_last_valid(group),
                 ) from e
             raise
 
@@ -7663,7 +7779,12 @@ class SignerClient:
                 request_id,
             )
         except (_AnswerLostError, _AnswerUnreadError) as e:
-            raise SignOutcomeUnknownError(e, request_id=request_id, rotating=prepared) from e
+            raise SignOutcomeUnknownError(
+                e,
+                request_id=request_id,
+                rotating=prepared,
+                last_valid=_prepared_last_valid(prepared),
+            ) from e
         except BaseException as e:
             # An interrupt while approval was pending leaves the same unknown
             # as a lost answer, and the same recovery: sign this group again.
@@ -7681,6 +7802,7 @@ class SignerClient:
                 _verification_error("verify signer response: ", e),
                 request_id=request_id,
                 rotating=prepared,
+                last_valid=_prepared_last_valid(prepared),
             ) from e
         result.request_id = request_id
         return result
@@ -7823,6 +7945,7 @@ class SignerClient:
                 _verification_error("verify signed group: ", e),
                 request_id=signed.request_id,
                 rotating=prepared,
+                last_valid=_prepared_last_valid(prepared),
             ) from e
         _submit_and_track(algod_client, raw, result, options)
         return result
@@ -9354,6 +9477,38 @@ def _describe_signed_group(result: SendResult) -> List[bytes]:
     return [bytes.fromhex(entry) for entry in result.signed_group]
 
 
+def _earliest_last_valid(txns: List[Any]) -> int:
+    """The earliest last valid round of the transactions, 0 for none."""
+    rounds = [txn.last_valid_round for txn in txns if txn is not None]
+    rounds = [value for value in rounds if isinstance(value, int) and not isinstance(value, bool)]
+    return min(rounds) if rounds else 0
+
+
+def _group_last_valid(group: PreparedGroup) -> int:
+    """The earliest last valid round of a prepared group's transactions: what
+    was sent to be signed. The signer never changes a validity round (it may
+    raise fees, append dummies on the first transaction's window, and set the
+    group ID), so it is the signed group's too."""
+    return _earliest_last_valid([item.transaction for item in group.transactions])
+
+
+def _prepared_last_valid(prepared: "PreparedRotating") -> int:
+    """The earliest last valid round of a prepared rotating group."""
+    try:
+        return _earliest_last_valid(prepared._decoded())
+    except Exception:
+        return 0
+
+
+def _signed_group_last_valid(signed_group: List[str]) -> int:
+    """The earliest last valid round of a signed group, hex msgpack."""
+    try:
+        decoded = _decode_executable_signed_group(signed_group)
+    except Exception:
+        return 0
+    return _earliest_last_valid([signed.transaction for signed in decoded])
+
+
 def _is_bad_request(error: BaseException) -> bool:
     return isinstance(error, algosdk_error.AlgodHTTPError) and error.code == 400
 
@@ -9402,9 +9557,12 @@ def _submit_and_wait(
 ) -> None:
     blob = b"".join(raw)
     txid = result.tx_ids[0]
+    last_valid = _signed_group_last_valid(result.signed_group)
 
     def uncertain(stage: str, error: BaseException) -> SubmissionUncertainError:
-        return SubmissionUncertainError(stage, result.signed_group, result.tx_ids, error)
+        return SubmissionUncertainError(
+            stage, result.signed_group, result.tx_ids, error, last_valid=last_valid
+        )
 
     try:
         sent_id = algod_client.send_raw_transaction(base64.b64encode(blob).decode())
@@ -9473,6 +9631,202 @@ def _submit_and_wait(
                 SEND_STAGE_CONFIRM, SignerError(f"wait for round {last + 1}: {e}")
             ) from e
         last = next_round if next_round > last else last + 1
+
+
+# What the node says of a group's first transaction (_look_up_outcome).
+_LOOKUP_CONFIRMED = "confirmed"
+_LOOKUP_IN_POOL = "in pool"
+_LOOKUP_POOL_ERROR = "pool error"
+_LOOKUP_NOT_FOUND = "not found"
+
+_OUTCOME_FINAL = (OUTCOME_CONFIRMED, OUTCOME_EXPIRED, OUTCOME_TOO_OLD)
+
+
+def _outcome_advice(state: str, confirmed_round: int, last_valid: int, rotating: bool) -> str:
+    if state == OUTCOME_CONFIRMED:
+        return f"The group was confirmed in round {confirmed_round}. Do not send it again."
+    if state == OUTCOME_PENDING:
+        return "The group is in the node's pool. Wait; do not send again."
+    if state == OUTCOME_NOT_SEEN:
+        return (
+            f"The node does not have the group and it can still execute until round "
+            f"{last_valid}. Submit the same signed group again, or wait until round "
+            f"{last_valid} has passed."
+        )
+    if state == OUTCOME_TOO_OLD:
+        return (
+            f"The group's validity ended more than {OUTCOME_NODE_MEMORY_ROUNDS} rounds ago and "
+            "this node may no longer remember it. Look the transaction ID up on an indexer "
+            "before sending again."
+        )
+    if state == OUTCOME_SIGNABLE:
+        if rotating:
+            return (
+                f"A signature may have been released and can execute until round {last_valid}. "
+                f"Sign the same prepared group again, or wait until round {last_valid} has "
+                "passed."
+            )
+        return (
+            f"A signature may have been released and can execute until round {last_valid}. "
+            f"Wait until round {last_valid} has passed before building a replacement."
+        )
+    raise AssertionError(f"no advice for state {state!r}")  # pragma: no cover
+
+
+def _node_round(algod_client: Any) -> int:
+    """The node's last round, from its status."""
+    try:
+        return _last_round(algod_client.status(**_algod_options()))
+    except Exception as e:
+        timeout = _timed_out("reading the node's current round", e)
+        if timeout is not None:
+            raise timeout from e
+        raise SignerError(f"read current round: {e}") from e
+
+
+def _look_up_outcome(algod_client: Any, txid: str) -> tuple:
+    """What the node's pending-transaction lookup says of txid, as
+    (_LOOKUP_*, confirmed round). A 404 is not found; any other failure is
+    an error, never a state."""
+    try:
+        info = algod_client.pending_transaction_info(txid, **_algod_options())
+    except Exception as e:
+        if isinstance(e, algosdk_error.AlgodHTTPError) and e.code == 404:
+            return _LOOKUP_NOT_FOUND, 0
+        timeout = _timed_out(f"looking up transaction {txid}", e)
+        if timeout is not None:
+            raise timeout from e
+        raise SignerError(f"look up transaction {txid}: {e}") from e
+    if not isinstance(info, dict):
+        raise SignerError(f"look up transaction {txid}: the node's answer is not an object")
+    confirmed = info.get("confirmed-round")
+    if confirmed is None:
+        confirmed = 0
+    if (
+        isinstance(confirmed, bool)
+        or not isinstance(confirmed, int)
+        or not 0 <= confirmed <= _UINT64_MAX
+    ):
+        raise SignerError(
+            f"look up transaction {txid}: confirmed-round {confirmed!r} is not a round"
+        )
+    pool_error = info.get("pool-error")
+    if pool_error is None:
+        pool_error = ""
+    if not isinstance(pool_error, str):
+        raise SignerError(f"look up transaction {txid}: pool-error is not a string")
+    if confirmed > 0:
+        return _LOOKUP_CONFIRMED, confirmed
+    if pool_error:
+        return _LOOKUP_POOL_ERROR, 0
+    return _LOOKUP_IN_POOL, 0
+
+
+def _resolve_outcome(algod_client: Any, error: Any) -> OutcomeReport:
+    """SignerClient.resolve_outcome. The node's round is read before the
+    lookup: a group the lookup does not find was then not in a block by a
+    round at least that late, so a round past the group's validity means it
+    can never execute."""
+    if not isinstance(error, (SignOutcomeUnknownError, SubmissionUncertainError)):
+        raise SignerError("not an uncertain outcome")
+    last_valid = getattr(error, "last_valid", 0)
+    if (
+        isinstance(last_valid, bool)
+        or not isinstance(last_valid, int)
+        or not 0 < last_valid <= _UINT64_MAX
+    ):
+        raise SignerError("the error carries no last valid round")
+    submission = isinstance(error, SubmissionUncertainError)
+    rotating = None if submission else cast(SignOutcomeUnknownError, error).rotating
+    if submission:
+        tx_ids = list(cast(SubmissionUncertainError, error).tx_ids)
+        if not tx_ids:
+            raise SignerError("the error carries no transaction IDs")
+    elif rotating is not None:
+        try:
+            tx_ids = rotating.tx_ids
+        except SignerError as e:
+            raise SignerError(f"the error's prepared rotating group: {e}") from e
+    else:
+        # The signer may have raised a fee or set the group, so the IDs of
+        # what it signed are not known, and there is nothing to look up.
+        tx_ids = []
+    if algod_client is None:
+        raise ValueError("algod_client is required")
+
+    current = _node_round(algod_client)
+    report = OutcomeReport(
+        state="",
+        tx_ids=tx_ids,
+        last_valid=last_valid,
+        current_round=current,
+        signed_group=list(error.signed_group) if submission else None,
+        rotating=rotating,
+    )
+    lookup, confirmed_round = (
+        _look_up_outcome(algod_client, tx_ids[0]) if tx_ids else (_LOOKUP_NOT_FOUND, 0)
+    )
+    if lookup == _LOOKUP_CONFIRMED:
+        report.state = OUTCOME_CONFIRMED
+        report.confirmed_round = confirmed_round
+    elif lookup == _LOOKUP_IN_POOL:
+        report.state = OUTCOME_PENDING
+    elif submission:
+        # Not found, or dropped from the pool with an error.
+        if current <= last_valid:
+            report.state = OUTCOME_NOT_SEEN
+        elif current - last_valid <= OUTCOME_NODE_MEMORY_ROUNDS:
+            report.state = OUTCOME_EXPIRED
+            report.safe_to_replace = True
+        else:
+            report.state = OUTCOME_TOO_OLD
+    elif current <= last_valid:
+        # This call submitted nothing, so expiry alone settles a sign
+        # outcome: there is no too_old.
+        report.state = OUTCOME_SIGNABLE
+    else:
+        report.state = OUTCOME_EXPIRED
+        report.safe_to_replace = True
+    if report.state == OUTCOME_EXPIRED:
+        report.advice = (
+            "The group was not confirmed and can no longer execute. It is safe to build a "
+            "new one."
+            if submission
+            else "No signature released by that request can execute any more. It is safe to "
+            "build a new one."
+        )
+    else:
+        report.advice = _outcome_advice(
+            report.state, report.confirmed_round, last_valid, rotating is not None
+        )
+    return report
+
+
+def _wait_for_outcome(algod_client: Any, error: Any, timeout: Optional[float]) -> OutcomeReport:
+    """SignerClient.wait_for_outcome."""
+    with _time_limit(timeout):
+        report: Optional[OutcomeReport] = None
+        while True:
+            try:
+                report = _resolve_outcome(algod_client, error)
+            except SendTimeoutError as e:
+                e.report = report
+                raise
+            if report.state in _OUTCOME_FINAL:
+                return report
+            if _time_limit_passed():
+                ended = _time_limit_error(f"waiting for the outcome, which is {report.state}")
+                ended.report = report
+                raise ended
+            try:
+                # status_after_block(n) returns once round n+1 exists.
+                algod_client.status_after_block(report.current_round, **_algod_options())
+            except Exception as e:
+                timed_out = _timed_out("waiting for the next round", e)
+                if timed_out is not None:
+                    timed_out.report = report
+                    raise timed_out from e
+                raise SignerError(f"wait for round {report.current_round + 1}: {e}") from e
 
 
 def send_raw_transaction(algod_client, signed_txn: str) -> str:
