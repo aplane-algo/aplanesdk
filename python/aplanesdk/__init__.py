@@ -30,6 +30,9 @@ from .signer import (
     sign_prepared_cosigned_group,
     simulate_prepared_cosigned_group,
 
+    # Cosigner discovery
+    EndpointCosignerResolver,
+
     # Unified sending and rotating accounts
     SendResult,
     RotatingSendDetails,
@@ -88,6 +91,7 @@ from .signer import (
     SubmissionRejectedError,
     SubmissionUncertainError,
     RotatingPreflightError,
+    CosignerDiscoveryError,
 
     # Types
     RuntimeArg,
@@ -162,6 +166,9 @@ __all__ = [
     "sign_prepared_cosigned_group",
     "simulate_prepared_cosigned_group",
 
+    # Cosigner discovery
+    "EndpointCosignerResolver",
+
     # Unified sending and rotating accounts
     "SendResult",
     "RotatingSendDetails",
@@ -220,6 +227,7 @@ __all__ = [
     "SubmissionRejectedError",
     "SubmissionUncertainError",
     "RotatingPreflightError",
+    "CosignerDiscoveryError",
 
     # Types
     "RuntimeArg",
