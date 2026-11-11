@@ -42,10 +42,9 @@ const NETWORK_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 /**
  * Read networks_allowed, refusing a malformed one. A value that cannot be
- * read must not become an empty list, which permits every network. This
- * accepts what the Go SDK's loader accepts: no value, or a list of network
- * IDs, where a bare number or true/false is read as its text and an empty
- * entry is skipped.
+ * read must not become an empty list, which permits every network. Every
+ * entry must be text: a bare number, true/false or an empty entry is a
+ * mistake, not a network name. A name made of digits must be quoted.
  */
 function parseNetworksAllowed(value: unknown): string[] {
   if (value === undefined || value === null) {
@@ -56,21 +55,19 @@ function parseNetworksAllowed(value: unknown): string[] {
       `networks_allowed in config.yaml must be a list of network IDs, not ${typeof value}`,
     );
   }
-  const allowed: string[] = [];
   for (const item of value) {
-    if (item === null || item === undefined) continue;
-    const text =
-      typeof item === "boolean" || (typeof item === "number" && Number.isInteger(item))
-        ? String(item)
-        : item;
-    if (typeof text !== "string" || !NETWORK_ID.test(text)) {
+    if (typeof item !== "string") {
+      throw new SignerError(
+        `invalid network in networks_allowed: ${JSON.stringify(item)} is not text (quote it if it is a network ID)`,
+      );
+    }
+    if (!NETWORK_ID.test(item)) {
       throw new SignerError(
         `invalid network in networks_allowed: ${JSON.stringify(item)} (use lowercase letters, digits, '_' or '-', starting with a letter or digit)`,
       );
     }
-    allowed.push(text);
   }
-  return allowed;
+  return [...(value as string[])];
 }
 
 /**

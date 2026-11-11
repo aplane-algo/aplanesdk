@@ -9,6 +9,8 @@ import (
 	"errors"
 	"math"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -339,5 +341,125 @@ func TestABIReferenceArgumentsAreNotCoerced(t *testing.T) {
 		if got, err := marshalABIUint64(good); err != nil || (got != 123 && got != 7) {
 			t.Fatalf("marshalABIUint64(%#v) = %d, %v", good, got, err)
 		}
+	}
+}
+
+// A networks_allowed that cannot be read must not become an empty list, which
+// permits every network, and an entry that is not text is not a network name.
+// The Python and TypeScript suites run the same cases.
+func TestLoadConfigRequiresNetworksAllowedToBeAListOfText(t *testing.T) {
+	load := func(value string) (*Config, error) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("network: testnet\nnetworks_allowed: "+value+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return LoadConfig(dir)
+	}
+	for _, value := range []string{
+		"mainnet", "{a: b}", "[testnet, [a]]", "[testnet, Mainnet]", "[testnet, 1.5]", "[testnet, -x]",
+		"[testnet, 1]", "[testnet, true]", "[testnet, null]", "[testnet, ~]",
+	} {
+		if _, err := load(value); err == nil || !strings.Contains(err.Error(), "networks_allowed") {
+			t.Fatalf("networks_allowed: %s: error = %v, want a refusal", value, err)
+		}
+	}
+	for value, want := range map[string][]string{
+		"[]": {},
+		"":   {},
+		// A name made of digits, or spelled like a boolean, is fine once quoted.
+		`[testnet, "1"]`:      {"testnet", "1"},
+		`[testnet, "true"]`:   {"testnet", "true"},
+		"[testnet, my_net-2]": {"testnet", "my_net-2"},
+	} {
+		config, err := load(value)
+		if err != nil {
+			t.Fatalf("networks_allowed: %s: error = %v", value, err)
+		}
+		if strings.Join(config.NetworksAllowed, ",") != strings.Join(want, ",") {
+			t.Fatalf("networks_allowed: %s = %q, want %q", value, config.NetworksAllowed, want)
+		}
+	}
+}
+
+// A zero app or asset reference names nothing. It is refused wherever the
+// Python and TypeScript SDKs refuse it: foreign apps and foreign assets on a
+// raw call, an ABI call and a deploy, and ABI application and asset
+// reference arguments. A box's app index may be zero (the called app), and a
+// deploy has no app ID to give.
+func TestZeroAppAndAssetReferencesAreRefused(t *testing.T) {
+	sender := sdkTestAddress(1)
+	receiver := sdkTestAddress(2)
+	ctx := context.Background()
+	signer, algodClient, cleanup := newPrepTestClients(t, sender, receiver, 2_000_000, 0, false)
+	defer cleanup()
+	program := []byte{0x06, 0x81, 0x01}
+	call := AppCallPrepParams{Sender: sender, AppID: 7}
+
+	refused := map[string]func() error{
+		"foreign_apps[1] must be greater than zero": func() error {
+			params := call
+			params.ForeignApps = []uint64{9, 0}
+			_, err := signer.PrepareAppCall(ctx, algodClient, params)
+			return err
+		},
+		"foreign_assets[0] must be greater than zero": func() error {
+			params := call
+			params.ForeignAssets = []uint64{0}
+			_, err := signer.PrepareAppCall(ctx, algodClient, params)
+			return err
+		},
+		"application argument must be greater than zero": func() error {
+			_, err := signer.PrepareABIAppCall(ctx, algodClient, ABIAppCallPrepParams{
+				AppCallPrepParams: call, MethodSignature: "f(application)void", Args: []any{uint64(0)},
+			})
+			return err
+		},
+		"asset argument must be greater than zero": func() error {
+			_, err := signer.PrepareABIAppCall(ctx, algodClient, ABIAppCallPrepParams{
+				AppCallPrepParams: call, MethodSignature: "f(asset)void", Args: []any{uint64(0)},
+			})
+			return err
+		},
+	}
+	for want, attempt := range refused {
+		if err := attempt(); err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %v, want %q", err, want)
+		}
+	}
+	abiWithZeroForeign := call
+	abiWithZeroForeign.ForeignApps = []uint64{0}
+	if _, err := signer.PrepareABIAppCall(ctx, algodClient, ABIAppCallPrepParams{
+		AppCallPrepParams: abiWithZeroForeign, MethodSignature: "f()void",
+	}); err == nil || !strings.Contains(err.Error(), "foreign_apps[0] must be greater than zero") {
+		t.Fatalf("ABI call with a zero foreign app: error = %v", err)
+	}
+	for _, deploy := range []AppDeployPrepParams{
+		{Sender: sender, ApprovalProgram: program, ClearProgram: program, ForeignApps: []uint64{0}},
+		{Sender: sender, ApprovalProgram: program, ClearProgram: program, ForeignAssets: []uint64{0}},
+	} {
+		if _, err := signer.PrepareAppDeploy(ctx, algodClient, deploy); err == nil || !strings.Contains(err.Error(), "must be greater than zero") {
+			t.Fatalf("PrepareAppDeploy() with a zero reference: error = %v", err)
+		}
+	}
+
+	// Still valid: non-zero references, a box on the called app, and a deploy,
+	// which creates the app and so names no app ID.
+	ok := call
+	ok.ForeignApps, ok.ForeignAssets = []uint64{9}, []uint64{1001}
+	ok.Boxes = []types.AppBoxReference{{AppID: 0, Name: []byte("a")}}
+	if _, err := signer.PrepareAppCall(ctx, algodClient, ok); err != nil {
+		t.Fatalf("PrepareAppCall() with valid references: %v", err)
+	}
+	if _, err := signer.PrepareABIAppCall(ctx, algodClient, ABIAppCallPrepParams{
+		AppCallPrepParams: call, MethodSignature: "f(asset,application)void", Args: []any{uint64(1001), uint64(9)},
+	}); err != nil {
+		t.Fatalf("PrepareABIAppCall() with valid reference arguments: %v", err)
+	}
+	created, err := signer.PrepareAppDeploy(ctx, algodClient, AppDeployPrepParams{Sender: sender, ApprovalProgram: program, ClearProgram: program})
+	if err != nil {
+		t.Fatalf("PrepareAppDeploy() error = %v", err)
+	}
+	if created.Transaction.ApplicationID != 0 {
+		t.Fatalf("deploy transaction app ID = %d, want 0 for a create", created.Transaction.ApplicationID)
 	}
 }

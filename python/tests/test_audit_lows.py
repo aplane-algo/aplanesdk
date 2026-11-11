@@ -446,7 +446,8 @@ def test_config_enforces_networks_allowed(tmp_path):
 
 
 # A networks_allowed that cannot be read must not become an empty list, which
-# permits every network. These are the Go loader's verdicts on the same files.
+# permits every network, and an entry that is not text is not a network name.
+# The Go and TypeScript suites run the same cases.
 
 
 @pytest.mark.parametrize(
@@ -458,6 +459,10 @@ def test_config_enforces_networks_allowed(tmp_path):
         "[testnet, Mainnet]",
         "[testnet, 1.5]",
         "[testnet, -x]",
+        "[testnet, 1]",
+        "[testnet, true]",
+        "[testnet, null]",
+        "[testnet, ~]",
     ],
 )
 def test_config_refuses_a_malformed_networks_allowed(tmp_path, value):
@@ -471,13 +476,13 @@ def test_config_refuses_a_malformed_networks_allowed(tmp_path, value):
     [
         ("[]", []),
         ("", []),
-        ("[testnet, 1]", ["testnet", "1"]),
-        ("[testnet, true]", ["testnet", "true"]),
-        ("[testnet, null]", ["testnet"]),
+        # A name made of digits, or spelled like a boolean, is fine once quoted.
+        ('[testnet, "1"]', ["testnet", "1"]),
+        ('[testnet, "true"]', ["testnet", "true"]),
         ("[testnet, my_net-2]", ["testnet", "my_net-2"]),
     ],
 )
-def test_config_reads_networks_allowed_as_go_does(tmp_path, value, allowed):
+def test_config_reads_a_well_formed_networks_allowed(tmp_path, value, allowed):
     (tmp_path / "config.yaml").write_text(f"network: testnet\nnetworks_allowed: {value}\n")
     assert load_config(str(tmp_path)).networks_allowed == allowed
 

@@ -42,6 +42,26 @@ func validateNetworkID(id string) error {
 	return nil
 }
 
+// requireNetworkNameList requires networks_allowed to be a list of text
+// entries. Decoding into []string would read a bare 1 or true as a network
+// named "1" or "true" and drop a null, so the YAML is checked before it is
+// turned into strings. An entry that is meant as a name made of digits must
+// be quoted.
+func requireNetworkNameList(node yaml.Node) error {
+	if node.Kind == yaml.ScalarNode && node.ShortTag() == "!!null" {
+		return nil
+	}
+	if node.Kind != yaml.SequenceNode {
+		return fmt.Errorf("networks_allowed in config.yaml must be a list of network IDs")
+	}
+	for _, item := range node.Content {
+		if item.Kind != yaml.ScalarNode || item.ShortTag() != "!!str" {
+			return fmt.Errorf("invalid network in networks_allowed: entry on line %d is not text (quote it if it is a network ID)", item.Line)
+		}
+	}
+	return nil
+}
+
 // ExpandPath expands ~ to the user's home directory.
 func ExpandPath(path string) string {
 	if strings.HasPrefix(path, "~") {
@@ -77,6 +97,11 @@ func LoadConfig(dataDir string) (*Config, error) {
 	for _, field := range []string{"endpoint", "ssh", "signer_port"} {
 		if _, ok := raw[field]; ok {
 			return nil, fmt.Errorf("unsupported client routing in config.yaml: remove %q and configure endpoints.yaml", field)
+		}
+	}
+	if node, ok := raw["networks_allowed"]; ok {
+		if err := requireNetworkNameList(node); err != nil {
+			return nil, err
 		}
 	}
 	if err := yaml.Unmarshal(data, config); err != nil {

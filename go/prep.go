@@ -412,6 +412,9 @@ func (c *SignerClient) PrepareABIAppCall(ctx context.Context, algodClient *algod
 	if err != nil {
 		return nil, fmt.Errorf("invalid ABI method signature: %w", err)
 	}
+	if err := requireNonZeroReferences(params.ForeignApps, params.ForeignAssets); err != nil {
+		return nil, err
+	}
 	raw := params.AppCallPrepParams
 	raw.AppArgs, raw.Accounts, raw.ForeignApps, raw.ForeignAssets, err = encodeABIMethodArgs(method, params.Args, raw.Sender, raw.AppID, raw.Accounts, raw.ForeignApps, raw.ForeignAssets)
 	if err != nil {
@@ -628,6 +631,9 @@ func (c *SignerClient) PrepareAppDeploy(ctx context.Context, algodClient *algod.
 	if len(params.ClearProgram) == 0 {
 		return nil, fmt.Errorf("clear_program is required")
 	}
+	if err := requireNonZeroReferences(params.ForeignApps, params.ForeignAssets); err != nil {
+		return nil, err
+	}
 
 	suggested, err := algodClient.SuggestedParams().Do(ctx)
 	if err != nil {
@@ -834,6 +840,9 @@ func (c *SignerClient) prepareAppCallWithInfo(ctx context.Context, algodClient *
 	}
 	if params.AppID == 0 {
 		return nil, fmt.Errorf("app_id is required")
+	}
+	if err := requireNonZeroReferences(params.ForeignApps, params.ForeignAssets); err != nil {
+		return nil, err
 	}
 	if params.OnCompletion > types.DeleteApplicationOC {
 		return nil, fmt.Errorf("invalid on_completion: %d", params.OnCompletion)
@@ -1161,6 +1170,23 @@ func appCallChecks(params AppCallPrepParams, info *AppCallInfo) []PreparedCheck 
 	}}
 }
 
+// requireNonZeroReferences refuses a zero app or asset reference. Zero names
+// no app and no asset, so one in a reference list is a mistake. The Python
+// and TypeScript SDKs refuse the same.
+func requireNonZeroReferences(foreignApps, foreignAssets []uint64) error {
+	for i, id := range foreignApps {
+		if id == 0 {
+			return fmt.Errorf("foreign_apps[%d] must be greater than zero", i)
+		}
+	}
+	for i, id := range foreignAssets {
+		if id == 0 {
+			return fmt.Errorf("foreign_assets[%d] must be greater than zero", i)
+		}
+	}
+	return nil
+}
+
 // addChecked adds two amounts and reports whether the sum fits in a uint64.
 // The caller words the refusal, so nothing is built unless it is needed.
 func addChecked(total, value uint64) (uint64, bool) {
@@ -1362,6 +1388,9 @@ func resolveABIReferenceArgs(sender string, appID uint64, types []string, values
 			if err != nil {
 				return nil, err
 			}
+			if refAppID == 0 {
+				return nil, fmt.Errorf("application argument must be greater than zero")
+			}
 			if refAppID == appID {
 				resolved = 0
 			} else if idx := uint64Index(*apps, refAppID); idx >= 0 {
@@ -1374,6 +1403,9 @@ func resolveABIReferenceArgs(sender string, appID uint64, types []string, values
 			assetID, err := marshalABIUint64(value)
 			if err != nil {
 				return nil, err
+			}
+			if assetID == 0 {
+				return nil, fmt.Errorf("asset argument must be greater than zero")
 			}
 			if idx := uint64Index(*assets, assetID); idx >= 0 {
 				resolved = idx

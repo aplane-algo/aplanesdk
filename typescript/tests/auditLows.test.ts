@@ -475,8 +475,12 @@ describe("networks_allowed", () => {
   });
 
   // A networks_allowed that cannot be read must not become an empty list,
-  // which permits every network. These are the Go loader's verdicts.
-  for (const value of ["mainnet", "{a: b}", "[testnet, [a]]", "[testnet, Mainnet]", "[testnet, 1.5]", "[testnet, -x]"]) {
+  // which permits every network, and an entry that is not text is not a
+  // network name. The Go and Python suites run the same cases.
+  for (const value of [
+    "mainnet", "{a: b}", "[testnet, [a]]", "[testnet, Mainnet]", "[testnet, 1.5]", "[testnet, -x]",
+    "[testnet, 1]", "[testnet, true]", "[testnet, null]", "[testnet, ~]",
+  ]) {
     it(`refuses networks_allowed: ${value}`, () => {
       const dir = write(`network: testnet\nnetworks_allowed: ${value}\n`);
       try {
@@ -490,13 +494,13 @@ describe("networks_allowed", () => {
   const readable: Array<[string, string[]]> = [
     ["[]", []],
     ["", []],
-    ["[testnet, 1]", ["testnet", "1"]],
-    ["[testnet, true]", ["testnet", "true"]],
-    ["[testnet, null]", ["testnet"]],
+    // A name made of digits, or spelled like a boolean, is fine once quoted.
+    ['[testnet, "1"]', ["testnet", "1"]],
+    ['[testnet, "true"]', ["testnet", "true"]],
     ["[testnet, my_net-2]", ["testnet", "my_net-2"]],
   ];
   for (const [value, allowed] of readable) {
-    it(`reads networks_allowed: ${value || "(empty)"} as Go does`, () => {
+    it(`reads networks_allowed: ${value || "(empty)"}`, () => {
       const dir = write(`network: testnet\nnetworks_allowed: ${value}\n`);
       try {
         assert.deepEqual(loadConfig(dir).networksAllowed, allowed);

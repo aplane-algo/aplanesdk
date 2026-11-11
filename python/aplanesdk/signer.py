@@ -1001,9 +1001,9 @@ def _parse_networks_allowed(value: Any) -> List[str]:
     """Read networks_allowed, refusing a malformed one.
 
     A value that cannot be read must not become an empty list, which permits
-    every network. This accepts what the Go SDK's loader accepts: no value, or
-    a list of network IDs, where a bare number or true/false is read as its
-    text and an empty entry is skipped.
+    every network. Every entry must be text: a bare number, true/false or an
+    empty entry is a mistake, not a network name. A name made of digits must
+    be quoted.
     """
     if value is None:
         return []
@@ -1012,21 +1012,18 @@ def _parse_networks_allowed(value: Any) -> List[str]:
             f"networks_allowed in config.yaml must be a list of network IDs, "
             f"not {type(value).__name__}"
         )
-    allowed = []
     for item in value:
-        if item is None:
-            continue
-        if isinstance(item, bool):
-            item = "true" if item else "false"
-        elif isinstance(item, int):
-            item = str(item)
-        if not isinstance(item, str) or _NETWORK_ID.fullmatch(item) is None:
+        if not isinstance(item, str):
+            raise SignerError(
+                f"invalid network in networks_allowed: {item!r} is not text "
+                "(quote it if it is a network ID)"
+            )
+        if _NETWORK_ID.fullmatch(item) is None:
             raise SignerError(
                 f"invalid network in networks_allowed: {item!r} (use lowercase letters, "
                 "digits, '_' or '-', starting with a letter or digit)"
             )
-        allowed.append(item)
-    return allowed
+    return list(value)
 
 
 def load_config(data_dir: str) -> ClientConfig:
