@@ -153,10 +153,15 @@ type RotatingSignResult struct {
 }
 
 // RotatingPreflightError reports a prepared rotating group that failed its
-// unsigned simulation. Nothing was signed.
+// unsigned simulation. Nothing was signed. The simulation fails on the node's
+// own failure-message, and on an answer that does not cover the group:
+// without exactly one result (none, or more than one), a result reporting
+// failed-at without a message, or one whose count of transaction results is
+// not the number of transactions simulated.
 type RotatingPreflightError struct {
 	Prepared *PreparedRotating
-	// Message is the node's failure message.
+	// Message says why, as SimulationResult.FailureMessage does: the node's
+	// failure-message, or which of the other failures it was.
 	Message string
 }
 
@@ -352,13 +357,14 @@ func (c *SignerClient) SimulatePreparedRotating(ctx context.Context, algodClient
 	if err != nil {
 		return nil, err
 	}
+	failure := simulationFailure(response, len(unsigned))
 	return &SimulationResult{
 		TxIDs:          prepared.TxIDs(),
 		Transactions:   prepared.Transactions(),
 		Mutations:      prepared.Mutations(),
 		Response:       response,
-		Failed:         simulationFailed(response),
-		FailureMessage: simulationFailure(response),
+		Failed:         failure != "",
+		FailureMessage: failure,
 	}, nil
 }
 

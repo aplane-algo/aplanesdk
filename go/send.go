@@ -122,11 +122,14 @@ var (
 // SignOutcomeUnknownError reports a signing exchange that ended with no
 // usable answer: a /sign request, or a step of the cosigned sequence. The
 // signer may or may not have released a signature. Nothing was submitted by
-// this call. RequestID and Requests are set for the ordinary /sign flow. Do not build and sign a replacement transaction on the
-// strength of this error alone: check the request with the operator or the
-// signer's audit log first.
+// this call. Do not build and sign a replacement transaction on the strength
+// of this error alone: check the request with the operator or the signer's
+// audit log first.
 type SignOutcomeUnknownError struct {
-	// RequestID is the sign request's ID, as the signer's audit log records it.
+	// RequestID is the ID of the request whose answer was lost, as the
+	// signer's audit log records it: the /sign request, or for a cosigned
+	// account the /sign/component, /sign/assemble or /sign request of the
+	// step that ended with no answer.
 	RequestID string
 	// Requests is what was sent to be signed, for the ordinary flow.
 	Requests []SignRequest
@@ -293,8 +296,8 @@ func (c *SignerClient) sendPrepared(ctx context.Context, algodClient *algod.Clie
 			// The sequence makes several approval-bearing requests. One that
 			// ended with no answer may have released a signature, and the
 			// last of them releases the whole group.
-			if answerLost(err) {
-				return nil, &SignOutcomeUnknownError{Err: err}
+			if requestID, lost := lostRequest(err); lost {
+				return nil, &SignOutcomeUnknownError{RequestID: requestID, Err: err}
 			}
 			return nil, err
 		}
@@ -320,14 +323,18 @@ func (c *SignerClient) sendPrepared(ctx context.Context, algodClient *algod.Clie
 	return result, nil
 }
 
-// answerLost reports whether err is an approval-bearing request of the
+// lostRequest reports whether err is an approval-bearing request of the
 // cosigned sequence that ended with no usable answer: a component request,
-// the /sign of the group's other positions, or the assembly. Planning and key
-// listing release nothing, so a failure there is not one.
-func answerLost(err error) bool {
-	var lost *lostAnswer
+// the /sign of the group's other positions, or the assembly. It returns that
+// request's ID. Planning and key listing release nothing, so a failure there
+// is not one.
+func lostRequest(err error) (requestID string, lost bool) {
+	var mark *lostAnswer
+	if errors.As(err, &mark) {
+		return mark.requestID, true
+	}
 	var unread *signUnreadError
-	return errors.As(err, &lost) || errors.As(err, &unread)
+	return "", errors.As(err, &unread)
 }
 
 // classifySend picks the one signing flow for the whole group from the

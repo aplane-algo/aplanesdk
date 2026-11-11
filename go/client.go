@@ -7,6 +7,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha512"
+	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -139,8 +141,11 @@ func readErrorParts(resp *http.Response) (code, message string) {
 		return "", http.StatusText(resp.StatusCode)
 	}
 
+	// A code is kept only beside a message: an envelope whose message is
+	// empty or only whitespace is not one, and neither is a JSON value that
+	// is not an object. The body text stands for the message then.
 	var errorResp ErrorResponse
-	if err := json.Unmarshal(bodyBytes, &errorResp); err == nil && errorResp.Error != "" {
+	if err := json.Unmarshal(bodyBytes, &errorResp); err == nil && strings.TrimSpace(errorResp.Error) != "" {
 		return errorResp.Code, errorResp.Error
 	}
 	return "", body
@@ -578,6 +583,14 @@ func (c *SignerClient) GetKeysResponseWithContext(ctx context.Context) (*KeysRes
 	if err := readAnswer(resp.Body, &keysResp); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
+	// An address is looked up by its exact text, so an Algorand address the
+	// signer spelled another way would never match the key's account. Any
+	// other text, such as a witness key's ID, is kept as sent.
+	for i, key := range keysResp.Keys {
+		if canonical, ok := alternateAddressSpelling(key.Address); ok {
+			return nil, fmt.Errorf("failed to decode response: key %d address %q is a non-canonical spelling of address %s", i, key.Address, canonical)
+		}
+	}
 
 	cache := make(map[string]*KeyInfo, len(keysResp.Keys))
 	for i := range keysResp.Keys {
@@ -603,6 +616,29 @@ func (c *SignerClient) GetKeysResponseWithContext(ctx context.Context) (*KeysRes
 			Keys:  keysResp.Keys,
 		},
 	}, nil
+}
+
+// alternateAddressSpelling reports whether text is an Algorand address spelled
+// other than canonically, and returns the canonical spelling: 58 characters
+// that decode, as base32 without padding, to 36 bytes whose last 4 are the
+// checksum of the first 32, but that do not re-encode to text. DecodeAddress
+// refuses such text, so it cannot tell it from text that is no address.
+func alternateAddressSpelling(text string) (string, bool) {
+	if len(text) != 58 {
+		return "", false
+	}
+	decoded, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(text)
+	if err != nil || len(decoded) != 36 {
+		return "", false
+	}
+	checksum := sha512.Sum512_256(decoded[:32])
+	if !bytes.Equal(checksum[len(checksum)-4:], decoded[32:]) {
+		return "", false
+	}
+	var address types.Address
+	copy(address[:], decoded[:32])
+	canonical := address.String()
+	return canonical, canonical != text
 }
 
 // ListKeyTypes returns available key types and their creation parameters.
@@ -674,19 +710,35 @@ func (c *SignerClient) GenerateKey(keyType string, parameters map[string]string)
 	if resp.StatusCode != 200 {
 		return nil, signerHTTPErrorOp(resp, "key generation failed")
 	}
+	// The signer answered, so its keys may have changed whatever the answer
+	// says.
+	c.invalidateKeyCache()
 
 	var result GenerateResult
 	if err := readAnswer(resp.Body, &result); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
+	if result.Error != "" {
+		return nil, fmt.Errorf("key generation failed: %s", result.Error)
+	}
+	if result.Address == "" {
+		return nil, fmt.Errorf("key generation failed: missing address")
+	}
+	return &result, nil
+}
 
-	// Invalidate key cache
+func (c *SignerClient) invalidateKeyCache() {
 	c.keyMu.Lock()
 	c.keyCache = nil
 	c.invalidateKeyCacheRevisionLocked()
 	c.keyMu.Unlock()
+}
 
-	return &result, nil
+// deleteKeyResponse is the answer of DELETE /admin/keys. The signer answers
+// {"success":true}; an error, which it never sets today, is a refusal.
+type deleteKeyResponse struct {
+	Success bool   `json:"success"`
+	Error   string `json:"error,omitempty"`
 }
 
 // DeleteKey deletes a key from the signer.
@@ -717,13 +769,15 @@ func (c *SignerClient) DeleteKey(address string) error {
 	if resp.StatusCode != 200 {
 		return signerHTTPErrorOp(resp, "key deletion failed")
 	}
+	c.invalidateKeyCache()
 
-	// Invalidate key cache
-	c.keyMu.Lock()
-	c.keyCache = nil
-	c.invalidateKeyCacheRevisionLocked()
-	c.keyMu.Unlock()
-
+	var result deleteKeyResponse
+	if err := readAnswer(resp.Body, &result); err != nil {
+		return fmt.Errorf("failed to decode response: %w", err)
+	}
+	if result.Error != "" {
+		return fmt.Errorf("key deletion failed: %s", result.Error)
+	}
 	return nil
 }
 
@@ -747,6 +801,14 @@ func (c *SignerClient) RequestAssembleWithContext(ctx context.Context, reqBody A
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// A context that has already ended sends nothing, as in postApproval: it
+	// is a plain stop, not an exchange whose outcome is unknown.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	reqCtx, cancel := c.requestContext(ctx, cosignedAssemblyTimeout)
 	defer cancel()
@@ -756,10 +818,13 @@ func (c *SignerClient) RequestAssembleWithContext(ctx context.Context, reqBody A
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if err := reqCtx.Err(); err != nil {
+		return nil, err
+	}
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to make request to Signer: %w", &lostAnswer{err: err})
+		return nil, fmt.Errorf("failed to make request to Signer: %w", &lostAnswer{requestID: reqBody.RequestID, err: err})
 	}
 	defer resp.Body.Close()
 
@@ -778,7 +843,10 @@ func (c *SignerClient) RequestAssembleWithContext(ctx context.Context, reqBody A
 
 	var assemblyResp AssemblyResponse
 	if err := readAnswer(resp.Body, &assemblyResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", &lostAnswer{err: err})
+		return nil, fmt.Errorf("failed to decode response: %w", &lostAnswer{requestID: reqBody.RequestID, err: err})
+	}
+	if assemblyResp.Error != "" {
+		return nil, fmt.Errorf("assembly failed: %s", assemblyResp.Error)
 	}
 	if err := assemblyResp.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid assembly response: %w", err)
@@ -1102,10 +1170,13 @@ func (c *SignerClient) SignGroupWithContext(ctx context.Context, groupReq GroupS
 	}
 	resp, err := c.postSign(ctx, groupReq)
 	var transport *signTransportError
+	var unread *signUnreadError
 	var body *signBodyError
 	switch {
 	case errors.As(err, &transport):
-		return nil, fmt.Errorf("failed to make request to Signer: %w", &lostAnswer{err: transport.err})
+		return nil, fmt.Errorf("failed to make request to Signer: %w", &lostAnswer{requestID: groupReq.RequestID, err: transport.err})
+	case errors.As(err, &unread):
+		return nil, &lostAnswer{requestID: groupReq.RequestID, err: err}
 	case errors.As(err, &body):
 		return nil, fmt.Errorf("group signing failed: %s", body.message)
 	}
@@ -1128,8 +1199,12 @@ func readAnswer(body io.Reader, out any) error {
 
 // lostAnswer marks an approval-bearing request that ended with no usable
 // answer: the exchange failed, or a 200 arrived whose body could not be read.
-// The signer may have acted on the request. It reads as the error it wraps.
-type lostAnswer struct{ err error }
+// The signer may have acted on the request. requestID is that request's ID,
+// as the signer's audit log records it. It reads as the error it wraps.
+type lostAnswer struct {
+	requestID string
+	err       error
+}
 
 func (e *lostAnswer) Error() string { return e.err.Error() }
 func (e *lostAnswer) Unwrap() error { return e.err }

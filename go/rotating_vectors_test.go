@@ -243,6 +243,11 @@ func rotatingAnswerBodies(t *testing.T, cases map[string]rotatingVectorCase) []r
 		if err != nil {
 			t.Fatal(err)
 		}
+		// A null stage reads as stage 0: right for a stage 0 spend only.
+		nullStage := "refused"
+		if c.Sign.Stage == 0 {
+			nullStage = "accepted"
+		}
 		for _, body := range []rotatingAnswerBody{
 			{Name: "the captured answer", Body: string(base), Expect: "accepted"},
 			{Name: "an extra field the client does not know", Body: set("extra", `{"a":1}`), Expect: "accepted"},
@@ -264,6 +269,8 @@ func rotatingAnswerBodies(t *testing.T, cases map[string]rotatingVectorCase) []r
 			{Name: "signed left out", Body: with(func(fields map[string]json.RawMessage) { delete(fields, "signed") }), Expect: "refused"},
 			{Name: "signed is null", Body: set("signed", "null"), Expect: "refused"},
 			{Name: "txid left out", Body: with(func(fields map[string]json.RawMessage) { delete(fields, "txid") }), Expect: "refused"},
+			{Name: "stage is null", Body: set("stage", "null"), Expect: nullStage},
+			{Name: "txid is null", Body: set("txid", "null"), Expect: "refused"},
 		} {
 			body.Case = name
 			bodies = append(bodies, body)
