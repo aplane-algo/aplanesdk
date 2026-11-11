@@ -3595,6 +3595,20 @@ def _require_app_references(
     return checked[0], checked[1], _require_box_references(boxes)
 
 
+def _require_account_references(accounts: Optional[List[Any]]) -> Optional[List[str]]:
+    """Require every account reference of an app call to be an address string,
+    spelled canonically, as the Go SDK's address decoding requires. None
+    stays None."""
+    if accounts is None:
+        return None
+    if isinstance(accounts, (str, bytes)) or not isinstance(accounts, (list, tuple)):
+        raise ValueError("accounts must be a list of addresses")
+    return [
+        _require_canonical_address(account, f"accounts[{position}]")
+        for position, account in enumerate(accounts)
+    ]
+
+
 def _apply_prep_fee(params: Any, fee: Optional[int]) -> None:
     # No fee-per-byte mode: fee is always flat microAlgos, so a set fee can
     # never be silently reinterpreted as EstimateSize*fee. None means unset
@@ -4137,8 +4151,9 @@ def _resolve_abi_reference_args(
 
 def _marshal_abi_address(value: Any) -> str:
     if isinstance(value, str):
-        encoding.decode_address(value)
-        return value
+        # Spelled canonically, or the reference could name the sender or an
+        # account already listed under another spelling.
+        return _require_canonical_address(value, "account reference argument")
     if isinstance(value, bytes):
         if len(value) != 32:
             raise ValueError("decoded value is not a 32-byte address")
@@ -5466,11 +5481,16 @@ class SignerClient:
         """Build a prepared ABI method-call transaction."""
         if not method_signature:
             raise ValueError("method_signature is required")
-        # Checked before the arguments are encoded, so a bad ID is reported
-        # as one and never reaches the encoder.
+        # Checked before the arguments are encoded, so a bad sender, ID or
+        # reference is reported as one and never reaches the encoder: an
+        # account argument is resolved against the sender.
+        if not sender:
+            raise ValueError("sender is required")
+        _require_canonical_address(sender, "sender")
         if app_id is None:
             raise ValueError("app_id is required")
         app_id = _require_uint(app_id, "app_id", positive=True)
+        accounts = _require_account_references(accounts)
         foreign_apps, foreign_assets, boxes = _require_app_references(
             foreign_apps, foreign_assets, boxes
         )
@@ -5531,6 +5551,7 @@ class SignerClient:
         if app_id is None:
             raise ValueError("app_id is required")
         app_id = _require_uint(app_id, "app_id", positive=True)
+        accounts = _require_account_references(accounts)
         foreign_apps, foreign_assets, boxes = _require_app_references(
             foreign_apps, foreign_assets, boxes
         )
@@ -5608,6 +5629,7 @@ class SignerClient:
             raise ValueError("clear_program is required")
         # None is "the default", as for the schemas: no extra pages.
         extra_pages = 0 if extra_pages is None else _require_uint(extra_pages, "extra_pages")
+        accounts = _require_account_references(accounts)
         foreign_apps, foreign_assets, boxes = _require_app_references(
             foreign_apps, foreign_assets, boxes
         )

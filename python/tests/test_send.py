@@ -1521,6 +1521,62 @@ def test_a_prepare_helper_refuses_an_address_spelled_otherwise(helper, kwargs, f
         getattr(client, helper)(_NoAlgod(), **kwargs)
 
 
+_APP_CALLS = [
+    ("prepare_app_call", {"sender": _SENDER, "app_id": 5}),
+    ("prepare_abi_app_call", {"sender": _SENDER, "app_id": 5, "method_signature": "f()void"}),
+    (
+        "prepare_app_deploy",
+        {"sender": _SENDER, "approval_program": b"\x06", "clear_program": b"\x06"},
+    ),
+]
+
+
+@pytest.mark.parametrize("helper,kwargs", _APP_CALLS)
+@pytest.mark.parametrize(
+    "entry,error",
+    [
+        (alternate_spelling(_OTHER), "is not the canonical spelling"),
+        (123, "is not a valid address"),
+        (None, "is not a valid address"),
+        (bytes(32), "is not a valid address"),
+        ("NOT-AN-ADDRESS", "is not a valid address"),
+    ],
+)
+def test_an_app_call_refuses_an_account_reference_that_is_not_a_canonical_address(
+    helper, kwargs, entry, error
+):
+    # As the Go SDK's address decoding does, before anything is asked of
+    # algod or the signer.
+    client = signer_client("http://127.0.0.1:9")
+    with pytest.raises(ValueError, match=rf"accounts\[1\] .*{error}"):
+        getattr(client, helper)(_NoAlgod(), accounts=[_OTHER, entry], **kwargs)
+
+
+@pytest.mark.parametrize("value", [alternate_spelling(_OTHER), alternate_spelling(_SENDER)])
+def test_an_abi_account_argument_spelled_otherwise_is_refused(value):
+    # Spelled otherwise, the sender would be listed as another account, and
+    # an account already listed would be listed twice.
+    client = signer_client("http://127.0.0.1:9")
+    with pytest.raises(ValueError, match="account reference argument .* is not the canonical"):
+        client.prepare_abi_app_call(
+            _NoAlgod(), sender=_SENDER, app_id=5, method_signature="f(account)void", args=[value]
+        )
+
+
+@pytest.mark.parametrize(
+    "sender,error",
+    [("", "sender is required"), (alternate_spelling(_SENDER), "sender .* is not the canonical")],
+)
+def test_an_abi_app_call_checks_its_sender_before_its_arguments(sender, error):
+    # The arguments are encoded against the sender, so it is checked first,
+    # and its error is the one reported.
+    client = signer_client("http://127.0.0.1:9")
+    with pytest.raises(ValueError, match=error):
+        client.prepare_abi_app_call(
+            _NoAlgod(), sender=sender, app_id=5, method_signature="f(uint64)void", args=[True]
+        )
+
+
 def test_a_rekey_to_a_rotating_account_spelled_otherwise_is_refused(fakes):
     # Spelled otherwise, the target would not be found by its record, and the
     # check that refuses a rekey to a rotating account would be skipped.
