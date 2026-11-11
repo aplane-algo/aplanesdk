@@ -324,6 +324,168 @@ const signed = await client.signTransaction(txn, undefined, undefined, {
 controller.abort();
 ```
 
+#### `sendPrepared(algodClient, group, options?): Promise<SendResult>`
+
+Sign a prepared transaction or group, check the signed result against what was
+prepared, submit exactly those bytes, and wait for confirmation. The SDK picks
+the signing flow from the signer's record of each key, so the same call works
+for Ed25519, native Falcon, LogicSig, bounded, cosigned and rotating accounts,
+and for a rekeyed sender.
+
+```typescript
+const prepared = await client.preparePayment(algodClient, {
+  sender,
+  receiver,
+  amount: 1_000_000, // microAlgos
+});
+const result = await client.sendPrepared(algodClient, { transactions: [prepared] });
+console.log(result.txIds[0], result.outcome, result.confirmedRound);
+```
+
+`sendPayment(algodClient, params, options?)` does both steps for an ALGO
+payment.
+
+- **Result.** `signedGroup` is the group as submitted, hex msgpack; the first
+  `originalCount` entries are yours and the rest are resource dummies the
+  signer appended. `txIds`, `fees` (bigint microAlgos) and `groupId` are
+  computed from the signed bytes. A signer may raise a fee or assign a group,
+  so `txIds` can differ from the IDs of the transactions you prepared.
+  `confirmedRound` is a bigint, `0n` unless `outcome` is `"confirmed"`.
+- **Options.** `noWait` returns once the node accepts the group, with outcome
+  `"submitted"`. `waitRounds` is how many further rounds to wait for
+  confirmation (default 10). A cosigned account needs `cosignerClient` with
+  `cosignerComponentKey`, or a `cosignerResolver`; the SDK does not close a
+  cosigner client you pass. `signal` is an `AbortSignal`: an abort before
+  anything is asked of the signer is a plain stop, and the send passes it to
+  its signing, rotating prepare and algod requests.
+- **Refused before signing:** an unknown signing flow
+  (`UnsupportedSigningFlowError`), and a pre-signed or foreign position
+  (`UnsupportedGroupError`). Use the lower-level signing calls for those
+  groups.
+- **No replacement spends.** The call never builds a second transaction for
+  one whose outcome is unknown. A rotating send may prepare and seek approval
+  again when the signer says an attempt released no signature.
+
+Failures:
+
+| Error | Meaning | What to do |
+|---|---|---|
+| The signing call's own error | The signer refused (policy, operator, locked), or the SDK refused the signer's answer (`verify signer response: ...`, `MaxFeeIncreaseError`). Nothing was submitted. | Read the reason. If the SDK refused a sign answer, the signer did sign and the SDK discarded the result. |
+| `SignOutcomeUnknownError` | A signing exchange ended with no answer. A signature may have been released; nothing was submitted. | Check with the operator or the audit log before signing again. For the ordinary flow the error carries `requestId` and `requests`; for a rotating account it carries the prepared group in `rotating` (see below). |
+| `SubmissionRejectedError` | The node refused the group or dropped it from its pool. | Read the reason. The signed bytes and IDs are in `signedGroup` and `txIds`. |
+| `SubmissionUncertainError` | `stage` says where it stopped: `"unsent"` (signed, never sent: your signal was aborted), `"submit"` (the submission's answer never arrived), or `"confirm"` (not confirmed within the wait). Except for `"unsent"`, it may still confirm. | Look up `txIds`, or submit the same `signedGroup` again. Do not sign a replacement until the outcome is known: both could execute. |
+
+A node that answers "already in ledger" has a transaction with the same ID
+from an earlier submission of the group. The SDK treats that as submitted and
+looks for the outcome; it is not a rejection. A committed transaction that
+carries a lease is the exception: the node refuses it for its lease, and the
+SDK reports a rejection.
+
+The existing `sign*` and `simulate*` calls are unchanged.
+
+#### Rotating accounts
+
+A rotating account (`signingFlow` `rotating1`) hands itself to a fresh stage
+on every spend, so the signer adds a rekey to the transaction. `sendPrepared`
+and `sendPayment` run the whole sequence:
+
+1. **Prepare.** The signer returns the exact group it will sign: your
+   transaction with the rekey to the next stage, its fee raised, and any
+   resource dummies.
+2. **Check.** The SDK refuses the group unless the only changes are that
+   rekey, a reported fee raise within your max fee increase, the group ID and
+   canonical dummies.
+3. **Simulate, unsigned,** through your algod. A group that fails throws
+   `RotatingPreflightError`, as does an answer with no result for the group;
+   a simulation that cannot be run throws a plain error. Either way no
+   one-time key has been used.
+4. **Sign,** with operator approval, then check the signed group is exactly
+   the prepared one.
+5. **Submit at once** and wait for confirmation. `result.rotating` reports the
+   stage that signed and the stage that now controls the account.
+
+What to know:
+
+- **One transaction, alone.** A rotating account's transaction must be
+  ungrouped, set no `rekeyTo`, not close the account, and take no LogicSig
+  arguments. It cannot share a group with other transactions.
+- **Short validity window.** The window is at most 100 rounds
+  (`ROTATING_MAX_VALIDITY_WINDOW`), and the signer signs only while
+  `firstValid` is at most 2 rounds ahead (`ROTATING_MAX_LEAD`) and at least 10
+  rounds remain (`ROTATING_MIN_REMAINING`). Every `prepare*` helper builds such
+  a window when the sender is a rotating account. A transaction whose rounds
+  are not current is refused before the operator is asked. For a transaction
+  you built yourself, set `refreshValidity: true` to let the SDK rebuild the
+  rounds; that changes the transaction ID, so leave it off if anything outside
+  the transaction binds its rounds.
+- **App calls carry the rekey.** A contract that requires a zero `rekeyTo`
+  fails the simulation in step 3.
+- **Bounded retries.** When the signer says an attempt released no signature
+  (`rotating_stage_unproven`, `rotating_stage_changed`,
+  `rotating_window_not_current`), the send prepares again, up to three
+  attempts. Each attempt needs approval again. A timing refusal is retried
+  only when the rounds may be rebuilt, and the retry uses the longest window
+  to give the operator time. The codes are `ErrorCodes.RotatingStageUnproven`,
+  `ErrorCodes.RotatingStageChanged` and
+  `ERROR_CODE_ROTATING_WINDOW_NOT_CURRENT`, read from `SignerError.code`.
+- **The SDK cannot derive stage addresses.** It binds the next stage's
+  address the signer reports to the prepared transaction; the signer derives
+  it again from the seed before it signs.
+- **Unsigned simulation checks effects, not signatures.** The node runs the
+  stage program only on the signed group.
+- **Two sends in a row** work once the first has confirmed, which the default
+  wait ensures. Two spends prepared from the same stage cannot both land; the
+  SDK does not serialize other clients or processes.
+- **Stage numbers** are safe integers; a signer answer with a stage beyond
+  `Number.MAX_SAFE_INTEGER` is refused, never rounded.
+
+The steps are also available one at a time. None of them submits:
+
+```typescript
+const prepared = await client.prepareRotating(txn);                           // nothing signed
+const simulation = await client.simulatePreparedRotating(algodClient, prepared); // never signs
+const signed = await client.signPreparedRotating(prepared);                  // waits for approval
+const result = await client.submitSignedGroup(algodClient, signed.signedGroup);
+```
+
+A `PreparedRotating` cannot be changed after it is made: every value it hands
+out is a copy, and it is checked again when it is simulated or signed. Submit a
+signed rotating group promptly: the stage's one-time keys are revealed until
+that transaction or a later rotation confirms.
+
+**If a sign answer is lost** (`SignOutcomeUnknownError`, whose `rotating`
+field holds the prepared group), call `signPreparedRotating` again with that
+same prepared group. It asks for the same transaction with the same IDs and
+builds no second spend. It needs approval again and succeeds only while the
+stage is still live and the window still acceptable. If the retry is refused,
+do not prepare a replacement until the first attempt's outcome is known:
+`rotating_stage_changed` means a transaction from that stage has confirmed.
+
+```typescript
+try {
+  await client.sendPayment(algodClient, { sender, receiver, amount: 1_000_000 });
+} catch (error) {
+  if (error instanceof SignOutcomeUnknownError && error.rotating) {
+    const signed = await client.signPreparedRotating(error.rotating);
+    await client.submitSignedGroup(algodClient, signed.signedGroup);
+  } else {
+    throw error;
+  }
+}
+```
+
+`submitSignedGroup` also submits again the `signedGroup` kept by a
+`SubmissionUncertainError`; the same bytes can execute only once.
+
+A rotating account that was rekeyed to an ordinary key the signer holds has
+left rotation. The `prepare*` helpers name that key as its `authAddress`, and
+it is then signed like any rekeyed account. `sendPrepared` confirms the rekey
+on the chain first, so an ordinary key is never asked to sign for an account
+that is still rotating. `resolveAuthAddress` reports a rotating account's
+`authAddress` as the account itself and the chain's authorizer, the current
+stage, in `chainAuthAddress`. Recovery of an unknown stage is an operator
+action (`rotate recover` in apshell).
+
 ## Supported Key Types
 
 | Key Type | Description | Notes |
