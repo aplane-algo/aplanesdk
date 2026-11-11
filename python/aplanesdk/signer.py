@@ -1720,14 +1720,49 @@ class _RequestSlot:
     signer: Optional[str] = None
 
 
+def _canonical_address(value: Any) -> Optional[str]:
+    """The canonical spelling of an address, or None when value is not one.
+
+    py-algorand-sdk decodes alternate spellings of an address, which set the
+    unused bits of the last base32 character, to the same 32 bytes. The Go
+    SDK refuses them, and compares addresses only in canonical form, so an
+    address is compared here after canonicalising, or refused.
+    """
+    if not isinstance(value, str) or not encoding.is_valid_address(value):
+        return None
+    return cast(str, encoding.encode_address(encoding.decode_address(value)))
+
+
+def _address_key(value: Any) -> Any:
+    """What an address is compared as: its canonical spelling, or the value
+    itself when it is not an address, which then matches only itself."""
+    return _canonical_address(value) or value
+
+
+def _refuse_alternate_spelling(value: Any, label: str, error: type = ValueError) -> None:
+    """Refuse an address spelled other than canonically, as the Go SDK's
+    address decoding does. Something that is not an address passes; the
+    caller decides what it means."""
+    canonical = _canonical_address(value)
+    if canonical is not None and canonical != value:
+        raise error(f"{label} {value} is not the canonical spelling of {canonical}")
+
+
+def _require_canonical_address(value: Any, label: str, error: type = ValueError) -> str:
+    """Require a canonically spelled address."""
+    if _canonical_address(value) is None:
+        raise error(f"{label} {value!r} is not a valid address")
+    _refuse_alternate_spelling(value, label, error)
+    return cast(str, value)
+
+
 def _sign_slot(txn: transaction.Transaction, auth_address: Any) -> _RequestSlot:
     """The slot of a sign-mode position.
 
-    The auth address must be a real address: the returned authorization is
-    checked against it.
+    The auth address must be a real address, spelled canonically: the
+    returned authorization is checked against it.
     """
-    if not isinstance(auth_address, str) or not encoding.is_valid_address(auth_address):
-        raise ValueError(f"auth_address {auth_address!r} is not a valid address")
+    _require_canonical_address(auth_address, "auth_address")
     return _RequestSlot("sign", txn, auth=auth_address)
 
 
@@ -2890,8 +2925,11 @@ def _extract_auth_address(account_info: Any) -> str:
 
 
 def _find_spendable_key(keys: List[KeyInfo], address: str) -> Optional[KeyInfo]:
+    """The spendable key the signer lists for address. Addresses are compared
+    in canonical form."""
+    wanted = _address_key(address)
     for key in keys:
-        if key.address != address:
+        if _address_key(key.address) != wanted:
             continue
         if key.is_spending_account is False:
             continue
@@ -4339,13 +4377,17 @@ class SignerClient:
         """
         if account_info_lookup is None:
             raise ValueError("account_info_lookup is required")
+        # The signer lists addresses canonically, and the Go SDK refuses any
+        # other spelling; one that differs would not be the account it names.
+        _refuse_alternate_spelling(address, "address")
 
         try:
             account_info = account_info_lookup(address)
         except Exception as e:
             raise SignerError(f"failed to query account info: {e}") from e
 
-        auth_addr = _extract_auth_address(account_info)
+        # The chain's answer is compared in canonical form.
+        auth_addr = _address_key(_extract_auth_address(account_info))
         signing_addr = address
         if auth_addr and auth_addr != address:
             signing_addr = auth_addr
@@ -6413,7 +6455,7 @@ class SignerClient:
                     f"prepared transaction {index}: read the authorizer of rotating account "
                     f"{sender}: {e}"
                 ) from e
-            if _extract_auth_address(info) != item.auth_address:
+            if _address_key(_extract_auth_address(info)) != item.auth_address:
                 raise UnsupportedGroupError(
                     f"prepared transaction {index}: it names auth address {item.auth_address}, "
                     f"but rotating account {sender} is not rekeyed to it"
@@ -6485,10 +6527,16 @@ class SignerClient:
                     "does not sign it"
                 )
             auth = item.auth_address
+            # Both are compared with the signer's records, which spell
+            # addresses canonically. Another spelling of the same account would
+            # be taken for another account, so it is refused, as the Go SDK's
+            # address decoding refuses it.
+            sender = item.transaction.sender
+            _refuse_alternate_spelling(sender, f"prepared transaction {index}: sender")
+            _refuse_alternate_spelling(auth, f"prepared transaction {index}: auth address")
             # A rotating account is recognised by its own record: once it has
             # rotated, its on-chain authorizer is a stage address the signer
             # does not list. It signs alone, and as itself.
-            sender = item.transaction.sender
             # A position that names another key the signer holds says the
             # account left rotation for that key. It is routed by that key
             # once the chain confirms the rekey.
@@ -6572,6 +6620,8 @@ class SignerClient:
         """
         if not isinstance(txn, transaction.Transaction):
             raise ValueError("transaction is required")
+        # The account is named to the signer as the transaction's sender.
+        _require_canonical_address(txn.sender, "sender")
         _check_rotating_shape(txn)
         _check_rotating_window(txn)
         original = bytes.fromhex(encode_transaction(txn)[0])
@@ -7491,6 +7541,8 @@ class PreparedRotating:
             original = _decode_canonical_txn(self._original)
         except SignerError as e:
             raise SignerError(f"original transaction: {e}") from e
+        # The decoded sender is spelled canonically, so another spelling of
+        # the account is refused here.
         if self._account != original.sender:
             raise SignerError(f"prepared account {self._account} is not the sender")
         stage = _require_uint(self._stage, "prepared stage", error=SignerError)
@@ -7500,8 +7552,11 @@ class PreparedRotating:
         if target != stage + 1:
             raise SignerError(f"prepared target stage {target} is not the stage after {stage}")
         rekey_to = self._rekey_to
-        if not isinstance(rekey_to, str) or not encoding.is_valid_address(rekey_to):
+        if _canonical_address(rekey_to) is None:
             raise SignerError(f"invalid rekey_to: {rekey_to!r} is not an address")
+        # Another spelling of an address decodes to the same bytes, and is
+        # refused all the same, as the Go SDK's address decoding refuses it.
+        _refuse_alternate_spelling(rekey_to, "invalid rekey_to:", error=SignerError)
         rekey_bytes = encoding.decode_address(rekey_to)
         if rekey_bytes == bytes(32) or rekey_bytes == encoding.decode_address(original.sender):
             raise SignerError("rekey_to must be another, non-zero address")

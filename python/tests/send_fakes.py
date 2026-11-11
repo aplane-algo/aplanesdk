@@ -285,6 +285,19 @@ ELSEWHERE = encoding.encode_address(bytes([0x55]) + bytes(31))
 ROTATING_KEY_TYPE = "aplane.rotating-triple-wotsc.v1"
 
 
+_BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+
+
+def alternate_spelling(address: str) -> str:
+    """Another spelling of address: the unused low bits of its last base32
+    character set. py-algorand-sdk decodes it to the same 32 bytes; the Go
+    SDK refuses it."""
+    value = _BASE32.index(address[-1])
+    other = address[:-1] + _BASE32[value | 1]
+    assert other != address and encoding.decode_address(other) == encoding.decode_address(address)
+    return other
+
+
 def program_address(program: bytes) -> str:
     return transaction.LogicSigAccount(program).address()
 

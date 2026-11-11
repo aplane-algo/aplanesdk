@@ -9,6 +9,7 @@ and a real AlgodClient.
 """
 
 import base64
+import copy
 import json
 
 import msgpack
@@ -41,7 +42,9 @@ from tests.send_fakes import (
     DROP,
     FakeNode,
     HTTPFake,
+    RotatingSigner,
     SendSigner,
+    alternate_spelling,
     key,
     reply,
     signer_client,
@@ -759,3 +762,118 @@ class TestAccountThatLeftRotation:
         resolved = client.resolve_auth_address(self.sender, lambda _: self.holder)
         assert resolved.auth_address == self.holder and resolved.is_rekeyed
         assert resolved.chain_auth_address == self.holder
+
+
+# -----------------------------------------------------------------------------
+# Addresses are compared in canonical form
+# -----------------------------------------------------------------------------
+
+
+def _respelled(txn, sender):
+    """txn with its sender written as sender: the same 32 bytes on the wire."""
+    txn = copy.deepcopy(txn)
+    txn.sender = sender
+    return txn
+
+
+class TestAddressSpellings:
+    """py-algorand-sdk accepts another spelling of an address, which decodes
+    to the same 32 bytes; the Go SDK refuses it, and compares addresses in
+    canonical form only."""
+
+    def test_a_rotating_sender_spelled_otherwise_naming_a_held_key_is_refused(self, fakes):
+        # Compared as written, the sender would not be found as a rotating
+        # account: the chain check would be skipped and the ordinary key would
+        # sign for an account that is still rotating.
+        txn = fake_signer.payment(41, 42)
+        holder = fake_signer.account(45)
+        keys = [key(txn.sender, SIGNING_FLOW_ROTATING1), key(holder)]
+        signer, node, client = make(fakes, SendSigner(keys))
+        respelled = _respelled(txn, alternate_spelling(txn.sender))
+        assert encoding.msgpack_encode(respelled) == encoding.msgpack_encode(txn)
+
+        group = PreparedGroup([PreparedTransaction(transaction=respelled, auth_address=holder)])
+        with pytest.raises(ValueError, match="not the canonical spelling"):
+            client.send_prepared(node.client, group)
+
+        assert signer.count("/sign") == 0 and node.submissions() == []
+
+    def test_a_rotating_sender_and_auth_address_spelled_otherwise_are_refused(self, fakes):
+        # The Go SDK cannot build a transaction from that spelling at all.
+        signer = fakes(RotatingSigner(fake_signer.account(41)))
+        node = fakes(FakeNode())
+        client = signer_client(signer.http.url)
+        other = alternate_spelling(signer.account)
+        txn = _respelled(
+            transaction.PaymentTxn(
+                signer.account,
+                transaction.SuggestedParams(
+                    1000, 10, 110, base64.b64encode(bytes(32)).decode(), "t", flat_fee=True
+                ),
+                fake_signer.test_address(42),
+                1,
+            ),
+            other,
+        )
+        group = PreparedGroup([PreparedTransaction(transaction=txn, auth_address=other)])
+
+        with pytest.raises(ValueError, match="not the canonical spelling"):
+            client.send_prepared(node.client, group)
+        with pytest.raises(ValueError, match="not the canonical spelling"):
+            client.prepare_rotating(txn)
+
+        assert signer.count("/sign/rotating/prepare") == 0
+        assert signer.count("/sign/rotating/sign") == 0 and node.submissions() == []
+
+    def test_an_auth_address_spelled_otherwise_is_refused(self, fakes):
+        # The Go SDK compares it with the signer's canonical records and
+        # finds no key; its address decoding refuses it too.
+        txn = fake_signer.payment(41, 42)
+        signer, node, client = make(fakes, SendSigner([key(txn.sender)]))
+        group = PreparedGroup(
+            [PreparedTransaction(transaction=txn, auth_address=alternate_spelling(txn.sender))]
+        )
+        with pytest.raises(ValueError, match="not the canonical spelling"):
+            client.send_prepared(node.client, group)
+        assert signer.count("/sign") == 0
+
+    def test_the_chain_check_compares_canonical_forms(self, fakes):
+        # The account left rotation for the held key, and the node spells
+        # that key otherwise: the same address, so the rekey is confirmed.
+        txn = fake_signer.payment(41, 42)
+        holder = fake_signer.account(45)
+        keys = [key(txn.sender, SIGNING_FLOW_ROTATING1), key(holder)]
+        signer, node, client = make(
+            fakes, SendSigner(keys), FakeNode(auth_addrs={txn.sender: alternate_spelling(holder)})
+        )
+        group = PreparedGroup([PreparedTransaction(transaction=txn, auth_address=holder)])
+        result = client.send_prepared(node.client, group)
+        assert result.flow == "" and signer.count("/sign") == 1
+
+    def test_resolve_auth_address(self, fakes):
+        sender, holder = fake_signer.account(41), fake_signer.account(45)
+        signer, _, client = make(
+            fakes, SendSigner([key(sender, SIGNING_FLOW_ROTATING1), key(holder)])
+        )
+        with pytest.raises(ValueError, match="not the canonical spelling"):
+            client.resolve_auth_address(alternate_spelling(sender), lambda _: "")
+        # The chain's answer is compared in canonical form, and reported so.
+        rekeyed = client.resolve_auth_address(sender, lambda _: alternate_spelling(holder))
+        assert rekeyed.auth_address == holder and rekeyed.chain_auth_address == holder
+        stage = fake_signer.test_address(77)
+        rotated = client.resolve_auth_address(sender, lambda _: alternate_spelling(stage))
+        assert rotated.auth_address == sender and rotated.chain_auth_address == stage
+
+    def test_a_key_record_is_found_by_any_spelling_the_signer_uses(self):
+        from aplanesdk.signer import KeyInfo, _find_spendable_key
+
+        address = fake_signer.account(41)
+        record = KeyInfo(address=alternate_spelling(address), key_type="ed25519")
+        assert _find_spendable_key([record], address) is record
+
+    def test_a_sign_request_names_its_auth_address_canonically(self, fakes):
+        txn = fake_signer.payment(41, 42)
+        signer, _, client = make(fakes, SendSigner([key(txn.sender)]))
+        with pytest.raises(ValueError, match="not the canonical spelling"):
+            client.sign_transaction(txn, auth_address=alternate_spelling(txn.sender))
+        assert signer.count("/sign") == 0
