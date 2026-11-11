@@ -1617,20 +1617,26 @@ function emptySendResult(flow: string, originalCount: number): SendResult {
 }
 
 /**
- * Read a 200 answer of the approval-bearing request requestId. A body that
- * does not parse, or parses to the wrong shape, is unreadable: the signer may
- * have acted, so it is marked as the request's lost answer.
+ * Read a 200 answer as shape. A body that does not parse, or parses to the
+ * wrong shape, is unreadable. Given requestId, the answer is that of an
+ * approval-bearing request: the signer may have acted, so the error is marked
+ * as the request's lost answer. Without one, the request releases no
+ * signature and the error is a plain one.
  */
-async function readApprovalAnswer<T>(response: Response, shape: AnswerShape, requestId: string): Promise<T> {
+async function readSignerAnswer<T>(response: Response, shape: AnswerShape, requestId?: string): Promise<T> {
+  const unreadable = (message: string): SignerError => {
+    const error = new SignerError(message);
+    return requestId === undefined ? error : markLostAnswer(error, requestId);
+  };
   let data: unknown;
   try {
     data = await response.json();
   } catch {
-    throw markLostAnswer(new SignerError("Server returned invalid JSON"), requestId);
+    throw unreadable("Server returned invalid JSON");
   }
   const read = readAnswer<T>(shape, data);
   if ("problem" in read) {
-    throw markLostAnswer(new SignerError(`Server returned a malformed response: ${read.problem}`), requestId);
+    throw unreadable(`Server returned a malformed response: ${read.problem}`);
   }
   return read.answer;
 }
@@ -1646,24 +1652,6 @@ function encodeRequestBody(body: unknown, what: string): string {
   } catch (error) {
     throw new SignerError(`failed to encode ${what} request: ${errorText(error)}`);
   }
-}
-
-/**
- * Read a 200 answer of a request that releases no signature. A body that
- * does not parse, or parses to the wrong shape, is a plain error.
- */
-async function readPlainAnswer<T>(response: Response, shape: AnswerShape): Promise<T> {
-  let data: unknown;
-  try {
-    data = await response.json();
-  } catch {
-    throw new SignerError("Server returned invalid JSON");
-  }
-  const read = readAnswer<T>(shape, data);
-  if ("problem" in read) {
-    throw new SignerError(`Server returned a malformed response: ${read.problem}`);
-  }
-  return read.answer;
 }
 
 /** The stable signer error code an error carries, or "". */
@@ -2691,7 +2679,7 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Failed to get signer status: HTTP ${response.status}`);
     }
 
-    const data = await readPlainAnswer<Record<string, any>>(response, STATUS_ANSWER);
+    const data = await readSignerAnswer<Record<string, any>>(response, STATUS_ANSWER);
     const status: StatusResponse = {
       nodeRole: data.node_role || undefined,
       protocolVersion: data.protocol_version
@@ -2787,7 +2775,7 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Failed to list keys: HTTP ${response.status}`);
     }
 
-    const data = await readPlainAnswer<{ keys?: Record<string, any>[] }>(response, KEYS_ANSWER);
+    const data = await readSignerAnswer<{ keys?: Record<string, any>[] }>(response, KEYS_ANSWER);
     const records = data.keys ?? [];
     // An address that algosdk reads as an Algorand address but that is not
     // its canonical spelling would be compared and looked up as another
@@ -3706,7 +3694,7 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Failed to list key types: HTTP ${response.status}`);
     }
 
-    const data = await readPlainAnswer<{ key_types?: Record<string, any>[] }>(response, KEYTYPES_ANSWER);
+    const data = await readSignerAnswer<{ key_types?: Record<string, any>[] }>(response, KEYTYPES_ANSWER);
     const result: KeyTypeInfo[] = [];
 
     for (const kt of data.key_types ?? []) {
@@ -3798,7 +3786,7 @@ export class SignerClient {
     this.keyCache.clear();
     this.keyCacheRevision = undefined;
 
-    const data = await readPlainAnswer<Record<string, any>>(response, GENERATE_ANSWER);
+    const data = await readSignerAnswer<Record<string, any>>(response, GENERATE_ANSWER);
     if (data.error) {
       throw new SignerError(data.error);
     }
@@ -3845,7 +3833,7 @@ export class SignerClient {
 
     // The signer answers {"success": true}: an empty or unreadable answer is
     // not one.
-    const data = await readPlainAnswer<{ error: string }>(response, DELETE_KEY_ANSWER);
+    const data = await readSignerAnswer<{ error: string }>(response, DELETE_KEY_ANSWER);
     if (data.error) {
       throw new SignerError(data.error);
     }
@@ -3872,7 +3860,7 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Sign cancel failed: HTTP ${response.status}`);
     }
 
-    const data = await readPlainAnswer<CancelSignResponse>(response, CANCEL_ANSWER);
+    const data = await readSignerAnswer<CancelSignResponse>(response, CANCEL_ANSWER);
     if (data.error) {
       throw new SignerError(data.error);
     }
@@ -3928,7 +3916,7 @@ export class SignerClient {
     if (response.status === 503) throw new SignerUnavailableError(await this.errorMessage(response, "Signer unavailable"));
     if (response.status === 400) throw await this.badRequestError(response);
     if (response.status !== 200) throw await this.signerHTTPError(response, `Component signing failed: HTTP ${response.status}`);
-    const data = await readApprovalAnswer<ComponentResponse & { error?: string }>(
+    const data = await readSignerAnswer<ComponentResponse & { error?: string }>(
       response,
       COMPONENT_ANSWER,
       requestBody.request_id || "",
@@ -4009,7 +3997,7 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Assembly failed: HTTP ${response.status}`);
     }
 
-    const data = await readApprovalAnswer<AssemblyResponse & { error?: string }>(
+    const data = await readSignerAnswer<AssemblyResponse & { error?: string }>(
       response,
       ASSEMBLY_ANSWER,
       requestBody.request_id || "",
@@ -4117,7 +4105,7 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Plan failed: HTTP ${response.status}`);
     }
 
-    let data = await readPlainAnswer<PlanGroupResponse>(response, PLAN_ANSWER);
+    let data = await readSignerAnswer<PlanGroupResponse>(response, PLAN_ANSWER);
 
     if (data.error) {
       throw new SignerError(data.error);
@@ -4384,7 +4372,7 @@ export class SignerClient {
     if (response.status !== 200) {
       throw await refuse(response);
     }
-    return readApprovalAnswer<T>(response, shape, requestId);
+    return readSignerAnswer<T>(response, shape, requestId);
   }
 
   /**
