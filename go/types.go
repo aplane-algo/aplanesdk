@@ -209,7 +209,7 @@ type CancelSignResponse struct {
 
 // RotatingPrepareRequest is the request payload for /sign/rotating/prepare:
 // one unsigned, ungrouped, TX-prefixed transaction from a rotating account.
-// The SDK carries the wire shape only; it does not drive the flow.
+// PrepareRotating sends it.
 type RotatingPrepareRequest struct {
 	RequestID   string `json:"request_id,omitempty"`
 	Account     string `json:"account"`
@@ -703,8 +703,8 @@ const SigningFlowCosigned1 = "cosigned1"
 
 // SigningFlowRotating1 names the rotating account choreography
 // (/sign/rotating/prepare then /sign/rotating/sign), in which the signer
-// rekeys the account to a fresh stage on every spend. This SDK does not
-// implement it; keys labelled with it must be signed through apshell.
+// rekeys the account to a fresh stage on every spend. SendPrepared runs it;
+// PrepareRotating and SignPreparedRotating are its steps.
 const SigningFlowRotating1 = "rotating1"
 
 type BoundedSignatureArgLayout struct {
