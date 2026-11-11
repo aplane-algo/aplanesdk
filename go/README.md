@@ -287,6 +287,12 @@ Fetch the raw `/keys` response plus local locked-state reporting. `Locked` is
 derived from a locked-signer HTTP response and is not part of the `/keys` JSON
 payload.
 
+Each key's `address` is kept exactly as the signer sent it and is matched by
+its exact text. A witness key's row carries its Witness Key ID there, not an
+Algorand address. An answer that spells an Algorand address non-canonically
+(the same 36 bytes and checksum, other text) is refused whole, since a lookup
+by the canonical address would never find that key.
+
 ```go
 keysResp, err := client.GetKeysResponseWithContext(ctx)
 if err != nil {
@@ -337,7 +343,11 @@ Go is the reference SDK shape for caller-initiated synchronous cancellation:
 pass a cancelable `context.Context` to `SignRequestsWithContext` or
 `SignGroupWithContext`. If that context is canceled before apsigner responds,
 the SDK sends best-effort `/sign/cancel` for the generated or supplied
-`request_id`.
+`request_id`. That cancel's own failure, or an answer to it the SDK cannot
+read, never fails the call or replaces its error; only
+`CancelSignRequestWithContext` reports a cancel's outcome. A context that has
+already ended when a call starts sends nothing, so it is a plain error, not
+an unknown outcome.
 
 #### `SendPrepared(ctx, algodClient, group, opts) (*SendResult, error)`
 
@@ -385,11 +395,24 @@ Failures:
 
 Every 200 answer from the signer, the key list included, is read as exactly
 one non-null JSON value: a `null` body or anything after the value is an
-error, never an empty answer. Go's reader differs from the TypeScript and
-Python SDKs in two known ways: it matches keys case-insensitively, so of two
-keys that differ only in case (`signed` and `Signed`) the later one wins where
-they read only the exact name, and it refuses `-0` for an unsigned field where
-they read it as 0.
+error, never an empty answer. A field left out or `null`, at any depth, reads
+as its zero value. An answer whose `error` field is set (component, assembly,
+key generation and key deletion answers as well as `/sign` and `/plan`) is a
+refusal; a key generation answer that names no address is refused too.
+
+The three SDKs' JSON readers differ in known ways that a real signer never
+reaches:
+
+- Go matches keys case-insensitively, so of two keys that differ only in case
+  (`signed` and `Signed`) the later one wins where TypeScript and Python read
+  only the exact name.
+- Go refuses `-0` for an unsigned field where the others read it as 0.
+- Of a key given twice, the later value is read, except that a later `null`
+  leaves Go's earlier string, number or boolean in place (a list, object or
+  pointer it does empty); the others read that `null` as zero.
+- A body that starts with a UTF-8 byte order mark is readable in TypeScript
+  only.
+- An integer of more than 4300 digits is unreadable in Python only.
 
 A node that answers "already in ledger" has a transaction with the same ID
 from an earlier submission of the group. The SDK treats that as submitted and
