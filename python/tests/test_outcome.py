@@ -324,6 +324,27 @@ class TestRefusals:
         assert report.state == OUTCOME_SIGNABLE and report.tx_ids == ["", "DUMMY"]
         assert algod.lookups() == []
 
+    @pytest.mark.parametrize("tx_ids", [[], ["", "DUMMY"]], ids=["no IDs", "empty first ID"])
+    @pytest.mark.parametrize(
+        "current,state,safe,advice",
+        [
+            (1000, OUTCOME_SIGNABLE, False, ROTATING_SIGNABLE_ADVICE),
+            (1500, OUTCOME_EXPIRED, True, SIGN_EXPIRED_ADVICE),
+            (1501, OUTCOME_TOO_OLD, False, ROTATING_TOO_OLD_ADVICE),
+        ],
+    )
+    def test_a_rotating_group_with_no_id_to_look_up_follows_the_rotating_rows(
+        self, node, tx_ids, current, state, safe, advice
+    ):
+        # A hand-built group: nothing can be looked up, so the rounds decide,
+        # and past the node's memory the safer answer is too old.
+        algod = node(current, CONFIRMED)
+        error = sign_error(rotating=True)
+        error.rotating = type("Prepared", (), {"tx_ids": tx_ids})()
+        report = client().resolve_outcome(algod.client, error)
+        assert (report.state, report.safe_to_replace, report.advice) == (state, safe, advice)
+        assert algod.lookups() == []
+
     @pytest.mark.parametrize(
         "options,error",
         [
