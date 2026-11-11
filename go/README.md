@@ -383,6 +383,14 @@ Failures:
 | `*SubmissionRejectedError` | The node refused the group or dropped it from its pool. | Read the reason. The signed bytes and IDs are in the error. |
 | `*SubmissionUncertainError` | `Stage` says where it stopped: `unsent` (signed, never sent: your context ended), `submit` (the submission's answer never arrived), or `confirm` (not confirmed within the wait). Except for `unsent`, it may still confirm. | Look up `TxIDs`, or submit the same `SignedGroup` again. Do not sign a replacement until the outcome is known: both could execute. |
 
+Every 200 answer from the signer, the key list included, is read as exactly
+one non-null JSON value: a `null` body or anything after the value is an
+error, never an empty answer. Go's reader differs from the TypeScript and
+Python SDKs in two known ways: it matches keys case-insensitively, so of two
+keys that differ only in case (`signed` and `Signed`) the later one wins where
+they read only the exact name, and it refuses `-0` for an unsigned field where
+they read it as 0.
+
 A node that answers "already in ledger" has a transaction with the same ID
 from an earlier submission of the group. The SDK treats that as submitted and
 looks for the outcome; it is not a rejection. A committed transaction that
