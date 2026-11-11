@@ -94,7 +94,7 @@ const (
 	// found the rotating account's live stage; a retry usually succeeds.
 	ErrCodeRotatingStageUnproven = "rotating_stage_unproven"
 	// ErrCodeRotatingStageChanged (409): the account's authorizer moved
-	// between prepare and sign; nothing was signed.
+	// between prepare and sign; no signature was released.
 	ErrCodeRotatingStageChanged = "rotating_stage_changed"
 	// ErrCodeRotatingWindowNotCurrent (409): the rotating spend's validity
 	// window is not acceptable at the round the signer read: its first valid

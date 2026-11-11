@@ -1211,7 +1211,7 @@ export const ErrorCodes = {
   RotatingSigningRequired: "rotating_signing_required",
   /** 409, temporary: the signer has not yet found the account's live stage. */
   RotatingStageUnproven: "rotating_stage_unproven",
-  /** 409: the account's authorizer moved between prepare and sign; nothing was signed. */
+  /** 409: the account's authorizer moved between prepare and sign; no signature was released. */
   RotatingStageChanged: "rotating_stage_changed",
   /**
    * 409: the rotating spend's validity window is not acceptable at the round
