@@ -17,6 +17,14 @@ the AGPL-licensed `aplane-algo/aplane` repository.
 Shared signer API contract fixtures live under `contracts/signerapi/` and are
 used by all SDK test suites.
 
+Each SDK sends a transaction or group in one call, for every account type the
+signer holds: it signs, checks the signed result, submits and waits for
+confirmation. The calls are `SendPrepared`/`SendPayment` (Go),
+`sendPrepared`/`sendPayment` (TypeScript) and `send_prepared`/`send_payment`
+(Python); see the user guides, [Go](docs/USER_SDK_GO.md),
+[TypeScript](docs/USER_SDK_TYPESCRIPT.md) and
+[Python](docs/USER_SDK_PYTHON.md).
+
 Key-type inventory exposes `authorization_kind` values `ed25519`, `native_pq`,
 and `logic_sig`. Raw and prepared foreign transaction slots may set
 `pq_scheme: "f1"` instead of `lsig_resources` when coordinating an Algorand
@@ -117,6 +125,13 @@ second focused test generates a protocol-native `falcon1024` key, signs a
 envelope contains a non-empty `f1` PQ signature, and deletes the key. Health,
 status, endpoint routing, and key inventory checks therefore run once rather
 than being duplicated for both authorization types.
+
+The live suites also send from a rotating account of each rotating family the
+signer has enabled (WOTS+C, XMSS and SLH-DSA), and skip a family it has not;
+the APlane harness enables all three before the suites run. SDK cosigner
+discovery is not covered here, since this fixture has no cosigner node: it is
+exercised by APlane's four-node Docker smoke test (`make docker-local-test` in
+the aplane repo).
 
 ## License
 
