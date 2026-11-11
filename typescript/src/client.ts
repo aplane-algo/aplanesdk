@@ -61,7 +61,6 @@ import type {
   LogicSigResourceProfile,
   AppCallInfo,
   RotatingPrepareRequest,
-  RotatingPrepareResponse,
   RotatingSignResponse,
 } from "./types.js";
 import {
@@ -165,7 +164,6 @@ import {
   ASSEMBLY_ANSWER,
   COMPONENT_ANSWER,
   GROUP_SIGN_ANSWER,
-  ROTATING_PREPARE_ANSWER,
   ROTATING_SIGN_ANSWER,
   readAnswer,
   type AnswerShape,
@@ -4611,17 +4609,8 @@ export class SignerClient {
     } catch {
       throw new SignerError("Server returned invalid JSON");
     }
-    // Prepare releases nothing, so an answer that cannot be read is a plain
-    // error, as in the Go SDK.
-    const read = readAnswer<RotatingPrepareResponse>(ROTATING_PREPARE_ANSWER, body);
-    if ("problem" in read) {
-      throw new SignerError(`failed to decode response: ${read.problem}`);
-    }
-    try {
-      return newPreparedRotating(originalHex, read.answer, maxFeeIncrease, options?.appCallInfo);
-    } catch (error) {
-      throw verificationError("verify prepared rotating group: ", error);
-    }
+    // The prepare answer is read, bound and checked in one place.
+    return newPreparedRotating(originalHex, body, maxFeeIncrease, options?.appCallInfo);
   }
 
   /**

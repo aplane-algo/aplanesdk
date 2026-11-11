@@ -14,7 +14,7 @@ import type {
   RotatingPrepareResponse,
   RotatingSignResponse,
 } from "./types.js";
-import { SignerError, UnsupportedGroupError, errorText } from "./errors.js";
+import { SignerError, UnsupportedGroupError, errorText, verificationError } from "./errors.js";
 import { bytesToBase64, hexToBytes } from "./encoding.js";
 import { ROTATING_PREPARE_ANSWER, readAnswer } from "./answers.js";
 import {
@@ -441,8 +441,12 @@ Object.freeze(PreparedRotating.prototype);
 Object.freeze(PreparedRotating);
 
 /**
- * Bind a prepare response to the transaction that was sent and check it.
- * Everything it keeps is a copy.
+ * Read a prepare answer, bind it to the transaction that was sent and check
+ * it. It is the only reader of the answer. Prepare releases nothing, so an
+ * answer that cannot be read is a plain error, as in the Go SDK; one the
+ * check refuses is reported as a failed verification. Anything else thrown,
+ * such as a TypeError, is a fault in the SDK, not a refusal, and is left
+ * as it is. Everything it keeps is a copy.
  */
 export function newPreparedRotating(
   originalHex: string,
@@ -457,19 +461,24 @@ export function newPreparedRotating(
     throw new SignerError(`failed to decode response: ${read.problem}`);
   }
   const body = read.answer;
-  const prepared = new PreparedRotating(constructToken, {
-    account: body.account ?? "",
-    originalHex,
-    stage: body.stage ?? 0,
-    target: body.target ?? 0,
-    rekeyTo: body.rekey_to ?? "",
-    transactions: body.transactions ?? [],
-    mutations: body.mutations ? mutationReportFromWire(body.mutations) : undefined,
-    appCallInfo,
-    ceiling,
-  });
-  PreparedRotating.verifyBinding(prepared);
-  return prepared;
+  try {
+    const prepared = new PreparedRotating(constructToken, {
+      account: body.account ?? "",
+      originalHex,
+      stage: body.stage ?? 0,
+      target: body.target ?? 0,
+      rekeyTo: body.rekey_to ?? "",
+      transactions: body.transactions ?? [],
+      mutations: body.mutations ? mutationReportFromWire(body.mutations) : undefined,
+      appCallInfo,
+      ceiling,
+    });
+    PreparedRotating.verifyBinding(prepared);
+    return prepared;
+  } catch (error) {
+    if (!(error instanceof SignerError)) throw error;
+    throw verificationError("verify prepared rotating group: ", error);
+  }
 }
 
 /**
