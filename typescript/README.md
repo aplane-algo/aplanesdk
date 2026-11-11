@@ -746,7 +746,8 @@ the cosigner component requests go out in the order of their first target
 position. A rekey that may take the listed path is resolved only
 once the base component says it needs the cosigner: a listed rekey needs
 none, and works with no cosigner configured or reachable. A resolver's own
-error is passed on as it is, never as an unknown outcome.
+error is passed on as it is, never as an unknown outcome, even when it wraps
+the lost answer of a request the resolver made itself.
 
 ### Bounded Cosigner Accounts
 

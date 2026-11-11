@@ -444,6 +444,33 @@ export function lostAnswerRequestId(error: unknown): string {
   return lostAnswerMark(error)?.requestId ?? "";
 }
 
+// An error a cosigner resolver threw. A resolver runs before the request that
+// needs its answer, so its error is never an unknown outcome, even when it
+// carries a lost-answer mark from a call the resolver made: the mark there
+// says nothing of this send. The error is marked in place and passed on as it
+// is; a value that cannot take a property is remembered instead.
+const RESOLVER_ERROR = Symbol.for("aplanesdk.resolverError");
+const unmarkableResolverErrors = new WeakSet<object>();
+
+/** Mark error as one a cosigner resolver threw, and return it. */
+export function markResolverError<T>(error: T): T {
+  if ((typeof error === "object" && error !== null) || typeof error === "function") {
+    try {
+      Object.defineProperty(error, RESOLVER_ERROR, { value: true, enumerable: false, configurable: true });
+    } catch {
+      unmarkableResolverErrors.add(error as object);
+    }
+  }
+  return error;
+}
+
+/** Whether error itself is one a cosigner resolver threw. */
+export function isResolverError(error: unknown): boolean {
+  if ((typeof error !== "object" || error === null) && typeof error !== "function") return false;
+  return (error as Record<symbol, unknown>)[RESOLVER_ERROR] === true ||
+    unmarkableResolverErrors.has(error as object);
+}
+
 /**
  * The plain stop for a caller's aborted signal, before anything was asked:
  * the error an aborted request already raises.

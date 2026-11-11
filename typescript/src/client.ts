@@ -91,8 +91,10 @@ import {
   UnsupportedSigningFlowError,
   callerAborted,
   isLostAnswer,
+  isResolverError,
   lostAnswerRequestId,
   markLostAnswer,
+  markResolverError,
 } from "./errors.js";
 import {
   encodeTransaction,
@@ -311,13 +313,20 @@ async function resolveCosignerForTarget(
     ?? (options.cosignerClient ? undefined : defaultCosignerResolver(options.userClient));
   if (resolver) {
     const resolveOptions: CosignedCosignerResolveOptions = { signal: options.signal };
-    let resolved: CosignedCosignerResolution;
+    let resolve: () => CosignedCosignerResolution | Promise<CosignedCosignerResolution>;
     if (typeof resolver === "function") {
-      resolved = await resolver(target, resolveOptions);
+      resolve = () => resolver(target, resolveOptions);
     } else if (resolver && typeof resolver.resolve === "function") {
-      resolved = await resolver.resolve(target, resolveOptions);
+      resolve = () => resolver.resolve(target, resolveOptions);
     } else {
       throw new SignerError("cosignerResolver must be a function or an object with a resolve method");
+    }
+    let resolved: CosignedCosignerResolution;
+    try {
+      resolved = await resolve();
+    } catch (error) {
+      // Never an unknown outcome, whatever it carries: see markResolverError.
+      throw markResolverError(error);
     }
     if (!resolved?.client) {
       throw new SignerError(`cosigner resolver returned no client for prepared transaction ${target.targetIndex}`);
@@ -521,11 +530,12 @@ async function requestBoundedPrimaryPassthrough(
  * an error that is not the SDK's own, thrown while the answer was checked,
  * decoded or described. It is not a refusal, because a signature may be out,
  * so it is marked as the request's lost answer, keeping its class and
- * message. The SDK's own error (a refusal), an error already marked, and any
- * error before a request has answered (requestId "") pass as they are.
+ * message. The SDK's own error (a refusal), an error already marked, a
+ * cosigner resolver's error, and any error before a request has answered
+ * (requestId "") pass as they are.
  */
 function faultAfterAnswer(error: unknown, requestId: string): unknown {
-  if (requestId === "" || error instanceof SignerError || isLostAnswer(error)) {
+  if (requestId === "" || error instanceof SignerError || isLostAnswer(error) || isResolverError(error)) {
     return error;
   }
   markLostAnswer(error, requestId);
@@ -4769,8 +4779,9 @@ export class SignerClient {
       } catch (error) {
         // The sequence makes several approval-bearing requests. One that
         // ended with no answer may have released a signature, and the last
-        // of them releases the whole group. The mark names the request.
-        if (isLostAnswer(error)) {
+        // of them releases the whole group. The mark names the request. A
+        // cosigner resolver's own error is passed on as it is.
+        if (isLostAnswer(error) && !isResolverError(error)) {
           throw new SignOutcomeUnknownError({ requestId: lostAnswerRequestId(error), lastValid, cause: error });
         }
         throw error;

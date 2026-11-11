@@ -28,6 +28,7 @@ import {
   SignerError,
   SignerUnavailableError,
   errorText,
+  markLostAnswer,
 } from "../src/errors.js";
 import { markSshSetupFailure, type SshSetupFailure } from "../src/ssh.js";
 import {
@@ -833,6 +834,51 @@ describe("the cosigned sequence's cosigner resolution", () => {
       },
     );
   });
+
+  // A resolver that throws what a lost answer elsewhere left it: an Error
+  // whose cause carries the mark, or the marked error itself.
+  const lostElsewhere = () => markLostAnswer(new SignerError("Server returned invalid JSON"), "sdk-elsewhere");
+  for (const [when, mayTakeListedPath] of [["up front", false], ["late", true]] as Array<[string, boolean]>) {
+    for (const [what, thrown] of [
+      ["an Error whose cause is a lost answer", () => new Error("cosigner lookup failed", { cause: lostElsewhere() })],
+      ["a lost answer itself", lostElsewhere],
+    ] as Array<[string, () => Error]>) {
+      it(`a resolver that throws ${what}, ${when}, is a plain error passed on as it is`, async () => {
+        const net = new Network();
+        const user = new CosignedUser([cosignedKey(account, WITNESS_A, mayTakeListedPath)]);
+        user.pathFor = () => "spending_rekey";
+        net.install(user.handle);
+        const own = thrown();
+        const keysBefore = Object.keys(own);
+        const { resolver, calls } = recordingResolver(user, async () => {
+          throw own;
+        });
+        const node = new FakeAlgod();
+        await assert.rejects(
+          new SignerClient(SIGNER).sendPrepared(
+            node as any,
+            group(cosignedPayment(account, mayTakeListedPath ? fakeAddress(23) : undefined)),
+            { cosignerResolver: resolver },
+          ),
+          (error: unknown) => {
+            assert.ok(!(error instanceof SignOutcomeUnknownError), `error is an unknown outcome: ${String(error)}`);
+            assert.equal(error, own, `error is not the resolver's own: ${String(error)}`);
+            assert.equal(errorText(error), errorText(own), "the resolver's error text changed");
+            assert.deepEqual(Object.keys(own), keysBefore, "the resolver's error gained an enumerable property");
+            return true;
+          },
+        );
+        assert.equal(calls.length, 1, `resolver calls ${calls.length}`);
+        assert.equal(
+          calls[0].before.includes("/sign/component"),
+          mayTakeListedPath,
+          `resolved ${mayTakeListedPath ? "before" : "after"} the base component: ${calls[0].before.join(", ")}`,
+        );
+        assert.ok(!user.paths.includes("/sign/assemble"), `the group was assembled: ${user.paths.join(", ")}`);
+        assert.equal(node.submitted.length, 0, "something was submitted");
+      });
+    }
+  }
 
   it("a listed rekey needs no cosigner, configured or not", async () => {
     const net = new Network();
