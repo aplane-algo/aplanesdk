@@ -68,6 +68,9 @@ export interface SendOptions {
    * A cosigned account's cosigner, used only when the group has a position
    * that needs one. Give a client, with the Witness Key ID it signs under,
    * or a resolver. The caller owns these clients; a send never closes them.
+   * With neither, a client made with SignerClient.fromEnv finds the cosigner
+   * in its endpoints.yaml (see EndpointCosignerResolver) and closes the
+   * connections it opens for that when it is closed.
    */
   cosignerClient?: SignerClient;
   cosignerComponentKey?: string;

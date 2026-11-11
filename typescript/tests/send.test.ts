@@ -791,6 +791,14 @@ function cosignedKey(address: string): WireKey {
   };
 }
 
+/** Give a cosigned key a rekey list, with spending-key rekeys allowed. */
+function listedRekeyKey(key: WireKey): void {
+  (key.bounded_authorization as any).rekey = "spending_key";
+  (key.bounded_authorization as any).rekey_list = { contract: "rekey_list1", depth: 4, root: "00".repeat(32) };
+  (key.logic_sig_resources as any).spending_rekey = { program_bytes: 5308, argument_bytes: 3358, max_opcode_cost: 20000 };
+  (key.logic_sig_resources as any).listed_rekey = { program_bytes: 5308, argument_bytes: 3500, max_opcode_cost: 20000 };
+}
+
 /**
  * A signer holding one cosigned account, its cosigner, and a node. fault
  * names a user-signer path and how it fails: "<path> drop" closes the
@@ -801,9 +809,11 @@ function cosignedFixture(
   fault: string,
   cosignerFault = "",
   edit: { user?: (path: string, body: any) => void; cosigner?: (body: any) => void } = {},
+  shape: { rekeyTo?: string; key?: (key: WireKey) => void; path?: string } = {},
 ) {
   const bounded = fakeAddress(21);
   const key = cosignedKey(bounded);
+  shape.key?.(key);
   const userPaths: string[] = [];
   const user = (path: string, body: any): FakeReply => {
     const reply = answerUser(path, body);
@@ -836,7 +846,7 @@ function cosignedFixture(
               runtime_args: { proof: "aabb" },
               assembly_receipt: "receipt",
               signature_scheme: "aplane.falcon1024.v1",
-              path: "spend",
+              path: shape.path ?? "spend",
             }],
           },
         };
@@ -883,6 +893,7 @@ function cosignedFixture(
     sender: bounded,
     receiver: fakeAddress(22),
     amount: 1000,
+    rekeyTo: shape.rekeyTo,
     suggestedParams: {
       fee: 1000, flatFee: true, minFee: 1000, firstValid: 1, lastValid: 100,
       genesisID: "testnet-v1.0", genesisHash: new Uint8Array(32),
@@ -917,13 +928,14 @@ describe("sendPrepared with a cosigned account", () => {
     assert.equal(result.fees[0], 1000n);
   });
 
-  it("refuses without a cosigner", async () => {
-    const { userClient, algod, node, txn } = cosignedFixture("");
+  it("refuses without a cosigner, before the base component request", async () => {
+    const { userClient, algod, node, txn, userPaths } = cosignedFixture("");
     await assert.rejects(userClient.sendPrepared(algod, preparedFor(txn)), (error: unknown) => {
       assert.match(errorText(error), /cosignerClient or cosignerResolver is required/);
       assert.ok(!(error instanceof SignOutcomeUnknownError), "want !(error instanceof SignOutcomeUnknownError)");
       return true;
     });
+    assert.ok(!userPaths.includes("/sign/component"), `a plain spend asked for its base component: ${userPaths.join(", ")}`);
     assert.equal(node.submitted.length, 0);
   });
 
@@ -1239,13 +1251,21 @@ describe("a fault after a signed answer", () => {
     }
 
     it("a refusal after the component answer stays a plain error", async () => {
-      // No cosigner is named, which only shows once the base component is in.
-      const { userClient, algod, txn: spend, userPaths } = cosignedFixture("");
+      // A rekey from an account with a rekey list may take the listed path,
+      // so a missing cosigner only shows once the base component names a
+      // path that needs one.
+      const { userClient, algod, txn: spend, userPaths } = cosignedFixture("", "", {}, {
+        rekeyTo: fakeAddress(23),
+        key: listedRekeyKey,
+        path: "spending_rekey",
+      });
       await assert.rejects(userClient.sendPrepared(algod, preparedFor(spend)), (error: unknown) => {
         assert.ok(!(error instanceof SignOutcomeUnknownError), String(error));
+        assert.match(errorText(error), /cosignerClient or cosignerResolver is required/);
         return true;
       });
       assert.ok(userPaths.includes("/sign/component"), `asked ${userPaths.join(", ")}`);
+      assert.ok(!userPaths.includes("/sign/assemble"), `asked ${userPaths.join(", ")}`);
     });
   });
 });

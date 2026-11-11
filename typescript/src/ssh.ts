@@ -54,6 +54,32 @@ export function validateEnrollmentLabel(label: string): void {
 }
 
 /**
+ * Why an SSH connection could not be set up, when the cause is the client's
+ * own files or the host's key rather than the network: the host's key differs
+ * from the pinned one, the host has no pinned key and trust-on-first-use is
+ * off, the known_hosts file cannot be read or written, or the client's
+ * identity file cannot be read.
+ */
+export type SshSetupFailure = "host-key-mismatch" | "unknown-host-key" | "known-hosts" | "identity";
+
+// Under a registered symbol, so the mark is the same whichever build of the
+// package made the error.
+const SSH_SETUP_FAILURE = Symbol.for("aplanesdk.sshSetupFailure");
+
+/** Mark error as an SSH setup failure of the given kind, and return it. */
+export function markSshSetupFailure<T extends Error>(error: T, kind: SshSetupFailure): T {
+  Object.defineProperty(error, SSH_SETUP_FAILURE, { value: kind, enumerable: false, configurable: true });
+  return error;
+}
+
+/** The kind of SSH setup failure error is marked with, if any. */
+export function sshSetupFailure(error: unknown): SshSetupFailure | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const kind = (error as Record<symbol, unknown>)[SSH_SETUP_FAILURE];
+  return typeof kind === "string" ? (kind as SshSetupFailure) : undefined;
+}
+
+/**
  * Client SSH keys the signer accepts. The signer refuses other key types (RSA,
  * DSA, certificates) before signature verification.
  */

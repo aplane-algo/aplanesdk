@@ -201,6 +201,26 @@ export class UnsupportedGroupError extends SignerError {
 }
 
 /**
+ * Cosigner discovery could not route a cosigned account's witness key to
+ * exactly one cosigner endpoint of endpoints.yaml: no endpoint lists it, more
+ * than one does, none is configured, or an endpoint's SSH host key differs
+ * from the pinned one. It is a plain error, never an unknown outcome: the
+ * cosigned sequence resolves a target that cannot take the listed-rekey path
+ * before any approval-bearing request, and one that may take it only after
+ * the base component answer says it needs the cosigner, before the cosigner
+ * is asked. `cause` is the underlying failure, when there is one.
+ */
+export class CosignerDiscoveryError extends SignerError {
+  readonly cause?: unknown;
+
+  constructor(message: string, cause?: unknown) {
+    super(message);
+    this.name = "CosignerDiscoveryError";
+    this.cause = cause;
+  }
+}
+
+/**
  * A signing exchange ended with no usable answer: a /sign request, or an
  * approval-bearing step of the cosigned or rotating sequence, got no answer,
  * an answer that could not be read, or one the SDK failed while checking

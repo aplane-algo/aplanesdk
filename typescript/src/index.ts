@@ -38,10 +38,14 @@ export {
 } from "./client.js";
 export { ErrorCodes } from "./types.js";
 export type { ErrorCode } from "./types.js";
+export { EndpointCosignerResolver } from "./discovery.js";
+export type { EndpointCosignerResolverOptions } from "./discovery.js";
 export type {
   CosignedSignTarget,
   CosignedCosignerResolution,
+  CosignedCosignerResolveOptions,
   CosignedCosignerResolver,
+  CosignedCosignerResolverObject,
   CosignedSignResult,
   CosignedSimulationResult,
   PreparedCosignedGroupOptions,
@@ -131,6 +135,7 @@ export {
   InvalidTransactionError,
   UnsupportedSigningFlowError,
   UnsupportedGroupError,
+  CosignerDiscoveryError,
   SignOutcomeUnknownError,
   SubmissionRejectedError,
   SubmissionUncertainError,
