@@ -4773,6 +4773,13 @@ class _SSHTunnel:
             except Exception:
                 pass
 
+    @property
+    def active(self) -> bool:
+        """Whether the tunnel is up: started, not stopped, and its SSH
+        transport still active. A local check; nothing is sent."""
+        transport = self._transport
+        return self._running and transport is not None and transport.is_active()
+
     def stop(self):
         """Tear down the tunnel."""
         self._running = False
@@ -4875,6 +4882,8 @@ class SignerClient:
         self.timeout = timeout if timeout and timeout > 0 else None
         self.session = requests.Session()
         self._tunnel = tunnel
+        # Set by close().
+        self._closed = False
         self._key_cache: Dict[str, KeyInfo] = {}  # Cache key info by address
         self._key_cache_revision: Optional[int] = None
         self._approval_wait_seconds: Optional[int] = None
@@ -5077,6 +5086,7 @@ class SignerClient:
     def close(self):
         """Close the client and any SSH tunnel, and the connections to
         cosigners it found from its endpoint registry."""
+        self._closed = True
         with self._cosigner_resolver_lock:
             resolver, self._cosigner_resolver = self._cosigner_resolver, None
         if resolver is not None:
@@ -8190,6 +8200,16 @@ def _cosigner_resolution_order(targets: List[Dict[str, Any]]) -> List[Dict[str, 
     )
 
 
+def _client_connection_open(client: Any) -> bool:
+    """Whether a signer client can still be used: not closed, and its SSH
+    tunnel, when it has one, still up. A client with no tunnel is open until
+    it is closed. A local check; no request is made."""
+    if client is None or getattr(client, "_closed", False):
+        return False
+    tunnel = getattr(client, "_tunnel", None)
+    return tunnel is None or bool(getattr(tunnel, "active", True))
+
+
 class EndpointCosignerResolver:
     """Finds a cosigned account's cosigner in the client's endpoint registry
     (endpoints.yaml), and resolves each cosigned target to that endpoint's
@@ -8202,8 +8222,9 @@ class EndpointCosignerResolver:
     record counts when it is a witness key with a key type; its public key
     must be hex and its address the Witness Key ID derived from its key type
     and public key, or the endpoint's listing is invalid as a whole. The
-    sweep is kept; a required key it does not hold makes one fresh sweep per
-    resolve call.
+    sweep is kept; a required key it does not hold, or holds only through a
+    connection that has since closed or whose SSH link is down, makes one
+    fresh sweep per resolve call.
 
     A witness key must be listed by exactly one endpoint that answered. When
     none or more than one does, when no cosigner endpoint is configured, or
@@ -8316,12 +8337,15 @@ class EndpointCosignerResolver:
 
     @staticmethod
     def _listing(probes: Dict[str, _CosignerProbe], key_type: str, public_key: str) -> List[str]:
-        """The aliases of the live endpoints that list the key, sorted. A key
-        an endpoint lists twice counts once."""
+        """The aliases of the live endpoints that list the key, sorted: those
+        that answered, and whose connection is still open. A key an endpoint
+        lists twice counts once. A kept connection that has since closed, or
+        whose SSH link is down, does not list it, so it counts as a miss."""
         return [
             alias
             for alias in sorted(probes)
             if probes[alias].state == _ENDPOINT_OK
+            and _client_connection_open(probes[alias].client)
             and any(key[0] == key_type and key[1] == public_key for key in probes[alias].keys)
         ]
 
@@ -8393,11 +8417,16 @@ class EndpointCosignerResolver:
             if outer is not None and outer[0] < at:
                 deadline = outer
             earlier = previous.get(alias)
+            # A kept connection is read again only while it is open; one that
+            # is not is closed below, and the endpoint connected afresh.
+            reuse = (
+                earlier.client
+                if earlier is not None and _client_connection_open(earlier.client)
+                else None
+            )
             token = _CALL_DEADLINE.set(deadline)
             try:
-                result = self._probe(
-                    alias, endpoints[alias], earlier.client if earlier is not None else None
-                )
+                result = self._probe(alias, endpoints[alias], reuse)
             finally:
                 _CALL_DEADLINE.reset(token)
             if result.host_key_mismatch:

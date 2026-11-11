@@ -742,7 +742,9 @@ names must be listed by exactly one endpoint; the resolver then uses that
 endpoint's client, with the listed Witness Key ID as the component key. The
 sweep is kept, and a key it does not hold makes one fresh sweep, which reads
 `/keys` again through the connections still live and reconnects the endpoints
-that had failed. `witness_key_id(key_type, public_key)` derives the ID: the
+that had failed. A kept connection that has been closed, or whose SSH link is
+down, counts as not holding its keys (a local check, with no request), so it
+too makes one fresh sweep, which connects that endpoint again. `witness_key_id(key_type, public_key)` derives the ID: the
 unpadded base32 of SHA-512/256 over `APLANE_WITNESS_KEY_ID_V1`, the key type
 and the public key, each prefixed by its length as 4 bytes big-endian.
 

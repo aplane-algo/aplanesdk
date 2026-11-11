@@ -391,6 +391,55 @@ class TestChoosing:
         assert issubclass(CosignerDiscoveryError, SignerError)
 
 
+class _Tunnel:
+    """Stands in for a client's SSH tunnel: up or not."""
+
+    def __init__(self, active):
+        self.is_up = active
+        self.stopped = False
+
+    @property
+    def active(self):
+        return self.is_up and not self.stopped
+
+    def stop(self):
+        self.stopped = True
+
+
+def test_a_tunnel_is_active_while_its_ssh_transport_is():
+    tunnel = signer_module._SSHTunnel("h", 22, "/k", "127.0.0.1", 1, 0)
+    assert tunnel.active is False
+
+    class Transport:
+        up = True
+
+        def is_active(self):
+            return self.up
+
+        def close(self):
+            self.up = False
+
+    tunnel._transport = Transport()
+    tunnel._running = True
+    assert tunnel.active is True
+    tunnel._transport.up = False
+    assert tunnel.active is False
+    tunnel._transport.up = True
+    tunnel.stop()
+    assert tunnel.active is False
+
+
+def test_a_client_is_open_until_closed():
+    client = SignerClient("http://127.0.0.1:9")
+    assert signer_module._client_connection_open(client)
+    client._tunnel = _Tunnel(active=False)
+    assert not signer_module._client_connection_open(client)
+    client._tunnel = _Tunnel(active=True)
+    assert signer_module._client_connection_open(client)
+    client.close()
+    assert not signer_module._client_connection_open(client)
+
+
 def _respelled(address):
     from tests.send_fakes import alternate_spelling
 
@@ -514,6 +563,39 @@ class TestCache:
             # which did not answer either.
             assert net.closed == ["alpha", "alpha"]
         assert sorted(net.closed) == ["alpha", "alpha", "beta"]
+
+    def test_a_closed_kept_connection_is_a_miss(self, network):
+        alpha = Endpoint([witness_record(PUBLIC_A)])
+        net = network({"alpha": alpha})
+        with net.resolver() as resolver:
+            first, _ = resolver.resolve(PUBLIC_A.hex(), WITNESS)
+            first.close()
+            # One fresh sweep, which connects again rather than reading
+            # through the closed client.
+            second, _ = resolver.resolve(PUBLIC_A.hex(), WITNESS)
+            assert second is not first and not second._closed
+            assert resolver._sweeps == 2 and len(net.connects) == 2
+            assert alpha.key_reads == 2
+            # The new connection is kept.
+            assert resolver.resolve(PUBLIC_A.hex(), WITNESS)[0] is second
+            assert resolver._sweeps == 2
+
+    def test_a_kept_connection_whose_ssh_link_is_down_is_a_miss(self, network):
+        alpha = Endpoint([witness_record(PUBLIC_A)])
+        net = network({"alpha": alpha})
+        with net.resolver() as resolver:
+            first, _ = resolver.resolve(PUBLIC_A.hex(), WITNESS)
+            first._tunnel = _Tunnel(active=True)
+            assert resolver.resolve(PUBLIC_A.hex(), WITNESS)[0] is first
+            assert resolver._sweeps == 1 and alpha.key_reads == 1
+            # The link drops. Seeing so asks the endpoint nothing.
+            first._tunnel.is_up = False
+            second, _ = resolver.resolve(PUBLIC_A.hex(), WITNESS)
+            assert second is not first
+            assert resolver._sweeps == 2 and len(net.connects) == 2
+            # The dead connection was closed, and was not read again.
+            assert net.closed == ["alpha"] and first._closed
+            assert alpha.key_reads == 2
 
     def test_nothing_from_a_mismatched_sweep_is_kept(self, network):
         mismatch = _SSHHostKeyMismatchError("SSH host key mismatch for rogue.example:2222")
