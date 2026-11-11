@@ -10,6 +10,7 @@ resource dummies, groups an ungrouped group, reports all of it, and signs.
 
 import base64
 import copy
+import json as json_module
 from unittest.mock import MagicMock
 
 from algosdk import encoding, transaction
@@ -209,14 +210,22 @@ def _response(body):
     return resp
 
 
+def posted_json(kwargs):
+    """The JSON body a session.post call sent: approval-bearing requests are
+    posted as bytes the SDK encoded itself, the others with json=."""
+    if kwargs.get("data") is not None:
+        return json_module.loads(kwargs["data"])
+    return kwargs.get("json")
+
+
 def signer_post(fee_raise=None, dummies=0, tamper=None):
     """A session.post stand-in answering /sign and /plan as a real signer would.
 
     ``tamper`` may edit the response body before it is returned.
     """
 
-    def post(url, json=None, **kwargs):
-        del kwargs
+    def post(url, **kwargs):
+        json = posted_json(kwargs)
         if url.endswith("/plan"):
             body = plan_response(json["requests"], fee_raise, dummies)
         elif url.endswith("/sign"):

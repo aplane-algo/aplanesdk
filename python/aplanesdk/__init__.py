@@ -30,6 +30,20 @@ from .signer import (
     sign_prepared_cosigned_group,
     simulate_prepared_cosigned_group,
 
+    # Unified sending and rotating accounts
+    SendResult,
+    RotatingSendDetails,
+    PreparedRotating,
+    RotatingSignResult,
+    DEFAULT_SEND_WAIT_ROUNDS,
+    SEND_OUTCOME_SUBMITTED,
+    SEND_OUTCOME_CONFIRMED,
+    SEND_STAGE_SUBMIT,
+    SEND_STAGE_CONFIRM,
+    ROTATING_MAX_VALIDITY_WINDOW,
+    ROTATING_MAX_LEAD,
+    ROTATING_MIN_REMAINING,
+
     # Enrollment
     request_enrollment,
     request_enrollment_from_env,
@@ -68,6 +82,12 @@ from .signer import (
     LogicSigRejectedError,
     InsufficientFundsError,
     InvalidTransactionError,
+    UnsupportedSigningFlowError,
+    UnsupportedGroupError,
+    SignOutcomeUnknownError,
+    SubmissionRejectedError,
+    SubmissionUncertainError,
+    RotatingPreflightError,
 
     # Types
     RuntimeArg,
@@ -142,6 +162,20 @@ __all__ = [
     "sign_prepared_cosigned_group",
     "simulate_prepared_cosigned_group",
 
+    # Unified sending and rotating accounts
+    "SendResult",
+    "RotatingSendDetails",
+    "PreparedRotating",
+    "RotatingSignResult",
+    "DEFAULT_SEND_WAIT_ROUNDS",
+    "SEND_OUTCOME_SUBMITTED",
+    "SEND_OUTCOME_CONFIRMED",
+    "SEND_STAGE_SUBMIT",
+    "SEND_STAGE_CONFIRM",
+    "ROTATING_MAX_VALIDITY_WINDOW",
+    "ROTATING_MAX_LEAD",
+    "ROTATING_MIN_REMAINING",
+
     # Enrollment
     "request_enrollment",
     "request_enrollment_from_env",
@@ -180,6 +214,12 @@ __all__ = [
     "LogicSigRejectedError",
     "InsufficientFundsError",
     "InvalidTransactionError",
+    "UnsupportedSigningFlowError",
+    "UnsupportedGroupError",
+    "SignOutcomeUnknownError",
+    "SubmissionRejectedError",
+    "SubmissionUncertainError",
+    "RotatingPreflightError",
 
     # Types
     "RuntimeArg",

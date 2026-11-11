@@ -314,7 +314,7 @@ class TestGetStatus:
             "key_count": 37,
             "keyset_revision": 4,
             "approval_wait_seconds": 60,
-            "warnings": ["authenticated prune is required", 7],
+            "warnings": ["authenticated prune is required"],
         })
 
         with patch.object(client.session, "get", return_value=resp) as mock_get:
@@ -764,6 +764,127 @@ class TestDeleteKey:
             client.delete_key("ADDR")
         assert mock_delete.call_args.kwargs["timeout"] == 10
 
+    def test_reads_the_answer_the_signer_sends(self):
+        # The signer answers {"success": true}; an error in it is a refusal.
+        client = make_client()
+        with patch.object(client.session, "delete", return_value=raw_response(200, b'{"success":true}\n')):
+            client.delete_key("ADDR")
+        refused = raw_response(200, b'{"success":false,"error":"key is in use"}')
+        with patch.object(client.session, "delete", return_value=refused):
+            with pytest.raises(SignerError, match="key is in use"):
+                client.delete_key("ADDR")
+
+    def test_an_empty_answer_is_unreadable(self):
+        # The signer never answers with an empty body.
+        client = make_client()
+        with patch.object(client.session, "delete", return_value=raw_response(200, b"")):
+            with pytest.raises(SignerError, match="failed to decode key deletion response"):
+                client.delete_key("ADDR")
+
+
+def raw_response(status_code, body: bytes):
+    """A real requests.Response carrying exactly these body bytes."""
+    import requests
+
+    resp = requests.Response()
+    resp.status_code = status_code
+    resp._content = body
+    resp.encoding = "utf-8"
+    return resp
+
+
+# Each answer that releases no signature, and the call that reads it.
+_UNSIGNED_ANSWER_CALLS = {
+    "status": ("get", lambda client: client.get_status()),
+    "keys": ("get", lambda client: client.list_keys(refresh=True)),
+    "key types": ("get", lambda client: client.list_key_types()),
+    "plan": ("post", lambda client: client.plan_group([fake_signer.payment()])),
+    "key generation": ("post", lambda client: client.generate_key("ed25519")),
+    "sign cancel": ("post", lambda client: client.cancel_sign_request("sdk-test")),
+    "key deletion": ("delete", lambda client: client.delete_key("ADDR")),
+}
+
+# For each, an answer with one field of the wrong type.
+_WRONG_TYPED_ANSWERS = {
+    "status": b'{"state":"unlocked","keyset_revision":"4"}',
+    "keys": b'{"count":1,"keys":[{"address":"ADDR1","key_type":"ed25519","is_spending_account":"no"}]}',
+    "key types": b'{"key_types":[{"key_type":"ed25519","creation_params":[{"name":"n","min":-1}]}]}',
+    "plan": b'{"transactions":"5458aa"}',
+    "key generation": b'{"address":"NEWADDR","key_type":"ed25519","parameters":{"a":1}}',
+    "sign cancel": b'{"success":"true","state":"canceled"}',
+    "key deletion": b'{"success":true,"error":1}',
+}
+
+
+class TestAnswersReadByShape:
+    """Every 200 answer is read whole against the shape the Go SDK declares
+    for it. An answer that cannot be read, at a request that releases no
+    signature, is a plain SignerError, never a raw Python exception."""
+
+    @pytest.mark.parametrize("what", list(_UNSIGNED_ANSWER_CALLS))
+    @pytest.mark.parametrize(
+        "body",
+        [b"", b"null", b"[]", b"7", b'"text"', b"{", b'{"a":1} {}', b'{"a":NaN}', b"not json"],
+    )
+    def test_an_answer_that_is_not_one_object_is_a_plain_error(self, what, body):
+        method, call = _UNSIGNED_ANSWER_CALLS[what]
+        client = make_client()
+        with patch.object(client.session, method, return_value=raw_response(200, body)):
+            with pytest.raises(SignerError) as excinfo:
+                call(client)
+        assert type(excinfo.value) is SignerError
+        assert str(excinfo.value).startswith(f"failed to decode {what} response")
+
+    @pytest.mark.parametrize("what", list(_UNSIGNED_ANSWER_CALLS))
+    def test_a_field_of_the_wrong_type_is_a_plain_error(self, what):
+        method, call = _UNSIGNED_ANSWER_CALLS[what]
+        client = make_client()
+        answer = raw_response(200, _WRONG_TYPED_ANSWERS[what])
+        with patch.object(client.session, method, return_value=answer):
+            with pytest.raises(SignerError) as excinfo:
+                call(client)
+        assert type(excinfo.value) is SignerError
+        assert str(excinfo.value).startswith(f"failed to decode {what} response: answer field")
+
+    def test_a_failed_key_list_read_keeps_the_cache(self):
+        client = make_client()
+        good = mock_response(200, {"count": 1, "keys": [{"address": "ADDR1", "key_type": "ed25519"}]})
+        with patch.object(client.session, "get", side_effect=[good, raw_response(200, b"[]")]):
+            client.list_keys()
+            with pytest.raises(SignerError):
+                client.list_keys(refresh=True)
+        assert list(client._key_cache) == ["ADDR1"]
+
+    def test_null_fields_and_entries_read_as_zero(self):
+        client = make_client()
+        status = raw_response(200, json.dumps({
+            "state": "unlocked",
+            "key_count": None,
+            "warnings": [None, "w"],
+            "rotating": [None, {"account": "ACCT", "stage": None, "round": None}],
+        }).encode())
+        with patch.object(client.session, "get", return_value=status):
+            result = client.get_status()
+        assert result.key_count == 0 and result.warnings == ["", "w"]
+        assert result.rotating[0].account == "" and result.rotating[1].account == "ACCT"
+        assert result.rotating[1].stage is None and result.rotating[1].round == 0
+
+    @pytest.mark.parametrize(
+        "body",
+        [b"[]", b"null", b"{", b'{"keyset_revision":"x"}', b'{"warnings":7}', b'{"rotating":[7]}'],
+    )
+    def test_a_malformed_status_never_stops_an_approval_request(self, body):
+        # /status is read to learn the approval wait. Whatever it answers, the
+        # sign request is still posted, with the default wait.
+        client = make_client()
+        txn = fake_signer.payment()
+        with patch.object(client.session, "get", return_value=raw_response(200, body)), \
+             patch.object(client.session, "post", side_effect=fake_signer.signer_post()) as mock_post:
+            signed = client.sign_transaction(txn)
+
+        assert base64.b64decode(signed) == bytes.fromhex(fake_signer.signed_hex(txn))
+        assert mock_post.call_args.args[0] == "http://localhost:11270/sign"
+
 
 # ---------------------------------------------------------------------------
 # cosigner low-level endpoints
@@ -795,7 +916,7 @@ class TestSpecializedLowLevelEndpoints:
 
         assert result.components[0]["signature"] == "aabb"
         assert mock_post.call_args.args[0] == "http://localhost:11270/sign/component"
-        body = mock_post.call_args.kwargs["json"]
+        body = fake_signer.posted_json(mock_post.call_args.kwargs)
         assert body["request_id"].startswith("sdk-")
         assert body["targets"][0]["kind"] == "cosigner"
         assert body["targets"][0]["component_key"] == "COMPONENT"
@@ -877,6 +998,32 @@ class TestSpecializedLowLevelEndpoints:
                     target_indices=[0],
                 ))
 
+    def test_request_components_reads_a_null_field_in_a_component_as_zero(self):
+        # Null means zero at every depth, as the Go SDK decodes it: a null
+        # target_index is position 0, and a null path is no path.
+        client = make_client()
+        resp = mock_response(200, {
+            "request_id": "sdk-component",
+            "components": [{
+                "target_index": None,
+                "kind": "cosigner",
+                "signature": "aabb",
+                "signature_scheme": KEY_TYPE_WITNESS_FALCON1024,
+                "path": None,
+            }],
+        })
+
+        with patch.object(client.session, "post", return_value=resp):
+            result = client.request_components(component_request(
+                request_id="sdk-component",
+                role=TEST_COMPONENT_KIND_COSIGNER,
+                group_bytes_hex=["5458aa"],
+                target_indices=[0],
+            ))
+
+        assert result.components[0]["target_index"] == 0
+        assert result.components[0]["path"] == ""
+
     def test_request_assemble_posts_to_assemble_endpoint(self):
         client = make_client()
         resp = mock_response(200, {
@@ -899,7 +1046,7 @@ class TestSpecializedLowLevelEndpoints:
 
         assert result.signed_group == ["ccdd"]
         assert mock_post.call_args.args[0] == "http://localhost:11270/sign/assemble"
-        body = mock_post.call_args.kwargs["json"]
+        body = fake_signer.posted_json(mock_post.call_args.kwargs)
         assert body["request_id"].startswith("sdk-")
         assert body["targets"][0]["kind"] == "bounded-cosigner"
         assert body["targets"][0]["auth_address"] == "BOUNDED"
@@ -2091,7 +2238,7 @@ class TestClientSideSignedSimulation:
             )
 
         assert mock_post.call_args.args[0] == "http://localhost:11270/sign"
-        assert mock_post.call_args.kwargs["json"]["request_id"] == "simulate-id"
+        assert fake_signer.posted_json(mock_post.call_args.kwargs)["request_id"] == "simulate-id"
         assert algod_client.simulate_transactions.call_count == 1
         simulate_request = algod_client.simulate_transactions.call_args.args[0]
         assert simulate_request.allow_empty_signatures is False
@@ -2132,7 +2279,7 @@ class TestClientSideSignedSimulation:
         })
         algod_client = MagicMock()
         algod_client.simulate_transactions.return_value = {
-            "last-round": 7, "version": 2, "txn-groups": [{}],
+            "last-round": 7, "version": 2, "txn-groups": [{"txn-results": [{}]}],
         }
         with patch.object(client, "_discover_approval_wait"), \
              patch.object(client.session, "post", return_value=sign_response):
@@ -2142,9 +2289,33 @@ class TestClientSideSignedSimulation:
             )
 
         simulated = algod_client.simulate_transactions.call_args.args[0].txn_groups[0].txns[0]
+        assert not result.failed
         assert isinstance(simulated, transaction.PQSignedTransaction)
         assert algo_encoding.msgpack_encode(simulated) == signed_b64
         assert result.signed_group == [signed_hex]
+
+    def test_a_null_count_in_the_mutation_report_reads_as_zero(self):
+        # A null foreign_count is zero foreign positions, as the Go SDK reads
+        # it, not a crash after the signer has signed.
+        txn = fake_signer.payment(41, 42)
+        client = make_client()
+        sign_response = mock_response(200, {
+            "signed": [fake_signer.signed_hex(txn)],
+            "mutations": {"original_count": 1, "final_count": 1, "foreign_count": None},
+        })
+        algod_client = MagicMock()
+        algod_client.simulate_transactions.return_value = {
+            "txn-groups": [{"txn-results": [{}]}],
+        }
+        with patch.object(client, "_discover_approval_wait"), \
+             patch.object(client.session, "post", return_value=sign_response):
+            result = client.simulate_prepared_group(
+                algod_client,
+                PreparedGroup([PreparedTransaction(transaction=txn, auth_address=txn.sender)]),
+            )
+
+        assert result.mutations["foreign_count"] == 0
+        assert result.signed_group == [fake_signer.signed_hex(txn)]
 
     def test_requires_algod_before_contacting_signer(self):
         client = make_client()
@@ -2211,6 +2382,27 @@ class TestSigningErrors:
         with patch.object(client.session, "post", return_value=resp):
             with pytest.raises(SignerUnavailableError):
                 client.sign_transaction(self._make_mock_txn())
+
+    @pytest.mark.parametrize("body", [b"[1, 2]", b"null", b"7", b'"oops"', b"[[[[["])
+    def test_an_error_body_that_is_not_an_object_has_no_code(self, body):
+        # It carries no code and no message, so its text is the message.
+        client = make_client()
+        with patch.object(client.session, "post", return_value=raw_response(500, body)):
+            with pytest.raises(SignerError) as exc_info:
+                client.sign_transaction(self._make_mock_txn())
+        assert type(exc_info.value) is SignerError
+        assert exc_info.value.code == ""
+        assert str(exc_info.value) == body.decode()
+
+    def test_an_error_code_needs_a_message(self):
+        # A code is kept only beside a message that is not blank.
+        client = make_client()
+        resp = raw_response(400, b'{"error": "  ", "code": "not_found"}')
+        with patch.object(client.session, "post", return_value=resp):
+            with pytest.raises(SignerError) as exc_info:
+                client.sign_transaction(self._make_mock_txn())
+        assert not isinstance(exc_info.value, KeyNotFoundError)
+        assert exc_info.value.code == ""
 
     def test_key_not_found(self):
         client = make_client()
@@ -2284,7 +2476,7 @@ class TestSigningErrors:
                 client.sign_transaction(self._make_mock_txn())
 
         assert mock_post.call_args_list[0].args[0] == "http://localhost:11270/sign"
-        assert mock_post.call_args_list[0].kwargs["json"]["request_id"] == "sdk-test"
+        assert fake_signer.posted_json(mock_post.call_args_list[0].kwargs)["request_id"] == "sdk-test"
         assert mock_post.call_args_list[1].args[0] == "http://localhost:11270/sign/cancel"
         assert mock_post.call_args_list[1].kwargs["json"] == {"request_id": "sdk-test"}
 
@@ -2294,7 +2486,7 @@ class TestSigningErrors:
              patch.object(client.session, "post", side_effect=fake_signer.signer_post()) as mock_post:
             client.sign_transaction(self._make_mock_txn(), request_id="app-owned-id")
 
-        assert mock_post.call_args.kwargs["json"]["request_id"] == "app-owned-id"
+        assert fake_signer.posted_json(mock_post.call_args.kwargs)["request_id"] == "app-owned-id"
 
     def test_sign_transaction_validates_caller_request_id(self):
         client = make_client()
@@ -2340,7 +2532,7 @@ class TestSignRequests:
 
         assert result.signed == [fake_signer.signed_hex(txn)]
         assert mock_post.call_args.args[0] == "http://localhost:11270/sign"
-        assert mock_post.call_args.kwargs["json"] == {
+        assert fake_signer.posted_json(mock_post.call_args.kwargs) == {
             "request_id": "raw-requests-id",
             "requests": [entry],
         }
@@ -2470,7 +2662,7 @@ class TestBuildSignRequests:
             client.sign_transaction(txn, auth_address=fake_signer.account(50))
 
         call_kwargs = mock_post.call_args
-        body = call_kwargs[1]["json"]
+        body = fake_signer.posted_json(call_kwargs[1])
         assert body["request_id"]
         assert len(body["requests"]) == 1
         assert body["requests"][0]["auth_address"] == fake_signer.account(50)
@@ -2484,7 +2676,7 @@ class TestBuildSignRequests:
             client.sign_transaction(self._make_mock_txn(sender=sender))
 
         call_kwargs = mock_post.call_args
-        body = call_kwargs[1]["json"]
+        body = fake_signer.posted_json(call_kwargs[1])
         assert body["requests"][0]["auth_address"] == sender
 
     def test_includes_lsig_args_as_hex(self):
@@ -2499,7 +2691,7 @@ class TestBuildSignRequests:
             )
 
         call_kwargs = mock_post.call_args
-        body = call_kwargs[1]["json"]
+        body = fake_signer.posted_json(call_kwargs[1])
         assert body["requests"][0]["lsig_args"] is not None
         assert body["requests"][0]["lsig_args"]["preimage"] == "736563726574"
 
@@ -2511,7 +2703,7 @@ class TestBuildSignRequests:
              patch.object(client.session, "post", side_effect=fake_signer.signer_post()) as mock_post:
             client.sign_transaction(txn, auth_address=auth_address, lsig_args={"preimage": b"secret"})
 
-        request = mock_post.call_args[1]["json"]["requests"][0]
+        request = fake_signer.posted_json(mock_post.call_args[1])["requests"][0]
         assert request["auth_address"] == txn.sender
         assert request["lsig_args"] == {"preimage": "736563726574"}
 

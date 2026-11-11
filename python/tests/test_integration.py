@@ -252,6 +252,81 @@ def test_live_native_falcon_signature_verifies_on_localnet():
         client.close()
 
 
+LIVE_ROTATING_KEY_TYPE = "aplane.rotating-triple-wotsc.v1"
+
+
+@pytest.mark.skipif(not _integration_enabled(), reason="set APLANE_SDK_INTEGRATION=1")
+def test_live_rotating_send_on_localnet():
+    """A rotating account spends through send_payment on a real node, twice
+    in a row. The second spend is the one that shows the flow works after
+    stage 0: the account's authorizer is then a stage address the signer does
+    not list, and the unsigned simulation has to accept it."""
+    if not _localnet_available():
+        pytest.skip("needs a LocalNet algod and KMD (ALGOD_URL, APLANE_LOCALNET_KMD_URL)")
+    algod_client = algod.AlgodClient(
+        os.environ.get("ALGOD_TOKEN", ""), os.environ["ALGOD_URL"].strip()
+    )
+    client = _live_signer_client()
+    account = ""
+    try:
+        if not any(item.key_type == LIVE_ROTATING_KEY_TYPE for item in client.list_key_types()):
+            pytest.skip(
+                f"key type {LIVE_ROTATING_KEY_TYPE} is not enabled at the signer "
+                f"(apadmin keytype enable {LIVE_ROTATING_KEY_TYPE})"
+            )
+        genesis_hash = algod_client.suggested_params().gh
+        before = client.get_status()
+        account = client.generate_key(LIVE_ROTATING_KEY_TYPE, {"network": genesis_hash}).address
+        assert account
+        _wait_for_keyset_revision(client, before.keyset_revision, "rotating generate")
+        _fund_from_localnet_kmd(algod_client, account, 2_000_000)
+
+        receiver = account  # a self-payment moves nothing and still rotates
+        last_target = 0
+        last_rekey_to = ""
+        for spend in range(2):
+            result = client.send_payment(algod_client, sender=account, receiver=receiver, amount=0)
+            details = result.rotating
+            assert result.flow == "rotating1" and details is not None, result
+            assert result.outcome == "confirmed" and result.confirmed_round > 0, result
+            assert (details.stage, details.target) == (spend, spend + 1), details
+            if spend > 0:
+                assert details.stage == last_target
+                assert details.rekey_to != last_rekey_to
+            # The chain agrees with what the SDK bound: the account is now
+            # authorized by the address the signer reported.
+            info = algod_client.account_info(account)
+            assert info.get("auth-addr") == details.rekey_to
+            last_target, last_rekey_to = details.target, details.rekey_to
+
+        # A third spend, one step at a time, as a caller managing submission
+        # itself would do it.
+        payment = client.prepare_payment(algod_client, sender=account, receiver=account, amount=0)
+        prepared = client.prepare_rotating(payment.transaction)
+        simulation = client.simulate_prepared_rotating(algod_client, prepared)
+        assert not simulation.failed, _simulation_failure(simulation.response)
+        signed = client.sign_prepared_rotating(prepared)
+        assert signed.stage == last_target
+        submitted = client.submit_signed_group(algod_client, signed.signed_group)
+        assert submitted.outcome == "confirmed" and submitted.tx_ids[0] == signed.txid
+        last_target = signed.target
+
+        # The steps on their own: prepare and simulate use no key.
+        payment = client.prepare_payment(algod_client, sender=account, receiver=account, amount=0)
+        assert payment.auth_address == account, "want the rotating account itself"
+        prepared = client.prepare_rotating(payment.transaction)
+        assert prepared.stage == last_target
+        simulation = client.simulate_prepared_rotating(algod_client, prepared)
+        assert not simulation.failed, _simulation_failure(simulation.response)
+    finally:
+        if account:
+            try:
+                client.delete_key(account)
+            except Exception:
+                pass
+        client.close()
+
+
 @pytest.mark.skipif(not _integration_enabled(), reason="set APLANE_SDK_INTEGRATION=1")
 def test_endpoint_registry_connection():
     data_dir = os.environ.get("APCLIENT_DATA")

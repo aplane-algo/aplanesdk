@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """
-Minimal validation transaction example.
+Send a payment from any account the signer holds.
 
-Sends a 0 ALGO self-payment to validate that signing works.
-Works with any key type (Ed25519, Falcon, etc.).
+send_payment builds the payment, signs it through the flow the sender's key
+needs, checks the signed result, submits it and waits for confirmation. The
+same call works for an Ed25519, native Falcon, LogicSig, bounded or rotating
+account, and for a rekeyed sender. A cosigned account also needs its cosigner:
+pass cosigner_client and cosigner_component_key.
 
 Setup:
     1. Create data directory: mkdir -p ~/aplane/apclient/.ssh
-    2. Copy token: cp /path/to/aplane.token ~/aplane/apclient/
-    3. Generate APlane SSH key: ssh-keygen -t ed25519 -f ~/aplane/apclient/.ssh/id_ed25519 -N ''
+    2. Generate APlane SSH key: ssh-keygen -t ed25519 -f ~/aplane/apclient/.ssh/id_ed25519 -N ''
+    3. Enroll it at the signer: run apshell enroll and approve in apadmin
     4. Create endpoints.yaml (see below)
     5. Set env: export APCLIENT_DATA=~/aplane/apclient
 
@@ -21,39 +24,52 @@ Example endpoints.yaml (SSH tunnel):
         identity_file: .ssh/id_ed25519
 """
 
-from algosdk import transaction
 from algosdk.v2client import algod
-from aplanesdk import SignerClient, send_raw_transaction
+from aplanesdk import SignerClient, SignOutcomeUnknownError, SubmissionUncertainError
 
-# The address to validate (must exist in apsigner keystore)
-# Replace with your actual address
+# The account to pay from (the signer must hold its key) and the account to
+# pay. Replace both.
 SENDER = "ED255ACCOUNTEXAMPLE77777777777777777777777777777777777777777"
+RECEIVER = "ED255ACCOUNTEXAMPLE77777777777777777777777777777777777777777"
 
 
 def main():
     # Connect using config from $APCLIENT_DATA
     with SignerClient.from_env() as signer:
-        algod_client = algod.AlgodClient("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "http://localhost:4001")
+        algod_client = algod.AlgodClient("a" * 64, "http://localhost:4001")
 
-        # Build 0-ALGO self-send (validation transaction)
-        params = algod_client.suggested_params()
-        txn = transaction.PaymentTxn(sender=SENDER, sp=params, receiver=SENDER, amt=0)
+        try:
+            # 1 ALGO, in microAlgos.
+            result = signer.send_payment(
+                algod_client, sender=SENDER, receiver=RECEIVER, amount=1_000_000
+            )
+        except SubmissionUncertainError as error:
+            # A group that was signed keeps its bytes and IDs in the error.
+            # Never send again until its outcome is known: both could execute.
+            print(f"Outcome unknown for {error.tx_ids} ({error.stage}); look it up before sending again")
+            raise
+        except SignOutcomeUnknownError as error:
+            # The signer may have released a signature this call never saw.
+            # Do NOT build and sign a replacement: both could execute. Sign
+            # the same prepared group again (a rotating account's is in
+            # error.rotating, for signer.sign_prepared_rotating), or check the
+            # chain and the signer's audit log for the request first.
+            print(
+                f"A signature may have been released (request {error.request_id or 'unnamed'}); "
+                "do not sign a replacement"
+            )
+            if error.rotating is not None:
+                print(f"Re-sign prepared group {error.rotating.tx_ids} with sign_prepared_rotating")
+            raise
 
-        # Resolve auth address (handles rekeyed accounts)
-        acct_info = algod_client.account_info(SENDER)
-        auth_addr = acct_info.get("auth-addr") or None
-
-        # Sign and submit (server handles fee pooling automatically)
-        print(f"Signing validation txn for {SENDER[:12]}...")
-        signed = signer.sign_transaction(txn, auth_address=auth_addr)
-
-        # Submit (handles concatenated group bytes from Falcon/LogicSig keys)
-        txid = send_raw_transaction(algod_client, signed)
-        print(f"Submitted: {txid}")
-
-        # Wait for confirmation
-        result = transaction.wait_for_confirmation(algod_client, txid, 4)
-        print(f"Confirmed in round {result['confirmed-round']}")
+        # The signer may raise the fee or add transactions, so the ID comes
+        # from the signed group, not from the payment as it was built.
+        print(
+            f"Confirmed {result.tx_ids[0]} in round {result.confirmed_round}, "
+            f"fee {result.fees[0]} microAlgos"
+        )
+        if result.rotating is not None:
+            print(f"Rotated from stage {result.rotating.stage} to stage {result.rotating.target}")
 
 
 if __name__ == "__main__":
