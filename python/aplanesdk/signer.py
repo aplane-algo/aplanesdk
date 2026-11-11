@@ -5184,7 +5184,7 @@ class SignerClient:
             # /status discovery failure must not fail /sign; use fallback.
             pass
 
-    def _sign_request_timeout(self) -> int:
+    def _sign_request_timeout(self) -> float:
         wait = self._cached_approval_wait()
         default = wait + SIGN_APPROVAL_SLACK if wait is not None else DEFAULT_SIGN_REQUEST_TIMEOUT
         return self._timeout_for(default)
@@ -8289,9 +8289,8 @@ class EndpointCosignerResolver:
     def __enter__(self) -> "EndpointCosignerResolver":
         return self
 
-    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool:
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         self.close()
-        return False
 
     @staticmethod
     def _listing(probes: Dict[str, _CosignerProbe], key_type: str, public_key: str) -> List[str]:
@@ -8641,7 +8640,7 @@ def _rekeys(txn: Any) -> bool:
     if not rekey_to:
         return False
     try:
-        return encoding.decode_address(rekey_to) != bytes(32)
+        return bool(encoding.decode_address(rekey_to) != bytes(32))
     except Exception:
         return True
 
@@ -8968,10 +8967,10 @@ def sign_prepared_cosigned_group(
     # a plain error with nothing signed. What the resolver raises is its own
     # error, never an unknown outcome, so it passes as it is.
     cosigners: Dict[int, tuple] = {}
-    for target in _cosigner_resolution_order(
+    for up_front in _cosigner_resolution_order(
         [target for target in targets if target["target_index"] not in may_take_listed_path]
     ):
-        cosigners[target["target_index"]] = resolve_cosigner(target)
+        cosigners[up_front["target_index"]] = resolve_cosigner(up_front)
 
     plan_response = user_client.plan_requests(requests_data)
     frozen_group = list(plan_response.get("transactions") or [])
@@ -9075,7 +9074,7 @@ def sign_prepared_cosigned_group(
     # rekey that could have taken the listed path and did not is resolved
     # only now. What the caller's resolver raises is its own error, not a
     # fault of the SDK's, so it passes as it is.
-    for target in _cosigner_resolution_order(
+    for late in _cosigner_resolution_order(
         [
             target
             for target in targets
@@ -9083,7 +9082,7 @@ def sign_prepared_cosigned_group(
             and component_needs_cosigner(components[target["target_index"]])
         ]
     ):
-        cosigners[target["target_index"]] = resolve_cosigner(target)
+        cosigners[late["target_index"]] = resolve_cosigner(late)
     cosigner_groups: Dict[tuple, Dict[str, Any]] = {}
     for target in targets:
         if not component_needs_cosigner(components[target["target_index"]]):
@@ -9939,7 +9938,9 @@ def _resolve_outcome(algod_client: Any, error: Any) -> OutcomeReport:
         tx_ids=tx_ids,
         last_valid=last_valid,
         current_round=current,
-        signed_group=list(error.signed_group) if submission else None,
+        signed_group=(
+            list(cast(SubmissionUncertainError, error).signed_group) if submission else None
+        ),
         rotating=rotating,
     )
     lookup, confirmed_round = (
