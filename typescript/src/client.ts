@@ -478,7 +478,7 @@ export async function signPreparedCosignedGroup(
   const targetMaxFees = new Map<number, number>();
   // One read of the signer's keys for the whole call, refreshed when the
   // signer's keyset revision has changed: the lookup the prepare helpers make.
-  const signerKeys = await options.userClient.listKeysIfKeysetChanged();
+  const signerKeys = await options.userClient.listKeysIfKeysetChanged({ signal: options.signal });
   for (let index = 0; index < prepared.length; index++) {
     const item = prepared[index];
     if (item.signedTransactionBase64) {
@@ -553,7 +553,7 @@ export async function signPreparedCosignedGroup(
     throw new SignerError("prepared group has no bounded-cosigner targets");
   }
 
-  const planResponse = await options.userClient.planRequests(requests);
+  const planResponse = await options.userClient.planRequests(requests, { signal: options.signal });
   const frozenGroup = [...(planResponse.transactions || [])];
   if (frozenGroup.length < prepared.length) {
     throw new SignerError(
@@ -1568,6 +1568,19 @@ async function readApprovalAnswer<T>(response: Response, shape: AnswerShape, req
     throw markLostAnswer(new SignerError(`Server returned a malformed response: ${read.problem}`), requestId);
   }
   return read.answer;
+}
+
+/**
+ * A request body as JSON, before anything is posted. A body that cannot be
+ * encoded, such as one holding a bigint, is a plain error: the request is
+ * never posted.
+ */
+function encodeRequestBody(body: unknown, what: string): string {
+  try {
+    return JSON.stringify(body);
+  } catch (error) {
+    throw new SignerError(`failed to encode ${what} request: ${errorText(error)}`);
+  }
 }
 
 /**
@@ -2593,10 +2606,11 @@ export class SignerClient {
    * /status is authenticated but does not require the signer to be unlocked.
    * A locked state in a 200 response is returned as normal data.
    */
-  async getStatus(): Promise<StatusResponse> {
+  async getStatus(options?: { signal?: AbortSignal }): Promise<StatusResponse> {
     const response = await this.fetch("/status", {
       method: "GET",
       timeout: this.timeoutFor(STATUS_TIMEOUT),
+      signal: options?.signal,
     });
 
     if (response.status === 401) {
@@ -2683,9 +2697,10 @@ export class SignerClient {
    * List available signing keys.
    *
    * @param refresh - If true, bypass cache and fetch fresh data
+   * @param options - Optional caller cancellation signal for the request
    * @returns List of KeyInfo with address, keyType, etc.
    */
-  async listKeys(refresh: boolean = false): Promise<KeyInfo[]> {
+  async listKeys(refresh: boolean = false, options?: { signal?: AbortSignal }): Promise<KeyInfo[]> {
     if (!refresh && this.keyCache.size > 0) {
       return Array.from(this.keyCache.values());
     }
@@ -2693,6 +2708,7 @@ export class SignerClient {
     const response = await this.fetch("/keys", {
       method: "GET",
       timeout: this.timeoutFor(INVENTORY_TIMEOUT),
+      signal: options?.signal,
     });
 
     if (response.status === 401) {
@@ -2762,8 +2778,8 @@ export class SignerClient {
   /**
    * Return cached keys when /status.keyset_revision is unchanged.
    */
-  async listKeysIfKeysetChanged(): Promise<KeyInfo[]> {
-    const status = await this.getStatus();
+  async listKeysIfKeysetChanged(options?: { signal?: AbortSignal }): Promise<KeyInfo[]> {
+    const status = await this.getStatus(options);
     if (status.signerLocked) {
       throw new SignerUnavailableError("signer is locked");
     }
@@ -2774,7 +2790,7 @@ export class SignerClient {
     ) {
       return Array.from(this.keyCache.values());
     }
-    const keys = await this.listKeys(true);
+    const keys = await this.listKeys(true, options);
     this.keyCacheRevision = status.keysetRevision;
     return keys;
   }
@@ -3810,19 +3826,30 @@ export class SignerClient {
     } catch (error) {
       throw new SignerError(`invalid component request: ${error instanceof Error ? error.message : String(error)}`);
     }
+    // A request that is never posted is a plain stop: nothing was asked, so
+    // nothing is canceled. A body that cannot be encoded is never posted.
+    const body = encodeRequestBody(requestBody, "component");
+    const signal = options?.signal;
+    if (signal?.aborted) {
+      throw callerAborted();
+    }
     const approvalBearing = requestBody.targets[0].kind !== "cosigner";
     let timeout = this.timeoutFor(COMPONENT_SIGN_TIMEOUT);
     if (approvalBearing) {
       await this.discoverApprovalWait();
       timeout = Math.max(timeout, this.signRequestTimeout());
     }
+    // Checked again after the discovery, the last wait before posting.
+    if (signal?.aborted) {
+      throw callerAborted();
+    }
     let response: Response;
     try {
       response = await this.fetch("/sign/component", {
         method: "POST",
-        body: JSON.stringify(requestBody),
+        body,
         timeout,
-        signal: options?.signal,
+        signal,
       });
     } catch (error) {
       if (approvalBearing) await this.bestEffortCancelSignRequest(requestBody.request_id || "");
@@ -3877,11 +3904,17 @@ export class SignerClient {
       );
     }
 
+    // A request that is never posted is a plain stop. A body that cannot be
+    // encoded is never posted.
+    const body = encodeRequestBody(requestBody, "assembly");
+    if (options?.signal?.aborted) {
+      throw callerAborted();
+    }
     let response: Response;
     try {
       response = await this.fetch("/sign/assemble", {
         method: "POST",
-        body: JSON.stringify(requestBody),
+        body,
         timeout: this.timeoutFor(COSIGNED_ASSEMBLY_TIMEOUT),
         signal: options?.signal,
       });
@@ -3981,7 +4014,7 @@ export class SignerClient {
    * Preview raw per-slot signer requests without rebuilding them through the
    * address-keyed convenience API.
    */
-  async planRequests(requests: SignRequest[]): Promise<PlanGroupResponse> {
+  async planRequests(requests: SignRequest[], options?: { signal?: AbortSignal }): Promise<PlanGroupResponse> {
     validateSignRequests(requests);
     // The slots the plan is checked against are decoded here, from the very
     // entries that are sent.
@@ -3990,8 +4023,9 @@ export class SignerClient {
 
     const response = await this.fetch("/plan", {
       method: "POST",
-      body: JSON.stringify({ requests }),
+      body: encodeRequestBody({ requests }, "plan"),
       timeout: this.timeoutFor(GROUP_PLAN_TIMEOUT),
+      signal: options?.signal,
     });
 
     if (response.status === 401) {
@@ -4189,7 +4223,7 @@ export class SignerClient {
     const data = await this.postApproval<GroupSignResponse>(
       "/sign",
       requestId,
-      JSON.stringify(signBody),
+      encodeRequestBody(signBody, "sign"),
       options?.signal,
       GROUP_SIGN_ANSWER,
       async (response) => {
@@ -4246,7 +4280,12 @@ export class SignerClient {
     shape: AnswerShape,
     refuse: (response: Response) => Promise<SignerError>,
   ): Promise<T> {
+    // A signal already aborted sends nothing, not even the status discovery.
+    if (signal?.aborted) {
+      throw callerAborted();
+    }
     await this.discoverApprovalWait();
+    // Checked again after the discovery, the last wait before posting.
     if (signal?.aborted) {
       throw callerAborted();
     }
@@ -4720,7 +4759,7 @@ export class SignerClient {
       data = await this.postApproval<RotatingSignResponse>(
         "/sign/rotating/sign",
         requestId,
-        JSON.stringify(prepared.signRequestBody(requestId)),
+        encodeRequestBody(prepared.signRequestBody(requestId), "rotating sign"),
         options?.signal,
         ROTATING_SIGN_ANSWER,
         (response) => this.rotatingAPIError(response, "rotating sign failed"),

@@ -27,11 +27,15 @@ export type FakeHandler = (path: string, body: any) => FakeReply | Promise<FakeR
  */
 export function installSigners(handlers: Record<string, FakeHandler>): () => void {
   const previous = globalThis.fetch;
-  globalThis.fetch = (async (input: unknown, init?: { body?: string }) => {
+  globalThis.fetch = (async (input: unknown, init?: { body?: string; signal?: AbortSignal }) => {
     const url = new URL(String(input));
     const handler = handlers[url.origin];
     if (!handler) {
       throw new TypeError(`fetch failed: no fake signer at ${url.origin}`);
+    }
+    // As fetch does, an already aborted signal sends nothing.
+    if (init?.signal?.aborted) {
+      throw new DOMException("This operation was aborted", "AbortError");
     }
     const body = init?.body ? JSON.parse(init.body) : undefined;
     const reply = await handler(url.pathname, body);

@@ -7,7 +7,7 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import algosdk, { type Transaction } from "algosdk";
-import { SignerClient } from "../src/client.js";
+import { SignerClient, signPreparedCosignedGroup } from "../src/client.js";
 import {
   KeyNotFoundError,
   SigningRejectedError,
@@ -24,13 +24,15 @@ import {
   SIGNING_FLOW_COSIGNED1,
   SIGNING_FLOW_ROTATING1,
   KEY_TYPE_WITNESS_FALCON1024,
+  type AssemblyRequest,
+  type ComponentRequest,
   type PreparedGroup,
 } from "../src/types.js";
 import { describeSignedGroup, submitAndTrack, type SendResult } from "../src/send.js";
 import { SignerError, isLostAnswer, lostAnswerRequestId, markLostAnswer } from "../src/errors.js";
-import { bytesToBase64, hexToBytes } from "../src/encoding.js";
+import { bytesToBase64, encodeTransaction, hexToBytes } from "../src/encoding.js";
 import { readAnswer, type AnswerShape } from "../src/answers.js";
-import { fakeAccount, fakeAddress, fakePayment, planResponse, signedHex } from "./fakeSigner.js";
+import { fakeAccount, fakeAddress, fakePayment, planResponse, signEntries, signedHex } from "./fakeSigner.js";
 import {
   FakeAlgod,
   SendSigner,
@@ -1058,6 +1060,164 @@ describe("sendPrepared with a cosigned account", () => {
       },
     );
     assert.equal(node.submitted.length, 0);
+  });
+});
+
+// A request that was provably never posted, because the caller's signal had
+// already ended or its body could not be encoded, is a plain error: nothing
+// was asked, so nothing is canceled and no outcome is unknown.
+describe("an approval request that is never posted", () => {
+  const groupHex = () => [encodeTransaction(fakePayment(41, 42, 1))[0]];
+  const baseRequest = (): ComponentRequest => ({
+    group_bytes_hex: groupHex(),
+    targets: [{ target_index: 0, kind: "bounded-base", auth_address: fakeAddress(21) }],
+  });
+  const cosignerRequest = (): ComponentRequest => ({
+    group_bytes_hex: groupHex(),
+    targets: [{ target_index: 0, kind: "cosigner", component_key: "COSIGNER_COMPONENT" }],
+  });
+  const assemblyRequest = (): AssemblyRequest => ({
+    group_bytes_hex: groupHex(),
+    targets: [{
+      target_index: 0,
+      kind: "bounded-cosigner",
+      auth_address: fakeAddress(21),
+      base_signatures: ["base-sig"],
+      assembly_receipt: "receipt",
+    }],
+  });
+  /** A signer that answers /status, and aborts controller there when asked to. */
+  const recording = (controller?: AbortController) => {
+    const paths: string[] = [];
+    restore = installSigners({
+      [SIGNER]: (path) => {
+        paths.push(path);
+        if (path === "/status") {
+          controller?.abort();
+          return { body: statusBody() };
+        }
+        if (path === "/sign/cancel") return { body: { success: true, state: "canceled" } };
+        return "drop";
+      },
+    });
+    return { client: new SignerClient(SIGNER), paths };
+  };
+  const plainStop = (error: unknown) => {
+    assert.ok(error instanceof SignerUnavailableError, String(error));
+    assert.equal(errorText(error), "Request aborted by caller");
+    assert.equal(isLostAnswer(error), false, "a request never posted is not a lost answer");
+    return true;
+  };
+  const calls: Array<[string, (client: SignerClient, signal: AbortSignal) => Promise<unknown>]> = [
+    ["a bounded-base component request", (client, signal) => client.requestComponents(baseRequest(), { signal })],
+    ["a cosigner component request", (client, signal) => client.requestComponents(cosignerRequest(), { signal })],
+    ["an assembly request", (client, signal) => client.requestAssemble(assemblyRequest(), { signal })],
+    ["a /sign request", (client, signal) => client.signRequests(signEntries(fakePayment(41, 42, 1)), { signal })],
+  ];
+
+  for (const [name, call] of calls) {
+    it(`${name} with an already aborted signal posts nothing`, async () => {
+      const { client, paths } = recording();
+      const controller = new AbortController();
+      controller.abort();
+      await assert.rejects(call(client, controller.signal), plainStop);
+      assert.deepEqual(paths, [], "a request, a discovery or a cancel was sent");
+    });
+  }
+
+  it("a bounded-base component request whose signal aborts during the approval-wait discovery posts nothing", async () => {
+    const controller = new AbortController();
+    const { client, paths } = recording(controller);
+    await assert.rejects(client.requestComponents(baseRequest(), { signal: controller.signal }), plainStop);
+    assert.deepEqual(paths, ["/status"]);
+  });
+
+  const unencodable: Array<[string, (client: SignerClient) => Promise<unknown>]> = [
+    ["a component request", (client) => client.requestComponents({
+      ...baseRequest(),
+      targets: [{ ...baseRequest().targets[0], app_call_info: { mode: 1n } as any }],
+    })],
+    ["an assembly request", (client) => client.requestAssemble({
+      ...assemblyRequest(),
+      targets: [{ ...assemblyRequest().targets![0], bounded_runtime_args: { proof: 1n } as any }],
+    })],
+  ];
+  for (const [name, call] of unencodable) {
+    it(`${name} whose body cannot be encoded posts nothing`, async () => {
+      const { client, paths } = recording();
+      await assert.rejects(call(client), (error: unknown) => {
+        assert.ok(error instanceof SignerError, String(error));
+        assert.match(errorText(error), /^failed to encode (component|assembly) request: /);
+        assert.equal(isLostAnswer(error), false);
+        return true;
+      });
+      assert.deepEqual(paths, []);
+    });
+  }
+
+  it("a cosigned send whose signal aborts while it plans asks for no component", async () => {
+    const controller = new AbortController();
+    const { userClient, cosignerClient, algod, node, txn, userPaths } = cosignedFixture("", "", {
+      user: (path) => {
+        if (path === "/plan") controller.abort();
+      },
+    });
+    await assert.rejects(
+      userClient.sendPrepared(algod, preparedFor(txn), {
+        cosignerClient,
+        cosignerComponentKey: "COSIGNER_COMPONENT",
+        signal: controller.signal,
+      }),
+      (error: unknown) => {
+        assert.ok(!(error instanceof SignOutcomeUnknownError), String(error));
+        return plainStop(error);
+      },
+    );
+    // The keys are read for routing and again, from the cache after one
+    // status, for signing; then the plan, and nothing after it.
+    assert.deepEqual(userPaths, ["/status", "/keys", "/status", "/plan"]);
+    assert.equal(node.submitted.length, 0);
+  });
+
+  it("cosigned signing whose signal aborts while it reads the keys asks nothing more", async () => {
+    // The key listing and the plan take the caller's signal too.
+    const controller = new AbortController();
+    const { userClient, cosignerClient, txn, userPaths } = cosignedFixture("", "", {
+      user: (path) => {
+        if (path === "/status") controller.abort();
+      },
+    });
+    await assert.rejects(
+      signPreparedCosignedGroup({
+        userClient,
+        cosignerClient,
+        cosignerComponentKey: "COSIGNER_COMPONENT",
+        preparedGroup: preparedFor(txn),
+        signal: controller.signal,
+      }),
+      plainStop,
+    );
+    assert.deepEqual(userPaths, ["/status"]);
+  });
+
+  it("cosigned signing whose signal aborts after the keys are read plans nothing", async () => {
+    const controller = new AbortController();
+    const { userClient, cosignerClient, txn, userPaths } = cosignedFixture("", "", {
+      user: (path) => {
+        if (path === "/keys") controller.abort();
+      },
+    });
+    await assert.rejects(
+      signPreparedCosignedGroup({
+        userClient,
+        cosignerClient,
+        cosignerComponentKey: "COSIGNER_COMPONENT",
+        preparedGroup: preparedFor(txn),
+        signal: controller.signal,
+      }),
+      plainStop,
+    );
+    assert.deepEqual(userPaths, ["/status", "/keys"]);
   });
 });
 
