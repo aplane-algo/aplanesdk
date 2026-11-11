@@ -1080,6 +1080,35 @@ def test_signed_simulation_leaves_the_signers_to_the_signatures(fakes):
     assert "fix-signers" not in request and "allow-empty-signatures" not in request
 
 
+@pytest.mark.parametrize(
+    "groups,message",
+    [
+        (None, "returned no result for the group"),
+        ([], "returned no result for the group"),
+        ([{}, {}], "returned 2 group results for one group"),
+        ([{"failure-message": "logic eval error"}], "logic eval error"),
+        ([{}], ""),
+    ],
+    ids=["no groups field", "zero results", "two results", "failed", "passed"],
+)
+def test_a_signed_simulation_needs_exactly_one_group_result(fakes, groups, message):
+    # As in the rotating preflight, an answer without exactly one group
+    # result checked nothing: it is a failure, not a pass.
+    txn = fake_signer.payment(41, 42)
+    answer = {"last-round": 10, "version": 2}
+    if groups is not None:
+        answer["txn-groups"] = groups
+    signer, node, client = make(
+        fakes, SendSigner([ordinary_key(txn)]), FakeNode(simulate=lambda: reply(200, answer))
+    )
+    result = client.simulate_prepared_group(node.client, prepared_for(txn))
+    assert result.failed is bool(message)
+    if message:
+        assert message in result.failure_message
+    else:
+        assert result.failure_message == ""
+
+
 def test_the_confirmation_wait_follows_a_node_that_jumps_ahead(fakes):
     # The wait after round 10 answers round 20: three rounds of waiting are
     # used up, and the group is looked up once more, not once per round.

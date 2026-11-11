@@ -1133,7 +1133,13 @@ class GroupSignResponse:
 
 @dataclass
 class SimulationResult:
-    """Result of ordinary signing followed by client-side algod simulation."""
+    """Result of ordinary signing followed by client-side algod simulation.
+
+    ``failed`` is set when the group failed, and when the node's answer did
+    not hold exactly one group result, which checked nothing.
+    ``failure_message`` says why: the node's failure message, or what was
+    wrong with its answer. It is empty when the group passed.
+    """
 
     tx_ids: List[str]
     transactions: List[str]
@@ -1141,6 +1147,7 @@ class SimulationResult:
     response: Dict[str, Any]
     mutations: Optional[Dict[str, Any]] = None
     failed: bool = False
+    failure_message: str = ""
 
 
 COMPONENT_TARGET_KIND_COSIGNER = "cosigner"
@@ -1822,11 +1829,7 @@ def _simulate_signed_group(
         raise ValueError("algod_client is required")
     signed_transactions = _decode_executable_signed_group(signed_group)
     response = _run_simulation(algod_client, signed_transactions, allow_empty_signatures=False)
-    groups = response.get("txn-groups") or response.get("txn_groups") or []
-    failure = ""
-    if groups:
-        failure = groups[0].get("failure-message") or groups[0].get("failure_message", "")
-
+    failure = _simulation_failure(response)
     return SimulationResult(
         tx_ids=[signed.get_txid() for signed in signed_transactions],
         transactions=[encode_transaction(signed.transaction)[0] for signed in signed_transactions],
@@ -1834,6 +1837,7 @@ def _simulate_signed_group(
         mutations=mutations,
         response=response,
         failed=bool(failure),
+        failure_message=failure,
     )
 
 
@@ -6944,7 +6948,8 @@ class SignerClient:
         """Simulate a prepared rotating group, unsigned, through the caller's
         algod, with the node taking each signer from the chain. It never
         signs. A failed simulation, and an answer without exactly one group
-        result, is reported in the result's ``failed`` field, not raised.
+        result, is reported in the result's ``failed`` and ``failure_message``
+        fields, not raised.
 
         It checks the group's effects. It does not prove the stage's
         signatures will pass: the node runs the stage program only on the
@@ -6961,13 +6966,15 @@ class SignerClient:
         txns = prepared._decoded()
         unsigned = [transaction.SignedTransaction(txn, None) for txn in txns]
         response = _run_simulation(algod_client, unsigned, allow_empty_signatures=True)
+        failure = _simulation_failure(response)
         return SimulationResult(
             tx_ids=[txn.get_txid() for txn in txns],
             transactions=prepared.transactions,
             signed_group=[],
             response=response,
             mutations=prepared.mutations,
-            failed=_simulation_failed(response),
+            failed=bool(failure),
+            failure_message=failure,
         )
 
     def sign_prepared_rotating(
@@ -7127,7 +7134,7 @@ class SignerClient:
                     f"simulate prepared rotating group; nothing was signed: {e}"
                 ) from e
             if simulation.failed:
-                raise RotatingPreflightError(prepared, _simulation_failure(simulation.response))
+                raise RotatingPreflightError(prepared, simulation.failure_message)
             return self.sign_prepared_rotating(prepared)
         except BaseException as e:
             _mark_interrupt(e, _ROTATING_INTERRUPT_NOTE, aplane_rotating=prepared)
@@ -8108,22 +8115,18 @@ def _simulation_groups(response: Any) -> Optional[List[Any]]:
     return groups if isinstance(groups, list) else None
 
 
-def _simulation_failed(response: Any) -> bool:
-    """Whether a simulation of one group did anything but pass. An answer
-    without exactly one group result checked nothing, and counts as failed."""
-    groups = _simulation_groups(response)
-    if groups is None or len(groups) != 1 or not isinstance(groups[0], dict):
-        return True
-    return bool(groups[0].get("failure-message") or groups[0].get("failure_message"))
-
-
 def _simulation_failure(response: Any) -> str:
-    if not _simulation_failed(response):
-        return ""
+    """Why a simulation of one group did anything but pass, or "" when it
+    passed. Signed or not, an answer without exactly one group result checked
+    nothing, and counts as failed."""
     groups = _simulation_groups(response)
-    if groups is None or len(groups) != 1 or not isinstance(groups[0], dict):
+    if not groups:
         return "the node returned no result for the group"
-    return str(groups[0].get("failure-message") or groups[0].get("failure_message"))
+    if len(groups) != 1:
+        return f"the node returned {len(groups)} group results for one group"
+    if not isinstance(groups[0], dict):
+        return "the node returned a group result that is not an object"
+    return str(groups[0].get("failure-message") or groups[0].get("failure_message") or "")
 
 
 def _last_round(status: Any) -> int:
