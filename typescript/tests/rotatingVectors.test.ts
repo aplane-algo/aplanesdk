@@ -14,6 +14,8 @@ import { fileURLToPath } from "url";
 import type { RotatingPrepareResponse, RotatingSignResponse } from "../src/types.js";
 import { newPreparedRotating } from "../src/rotating.js";
 import { SignerError, errorText } from "../src/errors.js";
+import algosdk from "algosdk";
+import { alternateSpellings } from "./fakeNetwork.js";
 
 interface RotatingVectorCase {
   key_type: string;
@@ -115,6 +117,34 @@ describe("rotating vectors", () => {
           return true;
         },
       );
+    }
+  });
+
+  it("refuses a rekey_to in another spelling of the same address", () => {
+    // The bytes are unchanged and algosdk reads the spelling as the same
+    // address, so only the canonical-spelling check can refuse it.
+    for (const [name, c] of Object.entries(vectors.cases)) {
+      const spellings = alternateSpellings(c.prepare.rekey_to);
+      assert.equal(spellings.length, 3);
+      for (const spelling of spellings) {
+        assert.equal(algosdk.Address.fromString(spelling).toString(), c.prepare.rekey_to, "algosdk reads the spelling as the address");
+        assert.throws(
+          () => preparedFrom(c, { ...c.prepare, rekey_to: spelling }),
+          (error: unknown) => {
+            assert.ok(error instanceof SignerError, String(error));
+            assert.match(errorText(error), /invalid rekey_to: .* is not the canonical spelling/, `${name}: ${spelling}`);
+            return true;
+          },
+        );
+      }
+    }
+  });
+
+  it("refuses an account in another spelling of the sender", () => {
+    for (const [name, c] of Object.entries(vectors.cases)) {
+      for (const spelling of alternateSpellings(c.prepare.account)) {
+        assert.throws(() => preparedFrom(c, { ...c.prepare, account: spelling }), /is not the sender/, name);
+      }
     }
   });
 

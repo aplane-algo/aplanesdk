@@ -312,6 +312,14 @@ export class PreparedRotating {
     } catch (error) {
       throw new SignerError(`invalid rekey_to: ${errorText(error)}`);
     }
+    // algosdk also reads the spellings that differ only in the unused low
+    // bits of the last character; the Go SDK's decoder refuses them. Kept,
+    // one would report a rekey_to that is not the chain's auth address.
+    if (rekeyTo.toString() !== this.#rekeyTo) {
+      throw new SignerError(
+        `invalid rekey_to: ${this.#rekeyTo} is not the canonical spelling of ${rekeyTo.toString()}`,
+      );
+    }
     if (isZeroAddress(rekeyTo) || rekeyTo.toString() === sender) {
       throw new SignerError("rekey_to must be another, non-zero address");
     }

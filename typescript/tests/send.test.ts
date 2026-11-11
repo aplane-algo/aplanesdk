@@ -33,6 +33,7 @@ import { fakeAccount, fakeAddress, fakePayment, signedHex } from "./fakeSigner.j
 import {
   FakeAlgod,
   SendSigner,
+  alternateSpellings,
   algodHttpError,
   blobHex,
   installSigners,
@@ -950,6 +951,46 @@ describe("an account that left rotation", () => {
     assert.equal(resolved.authAddress, holder);
     assert.equal(resolved.isRekeyed, true);
     assert.equal(resolved.chainAuthAddress, holder);
+  });
+
+  // A still-rotating account must never be signed for by an ordinary key,
+  // however its address or the key's is spelled. algosdk reads the alternate
+  // spellings of an address (the unused low bits of the last character) as
+  // the address, and the SDK compares addresses as strings.
+  describe("with addresses in alternate spellings", () => {
+    const spelled = alternateSpellings(sender)[0];
+    const misspelledTxn = fakePayment(41, 42, 1, spelled);
+
+    it("builds the transaction with the canonical sender", () => {
+      assert.notEqual(spelled, sender);
+      assert.equal(misspelledTxn.sender.toString(), sender);
+    });
+
+    const cases: Array<{ name: string; authAddress: string; chainAuth?: string; text: string }> = [
+      { name: "a misspelled sender naming a held key", authAddress: holder, text: "is not rekeyed to it" },
+      { name: "a misspelled held key", authAddress: alternateSpellings(holder)[0], text: "signs as itself" },
+      { name: "the sender misspelled as its own auth address", authAddress: alternateSpellings(sender)[1], text: "signs as itself" },
+      {
+        name: "a chain that reports the held key misspelled",
+        authAddress: holder,
+        chainAuth: alternateSpellings(holder)[2],
+        text: "is not rekeyed to it",
+      },
+    ];
+    for (const test of cases) {
+      it(`refuses ${test.name} before any /sign`, async () => {
+        const signer = new SendSigner(keys);
+        const node = new FakeAlgod();
+        if (test.chainAuth) node.authAddrs[sender] = test.chainAuth;
+        const { client, algod } = fixture(signer, node);
+        await assert.rejects(
+          client.sendPrepared(algod, { transactions: [{ transaction: misspelledTxn, authAddress: test.authAddress }] }),
+          rejectsWith(UnsupportedGroupError, test.text),
+        );
+        assert.equal(signer.count("/sign"), 0, "an ordinary key was asked to sign for a rotating account");
+        assert.equal(node.submitted.length, 0);
+      });
+    }
   });
 });
 

@@ -1502,6 +1502,22 @@ interface PrepParams {
   resolve: (address: string, accountInfo: AccountInfoResult) => ResolvedAuthAddress;
 }
 
+/**
+ * Refuse an address spelled other than canonically. algosdk reads the
+ * spellings that differ only in the unused low bits of the last character as
+ * the same address, and the Go SDK's decoder refuses them; the SDK compares
+ * and looks addresses up as strings, so such a spelling could pass a check
+ * the canonical one fails. A string that is not an address at all is left to
+ * the check that already reports it.
+ */
+function requireCanonicalAddress(value: unknown, name: string): void {
+  if (typeof value !== "string" || !algosdk.isValidAddress(value)) return;
+  const canonical = algosdk.Address.fromString(value).toString();
+  if (canonical !== value) {
+    throw new SignerError(`${name} ${value} is not the canonical spelling of ${canonical}`);
+  }
+}
+
 /** A send's result before signing fills it and submission settles its outcome. */
 function emptySendResult(flow: string, originalCount: number): SendResult {
   return {
@@ -2809,6 +2825,9 @@ export class SignerClient {
    * usual form, where it always has.
    */
   private async prepSuggestedParams(algodClient: any, sender: string): Promise<PrepParams> {
+    // The sender is looked up as a string, for the rotating check and for
+    // resolution: it must be the spelling the signer lists.
+    requireCanonicalAddress(sender, "sender");
     const suggestedParams = await algodClient.getTransactionParams().do();
     let keys: KeyInfo[] | undefined;
     let keysError: unknown;
@@ -2850,6 +2869,7 @@ export class SignerClient {
     if (!params.receiver) {
       throw new SignerError("receiver is required");
     }
+    requireCanonicalAddress(params.receiver, "receiver");
     requireUint(params.amount, "amount");
 
     const { suggestedParams, resolve } = await this.prepSuggestedParams(algodClient, params.sender);
@@ -2903,6 +2923,7 @@ export class SignerClient {
     if (!params.receiver) {
       throw new SignerError("receiver is required");
     }
+    requireCanonicalAddress(params.receiver, "receiver");
     if (params.assetId === undefined || params.assetId === null) {
       throw new SignerError("assetId is required");
     }
@@ -3021,6 +3042,9 @@ export class SignerClient {
     if (!params.closeTo) {
       throw new SignerError("closeTo is required");
     }
+    // Compared as a string: an alternate spelling of the sender would pass.
+    requireCanonicalAddress(params.closeTo, "closeTo");
+    requireCanonicalAddress(params.sender, "sender");
     if (params.closeTo === params.sender) {
       throw new SignerError("closeTo must differ from sender");
     }
@@ -3069,6 +3093,9 @@ export class SignerClient {
     if (!params.closeTo) {
       throw new SignerError("closeTo is required");
     }
+    // Compared as a string: an alternate spelling of the sender would pass.
+    requireCanonicalAddress(params.closeTo, "closeTo");
+    requireCanonicalAddress(params.sender, "sender");
     if (params.closeTo === params.sender) {
       throw new SignerError("closeTo must differ from sender");
     }
@@ -3113,6 +3140,10 @@ export class SignerClient {
     if (!params.rekeyTo) {
       throw new SignerError("rekeyTo is required");
     }
+    // Compared with the sender and looked up among the signer's keys as a
+    // string: an alternate spelling of a rotating account would skip the
+    // check that refuses a rekey to one.
+    requireCanonicalAddress(params.rekeyTo, "rekeyTo");
 
     const { suggestedParams, resolve } = await this.prepSuggestedParams(algodClient, params.sender);
     applyPrepFee(suggestedParams, params.fee);

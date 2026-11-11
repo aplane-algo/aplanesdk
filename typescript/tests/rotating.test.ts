@@ -12,6 +12,7 @@ import algosdk, { type Transaction } from "algosdk";
 import { SignerClient } from "../src/client.js";
 import {
   AuthenticationError,
+  KeyNotFoundError,
   MaxFeeIncreaseError,
   RotatingPreflightError,
   SignerError,
@@ -41,6 +42,7 @@ import { canonicalDummyTransaction, cloneTransaction, groupIDBytes, signCanonica
 import { fakeAccount, fakeAddress, regroup } from "./fakeSigner.js";
 import {
   FakeAlgod,
+  alternateSpellings,
   blobHex,
   installSigners,
   statusBody,
@@ -1289,5 +1291,97 @@ describe("signPreparedRotating answer classification", () => {
       return true;
     });
     assert.equal(signer.count("/sign/rotating/sign"), 0, "a sign request went out on an aborted signal");
+  });
+});
+
+describe("alternate spellings of an address", () => {
+  it("a rekey_to the signer spells otherwise is refused before simulation or signing", async () => {
+    const { signer, node, algod, client, txn } = rotatingFixture();
+    // The prepared bytes are unchanged: only the reported spelling differs.
+    signer.alterPrepare = (response) => {
+      response.rekey_to = alternateSpellings(response.rekey_to)[0];
+    };
+    await assert.rejects(
+      client.sendPrepared(algod, rotatingGroup(txn)),
+      mentions("verify prepared rotating group", "invalid rekey_to", "not the canonical spelling"),
+    );
+    assert.equal(node.simulated.length, 0);
+    assert.equal(signer.count("/sign/rotating/sign"), 0);
+  });
+
+  describe("in the prepare helpers", () => {
+    const rotating = fakeAccount(41);
+    const ordinary = fakeAccount(43);
+    const keys: WireKey[] = [
+      { address: rotating, key_type: "aplane.rotating-triple-wotsc.v1", signing_flow: SIGNING_FLOW_ROTATING1 },
+      { address: ordinary, key_type: "ed25519" },
+    ];
+    const setup = () => {
+      const paths: string[] = [];
+      restore = installSigners({
+        [SIGNER]: (path) => {
+          paths.push(path);
+          if (path === "/status") return { body: statusBody() };
+          if (path === "/keys") return { body: { count: keys.length, keys } };
+          throw new Error(`unexpected signer path ${path}`);
+        },
+      });
+      const node = new FakeAlgod();
+      return { client: new SignerClient(SIGNER), node, paths };
+    };
+
+    it("refuse a sender spelled otherwise, which the rotating check would not find", async () => {
+      const { client, node, paths } = setup();
+      for (const spelling of alternateSpellings(rotating)) {
+        await assert.rejects(
+          client.preparePayment(node, { sender: spelling, receiver: fakeAddress(42), amount: 1 }),
+          mentions("sender", "not the canonical spelling"),
+        );
+      }
+      assert.deepEqual(paths, [], "the signer was asked about a misspelled sender");
+    });
+
+    it("refuse a rekey target spelled otherwise, which the rotating-target check would not find", async () => {
+      const { client, node } = setup();
+      // Spelled canonically, a rekey to a rotating account is refused.
+      await assert.rejects(client.prepareRekey(node, { sender: ordinary, rekeyTo: rotating }), /rotating account/);
+      for (const spelling of alternateSpellings(rotating)) {
+        await assert.rejects(
+          client.prepareRekey(node, { sender: ordinary, rekeyTo: spelling }),
+          mentions("rekeyTo", "not the canonical spelling"),
+        );
+      }
+    });
+
+    it("refuse a close-to spelled otherwise, which the comparison with the sender would miss", async () => {
+      const { client, node } = setup();
+      for (const spelling of alternateSpellings(ordinary)) {
+        await assert.rejects(
+          client.prepareAccountClose(node, { sender: ordinary, closeTo: spelling }),
+          mentions("closeTo", "not the canonical spelling"),
+        );
+        await assert.rejects(
+          client.prepareAsaOptOut(node, { sender: ordinary, closeTo: spelling, assetId: 5 }),
+          mentions("closeTo", "not the canonical spelling"),
+        );
+      }
+      for (const spelling of alternateSpellings(fakeAddress(42))) {
+        await assert.rejects(
+          client.preparePayment(node, { sender: ordinary, receiver: spelling, amount: 1 }),
+          mentions("receiver", "not the canonical spelling"),
+        );
+      }
+    });
+
+    it("resolveAuthAddress never resolves a misspelled rotating account to an ordinary key", async () => {
+      const { client } = setup();
+      const stage = stageAddress(rotatingTestProgram).toString();
+      for (const spelling of alternateSpellings(rotating)) {
+        // Looked up as given, as the Go SDK does: the spelling names no key.
+        for (const chainAuth of ["", stage]) {
+          await assert.rejects(client.resolveAuthAddress(spelling, () => chainAuth), KeyNotFoundError);
+        }
+      }
+    });
   });
 });

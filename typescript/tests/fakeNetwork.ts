@@ -253,3 +253,20 @@ export function blobHex(blob: Uint8Array): string {
 export function transactionHex(txn: Transaction): string {
   return bytesToHex(txn.toByte());
 }
+
+const BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+/**
+ * The other spellings of an address: the same 288 bits with the unused low
+ * two bits of the last base32 character set otherwise. algosdk reads them as
+ * the address; the Go SDK refuses them.
+ */
+export function alternateSpellings(address: string): string[] {
+  const last = BASE32.indexOf(address[address.length - 1]);
+  const spellings: string[] = [];
+  for (let low = 0; low < 4; low++) {
+    const value = (last & ~3) | low;
+    if (value !== last) spellings.push(address.slice(0, -1) + BASE32[value]);
+  }
+  return spellings;
+}
