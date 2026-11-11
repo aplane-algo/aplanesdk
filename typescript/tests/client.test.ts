@@ -3890,6 +3890,55 @@ describe("SignerClient", () => {
       assert.deepEqual(result.signedGroup, [signedHex]);
     });
 
+    // An answer without exactly one group result checked nothing.
+    const groupCounts: Array<{ name: string; answer: Record<string, unknown>; failure: string }> = [
+      { name: "no group results", answer: { txnGroups: [] }, failure: "the node returned no result for the group" },
+      { name: "no group result list", answer: {}, failure: "the node returned no result for the group" },
+      {
+        name: "two group results",
+        answer: { txnGroups: [{ txnResults: [] }, { txnResults: [] }] },
+        failure: "the node returned 2 results for one group",
+      },
+      { name: "one passing group result", answer: { txnGroups: [{ txnResults: [] }] }, failure: "" },
+    ];
+    for (const testCase of groupCounts) {
+      it(`reports ${testCase.name} as ${testCase.failure ? "failed" : "passed"}`, async () => {
+        const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+          sender: fakeAccount(1),
+          receiver: testAddress(2),
+          amount: 1n,
+          suggestedParams: {
+            fee: 1000n,
+            minFee: 1000n,
+            firstValid: 1n,
+            lastValid: 100n,
+            genesisHash: new Uint8Array(32),
+            genesisID: "testnet-v1",
+            flatFee: true,
+          },
+        });
+        queueStatusResponse();
+        mockFetch.mockResolvedValueOnce({
+          status: 200,
+          ok: true,
+          json: async () => ({
+            signed: [bytesToHex(algosdk.encodeMsgpack(authorize(txn, txn.sender.toString())))],
+            mutations: { original_count: 1, final_count: 1 },
+          }),
+        });
+        const algodClient = {
+          simulateTransactions: () => ({ do: async () => ({ lastRound: 7n, version: 2n, ...testCase.answer }) }),
+        } as any;
+
+        const client = new SignerClient("http://localhost:11270");
+        const result = await client.simulatePreparedGroup(algodClient, {
+          transactions: [{ transaction: txn, authAddress: txn.sender.toString() }],
+        });
+        assert.equal(result.failed, testCase.failure !== "");
+        assert.equal(result.failureMessage, testCase.failure);
+      });
+    }
+
     it("requires algod before contacting the signer", async () => {
       const client = new SignerClient("http://localhost:11270");
       await assert.rejects(

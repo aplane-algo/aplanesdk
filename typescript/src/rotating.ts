@@ -563,22 +563,3 @@ export async function refreshRotatingValidity(
   rebuilt.lastValid = first + window;
   return rebuilt as unknown as Transaction;
 }
-
-/**
- * Whether a simulation of one group did anything but pass. An answer without
- * exactly one group result checked nothing, and counts as failed.
- */
-export function simulationFailed(response: any): boolean {
-  const groups = response?.txnGroups;
-  return !Array.isArray(groups) || groups.length !== 1 || (groups[0]?.failureMessage ?? "") !== "";
-}
-
-/** The node's failure message for a failed simulation, or "". */
-export function simulationFailure(response: any): string {
-  if (!simulationFailed(response)) return "";
-  const groups = response?.txnGroups;
-  if (!Array.isArray(groups) || groups.length !== 1) {
-    return "the node returned no result for the group";
-  }
-  return String(groups[0]?.failureMessage ?? "");
-}

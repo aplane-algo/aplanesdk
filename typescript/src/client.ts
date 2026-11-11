@@ -139,6 +139,7 @@ import {
   describeSignedGroup,
   runSimulation,
   signedGroupTransactions,
+  simulationFailure,
   submitAndTrack,
   type CheckedSendOptions,
   type SendOptions,
@@ -156,8 +157,6 @@ import {
   refreshRotatingValidity,
   rotatingTiming,
   rotatingWindowCurrent,
-  simulationFailed,
-  simulationFailure,
   type RotatingPrepareOptions,
   type RotatingSignOptions,
   type RotatingSignResult,
@@ -751,6 +750,7 @@ async function simulateSignedGroup(
   }
   const { decoded: signedTransactions } = decodeExecutableSignedGroup(signedGroup);
   const response = await runSimulation(algodClient, signedTransactions, false);
+  const failureMessage = simulationFailure(response);
 
   return {
     txIds: signedTransactions.map((signed) => signed.txn.txID()),
@@ -758,7 +758,8 @@ async function simulateSignedGroup(
     signedGroup: [...signedGroup],
     mutations,
     response,
-    failed: (response.txnGroups?.[0]?.failureMessage ?? "") !== "",
+    failed: failureMessage !== "",
+    failureMessage,
   };
 }
 
@@ -4247,6 +4248,8 @@ export class SignerClient {
   /**
    * Sign a prepared group through the ordinary approval path, then send the
    * exact executable group to the caller-provided algod simulation endpoint.
+   * A failed simulation, or an answer without exactly one group result, is
+   * reported in the result's `failed` and `failureMessage` fields.
    */
   async simulatePreparedGroup(
     algodClient: Algodv2,
@@ -4624,7 +4627,8 @@ export class SignerClient {
   /**
    * Simulate the prepared group, unsigned, through the caller's algod. It
    * never signs. A failed simulation, or an answer without exactly one group
-   * result, is reported in the result's `failed` field, not as an error.
+   * result, is reported in the result's `failed` and `failureMessage`
+   * fields, not as an error.
    *
    * It checks the group's effects. It does not prove the stage's signatures
    * will pass: the node runs the stage program only on the signed group.
@@ -4649,13 +4653,15 @@ export class SignerClient {
     }
     const unsigned = prepared.decoded().map((txn) => new algosdk.SignedTransaction({ txn }));
     const response = await runSimulation(algodClient, unsigned, true, options?.signal);
+    const failureMessage = simulationFailure(response);
     return {
       txIds: prepared.txIds(),
       transactions: prepared.transactions(),
       signedGroup: [],
       mutations: prepared.mutations(),
       response,
-      failed: simulationFailed(response),
+      failed: failureMessage !== "",
+      failureMessage,
     };
   }
 
@@ -4802,7 +4808,7 @@ export class SignerClient {
         throw new SignerError(`simulate prepared rotating group; nothing was signed: ${errorText(error)}`);
       }
       if (simulation.failed) {
-        throw new RotatingPreflightError(prepared, simulationFailure(simulation.response));
+        throw new RotatingPreflightError(prepared, simulation.failureMessage);
       }
       // Nothing has been asked to sign yet, so an aborted signal is a plain
       // stop, not an unknown outcome.

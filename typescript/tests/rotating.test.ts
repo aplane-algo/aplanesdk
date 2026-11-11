@@ -1249,6 +1249,17 @@ describe("rotating stops before signing", () => {
     assert.equal(signer.count("/sign/rotating/sign"), 0);
   });
 
+  it("when simulation reports two groups", async () => {
+    const { signer, node, algod, client, txn } = rotatingFixture();
+    node.simulate = () => ({ lastRound: 10n, version: 2, txnGroups: [{ txnResults: [] }, { txnResults: [] }] });
+    await assert.rejects(client.sendPrepared(algod, rotatingGroup(txn)), (error: unknown) => {
+      assert.ok(error instanceof RotatingPreflightError, String(error));
+      assert.equal(error.failureMessage, "the node returned 2 results for one group");
+      return true;
+    });
+    assert.equal(signer.count("/sign/rotating/sign"), 0);
+  });
+
   it("when the signal aborts after simulation", async () => {
     const { signer, node, algod, client, txn } = rotatingFixture();
     // A signal that aborts once the simulation has been answered, without

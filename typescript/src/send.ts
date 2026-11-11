@@ -249,6 +249,23 @@ export async function runSimulation(
 }
 
 /**
+ * Why a simulation of one group did anything but pass, or "" when it passed:
+ * the node's failure message, or that the node returned no result, or more
+ * than one, for the group. An answer without exactly one group result checked
+ * nothing, so it is a failure.
+ */
+export function simulationFailure(response: any): string {
+  const groups = response?.txnGroups;
+  if (!Array.isArray(groups) || groups.length === 0) {
+    return "the node returned no result for the group";
+  }
+  if (groups.length !== 1) {
+    return `the node returned ${groups.length} results for one group`;
+  }
+  return String(groups[0]?.failureMessage ?? "");
+}
+
+/**
  * Fill the result's IDs, fees and group ID from its signed bytes and return
  * those bytes decoded from hex. Each entry must be one canonically encoded
  * signed transaction, and a group of several must carry the group ID

@@ -425,9 +425,9 @@ and `sendPayment` run the whole sequence:
    rekey, a reported fee raise within your max fee increase, the group ID and
    canonical dummies.
 3. **Simulate, unsigned,** through your algod. A group that fails throws
-   `RotatingPreflightError`, as does an answer with no result for the group;
-   a simulation that cannot be run throws a plain error. Either way no
-   one-time key has been used.
+   `RotatingPreflightError`, as does an answer without exactly one result for
+   the group; a simulation that cannot be run throws a plain error. Either
+   way no one-time key has been used.
 4. **Sign,** with operator approval, then check the signed group is exactly
    the prepared one.
 5. **Submit at once** and wait for confirmation. `result.rotating` reports the

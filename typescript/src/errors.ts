@@ -298,8 +298,8 @@ export class SubmissionUncertainError extends SignerError {
 
 /**
  * A prepared rotating group failed its unsigned simulation, or the node
- * returned no result for it. Nothing was signed. `failureMessage` is the
- * node's failure message.
+ * returned no result for it, or more than one. Nothing was signed.
+ * `failureMessage` is the node's failure message, or which of those it was.
  */
 export class RotatingPreflightError extends SignerError {
   readonly prepared: PreparedRotating;

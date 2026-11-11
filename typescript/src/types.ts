@@ -1187,7 +1187,16 @@ export interface SimulationResult {
   signedGroup: string[];
   mutations?: MutationReport;
   response: modelsv2.SimulateResponse;
+  /**
+   * Whether the group did anything but pass. A node answer without exactly
+   * one group result checked nothing, so it is a failure too.
+   */
   failed: boolean;
+  /**
+   * Why it failed: the node's failure message, or that the node returned no
+   * result, or more than one, for the group. Empty when it passed.
+   */
+  failureMessage: string;
 }
 
 /**
