@@ -25,7 +25,7 @@ Example endpoints.yaml (SSH tunnel):
 """
 
 from algosdk.v2client import algod
-from aplanesdk import SignerClient, SubmissionUncertainError
+from aplanesdk import SignerClient, SignOutcomeUnknownError, SubmissionUncertainError
 
 # The account to pay from (the signer must hold its key) and the account to
 # pay. Replace both.
@@ -47,6 +47,19 @@ def main():
             # A group that was signed keeps its bytes and IDs in the error.
             # Never send again until its outcome is known: both could execute.
             print(f"Outcome unknown for {error.tx_ids} ({error.stage}); look it up before sending again")
+            raise
+        except SignOutcomeUnknownError as error:
+            # The signer may have released a signature this call never saw.
+            # Do NOT build and sign a replacement: both could execute. Sign
+            # the same prepared group again (a rotating account's is in
+            # error.rotating, for signer.sign_prepared_rotating), or check the
+            # chain and the signer's audit log for the request first.
+            print(
+                f"A signature may have been released (request {error.request_id or 'unnamed'}); "
+                "do not sign a replacement"
+            )
+            if error.rotating is not None:
+                print(f"Re-sign prepared group {error.rotating.tx_ids} with sign_prepared_rotating")
             raise
 
         # The signer may raise the fee or add transactions, so the ID comes
