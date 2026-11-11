@@ -623,9 +623,10 @@ class CosignedFixture:
     closes the connection with no answer, "<path> truncate" answers 200 with
     a body cut short."""
 
-    def __init__(self, fakes, fault=""):
+    def __init__(self, fakes, fault="", cosigner_fault=""):
         self.bounded = fake_signer.test_address(21)
         self.fault = fault
+        self.cosigner_fault = cosigner_fault
         self.cosigner_calls = 0
         bounded_key = key(
             self.bounded,
@@ -701,6 +702,10 @@ class CosignedFixture:
 
     def cosigner_app(self, method, path, body):
         self.cosigner_calls += 1
+        if self.cosigner_fault == "drop":
+            return DROP
+        if self.cosigner_fault == "truncate":
+            return truncated(b'{"request_id": "x", "compon')
         request = json.loads(body)
         assert request["targets"][0]["component_key"] == "COSIGNER_COMPONENT"
         return reply(
@@ -728,9 +733,17 @@ class _Fake:
 
     def __init__(self, app):
         self.paths = []
+        # The request ID each request named, by path, in order.
+        self.request_ids = {}
 
         def record(method, path, body):
             self.paths.append(path)
+            try:
+                request_id = json.loads(body).get("request_id")
+            except (ValueError, AttributeError):
+                request_id = None
+            if request_id:
+                self.request_ids.setdefault(path, []).append(request_id)
             return app(method, path, body)
 
         self.http = HTTPFake(record)
@@ -783,6 +796,24 @@ def test_send_prepared_cosigned_lost_answers(fakes, fault, unknown):
         )
 
     assert isinstance(excinfo.value, SignOutcomeUnknownError) is unknown
+    if unknown:
+        # It names the request whose answer was lost, as the audit log does.
+        path = fault.split()[0]
+        assert excinfo.value.request_id == fixture.user.request_ids[path][-1]
+        assert excinfo.value.request_id in str(excinfo.value)
+    assert fixture.node.submissions() == []
+
+
+@pytest.mark.parametrize("fault", ["drop", "truncate"])
+def test_send_prepared_cosigned_lost_cosigner_answer_names_its_request(fakes, fault):
+    fixture = CosignedFixture(fakes, cosigner_fault=fault)
+
+    with pytest.raises(SignOutcomeUnknownError) as excinfo:
+        fixture.send(
+            cosigner_client=fixture.cosigner_client, cosigner_component_key="COSIGNER_COMPONENT"
+        )
+
+    assert excinfo.value.request_id == fixture.cosigner.request_ids["/sign/component"][0]
     assert fixture.node.submissions() == []
 
 
@@ -802,13 +833,14 @@ def test_send_prepared_cosigned_lost_primary_sign_is_an_unknown_outcome(fakes):
         ]
     )
 
-    with pytest.raises(SignOutcomeUnknownError):
+    with pytest.raises(SignOutcomeUnknownError) as excinfo:
         fixture.user_client.send_prepared(
             fixture.node.client,
             group,
             cosigner_client=fixture.cosigner_client,
             cosigner_component_key="COSIGNER_COMPONENT",
         )
+    assert excinfo.value.request_id == fixture.user.request_ids["/sign"][0]
     assert fixture.user.paths.count("/sign") == 1
     assert fixture.cosigner_calls == 0
     assert fixture.node.submissions() == []

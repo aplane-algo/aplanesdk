@@ -376,7 +376,9 @@ class SignOutcomeUnknownError(SignerError):
     Attributes:
         error: the failure that ended the exchange
         request_id: the sign request's ID, as the signer's audit log records
-            it; set for the ordinary /sign flow and for a rotating account
+            it: the /sign request of the ordinary flow, the request whose
+            answer was lost in the cosigned sequence (a /sign/component, the
+            /sign/assemble or the primary /sign), or the rotating sign request
         requests: the /sign request entries that were sent, for the ordinary
             flow
         rotating: the PreparedRotating that was sent to be signed, for a
@@ -487,30 +489,43 @@ class RotatingPreflightError(SignerError):
 class _AnswerLostError(SignerUnavailableError):
     """An approval-bearing request whose exchange failed, so no answer
     arrived. The signer may have acted on it. Raised in place of the plain
-    connection failure, which it reads as."""
+    connection failure, which it reads as. ``request_id`` names the
+    request."""
 
-    pass
+    def __init__(self, *args: Any, request_id: str = "", code: str = ""):
+        super().__init__(*args, code=code)
+        self.request_id = request_id
 
 
 class _AnswerUnreadError(SignerError):
     """An approval-bearing request answered 200 with a body that could not be
-    read. The signer may have released a signature."""
+    read. The signer may have released a signature. ``request_id`` names
+    the request."""
 
-    pass
+    def __init__(self, *args: Any, request_id: str = "", code: str = ""):
+        super().__init__(*args, code=code)
+        self.request_id = request_id
 
 
-def _answer_lost(error: BaseException) -> bool:
-    """Whether error is, or was raised from, an approval-bearing request that
-    ended with no usable answer: a /sign, a component request, or an
-    assembly. Planning and key listing release nothing and never count."""
+def _lost_answer(error: BaseException) -> Optional[SignerError]:
+    """The mark of the approval-bearing request that ended with no usable
+    answer, when error is it or was raised from it: a /sign, a component
+    request, or an assembly. Planning and key listing release nothing and
+    never count."""
     seen = set()
     current: Optional[BaseException] = error
     while current is not None and id(current) not in seen:
         if isinstance(current, (_AnswerLostError, _AnswerUnreadError)):
-            return True
+            return current
         seen.add(id(current))
         current = current.__cause__
-    return False
+    return None
+
+
+def _answer_lost(error: BaseException) -> bool:
+    """Whether error is, or was raised from, an approval-bearing request that
+    ended with no usable answer (see _lost_answer)."""
+    return _lost_answer(error) is not None
 
 
 def _approval_answer(
@@ -518,6 +533,7 @@ def _approval_answer(
     what: str,
     shape: Optional[Dict[str, Any]] = None,
     shape_what: str = "",
+    request_id: str = "",
 ) -> Dict[str, Any]:
     """Read the JSON object an approval-bearing request was answered with.
 
@@ -528,21 +544,22 @@ def _approval_answer(
     body, an empty or cut-off body, anything after the object, a non-finite
     number) is an answer that could not be read, not a refusal: the signer
     may have released a signature. ``what`` begins the error's message, and
-    ``shape_what``, when given, that of a field of the wrong type. A
-    well-typed answer is checked by the caller.
+    ``shape_what``, when given, that of a field of the wrong type. The error
+    names ``request_id``, the request answered. A well-typed answer is
+    checked by the caller.
     """
     try:
         data = _read_json(resp)
-    except ValueError as e:
-        raise _AnswerUnreadError(f"{what}: {resp.text[:200]}") from e
+    except (ValueError, RecursionError) as e:
+        raise _AnswerUnreadError(f"{what}: {resp.text[:200]}", request_id=request_id) from e
     if not isinstance(data, dict):
         what_it_is = "null" if data is None else "not a JSON object"
-        raise _AnswerUnreadError(f"{what}: the answer is {what_it_is}")
+        raise _AnswerUnreadError(f"{what}: the answer is {what_it_is}", request_id=request_id)
     if shape is not None:
         try:
             _check_wire_shape(data, shape, "answer")
         except _WireShapeError as e:
-            raise _AnswerUnreadError(f"{shape_what or what}: {e}") from e
+            raise _AnswerUnreadError(f"{shape_what or what}: {e}", request_id=request_id) from e
     return data
 
 
@@ -975,14 +992,14 @@ def _typed_answer(data: Dict[str, Any], shape: Dict[str, Any]) -> Dict[str, Any]
     }
 
 
-def _rotating_sign_answer(data: Dict[str, Any]) -> Dict[str, Any]:
+def _rotating_sign_answer(data: Dict[str, Any], request_id: str = "") -> Dict[str, Any]:
     """A /sign/rotating/sign answer as the Go SDK decodes it. A field of
     another type makes the answer unreadable (_AnswerUnreadError)."""
     try:
         return _typed_answer(data, _ROTATING_SIGN_RESPONSE_SHAPE)
     except _WireShapeError as e:
         raise _AnswerUnreadError(
-            f"verify signer response: the answer could not be read: {e}"
+            f"verify signer response: the answer could not be read: {e}", request_id=request_id
         ) from e
 
 
@@ -6029,7 +6046,9 @@ class SignerClient:
                 self._best_effort_cancel_sign_request(request_body["request_id"])
             # The request may have reached the signer, which may have released
             # its component.
-            raise _AnswerLostError(f"Failed to connect: {e}") from e
+            raise _AnswerLostError(
+                f"Failed to connect: {e}", request_id=request_body["request_id"]
+            ) from e
         except BaseException as e:
             # A KeyboardInterrupt or the like ends the call as it is, after
             # canceling the approval it left pending, and names the request.
@@ -6053,7 +6072,10 @@ class SignerClient:
         if resp.status_code != 200:
             raise self._signer_http_error(resp, f"Component signing failed: HTTP {resp.status_code}")
         data = _approval_answer(
-            resp, "failed to decode component response", _COMPONENT_RESPONSE_SHAPE
+            resp,
+            "failed to decode component response",
+            _COMPONENT_RESPONSE_SHAPE,
+            request_id=request_body["request_id"],
         )
         if data.get("error"):
             raise SignerError(data["error"])
@@ -6111,7 +6133,9 @@ class SignerClient:
         except requests.RequestException as e:
             # Assembly releases the whole group, so a request that may have
             # reached the signer has an unknown outcome.
-            raise _AnswerLostError(f"Failed to connect: {e}") from e
+            raise _AnswerLostError(
+                f"Failed to connect: {e}", request_id=request_body["request_id"]
+            ) from e
         except BaseException as e:
             _mark_interrupt(
                 e,
@@ -6137,7 +6161,10 @@ class SignerClient:
             )
 
         data = _approval_answer(
-            resp, "failed to decode assembly response", _ASSEMBLY_RESPONSE_SHAPE
+            resp,
+            "failed to decode assembly response",
+            _ASSEMBLY_RESPONSE_SHAPE,
+            request_id=request_body["request_id"],
         )
         if data.get("error"):
             raise SignerError(data["error"])
@@ -6179,7 +6206,7 @@ class SignerClient:
             )
         except requests.RequestException as e:
             self._best_effort_cancel_sign_request(request_id)
-            raise _AnswerLostError(f"Failed to connect: {e}") from e
+            raise _AnswerLostError(f"Failed to connect: {e}", request_id=request_id) from e
         except BaseException as e:
             # Anything else, a KeyboardInterrupt among them, ends the call as
             # it is: it is not turned into an SDK error. The approval it left
@@ -6486,6 +6513,7 @@ class SignerClient:
             "Server returned invalid JSON",
             _GROUP_SIGN_RESPONSE_SHAPE,
             "verify signer response: the answer could not be read",
+            request_id=request_id,
         )
 
         if data.get("error"):
@@ -6993,9 +7021,13 @@ class SignerClient:
             except Exception as e:
                 # The sequence makes several approval-bearing requests. One
                 # that ended with no answer may have released a signature, and
-                # the last of them releases the whole group.
-                if _answer_lost(e):
-                    raise SignOutcomeUnknownError(e) from e
+                # the last of them releases the whole group. The error names
+                # that request.
+                lost = _lost_answer(e)
+                if lost is not None:
+                    raise SignOutcomeUnknownError(
+                        e, request_id=getattr(lost, "request_id", "")
+                    ) from e
                 raise
             result.signed_group = list(signed.signed_group)
             result.mutations = copy.deepcopy(signed.plan_mutations)
@@ -7246,7 +7278,10 @@ class SignerClient:
             resp = self._post_approval("/sign/rotating/sign", request_id, body)
             if resp.status_code != 200:
                 raise self._signing_http_error(resp, "Rotating sign failed")
-            answer = _rotating_sign_answer(_approval_answer(resp, "Server returned invalid JSON"))
+            answer = _rotating_sign_answer(
+                _approval_answer(resp, "Server returned invalid JSON", request_id=request_id),
+                request_id,
+            )
         except (_AnswerLostError, _AnswerUnreadError) as e:
             raise SignOutcomeUnknownError(e, request_id=request_id, rotating=prepared) from e
         except BaseException as e:
