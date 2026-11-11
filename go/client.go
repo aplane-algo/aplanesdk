@@ -950,7 +950,7 @@ func buildRequests(txns []types.Transaction, authAddresses []string, lsigArgsMap
 
 		// Passthrough: include pre-signed transaction as-is
 		if b64, ok := opts.Passthrough[i]; ok {
-			decoded, err := base64.StdEncoding.DecodeString(b64)
+			decoded, err := Base64ToBytes(b64)
 			if err != nil {
 				return nil, fmt.Errorf("invalid passthrough transaction %d: invalid base64: %w", i+1, err)
 			}

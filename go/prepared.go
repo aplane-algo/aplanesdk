@@ -4,7 +4,6 @@
 package aplane
 
 import (
-	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 
@@ -40,7 +39,7 @@ func (p PreparedTransaction) SignRequest() (SignRequest, error) {
 		if p.PQScheme != "" {
 			return SignRequest{}, fmt.Errorf("pq_scheme is allowed only for foreign transactions")
 		}
-		decoded, err := base64.StdEncoding.DecodeString(p.SignedTransactionBase64)
+		decoded, err := Base64ToBytes(p.SignedTransactionBase64)
 		if err != nil {
 			return SignRequest{}, fmt.Errorf("invalid passthrough transaction: invalid base64: %w", err)
 		}

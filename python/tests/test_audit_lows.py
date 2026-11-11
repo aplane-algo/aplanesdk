@@ -19,6 +19,8 @@ from aplanesdk.signer import (
     KeyNotFoundError,
     _parse_lsig_resource_usage,
     _require_uint,
+    _strict_base64,
+    send_raw_transaction,
     load_config,
     sign_prepared_cosigned_group,
 )
@@ -772,3 +774,62 @@ def test_assemble_group_is_gone():
     assert not hasattr(aplanesdk, "assemble_group")
     assert not hasattr(aplanesdk.signer, "assemble_group")
     assert SignerClient is aplanesdk.SignerClient
+
+
+# The case list the Go and TypeScript suites run too: the three SDKs accept and
+# refuse the same strings.
+BASE64_ACCEPTED = ["", "QQ==", "QUI=", "QUJD", "QUJDRA==", "+/+/", "AAAA"]
+BASE64_REFUSED = [
+    "QUJD\n",  # a trailing line feed
+    "QUJD\r\n",  # a trailing CRLF
+    "QU\nJD",  # a line feed inside
+    "QUJD\r\nQUJD",  # a wrapped line
+    "\nQUJD",  # a leading line feed
+    "QU JD",  # a space
+    "QUJD ",  # a trailing space
+    "\tQUJD",  # a tab
+    "QU*D",  # a character outside the alphabet
+    "-_-_",  # the URL-safe alphabet
+    "QUI",  # missing padding
+    "QQ=",  # short padding
+    "QQ===",  # long padding
+    "QUI=QUJD",  # data after the padding
+    "=QUJ",  # padding first
+    "Q",  # one character
+]
+
+
+@pytest.mark.parametrize("good", BASE64_ACCEPTED)
+def test_strict_base64_accepts_standard_padded_base64(good):
+    assert base64.b64encode(_strict_base64(good)).decode() == good
+
+
+@pytest.mark.parametrize("bad", BASE64_REFUSED + [None, b"QUJD", 5])
+def test_strict_base64_is_refused_at_every_site(bad):
+    """One decoder at every site that takes a caller's base64, before any request."""
+    with pytest.raises(ValueError, match="input is not valid base64"):
+        _strict_base64(bad, "input")
+    if not isinstance(bad, str):
+        return
+    with pytest.raises(ValueError, match="signed_transaction_base64 is not valid base64"):
+        PreparedTransaction(signed_transaction_base64=bad).to_sign_request()
+
+    client = make_client()
+    client.session = MagicMock()
+    with pytest.raises(ValueError, match=r"passthrough\[0\] is not valid base64"):
+        client.sign_transactions([fake_signer.payment()], passthrough={0: bad})
+    client.session.post.assert_not_called()
+
+    # Never submitted: algod's client would decode it leniently and send it.
+    algod = MagicMock()
+    with pytest.raises(ValueError, match="signed transaction is not valid base64") as refusal:
+        send_raw_transaction(algod, bad)
+    assert not isinstance(refusal.value, SignerError)
+    algod.send_raw_transaction.assert_not_called()
+
+
+def test_send_raw_transaction_submits_valid_base64():
+    algod = MagicMock()
+    algod.send_raw_transaction.return_value = "TXID"
+    assert send_raw_transaction(algod, "QUJD") == "TXID"
+    algod.send_raw_transaction.assert_called_once_with("QUJD")

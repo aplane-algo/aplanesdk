@@ -568,3 +568,56 @@ func TestZeroAppAndAssetReferencesAreRefused(t *testing.T) {
 		t.Fatalf("deploy transaction app ID = %d, want 0 for a create", created.Transaction.ApplicationID)
 	}
 }
+
+// strictBase64Cases is the case list the Python and TypeScript suites run too:
+// the three SDKs accept and refuse the same strings.
+var strictBase64Cases = struct{ accepted, refused []string }{
+	accepted: []string{"", "QQ==", "QUI=", "QUJD", "QUJDRA==", "+/+/", "AAAA"},
+	refused: []string{
+		"QUJD\n",       // a trailing line feed
+		"QUJD\r\n",     // a trailing CRLF
+		"QU\nJD",       // a line feed inside
+		"QUJD\r\nQUJD", // a wrapped line
+		"\nQUJD",       // a leading line feed
+		"QU JD",        // a space
+		"QUJD ",        // a trailing space
+		"\tQUJD",       // a tab
+		"QU*D",         // a character outside the alphabet
+		"-_-_",         // the URL-safe alphabet
+		"QUI",          // missing padding
+		"QQ=",          // short padding
+		"QQ===",        // long padding
+		"QUI=QUJD",     // data after the padding
+		"=QUJ",         // padding first
+		"Q",            // one character
+	},
+}
+
+// Base64ToBytes is the one decoder, used at every site that takes a caller's
+// base64: a passthrough entry and a prepared signed transaction.
+func TestBase64IsStrictAtEverySite(t *testing.T) {
+	for _, good := range strictBase64Cases.accepted {
+		decoded, err := Base64ToBytes(good)
+		if err != nil || BytesToBase64(decoded) != good {
+			t.Fatalf("Base64ToBytes(%q) = %x, %v", good, decoded, err)
+		}
+	}
+	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected request %s: bad base64 must be refused before the signer is asked", r.URL.Path)
+	})
+	defer server.Close()
+	txn := verifyTestPayment(t, 41, 42, 1)
+	for _, bad := range strictBase64Cases.refused {
+		if decoded, err := Base64ToBytes(bad); err == nil || !strings.Contains(err.Error(), "not valid base64") {
+			t.Fatalf("Base64ToBytes(%q) = %x, %v, want a refusal", bad, decoded, err)
+		}
+		_, err := PreparedTransaction{SignedTransactionBase64: bad}.SignRequest()
+		if err == nil || !strings.Contains(err.Error(), "not valid base64") {
+			t.Fatalf("SignRequest() with %q: error = %v, want a refusal", bad, err)
+		}
+		_, err = client.SignTransactionsWithOptions([]types.Transaction{txn}, []string{""}, nil, &SignOptions{Passthrough: map[int]string{0: bad}})
+		if err == nil || !strings.Contains(err.Error(), "invalid passthrough transaction 1: invalid base64: not valid base64") {
+			t.Fatalf("passthrough %q: error = %v, want a refusal", bad, err)
+		}
+	}
+}

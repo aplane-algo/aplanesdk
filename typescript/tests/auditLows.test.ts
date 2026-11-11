@@ -544,18 +544,33 @@ describe("cosigned group key record", () => {
 
 describe("strict base64", () => {
   const good = Buffer.from(signedHex(fakePayment()), "hex").toString("base64");
+  // The case list the Go and Python suites run too: the three SDKs accept and
+  // refuse the same strings.
+  const accepted = ["", "QQ==", "QUI=", "QUJD", "QUJDRA==", "+/+/", "AAAA"];
   const lenient: Array<[string, string]> = [
-    ["data after the padding", `${Buffer.from("ab").toString("base64")}AAAA`],
-    ["a character outside the alphabet", `${good.slice(0, 8)}*${good.slice(9)}`],
-    ["whitespace", `${good.slice(0, 8)} ${good.slice(8)}`],
+    ["a trailing line feed", "QUJD\n"],
+    ["a trailing CRLF", "QUJD\r\n"],
+    ["a line feed inside", "QU\nJD"],
+    ["a wrapped line", "QUJD\r\nQUJD"],
+    ["a leading line feed", "\nQUJD"],
+    ["a space", "QU JD"],
+    ["a trailing space", "QUJD "],
+    ["a tab", "\tQUJD"],
+    ["a character outside the alphabet", "QU*D"],
     ["the URL-safe alphabet", "-_-_"],
     ["missing padding", "QUI"],
+    ["short padding", "QQ="],
+    ["long padding", "QQ==="],
+    ["data after the padding", "QUI=QUJD"],
+    ["padding first", "=QUJ"],
+    ["one character", "Q"],
   ];
 
   it("decodes standard base64", () => {
     assert.deepEqual(Buffer.from(base64ToBytes(good)).toString("base64"), good);
-    assert.deepEqual(base64ToBytes(""), new Uint8Array());
-    assert.deepEqual(base64ToBytes("QUI="), new Uint8Array([0x41, 0x42]));
+    for (const value of accepted) {
+      assert.equal(Buffer.from(base64ToBytes(value)).toString("base64"), value);
+    }
   });
 
   for (const [name, value] of lenient) {

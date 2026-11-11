@@ -889,13 +889,9 @@ class PreparedTransaction:
         if self.signed_transaction_base64:
             if self.pq_scheme:
                 raise ValueError("pq_scheme is allowed only for foreign transactions")
-            try:
-                signed_hex = base64.b64decode(
-                    self.signed_transaction_base64,
-                    validate=True,
-                ).hex()
-            except Exception as e:
-                raise ValueError(f"invalid passthrough transaction: {e}") from e
+            signed_hex = _strict_base64(
+                self.signed_transaction_base64, "signed_transaction_base64"
+            ).hex()
             request = {"signed_txn_hex": signed_hex}
             if self.lsig_resources is not None:
                 request["lsig_resources"] = _wire_lsig_resources(self.lsig_resources)
@@ -1472,6 +1468,25 @@ def _validate_authorization(signed: Any, auth: str) -> None:
 
 
 _HEX = re.compile(r"(?:[0-9a-fA-F]{2})*")
+
+
+# Standard base64 and nothing else: the standard alphabet in groups of four,
+# padded.
+_STRICT_BASE64 = re.compile(
+    r"(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?"
+)
+
+
+def _strict_base64(value: Any, label: str = "value") -> bytes:
+    """Decode standard, padded base64; the SDK's one decoder for caller input.
+
+    base64.b64decode skips characters outside the alphabet unless asked to
+    validate, and py-algorand-sdk does not ask, so they take strings the Go and
+    TypeScript SDKs refuse.
+    """
+    if not isinstance(value, str) or _STRICT_BASE64.fullmatch(value) is None:
+        raise ValueError(f"{label} is not valid base64")
+    return base64.b64decode(value, validate=True)
 
 
 def _strict_hex(value: Any) -> bytes:
@@ -5248,10 +5263,7 @@ class SignerClient:
         for i, (txn, auth_addr) in enumerate(zip(txns, auth_addresses)):
             # Passthrough: include pre-signed transaction as-is
             if passthrough and i in passthrough:
-                try:
-                    signed_bytes = base64.b64decode(passthrough[i], validate=True)
-                except Exception as e:
-                    raise ValueError(f"invalid base64 in passthrough[{i}]: {e}") from e
+                signed_bytes = _strict_base64(passthrough[i], f"passthrough[{i}]")
                 try:
                     slot = _decode_passthrough_slot(signed_bytes)
                 except SignerError as e:
@@ -6369,6 +6381,8 @@ def send_raw_transaction(algod_client, signed_txn: str) -> str:
         Transaction ID
 
     Raises:
+        ValueError: If signed_txn is not standard, padded base64; nothing is
+            submitted
         LogicSigRejectedError: If a LogicSig program returned false
         InsufficientFundsError: If account has insufficient funds
         InvalidTransactionError: If transaction is malformed
@@ -6380,6 +6394,9 @@ def send_raw_transaction(algod_client, signed_txn: str) -> str:
     """
     from algosdk.error import AlgodHTTPError
 
+    # Checked before anything is sent: algod's client decodes leniently and
+    # would submit a string with stray characters in it.
+    _strict_base64(signed_txn, "signed transaction")
     try:
         return algod_client.send_raw_transaction(signed_txn)
     except AlgodHTTPError as e:
