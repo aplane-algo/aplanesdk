@@ -278,6 +278,15 @@ def _verification_error(prefix: str, error: Exception) -> SignerError:
     )
 
 
+def _check_fault(prefix: str, error: Exception, request_id: str) -> SignerError:
+    """A fault in checking, decoding or describing what an approval-bearing
+    request answered with 200: not a refusal by the checks but an exception
+    in them. The signer has released what it answered with, unchecked, so
+    the outcome is unknown; the mark names the request (_AnswerUnreadError,
+    which a send turns into SignOutcomeUnknownError)."""
+    return _AnswerUnreadError(str(_verification_error(prefix, error)), request_id=request_id)
+
+
 class AuthenticationError(SignerError):
     """The signer refused the request as unauthenticated (HTTP 401): the
     connection did not arrive through an enrolled SSH key."""
@@ -3400,6 +3409,38 @@ def _validate_component_response(
             raise ValueError(f"component {index} has unsupported kind")
 
 
+def _checked_component_response(
+    data: Dict[str, Any], request_body: Dict[str, Any]
+) -> ComponentResponse:
+    """A /sign/component answer checked against its request. A refusal is a
+    SignerError; anything else raised here is a fault in the check."""
+    try:
+        _validate_component_response(data, request_body)
+    except ValueError as e:
+        raise SignerError(f"invalid component response: {e}") from e
+    if data["request_id"] != request_body["request_id"]:
+        raise SignerError("component response request_id does not match request")
+    expected = {target["target_index"]: target["kind"] for target in request_body["targets"]}
+    actual = {component["target_index"]: component["kind"] for component in data["components"]}
+    if actual != expected:
+        raise SignerError("component response target indices or kinds do not match request")
+    return ComponentResponse(request_id=data["request_id"], components=list(data["components"]))
+
+
+def _checked_assembly_response(
+    data: Dict[str, Any], request_body: Dict[str, Any]
+) -> AssemblyResponse:
+    """A /sign/assemble answer checked against its request. A refusal is a
+    SignerError; anything else raised here is a fault in the check."""
+    try:
+        _validate_assembly_response(data)
+    except ValueError as e:
+        raise SignerError(f"invalid assembly response: {e}") from e
+    if data["request_id"] != request_body["request_id"]:
+        raise SignerError("assembly response request_id does not match request")
+    return AssemblyResponse(request_id=data["request_id"], signed_group=data.get("signed_group", []))
+
+
 def _extract_auth_address(account_info: Any) -> str:
     if account_info is None:
         return ""
@@ -6080,22 +6121,11 @@ class SignerClient:
         if data.get("error"):
             raise SignerError(data["error"])
         try:
-            _validate_component_response(data, request_body)
-        except ValueError as e:
-            raise SignerError(f"invalid component response: {e}") from e
-        if data["request_id"] != request_body["request_id"]:
-            raise SignerError("component response request_id does not match request")
-        expected = {
-            target["target_index"]: target["kind"]
-            for target in request_body["targets"]
-        }
-        actual = {
-            component["target_index"]: component["kind"]
-            for component in data["components"]
-        }
-        if actual != expected:
-            raise SignerError("component response target indices or kinds do not match request")
-        return ComponentResponse(request_id=data["request_id"], components=list(data["components"]))
+            return _checked_component_response(data, request_body)
+        except SignerError:
+            raise
+        except Exception as e:
+            raise _check_fault("invalid component response: ", e, request_body["request_id"]) from e
 
     def request_assemble(
         self,
@@ -6169,16 +6199,11 @@ class SignerClient:
         if data.get("error"):
             raise SignerError(data["error"])
         try:
-            _validate_assembly_response(data)
-        except ValueError as e:
-            raise SignerError(f"invalid assembly response: {e}") from e
-        if data["request_id"] != request_body["request_id"]:
-            raise SignerError("assembly response request_id does not match request")
-
-        return AssemblyResponse(
-            request_id=data["request_id"],
-            signed_group=data.get("signed_group", []),
-        )
+            return _checked_assembly_response(data, request_body)
+        except SignerError:
+            raise
+        except Exception as e:
+            raise _check_fault("invalid assembly response: ", e, request_body["request_id"]) from e
 
     def _best_effort_cancel_sign_request(self, request_id: str) -> None:
         try:
@@ -6525,8 +6550,12 @@ class SignerClient:
         # group can never be returned for submission or simulation.
         try:
             _validate_sign_response(slots, signed, mutations, max_fee_increase)
-        except Exception as e:
+        except SignerError as e:
             raise _verification_error("verify signer response: ", e) from e
+        except Exception as e:
+            # A fault in the check itself, after a 200: the signature is out
+            # and its group unchecked.
+            raise _check_fault("verify signer response: ", e, request_id) from e
 
         return GroupSignResponse(
             signed=signed,
@@ -6878,7 +6907,9 @@ class SignerClient:
             UnsupportedSigningFlowError, UnsupportedGroupError,
             KeyNotFoundError: refused before any signature is requested.
             SignOutcomeUnknownError: an approval-bearing request ended with
-                no answer; a signature may have been released.
+                no usable answer: none arrived, it could not be read, or the
+                checks faulted on it. A signature may have been released;
+                ``request_id`` names the request.
             SubmissionRejectedError, SubmissionUncertainError: the group was
                 signed; the error keeps the signed bytes and their IDs.
             RotatingPreflightError: a rotating spend failed its unsigned
@@ -7032,12 +7063,30 @@ class SignerClient:
             result.signed_group = list(signed.signed_group)
             result.mutations = copy.deepcopy(signed.plan_mutations)
             result.cosigned = signed
+            released_by = (
+                signed.bounded_assembly_response.request_id
+                if signed.bounded_assembly_response is not None
+                else ""
+            )
+            sign_entries: Optional[List[Dict[str, Any]]] = None
         else:
-            response = self._sign_for_send(group)
+            response, released_by, sign_entries = self._sign_for_send(group)
             result.signed_group = list(response.signed)
             result.mutations = copy.deepcopy(response.mutations)
 
-        raw = _describe_signed_group(result)
+        try:
+            raw = _describe_signed_group(result)
+        except SignerError:
+            raise
+        except Exception as e:
+            # The group is signed and nothing is submitted yet: a fault in
+            # describing it leaves the outcome unknown, as on the rotating
+            # path. A refusal by the checks stays a refusal.
+            raise SignOutcomeUnknownError(
+                _verification_error("verify signed group: ", e),
+                request_id=released_by,
+                requests=sign_entries,
+            ) from e
         _submit_and_track(algod_client, raw, result, options)
         return result
 
@@ -7122,13 +7171,21 @@ class SignerClient:
             )
         return flow, left_rotation
 
-    def _sign_for_send(self, group: PreparedGroup) -> GroupSignResponse:
+    def _sign_for_send(
+        self, group: PreparedGroup
+    ) -> tuple[GroupSignResponse, str, List[Dict[str, Any]]]:
         """The ordinary /sign flow for a send: sign_requests, with an exchange
-        that ended with no usable answer told apart from a refusal."""
+        that ended with no usable answer, or whose answer the checks faulted
+        on, told apart from a refusal. Returns the response, the request ID
+        and the entries sent."""
         sign_entries = group.to_sign_requests()
         request_id = _new_sign_request_id()
         try:
-            return self.sign_requests(sign_entries, request_id=request_id)
+            return (
+                self.sign_requests(sign_entries, request_id=request_id),
+                request_id,
+                sign_entries,
+            )
         except SignerError as e:
             if _answer_lost(e):
                 raise SignOutcomeUnknownError(
@@ -7711,23 +7768,33 @@ def _request_bounded_primary_passthrough(
                 if target.get(field):
                     request[field] = target[field]
             requests_data.append(request)
-    response = user_client.sign_requests(requests_data)
+    request_id = _new_sign_request_id()
+    response = user_client.sign_requests(requests_data, request_id=request_id)
     passthrough = []
-    for index in sorted(primary_by_index):
-        if index >= len(response.signed) or not response.signed[index]:
-            raise SignerError(f"primary signer returned no signed transaction for target {index}")
-        _verify_signed_transaction_matches_canonical(
-            "primary passthrough",
-            index,
-            response.signed[index],
-            group_bytes_hex[index],
-        )
-        passthrough.append(
-            CosignedPassthroughItem(
-                target_index=index,
-                signed_txn_hex=response.signed[index],
+    try:
+        for index in sorted(primary_by_index):
+            if index >= len(response.signed) or not response.signed[index]:
+                raise SignerError(
+                    f"primary signer returned no signed transaction for target {index}"
+                )
+            _verify_signed_transaction_matches_canonical(
+                "primary passthrough",
+                index,
+                response.signed[index],
+                group_bytes_hex[index],
             )
-        )
+            passthrough.append(
+                CosignedPassthroughItem(
+                    target_index=index,
+                    signed_txn_hex=response.signed[index],
+                )
+            )
+    except SignerError:
+        raise
+    except Exception as e:
+        # The primary /sign has released its signatures: a fault in checking
+        # them leaves the outcome unknown.
+        raise _check_fault("verify primary passthrough: ", e, request_id) from e
     return response, passthrough
 
 
@@ -7995,7 +8062,14 @@ def sign_prepared_cosigned_group(
             passthrough=passthrough,
         )
     )
-    _verify_bounded_assembled_group(frozen_group, assembly_response.signed_group)
+    try:
+        _verify_bounded_assembled_group(frozen_group, assembly_response.signed_group)
+    except SignerError:
+        raise
+    except Exception as e:
+        # The assembly has released the whole group: a fault in checking it
+        # leaves the outcome unknown.
+        raise _check_fault("verify assembled group: ", e, assembly_response.request_id) from e
     return CosignedSignResult(
         signed_group=list(assembly_response.signed_group),
         cosigner_component_responses=cosigner_component_responses,

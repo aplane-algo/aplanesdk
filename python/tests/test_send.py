@@ -671,6 +671,8 @@ class CosignedFixture:
         request = json.loads(body)
         if path == "/plan":
             return reply(200, fake_signer.plan_response(request["requests"]))
+        if path == "/sign":
+            return reply(200, fake_signer.sign_response(request["requests"]))
         if path == "/sign/component":
             return reply(
                 200,
@@ -844,6 +846,156 @@ def test_send_prepared_cosigned_lost_primary_sign_is_an_unknown_outcome(fakes):
     assert fixture.user.paths.count("/sign") == 1
     assert fixture.cosigner_calls == 0
     assert fixture.node.submissions() == []
+
+
+# -----------------------------------------------------------------------------
+# A fault after a 200: the checks raised something that is not a refusal
+# -----------------------------------------------------------------------------
+
+
+class TestAFaultAfterTheSignerAnswered:
+    """Once an approval-bearing request has answered 200, its signature is
+    out. An exception in checking, decoding or describing what it answered
+    with, one that is not the SDK's own refusal, leaves the outcome unknown:
+    the send raises SignOutcomeUnknownError naming the request. A refusal by
+    the checks stays a plain error."""
+
+    BOOM = RuntimeError("checker blew up")
+
+    def _cosigned_send(self, fixture):
+        return fixture.send(
+            cosigner_client=fixture.cosigner_client, cosigner_component_key="COSIGNER_COMPONENT"
+        )
+
+    def test_in_the_sign_checks(self, fakes, monkeypatch):
+        txn = fake_signer.payment(41, 42)
+        signer, node, client = make(fakes, _RecordingSendSigner([ordinary_key(txn)]))
+        monkeypatch.setattr(
+            "aplanesdk.signer._validate_group_mutations", _raises(self.BOOM)
+        )
+        with pytest.raises(SignOutcomeUnknownError) as excinfo:
+            client.send_prepared(node.client, prepared_for(txn))
+        unknown = excinfo.value
+        assert unknown.request_id == signer.request_ids[0]
+        assert [entry["auth_address"] for entry in unknown.requests] == [txn.sender]
+        assert "the check itself failed with RuntimeError: checker blew up" in str(unknown)
+        assert _caused_by(unknown, self.BOOM) and node.submissions() == []
+
+    def test_in_describing_the_signed_group(self, fakes, monkeypatch):
+        txn = fake_signer.payment(41, 42)
+        signer, node, client = make(fakes, _RecordingSendSigner([ordinary_key(txn)]))
+        monkeypatch.setattr(
+            "aplanesdk.signer._decode_executable_signed_group", _raises(self.BOOM)
+        )
+        with pytest.raises(SignOutcomeUnknownError) as excinfo:
+            client.send_prepared(node.client, prepared_for(txn))
+        assert excinfo.value.request_id == signer.request_ids[0]
+        assert excinfo.value.requests is not None
+        assert _caused_by(excinfo.value, self.BOOM) and node.submissions() == []
+
+    def test_a_refusal_in_describing_stays_a_refusal(self, fakes, monkeypatch):
+        txn = fake_signer.payment(41, 42)
+        signer, node, client = make(fakes, SendSigner([ordinary_key(txn)]))
+        monkeypatch.setattr(
+            "aplanesdk.signer._decode_executable_signed_group",
+            _raises(SignerError("signed group position 1 is empty")),
+        )
+        with pytest.raises(SignerError, match="verify signed group") as excinfo:
+            client.send_prepared(node.client, prepared_for(txn))
+        assert not isinstance(excinfo.value, SignOutcomeUnknownError)
+
+    @pytest.mark.parametrize(
+        "patched,path",
+        [
+            ("_validate_component_response", "/sign/component"),
+            ("_validate_assembly_response", "/sign/assemble"),
+            ("_verify_bounded_assembled_group", "/sign/assemble"),
+            ("_decode_executable_signed_group", "/sign/assemble"),
+        ],
+    )
+    def test_in_the_cosigned_sequence(self, fakes, monkeypatch, patched, path):
+        fixture = CosignedFixture(fakes)
+        monkeypatch.setattr(f"aplanesdk.signer.{patched}", _raises(self.BOOM))
+        with pytest.raises(SignOutcomeUnknownError) as excinfo:
+            self._cosigned_send(fixture)
+        assert excinfo.value.request_id == fixture.user.request_ids[path][-1]
+        assert _caused_by(excinfo.value, self.BOOM)
+        assert fixture.node.submissions() == []
+
+    def test_in_checking_the_cosigned_primary_sign(self, fakes, monkeypatch):
+        fixture = CosignedFixture(fakes)
+        holder = fake_signer.account(45)
+        fixture.keys.append(key(holder))
+        params = transaction.SuggestedParams(
+            1000, 1, 100, base64.b64encode(bytes(32)).decode(), "testnet-v1.0", flat_fee=True
+        )
+        other = transaction.PaymentTxn(holder, params, fake_signer.test_address(22), 1)
+        group = PreparedGroup(
+            [
+                PreparedTransaction(transaction=fixture.txn, auth_address=fixture.bounded),
+                PreparedTransaction(transaction=other, auth_address=holder),
+            ]
+        )
+        monkeypatch.setattr(
+            "aplanesdk.signer._verify_signed_transaction_matches_canonical", _raises(self.BOOM)
+        )
+        with pytest.raises(SignOutcomeUnknownError) as excinfo:
+            fixture.user_client.send_prepared(
+                fixture.node.client,
+                group,
+                cosigner_client=fixture.cosigner_client,
+                cosigner_component_key="COSIGNER_COMPONENT",
+            )
+        assert excinfo.value.request_id == fixture.user.request_ids["/sign"][0]
+        assert _caused_by(excinfo.value, self.BOOM) and fixture.cosigner_calls == 0
+
+    def test_a_cosigned_refusal_stays_a_refusal(self, fakes, monkeypatch):
+        fixture = CosignedFixture(fakes)
+        monkeypatch.setattr(
+            "aplanesdk.signer._verify_bounded_assembled_group",
+            _raises(SignerError("assembled transaction 0 does not match")),
+        )
+        with pytest.raises(SignerError, match="does not match") as excinfo:
+            self._cosigned_send(fixture)
+        assert not isinstance(excinfo.value, SignOutcomeUnknownError)
+
+    def test_an_interrupt_is_not_caught(self, fakes, monkeypatch):
+        txn = fake_signer.payment(41, 42)
+        signer, node, client = make(fakes, SendSigner([ordinary_key(txn)]))
+        monkeypatch.setattr(
+            "aplanesdk.signer._decode_executable_signed_group", _raises(KeyboardInterrupt())
+        )
+        with pytest.raises(KeyboardInterrupt):
+            client.send_prepared(node.client, prepared_for(txn))
+
+
+def _raises(error):
+    def fail(*_args, **_kwargs):
+        raise error
+
+    return fail
+
+
+def _caused_by(error, cause):
+    seen = error
+    while seen is not None:
+        if seen is cause:
+            return True
+        seen = seen.__cause__
+    return False
+
+
+class _RecordingSendSigner(SendSigner):
+    """A SendSigner that records the request ID of each /sign."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.request_ids = []
+
+    def app(self, method, path, body):
+        if path == "/sign":
+            self.request_ids.append(json.loads(body)["request_id"])
+        return super().app(method, path, body)
 
 
 # -----------------------------------------------------------------------------
