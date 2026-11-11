@@ -288,7 +288,7 @@ test(
 const LIVE_ROTATING_FAMILIES: Array<{ keyType: string; limitMs: number }> = [
   { keyType: "aplane.rotating-triple-wotsc.v1", limitMs: 5 * 60_000 },
   { keyType: "aplane.rotating-triple-xmss.v1", limitMs: 5 * 60_000 },
-  { keyType: "aplane.rotating-triple-slhdsa.v1", limitMs: 30 * 60_000 },
+  { keyType: "aplane.rotating-triple-slhdsa.v1", limitMs: 20 * 60_000 },
 ];
 
 // A rotating account spends through sendPayment on a real node, twice in a
