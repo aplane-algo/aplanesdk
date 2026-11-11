@@ -2679,6 +2679,22 @@ export class SignerClient {
 
     const data = await readPlainAnswer<{ keys?: Record<string, any>[] }>(response, KEYS_ANSWER);
     const records = data.keys ?? [];
+    // An address that algosdk reads as an Algorand address but that is not
+    // its canonical spelling would be compared and looked up as another
+    // address than the one it stands for, so the whole answer is refused.
+    // Any other string is kept as sent: a witness key's record carries its
+    // Witness Key ID, which is not an Algorand address, and it can only be
+    // matched by an exact lookup.
+    records.forEach((record, index) => {
+      const address = record.address as string;
+      if (!algosdk.isValidAddress(address)) return;
+      const canonical = algosdk.Address.fromString(address).toString();
+      if (canonical !== address) {
+        throw new SignerError(
+          `Server returned a malformed response: key ${index + 1} address ${address} is not the canonical spelling of ${canonical}`,
+        );
+      }
+    });
     const keys: KeyInfo[] = [];
     this.keyCache.clear();
     this.keyCacheRevision = undefined;

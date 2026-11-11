@@ -4115,6 +4115,44 @@ describe("SignerClient", () => {
       assert.equal(plan.mutations?.totalFeesDelta, 500);
       assert.deepEqual(plan.mutations?.feesModified, [0]);
     });
+
+    describe("/keys addresses", () => {
+      const real = fakeAccount(5);
+      const keys = (...addresses: unknown[]) => JSON.stringify({
+        count: addresses.length,
+        keys: addresses.map((address) => ({ address, key_type: "ed25519" })),
+      });
+      const BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+      const last = BASE32.indexOf(real[real.length - 1]);
+      const misspelled = real.slice(0, -1) + BASE32[(last & ~3) | ((last + 1) & 3)];
+
+      it("refuses the whole answer when a record holds an alternate spelling of an address", async () => {
+        assert.notEqual(misspelled, real);
+        assert.ok(algosdk.isValidAddress(misspelled), "algosdk reads the alternate spelling as the address");
+        const signer = client();
+        answerRaw(keys(fakeAccount(6)));
+        await signer.listKeys(true);
+        answerRaw(keys(fakeAccount(7), misspelled));
+        await assert.rejects(signer.listKeys(true), (error: unknown) => {
+          assert.ok(error instanceof SignerError, String(error));
+          assert.equal(
+            (error as Error).message,
+            `Server returned a malformed response: key 2 address ${misspelled} is not the canonical spelling of ${real}`,
+          );
+          return true;
+        });
+        // The refused answer left the keys already read in place.
+        assert.deepEqual((await signer.listKeys()).map((key) => key.address), [fakeAccount(6)]);
+      });
+
+      it("keeps a Witness Key ID, a placeholder and an empty address as sent", async () => {
+        const witnessId = "ROGAFDACF7ASC3EMZRWNKVM73NXHO4P6O4EB7ZXWER37SM63BMFQ";
+        const placeholder = "BOUNDEDADDR000000000000000000000000000000000000000000000";
+        answerRaw(keys(real, witnessId, placeholder, "", null));
+        const listed = await client().listKeys(true);
+        assert.deepEqual(listed.map((key) => key.address), [real, witnessId, placeholder, "", ""]);
+      });
+    });
   });
 });
 
