@@ -15,7 +15,11 @@ The Go SDK is a user-facing integration surface for:
 - enrolling the client SSH key at a signer (operator-approved)
 - connecting to `apsigner` over the standard SSH-backed product path
 - listing signer keys and available key types
-- planning and signing single transactions and groups
+- sending a transaction or group in one call (sign, check, submit and wait
+  for confirmation) for every account type the signer holds
+- finding a cosigned account's cosigner from `endpoints.yaml`
+- saying where an uncertain outcome stands, from the node alone
+- planning and signing single transactions and groups without submitting them
 - assembling multi-party group results
 - building an `algod` client from the same client config
 - constructing a signer client from a caller-owned base URL and HTTP client
@@ -25,7 +29,7 @@ Go, Python, and TypeScript SDK package versions will always match.
 
 ## Requirements
 
-- Go `1.25` or newer for this module as currently declared
+- Go `1.26` or newer for this module as currently declared
 - an APlane signer you can reach over the standard SSH-backed client path
 - either:
   - an existing client data directory with config, an enrolled SSH key, and
@@ -230,6 +234,270 @@ Use this when:
 - you proxy signer traffic through another transport
 - you need custom HTTP behavior such as retry or tracing middleware
 
+## Sending Transactions
+
+### Send A Payment Or A Prepared Group
+
+`SendPayment` and `SendPrepared` are the recommended way to send. One call
+signs a transaction or group, checks the signed result, submits exactly those
+bytes and waits for confirmation:
+
+```go
+result, err := client.SendPayment(ctx, algodClient, aplane.PaymentPrepParams{
+	Sender:   sender,
+	Receiver: receiver,
+	Amount:   1_000_000, // microAlgos
+}, nil)
+if err != nil {
+	return err // see Send Failures below
+}
+fmt.Println(result.TxIDs[0], result.Outcome, result.ConfirmedRound)
+```
+
+`SendPayment` builds the payment with `PreparePayment` and sends it.
+`SendPrepared` sends what a `Prepare*` helper built, one transaction or a
+group:
+
+```go
+group, err := client.PreparePaymentGroup(ctx, algodClient, []aplane.PaymentPrepParams{
+	{Sender: sender, Receiver: receiverA, Amount: 1_000_000},
+	{Sender: sender, Receiver: receiverB, Amount: 2_000_000},
+})
+if err != nil {
+	return err
+}
+result, err := client.SendPrepared(ctx, algodClient, *group, nil)
+```
+
+Wrap one prepared transaction with `aplane.NewPreparedGroup(*prepared)`.
+
+The same call works for every account type: Ed25519, native Falcon, LogicSig,
+bounded, cosigned and rotating accounts, and a rekeyed sender. You do not
+look up the auth address or choose the signing flow:
+
+- the `Prepare*` helpers read each sender's auth address from the chain and
+  name the key that signs in `AuthAddress`;
+- the send reads the signer's own record of that key and picks the flow from
+  it: ordinary `/sign` for Ed25519, native Falcon, LogicSig and bounded
+  accounts, the cosigned sequence for an account with a cosigner, and the
+  rotating sequence for a rotating account;
+- it signs, with operator approval where the signer asks for it, and checks
+  the signed group against what was prepared, with the checks in
+  [What The SDK Checks Before Returning](#what-the-sdk-checks-before-returning);
+- it submits exactly those bytes and waits for confirmation.
+
+Every position must name, in `AuthAddress`, a key this signer holds, as the
+`Prepare*` helpers do.
+
+`SendResult` carries:
+
+- `SignedGroup`: the group as submitted, hex msgpack. The first
+  `OriginalCount` entries are your transactions, in order; the rest are
+  resource dummies the signer appended.
+- `TxIDs`, `Fees` (microAlgos) and `GroupID`, computed from the signed bytes.
+  The signer may raise a fee or assign a group ID, so `TxIDs` can differ from
+  the IDs of the transactions you prepared.
+- `Mutations`: the signer's report of what it changed, checked against the
+  signed bytes; nil when it changed nothing.
+- `Outcome` (`SendOutcomeConfirmed`, or `SendOutcomeSubmitted` with `NoWait`)
+  and `ConfirmedRound`, zero unless confirmed.
+- `Flow`: empty for the ordinary flow, `SigningFlowCosigned1` or
+  `SigningFlowRotating1`. `Cosigned` holds a cosigned send's component
+  responses and `Rotating` a rotating send's stages.
+
+`SendOptions` (nil for the defaults):
+
+- `NoWait`: return once the node accepts the group, with outcome `submitted`.
+- `WaitRounds`: how many further rounds to wait for confirmation; zero means
+  10.
+- `RefreshValidity`: let a rotating account's send rebuild the transaction's
+  validity rounds; see [Rotating Accounts](#rotating-accounts).
+- `CosignerClient` with `CosignerComponentKey`, or `CosignerResolver`: a
+  cosigned account's cosigner, when it is not found from `endpoints.yaml`;
+  see [Finding The Cosigner](#finding-the-cosigner). The send does not close
+  a cosigner client you pass.
+
+Refused before anything is signed:
+
+- `ErrUnsupportedSigningFlow`: a key needs a signing flow this SDK version
+  cannot run. Upgrade the SDK.
+- `ErrUnsupportedGroup`: a group the send does not cover, such as a
+  pre-signed or foreign position, or a rotating account's transaction in a
+  group.
+- `ErrKeyNotFound`: a position names a key the signer does not hold.
+
+The `Sign*` and `Plan*` calls under [Common Tasks](#common-tasks) remain for
+callers who want signed bytes without the SDK submitting them: to submit
+through their own node or pipeline, to hold a signed group, or to sign a
+group the send does not take, such as a multi-party group with passthrough
+positions. They do not submit and do not wait.
+
+### Rotating Accounts
+
+A rotating account (signing flow `rotating1`) hands itself to a fresh stage
+on every spend, so the signer adds a rekey to the next stage to your
+transaction. Inside `SendPrepared` and `SendPayment` the SDK:
+
+1. asks the signer to prepare the exact group it will sign: your transaction
+   with the rekey, its fee raised, and any resource dummies;
+2. refuses that group unless the only changes are the rekey, a reported fee
+   raise within your max fee increase, the group ID and canonical dummies;
+3. simulates it, unsigned, through your algod. A failure returns
+   `*RotatingPreflightError`, whose `Message` says why, before any one-time
+   key is used;
+4. asks the signer to sign, with operator approval, and checks that the
+   signed group is exactly the prepared one;
+5. submits at once and waits for confirmation. `SendResult.Rotating` reports
+   the stage that signed (`Stage`), the stage that now controls the account
+   (`Target`), its address (`RekeyTo`) and how many times the spend was
+   prepared (`Attempts`).
+
+Limits:
+
+- **One transaction, alone.** It must be ungrouped, set no `RekeyTo`, not
+  close the account, and take no LogicSig arguments. The send refuses
+  anything else with `ErrUnsupportedGroup` before it asks the signer.
+- **Short validity window.** At most `RotatingMaxValidityWindow` (100)
+  rounds, and the signer signs only while `FirstValid` is at most
+  `RotatingMaxLead` (2) rounds ahead of the current round and at least
+  `RotatingMinRemaining` (10) rounds remain. The `Prepare*` helpers build such
+  a window for a rotating sender. A transaction whose rounds are not current
+  is refused before the operator is asked.
+- **When the send rebuilds the rounds.** `SendPayment` builds its own
+  transaction, so it may rebuild stale rounds. For a transaction you prepared
+  or built, set `SendOptions.RefreshValidity` to allow it. That changes the
+  transaction ID, so leave it off when anything outside the transaction, such
+  as an app argument or a proof, binds its rounds.
+- **Bounded retries.** When the signer says an attempt released no signature
+  (`ErrCodeRotatingStageUnproven`, `ErrCodeRotatingStageChanged`,
+  `ErrCodeRotatingWindowNotCurrent`), the send prepares again, up to three
+  attempts, and each attempt needs approval again. A window refusal is
+  retried only when the rounds may be rebuilt, with the longest window. This
+  needs a signer that reports `rotating_window_not_current`; see the
+  [compatibility note](COMPATIBILITY.md).
+- **App calls carry the rekey**, so a contract that requires a zero
+  `RekeyTo` fails the simulation.
+- **Two sends in a row** work once the first has confirmed, which the default
+  wait ensures.
+
+The steps are also available one at a time, for callers who need them. None
+of them submits:
+
+```go
+prepared, err := client.PrepareRotating(ctx, txn, nil)                         // nothing signed
+simulation, err := client.SimulatePreparedRotating(ctx, algodClient, prepared) // never signs
+signed, err := client.SignPreparedRotating(ctx, prepared, nil)                 // waits for approval
+result, err := client.SubmitSignedGroup(ctx, algodClient, signed.SignedGroup, nil)
+```
+
+Submit a signed rotating group promptly: the stage's one-time keys are
+revealed until that transaction or a later rotation confirms.
+
+If a sign answer is lost (a `*SignOutcomeUnknownError` whose `Rotating` field
+holds the prepared group), call `SignPreparedRotating` again with that same
+prepared group. It asks for the same transaction with the same IDs and builds
+no second spend. Do not call `SendPayment` or `SendPrepared` again until the
+first attempt's outcome is known: that prepares a new spend from the same
+stage.
+
+For a rotating account, `ResolveAuthAddress` returns the account itself as
+`AuthAddress` at every stage; the stage address the chain reports is in
+`ChainAuthAddress`. A rotating account rekeyed to an ordinary key the signer
+holds has left rotation, and is sent like any rekeyed account once the chain
+confirms the rekey.
+
+### Send Failures
+
+| Error | What it means | What to do |
+|---|---|---|
+| `*SignOutcomeUnknownError` | A signing request ended with no answer, or with a 200 answer that could not be read. A signature may have been released. Nothing was submitted. | Do not send again. Call `ResolveOutcome` (below), or check `RequestID` with the operator or the signer's audit log. |
+| `*SubmissionUncertainError` | The group was signed and the call did not see it confirmed or refused. `Stage` is `unsent` (your context ended before it was sent), `submit` (the submission's answer never arrived) or `confirm` (not confirmed within the wait). Except for `unsent`, it may still confirm. | Do not sign a replacement. Call `ResolveOutcome`, or submit the same `SignedGroup` again with `SubmitSignedGroup`. |
+| `*SubmissionRejectedError` | The node refused the group or dropped it from its pool. `SignedGroup` and `TxIDs` are kept. | Read the reason. |
+| `*RotatingPreflightError` | A rotating spend failed its unsigned simulation. Nothing was signed. | Read `Message`. |
+| `ErrUnsupportedSigningFlow`, `ErrUnsupportedGroup`, `ErrKeyNotFound`, `ErrCosignerDiscovery` | Refused before anything that can execute was signed. | Read the reason. |
+| Any other error | The signer refused (policy, operator, locked), or the SDK refused its answer (`verify signer response: ...`, `*MaxFeeIncreaseError`). Nothing was submitted. | Read the reason. When the SDK refused a sign answer, the signer did sign and the SDK discarded the result. |
+
+Two of these must not be answered by sending again:
+
+- `*SignOutcomeUnknownError`: the signer may have released a signature that
+  never reached you. A replacement you build and sign, and that signature,
+  could both execute. Find out what happened, or wait until the error's
+  `LastValid` round has passed, first.
+- `*SubmissionUncertainError`: the signed group may already be in a block or
+  in the node's pool, and a replacement could execute beside it. Submitting
+  the same `SignedGroup` again is safe: the same bytes execute at most once.
+
+Any other error, `*SubmissionRejectedError` aside, means nothing that was
+signed can execute: the send was refused before signing, the signer refused,
+or the SDK refused the signer's answer and discarded it. It is safe to fix
+the cause and send again.
+
+### After An Uncertain Outcome
+
+`client.ResolveOutcome(ctx, algodClient, err)` takes either uncertain error
+(wrapped or not) and says where things stand. It asks the node only: it never
+signs, never submits and never calls the signer. It rests on two facts: the
+signer never submits, and a transaction cannot execute after its last valid
+round, which the signer never changes. Both errors carry that round as
+`LastValid`. Any other error is refused with `ErrNotUncertainOutcome`, and a
+node failure is returned as an error, never as a state.
+
+```go
+result, err := client.SendPayment(ctx, algodClient, params, nil)
+if err != nil {
+	report, checkErr := client.ResolveOutcome(ctx, algodClient, err)
+	if checkErr != nil {
+		// Not an uncertain outcome, or the node could not be asked.
+		return err
+	}
+	// report.SafeToReplace is true only once nothing from the first
+	// attempt can execute.
+	return fmt.Errorf("%s: %s: %w", report.State, report.Advice, err)
+}
+fmt.Println(result.TxIDs[0])
+```
+
+`OutcomeReport.State` is one of six values:
+
+| State | Meaning | `SafeToReplace` |
+|---|---|---|
+| `OutcomeConfirmed` (`confirmed`) | The group is in a block, in `ConfirmedRound`. Do not send it again. | false |
+| `OutcomePending` (`pending`) | The group is in the node's pool. Wait. | false |
+| `OutcomeNotSeen` (`not_seen`) | The node does not have the signed group, and it can still execute until `LastValid`. Submit the same `SignedGroup` again, or wait until `LastValid` has passed. | false |
+| `OutcomeSignable` (`signable`) | A signature may have been released, and it can still execute until `LastValid`. Wait until that round has passed before building a replacement; for a rotating account, sign the same prepared group again. | false |
+| `OutcomeExpired` (`expired`) | Nothing from the request can execute any more. | true |
+| `OutcomeTooOld` (`too_old`) | Its validity ended more than 500 rounds ago, and the node may no longer remember it. Look the transaction ID up on an indexer before sending again. | false |
+
+`Advice` says what to do, in one sentence. The report also carries `TxIDs`
+(empty for an ordinary or cosigned sign outcome, whose transactions the
+signer may have changed), `LastValid`, `CurrentRound`, and the error's
+`SignedGroup` or `Rotating` group.
+
+`client.WaitForOutcome(ctx, algodClient, err, &aplane.WaitOutcomeOptions{Timeout: 5 * time.Minute})`
+checks once per round until the state is `confirmed`, `expired` or
+`too_old`. If the context or `Timeout` ends first, it returns the last report
+with the context's error. A zero `Timeout` means no limit beyond the context.
+
+### Cancellation And Time Limits
+
+The send and the step calls take a `context.Context`. The send sets no
+deadline of its own: each signing request waits as long as the signer's
+approval wait allows, unless the client was given a shorter `Timeout`, and a
+shorter context deadline wins. Where the context ends decides what you get:
+
+- before an approval-bearing request is posted (while keys, rounds or the
+  plan are read, or between steps): a plain error, not an unknown outcome.
+  Nothing more is sent, not even a `/sign/cancel`.
+- while an approval-bearing request (`/sign`, `/sign/component`,
+  `/sign/assemble`, `/sign/rotating/sign`) is waiting: a best-effort
+  `/sign/cancel`, then `*SignOutcomeUnknownError`.
+- after signing, before submission: `*SubmissionUncertainError` with `Stage`
+  `unsent`. The node does not have the group; `SubmitSignedGroup` submits it.
+- during submission or the confirmation wait: `*SubmissionUncertainError`
+  with `Stage` `submit` or `confirm`.
+
+`WaitForOutcome` takes `WaitOutcomeOptions.Timeout` as well as its context.
+
 ## Common Tasks
 
 ### Health Check
@@ -365,6 +633,11 @@ if err := client.DeleteKey(generated.Address); err != nil {
 
 ### Sign One Transaction
 
+The `Sign*` calls in this and the following sections return signed bytes and
+submit nothing. Use them when you want the signed transactions yourself; to
+send, use `SendPayment` or `SendPrepared` (see
+[Sending Transactions](#sending-transactions)).
+
 ```go
 params, err := algodClient.SuggestedParams().Do(ctx)
 if err != nil {
@@ -396,7 +669,10 @@ if err != nil {
 txid, err := algodClient.SendRawTransaction(signedBytes).Do(ctx)
 ```
 
-For rekeyed accounts, pass the signing key explicitly:
+For a rekeyed account, these calls take the signing key explicitly. (The
+`Prepare*` helpers read it from the chain for you, so `SendPayment` and
+`SendPrepared` need nothing extra; `ResolveAuthAddress` does that lookup on
+its own.)
 
 ```go
 signed, err := client.SignTransaction(txn, authAddress, nil)
@@ -525,7 +801,9 @@ A group that another party also signs goes through the signer in two steps:
    transaction as a passthrough position in `SignOptions.Passthrough` and
    repeating the same `LsigResources`.
 
-The result is the complete signed group, ready to submit:
+The result is the complete signed group, ready to submit. `SendPrepared`
+does not take passthrough positions, so a multi-party group is signed with
+these calls and you submit it:
 
 ```go
 signed, err := client.SignTransactionsWithOptions(plannedTxns, authAddresses, nil, &aplane.SignOptions{
@@ -553,6 +831,73 @@ signs through ordinary `/sign`. Cosigner component selectors are public policy k
 Algorand spending accounts, and must not be used as senders, receivers, auth
 addresses, or rekey targets.
 
+`SendPrepared` and `SendPayment` run the whole cosigned sequence and submit
+the result. `SignPreparedCosignedGroup` runs the same sequence and returns
+the signed group without submitting it.
+
+#### Finding The Cosigner
+
+A client created from a data directory (`FromEnv` or `FromEnvWithContext`)
+finds a cosigned account's cosigner in its own `endpoints.yaml`. List the
+cosigner node as an endpoint with role `cosigner`:
+
+```yaml
+schema_version: 2
+default: primary
+endpoints:
+  primary:
+    role: signer
+    url: ssh://signer.example.com:1127
+    identity_file: .ssh/id_ed25519
+    known_hosts_path: .ssh/known_hosts
+  cosigner:
+    role: cosigner
+    url: ssh://cosigner.example.com:1127
+    identity_file: .ssh/id_ed25519
+    known_hosts_path: .ssh/known_hosts
+```
+
+The key in `identity_file` must be enrolled at the cosigner too
+(`RequestEnrollmentFromEnv` with `Endpoint: "cosigner"`). When a send, or
+`SignPreparedCosignedGroup`, is given no `CosignerClient` and no
+`CosignerResolver`, the client then:
+
+- connects, on first use, to every `role: cosigner` endpoint (at most 12),
+  each with its own identity file and known hosts file and with the client's
+  trust-on-first-use, SSH setup timeout and request timeout, and reads its
+  `/keys`;
+- signs with the one endpoint that lists the account's witness key, under its
+  Witness Key ID;
+- keeps those connections, and closes them when you `Close` the client.
+
+An explicit `CosignerClient` (with `CosignerComponentKey`) or
+`CosignerResolver` always wins. A client made with `ConnectSSH` or
+`NewSignerClient` has no endpoint registry, so it needs one of them; without
+one, a cosigned send is refused with "cosigner client or resolver is
+required". `NewEndpointCosignerResolver(dataDir, opts)` builds the same
+resolver for you to pass as `CosignerResolver`; it owns the connections it
+opens, so `Close` it when done.
+
+Every cosigner a position is sure to need is found before anything is asked
+to sign, so a cosigner that cannot be found fails the send with nothing
+signed. The error matches `aplane.ErrCosignerDiscovery` and is never an
+unknown outcome. Its message says why:
+
+- no endpoint lists the witness key: the message names every cosigner
+  endpoint with its state (`ok`, `unreachable`, `locked`,
+  `authentication failed`, `invalid cosigner metadata` or
+  `configuration invalid`);
+- more than one endpoint lists it;
+- `endpoints.yaml` lists no cosigner endpoint;
+- a cosigner endpoint's SSH host key differs from the pinned one.
+
+A rekey to an address on the account's rekey-to list needs no cosigner. For
+such a rekey the cosigner is looked up only after the user signer's base
+component, and only if that component says the rekey needs one, so a listed
+rekey works with no cosigner endpoint configured and with the cosigner down.
+
+#### Cosigner Policy
+
 Before signing, an operator must apply a policy document for the selected
 cosigner Witness Key ID using `apadmin policy check` and `apadmin policy apply`.
 The cosigner stores it as `policies/<WitnessKeyID>.json` with a `.hmac`
@@ -567,6 +912,8 @@ If the cosigner holds the key but it is still on the deny-all default,
 returns `ErrSigningRejected`, and the cosigned signing helper propagates that
 error. Apply the key's document before retrying. See the
 [compatibility note](COMPATIBILITY.md) for policy format and provisioning details.
+
+#### The Cosigned Sequence
 
 The helper reads each position's key (its signing flow, LogicSig resources
 and fee ceiling) from the user signer's `/keys` record, by the position's
@@ -595,16 +942,22 @@ It checks a planned fee against the account's ceiling only on `bounded2`: a
 contract it doesn't know, a `bounded2` account without a ceiling, and a `plain1`
 account that advertises one.
 `SignPreparedCosignedGroup` discovers the flow from signer inventory and performs
-the user-first sequence:
+the user-first sequence. With a client from `FromEnv` the cosigner comes from
+`endpoints.yaml`:
 
 ```go
 result, err := aplane.SignPreparedCosignedGroup(aplane.PreparedCosignedGroupOptions{
-	UserClient:     userClient,
-	CosignerResolver: cosignerResolver,
-	PreparedGroup:  preparedGroup,
+	UserClient:    userClient,
+	PreparedGroup: preparedGroup,
 })
+if err != nil {
+	return err
+}
 signedGroup := result.SignedGroup
 ```
+
+Set `CosignerClient` and `CosignerComponentKey`, or `CosignerResolver`, in
+the options to name the cosigner yourself.
 
 The sequence is `/plan`, user approval and base-component release through
 `RequestComponents` with a bounded-base target, signing of ordinary group
@@ -640,7 +993,8 @@ if err != nil {
 	return err
 }
 if simulation.Failed {
-	// Inspect simulation.Response for algod diagnostics.
+	// simulation.FailureMessage says why; simulation.Response has the
+	// algod diagnostics.
 }
 
 cosigned, err := aplane.SimulatePreparedCosignedGroup(algodClient, cosignedOptions)
@@ -649,9 +1003,12 @@ cosigned, err := aplane.SimulatePreparedCosignedGroup(algodClient, cosignedOptio
 `SimulationResult.SignedGroup` contains fully executable signed transactions
 that remain submittable until expiry. Keep them confidential. The helper sends
 the exact signed group to the supplied algod with empty-signature overrides
-disabled. A missing algod client fails before any signing request. Algod
-execution failure sets `Failed`; transport or decoding failures return an
-error and never trigger another signing request automatically.
+disabled. A missing algod client fails before any signing request. A
+simulation is `Failed` unless the node returned exactly one group result,
+that result reports no failure, and it holds one transaction result per
+transaction simulated. `FailureMessage` says why: the node's own failure
+message, or which of the other cases it was. Transport or decoding failures
+return an error and never trigger another signing request automatically.
 
 ## Transaction Semantics
 
@@ -685,14 +1042,21 @@ error and never trigger another signing request automatically.
 - passthrough entries are supplied through `SignOptions.Passthrough`
 - foreign planning uses empty auth-address slots plus optional
   `SignOptions.LsigResources`
+- `SendPrepared(...)` and `SendPayment(...)` sign, submit and wait; their
+  `SendResult.SignedGroup` is hex msgpack, one entry per transaction.
+- `SubmitSignedGroup(...)` submits a signed hex group exactly as given (a
+  rotating group from `SignPreparedRotating`, or the `SignedGroup` a
+  `*SubmissionUncertainError` kept) and waits for confirmation. It signs
+  nothing.
 
-The Go SDK does not provide a `SendRawTransaction(...)` helper. Decode the
-returned base64 string and submit it with the standard Algorand Go SDK.
+`SendPrepared` and `SendPayment` submit for you. There is no
+`SendRawTransaction(...)` helper for the base64 the `Sign*` calls return:
+decode it and submit it with the standard Algorand Go SDK.
 
 ### What The SDK Checks Before Returning
 
 Every `/sign` and `/plan` result is checked against the request before
-`SignTransaction(...)`, `SignTransactions*(...)`, `SignRequestsWithContext(...)`/`SignGroupWithContext(...)`, `PlanGroup(...)`/`PlanRequestsWithContext(...)` or the simulation helpers returns it. The
+`SignTransaction(...)`, `SignTransactions*(...)`, `SignRequestsWithContext(...)`/`SignGroupWithContext(...)`, `PlanGroup(...)`/`PlanRequestsWithContext(...)` or the simulation helpers returns it, and before `SendPrepared(...)` submits anything. The
 signer may change a request in three ways, and must report each in
 `mutations`:
 
@@ -812,7 +1176,22 @@ A passthrough transaction must round-trip through the SDK's Algorand
 library (`go-algorand-sdk`), so one that uses a field newer than that library is refused
 locally.
 
+#### How Signer Answers Are Read
+
+Every 200 answer from the signer, the key list included, is read strictly:
+it must be exactly one JSON value, so a `null` body or anything after the
+value is an error, never an empty answer, and a field left out or `null`
+reads as its zero value. An answer whose `error` field is set is a refusal,
+and at an approval-bearing request an answer that cannot be read counts as a
+lost answer, which a send reports as `*SignOutcomeUnknownError`. The full
+rule, and how the three SDKs' readers differ, is in
+[`go/README.md`](../go/README.md) under `SendPrepared`.
+
 ## Error Handling
+
+A send's failures are described in [Send Failures](#send-failures). Every
+call returns the signer's refusals as errors you match with `errors.Is` or
+`errors.As`.
 
 Main sentinel errors:
 
@@ -827,6 +1206,21 @@ Main sentinel errors:
 - `aplane.ErrMaxFeeIncreaseExceeded`, with `*aplane.MaxFeeIncreaseError` for
   the amounts: the signer raised fees by more than the client's max fee
   increase
+- `aplane.ErrUnsupportedSigningFlow` and `aplane.ErrUnsupportedGroup`: a send
+  refused the group before signing
+- `aplane.ErrCosignerDiscovery`: a cosigned account's cosigner was not found
+  in `endpoints.yaml`
+- `aplane.ErrNotUncertainOutcome`: `ResolveOutcome` or `WaitForOutcome` was
+  given an error that is not an uncertain outcome
+
+Typed errors, matched with `errors.As`:
+
+- `*aplane.SignOutcomeUnknownError`, `*aplane.SubmissionUncertainError`,
+  `*aplane.SubmissionRejectedError` and `*aplane.RotatingPreflightError`: see
+  [Send Failures](#send-failures)
+- `*aplane.APIError`: any other signer refusal, with its HTTP `StatusCode`,
+  its stable `Code` (such as `aplane.ErrCodeRotatingStageChanged`) and its
+  `Message`
 
 Transaction submission helpers in your own code may also choose to wrap:
 
@@ -838,9 +1232,18 @@ Transaction submission helpers in your own code may also choose to wrap:
 Example:
 
 ```go
-signed, err := client.SignTransaction(txn, "", nil)
+result, err := client.SendPayment(ctx, algodClient, params, nil)
 if err != nil {
+	var unknown *aplane.SignOutcomeUnknownError
+	var uncertain *aplane.SubmissionUncertainError
 	switch {
+	case errors.As(err, &unknown), errors.As(err, &uncertain):
+		// Do not send again: ask the node where things stand.
+		report, checkErr := client.ResolveOutcome(ctx, algodClient, err)
+		if checkErr == nil {
+			log.Printf("%s: %s", report.State, report.Advice)
+		}
+		return err
 	case errors.Is(err, aplane.ErrAuthentication):
 		return fmt.Errorf("connection is not authenticated by an enrolled SSH key: %w", err)
 	case errors.Is(err, aplane.ErrSignerLocked):
@@ -851,6 +1254,7 @@ if err != nil {
 		return err
 	}
 }
+fmt.Println(result.TxIDs[0])
 ```
 
 ## Advanced Notes
@@ -870,7 +1274,8 @@ if err != nil {
 - Signing request deadlines are approval-wait-aware. A shorter caller context
   deadline still wins; SDK `/sign` calls include a `request_id` and send a
   best-effort `/sign/cancel` when the caller context is canceled before the
-  signer responds.
+  signer responds. A context that has already ended before a request is
+  posted sends nothing, not even the cancel.
 - `CancelSignRequestWithContext(...)` exposes explicit synchronous sign-request
   cancellation for advanced callers that already know a request ID.
 - Go is the reference SDK shape for caller-initiated cancellation: pass a
@@ -883,8 +1288,9 @@ if err != nil {
 
 ## Compatibility Notes
 
-This SDK follows the signer API contract documented in
-the signer API contract documented by the main APlane repository.
+This SDK follows the signer API contract documented by the main APlane
+repository. Before upgrading the SDK or the signer, read the
+[compatibility note](COMPATIBILITY.md).
 
 For compatibility-sensitive changes, check:
 
