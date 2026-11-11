@@ -583,6 +583,7 @@ func signerAPIErrorCodes(t *testing.T) []string {
 		ErrCodeRotatingSigningRequired,
 		ErrCodeRotatingStageUnproven,
 		ErrCodeRotatingStageChanged,
+		ErrCodeRotatingWindowNotCurrent,
 	}
 }
 
