@@ -6835,7 +6835,7 @@ class SignerClient:
             raise ValueError("prepared rotating group is required")
         try:
             prepared._verify()
-        except Exception as e:
+        except SignerError as e:
             raise _verification_error("verify prepared rotating group: ", e) from e
         txns = prepared._decoded()
         unsigned = [transaction.SignedTransaction(txn, None) for txn in txns]
@@ -6878,7 +6878,7 @@ class SignerClient:
         # The binding is checked again at the signing boundary.
         try:
             prepared._verify()
-        except Exception as e:
+        except SignerError as e:
             raise _verification_error("verify prepared rotating group: ", e) from e
         if not request_id:
             request_id = _new_sign_request_id()
@@ -6970,7 +6970,7 @@ class SignerClient:
 
             try:
                 simulation = self.simulate_prepared_rotating(algod_client, prepared)
-            except Exception as e:
+            except SignerError as e:
                 raise SignerError(
                     f"simulate prepared rotating group; nothing was signed: {e}"
                 ) from e
@@ -7592,10 +7592,12 @@ class PreparedRotating:
     unsigned group it will sign, checked against the transaction the caller
     sent. Nothing has been signed and no one-time key has been used.
 
-    It cannot be changed after it is made: its fields are read-only and every
-    accessor returns a copy, and simulate_prepared_rotating and
-    sign_prepared_rotating check the binding again. prepare_rotating makes
-    it.
+    Its fields are read-only by convention: they are private attributes
+    behind properties without setters, and everything it hands out is a
+    copy. Python does not stop a holder from changing the private
+    attributes, so simulate_prepared_rotating and sign_prepared_rotating
+    verify it again, which catches a change that breaks its binding to the
+    original transaction. prepare_rotating makes it.
     """
 
     __slots__ = (
@@ -7862,7 +7864,7 @@ def _new_prepared_rotating(
     )
     try:
         prepared._verify()
-    except Exception as e:
+    except SignerError as e:
         raise _verification_error("verify prepared rotating group: ", e) from e
     return prepared
 
@@ -7994,7 +7996,7 @@ def _describe_signed_group(result: SendResult) -> List[bytes]:
         group_id = _validate_canonical_group_id(txns)
         if len(txns) == 1:
             group_id = _group_id_bytes(txns[0])
-    except Exception as e:
+    except SignerError as e:
         raise _verification_error("verify signed group: ", e) from e
     result.fees = [int(txn.fee) for txn in txns]
     result.group_id = base64.b64encode(group_id).decode() if group_id else ""

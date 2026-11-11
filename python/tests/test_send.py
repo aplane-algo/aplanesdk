@@ -1026,3 +1026,31 @@ def test_an_interrupt_during_submission_carries_the_signed_group(fakes, method):
     assert interrupt.aplane_tx_ids == [txn.get_txid()]
     if hasattr(interrupt, "add_note"):
         assert any("aplane_signed_group" in note for note in interrupt.__notes__)
+
+
+# -----------------------------------------------------------------------------
+# Checks the tests above would not notice missing
+# -----------------------------------------------------------------------------
+
+
+def test_signed_simulation_leaves_the_signers_to_the_signatures(fakes):
+    # fix-signers and empty signatures are for the unsigned rotating
+    # preflight only: a signed simulation has the node check every signature.
+    txn = fake_signer.payment(41, 42)
+    signer, node, client = make(fakes, SendSigner([ordinary_key(txn)]))
+    client.simulate_prepared_group(node.client, prepared_for(txn))
+    request = node.simulations()[0]
+    assert "fix-signers" not in request and "allow-empty-signatures" not in request
+
+
+def test_the_confirmation_wait_follows_a_node_that_jumps_ahead(fakes):
+    # The wait after round 10 answers round 20: three rounds of waiting are
+    # used up, and the group is looked up once more, not once per round.
+    txn = fake_signer.payment(41, 42)
+    signer, node, client = make(
+        fakes, SendSigner([ordinary_key(txn)]), FakeNode(pending=lambda: {}, wait_round=20)
+    )
+    with pytest.raises(SubmissionUncertainError) as excinfo:
+        client.send_prepared(node.client, prepared_for(txn), wait_rounds=3)
+    assert excinfo.value.stage == SEND_STAGE_CONFIRM
+    assert node.lookups == 2 and node.waits == ["10"]

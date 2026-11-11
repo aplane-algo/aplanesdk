@@ -445,10 +445,11 @@ signed = client.sign_prepared_rotating(prepared)                        # waits 
 result = client.submit_signed_group(algod_client, signed.signed_group)
 ```
 
-`prepare_rotating` returns a `PreparedRotating`, which cannot be changed:
-its properties (`account`, `stage`, `target`, `rekey_to`, `transactions`,
-`mutations`, `original`, `tx_ids`) return copies, and the simulate and sign
-steps check it again. `sign_prepared_rotating(prepared, request_id=...)`
+`prepare_rotating` returns a `PreparedRotating`. Its fields are read-only by
+convention, and everything it hands out (`account`, `stage`, `target`,
+`rekey_to`, `transactions`, `mutations`, `original`, `tx_ids`) is a copy. It
+is verified again whenever it is simulated or signed, which catches a change
+that breaks its binding to the original transaction. `sign_prepared_rotating(prepared, request_id=...)`
 takes an application-owned request ID for `cancel_sign_request`.
 
 Submit a signed rotating group promptly: the stage's one-time keys are

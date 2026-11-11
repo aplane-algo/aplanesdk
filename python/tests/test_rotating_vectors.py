@@ -20,11 +20,20 @@ from algosdk import encoding
 
 from aplanesdk import MaxFeeIncreaseError, SignerError
 from aplanesdk.signer import (
+    _AnswerUnreadError,
     _new_prepared_rotating,
+    _rotating_sign_answer,
     _sign_canonical_dummy,
     encode_transaction,
 )
-from tests.send_fakes import decode_map, encode_map, program_address, regroup, set_prepared
+from tests.send_fakes import (
+    alternate_spelling,
+    decode_map,
+    encode_map,
+    program_address,
+    regroup,
+    set_prepared,
+)
 from tests.test_rotating import PREPARE_TAMPERS, SIGN_TAMPERS
 
 VECTORS_PATH = (
@@ -50,6 +59,21 @@ def prepared_from(case, prepare, max_fee_increase=None):
     )
 
 
+def assert_verifier_refusal(error):
+    """A refusal by the checks themselves: not an answer that could not be
+    read, and not a fault inside the checking code, which would surface as
+    some other exception and fail the test on its own."""
+    assert isinstance(error, SignerError)
+    assert not isinstance(error, _AnswerUnreadError)
+    assert "the check itself failed" not in str(error)
+
+
+def verify_signed(prepared, sign):
+    """Check a sign answer the way sign_prepared_rotating does: read it as
+    its wire types, then verify it against the prepared group."""
+    return prepared._verify_signed(_rotating_sign_answer(copy.deepcopy(sign)))
+
+
 def decode_txn_hex(txn_hex):
     return encoding.msgpack_decode(base64.b64encode(bytes.fromhex(txn_hex)[2:]).decode())
 
@@ -63,7 +87,7 @@ def test_the_vectors_have_cases_and_alterations():
 def test_every_captured_answer_is_accepted(name):
     case = CASES[name]
     prepared = prepared_from(case, case["prepare"])
-    result = prepared._verify_signed(copy.deepcopy(case["sign"]))
+    result = verify_signed(prepared, case["sign"])
     assert result.stage == case["sign"]["stage"] and result.target == case["sign"]["target"]
     assert result.txid == case["sign"]["txid"]
     assert result.signed_group == case["sign"]["signed"]
@@ -76,8 +100,9 @@ def test_every_captured_answer_is_accepted(name):
     ids=[f"{entry['case']}: {entry['name']}" for entry in VECTORS["prepare_tampered"]],
 )
 def test_every_altered_prepare_answer_is_refused(altered):
-    with pytest.raises(SignerError, match="verify prepared rotating group"):
+    with pytest.raises(SignerError, match="verify prepared rotating group") as excinfo:
         prepared_from(CASES[altered["case"]], altered["prepare"])
+    assert_verifier_refusal(excinfo.value)
 
 
 @pytest.mark.parametrize(
@@ -89,8 +114,9 @@ def test_every_altered_sign_answer_is_refused(altered):
     # Checked against the case's own, unaltered prepare answer.
     case = CASES[altered["case"]]
     prepared = prepared_from(case, case["prepare"])
-    with pytest.raises(SignerError):
-        prepared._verify_signed(copy.deepcopy(altered["sign"]))
+    with pytest.raises(SignerError) as excinfo:
+        verify_signed(prepared, altered["sign"])
+    assert_verifier_refusal(excinfo.value)
 
 
 def test_the_alterations_are_the_ones_this_sdk_tests_directly():
@@ -105,6 +131,28 @@ def test_the_alterations_are_the_ones_this_sdk_tests_directly():
         "stage 0 spend signed by another program that it names as its signer"
     }
     assert {case[0] for case in SIGN_TAMPERS} <= sign_names
+
+
+@pytest.mark.parametrize("name", sorted(CASES))
+def test_another_spelling_of_the_rekey_target_is_refused(name):
+    # The group bytes are unchanged: they carry the target's 32 bytes, which
+    # both spellings decode to. Only the address check can refuse it.
+    case = CASES[name]
+    prepare = copy.deepcopy(case["prepare"])
+    prepare["rekey_to"] = alternate_spelling(prepare["rekey_to"])
+    with pytest.raises(SignerError, match="invalid rekey_to") as excinfo:
+        prepared_from(case, prepare)
+    assert_verifier_refusal(excinfo.value)
+
+
+@pytest.mark.parametrize("name", sorted(CASES))
+def test_another_spelling_of_the_account_is_refused(name):
+    case = CASES[name]
+    prepare = copy.deepcopy(case["prepare"])
+    prepare["account"] = alternate_spelling(prepare["account"])
+    with pytest.raises(SignerError, match="is not the sender") as excinfo:
+        prepared_from(case, prepare)
+    assert_verifier_refusal(excinfo.value)
 
 
 # The two rules the vectors cannot carry, because they depend on the client's
@@ -152,11 +200,12 @@ def test_a_spend_signed_by_the_program_whose_address_is_its_rekey_target_is_refu
     # refusal below is the rule's.
     elsewhere = encoding.encode_address(bytes([0x55]) + bytes(31))
     prepare, sign = _rekeyed_to(case, elsewhere)
-    prepared_from(case, prepare)._verify_signed(sign)
+    verify_signed(prepared_from(case, prepare), sign)
 
     # The reported target is the address of the program that signs: each
     # answer is acceptable alone, and the pair is not.
     prepare, sign = _rekeyed_to(case, stage_address)
     prepared = prepared_from(case, prepare)
-    with pytest.raises(SignerError, match="authorized by the next stage's program"):
-        prepared._verify_signed(sign)
+    with pytest.raises(SignerError, match="authorized by the next stage's program") as excinfo:
+        verify_signed(prepared, sign)
+    assert_verifier_refusal(excinfo.value)

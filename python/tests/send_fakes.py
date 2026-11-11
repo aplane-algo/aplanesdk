@@ -180,7 +180,9 @@ class FakeNode:
     and reports its first transaction's ID. ``pending`` answers the pending
     transaction lookup; None confirms in round 12. ``simulate`` answers the
     simulate endpoint; None reports success. ``auth_addrs`` is the chain's
-    auth address per account. ``round`` is the node's current round.
+    auth address per account. ``round`` is the node's current round, and
+    ``wait_round`` the round a wait for the next block answers with, when it
+    is not that.
     """
 
     def __init__(
@@ -191,6 +193,7 @@ class FakeNode:
         auth_addrs: Optional[Dict[str, str]] = None,
         round: int = 10,
         accounts: Optional[Dict[str, Dict[str, Any]]] = None,
+        wait_round: Optional[int] = None,
     ):
         self.submit = submit
         self.pending = pending
@@ -198,6 +201,7 @@ class FakeNode:
         self.auth_addrs = auth_addrs or {}
         self.round = round
         self.accounts = accounts or {}
+        self.wait_round = wait_round
         self.lock = threading.Lock()
         self.submitted: List[bytes] = []
         self.simulated: List[Dict[str, Any]] = []
@@ -228,7 +232,8 @@ class FakeNode:
         if path.startswith("/v2/status/wait-for-block-after/"):
             with self.lock:
                 self.waits.append(path.rsplit("/", 1)[1])
-            return reply(200, {"last-round": self.round})
+            answer = self.round if self.wait_round is None else self.wait_round
+            return reply(200, {"last-round": answer})
         if path == "/v2/status":
             return reply(200, {"last-round": self.round})
         if path.startswith("/v2/accounts/"):

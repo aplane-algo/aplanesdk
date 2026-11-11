@@ -859,6 +859,12 @@ class TestValidityRounds:
         assert sent.last_valid_round - sent.first_valid_round <= ROTATING_MAX_VALIDITY_WINDOW
         assert result.rotating.transaction.first_valid_round == sent.first_valid_round
 
+    def test_refresh_keeps_a_stale_windows_length_between_10_and_100_rounds(self, fakes):
+        f = Fixture(fakes, node=FakeNode(round=40))
+        f.send(rotating_payment(f.signer.account, 1, 31), refresh_validity=True)
+        sent = f.signer.prepare_seen[0]
+        assert (sent.first_valid_round, sent.last_valid_round) == (40, 70)
+
     def test_a_current_window_is_left_alone_even_when_refresh_is_allowed(self, fakes):
         f = Fixture(fakes)
         f.send(refresh_validity=True)
@@ -1105,6 +1111,27 @@ def test_an_interrupt_while_approval_is_pending_cancels_it_and_propagates(fakes)
     with pytest.raises(KeyboardInterrupt):
         f.client.sign_prepared_rotating(prepared, request_id="app-id-2")
     assert cancels == ["app-id-2"]
+
+
+def test_a_fault_in_the_checks_is_not_reported_as_a_refusal(fakes, monkeypatch):
+    # Only the checks' own refusals are refusals. A fault inside them is an
+    # SDK defect and surfaces as what it is.
+    f = Fixture(fakes)
+    prepared = f.client.prepare_rotating(f.txn)
+
+    def fault(*args, **kwargs):
+        raise TypeError("a defect in the checks")
+
+    monkeypatch.setattr(signer_module, "_sign_canonical_dummy", fault)
+    with pytest.raises(TypeError, match="a defect"):
+        f.client.sign_prepared_rotating(prepared)
+    monkeypatch.setattr(signer_module, "_validate_group_mutations", fault)
+    with pytest.raises(TypeError, match="a defect"):
+        f.client.prepare_rotating(f.txn)
+    with pytest.raises(TypeError, match="a defect"):
+        f.client.simulate_prepared_rotating(f.node.client, prepared)
+    with pytest.raises(TypeError, match="a defect"):
+        f.send()
 
 
 class _Fake:
