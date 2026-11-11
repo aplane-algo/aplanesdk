@@ -5080,10 +5080,11 @@ class SignerClient:
         an EndpointCosignerResolver over the endpoint registry from_env read,
         with the connection options from_env was given. It is made on first
         use and closed with this client. None for a client not made from a
-        data directory."""
-        if self._endpoint_registry is None:
-            return None
+        data directory, and once this client is closed: none is made again,
+        so a closed client opens no cosigner connections."""
         with self._cosigner_resolver_lock:
+            if self._endpoint_registry is None or self._closed:
+                return None
             if self._cosigner_resolver is None:
                 self._cosigner_resolver = EndpointCosignerResolver(
                     registry=self._endpoint_registry, **self._cosigner_connection
@@ -5093,8 +5094,10 @@ class SignerClient:
     def close(self):
         """Close the client and any SSH tunnel, and the connections to
         cosigners it found from its endpoint registry."""
-        self._closed = True
         with self._cosigner_resolver_lock:
+            self._closed = True
+            # Without the registry no default resolver is made again.
+            self._endpoint_registry = None
             resolver, self._cosigner_resolver = self._cosigner_resolver, None
         if resolver is not None:
             resolver.close()

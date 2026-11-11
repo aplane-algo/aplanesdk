@@ -721,8 +721,9 @@ given no `cosigner_client` and no `cosigner_resolver`, finds the cosigner
 with an `EndpointCosignerResolver` over the same registry, connecting with the
 same `timeout`, `trust_on_first_use` and `ssh_setup_timeout`. It makes the
 resolver on first use, keeps it, and closes it, with its connections, when
-the client is closed. A client not made from a data directory still needs a
-cosigner passed to it.
+the client is closed; a closed client makes none again, so a later cosigned
+call fails as with no cosigner and opens no connection. A client not made
+from a data directory still needs a cosigner passed to it.
 
 ```yaml
 schema_version: 2

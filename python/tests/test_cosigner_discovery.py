@@ -716,6 +716,27 @@ class TestCosignedFlow:
         assert sorted(net.closed) == ["cosign", "other"]
         assert fixture.user_client._cosigner_resolver is None
 
+    @pytest.mark.parametrize("used", [True, False], ids=["after a send", "before any"])
+    def test_a_closed_client_makes_no_resolver_again(self, fakes, network, used):
+        fixture = CosignedFixture(fakes)
+        net = network({"cosign": _fixture_cosigner()})
+        _from_data_directory(fixture.user_client, net.registry)
+        if used:
+            fixture.send()
+        connects = len(net.connects)
+        fixture.user_client.close()
+        # A later cosigned call fails as a client with no cosigner does,
+        # before anything is planned or asked to sign, and connects to
+        # nothing.
+        before = len(fixture.user.paths)
+        with pytest.raises(SignerError, match="cosigner_client or cosigner_resolver is required"):
+            fixture.send()
+        assert fixture.user_client._default_cosigner_resolver() is None
+        assert fixture.user_client._cosigner_resolver is None
+        assert len(net.connects) == connects
+        after = fixture.user.paths[before:]
+        assert not any(path in after for path in ("/plan",) + APPROVAL_PATHS)
+
     def test_a_discovery_failure_is_raised_before_any_approval(self, fakes, network):
         fixture = CosignedFixture(fakes)
         net = network({"other": Endpoint([witness_record(PUBLIC_A)])})
