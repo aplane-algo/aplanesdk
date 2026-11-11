@@ -776,7 +776,7 @@ the listed path, which needs no cosigner, so its cosigner is resolved only
 after the base component, and only when the signer's path needs one: the
 rekey-list escape hatch keeps working with the cosigner down or not
 configured. A resolver's own exception is passed on as it is, never as an
-unknown outcome.
+unknown outcome, even when it was raised from an SDK error that is one.
 
 To use the resolver yourself, build it from a data directory or a loaded
 registry and close it when done:
