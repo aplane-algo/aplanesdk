@@ -5880,6 +5880,7 @@ class SignerClient:
         Returns the parsed JSON as a dict, or an empty dict if:
         - Response has no content
         - Response content is not valid JSON (e.g., plain text error)
+        - Response content is JSON but not an object
 
         This prevents JSONDecodeError when the server returns plain text
         error messages instead of JSON.
@@ -5887,9 +5888,12 @@ class SignerClient:
         if not resp.content:
             return {}
         try:
-            return resp.json()
-        except json.JSONDecodeError:
+            data = resp.json()
+        except (ValueError, RecursionError):
             return {}
+        # A JSON error body that is not an object carries no code and no
+        # message.
+        return data if isinstance(data, dict) else {}
 
     def _error_message(self, resp: requests.Response, fallback: str) -> str:
         """Return signer error text from top-level JSON error, text, or fallback."""

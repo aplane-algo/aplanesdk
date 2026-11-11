@@ -2382,6 +2382,27 @@ class TestSigningErrors:
             with pytest.raises(SignerUnavailableError):
                 client.sign_transaction(self._make_mock_txn())
 
+    @pytest.mark.parametrize("body", [b"[1, 2]", b"null", b"7", b'"oops"', b"[[[[["])
+    def test_an_error_body_that_is_not_an_object_has_no_code(self, body):
+        # It carries no code and no message, so its text is the message.
+        client = make_client()
+        with patch.object(client.session, "post", return_value=raw_response(500, body)):
+            with pytest.raises(SignerError) as exc_info:
+                client.sign_transaction(self._make_mock_txn())
+        assert type(exc_info.value) is SignerError
+        assert exc_info.value.code == ""
+        assert str(exc_info.value) == body.decode()
+
+    def test_an_error_code_needs_a_message(self):
+        # A code is kept only beside a message that is not blank.
+        client = make_client()
+        resp = raw_response(400, b'{"error": "  ", "code": "not_found"}')
+        with patch.object(client.session, "post", return_value=resp):
+            with pytest.raises(SignerError) as exc_info:
+                client.sign_transaction(self._make_mock_txn())
+        assert not isinstance(exc_info.value, KeyNotFoundError)
+        assert exc_info.value.code == ""
+
     def test_key_not_found(self):
         client = make_client()
         resp = mock_response(400, {"error": "Key not found: INVALID_ADDRESS", "code": "not_found"})
