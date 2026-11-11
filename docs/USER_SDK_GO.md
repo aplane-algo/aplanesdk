@@ -483,7 +483,11 @@ plan, err := client.PlanGroup(txns, authAddresses, lsigArgsMap, opts)
 
 `SignOptions.Passthrough` values are base64-encoded signed transaction msgpack
 from another signer and must already carry the intended group ID. The SDK
-decodes them and sends them as passthrough slots. `SignOptions.LsigResources`
+decodes them and sends them as passthrough slots. They must be standard base64
+with padding: a string that is not (a line break or other whitespace, URL-safe
+characters, missing padding, data after the padding) is refused, as the Python
+and TypeScript SDKs refuse it. `Base64ToBytes(...)` is that decoder and
+refuses the same strings. `SignOptions.LsigResources`
 describes unsigned foreign slots for `/plan` and must also accompany a final
 passthrough LogicSig slot on `/sign`. Reuse the same selected
 authorization-path values; the signer verifies the declared program and
@@ -508,26 +512,35 @@ For actual signing with passthrough slots, use:
 Foreign slots are only supported on `/plan`; they must be resubmitted as
 passthrough for final signing.
 
-### Multi-Party Group Assembly
+### Multi-Party Groups
 
-Use `AssembleGroup(...)` on the results of
-`SignTransactionsListWithOptions(...)`:
+A group that another party also signs goes through the signer in two steps:
+
+1. Plan it with `PlanGroup(...)`, leaving the other party's positions foreign
+   (an empty auth address) and declaring `SignOptions.LsigResources` for any
+   that are LogicSigs. The plan is the final group: its group ID, and any fees
+   and dummies the signer adds.
+2. The other party signs its transaction from the planned group. Sign the
+   planned group with `SignTransactionsWithOptions(...)`, passing that signed
+   transaction as a passthrough position in `SignOptions.Passthrough` and
+   repeating the same `LsigResources`.
+
+The result is the complete signed group, ready to submit:
 
 ```go
-combined, err := aplane.AssembleGroup([][]string{
-	aliceSigned,
-	bobSigned,
+signed, err := client.SignTransactionsWithOptions(plannedTxns, authAddresses, nil, &aplane.SignOptions{
+	Passthrough: map[int]string{1: otherPartySignedBase64},
 })
 if err != nil {
 	return err
 }
 
-combinedBytes, err := aplane.Base64ToBytes(combined)
+signedBytes, err := aplane.Base64ToBytes(signed)
 if err != nil {
 	return err
 }
 
-txid, err := algodClient.SendRawTransaction(combinedBytes).Do(ctx)
+txid, err := algodClient.SendRawTransaction(signedBytes).Do(ctx)
 ```
 
 ### Cosigned Accounts
@@ -555,12 +568,21 @@ returns `ErrSigningRejected`, and the cosigned signing helper propagates that
 error. Apply the key's document before retrying. See the
 [compatibility note](COMPATIBILITY.md) for policy format and provisioning details.
 
+The helper reads each position's key (its signing flow, LogicSig resources
+and fee ceiling) from the user signer's `/keys` record, by the position's
+auth address. A prepared transaction carries no key of its own. It is the
+lookup the prepare helpers make: the spendable key for the address (a witness
+key is never chosen), from a key list the client caches. Each call checks the
+signer's keyset revision with one `/status` request and fetches `/keys` again
+only when the revision has changed, so a key added or replaced on the signer
+is picked up by the next call. An address with no spendable key is
+refused with `ErrKeyNotFound`.
+
 For manual orchestration, use `RequestComponents` on the user client with a
 bounded-base target and on the cosigner client, then `RequestAssemble` on the
 user client. Finish the user side (the base components and any ordinary-position
 signing) before requesting cosigner components, so a cosigner never sees a group
-the user signer rejects. `AssembleGroup` remains only the local multi-party
-concatenation helper.
+the user signer rejects.
 
 A cosigned account's LogicSig contract is `plain1` on a plain host, or
 `bounded2` on a bounded account such as Corridor, and its online signing flow is
@@ -638,6 +660,24 @@ error and never trigger another signing request automatically.
 - `SignTransactions(...)` returns one concatenated base64 string for the full
   signed group.
 - `SignTransactionsList(...)` returns per-slot base64 strings.
+- These simple sign calls return only the signed transactions. To read what
+  the signer changed (the fee it added, the group ID, appended dummies), call
+  `SignRequestsWithContext(...)`, whose `GroupSignResponse.Mutations` is the
+  mutation report, already checked against the request.
+- Amounts and fees in the `*PrepParams` types are in microAlgos; an asset
+  amount is in the asset's base units, not adjusted for its decimals.
+- A foreign app or asset reference, and an ABI `application` or `asset`
+  argument, must not be zero. A box's app index may be zero (the called app).
+- Group helpers check every sender against everything it pays across the
+  group: the ALGO it sends plus the fee of every position it sends, asset
+  transfers included. The check is named `group_algo_balance`. It reads each
+  sender's spendable ALGO from the `spendable_algo` check that the payment and
+  asset-transfer helpers record on every position (the lowest value, when a
+  sender has several positions), and refuses a position
+  that lacks that check or whose `available` value is not a `uint64`
+- `PrepareAsaTransfer(...)` checks the transfer's fee against the sender's spendable ALGO
+  itself, so one transfer is refused alone exactly as it is in a group. Its
+  `asa_transfer` check records the fee.
 - `PlanGroup(...)` returns unsigned `TX`-prefixed hex transactions plus a
   mutation report.
 - `SimulateGroup(...)` and `SimulatePreparedGroup(...)` perform ordinary
@@ -816,7 +856,12 @@ if err != nil {
 ## Advanced Notes
 
 - `LoadConfig(...)` also understands client-side `algod` configuration and can
-  build an `algod` client with `Config.NewAlgodClient(...)`.
+  build an `algod` client with `Config.NewAlgodClient(...)`. When
+  `networks_allowed` is set in `config.yaml`, `NewAlgodClient` refuses a network
+  that is not on it, and loading the config refuses a default network that is
+  not on it. The list must hold network IDs written as text: a bare
+  number, `true`/`false` or an empty entry is refused, so quote a name such as
+  `"1"`. Quote a network name that YAML could read as a boolean, such as `"on"`, `"yes"` or `"no"`. The `network` value follows the same rule: it must be text and a network ID, and a bare number or `true`/`false` is refused.
 - `ResolveDataDir(...)`,
   `ResolvePath(...)`, `Base64ToBytes(...)`, `BytesToBase64(...)`,
   `HexToBytes(...)`, and `BytesToHex(...)` are exported for integration code.

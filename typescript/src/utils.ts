@@ -9,6 +9,7 @@ import {
   InvalidTransactionError,
 } from "./errors.js";
 
+import { base64ToBytes } from "./encoding.js";
 import * as fs from "fs";
 import * as path from "path";
 import { createHash } from "crypto";
@@ -18,6 +19,7 @@ import {
 } from "./errors.js";
 import {
   loadConfig,
+  isNetworkAllowed,
   loadClientEndpointRegistry,
   resolveClientEndpoint,
   clientEndpointSshHostPort,
@@ -36,6 +38,7 @@ import {
 // Re-export config utilities
 export {
   loadConfig,
+  isNetworkAllowed,
   loadClientEndpointRegistry,
   resolveClientEndpoint,
   resolveDataDir,
@@ -105,8 +108,10 @@ export async function sendRawTransaction(
   algodClient: Algodv2,
   signedTxn: string
 ): Promise<string> {
+  // Checked before the call: a string that is not base64 was never submitted,
+  // so it is not an algod rejection.
+  const txnBytes = base64ToBytes(signedTxn, "signed transaction");
   try {
-    const txnBytes = Buffer.from(signedTxn, "base64");
     const response = await algodClient.sendRawTransaction(txnBytes).do();
     return response.txid;
   } catch (error) {
@@ -206,67 +211,6 @@ function parseAlgodError(error: unknown): Error {
   // Fallback: return generic error with truncated message
   const truncated = msg.length > 200 ? msg.slice(0, 200) + "..." : msg;
   return new TransactionRejectedError(txid, truncated);
-}
-
-/**
- * Merge multi-party signed outputs into one complete group.
- *
- * Each signer produces a list of base64-encoded signed transactions,
- * with empty strings ("") for slots they didn't sign (foreign entries).
- * This function merges them so each slot has exactly one non-empty entry.
- *
- * @param signedLists - List of signed transaction lists from different signers
- * @returns Base64-encoded concatenated signed transactions
- *
- * @example
- * ```typescript
- * // Alice signs her txns, gets "" for Bob's slots
- * const aliceSigned = await aliceClient.signTransactionsList(...);
- * // Bob signs his txns, gets "" for Alice's slots
- * const bobSigned = await bobClient.signTransactionsList(...);
- * // Merge and submit
- * const combined = assembleGroup([aliceSigned, bobSigned]);
- * await sendRawTransaction(algodClient, combined);
- * ```
- */
-export function assembleGroup(signedLists: string[][]): string {
-  if (signedLists.length === 0) {
-    throw new SignerError("signedLists must not be empty");
-  }
-
-  const groupLen = signedLists[0].length;
-  for (let i = 0; i < signedLists.length; i++) {
-    if (signedLists[i].length !== groupLen) {
-      throw new SignerError(
-        `signedLists[${i}] has ${signedLists[i].length} entries, expected ${groupLen}`
-      );
-    }
-  }
-
-  const merged: string[] = [];
-  for (let idx = 0; idx < groupLen; idx++) {
-    const entries = signedLists
-      .map((sl) => sl[idx])
-      .filter((s) => s !== "");
-    if (entries.length === 0) {
-      throw new SignerError(`slot ${idx}: no signer provided a signed transaction`);
-    }
-    if (entries.length > 1) {
-      throw new SignerError(`slot ${idx}: multiple signers provided a signed transaction`);
-    }
-    merged.push(entries[0]);
-  }
-
-  // Concatenate all signed txns
-  const buffers = merged.map((s) => Buffer.from(s, "base64"));
-  const totalLength = buffers.reduce((sum, b) => sum + b.length, 0);
-  const combined = Buffer.alloc(totalLength);
-  let offset = 0;
-  for (const buf of buffers) {
-    buf.copy(combined, offset);
-    offset += buf.length;
-  }
-  return combined.toString("base64");
 }
 
 /** Options for requestEnrollment. */

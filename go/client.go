@@ -582,6 +582,14 @@ func (c *SignerClient) GetKeysResponseWithContext(ctx context.Context) (*KeysRes
 	cache := make(map[string]*KeyInfo, len(keysResp.Keys))
 	for i := range keysResp.Keys {
 		k := &keysResp.Keys[i]
+		// One record per address. Should the signer list an address twice,
+		// the first spendable row is the one kept, the row findSpendableKey
+		// picks from the list itself, so a lookup answers the same from a
+		// fresh list and from the cache. A row is displaced only by the first
+		// spendable row after a non-spending one.
+		if kept, ok := cache[k.Address]; ok && (isSpendableKey(*kept) || !isSpendableKey(*k)) {
+			continue
+		}
 		cache[k.Address] = k
 	}
 	c.keyMu.Lock()
@@ -775,6 +783,10 @@ func (c *SignerClient) RequestAssembleWithContext(ctx context.Context, reqBody A
 	if err := assemblyResp.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid assembly response: %w", err)
 	}
+	// The answer must be to this request, not merely carry a well-formed ID.
+	if assemblyResp.RequestID != reqBody.RequestID {
+		return nil, fmt.Errorf("invalid assembly response: request_id %q does not match the request's %q", assemblyResp.RequestID, reqBody.RequestID)
+	}
 	return &assemblyResp, nil
 }
 
@@ -940,7 +952,7 @@ func buildRequests(txns []types.Transaction, authAddresses []string, lsigArgsMap
 
 		// Passthrough: include pre-signed transaction as-is
 		if b64, ok := opts.Passthrough[i]; ok {
-			decoded, err := base64.StdEncoding.DecodeString(b64)
+			decoded, err := Base64ToBytes(b64)
 			if err != nil {
 				return nil, fmt.Errorf("invalid passthrough transaction %d: invalid base64: %w", i+1, err)
 			}

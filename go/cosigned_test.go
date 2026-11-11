@@ -5,6 +5,7 @@ package aplane
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -156,20 +157,27 @@ func TestSignPreparedCosignedGroupRejectsUnsupportedSigningFlow(t *testing.T) {
 		t.Fatalf("MakePaymentTxn() error = %v", err)
 	}
 
-	_, err = SignPreparedCosignedGroup(PreparedCosignedGroupOptions{
-		UserClient: &SignerClient{},
-		PreparedGroup: NewPreparedGroup(PreparedTransaction{
+	// The flow reads the signer's keyset revision, and nothing else here.
+	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/status" {
+			t.Errorf("unexpected request %s", r.URL.Path)
+		}
+		json.NewEncoder(w).Encode(StatusResponse{State: "unlocked"})
+	})
+	defer server.Close()
+	_, err = signCosignedWithHeldKeys(PreparedCosignedGroupOptions{
+		UserClient: client,
+		PreparedGroup: NewPreparedGroup(held(PreparedTransaction{
 			Transaction: &txn,
 			AuthAddress: cosigned,
-			SignerKey: &KeyInfo{
-				Address:     cosigned,
-				KeyType:     "aplane.future-cosigned.v1",
-				SigningFlow: "cosigner2",
-				LogicSigResources: &LogicSigResourceProfile{
-					Spend: &LogicSigResourceUsage{ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000},
-				},
+		}, &KeyInfo{
+			Address:     cosigned,
+			KeyType:     "aplane.future-cosigned.v1",
+			SigningFlow: "cosigner2",
+			LogicSigResources: &LogicSigResourceProfile{
+				Spend: &LogicSigResourceUsage{ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000},
 			},
-		}),
+		})),
 	})
 	if err == nil || !strings.Contains(err.Error(), `signing flow "cosigner2"`) {
 		t.Fatalf("SignPreparedCosignedGroup() error = %v, want unsupported signing flow rejection", err)
@@ -191,23 +199,27 @@ func TestSignPreparedCosignedGroupRefusesCosigner1AsUnknown(t *testing.T) {
 	}
 	requests := 0
 	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		// Reading the signer's keyset revision is not a signing request.
+		if r.URL.Path == "/status" {
+			json.NewEncoder(w).Encode(StatusResponse{State: "unlocked"})
+			return
+		}
 		requests++
 		http.Error(w, "unexpected request", http.StatusInternalServerError)
 	})
 	defer server.Close()
-	_, err = SignPreparedCosignedGroup(PreparedCosignedGroupOptions{
+	_, err = signCosignedWithHeldKeys(PreparedCosignedGroupOptions{
 		UserClient: client,
-		PreparedGroup: NewPreparedGroup(PreparedTransaction{
+		PreparedGroup: NewPreparedGroup(held(PreparedTransaction{
 			Transaction: &txn,
 			AuthAddress: account,
-			SignerKey: &KeyInfo{
-				Address: account, KeyType: "aplane.falcon1024-cosigner1024.v1", SigningFlow: "cosigner1",
-				CosignerComponentKeyType: KeyTypeWitnessFalcon1024,
-				LogicSigResources: &LogicSigResourceProfile{
-					Spend: &LogicSigResourceUsage{ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000},
-				},
+		}, &KeyInfo{
+			Address: account, KeyType: "aplane.falcon1024-cosigner1024.v1", SigningFlow: "cosigner1",
+			CosignerComponentKeyType: KeyTypeWitnessFalcon1024,
+			LogicSigResources: &LogicSigResourceProfile{
+				Spend: &LogicSigResourceUsage{ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000},
 			},
-		}),
+		})),
 	})
 	if err == nil || !strings.Contains(err.Error(), `signing flow "cosigner1", which this SDK does not support`) {
 		t.Fatalf("SignPreparedCosignedGroup() error = %v, want cosigner1 refused as an unknown flow", err)
@@ -234,4 +246,39 @@ func TestSelectedPreparedResourcesUsesTheListedPathForOnlyThese(t *testing.T) {
 	if got, err := selectedPreparedResources(key, &types.Transaction{}); err != nil || *got != *spend {
 		t.Fatalf("a spend on a list account = %+v, %v", got, err)
 	}
+}
+
+// testHeldKeys are the keys the signer of a cosigned test holds, by address.
+// The cosigned flow reads each key from the signer by the position's auth
+// address, so a test names the signer's key beside the position that uses it
+// with held, and signCosignedWithHeldKeys serves those to the flow.
+var testHeldKeys = map[string]*KeyInfo{}
+
+// held records key as the signer's key for a position and returns the
+// position unchanged.
+func held(position PreparedTransaction, key *KeyInfo) PreparedTransaction {
+	if key != nil {
+		testHeldKeys[key.Address] = key
+	}
+	return position
+}
+
+// signCosignedWithHeldKeys is SignPreparedCosignedGroup against a signer that
+// holds the keys named with held.
+func signCosignedWithHeldKeys(opts PreparedCosignedGroupOptions) (*CosignedSignResult, error) {
+	if opts.UserClient != nil {
+		cache := make(map[string]*KeyInfo, len(testHeldKeys))
+		for address, key := range testHeldKeys {
+			copied := *key
+			cache[address] = &copied
+		}
+		// Cached at the keyset revision the test signers report, so the flow's
+		// key read is served from here.
+		opts.UserClient.keyMu.Lock()
+		opts.UserClient.keyCache = cache
+		opts.UserClient.keyCacheRevision = 0
+		opts.UserClient.keyCacheRevisionKnown = true
+		opts.UserClient.keyMu.Unlock()
+	}
+	return SignPreparedCosignedGroup(opts)
 }

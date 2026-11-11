@@ -42,6 +42,48 @@ func validateNetworkID(id string) error {
 	return nil
 }
 
+// requireNetworkNameList requires networks_allowed to be a list of text
+// entries. Decoding into []string would read a bare 1 or true as a network
+// named "1" or "true" and drop a null, so the YAML is checked before it is
+// turned into strings. An entry that is meant as a name made of digits must
+// be quoted.
+func requireNetworkNameList(listNode yaml.Node) error {
+	node := resolveYAMLAlias(&listNode)
+	if node.Kind == yaml.ScalarNode && node.ShortTag() == "!!null" {
+		return nil
+	}
+	if node.Kind != yaml.SequenceNode {
+		return fmt.Errorf("networks_allowed in config.yaml must be a list of network IDs")
+	}
+	for _, entry := range node.Content {
+		if item := resolveYAMLAlias(entry); item.Kind != yaml.ScalarNode || item.ShortTag() != "!!str" {
+			return fmt.Errorf("invalid network in networks_allowed: entry on line %d is not text (quote it if it is a network ID)", entry.Line)
+		}
+	}
+	return nil
+}
+
+// requireNetworkName requires the config's network to be text, the rule of the
+// networks_allowed entries. yaml.v3 would decode a bare 1 or true into the
+// string field as "1" or "true"; the Python and TypeScript loaders refuse
+// them. A null keeps the default.
+func requireNetworkName(nameNode yaml.Node) error {
+	node := resolveYAMLAlias(&nameNode)
+	if node.Kind == yaml.ScalarNode && (node.ShortTag() == "!!null" || node.ShortTag() == "!!str") {
+		return nil
+	}
+	return fmt.Errorf("invalid network in config.yaml: the value on line %d is not text (quote it if it is a network ID)", nameNode.Line)
+}
+
+// resolveYAMLAlias follows an alias (*name) to the node it stands for, so a
+// value is checked for what it is however the file spells it.
+func resolveYAMLAlias(node *yaml.Node) *yaml.Node {
+	for node.Kind == yaml.AliasNode && node.Alias != nil {
+		node = node.Alias
+	}
+	return node
+}
+
 // ExpandPath expands ~ to the user's home directory.
 func ExpandPath(path string) string {
 	if strings.HasPrefix(path, "~") {
@@ -77,6 +119,16 @@ func LoadConfig(dataDir string) (*Config, error) {
 	for _, field := range []string{"endpoint", "ssh", "signer_port"} {
 		if _, ok := raw[field]; ok {
 			return nil, fmt.Errorf("unsupported client routing in config.yaml: remove %q and configure endpoints.yaml", field)
+		}
+	}
+	if node, ok := raw["network"]; ok {
+		if err := requireNetworkName(node); err != nil {
+			return nil, err
+		}
+	}
+	if node, ok := raw["networks_allowed"]; ok {
+		if err := requireNetworkNameList(node); err != nil {
+			return nil, err
 		}
 	}
 	if err := yaml.Unmarshal(data, config); err != nil {
@@ -173,6 +225,12 @@ const algodRequestTimeout = 30 * time.Second
 func (c *Config) NewAlgodClient(network string) (*algod.Client, error) {
 	if c == nil {
 		return nil, fmt.Errorf("algod not configured: no config provided")
+	}
+	// networks_allowed is the operator's list of networks this client may
+	// work on. It is enforced here, where a client for a named network is
+	// made, and not only for the default network at load.
+	if !c.IsNetworkAllowed(network) {
+		return nil, fmt.Errorf("network %q is not in networks_allowed %v", network, c.NetworksAllowed)
 	}
 	algodConfig, err := c.GetAlgodConfig(network)
 	if err != nil {

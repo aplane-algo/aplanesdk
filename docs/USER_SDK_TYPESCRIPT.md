@@ -202,6 +202,11 @@ try {
 This path:
 
 - resolves the client data dir
+- refuses a `config.yaml` whose `network` is not in its `networks_allowed`,
+  when that list is set, and one whose `networks_allowed` is not a list of
+  network IDs written as text (a malformed list is an error, never an empty
+  one; a bare number, `true`/`false` or an empty entry is refused, so quote a
+  name such as `"1"`). Quote a network name that YAML could read as a boolean, such as `"on"`, `"yes"` or `"no"`. The `network` value follows the same rule: it must be text and a network ID, and a bare number or `true`/`false` is refused.
 - validates `config.yaml` contains no obsolete routing
 - loads and selects an endpoint from `endpoints.yaml`
 - resolves SSH paths relative to the client data dir
@@ -490,17 +495,28 @@ address-keyed `planGroup()` convenience form when two transactions use the
 same authorization address with different LogicSig arguments or app-call
 metadata.
 
-`assembleGroup()` is a lower-level utility for workflows that already have
-partial list-per-slot outputs where unsigned slots are represented by empty
-strings:
+A group that another party also signs goes through the signer in two steps:
+
+1. Plan it with `planGroup()`, leaving the other party's positions foreign (a
+   `null` auth address) and declaring `lsigResources` for any that are
+   LogicSigs. The plan is the final group: its group ID, and any fees and
+   dummies the signer adds.
+2. The other party signs its transaction from the planned group. Sign the
+   planned group with `signTransactions()`, passing that signed transaction as
+   a passthrough position and repeating the same `lsigResources`.
 
 ```ts
-import { assembleGroup } from "aplanesdk";
-
-const aliceSigned = await aliceClient.signTransactionsList(...);
-const bobSigned = await bobClient.signTransactionsList(...);
-const combined = assembleGroup([aliceSigned, bobSigned]);
+const signedGroup = await client.signTransactions(
+  plannedTxns,
+  authAddresses,
+  undefined,
+  { 1: otherPartySignedBase64 },
+);
 ```
+
+Passthrough values are standard base64 with padding. A string that is not
+(URL-safe characters, a line break or other whitespace, missing padding, data
+after the padding) is refused, as the Go and Python SDKs refuse it.
 
 The high-level final-signing helpers reject foreign slots for `/sign`; foreign
 slots are accepted by `planGroup()` only.
@@ -530,12 +546,21 @@ throws `SigningRejectedError`, preserving the code and message, and the cosigned
 signing helper propagates that error. Apply the key's document before retrying.
 See the [compatibility note](COMPATIBILITY.md) for policy format and provisioning details.
 
+The helper reads each position's key (its signing flow, LogicSig resources
+and fee ceiling) from the user signer's `/keys` record, by the position's
+auth address. A prepared transaction carries no key of its own. It is the
+lookup the prepare helpers make: the spendable key for the address (a witness
+key is never chosen), from a key list the client caches. Each call checks the
+signer's keyset revision with one `/status` request and fetches `/keys` again
+only when the revision has changed, so a key added or replaced on the signer
+is picked up by the next call. An address with no spendable key is
+refused with `KeyNotFoundError`.
+
 For manual orchestration, use `requestComponents()` on the user client with a
 bounded-base target and on the cosigner client, then `requestAssemble()` on the
 user client. Finish the user side (the base components and any ordinary-position
 signing) before requesting cosigner components, so a cosigner never sees a group
-the user signer rejects. `assembleGroup()` remains only the local multi-party
-concatenation helper.
+the user signer rejects.
 
 A cosigned account's LogicSig contract is `plain1` on a plain host, or
 `bounded2` on a bounded account such as Corridor, and its online signing flow is
@@ -610,6 +635,29 @@ never trigger another signing request automatically.
   signed group.
 - `signTransactionsList()` returns per-slot base64 strings; it also rejects
   foreign slots for `/sign`.
+- These simple sign calls return only the signed transactions. To read what
+  the signer changed (the fee it added, the group ID, appended dummies), call
+  `signRequests()`, whose `mutations` is the mutation report, already checked
+  against the request.
+- Amounts and fees in the `*PrepParams` types are in microAlgos; an asset
+  amount is in the asset's base units, not adjusted for its decimals. IDs,
+  amounts and fees must be whole numbers (a safe integer or a bigint): a
+  fraction, a numeric string or a boolean is refused. That holds for every
+  ID, count and index a prepare helper takes: app and asset IDs, foreign
+  references, ABI `application` and `asset` arguments, box app indexes, extra
+  pages, the state schema counts (`numLocalInts`, `numLocalByteSlices`,
+  `numGlobalInts`, `numGlobalByteSlices`), and the key-registration rounds and
+  dilution.
+- Group helpers check every sender against everything it pays across the
+  group: the ALGO it sends plus the fee of every position it sends, asset
+  transfers included. The check is named `group_algo_balance`. It reads each
+  sender's spendable ALGO from the `spendable_algo` check that the payment and
+  asset-transfer helpers record on every position (the lowest value, when a
+  sender has several positions), and refuses a position
+  that lacks that check or whose `available` value is not a whole number
+- `prepareAsaTransfer()` checks the transfer's fee against the sender's spendable ALGO
+  itself, so one transfer is refused alone exactly as it is in a group. Its
+  `asa_transfer` check records the fee.
 - `signRequests()` accepts one or more raw `/sign` request entries and returns the
   `/sign` response, with its mutation report in the typed camelCase
   `MutationReport` form.

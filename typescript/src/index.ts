@@ -50,10 +50,10 @@ export type {
 // Utilities
 export {
   sendRawTransaction,
-  assembleGroup,
   requestEnrollment,
   requestEnrollmentFromEnv,
   loadConfig,
+  isNetworkAllowed,
   loadClientEndpointRegistry,
   resolveClientEndpoint,
   resolveDataDir,

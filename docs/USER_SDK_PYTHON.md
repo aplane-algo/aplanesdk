@@ -195,6 +195,11 @@ finally:
 This path:
 
 - resolves the client data dir,
+- refuses a `config.yaml` whose `network` is not in its `networks_allowed`,
+  when that list is set, and one whose `networks_allowed` is not a list of
+  network IDs written as text (a malformed list is an error, never an empty
+  one; a bare number, `true`/`false` or an empty entry is refused, so quote a
+  name such as `"1"`). Quote a network name that YAML could read as a boolean, such as `"on"`, `"yes"` or `"no"`. The `network` value follows the same rule: it must be text and a network ID, and a bare number or `true`/`false` is refused.
 - validates `config.yaml` contains no obsolete routing,
 - loads and selects an endpoint from `endpoints.yaml`,
 - resolves SSH paths relative to the client data dir,
@@ -498,6 +503,31 @@ Important behavior:
 - `sign_transactions()` returns one base64 string containing the concatenated
   signed group
 - `sign_transactions_list()` returns one base64 string per slot
+- these simple sign calls return only the signed transactions; to read what
+  the signer changed (the fee it added, the group ID, appended dummies), call
+  `sign_requests()`, whose `mutations` is the mutation report, already checked
+  against the request
+- amounts and fees given to the `prepare_*` helpers are in microAlgos; an
+  asset amount is in the asset's base units, not adjusted for its decimals.
+  IDs, amounts and fees must be integers: a float, a numeric string or a
+  bool raises `ValueError`. Any integral type is accepted (one that defines
+  `__index__`, such as a NumPy integer) and is converted to a plain `int`.
+  That holds for every ID, count and index a prepare helper takes: app and
+  asset IDs, foreign references, ABI `application` and `asset` arguments, box
+  app indexes, extra pages, the counts of a `StateSchema`, `on_complete`, and
+  the key-registration rounds and dilution. A bool is also refused where an
+  ABI method takes an integer. `None` still means "not set" for an optional
+  parameter, `extra_pages` and the schemas included
+- Group helpers check every sender against everything it pays across the
+  group: the ALGO it sends plus the fee of every position it sends, asset
+  transfers included. The check is named `group_algo_balance`. It reads each
+  sender's spendable ALGO from the `spendable_algo` check that the payment and
+  asset-transfer helpers record on every position (the lowest value, when a
+  sender has several positions), and refuses a position
+  that lacks that check or whose `available` value is not a non-negative integer
+- `prepare_asa_transfer()` checks the transfer's fee against the sender's spendable ALGO
+  itself, so one transfer is refused alone exactly as it is in a group. Its
+  `asa_transfer` check records the fee
 - `sign_requests()` accepts one or more raw `/sign` request entries and returns the raw
   `/sign` response
 - for large LogicSigs, the signer may add dummy transactions for fee pooling
@@ -655,7 +685,11 @@ metadata.
 ### Passthrough And Multi-Party Assembly
 
 `passthrough` lets you include base64-encoded signed transaction msgpack slots
-in a final signing request.
+in a final signing request. Passthrough values are standard base64 with
+padding. A string that is not (a line break or other whitespace, URL-safe
+characters, missing padding, data after the padding) raises `ValueError`, as
+the Go and TypeScript SDKs refuse it. `send_raw_transaction()` makes the same
+check before it submits anything.
 When passthrough entries are present:
 
 - the caller must pre-assign group IDs on all transactions
@@ -672,18 +706,6 @@ For multi-party workflows, the standard high-level flow is:
 The signer checks the declared program and argument byte counts against each
 signed passthrough envelope. Omitting the declaration for a LogicSig
 passthrough is a client error.
-
-`assemble_group()` is a lower-level utility for workflows that already have
-partial list-per-slot outputs where unsigned slots are represented by empty
-strings:
-
-```python
-from aplanesdk import assemble_group
-
-combined = assemble_group([alice_signed_list, bob_signed_list])
-```
-
-Each slot must have exactly one non-empty signed entry across the input lists.
 
 ### Cosigned Accounts
 
@@ -710,12 +732,21 @@ raises `SigningRejectedError`, preserving the code and message, and the cosigned
 signing helper propagates that error. Apply the key's document before retrying.
 See the [compatibility note](COMPATIBILITY.md) for policy format and provisioning details.
 
+The helper reads each position's key (its signing flow, LogicSig resources
+and fee ceiling) from the user signer's `/keys` record, by the position's
+auth address. A prepared transaction carries no key of its own. It is the
+lookup the prepare helpers make: the spendable key for the address (a witness
+key is never chosen), from a key list the client caches. Each call checks the
+signer's keyset revision with one `/status` request and fetches `/keys` again
+only when the revision has changed, so a key added or replaced on the signer
+is picked up by the next call. An address with no spendable key is
+refused with `KeyNotFoundError`.
+
 For manual orchestration, use `request_components()` on the user client with a
 bounded-base target and on the cosigner client, then `request_assemble()` on the
 user client. Finish the user side (the base components and any ordinary-position
 signing) before requesting cosigner components, so a cosigner never sees a group
-the user signer rejects. `assemble_group()` remains only the local multi-party
-concatenation helper.
+the user signer rejects.
 
 A cosigned account's LogicSig contract is `plain1` on a plain host, or
 `bounded2` on a bounded account such as Corridor, and its online signing flow is

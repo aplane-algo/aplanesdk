@@ -38,6 +38,45 @@ export function expandPath(filePath: string): string {
   return filePath;
 }
 
+const NETWORK_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
+/**
+ * Read networks_allowed, refusing a malformed one. A value that cannot be
+ * read must not become an empty list, which permits every network. Every
+ * entry must be text: a bare number, true/false or an empty entry is a
+ * mistake, not a network name. A name made of digits must be quoted.
+ */
+function parseNetworksAllowed(value: unknown): string[] {
+  if (value === undefined || value === null) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new SignerError(
+      `networks_allowed in config.yaml must be a list of network IDs, not ${typeof value}`,
+    );
+  }
+  for (const item of value) {
+    if (typeof item !== "string") {
+      throw new SignerError(
+        `invalid network in networks_allowed: ${JSON.stringify(item)} is not text (quote it if it is a network ID)`,
+      );
+    }
+    if (!NETWORK_ID.test(item)) {
+      throw new SignerError(
+        `invalid network in networks_allowed: ${JSON.stringify(item)} (use lowercase letters, digits, '_' or '-', starting with a letter or digit)`,
+      );
+    }
+  }
+  return [...(value as string[])];
+}
+
+/**
+ * Whether config permits the network. An empty allowlist permits all.
+ */
+export function isNetworkAllowed(config: ClientConfig, network: string): boolean {
+  return config.networksAllowed.length === 0 || config.networksAllowed.includes(network);
+}
+
 /**
  * Load client configuration from data_dir/config.yaml.
  *
@@ -68,14 +107,27 @@ export function loadConfig(dataDir: string): ClientConfig {
         );
       }
     }
-    if (typeof data.network === "string") config.network = data.network;
-    if (
-      Array.isArray(data.networks_allowed) &&
-      data.networks_allowed.every((item) => typeof item === "string")
-    ) {
-      config.networksAllowed = data.networks_allowed;
+    if (data.network !== undefined && data.network !== null) {
+      // The rule of the networks_allowed entries: text, and a network ID.
+      if (typeof data.network !== "string") {
+        throw new SignerError(
+          `invalid network in config.yaml: ${JSON.stringify(data.network)} is not text (quote it if it is a network ID)`,
+        );
+      }
+      if (!NETWORK_ID.test(data.network)) {
+        throw new SignerError(
+          `invalid network in config.yaml: ${JSON.stringify(data.network)} (use lowercase letters, digits, '_' or '-', starting with a letter or digit)`,
+        );
+      }
+      config.network = data.network;
     }
+    config.networksAllowed = parseNetworksAllowed(data.networks_allowed);
     if (typeof data.theme === "string" && data.theme) config.theme = data.theme;
+    if (!isNetworkAllowed(config, config.network)) {
+      throw new SignerError(
+        `network ${JSON.stringify(config.network)} is not in networks_allowed ${JSON.stringify(config.networksAllowed)}`,
+      );
+    }
   } catch (error) {
     if (error instanceof SignerError) throw error;
     throw new SignerError(`failed to parse config.yaml: ${errorMessage(error)}`);

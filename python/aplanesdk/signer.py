@@ -445,6 +445,10 @@ class ClientConfig:
     networks_allowed: List[str] = field(default_factory=list)
     theme: str = "auto"
 
+    def is_network_allowed(self, network: str) -> bool:
+        """Whether config permits the network; an empty allowlist permits all."""
+        return not self.networks_allowed or network in self.networks_allowed
+
 
 @dataclass
 class ClientEndpointConfig:
@@ -842,6 +846,10 @@ class CosignedSignResult:
     primary_sign_response: Optional[GroupSignResponse] = None
     bounded_component_response: Optional[ComponentResponse] = None
     bounded_assembly_response: Optional[AssemblyResponse] = None
+    # The plan's mutation report, checked against the prepared group: what
+    # the signer added to it (fees, group ID, dummies). None when it changed
+    # nothing.
+    plan_mutations: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -869,7 +877,6 @@ class PreparedTransaction:
     transaction: Optional[transaction.Transaction] = None
     auth_address: Optional[str] = None
     txn_sender: str = ""
-    signer_key: Optional[KeyInfo] = None
     lsig_args: Optional[Dict[str, bytes]] = None
     lsig_resources: Optional[LogicSigResourceUsage] = None
     pq_scheme: str = ""
@@ -882,13 +889,9 @@ class PreparedTransaction:
         if self.signed_transaction_base64:
             if self.pq_scheme:
                 raise ValueError("pq_scheme is allowed only for foreign transactions")
-            try:
-                signed_hex = base64.b64decode(
-                    self.signed_transaction_base64,
-                    validate=True,
-                ).hex()
-            except Exception as e:
-                raise ValueError(f"invalid passthrough transaction: {e}") from e
+            signed_hex = _strict_base64(
+                self.signed_transaction_base64, "signed_transaction_base64"
+            ).hex()
             request = {"signed_txn_hex": signed_hex}
             if self.lsig_resources is not None:
                 request["lsig_resources"] = _wire_lsig_resources(self.lsig_resources)
@@ -986,6 +989,38 @@ class GenerateResult:
     parameters: Optional[Dict[str, str]] = None
 
 
+_NETWORK_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
+
+
+def _parse_networks_allowed(value: Any) -> List[str]:
+    """Read networks_allowed, refusing a malformed one.
+
+    A value that cannot be read must not become an empty list, which permits
+    every network. Every entry must be text: a bare number, true/false or an
+    empty entry is a mistake, not a network name. A name made of digits must
+    be quoted.
+    """
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise SignerError(
+            f"networks_allowed in config.yaml must be a list of network IDs, "
+            f"not {type(value).__name__}"
+        )
+    for item in value:
+        if not isinstance(item, str):
+            raise SignerError(
+                f"invalid network in networks_allowed: {item!r} is not text "
+                "(quote it if it is a network ID)"
+            )
+        if _NETWORK_ID.fullmatch(item) is None:
+            raise SignerError(
+                f"invalid network in networks_allowed: {item!r} (use lowercase letters, "
+                "digits, '_' or '-', starting with a letter or digit)"
+            )
+    return list(value)
+
+
 def load_config(data_dir: str) -> ClientConfig:
     """
     Load client configuration from data_dir/config.yaml.
@@ -1018,14 +1053,27 @@ def load_config(data_dir: str) -> ClientConfig:
                 f'unsupported client routing in config.yaml: remove "{field}" '
                 "and configure endpoints.yaml"
             )
-    if isinstance(data.get("network"), str):
-        config.network = data["network"]
-    if isinstance(data.get("networks_allowed"), list) and all(
-        isinstance(item, str) for item in data["networks_allowed"]
-    ):
-        config.networks_allowed = data["networks_allowed"]
+    network = data.get("network")
+    if network is not None:
+        # The rule of the networks_allowed entries: text, and a network ID.
+        if not isinstance(network, str):
+            raise SignerError(
+                f"invalid network in config.yaml: {network!r} is not text "
+                "(quote it if it is a network ID)"
+            )
+        if _NETWORK_ID.fullmatch(network) is None:
+            raise SignerError(
+                f"invalid network in config.yaml: {network!r} (use lowercase letters, "
+                "digits, '_' or '-', starting with a letter or digit)"
+            )
+        config.network = network
+    config.networks_allowed = _parse_networks_allowed(data.get("networks_allowed"))
     if isinstance(data.get("theme"), str) and data["theme"]:
         config.theme = data["theme"]
+    if config.networks_allowed and config.network not in config.networks_allowed:
+        raise SignerError(
+            f"network {config.network!r} is not in networks_allowed {config.networks_allowed}"
+        )
 
     return config
 
@@ -1434,6 +1482,25 @@ def _validate_authorization(signed: Any, auth: str) -> None:
 _HEX = re.compile(r"(?:[0-9a-fA-F]{2})*")
 
 
+# Standard base64 and nothing else: the standard alphabet in groups of four,
+# padded.
+_STRICT_BASE64 = re.compile(
+    r"(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?"
+)
+
+
+def _strict_base64(value: Any, label: str = "value") -> bytes:
+    """Decode standard, padded base64; the SDK's one decoder for caller input.
+
+    base64.b64decode skips characters outside the alphabet unless asked to
+    validate, and py-algorand-sdk does not ask, so they take strings the Go and
+    TypeScript SDKs refuse.
+    """
+    if not isinstance(value, str) or _STRICT_BASE64.fullmatch(value) is None:
+        raise ValueError(f"{label} is not valid base64")
+    return base64.b64decode(value, validate=True)
+
+
 def _strict_hex(value: Any) -> bytes:
     """Decode a hex string that holds hex digits and nothing else.
 
@@ -1538,7 +1605,9 @@ def _mutation_int(mutations: Dict[str, Any], name: str) -> int:
     if value is None:
         return 0
     if isinstance(value, bool) or not isinstance(value, int):
-        raise SignerError(f"mutation {name} must be an integer")
+        raise SignerError(
+            f"mutation {name} must be an integer, not {type(value).__name__}"
+        )
     return cast(int, value)
 
 
@@ -2110,10 +2179,20 @@ def _validate_sign_entries(sign_entries: List[Dict[str, Any]]) -> None:
 def _parse_lsig_resource_usage(data: Any) -> Optional[LogicSigResourceUsage]:
     if not isinstance(data, dict):
         return None
+
+    def number(name: str) -> int:
+        # A missing field keeps its default. Anything that is not a
+        # non-negative integer is a malformed payload, not a number to convert.
+        return _require_uint(
+            data.get(name, 0),
+            f"signer-reported LogicSig resources {name}",
+            error=SignerError,
+        )
+
     return LogicSigResourceUsage(
-        program_bytes=int(data.get("program_bytes", 0)),
-        argument_bytes=int(data.get("argument_bytes", 0)),
-        max_opcode_cost=int(data.get("max_opcode_cost", 0)),
+        program_bytes=number("program_bytes"),
+        argument_bytes=number("argument_bytes"),
+        max_opcode_cost=number("max_opcode_cost"),
     )
 
 
@@ -2475,6 +2554,122 @@ def _find_spendable_key(keys: List[KeyInfo], address: str) -> Optional[KeyInfo]:
     return None
 
 
+_UINT64_LIMIT = 1 << 64
+
+
+def _require_uint(
+    value: Any,
+    name: str,
+    *,
+    positive: bool = False,
+    error: type = ValueError,
+) -> int:
+    """Require an integer for an ID, a count, an amount or a fee; return it as an int.
+
+    The one check for "a whole number, not something that converts to one".
+    py-algorand-sdk and int() would turn 123.9 into 123 and accept "123"; a
+    float, a string or a bool is a mistake, not a number to be rounded. Any
+    integral type is taken (operator.index), and the plain int returned is what
+    goes on to the transaction. ``error`` is ValueError for a value the caller
+    passed and SignerError for one the signer sent.
+    """
+    if isinstance(value, bool):
+        raise error(f"{name} must be an integer, not bool")
+    try:
+        number = operator.index(value)
+    except TypeError:
+        raise error(f"{name} must be an integer, not {type(value).__name__}") from None
+    if number < 0:
+        raise error(f"{name} must not be negative")
+    if positive and number == 0:
+        raise error(f"{name} must be greater than zero")
+    if number >= _UINT64_LIMIT:
+        raise error(f"{name} must be below 2**64")
+    return number
+
+
+def _require_state_schema(schema: Any, name: str) -> Optional[transaction.StateSchema]:
+    """Require a state schema's counts to be integers; None stays unset.
+
+    The schema is rebuilt from the checked counts, so what is encoded is what
+    was checked. A count left as None is the schema's own default, zero.
+    """
+    if schema is None:
+        return None
+    if not isinstance(schema, transaction.StateSchema):
+        raise ValueError(f"{name} must be a StateSchema, not {type(schema).__name__}")
+    counts = []
+    for member in ("num_uints", "num_byte_slices"):
+        count = getattr(schema, member)
+        counts.append(0 if count is None else _require_uint(count, f"{name}.{member}"))
+    return transaction.StateSchema(counts[0], counts[1])
+
+
+def _require_on_complete(on_complete: Any) -> transaction.OnComplete:
+    """Require on_complete to be one of the six on-completion values."""
+    number = _require_uint(on_complete, "on_complete")
+    if number > int(transaction.OnComplete.DeleteApplicationOC):
+        raise ValueError(f"invalid on_complete: {on_complete}")
+    return transaction.OnComplete(number)
+
+
+def _refuse_bool_for_abi_integer(abi_type: Any, value: Any, name: str) -> None:
+    """Refuse True or False where an ABI method takes an integer.
+
+    The ABI encoder checks integers with isinstance(value, int), which a bool
+    passes: True would be encoded as 1.
+    """
+    if isinstance(abi_type, (abi.UintType, abi.UfixedType, abi.ByteType)):
+        if isinstance(value, bool):
+            raise ValueError(f"{name} must be an integer, not bool")
+        return
+    if not isinstance(value, (list, tuple)):
+        return
+    if isinstance(abi_type, abi.TupleType):
+        for position, (child_type, child) in enumerate(zip(abi_type.child_types, value)):
+            _refuse_bool_for_abi_integer(child_type, child, f"{name}[{position}]")
+    elif isinstance(abi_type, (abi.ArrayStaticType, abi.ArrayDynamicType)):
+        for position, child in enumerate(value):
+            _refuse_bool_for_abi_integer(abi_type.child_type, child, f"{name}[{position}]")
+
+
+def _require_box_references(boxes: Optional[List[Any]]) -> Optional[List[Any]]:
+    """Require each box reference's app index to be an integer; return the checked list."""
+    if boxes is None:
+        return None
+    checked = []
+    for position, box in enumerate(boxes):
+        if not isinstance(box, (tuple, list)) or len(box) != 2:
+            raise ValueError(f"boxes[{position}] must be an (app index, name) pair")
+        if not isinstance(box[1], (bytes, bytearray, str)):
+            raise ValueError(f"boxes[{position}] name must be bytes or a string")
+        checked.append((_require_uint(box[0], f"boxes[{position}] app index"), box[1]))
+    return checked
+
+
+def _require_app_references(
+    foreign_apps: Optional[List[Any]],
+    foreign_assets: Optional[List[Any]],
+    boxes: Optional[List[Any]],
+) -> tuple[Optional[List[int]], Optional[List[int]], Optional[List[Any]]]:
+    """Require every app, asset and box reference of an app call to be an integer.
+
+    Returns the three lists as checked; one passed as None stays None.
+    """
+    checked: List[Optional[List[int]]] = []
+    for name, references in (("foreign_apps", foreign_apps), ("foreign_assets", foreign_assets)):
+        if references is None:
+            checked.append(None)
+            continue
+        checked.append(
+            [
+                _require_uint(reference, f"{name}[{position}]", positive=True)
+                for position, reference in enumerate(references)
+            ]
+        )
+    return checked[0], checked[1], _require_box_references(boxes)
+
+
 def _apply_prep_fee(params: Any, fee: Optional[int]) -> None:
     # No fee-per-byte mode: fee is always flat microAlgos, so a set fee can
     # never be silently reinterpreted as EstimateSize*fee. None means unset
@@ -2482,7 +2677,7 @@ def _apply_prep_fee(params: Any, fee: Optional[int]) -> None:
     # pooling) is applied as a flat fee.
     if fee is None:
         return
-    params.fee = fee
+    params.fee = _require_uint(fee, "fee")
     params.flat_fee = True
 
 
@@ -2765,27 +2960,78 @@ def _account_incentive_eligible(account_info: Any) -> bool:
     )
 
 
-def _validate_payment_group(transactions: List[PreparedTransaction]) -> PreparedCheck:
+# The check that records what a position's sender can spend in ALGO. A
+# group's ALGO check reads it by this name and no other.
+_SPENDABLE_ALGO_CHECK = "spendable_algo"
+
+
+def _spendable_algo(account_info: Any) -> int:
+    return max(_account_amount(account_info) - _account_min_balance(account_info), 0)
+
+
+def _spendable_algo_check(account_info: Any) -> PreparedCheck:
+    return PreparedCheck(
+        name=_SPENDABLE_ALGO_CHECK,
+        status="ok",
+        data={"available": _spendable_algo(account_info)},
+    )
+
+
+def _recorded_spendable_algo(item: PreparedTransaction) -> int:
+    """Read a position's spendable_algo check.
+
+    A position without one, or with a value that is not a non-negative
+    integer, is an error: the group check never guesses a balance and never
+    skips a sender.
+    """
+    for check in item.checks or []:
+        if check.name != _SPENDABLE_ALGO_CHECK:
+            continue
+        if not isinstance(check.data, dict) or "available" not in check.data:
+            raise SignerError(f"the {_SPENDABLE_ALGO_CHECK} check has no available amount")
+        return _require_uint(
+            check.data["available"],
+            f"the {_SPENDABLE_ALGO_CHECK} check's available amount",
+            error=SignerError,
+        )
+    raise SignerError(f"no ALGO balance on record (a {_SPENDABLE_ALGO_CHECK} check)")
+
+
+def _validate_group_algo_balance(transactions: List[PreparedTransaction]) -> PreparedCheck:
+    """Check each sender can cover everything it pays across the group.
+
+    A sender's total is the ALGO it sends plus the fee of every position it
+    sends, whatever the position's kind: an asset transfer moves no ALGO but
+    still pays a fee. The total is checked against the sender's spendable
+    ALGO, which each position records in its spendable_algo check. A position
+    without that record is refused.
+    """
     totals: Dict[str, Dict[str, int]] = {}
-    for item in transactions:
+    for index, item in enumerate(transactions):
         if item.transaction is None:
-            raise ValueError("payment group transaction is required")
+            raise ValueError("group transaction is required")
         sender = item.transaction.sender
-        total = totals.setdefault(sender, {"available": 0, "required": 0})
-        amount = int(getattr(item.transaction, "amt", getattr(item.transaction, "amount", 0)))
-        fee = int(getattr(item.transaction, "fee", 0))
-        total["required"] += amount + fee
-        for check in item.checks or []:
-            if check.name == "payment_balance" and check.data:
-                total["available"] = int(check.data.get("available", 0))
+        total = totals.setdefault(sender, {"required": 0})
+        amount = 0
+        if isinstance(item.transaction, transaction.PaymentTxn):
+            amount = int(item.transaction.amt)
+        total["required"] += amount + int(getattr(item.transaction, "fee", 0))
+        try:
+            # The lowest value recorded for the sender: each position read the
+            # balance on its own, and the check must not depend on their order.
+            total["available"] = min(
+                _recorded_spendable_algo(item), total.get("available", _UINT64_LIMIT)
+            )
+        except SignerError as e:
+            raise SignerError(f"group transaction {index}, sender {sender}: {e}") from None
     for sender, total in totals.items():
         if total["available"] < total["required"]:
             raise SignerError(
-                f"payment group insufficient funds for {sender}: "
+                f"group insufficient funds for {sender}: "
                 f"available {total['available']}, required {total['required']}"
             )
     return PreparedCheck(
-        name="payment_group_balance",
+        name="group_algo_balance",
         status="ok",
         data={"sender_count": len(totals)},
     )
@@ -2875,10 +3121,15 @@ def _encode_abi_method_args(
             ref_arg_types.append(arg_type)
             ref_arg_values.append(arg_value)
             abi_type = abi.ABIType.from_string("uint8")
-        elif isinstance(arg_type, str):
-            abi_type = abi.ABIType.from_string(arg_type)
         else:
-            abi_type = arg_type
+            abi_type = abi.ABIType.from_string(arg_type) if isinstance(arg_type, str) else arg_type
+            # Checked here, against the method's own argument list, so the
+            # error names the argument the caller passed and not a position
+            # in the list as it is packed for encoding.
+            label = f"ABI argument {index}"
+            if getattr(method_arg, "name", None):
+                label += f" ({method_arg.name})"
+            _refuse_bool_for_abi_integer(abi_type, arg_value, label)
 
         basic_arg_types.append(abi_type)
         basic_arg_values.append(arg_value)
@@ -2939,7 +3190,7 @@ def _resolve_abi_reference_args(
                 accounts.append(address)
                 resolved.append(len(accounts))
         elif arg_type == "application":
-            ref_app_id = int(value)
+            ref_app_id = _require_uint(value, "application argument", positive=True)
             if ref_app_id == app_id:
                 resolved.append(0)
             elif ref_app_id in apps:
@@ -2948,7 +3199,7 @@ def _resolve_abi_reference_args(
                 apps.append(ref_app_id)
                 resolved.append(len(apps))
         elif arg_type == "asset":
-            asset_id = int(value)
+            asset_id = _require_uint(value, "asset argument", positive=True)
             if asset_id in assets:
                 resolved.append(assets.index(asset_id))
             else:
@@ -3666,6 +3917,15 @@ class SignerClient:
                 template_provenance_note=k.get("template_provenance_note", ""),
             )
             keys.append(key_info)
+            # One record per address. Should the signer list an address
+            # twice, the first spendable row is the one kept, the row
+            # _find_spendable_key picks from the list itself, so a lookup
+            # answers the same from a fresh list and from the cache.
+            kept = self._key_cache.get(key_info.address)
+            if kept is not None and (
+                kept.is_spending_account is not False or key_info.is_spending_account is False
+            ):
+                continue
             self._key_cache[key_info.address] = key_info
 
         return keys
@@ -3758,13 +4018,18 @@ class SignerClient:
         note: Optional[bytes] = None,
         fee: Optional[int] = None,
     ) -> PreparedTransaction:
-        """Build a prepared ALGO payment transaction."""
+        """Build a prepared ALGO payment transaction.
+
+        ``amount`` and ``fee`` are in microAlgos. A set ``fee`` is the flat fee
+        the transaction pays.
+        """
         if algod_client is None:
             raise ValueError("algod_client is required")
         if not sender:
             raise ValueError("sender is required")
         if not receiver:
             raise ValueError("receiver is required")
+        amount = _require_uint(amount, "amount")
 
         params = algod_client.suggested_params()
         _apply_prep_fee(params, fee)
@@ -3787,7 +4052,6 @@ class SignerClient:
         return PreparedTransaction(
             transaction=txn,
             auth_address=resolved.auth_address,
-            signer_key=resolved.key_info,
             checks=[
                 PreparedCheck(
                     name="payment_balance",
@@ -3797,7 +4061,8 @@ class SignerClient:
                         "fee": txn_fee,
                         "available": available,
                     },
-                )
+                ),
+                _spendable_algo_check(sender_info),
             ],
         )
 
@@ -3812,15 +4077,21 @@ class SignerClient:
         note: Optional[bytes] = None,
         fee: Optional[int] = None,
     ) -> PreparedTransaction:
-        """Build a prepared ASA transfer transaction."""
+        """Build a prepared ASA transfer transaction.
+
+        ``amount`` is in the asset's base units, not adjusted for its
+        decimals. ``fee`` is in microAlgos.
+        """
         if algod_client is None:
             raise ValueError("algod_client is required")
         if not sender:
             raise ValueError("sender is required")
         if not receiver:
             raise ValueError("receiver is required")
-        if not asset_id:
+        if asset_id is None:
             raise ValueError("asset_id is required")
+        asset_id = _require_uint(asset_id, "asset_id", positive=True)
+        amount = _require_uint(amount, "amount")
 
         params = algod_client.suggested_params()
         _apply_prep_fee(params, fee)
@@ -3847,11 +4118,18 @@ class SignerClient:
             note=note,
         )
 
+        # An asset transfer moves no ALGO but pays its fee from the sender's.
+        txn_fee = int(txn.fee)
+        available = _spendable_algo(sender_info)
+        if available < txn_fee:
+            raise SignerError(
+                f"insufficient funds for asset transfer fee: available {available}, fee {txn_fee}"
+            )
+
         resolved = self.resolve_auth_address(sender, lambda _: sender_info)
         return PreparedTransaction(
             transaction=txn,
             auth_address=resolved.auth_address,
-            signer_key=resolved.key_info,
             checks=[
                 PreparedCheck(
                     name="asa_transfer",
@@ -3860,8 +4138,10 @@ class SignerClient:
                         "asset_id": asset_id,
                         "amount": amount,
                         "balance": sender_amount,
+                        "fee": txn_fee,
                     },
-                )
+                ),
+                _spendable_algo_check(sender_info),
             ],
         )
 
@@ -3879,14 +4159,14 @@ class SignerClient:
             raise ValueError("algod_client is required")
         if not sender:
             raise ValueError("sender is required")
-        if not asset_id:
+        if asset_id is None:
             raise ValueError("asset_id is required")
+        asset_id = _require_uint(asset_id, "asset_id", positive=True)
 
         params = algod_client.suggested_params()
         _apply_prep_fee(params, fee)
 
         sender_info = algod_client.account_info(sender)
-        checks = _asa_opt_in_checks(sender_info, asset_id, int(getattr(params, "fee", 0)))
         txn = transaction.AssetTransferTxn(
             sender=sender,
             sp=params,
@@ -3895,11 +4175,13 @@ class SignerClient:
             index=asset_id,
             note=note,
         )
+        # The balance is checked against the fee the built transaction pays.
+        # The suggested fee is per byte, usually zero, and would check nothing.
+        checks = _asa_opt_in_checks(sender_info, asset_id, int(txn.fee))
         resolved = self.resolve_auth_address(sender, lambda _: sender_info)
         return PreparedTransaction(
             transaction=txn,
             auth_address=resolved.auth_address,
-            signer_key=resolved.key_info,
             checks=checks,
         )
 
@@ -3922,8 +4204,9 @@ class SignerClient:
             raise ValueError("close_to is required")
         if sender == close_to:
             raise ValueError("close_to must differ from sender")
-        if not asset_id:
+        if asset_id is None:
             raise ValueError("asset_id is required")
+        asset_id = _require_uint(asset_id, "asset_id", positive=True)
 
         params = algod_client.suggested_params()
         _apply_prep_fee(params, fee)
@@ -3944,7 +4227,6 @@ class SignerClient:
         return PreparedTransaction(
             transaction=txn,
             auth_address=resolved.auth_address,
-            signer_key=resolved.key_info,
             checks=checks,
         )
 
@@ -3971,7 +4253,6 @@ class SignerClient:
         _apply_prep_fee(params, fee)
 
         sender_info = algod_client.account_info(sender)
-        checks = _account_close_checks(sender_info, int(getattr(params, "fee", 0)))
         txn = transaction.PaymentTxn(
             sender=sender,
             sp=params,
@@ -3980,11 +4261,13 @@ class SignerClient:
             close_remainder_to=close_to,
             note=note,
         )
+        # Checked against the fee the built transaction pays, not the
+        # suggested per-byte fee.
+        checks = _account_close_checks(sender_info, int(txn.fee))
         resolved = self.resolve_auth_address(sender, lambda _: sender_info)
         return PreparedTransaction(
             transaction=txn,
             auth_address=resolved.auth_address,
-            signer_key=resolved.key_info,
             checks=checks,
         )
 
@@ -4030,7 +4313,6 @@ class SignerClient:
         return PreparedTransaction(
             transaction=txn,
             auth_address=resolved.auth_address,
-            signer_key=resolved.key_info,
             checks=checks,
         )
 
@@ -4068,6 +4350,10 @@ class SignerClient:
             raise ValueError("algod_client is required")
         if not sender:
             raise ValueError("sender is required")
+        votefst, votelst, votekd = (
+            None if number is None else _require_uint(number, field_name)
+            for field_name, number in (("votefst", votefst), ("votelst", votelst), ("votekd", votekd))
+        )
         _validate_keyreg_params(
             mode=mode,
             votekey=votekey,
@@ -4134,7 +4420,6 @@ class SignerClient:
         return PreparedTransaction(
             transaction=txn,
             auth_address=resolved.auth_address,
-            signer_key=resolved.key_info,
             checks=[PreparedCheck(name="keyreg", status="ok", message=message, data=data)],
         )
 
@@ -4200,6 +4485,14 @@ class SignerClient:
         """Build a prepared ABI method-call transaction."""
         if not method_signature:
             raise ValueError("method_signature is required")
+        # Checked before the arguments are encoded, so a bad ID is reported
+        # as one and never reaches the encoder.
+        if app_id is None:
+            raise ValueError("app_id is required")
+        app_id = _require_uint(app_id, "app_id", positive=True)
+        foreign_apps, foreign_assets, boxes = _require_app_references(
+            foreign_apps, foreign_assets, boxes
+        )
         method = abi.Method.from_signature(method_signature)
         app_args, resolved_accounts, resolved_apps, resolved_assets = _encode_abi_method_args(
             method,
@@ -4253,12 +4546,15 @@ class SignerClient:
             raise ValueError("algod_client is required")
         if not sender:
             raise ValueError("sender is required")
-        if not app_id:
+        if app_id is None:
             raise ValueError("app_id is required")
-        if int(on_complete) < 0 or int(on_complete) > int(
-            transaction.OnComplete.DeleteApplicationOC
-        ):
-            raise ValueError(f"invalid on_complete: {on_complete}")
+        app_id = _require_uint(app_id, "app_id", positive=True)
+        foreign_apps, foreign_assets, boxes = _require_app_references(
+            foreign_apps, foreign_assets, boxes
+        )
+        on_complete = _require_on_complete(on_complete)
+        local_schema = _require_state_schema(local_schema, "local_schema")
+        global_schema = _require_state_schema(global_schema, "global_schema")
 
         params = algod_client.suggested_params()
         _apply_prep_fee(params, fee)
@@ -4285,7 +4581,6 @@ class SignerClient:
         return PreparedTransaction(
             transaction=txn,
             auth_address=resolved.auth_address,
-            signer_key=resolved.key_info,
             app_call_info=app_call_info,
             checks=_app_call_checks(
                 app_id,
@@ -4308,7 +4603,7 @@ class SignerClient:
         clear_program: bytes,
         global_schema: Optional[transaction.StateSchema] = None,
         local_schema: Optional[transaction.StateSchema] = None,
-        extra_pages: int = 0,
+        extra_pages: Optional[int] = 0,
         app_args: Optional[List[bytes]] = None,
         accounts: Optional[List[str]] = None,
         foreign_apps: Optional[List[int]] = None,
@@ -4327,6 +4622,13 @@ class SignerClient:
             raise ValueError("approval_program is required")
         if not clear_program:
             raise ValueError("clear_program is required")
+        # None is "the default", as for the schemas: no extra pages.
+        extra_pages = 0 if extra_pages is None else _require_uint(extra_pages, "extra_pages")
+        foreign_apps, foreign_assets, boxes = _require_app_references(
+            foreign_apps, foreign_assets, boxes
+        )
+        global_schema = _require_state_schema(global_schema, "global_schema")
+        local_schema = _require_state_schema(local_schema, "local_schema")
 
         params = algod_client.suggested_params()
         _apply_prep_fee(params, fee)
@@ -4352,7 +4654,6 @@ class SignerClient:
         return PreparedTransaction(
             transaction=txn,
             auth_address=resolved.auth_address,
-            signer_key=resolved.key_info,
             app_call_info={"mode": "raw"},
             checks=[
                 PreparedCheck(
@@ -4404,8 +4705,7 @@ class SignerClient:
         ]
         if asa_transfers:
             checks.append(_validate_asa_transfer_group(prepared[: len(asa_transfers)]))
-        if payments:
-            checks.append(_validate_payment_group(prepared[len(asa_transfers) :]))
+        checks.append(_validate_group_algo_balance(prepared))
         return PreparedGroup(prepared, checks=checks)
 
     def prepare_payment_group(
@@ -4428,7 +4728,7 @@ class SignerClient:
                 status="ok",
                 data={"count": len(payments)},
             ),
-            _validate_payment_group(prepared),
+            _validate_group_algo_balance(prepared),
         ]
         return PreparedGroup(
             prepared,
@@ -4456,6 +4756,7 @@ class SignerClient:
                 data={"count": len(transfers)},
             ),
             _validate_asa_transfer_group(prepared),
+            _validate_group_algo_balance(prepared),
         ]
         return PreparedGroup(
             prepared,
@@ -4982,10 +5283,7 @@ class SignerClient:
         for i, (txn, auth_addr) in enumerate(zip(txns, auth_addresses)):
             # Passthrough: include pre-signed transaction as-is
             if passthrough and i in passthrough:
-                try:
-                    signed_bytes = base64.b64decode(passthrough[i], validate=True)
-                except Exception as e:
-                    raise ValueError(f"invalid base64 in passthrough[{i}]: {e}") from e
+                signed_bytes = _strict_base64(passthrough[i], f"passthrough[{i}]")
                 try:
                     slot = _decode_passthrough_slot(signed_bytes)
                 except SignerError as e:
@@ -5832,6 +6130,9 @@ def sign_prepared_cosigned_group(
     target_resources: Dict[int, Optional[LogicSigResourceUsage]] = {}
     target_keys: Dict[int, KeyInfo] = {}
     target_max_fees: Dict[int, int] = {}
+    # One read of the signer's keys for the whole call, refreshed when the
+    # signer's keyset revision has changed: the lookup the prepare helpers make.
+    signer_keys = user_client.list_keys_if_keyset_changed()
     for index, item in enumerate(prepared):
         if item.signed_transaction_base64:
             raise ValueError(
@@ -5840,14 +6141,19 @@ def sign_prepared_cosigned_group(
             )
         if item.transaction is None:
             raise ValueError(f"prepared transaction {index}: transaction is required")
-        key = item.signer_key
-        if key is None and item.auth_address:
-            key = user_client.get_key_info(item.auth_address)
+        # The key's flow, resources and fee ceiling decide how the position
+        # is signed, so they come from the signer's own record of the key,
+        # the spendable key for the position's auth address, never from the
+        # caller.
+        if not item.auth_address:
+            raise ValueError(f"prepared transaction {index}: auth address is required")
+        key = _find_spendable_key(signer_keys, item.auth_address)
         if key is None:
-            raise ValueError(f"prepared transaction {index}: signer key metadata is required")
+            raise KeyNotFoundError(
+                f"prepared transaction {index}: {item.auth_address} is not "
+                "available for signing"
+            )
         if key.signing_flow == SIGNING_FLOW_COSIGNED1:
-            if not item.auth_address:
-                raise ValueError(f"prepared transaction {index}: bounded auth address is required")
             resources = _require_lsig_resources(
                 _selected_prepared_resources(key, item.transaction),
                 f"prepared transaction {index}: bounded",
@@ -5878,8 +6184,6 @@ def sign_prepared_cosigned_group(
                 f"prepared transaction {index}: signer key requires signing flow "
                 f"{key.signing_flow!r}, which this SDK does not support; upgrade the SDK"
             )
-        if not item.auth_address:
-            raise ValueError(f"prepared transaction {index}: primary auth address is required")
         # The signer holds this position's key, so it is sent as the signer's
         # own: in sign mode on /plan, and as a contextual position with
         # auth_address on /sign/component. The signer sizes it from its records
@@ -6067,6 +6371,7 @@ def sign_prepared_cosigned_group(
         primary_sign_response=primary_response,
         bounded_component_response=component_response,
         bounded_assembly_response=assembly_response,
+        plan_mutations=plan_response.get("mutations"),
     )
 
 
@@ -6084,57 +6389,6 @@ def simulate_prepared_cosigned_group(
     )
 
 
-def assemble_group(signed_lists: List[List[str]]) -> str:
-    """
-    Merge multi-party signed outputs into one complete group.
-
-    Each signer produces a list of base64-encoded signed transactions,
-    with empty strings ("") for slots they didn't sign (foreign entries).
-    This function merges them so each slot has exactly one non-empty entry.
-
-    Args:
-        signed_lists: List of signed transaction lists from different signers.
-            Each list must have the same length. For each index, exactly one
-            list should have a non-empty entry.
-
-    Returns:
-        Base64-encoded concatenated signed transactions, ready for
-        algod_client.send_raw_transaction().
-
-    Raises:
-        ValueError: If lists have different lengths, if a slot has no
-            signed entry, or if multiple signers signed the same slot.
-
-    Example:
-        # Alice signs her txns, gets "" for Bob's slots
-        alice_signed = alice_client.sign_transactions_list(...)
-        # Bob signs his txns, gets "" for Alice's slots
-        bob_signed = bob_client.sign_transactions_list(...)
-        # Merge and submit
-        combined = assemble_group([alice_signed, bob_signed])
-        send_raw_transaction(algod_client, combined)
-    """
-    if not signed_lists:
-        raise ValueError("signed_lists must not be empty")
-
-    group_len = len(signed_lists[0])
-    for i, sl in enumerate(signed_lists):
-        if len(sl) != group_len:
-            raise ValueError(f"signed_lists[{i}] has {len(sl)} entries, expected {group_len}")
-
-    merged = []
-    for idx in range(group_len):
-        entries = [sl[idx] for sl in signed_lists if sl[idx]]
-        if len(entries) == 0:
-            raise ValueError(f"slot {idx}: no signer provided a signed transaction")
-        if len(entries) > 1:
-            raise ValueError(f"slot {idx}: multiple signers provided a signed transaction")
-        merged.append(entries[0])
-
-    all_bytes = b"".join(base64.b64decode(s) for s in merged)
-    return base64.b64encode(all_bytes).decode()
-
-
 def send_raw_transaction(algod_client, signed_txn: str) -> str:
     """
     Submit a signed transaction to the network with clean error handling.
@@ -6147,6 +6401,8 @@ def send_raw_transaction(algod_client, signed_txn: str) -> str:
         Transaction ID
 
     Raises:
+        ValueError: If signed_txn is not standard, padded base64; nothing is
+            submitted
         LogicSigRejectedError: If a LogicSig program returned false
         InsufficientFundsError: If account has insufficient funds
         InvalidTransactionError: If transaction is malformed
@@ -6158,6 +6414,9 @@ def send_raw_transaction(algod_client, signed_txn: str) -> str:
     """
     from algosdk.error import AlgodHTTPError
 
+    # Checked before anything is sent: algod's client decodes leniently and
+    # would submit a string with stray characters in it.
+    _strict_base64(signed_txn, "signed transaction")
     try:
         return algod_client.send_raw_transaction(signed_txn)
     except AlgodHTTPError as e:

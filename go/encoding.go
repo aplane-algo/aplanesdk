@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"strings"
 
 	"github.com/algorand/go-algorand-sdk/v2/encoding/msgpack"
 	"github.com/algorand/go-algorand-sdk/v2/types"
@@ -39,47 +40,6 @@ func hexArrayToBase64(hexStrings []string) (string, error) {
 	return base64.StdEncoding.EncodeToString(combined), nil
 }
 
-// AssembleGroup merges multiple signers' outputs into a single signed group.
-// Each input is a []string from SignTransactionsListWithOptions, where empty
-// strings represent slots that signer didn't sign. Exactly one signer must
-// provide a non-empty value for each slot.
-// Returns concatenated base64-encoded signed transactions.
-func AssembleGroup(signedLists [][]string) (string, error) {
-	if len(signedLists) == 0 {
-		return "", fmt.Errorf("signedLists must not be empty")
-	}
-
-	groupLen := len(signedLists[0])
-	for i, sl := range signedLists {
-		if len(sl) != groupLen {
-			return "", fmt.Errorf("signedLists[%d] has %d entries, expected %d", i, len(sl), groupLen)
-		}
-	}
-
-	var combined []byte
-	for idx := 0; idx < groupLen; idx++ {
-		var found string
-		for _, sl := range signedLists {
-			if sl[idx] != "" {
-				if found != "" {
-					return "", fmt.Errorf("slot %d: multiple signers provided a signed transaction", idx)
-				}
-				found = sl[idx]
-			}
-		}
-		if found == "" {
-			return "", fmt.Errorf("slot %d: no signer provided a signed transaction", idx)
-		}
-		decoded, err := base64.StdEncoding.DecodeString(found)
-		if err != nil {
-			return "", fmt.Errorf("slot %d: invalid base64: %w", idx, err)
-		}
-		combined = append(combined, decoded...)
-	}
-
-	return base64.StdEncoding.EncodeToString(combined), nil
-}
-
 // HexToBytes converts a hex string to bytes.
 func HexToBytes(h string) ([]byte, error) {
 	return hex.DecodeString(h)
@@ -90,9 +50,22 @@ func BytesToHex(b []byte) string {
 	return hex.EncodeToString(b)
 }
 
-// Base64ToBytes converts a base64 string to bytes.
+// Base64ToBytes converts a standard, padded base64 string to bytes. It is the
+// SDK's one base64 decoder. base64.StdEncoding alone skips carriage returns
+// and line feeds, so it takes strings the Python and TypeScript SDKs refuse;
+// here a line break, like any other character outside the alphabet, is an
+// error.
 func Base64ToBytes(s string) ([]byte, error) {
-	return base64.StdEncoding.DecodeString(s)
+	// The decoder refuses everything else that is not standard padded base64;
+	// the two line-break characters are the ones it skips.
+	if strings.ContainsAny(s, "\r\n") {
+		return nil, fmt.Errorf("not valid base64")
+	}
+	decoded, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return nil, fmt.Errorf("not valid base64")
+	}
+	return decoded, nil
 }
 
 // BytesToBase64 converts bytes to base64 string.

@@ -122,26 +122,25 @@ func TestSignPreparedCosignedGroupOneTarget(t *testing.T) {
 	options := PreparedCosignedGroupOptions{
 		UserClient: userClient, CosignerClient: cosignerClient,
 		CosignerComponentKey: "COSIGNER_COMPONENT",
-		PreparedGroup: NewPreparedGroup(PreparedTransaction{
+		PreparedGroup: NewPreparedGroup(held(PreparedTransaction{
 			Transaction: &txn, AuthAddress: bounded,
 			AppCallInfo: &AppCallInfo{Mode: "raw"},
-			SignerKey: &KeyInfo{
-				Address: bounded, KeyType: "aplane.falcon1024.v1",
-				SigningFlow: SigningFlowCosigned1,
-				LogicSigResources: &LogicSigResourceProfile{
-					Spend: &LogicSigResourceUsage{ProgramBytes: 5308, ArgumentBytes: 3358, MaxOpcodeCost: 20000},
-				},
-				CosignerComponentKeyType: KeyTypeWitnessFalcon1024,
-				BoundedAuthorization: &BoundedAuthorizationInfo{
-					Contract: BoundedContractBounded2, MaxFee: new(uint64(1000)),
-					Cosigner: &BoundedCosignerAuthorizationInfo{
-						ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: "aabb",
-					},
+		}, &KeyInfo{
+			Address: bounded, KeyType: "aplane.falcon1024.v1",
+			SigningFlow: SigningFlowCosigned1,
+			LogicSigResources: &LogicSigResourceProfile{
+				Spend: &LogicSigResourceUsage{ProgramBytes: 5308, ArgumentBytes: 3358, MaxOpcodeCost: 20000},
+			},
+			CosignerComponentKeyType: KeyTypeWitnessFalcon1024,
+			BoundedAuthorization: &BoundedAuthorizationInfo{
+				Contract: BoundedContractBounded2, MaxFee: new(uint64(1000)),
+				Cosigner: &BoundedCosignerAuthorizationInfo{
+					ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: "aabb",
 				},
 			},
-		}),
+		})),
 	}
-	result, err := SignPreparedCosignedGroup(options)
+	result, err := signCosignedWithHeldKeys(options)
 	if err != nil {
 		t.Fatalf("SignPreparedCosignedGroup() error = %v", err)
 	}
@@ -150,8 +149,8 @@ func TestSignPreparedCosignedGroupOneTarget(t *testing.T) {
 		t.Fatalf("result = %+v", result)
 	}
 	componentCalls = 0
-	options.PreparedGroup.Transactions[0].SignerKey.BoundedAuthorization.MaxFee = new(uint64(999))
-	if _, err := SignPreparedCosignedGroup(options); err == nil ||
+	testHeldKeys[bounded].BoundedAuthorization.MaxFee = new(uint64(999))
+	if _, err := signCosignedWithHeldKeys(options); err == nil ||
 		!strings.Contains(err.Error(), "exceeds advertised max_fee") {
 		t.Fatalf("SignPreparedCosignedGroup() error = %v, want max_fee rejection", err)
 	}
@@ -236,9 +235,9 @@ func TestSignPreparedCosignedGroupSkipsTheCosignerOnAListedRekey(t *testing.T) {
 			Cosigner:  &BoundedCosignerAuthorizationInfo{ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: "aabb"},
 		},
 	}
-	result, err := SignPreparedCosignedGroup(PreparedCosignedGroupOptions{
+	result, err := signCosignedWithHeldKeys(PreparedCosignedGroupOptions{
 		UserClient: userClient, CosignerClient: cosignerClient, CosignerComponentKey: "COSIGNER_COMPONENT",
-		PreparedGroup: NewPreparedGroup(PreparedTransaction{Transaction: &txn, AuthAddress: bounded, SignerKey: key}),
+		PreparedGroup: NewPreparedGroup(held(PreparedTransaction{Transaction: &txn, AuthAddress: bounded}, key)),
 	})
 	if err != nil {
 		t.Fatalf("SignPreparedCosignedGroup() error = %v", err)
@@ -404,35 +403,33 @@ func TestSignPreparedCosignedGroupSendsAHeldPrimaryAsTheSignersOwn(t *testing.T)
 			// The group is sent ungrouped: the signer raises no fee on a group
 			// that already carries an ID.
 
-			_, err = SignPreparedCosignedGroup(PreparedCosignedGroupOptions{
+			result, err := signCosignedWithHeldKeys(PreparedCosignedGroupOptions{
 				UserClient: userClient, CosignerClient: cosignerClient,
 				CosignerComponentKey: "COSIGNER_COMPONENT",
 				PreparedGroup: NewPreparedGroup(
-					PreparedTransaction{
+					held(PreparedTransaction{
 						Transaction: &corridorTxn, AuthAddress: bounded,
-						SignerKey: &KeyInfo{
-							Address: bounded, KeyType: "aplane.falcon1024.v1",
-							AuthorizationKind: AuthorizationKindLogicSig,
-							SigningFlow:       SigningFlowCosigned1,
-							LogicSigResources: &LogicSigResourceProfile{
-								Spend: &LogicSigResourceUsage{ProgramBytes: 5308, ArgumentBytes: 3358, MaxOpcodeCost: 20000},
-							},
-							CosignerComponentKeyType: KeyTypeWitnessFalcon1024,
-							BoundedAuthorization: &BoundedAuthorizationInfo{
-								Contract: BoundedContractBounded2, MaxFee: new(uint64(1000)),
-								Cosigner: &BoundedCosignerAuthorizationInfo{
-									ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: "aabb",
-								},
+					}, &KeyInfo{
+						Address: bounded, KeyType: "aplane.falcon1024.v1",
+						AuthorizationKind: AuthorizationKindLogicSig,
+						SigningFlow:       SigningFlowCosigned1,
+						LogicSigResources: &LogicSigResourceProfile{
+							Spend: &LogicSigResourceUsage{ProgramBytes: 5308, ArgumentBytes: 3358, MaxOpcodeCost: 20000},
+						},
+						CosignerComponentKeyType: KeyTypeWitnessFalcon1024,
+						BoundedAuthorization: &BoundedAuthorizationInfo{
+							Contract: BoundedContractBounded2, MaxFee: new(uint64(1000)),
+							Cosigner: &BoundedCosignerAuthorizationInfo{
+								ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: "aabb",
 							},
 						},
-					},
-					PreparedTransaction{
+					}),
+					held(PreparedTransaction{
 						Transaction: &nativeTxn, AuthAddress: nativePQ,
-						SignerKey: &KeyInfo{
-							Address: nativePQ, KeyType: "falcon1024",
-							AuthorizationKind: AuthorizationKindNativePQ,
-						},
-					},
+					}, &KeyInfo{
+						Address: nativePQ, KeyType: "falcon1024",
+						AuthorizationKind: AuthorizationKindNativePQ,
+					}),
 				),
 			})
 			if rejectSign {
@@ -449,6 +446,11 @@ func TestSignPreparedCosignedGroupSendsAHeldPrimaryAsTheSignersOwn(t *testing.T)
 			}
 			if got := eventSnapshot(); got != "base,sign,cosigner,assemble" {
 				t.Fatalf("calls = %s, want %s", got, "base,sign,cosigner,assemble")
+			}
+			// The result carries what the plan added, so the caller can read
+			// the fee the signer charged.
+			if m := result.PlanMutations; m == nil || m.TotalFeesDelta != 2000 || len(m.FeesModified) != 1 || m.FeesModified[0] != 1 {
+				t.Fatalf("PlanMutations = %+v, want the plan's 2000 raise on position 1", m)
 			}
 
 			if primaryRequest.AuthAddress != nativePQ {
@@ -1040,16 +1042,15 @@ func TestSignPreparedCosignedGroupMixedPaths(t *testing.T) {
 					},
 				}
 			}
-			result, err := SignPreparedCosignedGroup(PreparedCosignedGroupOptions{
+			result, err := signCosignedWithHeldKeys(PreparedCosignedGroupOptions{
 				UserClient: userClient, CosignerClient: cosignerClient, CosignerComponentKey: "COSIGNER_COMPONENT",
 				PreparedGroup: NewPreparedGroup(
-					PreparedTransaction{Transaction: &rekeyTxn, AuthAddress: listed, SignerKey: cosignedKey(listed), AppCallInfo: appInfo[0]},
-					PreparedTransaction{Transaction: &spendATxn, AuthAddress: spendA, SignerKey: cosignedKey(spendA)},
-					PreparedTransaction{Transaction: &spendBTxn, AuthAddress: spendB, SignerKey: cosignedKey(spendB)},
-					PreparedTransaction{
+					held(PreparedTransaction{Transaction: &rekeyTxn, AuthAddress: listed, AppCallInfo: appInfo[0]}, cosignedKey(listed)),
+					held(PreparedTransaction{Transaction: &spendATxn, AuthAddress: spendA}, cosignedKey(spendA)),
+					held(PreparedTransaction{Transaction: &spendBTxn, AuthAddress: spendB}, cosignedKey(spendB)),
+					held(PreparedTransaction{
 						Transaction: &primaryTxn, AuthAddress: primary, AppCallInfo: appInfo[3],
-						SignerKey: &KeyInfo{Address: primary, KeyType: "ed25519", AuthorizationKind: AuthorizationKindEd25519},
-					},
+					}, &KeyInfo{Address: primary, KeyType: "ed25519", AuthorizationKind: AuthorizationKindEd25519}),
 				),
 			})
 			if wrongScheme {

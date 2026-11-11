@@ -4,7 +4,6 @@
 package aplane
 
 import (
-	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 
@@ -26,7 +25,6 @@ type PreparedTransaction struct {
 	Transaction             *types.Transaction
 	AuthAddress             string
 	TxnSender               string
-	SignerKey               *KeyInfo
 	LsigArgs                LsigArgs
 	LsigResources           *LogicSigResourceUsage
 	PQScheme                string
@@ -41,7 +39,7 @@ func (p PreparedTransaction) SignRequest() (SignRequest, error) {
 		if p.PQScheme != "" {
 			return SignRequest{}, fmt.Errorf("pq_scheme is allowed only for foreign transactions")
 		}
-		decoded, err := base64.StdEncoding.DecodeString(p.SignedTransactionBase64)
+		decoded, err := Base64ToBytes(p.SignedTransactionBase64)
 		if err != nil {
 			return SignRequest{}, fmt.Errorf("invalid passthrough transaction: invalid base64: %w", err)
 		}

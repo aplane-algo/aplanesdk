@@ -354,9 +354,6 @@ sufficient for its slots. Sign it with `signPreparedCosignedGroup`, below. `requ
 the low-level calls that helper makes, for applications that own the
 orchestration.
 
-`assembleGroup()` remains the local multi-party concatenation helper; it is
-not the same operation as server-side assembly.
-
 ### Bounded Cosigner Accounts
 
 Corridor uses the bounded contract `bounded2`, and a cosigned plain host

@@ -25,7 +25,6 @@ import {
 } from "../src/errors.js";
 import { parseEnrollmentReply, requestEnrollment, requestEnrollmentFromEnv } from "../src/utils.js";
 import { bytesToHex, hexToBytes, concatenateSignedTxns, encodeTransaction, encodeLsigArgs } from "../src/encoding.js";
-import { assembleGroup } from "../src/utils.js";
 import {
   loadClientEndpointRegistry,
   loadConfig,
@@ -200,6 +199,38 @@ function mockAlgod(accounts: Record<string, any>): any {
       do: async () => accounts[address],
     }),
   };
+}
+
+// The keys the signer of a cosigned test holds, by address. The cosigned flow
+// reads the signer's keys and picks by the position's auth address, so a test
+// names the signer's key beside the position that uses it with held(), and
+// signCosignedWithHeldKeys has the user client answer key lookups with those.
+const heldKeys = new Map<string, unknown>();
+beforeEach(() => {
+  heldKeys.clear();
+});
+
+/** Record key as the signer's key for a position; return the position. */
+function held<T>(position: T, key?: { address: string }): T {
+  if (key) heldKeys.set(key.address, key);
+  return position;
+}
+
+const listHeldKeys = async () => Array.from(heldKeys.values());
+
+// A test that sets its own key lookup on the client keeps it.
+function signCosignedWithHeldKeys(
+  options: Parameters<typeof signPreparedCosignedGroup>[0],
+): ReturnType<typeof signPreparedCosignedGroup> {
+  const user = options.userClient as any;
+  const ownLookup =
+    user &&
+    Object.prototype.hasOwnProperty.call(user, "listKeysIfKeysetChanged") &&
+    user.listKeysIfKeysetChanged !== listHeldKeys;
+  if (user && !ownLookup) {
+    user.listKeysIfKeysetChanged = listHeldKeys;
+  }
+  return signPreparedCosignedGroup(options);
 }
 
 // Restore on process exit
@@ -589,7 +620,7 @@ describe("SignerClient", () => {
       });
 
       assert.equal(prepared.authAddress, sender);
-      assert.equal(prepared.signerKey?.address, sender);
+      assert.equal("signerKey" in prepared, false);
       assert.equal((prepared.transaction as any).payment.receiver.toString(), receiver);
       assert.equal(String((prepared.transaction as any).fee), "1000");
       assert.equal(prepared.checks?.[0].name, "payment_balance");
@@ -618,7 +649,6 @@ describe("SignerClient", () => {
       });
 
       assert.equal(prepared.authAddress, auth);
-      assert.equal(prepared.signerKey?.address, auth);
       assert.equal((prepared.transaction as any).sender.toString(), sender);
     });
 
@@ -722,7 +752,6 @@ describe("SignerClient", () => {
       });
 
       assert.equal(prepared.authAddress, sender);
-      assert.equal(prepared.signerKey?.address, sender);
       assert.equal(String((prepared.transaction as any).assetTransfer.assetIndex), "1001");
       assert.equal(String((prepared.transaction as any).assetTransfer.amount), "5");
       assert.equal(prepared.checks?.[0].name, "asa_transfer");
@@ -1256,7 +1285,7 @@ describe("SignerClient", () => {
       assert.equal((group.transactions[0].transaction as any).payment.receiver.toString(), receiver1);
       assert.equal((group.transactions[1].transaction as any).payment.receiver.toString(), receiver2);
       assert.equal(group.checks?.[0].name, "payment_group");
-      assert.equal(group.checks?.[1].name, "payment_group_balance");
+      assert.equal(group.checks?.[1].name, "group_algo_balance");
     });
 
     it("rejects payment groups with aggregate insufficient funds", async () => {
@@ -1276,7 +1305,7 @@ describe("SignerClient", () => {
           { sender, receiver: receiver1, amount: 10_000, fee: 1000 },
           { sender, receiver: receiver2, amount: 10_000, fee: 1000 },
         ]),
-        /payment group insufficient funds/,
+        /group insufficient funds/,
       );
     });
 
@@ -1716,19 +1745,32 @@ describe("SignerClient", () => {
       });
 
       const client = new SignerClient("http://localhost:11270");
-      const result = await client.requestAssemble({
+      const assembly = {
+        request_id: "sdk-assembly",
         group_bytes_hex: ["5458aa"],
         targets: [
           {
             target_index: 0,
-            kind: "bounded-cosigner",
+            kind: "bounded-cosigner" as const,
             auth_address: "BOUNDED",
             base_signatures: ["aabb"],
             assembly_receipt: "eeff",
             cosigner_signature: "bbcc",
           },
         ],
+      };
+      const result = await client.requestAssemble(assembly);
+
+      // An answer to some other request is refused.
+      mockFetch.mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: async () => ({ request_id: "sdk-someone-elses", signed_group: ["ccdd"] }),
       });
+      await assert.rejects(
+        client.requestAssemble(assembly),
+        /invalid assembly response: request_id "sdk-someone-elses" does not match the request's "sdk-assembly"/,
+      );
 
       assert.deepEqual(result.signed_group, ["ccdd"]);
       assert.equal(mockFetch.mock.calls[0][0], "http://localhost:11270/sign/assemble");
@@ -1989,28 +2031,26 @@ describe("SignerClient", () => {
       };
 
       await assert.rejects(
-        signPreparedCosignedGroup({
+        signCosignedWithHeldKeys({
           userClient: user,
           preparedGroup: {
             transactions: [
-              {
+              held({
                 transaction: algosdk.makePaymentTxnWithSuggestedParamsFromObject({
                   sender: cosigned, receiver, amount: 1n, suggestedParams,
                 }),
                 authAddress: cosigned,
-                signerKey,
                 lsigArgs: { preimage: new TextEncoder().encode("alpha") },
                 appCallInfo: { mode: "raw", method: "first" },
-              },
-              {
+              }, signerKey),
+              held({
                 transaction: algosdk.makePaymentTxnWithSuggestedParamsFromObject({
                   sender: cosigned, receiver, amount: 2n, suggestedParams,
                 }),
                 authAddress: cosigned,
-                signerKey,
                 lsigArgs: { preimage: new TextEncoder().encode("beta") },
                 appCallInfo: { mode: "abi", method: "second" },
-              },
+              }, signerKey),
             ],
           },
         }),
@@ -2059,15 +2099,15 @@ describe("SignerClient", () => {
           signed_group: [bytesToHex(algosdk.encodeMsgpack(new algosdk.SignedTransaction({ txn, sig: signature })))],
         };
       };
-      const result = await signPreparedCosignedGroup({
+      const result = await signCosignedWithHeldKeys({
         userClient: user,
         cosignerClient: cosigner,
         cosignerComponentKey: "COSIGNER_COMPONENT",
         preparedGroup: {
-          transactions: [{
+          transactions: [held({
             transaction: txn,
             authAddress: bounded,
-            signerKey: {
+          }, {
               address: bounded,
               publicKeyHex: "",
               keyType: "aplane.falcon1024.v1",
@@ -2098,8 +2138,7 @@ describe("SignerClient", () => {
                 argumentLayout: [],
                 layer3Policy: "merkle_allowlist",
               },
-            },
-          }],
+            })],
         },
       } as any);
       assert.equal(result.signedGroup.length, 1);
@@ -2210,19 +2249,18 @@ describe("SignerClient", () => {
             })),
           };
         };
-        const sign = () => signPreparedCosignedGroup({
+        const sign = () => signCosignedWithHeldKeys({
           userClient: user,
           cosignerClient: cosigner,
           cosignerComponentKey: "COSIGNER_COMPONENT",
           preparedGroup: {
             transactions: [
-              { transaction: txns[0], authAddress: listed, signerKey: cosignedKey(listed), appCallInfo: { mode: "listed" } },
-              { transaction: txns[1], authAddress: spendA, signerKey: cosignedKey(spendA) },
-              { transaction: txns[2], authAddress: spendB, signerKey: cosignedKey(spendB) },
-              {
+              held({ transaction: txns[0], authAddress: listed, appCallInfo: { mode: "listed" } }, cosignedKey(listed)),
+              held({ transaction: txns[1], authAddress: spendA, }, cosignedKey(spendA)),
+              held({ transaction: txns[2], authAddress: spendB, }, cosignedKey(spendB)),
+              held({
                 transaction: txns[3], authAddress: primary, appCallInfo: { mode: "primary" },
-                signerKey: { address: primary, publicKeyHex: "", keyType: "ed25519", authorizationKind: "ed25519", isGenericLsig: false },
-              },
+              }, { address: primary, publicKeyHex: "", keyType: "ed25519", authorizationKind: "ed25519", isGenericLsig: false }),
             ],
           },
         } as any);
@@ -2365,11 +2403,11 @@ describe("SignerClient", () => {
         cosignerClient: cosigner,
         cosignerComponentKey: "COSIGNER_COMPONENT",
         preparedGroup: {
-          transactions: [{
+          transactions: [held({
             transaction: txn,
             authAddress: bounded,
             appCallInfo: { mode: "raw" },
-            signerKey: {
+          }, {
               address: bounded,
               publicKeyHex: "",
               keyType: "aplane.falcon1024.v1",
@@ -2397,8 +2435,7 @@ describe("SignerClient", () => {
                 argumentLayout: [],
                 layer3Policy: "merkle_allowlist",
               },
-            },
-          }],
+            })],
         },
       };
       const fabricatedFirst = algosdk.decodeUnsignedTransaction(txn.toByte());
@@ -2431,7 +2468,7 @@ describe("SignerClient", () => {
         finalCount: 2,
       };
       await assert.rejects(
-        signPreparedCosignedGroup(options),
+        signCosignedWithHeldKeys(options),
         /verify signer plan: returned transaction 1 does not carry the canonical group ID/,
       );
 
@@ -2452,7 +2489,7 @@ describe("SignerClient", () => {
       plannedTransactions = [encodeTransaction(changedPlanTxn)[0]];
       plannedMutations = undefined;
       await assert.rejects(
-        signPreparedCosignedGroup(options),
+        signCosignedWithHeldKeys(options),
         /changed unreported fields/,
       );
 
@@ -2481,7 +2518,7 @@ describe("SignerClient", () => {
       };
       const callsBeforeInflatedFee = baseComponentCalls;
       await assert.rejects(
-        signPreparedCosignedGroup(options),
+        signCosignedWithHeldKeys(options),
         /exceeds advertised max_fee/,
       );
       assert.equal(baseComponentCalls, callsBeforeInflatedFee);
@@ -2516,7 +2553,7 @@ describe("SignerClient", () => {
         finalCount: 2,
       };
       await assert.rejects(
-        signPreparedCosignedGroup(options),
+        signCosignedWithHeldKeys(options),
         /appended transaction 1 is not the canonical resource dummy/,
       );
       plannedTransactions = undefined;
@@ -2537,12 +2574,12 @@ describe("SignerClient", () => {
         },
       });
       await assert.rejects(
-        signPreparedCosignedGroup(options),
+        signCosignedWithHeldKeys(options),
         /does not match the submitted canonical bytes/,
       );
 
       assembledTxn = txn;
-      const result = await signPreparedCosignedGroup(options);
+      const result = await signCosignedWithHeldKeys(options);
 
       assert.deepEqual(result.signedGroup, [signedTxnHex(txn)]);
       assert.ok(result.boundedComponentResponse);
@@ -2616,17 +2653,17 @@ describe("SignerClient", () => {
         });
 
         await assert.rejects(
-          signPreparedCosignedGroup({
+          signCosignedWithHeldKeys({
             userClient: user,
             cosignerResolver: async (target) => {
               assert.deepEqual(target.logicSigResources, item.expected);
               throw new Error(`observed ${item.name}`);
             },
             preparedGroup: {
-              transactions: [{
+              transactions: [held({
                 transaction: txn,
                 authAddress: bounded,
-                signerKey: {
+              }, {
                   address: bounded,
                   publicKeyHex: "",
                   keyType: "aplane.falcon1024.v1",
@@ -2653,8 +2690,7 @@ describe("SignerClient", () => {
                     argumentLayout: [],
                     layer3Policy: "fixed_allowlist",
                   },
-                },
-              }],
+                })],
             },
           }),
           item.error ?? new RegExp(`observed ${item.name}`),
@@ -2665,11 +2701,11 @@ describe("SignerClient", () => {
     it("names the position of a held primary that carries a size hint", async () => {
       const account = testAddress(41);
       await assert.rejects(
-        signPreparedCosignedGroup({
+        signCosignedWithHeldKeys({
           userClient: new SignerClient("http://localhost:11270"),
           preparedGroup: {
             transactions: [
-              {
+              held({
                 transaction: algosdk.makePaymentTxnWithSuggestedParamsFromObject({
                   sender: account,
                   receiver: testAddress(42),
@@ -2686,13 +2722,12 @@ describe("SignerClient", () => {
                 }),
                 authAddress: account,
                 pqScheme: "f1",
-                signerKey: {
+              }, {
                   address: account,
                   publicKeyHex: "",
                   keyType: "falcon1024",
                   isGenericLsig: false,
-                },
-              },
+                }),
             ],
           },
         }),
@@ -2713,16 +2748,16 @@ describe("SignerClient", () => {
         flatFee: true,
       };
       await assert.rejects(
-        signPreparedCosignedGroup({
+        signCosignedWithHeldKeys({
           userClient: user,
           preparedGroup: {
             transactions: [
-              {
+              held({
                 transaction: algosdk.makePaymentTxnWithSuggestedParamsFromObject({
                   sender: account, receiver: testAddress(42), amount: 1n, suggestedParams,
                 }),
                 authAddress: account,
-                signerKey: {
+              }, {
                   address: account,
                   publicKeyHex: "",
                   keyType: "aplane.falcon1024-cosigner1024.v1",
@@ -2732,8 +2767,7 @@ describe("SignerClient", () => {
                     spend: { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 },
                   },
                   isGenericLsig: false,
-                },
-              },
+                }),
             ],
           },
         }),
@@ -2841,10 +2875,10 @@ describe("SignerClient", () => {
         cosignerComponentKey: "COSIGNER_COMPONENT",
         preparedGroup: {
           transactions: [
-            {
+            held({
               transaction: boundedTxn,
               authAddress: bounded,
-              signerKey: {
+            }, {
                 address: bounded,
                 publicKeyHex: "",
                 keyType: "aplane.falcon1024.v1",
@@ -2871,28 +2905,26 @@ describe("SignerClient", () => {
                   derivedArgs: [],
                   argumentLayout: [],
                 },
-              },
-            },
-            {
+              }),
+            held({
               transaction: primaryTxn,
               authAddress: primary,
-              signerKey: {
+            }, {
                 address: primary,
                 publicKeyHex: "",
                 keyType: "aplane.falcon1024.v1",
                 signingFlow: "",
                 isGenericLsig: false,
-              },
-            },
+              }),
           ],
         },
       };
       await assert.rejects(
-        signPreparedCosignedGroup(options),
+        signCosignedWithHeldKeys(options),
         /primary passthrough 1 does not match/,
       );
       useWrongPrimary = false;
-      const result = await signPreparedCosignedGroup(options);
+      const result = await signCosignedWithHeldKeys(options);
       assert.equal(result.signedGroup.length, 2);
     });
 
@@ -3007,16 +3039,16 @@ describe("SignerClient", () => {
         };
       };
 
-      const run = () => signPreparedCosignedGroup({
+      const run = () => signCosignedWithHeldKeys({
         userClient: user,
         cosignerClient: cosigner,
         cosignerComponentKey: "COSIGNER_COMPONENT",
         preparedGroup: {
           transactions: [
-            {
+            held({
               transaction: boundedTxn,
               authAddress: bounded,
-              signerKey: {
+            }, {
                 address: bounded,
                 publicKeyHex: "",
                 keyType: "aplane.falcon1024.v1",
@@ -3044,19 +3076,17 @@ describe("SignerClient", () => {
                   derivedArgs: [],
                   argumentLayout: [],
                 },
-              },
-            },
-            {
+              }),
+            held({
               transaction: nativeTxn,
               authAddress: nativePq,
-              signerKey: {
+            }, {
                 address: nativePq,
                 publicKeyHex: "",
                 keyType: "falcon1024",
                 authorizationKind: "native_pq",
                 isGenericLsig: false,
-              },
-            },
+              }),
           ],
         },
       } as any);
@@ -3065,8 +3095,12 @@ describe("SignerClient", () => {
         assert.deepEqual(events, ["base", "sign"]);
         return;
       }
-      await run();
+      const result = await run();
       assert.deepEqual(events, ["base", "sign", "cosigner", "assemble"]);
+      // The result carries what the plan added, so the caller can read the
+      // fee the signer charged.
+      assert.equal(result.planMutations?.totalFeesDelta, 2000);
+      assert.deepEqual(result.planMutations?.feesModified, [1]);
       // Sign mode on /plan, with no size hint.
       assert.equal(primaryRequest.auth_address, nativePq);
       assert.equal(primaryRequest.pq_scheme, undefined);
@@ -3095,14 +3129,14 @@ describe("SignerClient", () => {
       });
 
       await assert.rejects(
-        signPreparedCosignedGroup({
+        signCosignedWithHeldKeys({
           userClient: user,
           preparedGroup: {
             transactions: [
-              {
+              held({
                 transaction: txn,
                 authAddress: cosigned,
-                signerKey: {
+              }, {
                   address: cosigned,
                   publicKeyHex: "",
                   keyType: "aplane.future-cosigned.v1",
@@ -3111,8 +3145,7 @@ describe("SignerClient", () => {
                     spend: { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 },
                   },
                   isGenericLsig: false,
-                },
-              },
+                }),
             ],
           },
         }),
@@ -4793,42 +4826,6 @@ describe("sign return format", () => {
     const client = new SignerClient("http://localhost:11270");
     const mockTxn = createMockTxn() as Parameters<typeof client.planGroup>[0][0];
     await assert.rejects(client.planGroup([mockTxn], ["A", "B"]), SignerError);
-  });
-});
-
-describe("assembleGroup", () => {
-  it("merges two signers into one group", () => {
-    // Alice signed slots 0,2; Bob signed slot 1
-    const aliceSigned = [
-      Buffer.from([1, 2]).toString("base64"),
-      "",
-      Buffer.from([5, 6]).toString("base64"),
-    ];
-    const bobSigned = [
-      "",
-      Buffer.from([3, 4]).toString("base64"),
-      "",
-    ];
-
-    const result = assembleGroup([aliceSigned, bobSigned]);
-    // Should be base64 of [1,2,3,4,5,6]
-    assert.equal(result, Buffer.from([1, 2, 3, 4, 5, 6]).toString("base64"));
-  });
-
-  it("throws on empty input", () => {
-    assert.throws(() => assembleGroup([]), { message: /must not be empty/ });
-  });
-
-  it("throws on mismatched lengths", () => {
-    assert.throws(() => assembleGroup([["a", "b"], ["c"]]), { message: /expected 2/ });
-  });
-
-  it("throws on slot with no signer", () => {
-    assert.throws(() => assembleGroup([["a", ""], ["", ""]]), { message: /slot 1: no signer/ });
-  });
-
-  it("throws on slot with multiple signers", () => {
-    assert.throws(() => assembleGroup([["a", "b"], ["c", "d"]]), { message: /slot 0: multiple signers/ });
   });
 });
 

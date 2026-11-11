@@ -20,21 +20,26 @@ const appCallMethodArgsTupleThreshold = appCallMaxAppArgs - 2
 
 // PaymentPrepParams describes a payment transaction intent.
 type PaymentPrepParams struct {
-	Sender     string
-	Receiver   string
-	Amount     uint64
-	Note       []byte
+	Sender   string
+	Receiver string
+	// Amount is in microAlgos.
+	Amount uint64
+	Note   []byte
+	// Fee is the flat fee in microAlgos, applied when UseFlatFee is set or
+	// Fee is non-zero.
 	Fee        uint64
 	UseFlatFee bool
 }
 
 // AsaTransferPrepParams describes an ASA transfer transaction intent.
 type AsaTransferPrepParams struct {
-	Sender     string
-	Receiver   string
-	AssetID    uint64
-	Amount     uint64
-	Note       []byte
+	Sender   string
+	Receiver string
+	AssetID  uint64
+	// Amount is in the asset's base units, not adjusted for its decimals.
+	Amount uint64
+	Note   []byte
+	// Fee is the flat fee in microAlgos; see PaymentPrepParams.
 	Fee        uint64
 	UseFlatFee bool
 }
@@ -221,7 +226,6 @@ func (c *SignerClient) PreparePayment(ctx context.Context, algodClient *algod.Cl
 	return &PreparedTransaction{
 		Transaction: &txn,
 		AuthAddress: resolved.AuthAddress,
-		SignerKey:   &resolved.KeyInfo,
 		Checks:      checks,
 	}, nil
 }
@@ -268,7 +272,7 @@ func (c *SignerClient) PrepareAsaTransfer(ctx context.Context, algodClient *algo
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ASA transfer transaction: %w", err)
 	}
-	checks, err := asaTransferChecks(senderAcct, receiverAcct, params.AssetID, params.Amount)
+	checks, err := asaTransferChecks(senderAcct, receiverAcct, params.AssetID, params.Amount, uint64(txn.Fee))
 	if err != nil {
 		return nil, err
 	}
@@ -283,7 +287,6 @@ func (c *SignerClient) PrepareAsaTransfer(ctx context.Context, algodClient *algo
 	return &PreparedTransaction{
 		Transaction: &txn,
 		AuthAddress: resolved.AuthAddress,
-		SignerKey:   &resolved.KeyInfo,
 		Checks:      checks,
 	}, nil
 }
@@ -310,14 +313,15 @@ func (c *SignerClient) PrepareAsaOptIn(ctx context.Context, algodClient *algod.C
 	if err != nil {
 		return nil, fmt.Errorf("failed to get sender account info: %w", err)
 	}
-	checks, err := asaOptInChecks(senderAcct, params.AssetID, uint64(suggested.Fee))
-	if err != nil {
-		return nil, err
-	}
-
 	txn, err := transaction.MakeAssetAcceptanceTxn(params.Sender, params.Note, suggested, params.AssetID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ASA opt-in transaction: %w", err)
+	}
+	// The balance is checked against the fee the built transaction pays. The
+	// suggested fee is per byte, usually zero, and would check nothing.
+	checks, err := asaOptInChecks(senderAcct, params.AssetID, uint64(txn.Fee))
+	if err != nil {
+		return nil, err
 	}
 
 	resolved, err := c.ResolveAuthAddress(ctx, params.Sender, func(context.Context, string) (string, error) {
@@ -330,7 +334,6 @@ func (c *SignerClient) PrepareAsaOptIn(ctx context.Context, algodClient *algod.C
 	return &PreparedTransaction{
 		Transaction: &txn,
 		AuthAddress: resolved.AuthAddress,
-		SignerKey:   &resolved.KeyInfo,
 		Checks:      checks,
 	}, nil
 }
@@ -387,7 +390,6 @@ func (c *SignerClient) PrepareAsaOptOut(ctx context.Context, algodClient *algod.
 	return &PreparedTransaction{
 		Transaction: &txn,
 		AuthAddress: resolved.AuthAddress,
-		SignerKey:   &resolved.KeyInfo,
 		Checks:      checks,
 	}, nil
 }
@@ -405,6 +407,9 @@ func (c *SignerClient) PrepareABIAppCall(ctx context.Context, algodClient *algod
 	method, err := abi.MethodFromSignature(params.MethodSignature)
 	if err != nil {
 		return nil, fmt.Errorf("invalid ABI method signature: %w", err)
+	}
+	if err := requireNonZeroReferences(params.ForeignApps, params.ForeignAssets); err != nil {
+		return nil, err
 	}
 	raw := params.AppCallPrepParams
 	raw.AppArgs, raw.Accounts, raw.ForeignApps, raw.ForeignAssets, err = encodeABIMethodArgs(method, params.Args, raw.Sender, raw.AppID, raw.Accounts, raw.ForeignApps, raw.ForeignAssets)
@@ -442,14 +447,15 @@ func (c *SignerClient) PrepareAccountClose(ctx context.Context, algodClient *alg
 	if err != nil {
 		return nil, fmt.Errorf("failed to get sender account info: %w", err)
 	}
-	checks, err := accountCloseChecks(senderAcct, uint64(suggested.Fee))
-	if err != nil {
-		return nil, err
-	}
-
 	txn, err := transaction.MakePaymentTxn(params.Sender, params.CloseTo, 0, params.Note, params.CloseTo, suggested)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create account close transaction: %w", err)
+	}
+	// Checked against the fee the built transaction pays, not the suggested
+	// per-byte fee.
+	checks, err := accountCloseChecks(senderAcct, uint64(txn.Fee))
+	if err != nil {
+		return nil, err
 	}
 
 	resolved, err := c.ResolveAuthAddress(ctx, params.Sender, func(context.Context, string) (string, error) {
@@ -462,7 +468,6 @@ func (c *SignerClient) PrepareAccountClose(ctx context.Context, algodClient *alg
 	return &PreparedTransaction{
 		Transaction: &txn,
 		AuthAddress: resolved.AuthAddress,
-		SignerKey:   &resolved.KeyInfo,
 		Checks:      checks,
 	}, nil
 }
@@ -531,7 +536,6 @@ func (c *SignerClient) PrepareRekey(ctx context.Context, algodClient *algod.Clie
 	return &PreparedTransaction{
 		Transaction: &txn,
 		AuthAddress: resolved.AuthAddress,
-		SignerKey:   &resolved.KeyInfo,
 		Checks:      checks,
 	}, nil
 }
@@ -597,7 +601,6 @@ func (c *SignerClient) PrepareKeyReg(ctx context.Context, algodClient *algod.Cli
 	return &PreparedTransaction{
 		Transaction: &txn,
 		AuthAddress: resolved.AuthAddress,
-		SignerKey:   &resolved.KeyInfo,
 		Checks: []PreparedCheck{{
 			Name:    "keyreg",
 			Status:  "ok",
@@ -620,6 +623,9 @@ func (c *SignerClient) PrepareAppDeploy(ctx context.Context, algodClient *algod.
 	}
 	if len(params.ClearProgram) == 0 {
 		return nil, fmt.Errorf("clear_program is required")
+	}
+	if err := requireNonZeroReferences(params.ForeignApps, params.ForeignAssets); err != nil {
+		return nil, err
 	}
 
 	suggested, err := algodClient.SuggestedParams().Do(ctx)
@@ -670,7 +676,6 @@ func (c *SignerClient) PrepareAppDeploy(ctx context.Context, algodClient *algod.
 	return &PreparedTransaction{
 		Transaction: &txn,
 		AuthAddress: resolved.AuthAddress,
-		SignerKey:   &resolved.KeyInfo,
 		AppCallInfo: &AppCallInfo{Mode: "raw"},
 		Checks: []PreparedCheck{{
 			Name:   "app_deploy",
@@ -723,13 +728,11 @@ func (c *SignerClient) PrepareSweepGroup(ctx context.Context, algodClient *algod
 		}
 		group.Checks = append(group.Checks, check)
 	}
-	if len(params.Payments) > 0 {
-		check, err := paymentGroupBalanceCheck(group.Transactions[len(params.AsaTransfers):])
-		if err != nil {
-			return nil, err
-		}
-		group.Checks = append(group.Checks, check)
+	check, err := groupAlgoBalanceCheck(group.Transactions)
+	if err != nil {
+		return nil, err
 	}
+	group.Checks = append(group.Checks, check)
 	return &group, nil
 }
 
@@ -755,7 +758,7 @@ func (c *SignerClient) PreparePaymentGroup(ctx context.Context, algodClient *alg
 		}
 		group.Transactions = append(group.Transactions, *prepared)
 	}
-	check, err := paymentGroupBalanceCheck(group.Transactions)
+	check, err := groupAlgoBalanceCheck(group.Transactions)
 	if err != nil {
 		return nil, err
 	}
@@ -786,6 +789,11 @@ func (c *SignerClient) PrepareAsaTransferGroup(ctx context.Context, algodClient 
 		group.Transactions = append(group.Transactions, *prepared)
 	}
 	check, err := asaTransferGroupBalanceCheck(group.Transactions)
+	if err != nil {
+		return nil, err
+	}
+	group.Checks = append(group.Checks, check)
+	check, err = groupAlgoBalanceCheck(group.Transactions)
 	if err != nil {
 		return nil, err
 	}
@@ -824,6 +832,9 @@ func (c *SignerClient) prepareAppCallWithInfo(ctx context.Context, algodClient *
 	}
 	if params.AppID == 0 {
 		return nil, fmt.Errorf("app_id is required")
+	}
+	if err := requireNonZeroReferences(params.ForeignApps, params.ForeignAssets); err != nil {
+		return nil, err
 	}
 	if params.OnCompletion > types.DeleteApplicationOC {
 		return nil, fmt.Errorf("invalid on_completion: %d", params.OnCompletion)
@@ -879,7 +890,6 @@ func (c *SignerClient) prepareAppCallWithInfo(ctx context.Context, algodClient *
 	return &PreparedTransaction{
 		Transaction: &txn,
 		AuthAddress: resolved.AuthAddress,
-		SignerKey:   &resolved.KeyInfo,
 		AppCallInfo: info,
 		Checks:      appCallChecks(params, info),
 	}, nil
@@ -909,9 +919,42 @@ func spendableBalance(account models.Account) uint64 {
 	return 0
 }
 
+// spendableAlgoCheckName names the check that records what a position's sender
+// can spend in ALGO. A group's ALGO check reads it by this name and no other.
+const spendableAlgoCheckName = "spendable_algo"
+
+func spendableAlgoCheck(sender models.Account) PreparedCheck {
+	return PreparedCheck{
+		Name:   spendableAlgoCheckName,
+		Status: "ok",
+		Data:   map[string]any{"available": spendableBalance(sender)},
+	}
+}
+
+// recordedSpendableAlgo reads a position's spendable_algo check. A position
+// without one, or with a value that is not a uint64, is an error: the group
+// check never guesses a balance and never skips a sender.
+func recordedSpendableAlgo(item PreparedTransaction) (uint64, error) {
+	for _, check := range item.Checks {
+		if check.Name != spendableAlgoCheckName {
+			continue
+		}
+		value, present := check.Data["available"]
+		if !present {
+			return 0, fmt.Errorf("the %s check has no available amount", spendableAlgoCheckName)
+		}
+		available, ok := value.(uint64)
+		if !ok {
+			return 0, fmt.Errorf("the %s check's available amount must be a uint64, not %T", spendableAlgoCheckName, value)
+		}
+		return available, nil
+	}
+	return 0, fmt.Errorf("no ALGO balance on record (a %s check)", spendableAlgoCheckName)
+}
+
 func paymentChecks(sender models.Account, amount uint64, fee uint64) ([]PreparedCheck, error) {
-	required := amount + fee
-	if required < amount {
+	required, ok := addChecked(amount, fee)
+	if !ok {
 		return nil, fmt.Errorf("amount %d plus fee %d overflows uint64", amount, fee)
 	}
 	available := spendableBalance(sender)
@@ -928,10 +971,10 @@ func paymentChecks(sender models.Account, amount uint64, fee uint64) ([]Prepared
 			"balance":     sender.Amount,
 			"available":   available,
 		},
-	}}, nil
+	}, spendableAlgoCheck(sender)}, nil
 }
 
-func asaTransferChecks(sender models.Account, receiver models.Account, assetID uint64, amount uint64) ([]PreparedCheck, error) {
+func asaTransferChecks(sender models.Account, receiver models.Account, assetID uint64, amount uint64, fee uint64) ([]PreparedCheck, error) {
 	senderHolding, ok := accountAssetHolding(sender, assetID)
 	if !ok {
 		return nil, fmt.Errorf("sender is not opted into asset %d", assetID)
@@ -942,6 +985,10 @@ func asaTransferChecks(sender models.Account, receiver models.Account, assetID u
 	if _, ok := accountAssetHolding(receiver, assetID); !ok {
 		return nil, fmt.Errorf("receiver is not opted into asset %d", assetID)
 	}
+	// An asset transfer moves no ALGO but pays its fee from the sender's.
+	if available := spendableBalance(sender); available < fee {
+		return nil, fmt.Errorf("insufficient funds for asset transfer fee: available %d, fee %d", available, fee)
+	}
 	return []PreparedCheck{{
 		Name:   "asa_transfer",
 		Status: "ok",
@@ -949,8 +996,9 @@ func asaTransferChecks(sender models.Account, receiver models.Account, assetID u
 			"asset_id": assetID,
 			"amount":   amount,
 			"balance":  senderHolding.Amount,
+			"fee":      fee,
 		},
-	}}, nil
+	}, spendableAlgoCheck(sender)}, nil
 }
 
 func asaOptInChecks(sender models.Account, assetID uint64, fee uint64) ([]PreparedCheck, error) {
@@ -1149,15 +1197,46 @@ func appCallChecks(params AppCallPrepParams, info *AppCallInfo) []PreparedCheck 
 	}}
 }
 
-func paymentGroupBalanceCheck(items []PreparedTransaction) (PreparedCheck, error) {
+// requireNonZeroReferences refuses a zero app or asset reference. Zero names
+// no app and no asset, so one in a reference list is a mistake. The Python
+// and TypeScript SDKs refuse the same.
+func requireNonZeroReferences(foreignApps, foreignAssets []uint64) error {
+	for i, id := range foreignApps {
+		if id == 0 {
+			return fmt.Errorf("foreign_apps[%d] must be greater than zero", i)
+		}
+	}
+	for i, id := range foreignAssets {
+		if id == 0 {
+			return fmt.Errorf("foreign_assets[%d] must be greater than zero", i)
+		}
+	}
+	return nil
+}
+
+// addChecked adds two amounts and reports whether the sum fits in a uint64.
+// The caller words the refusal, so nothing is built unless it is needed.
+func addChecked(total, value uint64) (uint64, bool) {
+	sum := total + value
+	return sum, sum >= total
+}
+
+// groupAlgoBalanceCheck checks each sender can cover everything it pays
+// across the group. A sender's total is the ALGO it sends plus the fee of
+// every position it sends, whatever the position's kind: an asset transfer
+// moves no ALGO but still pays a fee. The total is checked against the
+// sender's spendable ALGO, which each position records in its spendable_algo
+// check. A position without that record is refused.
+func groupAlgoBalanceCheck(items []PreparedTransaction) (PreparedCheck, error) {
 	type totals struct {
 		available uint64
+		recorded  bool
 		required  uint64
 	}
 	bySender := map[string]*totals{}
-	for _, item := range items {
+	for index, item := range items {
 		if item.Transaction == nil {
-			return PreparedCheck{}, fmt.Errorf("payment group transaction is required")
+			return PreparedCheck{}, fmt.Errorf("group transaction is required")
 		}
 		sender := item.Transaction.Sender.String()
 		total := bySender[sender]
@@ -1165,23 +1244,34 @@ func paymentGroupBalanceCheck(items []PreparedTransaction) (PreparedCheck, error
 			total = &totals{}
 			bySender[sender] = total
 		}
-		total.required += uint64(item.Transaction.Amount) + uint64(item.Transaction.Fee)
-		for _, check := range item.Checks {
-			if check.Name != "payment_balance" || check.Data == nil {
-				continue
-			}
-			if available, ok := check.Data["available"].(uint64); ok {
-				total.available = available
-			}
+		var amount uint64
+		if item.Transaction.Type == types.PaymentTx {
+			amount = uint64(item.Transaction.Amount)
+		}
+		ok := true
+		if total.required, ok = addChecked(total.required, amount); ok {
+			total.required, ok = addChecked(total.required, uint64(item.Transaction.Fee))
+		}
+		if !ok {
+			return PreparedCheck{}, fmt.Errorf("group total for %s overflows uint64", sender)
+		}
+		available, err := recordedSpendableAlgo(item)
+		if err != nil {
+			return PreparedCheck{}, fmt.Errorf("group transaction %d, sender %s: %w", index, sender, err)
+		}
+		// The lowest value recorded for the sender: each position read the
+		// balance on its own, and the check must not depend on their order.
+		if !total.recorded || available < total.available {
+			total.available, total.recorded = available, true
 		}
 	}
 	for sender, total := range bySender {
 		if total.available < total.required {
-			return PreparedCheck{}, fmt.Errorf("payment group insufficient funds for %s: available %d, required %d", sender, total.available, total.required)
+			return PreparedCheck{}, fmt.Errorf("group insufficient funds for %s: available %d, required %d", sender, total.available, total.required)
 		}
 	}
 	return PreparedCheck{
-		Name:   "payment_group_balance",
+		Name:   "group_algo_balance",
 		Status: "ok",
 		Data: map[string]any{
 			"sender_count": len(bySender),
@@ -1205,7 +1295,10 @@ func asaTransferGroupBalanceCheck(items []PreparedTransaction) (PreparedCheck, e
 			total = &totals{}
 			byHolding[key] = total
 		}
-		total.amount += item.Transaction.AssetAmount
+		var ok bool
+		if total.amount, ok = addChecked(total.amount, item.Transaction.AssetAmount); !ok {
+			return PreparedCheck{}, fmt.Errorf("ASA transfer group total for %s overflows uint64", key)
+		}
 		for _, check := range item.Checks {
 			if check.Name != "asa_transfer" || check.Data == nil {
 				continue
@@ -1324,6 +1417,9 @@ func resolveABIReferenceArgs(sender string, appID uint64, types []string, values
 			if err != nil {
 				return nil, err
 			}
+			if refAppID == 0 {
+				return nil, fmt.Errorf("application argument must be greater than zero")
+			}
 			if refAppID == appID {
 				resolved = 0
 			} else if idx := uint64Index(*apps, refAppID); idx >= 0 {
@@ -1336,6 +1432,9 @@ func resolveABIReferenceArgs(sender string, appID uint64, types []string, values
 			assetID, err := marshalABIUint64(value)
 			if err != nil {
 				return nil, err
+			}
+			if assetID == 0 {
+				return nil, fmt.Errorf("asset argument must be greater than zero")
 			}
 			if idx := uint64Index(*assets, assetID); idx >= 0 {
 				resolved = idx

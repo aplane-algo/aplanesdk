@@ -27,7 +27,6 @@ from aplanesdk.signer import (
     SignerError,
     KeyNotFoundError,
     KeyDeletionError,
-    assemble_group,
     sign_prepared_cosigned_group,
     simulate_prepared_cosigned_group,
     load_config,
@@ -1059,7 +1058,40 @@ def record_call_order(events, **mocks):
         mock.side_effect = side_effect
 
 
+# The keys the signer of a cosigned test holds, by address.
+HELD_KEYS: dict = {}
+
+
+def held(position, key):
+    """Record key as the signer's key for a position; return the position."""
+    if key is not None:
+        HELD_KEYS[key.address] = key
+    return position
+
+
 class TestSignPreparedCosignedGroup:
+    @pytest.fixture(autouse=True)
+    def _signer_holds_the_named_keys(self, monkeypatch):
+        """The cosigned flow reads the signer's keys and picks by auth address.
+
+        A test names the signer's key beside the position that uses it with
+        held(), and the user client here answers key lookups with those.
+        """
+        HELD_KEYS.clear()
+        real = sign_prepared_cosigned_group
+
+        def sign(*args, **kwargs):
+            user = kwargs.get("user_client")
+            # A test that sets its own key lookup on a real client keeps it.
+            own_lookup = not isinstance(user, MagicMock) and isinstance(
+                getattr(user, "__dict__", {}).get("list_keys_if_keyset_changed"), MagicMock
+            )
+            if user is not None and not own_lookup:
+                user.list_keys_if_keyset_changed = lambda: list(HELD_KEYS.values())
+            return real(*args, **kwargs)
+
+        monkeypatch.setitem(globals(), "sign_prepared_cosigned_group", sign)
+
     def test_prepared_plan_preserves_per_slot_args_for_repeated_auth_address(self):
         cosigned = sdk_test_address(31)
         receiver = sdk_test_address(32)
@@ -1114,20 +1146,18 @@ class TestSignPreparedCosignedGroup:
 
         user.plan_requests = MagicMock(side_effect=assert_per_slot_requests)
         prepared = PreparedGroup([
-            PreparedTransaction(
+            held(PreparedTransaction(
                 transaction=transaction.PaymentTxn(cosigned, params, receiver, 1),
                 auth_address=cosigned,
-                signer_key=signer_key,
                 lsig_args={"preimage": b"alpha"},
                 app_call_info={"mode": "raw", "method": "first"},
-            ),
-            PreparedTransaction(
+            ), signer_key),
+            held(PreparedTransaction(
                 transaction=transaction.PaymentTxn(cosigned, params, receiver, 2),
                 auth_address=cosigned,
-                signer_key=signer_key,
                 lsig_args={"preimage": b"beta"},
                 app_call_info={"mode": "abi", "method": "second"},
-            ),
+            ), signer_key),
         ])
 
         with pytest.raises(RuntimeError, match="stop after per-slot plan assertion"):
@@ -1258,7 +1288,7 @@ class TestSignPreparedCosignedGroup:
             })
 
         user = make_client()
-        user.get_key_info = MagicMock(
+        user.list_keys_if_keyset_changed = MagicMock(
             side_effect=AuthenticationError("Not authenticated: connect through an enrolled SSH key")
         )
         params = transaction.SuggestedParams(
@@ -1396,7 +1426,7 @@ class TestSignPreparedCosignedGroup:
             cosigner_client=cosigner,
             cosigner_component_key="COSIGNER_COMPONENT",
             prepared_group=PreparedGroup([
-                PreparedTransaction(transaction=txn, auth_address=bounded, signer_key=key)
+                held(PreparedTransaction(transaction=txn, auth_address=bounded, ), key)
             ]),
         )
         assert result.signed_group == [signed_txn_hex(txn)]
@@ -1497,14 +1527,13 @@ class TestSignPreparedCosignedGroup:
                 ],
             ))
             prepared = PreparedGroup([
-                PreparedTransaction(transaction=txns[0], auth_address=listed,
-                                    signer_key=cosigned_key(listed), app_call_info={"mode": "listed"}),
-                PreparedTransaction(transaction=txns[1], auth_address=spend_a, signer_key=cosigned_key(spend_a)),
-                PreparedTransaction(transaction=txns[2], auth_address=spend_b, signer_key=cosigned_key(spend_b)),
-                PreparedTransaction(
+                held(PreparedTransaction(transaction=txns[0], auth_address=listed,
+                                     app_call_info={"mode": "listed"}), cosigned_key(listed)),
+                held(PreparedTransaction(transaction=txns[1], auth_address=spend_a, ), cosigned_key(spend_a)),
+                held(PreparedTransaction(transaction=txns[2], auth_address=spend_b, ), cosigned_key(spend_b)),
+                held(PreparedTransaction(
                     transaction=txns[3], auth_address=primary, app_call_info={"mode": "primary"},
-                    signer_key=KeyInfo(address=primary, key_type="ed25519", authorization_kind="ed25519"),
-                ),
+                ), KeyInfo(address=primary, key_type="ed25519", authorization_kind="ed25519")),
             ])
             sign = lambda: sign_prepared_cosigned_group(
                 user_client=user,
@@ -1617,11 +1646,11 @@ class TestSignPreparedCosignedGroup:
         txn = transaction.PaymentTxn(bounded, params, receiver, 1000)
         prepared_group = PreparedGroup(
             [
-                PreparedTransaction(
+                held(PreparedTransaction(
                     transaction=txn,
                     auth_address=bounded,
                     app_call_info={"mode": "raw"},
-                    signer_key=KeyInfo(
+                ), KeyInfo(
                         address=bounded,
                         key_type="aplane.falcon1024.v1",
                         signing_flow=SIGNING_FLOW_COSIGNED1,
@@ -1647,8 +1676,7 @@ class TestSignPreparedCosignedGroup:
                                 public_key_hex="aabb",
                             ),
                         ),
-                    ),
-                )
+                    ))
             ]
         )
         assembled_txn[0] = transaction.PaymentTxn(
@@ -1682,7 +1710,7 @@ class TestSignPreparedCosignedGroup:
         assert cosigner_req.targets[0]["app_call_info"] == {"mode": "raw"}
 
         user.request_components.reset_mock()
-        prepared_group.transactions[0].signer_key.bounded_authorization.max_fee = 999
+        HELD_KEYS[prepared_group.transactions[0].auth_address].bounded_authorization.max_fee = 999
         with pytest.raises(SignerError, match="exceeds advertised max_fee"):
             sign_prepared_cosigned_group(
                 user_client=user,
@@ -1802,10 +1830,10 @@ class TestSignPreparedCosignedGroup:
                 cosigner_client=cosigner,
                 cosigner_component_key="COSIGNER_COMPONENT",
                 prepared_group=PreparedGroup([
-                    PreparedTransaction(
+                    held(PreparedTransaction(
                         transaction=bounded_txn,
                         auth_address=bounded,
-                        signer_key=KeyInfo(
+                    ), KeyInfo(
                             address=bounded,
                             key_type="aplane.falcon1024.v1",
                             authorization_kind=AUTHORIZATION_KIND_LOGIC_SIG,
@@ -1832,17 +1860,15 @@ class TestSignPreparedCosignedGroup:
                                     public_key_hex="aabb",
                                 ),
                             ),
-                        ),
-                    ),
-                    PreparedTransaction(
+                        )),
+                    held(PreparedTransaction(
                         transaction=native_txn,
                         auth_address=native_pq,
-                        signer_key=KeyInfo(
+                    ), KeyInfo(
                             address=native_pq,
                             key_type="falcon1024",
                             authorization_kind=AUTHORIZATION_KIND_NATIVE_PQ,
-                        ),
-                    ),
+                        )),
                 ]),
             )
 
@@ -1851,8 +1877,12 @@ class TestSignPreparedCosignedGroup:
                 run()
             assert events == ["base", "sign"]
             return
-        run()
+        result = run()
         assert events == ["base", "sign", "cosigner", "assemble"]
+        # The result carries what the plan added, so the caller can read the
+        # fee the signer charged.
+        assert result.plan_mutations["total_fees_delta"] == 2000
+        assert result.plan_mutations["fees_modified"] == [1]
 
         # A held position is sent as the signer's own: sign mode on /plan,
         # with no size hint.
@@ -1878,18 +1908,17 @@ class TestSignPreparedCosignedGroup:
             sign_prepared_cosigned_group(
                 user_client=user,
                 prepared_group=PreparedGroup([
-                    PreparedTransaction(
+                    held(PreparedTransaction(
                         transaction=txn,
                         auth_address=cosigned,
-                        signer_key=KeyInfo(
+                    ), KeyInfo(
                             address=cosigned,
                             key_type="aplane.future-cosigned.v1",
                             signing_flow="cosigner2",
                             logic_sig_resources=LogicSigResourceProfile(
                                 spend=LogicSigResourceUsage(1612, 1423, 20000)
                             ),
-                        ),
-                    )
+                        ))
                 ]),
             )
 
@@ -1912,12 +1941,11 @@ class TestSignPreparedCosignedGroup:
             sign_prepared_cosigned_group(
                 user_client=MagicMock(),
                 prepared_group=PreparedGroup([
-                    PreparedTransaction(
+                    held(PreparedTransaction(
                         transaction=txn,
                         auth_address=account,
                         pq_scheme="f1",
-                        signer_key=KeyInfo(address=account, key_type="falcon1024"),
-                    )
+                    ), KeyInfo(address=account, key_type="falcon1024"))
                 ]),
             )
 
@@ -1941,10 +1969,10 @@ class TestSignPreparedCosignedGroup:
                 sign_prepared_cosigned_group(
                     user_client=user,
                     prepared_group=PreparedGroup([
-                        PreparedTransaction(
+                        held(PreparedTransaction(
                             transaction=txn,
                             auth_address=account,
-                            signer_key=KeyInfo(
+                        ), KeyInfo(
                                 address=account,
                                 key_type="aplane.falcon1024-cosigner1024.v1",
                                 signing_flow="cosigner1",
@@ -1952,8 +1980,7 @@ class TestSignPreparedCosignedGroup:
                                 logic_sig_resources=LogicSigResourceProfile(
                                     spend=LogicSigResourceUsage(1612, 1423, 20000)
                                 ),
-                            ),
-                        )
+                            ))
                     ]),
                 )
         mock_post.assert_not_called()
@@ -2428,7 +2455,7 @@ class TestSignTransactionsForeign:
 
 
 # ---------------------------------------------------------------------------
-# assemble_group
+# request building
 # ---------------------------------------------------------------------------
 
 class TestBuildSignRequests:
@@ -2767,7 +2794,7 @@ class TestPrepHelpers:
             )
 
         assert prepared.auth_address == sender
-        assert prepared.signer_key.address == sender
+        assert not hasattr(prepared, "signer_key")
         assert prepared.transaction.receiver == receiver
         assert prepared.transaction.fee == 1000
         assert prepared.checks[0].name == "payment_balance"
@@ -2816,7 +2843,6 @@ class TestPrepHelpers:
             )
 
         assert prepared.auth_address == sender
-        assert prepared.signer_key.address == sender
         assert prepared.transaction.index == 1001
         assert prepared.transaction.amount == 5
         assert prepared.checks[0].name == "asa_transfer"
@@ -3312,7 +3338,7 @@ class TestPrepHelpers:
         assert group.transactions[0].transaction.receiver == receiver1
         assert group.transactions[1].transaction.receiver == receiver2
         assert group.checks[0].name == "payment_group"
-        assert group.checks[1].name == "payment_group_balance"
+        assert group.checks[1].name == "group_algo_balance"
 
     def test_prepare_payment_group_rejects_aggregate_insufficient_funds(self):
         sender = sdk_test_address(1)
@@ -3327,7 +3353,7 @@ class TestPrepHelpers:
             self._keys(sender),
             self._status(),
         ]):
-            with pytest.raises(SignerError, match="payment group insufficient funds"):
+            with pytest.raises(SignerError, match="group insufficient funds"):
                 client.prepare_payment_group(algod, [
                     {
                         "sender": sender,
@@ -3554,40 +3580,6 @@ class TestRequestEnrollmentFromEnv:
         )
         # Nothing is stored on the client: the key is its credential.
         assert sorted(p.name for p in tmp_path.iterdir()) == [".ssh", "endpoints.yaml"]
-
-
-class TestAssembleGroup:
-    def test_merges_two_signers(self):
-        alice_signed = [
-            base64.b64encode(bytes([1, 2])).decode(),
-            "",
-            base64.b64encode(bytes([5, 6])).decode(),
-        ]
-        bob_signed = [
-            "",
-            base64.b64encode(bytes([3, 4])).decode(),
-            "",
-        ]
-
-        result = assemble_group([alice_signed, bob_signed])
-        expected = base64.b64encode(bytes([1, 2, 3, 4, 5, 6])).decode()
-        assert result == expected
-
-    def test_empty_input(self):
-        with pytest.raises(ValueError, match="must not be empty"):
-            assemble_group([])
-
-    def test_mismatched_lengths(self):
-        with pytest.raises(ValueError, match="expected 2"):
-            assemble_group([["a", "b"], ["c"]])
-
-    def test_no_signer_for_slot(self):
-        with pytest.raises(ValueError, match="slot 1: no signer"):
-            assemble_group([["a", ""], ["", ""]])
-
-    def test_multiple_signers_for_slot(self):
-        with pytest.raises(ValueError, match="slot 0: multiple signers"):
-            assemble_group([["a", "b"], ["c", "d"]])
 
 
 # ---------------------------------------------------------------------------

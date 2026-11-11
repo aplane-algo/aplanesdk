@@ -94,6 +94,7 @@ import {
   bytesToBase64,
   bytesToHex,
   hexToBytes,
+  base64ToBytes,
 } from "./encoding.js";
 import { preparedGroupToSignRequests, preparedTransactionToSignRequest } from "./prepared.js";
 import {
@@ -113,6 +114,7 @@ import {
   validateCanonicalGroupID,
   validatePlanResponse,
   validateSignResponse,
+  wholeNumber,
 } from "./verify.js";
 import {
   SSH_USERNAME,
@@ -306,10 +308,11 @@ function validateBoundedTargetFees(
     if (index < 0 || index >= planned.length) {
       throw new SignerError(`bounded target index ${index} is outside planned group`);
     }
-    if (!Number.isSafeInteger(maxFee) || maxFee < 0) {
+    const ceiling = wholeNumber(maxFee);
+    if (ceiling === undefined || ceiling < 0n) {
       throw new SignerError(`bounded target ${index} has invalid advertised max_fee`);
     }
-    if (planned[index].fee > BigInt(maxFee)) {
+    if (planned[index].fee > ceiling) {
       throw new SignerError(
         `bounded target ${index} fee ${planned[index].fee} exceeds advertised max_fee ${maxFee}`,
       );
@@ -418,6 +421,9 @@ export async function signPreparedCosignedGroup(
   const targetResources = new Map<number, LogicSigResourceUsage | undefined>();
   const targetKeys = new Map<number, KeyInfo>();
   const targetMaxFees = new Map<number, number>();
+  // One read of the signer's keys for the whole call, refreshed when the
+  // signer's keyset revision has changed: the lookup the prepare helpers make.
+  const signerKeys = await options.userClient.listKeysIfKeysetChanged();
   for (let index = 0; index < prepared.length; index++) {
     const item = prepared[index];
     if (item.signedTransactionBase64) {
@@ -428,17 +434,20 @@ export async function signPreparedCosignedGroup(
     if (!item.transaction) {
       throw new SignerError(`prepared transaction ${index}: transaction is required`);
     }
-    let key = item.signerKey;
-    if (!key && item.authAddress) {
-      key = await options.userClient.getKeyInfo(item.authAddress);
+    // The key's flow, resources and fee ceiling decide how the position is
+    // signed, so they come from the signer's own record of the key, looked up
+    // as the spendable key for the position's auth address, never from the
+    // caller.
+    if (!item.authAddress) {
+      throw new SignerError(`prepared transaction ${index}: auth address is required`);
     }
+    const key = findSpendableKey(signerKeys, item.authAddress);
     if (!key) {
-      throw new SignerError(`prepared transaction ${index}: signer key metadata is required`);
+      throw new KeyNotFoundError(
+        `prepared transaction ${index}: ${item.authAddress} is not available for signing`,
+      );
     }
     if (key.signingFlow === SIGNING_FLOW_COSIGNED1) {
-      if (!item.authAddress) {
-        throw new SignerError(`prepared transaction ${index}: bounded auth address is required`);
-      }
       const requiredResources = requireLogicSigResources(
         selectedPreparedResources(key, item.transaction),
         `prepared transaction ${index}: bounded`,
@@ -469,9 +478,6 @@ export async function signPreparedCosignedGroup(
       throw new SignerError(
         `prepared transaction ${index}: signer key requires signing flow "${key.signingFlow}", which this SDK does not support; upgrade the SDK`,
       );
-    }
-    if (!item.authAddress) {
-      throw new SignerError(`prepared transaction ${index}: primary auth address is required`);
     }
     // The signer holds this position's key, so it is sent as the signer's
     // own: in sign mode on /plan, and as a contextual position with
@@ -658,6 +664,7 @@ export async function signPreparedCosignedGroup(
     primarySignResponse: primary.response,
     boundedComponentResponse: componentResponse,
     boundedAssemblyResponse: assemblyResponse,
+    planMutations: planResponse.mutations,
   };
 }
 
@@ -1432,6 +1439,12 @@ export interface CosignedSignResult {
   primarySignResponse?: GroupSignResponse;
   boundedComponentResponse?: ComponentResponse;
   boundedAssemblyResponse?: AssemblyResponse;
+  /**
+   * The plan's mutation report, checked against the prepared group: what the
+   * signer added to it (fees, group ID, dummies). Undefined when it changed
+   * nothing.
+   */
+  planMutations?: MutationReport;
 }
 
 export interface CosignedSimulationResult {
@@ -1468,6 +1481,42 @@ function findSpendableKey(keys: KeyInfo[], address: string): KeyInfo | undefined
   return keys.find((key) => (
     key.address === address && key.isSpendingAccount !== false
   ));
+}
+
+/**
+ * The check that records what a position's sender can spend in ALGO. A
+ * group's ALGO check reads it by this name and no other.
+ */
+const SPENDABLE_ALGO_CHECK = "spendable_algo";
+
+function spendableAlgo(accountInfo: AccountInfoResult | Record<string, any>): bigint {
+  const spendable = accountAmountBig(accountInfo) - accountMinBalanceBig(accountInfo);
+  return spendable > 0n ? spendable : 0n;
+}
+
+function spendableAlgoCheck(accountInfo: AccountInfoResult | Record<string, any>): PreparedCheck {
+  return {
+    name: SPENDABLE_ALGO_CHECK,
+    status: "ok",
+    data: { available: spendableAlgo(accountInfo) },
+  };
+}
+
+/**
+ * Read a position's spendable_algo check. A position without one, or with a
+ * value that is not a whole number, is an error: the group check never guesses
+ * a balance and never skips a sender.
+ */
+function recordedSpendableAlgo(item: PreparedTransaction): bigint {
+  const check = (item.checks || []).find((entry) => entry.name === SPENDABLE_ALGO_CHECK);
+  if (!check) {
+    throw new SignerError(`no ALGO balance on record (a ${SPENDABLE_ALGO_CHECK} check)`);
+  }
+  const data = check.data;
+  if (!data || typeof data !== "object" || !Object.prototype.hasOwnProperty.call(data, "available")) {
+    throw new SignerError(`the ${SPENDABLE_ALGO_CHECK} check has no available amount`);
+  }
+  return requireUint(data.available, `the ${SPENDABLE_ALGO_CHECK} check's available amount`);
 }
 
 function accountAmount(accountInfo: AccountInfoResult | Record<string, any>): number {
@@ -1568,6 +1617,82 @@ function accountStatus(accountInfo: AccountInfoResult | Record<string, any>): st
   return String((accountInfo as Record<string, any>).status || "");
 }
 
+const UINT64_LIMIT = 1n << 64n;
+
+/**
+ * Require a whole number for an ID, an amount or a fee: a safe-integer number
+ * or a bigint, below 2**64. algosdk and BigInt() would turn "123" into 123 and
+ * throw an unrelated error on 123.9; a string, a fraction or a boolean is a
+ * mistake in the caller, not a number to be converted.
+ */
+function requireUint(value: unknown, name: string, positive = false): bigint {
+  const big = wholeNumber(value);
+  if (big === undefined) {
+    throw new SignerError(
+      `${name} must be a whole number (a safe integer or a bigint), not ${
+        typeof value === "number" ? value : typeof value
+      }`,
+    );
+  }
+  if (big < 0n || big >= UINT64_LIMIT || (positive && big === 0n)) {
+    throw new SignerError(
+      `${name} must be ${positive ? "a positive" : "a non-negative"} whole number below 2**64`,
+    );
+  }
+  return big;
+}
+
+/**
+ * Require the state schema counts and extra pages of an app create to be whole
+ * numbers. One left undefined is unset and keeps algosdk's default, zero.
+ */
+function requireAppCreateCounts(params: {
+  numLocalInts?: unknown;
+  numLocalByteSlices?: unknown;
+  numGlobalInts?: unknown;
+  numGlobalByteSlices?: unknown;
+  extraPages?: unknown;
+}): void {
+  for (const name of [
+    "numLocalInts",
+    "numLocalByteSlices",
+    "numGlobalInts",
+    "numGlobalByteSlices",
+    "extraPages",
+  ] as const) {
+    if (params[name] !== undefined) {
+      requireUint(params[name], name);
+    }
+  }
+}
+
+/** Require each box reference's app index to be a whole number. */
+function requireBoxReferences(boxes: unknown): void {
+  if (boxes === undefined || boxes === null) return;
+  if (!Array.isArray(boxes)) {
+    throw new SignerError("boxes must be an array of { appIndex, name }");
+  }
+  boxes.forEach((box, position) => {
+    if (!box || typeof box !== "object") {
+      throw new SignerError(`boxes[${position}] must be { appIndex, name }`);
+    }
+    requireUint((box as { appIndex?: unknown }).appIndex, `boxes[${position}].appIndex`);
+  });
+}
+
+/** Require every app, asset and box reference of an app call to be a whole number. */
+function requireAppReferences(params: {
+  foreignApps?: unknown[];
+  foreignAssets?: unknown[];
+  boxes?: unknown;
+}): void {
+  (params.foreignApps ?? []).forEach((reference, position) =>
+    requireUint(reference, `foreignApps[${position}]`, true));
+  (params.foreignAssets ?? []).forEach((reference, position) =>
+    requireUint(reference, `foreignAssets[${position}]`, true));
+  requireBoxReferences(params.boxes);
+}
+
 function applyPrepFee(params: Record<string, any>, fee?: number): void {
   // No fee-per-byte mode: fee is always flat microAlgos, so a set fee can never
   // be silently reinterpreted as EstimateSize*fee. undefined means unset (keep
@@ -1576,6 +1701,7 @@ function applyPrepFee(params: Record<string, any>, fee?: number): void {
   if (fee === undefined) {
     return;
   }
+  requireUint(fee, "fee");
   params.fee = fee;
   params.flatFee = true;
   params.flat_fee = true;
@@ -1720,6 +1846,15 @@ function validateKeyregParams(params: KeyregPrepParams): void {
   if (mode === undefined || mode === null || mode === "") {
     throw new SignerError('mode is required: "online" or "offline"');
   }
+  for (const [name, value] of [
+    ["voteFirst", params.voteFirst],
+    ["voteLast", params.voteLast],
+    ["voteKeyDilution", params.voteKeyDilution],
+  ] as [string, unknown][]) {
+    if (value !== undefined && value !== null) {
+      requireUint(value, name);
+    }
+  }
   if (mode === "offline") {
     if (params.incentiveEligible) {
       throw new SignerError("incentive eligibility needs an online keyreg");
@@ -1768,33 +1903,48 @@ function validateKeyregParams(params: KeyregPrepParams): void {
   }
 }
 
-function validatePaymentGroup(transactions: PreparedTransaction[]): PreparedCheck {
-  const totals = new Map<string, { available: bigint; required: bigint }>();
-  for (const item of transactions) {
+/**
+ * Check each sender can cover everything it pays across the group. A sender's
+ * total is the ALGO it sends plus the fee of every position it sends,
+ * whatever the position's kind: an asset transfer moves no ALGO but still
+ * pays a fee. The total is checked against the sender's spendable ALGO, which
+ * each position records in its spendable_algo check. A position without that
+ * record is refused.
+ */
+function validateGroupAlgoBalance(transactions: PreparedTransaction[]): PreparedCheck {
+  const totals = new Map<string, { available?: bigint; required: bigint }>();
+  transactions.forEach((item, index) => {
     if (!item.transaction) {
-      throw new SignerError("payment group transaction is required");
+      throw new SignerError("group transaction is required");
     }
     const txn = item.transaction as any;
     const sender = txn.sender.toString();
-    const total = totals.get(sender) || { available: 0n, required: 0n };
+    const total: { available?: bigint; required: bigint } =
+      totals.get(sender) || { required: 0n };
     total.required += BigInt(txn.payment?.amount || 0) + BigInt(txn.fee || 0);
-    for (const check of item.checks || []) {
-      if (check.name !== "payment_balance" || !check.data) {
-        continue;
+    try {
+      // The lowest value recorded for the sender: each position read the
+      // balance on its own, and the check must not depend on their order.
+      const available = recordedSpendableAlgo(item);
+      if (total.available === undefined || available < total.available) {
+        total.available = available;
       }
-      total.available = BigInt((check.data.available as number | bigint | undefined) || 0);
+    } catch (error) {
+      throw new SignerError(
+        `group transaction ${index}, sender ${sender}: ${(error as Error).message}`,
+      );
     }
     totals.set(sender, total);
-  }
+  });
   for (const [sender, total] of totals) {
-    if (total.available < total.required) {
+    if ((total.available ?? 0n) < total.required) {
       throw new SignerError(
-        `payment group insufficient funds for ${sender}: available ${total.available}, required ${total.required}`,
+        `group insufficient funds for ${sender}: available ${total.available}, required ${total.required}`,
       );
     }
   }
   return {
-    name: "payment_group_balance",
+    name: "group_algo_balance",
     status: "ok",
     data: { senderCount: totals.size },
   };
@@ -1968,7 +2118,7 @@ function resolveAbiReferenceArgs(
         break;
       }
       case "application": {
-        const refAppId = BigInt(values[index] as any);
+        const refAppId = requireUint(values[index], "application argument", true);
         if (refAppId === BigInt(appId)) {
           resolved.push(0);
         } else {
@@ -1983,7 +2133,7 @@ function resolveAbiReferenceArgs(
         break;
       }
       case "asset": {
-        const assetId = BigInt(values[index] as any);
+        const assetId = requireUint(values[index], "asset argument", true);
         const existing = indexOfUint64(assets, assetId);
         if (existing >= 0) {
           resolved.push(existing);
@@ -2455,6 +2605,14 @@ export class SignerClient {
         templateProvenanceNote: raw.template_provenance_note || undefined,
       };
       keys.push(keyInfo);
+      // One record per address. Should the signer list an address twice, the
+      // first spendable row is the one kept, the row findSpendableKey picks
+      // from the list itself, so a lookup answers the same from a fresh list
+      // and from the cache.
+      const kept = this.keyCache.get(keyInfo.address);
+      if (kept && (kept.isSpendingAccount !== false || keyInfo.isSpendingAccount === false)) {
+        continue;
+      }
       this.keyCache.set(keyInfo.address, keyInfo);
     }
 
@@ -2553,6 +2711,7 @@ export class SignerClient {
     if (!params.receiver) {
       throw new SignerError("receiver is required");
     }
+    requireUint(params.amount, "amount");
 
     const suggestedParams = await algodClient.getTransactionParams().do();
     applyPrepFee(suggestedParams, params.fee);
@@ -2577,7 +2736,6 @@ export class SignerClient {
     return {
       transaction: txn,
       authAddress: resolved.authAddress,
-      signerKey: resolved.keyInfo,
       checks: [{
         name: "payment_balance",
         status: "ok",
@@ -2586,7 +2744,7 @@ export class SignerClient {
           fee,
           available,
         },
-      }],
+      }, spendableAlgoCheck(senderInfo)],
     };
   }
 
@@ -2606,9 +2764,11 @@ export class SignerClient {
     if (!params.receiver) {
       throw new SignerError("receiver is required");
     }
-    if (!params.assetId) {
+    if (params.assetId === undefined || params.assetId === null) {
       throw new SignerError("assetId is required");
     }
+    requireUint(params.assetId, "assetId", true);
+    requireUint(params.amount, "amount");
 
     const suggestedParams = await algodClient.getTransactionParams().do();
     applyPrepFee(suggestedParams, params.fee);
@@ -2638,11 +2798,19 @@ export class SignerClient {
       suggestedParams,
     });
 
+    // An asset transfer moves no ALGO but pays its fee from the sender's.
+    const fee = BigInt((txn as any).fee ?? 0);
+    const available = spendableAlgo(senderInfo);
+    if (available < fee) {
+      throw new SignerError(
+        `insufficient funds for asset transfer fee: available ${available}, fee ${fee}`,
+      );
+    }
+
     const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
     return {
       transaction: txn,
       authAddress: resolved.authAddress,
-      signerKey: resolved.keyInfo,
       checks: [{
         name: "asa_transfer",
         status: "ok",
@@ -2650,8 +2818,9 @@ export class SignerClient {
           assetId: params.assetId,
           amount: params.amount,
           balance: senderAmount,
+          fee,
         },
-      }],
+      }, spendableAlgoCheck(senderInfo)],
     };
   }
 
@@ -2668,15 +2837,15 @@ export class SignerClient {
     if (!params.sender) {
       throw new SignerError("sender is required");
     }
-    if (!params.assetId) {
+    if (params.assetId === undefined || params.assetId === null) {
       throw new SignerError("assetId is required");
     }
+    requireUint(params.assetId, "assetId", true);
 
     const suggestedParams = await algodClient.getTransactionParams().do();
     applyPrepFee(suggestedParams, params.fee);
 
     const senderInfo = await algodClient.accountInformation(params.sender).do();
-    const checks = asaOptInChecks(senderInfo, params.assetId, Number(suggestedParams.fee || 0));
     const txn = algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
       sender: params.sender,
       receiver: params.sender,
@@ -2685,12 +2854,14 @@ export class SignerClient {
       note: params.note,
       suggestedParams,
     });
+    // The balance is checked against the fee the built transaction pays. The
+    // suggested fee is per byte, usually zero, and would check nothing.
+    const checks = asaOptInChecks(senderInfo, params.assetId, Number(txn.fee));
 
     const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
     return {
       transaction: txn,
       authAddress: resolved.authAddress,
-      signerKey: resolved.keyInfo,
       checks,
     };
   }
@@ -2714,9 +2885,10 @@ export class SignerClient {
     if (params.closeTo === params.sender) {
       throw new SignerError("closeTo must differ from sender");
     }
-    if (!params.assetId) {
+    if (params.assetId === undefined || params.assetId === null) {
       throw new SignerError("assetId is required");
     }
+    requireUint(params.assetId, "assetId", true);
 
     const suggestedParams = await algodClient.getTransactionParams().do();
     applyPrepFee(suggestedParams, params.fee);
@@ -2738,7 +2910,6 @@ export class SignerClient {
     return {
       transaction: txn,
       authAddress: resolved.authAddress,
-      signerKey: resolved.keyInfo,
       checks,
     };
   }
@@ -2767,7 +2938,6 @@ export class SignerClient {
     applyPrepFee(suggestedParams, params.fee);
 
     const senderInfo = await algodClient.accountInformation(params.sender).do();
-    const checks = accountCloseChecks(senderInfo, Number(suggestedParams.fee || 0));
     const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
       sender: params.sender,
       receiver: params.closeTo,
@@ -2776,12 +2946,14 @@ export class SignerClient {
       note: params.note,
       suggestedParams,
     });
+    // Checked against the fee the built transaction pays, not the suggested
+    // per-byte fee.
+    const checks = accountCloseChecks(senderInfo, Number(txn.fee));
 
     const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
     return {
       transaction: txn,
       authAddress: resolved.authAddress,
-      signerKey: resolved.keyInfo,
       checks,
     };
   }
@@ -2830,7 +3002,6 @@ export class SignerClient {
     return {
       transaction: txn,
       authAddress: resolved.authAddress,
-      signerKey: resolved.keyInfo,
       checks,
     };
   }
@@ -2896,7 +3067,6 @@ export class SignerClient {
     return {
       transaction: txn,
       authAddress: resolved.authAddress,
-      signerKey: resolved.keyInfo,
       checks: [{
         name: "keyreg",
         status: "ok",
@@ -2935,6 +3105,13 @@ export class SignerClient {
     if (!params.methodSignature) {
       throw new SignerError("methodSignature is required");
     }
+    // Checked before the arguments are encoded, so a bad ID is reported as
+    // one and never reaches BigInt() or the encoder.
+    if (params.appId === undefined || params.appId === null) {
+      throw new SignerError("appId is required");
+    }
+    requireUint(params.appId, "appId", true);
+    requireAppReferences(params);
     const method = (algosdk as any).ABIMethod.fromSignature(params.methodSignature);
     const encoded = encodeAbiMethodArgs(
       method,
@@ -2969,9 +3146,12 @@ export class SignerClient {
     if (!params.sender) {
       throw new SignerError("sender is required");
     }
-    if (!params.appId || BigInt(params.appId) === 0n) {
+    if (params.appId === undefined || params.appId === null) {
       throw new SignerError("appId is required");
     }
+    requireUint(params.appId, "appId", true);
+    requireAppReferences(params);
+    requireAppCreateCounts(params);
     const onComplete = params.onComplete ?? algosdk.OnApplicationComplete.NoOpOC;
     if (!Number.isInteger(onComplete) || onComplete < 0 || onComplete > algosdk.OnApplicationComplete.DeleteApplicationOC) {
       throw new SignerError(`invalid onComplete: ${onComplete}`);
@@ -3005,7 +3185,6 @@ export class SignerClient {
     return {
       transaction: txn,
       authAddress: resolved.authAddress,
-      signerKey: resolved.keyInfo,
       appCallInfo,
       checks: appCallChecks(params, appCallInfo),
     };
@@ -3030,6 +3209,8 @@ export class SignerClient {
     if (!params.clearProgram || params.clearProgram.length === 0) {
       throw new SignerError("clearProgram is required");
     }
+    requireAppCreateCounts(params);
+    requireAppReferences(params);
 
     const suggestedParams = await algodClient.getTransactionParams().do();
     applyPrepFee(suggestedParams, params.fee);
@@ -3058,7 +3239,6 @@ export class SignerClient {
     return {
       transaction: txn,
       authAddress: resolved.authAddress,
-      signerKey: resolved.keyInfo,
       appCallInfo: { mode: "raw" },
       checks: [{
         name: "app_deploy",
@@ -3115,9 +3295,7 @@ export class SignerClient {
     if (asaTransfers.length > 0) {
       checks.push(validateAsaTransferGroup(transactions.slice(0, asaTransfers.length)));
     }
-    if (payments.length > 0) {
-      checks.push(validatePaymentGroup(transactions.slice(asaTransfers.length)));
-    }
+    checks.push(validateGroupAlgoBalance(transactions));
     return { transactions, checks };
   }
 
@@ -3146,7 +3324,7 @@ export class SignerClient {
         name: "payment_group",
         status: "ok",
         data: { count: payments.length },
-      }, validatePaymentGroup(transactions)],
+      }, validateGroupAlgoBalance(transactions)],
     };
   }
 
@@ -3175,7 +3353,7 @@ export class SignerClient {
         name: "asa_transfer_group",
         status: "ok",
         data: { count: transfers.length },
-      }, validateAsaTransferGroup(transactions)],
+      }, validateAsaTransferGroup(transactions), validateGroupAlgoBalance(transactions)],
     };
   }
 
@@ -3520,6 +3698,12 @@ export class SignerClient {
 
     try {
       validateAssemblyResponse(data);
+      // The answer must be to this request, not merely carry a well-formed ID.
+      if (data.request_id !== requestBody.request_id) {
+        throw new SignerError(
+          `request_id ${JSON.stringify(data.request_id)} does not match the request's ${JSON.stringify(requestBody.request_id)}`,
+        );
+      }
     } catch (error) {
       throw new SignerError(
         `invalid assembly response: ${error instanceof Error ? error.message : String(error)}`
@@ -3727,8 +3911,9 @@ export class SignerClient {
     if (signedList.some((s) => s === "")) {
       throw new SignerError(
         "signTransactions() cannot produce a complete group when foreign " +
-        "entries are present (some slots are unsigned). Use " +
-        "signTransactionsList() + assembleGroup() instead."
+        "entries are present (some slots are unsigned). Plan the group with " +
+        "planGroup(), have the other party sign its transaction, then sign " +
+        "with that signed transaction as a passthrough position."
       );
     }
 
@@ -3931,10 +4116,10 @@ export class SignerClient {
       // LogicSig args; what is decoded goes no further.
       const passthroughEntry = passthroughByIndex.get(i);
       if (passthroughEntry !== undefined) {
-        const signedBytes = Buffer.from(passthroughEntry, "base64");
+        const signedBytes = base64ToBytes(passthroughEntry, `passthrough[${i}]`);
         let slot: RequestSlot;
         try {
-          slot = decodePassthroughSlot(new Uint8Array(signedBytes));
+          slot = decodePassthroughSlot(signedBytes);
         } catch (error) {
           throw new SignerError(`invalid passthrough[${i}]: ${errorText(error)}`);
         }
@@ -3944,7 +4129,7 @@ export class SignerClient {
         // account is not its authorizer.
         if (authAddr) matchedLsigArgs.add(authAddr);
         matchedLsigArgs.add(slot.signer ?? slot.txn.sender.toString());
-        const request: SignRequest = { signed_txn_hex: signedBytes.toString("hex") };
+        const request: SignRequest = { signed_txn_hex: bytesToHex(signedBytes) };
         const resources = lsigResourcesByIndex.get(i);
         if (resources) {
           request.lsig_resources = wireLogicSigResources(resources);

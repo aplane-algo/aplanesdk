@@ -1320,64 +1320,6 @@ func TestSignTransactionsListWithOptions_RejectsForeignEntries(t *testing.T) {
 	}
 }
 
-// --- AssembleGroup tests ---
-
-func TestAssembleGroup_MergesTwoSigners(t *testing.T) {
-	s1 := base64.StdEncoding.EncodeToString([]byte("signed-A"))
-	s2 := base64.StdEncoding.EncodeToString([]byte("signed-B"))
-
-	result, err := AssembleGroup([][]string{
-		{s1, ""},
-		{"", s2},
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	decoded, _ := base64.StdEncoding.DecodeString(result)
-	if string(decoded) != "signed-Asigned-B" {
-		t.Fatalf("expected 'signed-Asigned-B', got %q", decoded)
-	}
-}
-
-func TestAssembleGroup_Empty(t *testing.T) {
-	_, err := AssembleGroup([][]string{})
-	if err == nil {
-		t.Fatal("expected error for empty input")
-	}
-}
-
-func TestAssembleGroup_MismatchedLengths(t *testing.T) {
-	_, err := AssembleGroup([][]string{
-		{"a", "b"},
-		{"c"},
-	})
-	if err == nil || !strings.Contains(err.Error(), "expected 2") {
-		t.Fatalf("expected length mismatch error, got: %v", err)
-	}
-}
-
-func TestAssembleGroup_NoSigner(t *testing.T) {
-	_, err := AssembleGroup([][]string{
-		{"", ""},
-		{"", ""},
-	})
-	if err == nil || !strings.Contains(err.Error(), "no signer") {
-		t.Fatalf("expected no signer error, got: %v", err)
-	}
-}
-
-func TestAssembleGroup_MultipleSigners(t *testing.T) {
-	s := base64.StdEncoding.EncodeToString([]byte("x"))
-	_, err := AssembleGroup([][]string{
-		{s, ""},
-		{s, ""},
-	})
-	if err == nil || !strings.Contains(err.Error(), "multiple signers") {
-		t.Fatalf("expected multiple signers error, got: %v", err)
-	}
-}
-
 // --- Config tests ---
 
 func TestLoadConfig_Default(t *testing.T) {

@@ -31,6 +31,12 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 	targetResources := make(map[int]*LogicSigResourceUsage)
 	targetKeys := make(map[int]*KeyInfo)
 	targetMaxFees := make(map[int]uint64)
+	// One read of the signer's keys for the whole group, refreshed when its
+	// keyset revision has changed since the list was cached.
+	signerKeys, err := opts.UserClient.ListKeysIfKeysetChangedWithContext(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("resolve signer keys: %w", err)
+	}
 	for i, item := range prepared {
 		if item.SignedTransactionBase64 != "" {
 			return nil, fmt.Errorf("prepared transaction %d: passthrough entries are not supported in prepared bounded-cosigner groups", i)
@@ -38,24 +44,22 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 		if item.Transaction == nil {
 			return nil, fmt.Errorf("prepared transaction %d: transaction is required", i)
 		}
-		key := item.SignerKey
-		if key == nil && item.AuthAddress != "" {
-			var err error
-			key, err = opts.UserClient.getKeyInfoWithContext(ctx, item.AuthAddress)
-			if err != nil {
-				return nil, fmt.Errorf("prepared transaction %d: resolve signer key: %w", i, err)
-			}
+		if item.AuthAddress == "" {
+			return nil, fmt.Errorf("prepared transaction %d: auth address is required", i)
 		}
-		if key == nil {
-			return nil, fmt.Errorf("prepared transaction %d: signer key metadata is required", i)
+		// The key's flow, resources and fee ceiling decide how the position
+		// is signed, so they come from the signer's own record of the key,
+		// never from the caller: the spendable key for the position's auth
+		// address, the same selection the prepare helpers make.
+		found, ok := findSpendableKey(signerKeys, item.AuthAddress)
+		if !ok {
+			return nil, fmt.Errorf("prepared transaction %d: %w: %s is not available for signing", i, ErrKeyNotFound, item.AuthAddress)
 		}
+		key := &found
 		appCallInfo[i] = item.AppCallInfo
 
 		switch key.SigningFlow {
 		case SigningFlowCosigned1:
-			if item.AuthAddress == "" {
-				return nil, fmt.Errorf("prepared transaction %d: bounded auth address is required", i)
-			}
 			resources, err := selectedPreparedResources(key, item.Transaction)
 			if err != nil {
 				return nil, fmt.Errorf("prepared transaction %d: %w", i, err)
@@ -98,9 +102,6 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 			// it from its records in both and can put the group's
 			// authorization charge on it. Sent as foreign with a size hint,
 			// it was immutable, and the cosigned targets paid its charge.
-			if item.AuthAddress == "" {
-				return nil, fmt.Errorf("prepared transaction %d: primary auth address is required", i)
-			}
 			req, err := item.SignRequest()
 			if err != nil {
 				return nil, fmt.Errorf("prepared transaction %d: %w", i, err)
@@ -182,7 +183,7 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 		targetResources[target.TargetIndex] = resources
 	}
 
-	result := &CosignedSignResult{BoundedComponentResponse: componentResp}
+	result := &CosignedSignResult{BoundedComponentResponse: componentResp, PlanMutations: planResp.Mutations}
 	primary, err := requestBoundedPrimaryPassthrough(
 		ctx, opts.UserClient, planResp.Transactions, len(prepared),
 		targetsByIndex, targetResources, primaryTargets,

@@ -113,7 +113,7 @@ func TestPreparePayment(t *testing.T) {
 	if uint64(prepared.Transaction.Fee) != 1000 {
 		t.Fatalf("fee = %d, want 1000", prepared.Transaction.Fee)
 	}
-	if len(prepared.Checks) != 1 || prepared.Checks[0].Name != "payment_balance" {
+	if len(prepared.Checks) != 2 || prepared.Checks[0].Name != "payment_balance" || prepared.Checks[1].Name != spendableAlgoCheckName {
 		t.Fatalf("checks mismatch: %#v", prepared.Checks)
 	}
 }
@@ -722,7 +722,7 @@ func TestPreparePaymentGroupRejectsAggregateInsufficientFunds(t *testing.T) {
 		{Sender: sender, Receiver: receiver1, Amount: 10_000, Fee: 1000, UseFlatFee: true},
 		{Sender: sender, Receiver: receiver2, Amount: 10_000, Fee: 1000, UseFlatFee: true},
 	})
-	if err == nil || !strings.Contains(err.Error(), "payment group insufficient funds") {
+	if err == nil || !strings.Contains(err.Error(), "group insufficient funds") {
 		t.Fatalf("expected aggregate insufficient funds error, got %v", err)
 	}
 }
