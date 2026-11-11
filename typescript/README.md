@@ -360,23 +360,28 @@ payment.
 - **Cancellation.** The send checks `signal` before it asks the signer
   anything, before the ordinary `/sign` and before the rotating sign, and an
   abort found there is a plain stop: a `SignerUnavailableError` ("Request
-  aborted by caller"), not an unknown outcome. Inside the cosigned sequence an
-  abort ends the next step's request, which counts as a lost answer
-  (`SignOutcomeUnknownError`), as in the Go SDK. Once the group is signed, an
-  abort before it is sent is a `SubmissionUncertainError` at stage `"unsent"`.
-  These requests take the signal and are aborted with it: `/sign` (including
-  the cosigned sequence's other positions), the cosigned `/sign/component`
-  requests (yours and the cosigner's) and `/sign/assemble`, the rotating
-  `/sign/rotating/prepare` and `/sign/rotating/sign`, and every algod request
-  the send makes (the account lookup for an account that left rotation, round
-  reads, the suggested parameters for rebuilt rounds, the simulation, the
-  submission and the confirmation wait). These do not, and run to completion
-  or their own timeout: the prepare step inside `sendPayment` (its algod and
-  key lookups), the key listing (`/status` and `/keys`) that picks the flow
-  and the cosigned sequence's own key listing, the cosigned `/plan`, and the
+  aborted by caller"), not an unknown outcome. Every approval-bearing request
+  (`/sign`, `/sign/component`, yours and the cosigner's, `/sign/assemble` and
+  `/sign/rotating/sign`) checks the signal again just before it is posted, after
+  the approval-wait discovery: one that was never posted, because the signal
+  had already been aborted or its body could not be encoded, is a plain error,
+  and no `/sign/cancel` is sent for it. An abort while such a request is in
+  flight ends it, which counts as a lost answer (`SignOutcomeUnknownError`),
+  as in the Go SDK. Once the group is signed, an abort before it is sent is a
+  `SubmissionUncertainError` at stage `"unsent"`. These requests take the
+  signal and are aborted with it: `/sign` (including the cosigned sequence's
+  other positions), the cosigned sequence's key listing (`/status` and
+  `/keys`), its `/plan`, its `/sign/component` requests and `/sign/assemble`,
+  the rotating `/sign/rotating/prepare` and `/sign/rotating/sign`, and every
+  algod request the send makes (the account lookup for an account that left
+  rotation, round reads, the suggested parameters for rebuilt rounds, the
+  simulation, the submission and the confirmation wait). These do not, and run
+  to completion or their own timeout: the prepare step inside `sendPayment`
+  (its algod and key lookups), the key listing that picks the flow, and the
   `/status` call that discovers the approval wait. None of them signs
   anything. The best-effort `/sign/cancel` sent after an aborted or lost
-  signing request uses its own short timeout.
+  signing request uses its own short timeout, and a cancel that fails or
+  whose answer cannot be read never fails the send or replaces its error.
 - **Refused before signing:** an unknown signing flow
   (`UnsupportedSigningFlowError`), and a pre-signed or foreign position
   (`UnsupportedGroupError`). Use the lower-level signing calls for those
@@ -390,7 +395,7 @@ Failures:
 | Error | Meaning | What to do |
 |---|---|---|
 | The signing call's own error | The signer refused (policy, operator, locked), or the SDK refused the signer's answer (`verify signer response: ...`, `MaxFeeIncreaseError`). Nothing was submitted. | Read the reason. If the SDK refused a sign answer, the signer did sign and the SDK discarded the result. |
-| `SignOutcomeUnknownError` | A signing exchange ended with no answer, or with a 200 answer that could not be read (not one JSON object of the expected shape). A signature may have been released; nothing was submitted. | Check with the operator or the audit log before signing again. For the ordinary flow the error carries `requestId` and `requests`; for a rotating account it carries the prepared group in `rotating` (see below). |
+| `SignOutcomeUnknownError` | A signing exchange ended with no answer, or with a 200 answer that could not be read (not one JSON object of the expected shape), or the SDK failed while checking or describing a 200 answer (a fault in the SDK: anything thrown that is not a `SignerError`). A signature may have been released; nothing was submitted. | Check with the operator or the audit log before signing again. `requestId` names the request whose answer was lost: the `/sign` request of the ordinary flow, the rotating sign request, or the cosigned sequence's `/sign/component`, `/sign/assemble` or `/sign` request. For the ordinary flow the error also carries `requests`; for a rotating account it carries the prepared group in `rotating` (see below). |
 | `SubmissionRejectedError` | The node refused the group or dropped it from its pool. | Read the reason. The signed bytes and IDs are in `signedGroup` and `txIds`. |
 | `SubmissionUncertainError` | `stage` says where it stopped: `"unsent"` (signed, never sent: your signal was aborted), `"submit"` (the submission's answer never arrived), or `"confirm"` (not confirmed within the wait). Except for `"unsent"`, it may still confirm. | Look up `txIds`, or submit the same `signedGroup` again. Do not sign a replacement until the outcome is known: both could execute. |
 
@@ -400,17 +405,49 @@ looks for the outcome; it is not a rejection. A committed transaction that
 carries a lease is the exception: the node refuses it for its lease, and the
 SDK reports a rejection.
 
-A 200 answer is read as the Go SDK reads it: exactly one JSON object; a field
-left out or null takes its zero value, as does a null entry in a list; an
-unknown field is ignored. A field of the wrong type, a number outside the
-field's range, a null or non-object body, an empty or cut-off body, or anything
-after the object makes the answer unreadable. Two limits come from
-`JSON.parse`: a number a JavaScript number cannot hold exactly (above 2^53) is
-unreadable, where the Go SDK reads numbers up to 2^64 - 1 and then refuses
-them; and a number written as `3.0` is read as `3`, because `JSON.parse` does
-not keep how a number was written.
+Every 200 answer from the signer is read as the Go SDK reads it, against the
+answer's declared shape: `/status`, `/keys`, `/keytypes`, `/plan`,
+`/admin/generate`, `/sign/cancel` and `DELETE /admin/keys` as much as the
+signing answers. It is exactly one JSON object; null means zero at every
+depth, so a field left out or null, in the answer or in any object nested in
+it, takes its zero value (a field the Go SDK keeps as a pointer, such as a
+rotating account's `stage`, is left out instead), as does a null entry in a
+list; an unknown field is ignored. A field of the wrong type, a number outside
+the field's range, a null or non-object body, an empty or cut-off body, or
+anything after the object makes the answer unreadable. At a request that
+releases no signature an unreadable answer is a plain `SignerError`, never a
+`TypeError` or `SyntaxError`, and no field is coerced. `generateKey` refuses
+an answer without an address; `deleteKey` reads the signer's
+`{"success": true}` answer and refuses an empty one or one with an `error`.
+A `/keys` answer listing an address in an alternate spelling (an Algorand
+address algosdk reads, but not its canonical form) is refused as a whole; any
+other address string, such as a witness key's Witness Key ID, is kept exactly
+as sent. The addresses you pass in are held to the same spelling: a sign
+request's `auth_address`, the prepare helpers' address parameters, an app
+call's `accounts` and its ABI account arguments (which also take an algosdk
+`Address` or a 32-byte public key) must be canonically spelled address
+strings, and anything else is refused before a request is sent.
 
-The existing `sign*` and `simulate*` calls are unchanged.
+Known limits of the reader, beside the Go and Python SDKs:
+
+- Numbers. `JSON.parse` cannot hold a number above 2^53 exactly, so it is
+  unreadable, where the Go SDK reads numbers up to 2^64 - 1 and then refuses
+  them; and a number written as `3.0` is read as `3`, because `JSON.parse`
+  does not keep how a number was written. The Python SDK cannot read an
+  integer of more than 4300 digits.
+- Duplicate keys. Of two copies of a key the later one wins. The Go SDK keeps
+  the earlier value when the later one is null.
+- A UTF-8 byte order mark before the answer is read (fetch's `json()` strips
+  it); the Go and Python SDKs cannot read such an answer.
+
+The existing `sign*` and `simulate*` calls are unchanged. A `simulate*`
+result is `failed` unless the node returned exactly one group result, an
+object holding one transaction result per transaction, that reports no
+failure; `failureMessage` says why: the node's own failure message, "the node
+reported a failure without a message" for a failed-at alone, or "the node
+returned no result for the group", "the node returned N results for one
+group", "the node's result for the group is not an object" or "the node
+returned M transaction results for N transactions".
 
 #### Rotating accounts
 
@@ -426,8 +463,10 @@ and `sendPayment` run the whole sequence:
    canonical dummies.
 3. **Simulate, unsigned,** through your algod. A group that fails throws
    `RotatingPreflightError`, as does an answer without exactly one result for
-   the group; a simulation that cannot be run throws a plain error. Either
-   way no one-time key has been used.
+   the group, or with the wrong number of transaction results;
+   `failureMessage` is the node's failure message, or which of those it was.
+   A simulation that cannot be run throws a plain error. Either way no
+   one-time key has been used.
 4. **Sign,** with operator approval, then check the signed group is exactly
    the prepared one.
 5. **Submit at once** and wait for confirmation. `result.rotating` reports the
