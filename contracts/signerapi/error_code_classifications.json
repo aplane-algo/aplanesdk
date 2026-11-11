@@ -14,6 +14,7 @@
     "bounded_rekey_target_not_listed": "request_error",
     "rotating_signing_required": "request_error",
     "rotating_stage_unproven": "temporary",
-    "rotating_stage_changed": "request_error"
+    "rotating_stage_changed": "request_error",
+    "rotating_window_not_current": "request_error"
   }
 }
