@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/algorand/go-algorand-sdk/v2/client/v2/algod"
+	"github.com/algorand/go-algorand-sdk/v2/client/v2/common/models"
 	"github.com/algorand/go-algorand-sdk/v2/crypto"
 	"github.com/algorand/go-algorand-sdk/v2/encoding/msgpack"
 	"github.com/algorand/go-algorand-sdk/v2/transaction"
@@ -697,7 +698,7 @@ func TestSignPreparedRotatingStageProgramMustFitTheStage(t *testing.T) {
 func TestSendPreparedRotatingFailedPreflightSignsNothing(t *testing.T) {
 	t.Run("simulation fails", func(t *testing.T) {
 		signer, node, client, algodClient, txn := newRotatingFixture(t)
-		node.simulate = func(w http.ResponseWriter) {
+		node.simulate = func(w http.ResponseWriter, _ models.SimulateRequest) {
 			w.Write([]byte(`{"last-round":10,"version":2,"txn-groups":[{"failure-message":"logic eval error: rekey not allowed"}]}`))
 		}
 		_, err := client.SendPrepared(context.Background(), algodClient, rotatingGroup(txn), nil)
@@ -711,7 +712,7 @@ func TestSendPreparedRotatingFailedPreflightSignsNothing(t *testing.T) {
 	})
 	t.Run("simulation cannot be run", func(t *testing.T) {
 		signer, node, client, algodClient, txn := newRotatingFixture(t)
-		node.simulate = func(w http.ResponseWriter) { w.WriteHeader(http.StatusInternalServerError) }
+		node.simulate = func(w http.ResponseWriter, _ models.SimulateRequest) { w.WriteHeader(http.StatusInternalServerError) }
 		_, err := client.SendPrepared(context.Background(), algodClient, rotatingGroup(txn), nil)
 		if err == nil || !strings.Contains(err.Error(), "nothing was signed") {
 			t.Fatalf("error = %v", err)
@@ -1188,7 +1189,9 @@ func TestSendPreparedRotatingChecksTheRoundBeforeTheOperatorIsAsked(t *testing.T
 func TestSendPreparedRotatingStopsBeforeSigning(t *testing.T) {
 	t.Run("simulation reports no group", func(t *testing.T) {
 		signer, node, client, algodClient, txn := newRotatingFixture(t)
-		node.simulate = func(w http.ResponseWriter) { w.Write([]byte(`{"last-round":10,"version":2}`)) }
+		node.simulate = func(w http.ResponseWriter, _ models.SimulateRequest) {
+			w.Write([]byte(`{"last-round":10,"version":2}`))
+		}
 		_, err := client.SendPrepared(context.Background(), algodClient, rotatingGroup(txn), nil)
 		var preflight *RotatingPreflightError
 		if !errors.As(err, &preflight) || !strings.Contains(err.Error(), "no result for the group") || signer.count("/sign/rotating/sign") != 0 {
@@ -1200,8 +1203,8 @@ func TestSendPreparedRotatingStopsBeforeSigning(t *testing.T) {
 		// A context that reports itself ended once the simulation has been
 		// answered, without interrupting the requests already made.
 		ctx := &endsAfter{Context: context.Background()}
-		node.simulate = func(w http.ResponseWriter) {
-			json.NewEncoder(w).Encode(map[string]any{"last-round": 10, "version": 2, "txn-groups": []map[string]any{{}}})
+		node.simulate = func(w http.ResponseWriter, request models.SimulateRequest) {
+			json.NewEncoder(w).Encode(passingSimulation(10, request))
 			ctx.ended.Store(true)
 		}
 		_, err := client.SendPrepared(ctx, algodClient, rotatingGroup(txn), nil)
@@ -1215,7 +1218,9 @@ func TestSendPreparedRotatingStopsBeforeSigning(t *testing.T) {
 	})
 	t.Run("the steps report an empty simulation answer as failed", func(t *testing.T) {
 		_, node, client, algodClient, txn := newRotatingFixture(t)
-		node.simulate = func(w http.ResponseWriter) { w.Write([]byte(`{"last-round":10,"version":2}`)) }
+		node.simulate = func(w http.ResponseWriter, _ models.SimulateRequest) {
+			w.Write([]byte(`{"last-round":10,"version":2}`))
+		}
 		prepared, err := client.PrepareRotating(context.Background(), txn, nil)
 		if err != nil {
 			t.Fatal(err)
@@ -1225,6 +1230,48 @@ func TestSendPreparedRotatingStopsBeforeSigning(t *testing.T) {
 			t.Fatalf("SimulatePreparedRotating() = %+v, %v; want Failed with no result", simulation, err)
 		}
 	})
+}
+
+// The unsigned rotating simulation reads the node's answer by the rule the
+// signed one does, and a send stops before signing on any failure.
+func TestSimulatePreparedRotatingClassifiesTheNodesAnswer(t *testing.T) {
+	_, _, client, _, txn := newRotatingFixture(t)
+	prepared, err := client.PrepareRotating(context.Background(), txn, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	submitted := len(prepared.Transactions())
+	if submitted < 2 {
+		t.Fatalf("the fixture's group has %d transaction(s); a dummy makes the count meaningful", submitted)
+	}
+	for _, tc := range simulationVerdicts(submitted) {
+		t.Run(tc.name, func(t *testing.T) {
+			signer, node, client, algodClient, txn := newRotatingFixture(t)
+			node.simulate = func(w http.ResponseWriter, _ models.SimulateRequest) { w.Write([]byte(tc.body)) }
+			prepared, err := client.PrepareRotating(context.Background(), txn, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			simulation, err := client.SimulatePreparedRotating(context.Background(), algodClient, prepared)
+			if err != nil {
+				t.Fatalf("SimulatePreparedRotating() error = %v", err)
+			}
+			if simulation.Failed != (tc.message != "") || simulation.FailureMessage != tc.message {
+				t.Fatalf("Failed = %v, FailureMessage = %q; want %q", simulation.Failed, simulation.FailureMessage, tc.message)
+			}
+			if tc.message == "" {
+				return
+			}
+			_, err = client.SendPrepared(context.Background(), algodClient, rotatingGroup(txn), nil)
+			var preflight *RotatingPreflightError
+			if !errors.As(err, &preflight) || preflight.Message != tc.message {
+				t.Fatalf("SendPrepared() error = %v, want *RotatingPreflightError with %q", err, tc.message)
+			}
+			if signer.count("/sign/rotating/sign") != 0 || len(node.submissions()) != 0 {
+				t.Fatalf("a failed simulation reached signing or submission")
+			}
+		})
+	}
 }
 
 // endsAfter is a context whose Err reports cancellation once ended is set.

@@ -87,7 +87,7 @@ type sendAlgod struct {
 	// authAddrs is the chain's auth address per account, for account lookups.
 	authAddrs map[string]string
 	// simulate answers the simulate endpoint; nil reports success.
-	simulate func(w http.ResponseWriter)
+	simulate func(w http.ResponseWriter, request models.SimulateRequest)
 	// round is the node's current round; zero means 10.
 	round uint64
 
@@ -177,10 +177,10 @@ func (a *sendAlgod) handle(w http.ResponseWriter, r *http.Request) {
 		a.simulated = append(a.simulated, request)
 		a.mu.Unlock()
 		if a.simulate != nil {
-			a.simulate(w)
+			a.simulate(w, request)
 			return
 		}
-		json.NewEncoder(w).Encode(models.SimulateResponse{LastRound: a.currentRound(), Version: 2, TxnGroups: []models.SimulateTransactionGroupResult{{}}})
+		json.NewEncoder(w).Encode(passingSimulation(a.currentRound(), request))
 	case strings.HasPrefix(r.URL.Path, "/v2/transactions/pending/"):
 		a.mu.Lock()
 		a.lookups++
@@ -193,6 +193,16 @@ func (a *sendAlgod) handle(w http.ResponseWriter, r *http.Request) {
 	default:
 		a.t.Errorf("unexpected algod request %s %s", r.Method, r.URL.Path)
 	}
+}
+
+// passingSimulation is a node's answer for a group that passed: one group
+// result holding one transaction result per transaction simulated.
+func passingSimulation(round uint64, request models.SimulateRequest) models.SimulateResponse {
+	group := models.SimulateTransactionGroupResult{}
+	if len(request.TxnGroups) > 0 {
+		group.TxnResults = make([]models.SimulateTransactionResult, len(request.TxnGroups[0].Txns))
+	}
+	return models.SimulateResponse{LastRound: round, Version: 2, TxnGroups: []models.SimulateTransactionGroupResult{group}}
 }
 
 func newSendFixture(t *testing.T, signer *sendSigner, node *sendAlgod) (*SignerClient, *algod.Client) {
