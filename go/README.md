@@ -389,9 +389,9 @@ Failures:
 | Error | Meaning | What to do |
 |---|---|---|
 | The signing call's own error | The signer refused (policy, operator, locked), or the SDK refused the signer's answer (`verify signer response: ...`, `ErrMaxFeeIncreaseExceeded`). Nothing was submitted. | Read the reason. If the SDK refused a sign answer, the signer did sign and the SDK discarded the result. |
-| `*SignOutcomeUnknownError` | A signing exchange ended with no answer, or with a 200 answer that could not be read (not one JSON object of the expected shape). A signature may have been released; nothing was submitted. | Check with the operator or the audit log before signing again. The error carries the ID of the request whose answer was lost (for a cosigned account, the step's `/sign/component`, `/sign/assemble` or `/sign` request); for a rotating account it also carries the prepared group (see below). |
+| `*SignOutcomeUnknownError` | A signing exchange ended with no answer, or with a 200 answer that could not be read (not one JSON object of the expected shape). A signature may have been released; nothing was submitted. | Call `ResolveOutcome` (below), or check with the operator or the audit log, before signing again. The error carries the ID of the request whose answer was lost (for a cosigned account, the step's `/sign/component`, `/sign/assemble` or `/sign` request) and `LastValid`, the earliest last valid round of what was sent to be signed; for a rotating account it also carries the prepared group (see below). |
 | `*SubmissionRejectedError` | The node refused the group or dropped it from its pool. | Read the reason. The signed bytes and IDs are in the error. |
-| `*SubmissionUncertainError` | `Stage` says where it stopped: `unsent` (signed, never sent: your context ended), `submit` (the submission's answer never arrived), or `confirm` (not confirmed within the wait). Except for `unsent`, it may still confirm. | Look up `TxIDs`, or submit the same `SignedGroup` again. Do not sign a replacement until the outcome is known: both could execute. |
+| `*SubmissionUncertainError` | `Stage` says where it stopped: `unsent` (signed, never sent: your context ended), `submit` (the submission's answer never arrived), or `confirm` (not confirmed within the wait). Except for `unsent`, it may still confirm. | Call `ResolveOutcome` (below), or submit the same `SignedGroup` again. Do not sign a replacement until the outcome is known: both could execute. `LastValid` is the signed group's earliest last valid round. |
 
 Every 200 answer from the signer, the key list included, is read as exactly
 one non-null JSON value: a `null` body or anything after the value is an
@@ -431,6 +431,45 @@ group", "the node returned N results for one group", "the node reported a
 failure without a message" or "the node returned M transaction results for N
 transactions". Go's algod client reads a `null` group result as an empty one,
 so it fails on its count of transaction results.
+
+#### After an uncertain outcome
+
+`ResolveOutcome(ctx, algodClient, err)` takes either "do not just send again"
+error (`*SubmissionUncertainError` or `*SignOutcomeUnknownError`, wrapped or
+not) and says where things stand; any other error is refused with
+`ErrNotUncertainOutcome`. It reads the node's current round, looks up the
+group's first transaction ID when the IDs are known, and returns an
+`*OutcomeReport`: `State`, `ConfirmedRound`, `TxIDs`, `LastValid`,
+`CurrentRound`, `SafeToReplace`, the error's `SignedGroup` or `Rotating`
+group, and one sentence of `Advice`. It never signs, never submits and never
+calls the signer; a node failure is returned as an error, not a state.
+`WaitForOutcome(ctx, algodClient, err, opts)` checks once per round until the
+state is `confirmed`, `expired` or `too_old`, and when the context or
+`WaitOutcomeOptions.Timeout` ends first returns the last report with that
+error.
+
+The signer never changes validity rounds, so after `LastValid` nothing from
+the request can execute. For a signed group (`*SubmissionUncertainError`):
+
+- found in a block: `confirmed`; do not send it again;
+- in the node's pool: `pending`; wait;
+- not found, or dropped from the pool, while the current round is at most
+  `LastValid`: `not_seen`; submit the same signed group again, or wait until
+  `LastValid` has passed;
+- not found, or dropped, within 500 rounds after `LastValid`: `expired`, and
+  `SafeToReplace`;
+- more than 500 rounds after `LastValid`: `too_old`; a node only answers for
+  recent rounds, so look the ID up on an indexer before sending again.
+
+For a signing exchange (`*SignOutcomeUnknownError`, nothing submitted by the
+call): a rotating group's IDs are known, so it is looked up first and is
+`confirmed` or `pending` when the node says so. Otherwise, while the current
+round is at most `LastValid`, it is `signable`: a signature may have been
+released (for a rotating account, sign the same prepared group again or wait;
+for any other, wait until `LastValid` has passed before building a
+replacement). After `LastValid` it is `expired`, and `SafeToReplace`. An
+ordinary or cosigned group is not looked up and its `TxIDs` are empty: the
+signer may have changed its transactions.
 
 #### Rotating accounts
 
