@@ -91,6 +91,7 @@ import {
   UnsupportedSigningFlowError,
   callerAborted,
   isLostAnswer,
+  lostAnswerRequestId,
   markLostAnswer,
 } from "./errors.js";
 import {
@@ -1551,20 +1552,20 @@ function emptySendResult(flow: string, originalCount: number): SendResult {
 }
 
 /**
- * Read a 200 answer of an approval-bearing request. A body that does not
- * parse, or parses to the wrong shape, is unreadable: the signer may have
- * acted, so it is marked as a lost answer.
+ * Read a 200 answer of the approval-bearing request requestId. A body that
+ * does not parse, or parses to the wrong shape, is unreadable: the signer may
+ * have acted, so it is marked as the request's lost answer.
  */
-async function readApprovalAnswer<T>(response: Response, shape: AnswerShape): Promise<T> {
+async function readApprovalAnswer<T>(response: Response, shape: AnswerShape, requestId: string): Promise<T> {
   let data: unknown;
   try {
     data = await response.json();
   } catch {
-    throw markLostAnswer(new SignerError("Server returned invalid JSON"));
+    throw markLostAnswer(new SignerError("Server returned invalid JSON"), requestId);
   }
   const read = readAnswer<T>(shape, data);
   if ("problem" in read) {
-    throw markLostAnswer(new SignerError(`Server returned a malformed response: ${read.problem}`));
+    throw markLostAnswer(new SignerError(`Server returned a malformed response: ${read.problem}`), requestId);
   }
   return read.answer;
 }
@@ -3827,14 +3828,18 @@ export class SignerClient {
       if (approvalBearing) await this.bestEffortCancelSignRequest(requestBody.request_id || "");
       // A component request releases a signature: one whose answer never
       // arrived may have released it.
-      throw markLostAnswer(error);
+      throw markLostAnswer(error, requestBody.request_id);
     }
     if (response.status === 401) throw new AuthenticationError();
     if (response.status === 403) throw await this.forbiddenRejectedError(response, "Component signing request rejected");
     if (response.status === 503) throw new SignerUnavailableError(await this.errorMessage(response, "Signer unavailable"));
     if (response.status === 400) throw await this.badRequestError(response);
     if (response.status !== 200) throw await this.signerHTTPError(response, `Component signing failed: HTTP ${response.status}`);
-    const data = await readApprovalAnswer<ComponentResponse & { error?: string }>(response, COMPONENT_ANSWER);
+    const data = await readApprovalAnswer<ComponentResponse & { error?: string }>(
+      response,
+      COMPONENT_ANSWER,
+      requestBody.request_id || "",
+    );
     if (data.error) throw new SignerError(data.error);
     try {
       validateComponentResponse(data, requestBody);
@@ -3883,7 +3888,7 @@ export class SignerClient {
     } catch (error) {
       // Assembly releases the whole group: an answer that never arrived may
       // have released it.
-      throw markLostAnswer(error);
+      throw markLostAnswer(error, requestBody.request_id);
     }
 
     if (response.status === 401) {
@@ -3902,7 +3907,11 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Assembly failed: HTTP ${response.status}`);
     }
 
-    const data = await readApprovalAnswer<AssemblyResponse & { error?: string }>(response, ASSEMBLY_ANSWER);
+    const data = await readApprovalAnswer<AssemblyResponse & { error?: string }>(
+      response,
+      ASSEMBLY_ANSWER,
+      requestBody.request_id || "",
+    );
 
     if (data.error) {
       throw new SignerError(data.error);
@@ -4252,13 +4261,13 @@ export class SignerClient {
       });
     } catch (error) {
       await this.bestEffortCancelSignRequest(requestId);
-      throw markLostAnswer(error);
+      throw markLostAnswer(error, requestId);
     }
 
     if (response.status !== 200) {
       throw await refuse(response);
     }
-    return readApprovalAnswer<T>(response, shape);
+    return readApprovalAnswer<T>(response, shape, requestId);
   }
 
   /**
@@ -4421,9 +4430,9 @@ export class SignerClient {
       } catch (error) {
         // The sequence makes several approval-bearing requests. One that
         // ended with no answer may have released a signature, and the last
-        // of them releases the whole group.
+        // of them releases the whole group. The mark names the request.
         if (isLostAnswer(error)) {
-          throw new SignOutcomeUnknownError({ cause: error });
+          throw new SignOutcomeUnknownError({ requestId: lostAnswerRequestId(error), cause: error });
         }
         throw error;
       }

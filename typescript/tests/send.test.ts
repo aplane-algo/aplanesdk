@@ -27,10 +27,10 @@ import {
   type PreparedGroup,
 } from "../src/types.js";
 import { describeSignedGroup, submitAndTrack, type SendResult } from "../src/send.js";
-import { SignerError, isLostAnswer, markLostAnswer } from "../src/errors.js";
+import { SignerError, isLostAnswer, lostAnswerRequestId, markLostAnswer } from "../src/errors.js";
 import { bytesToBase64, hexToBytes } from "../src/encoding.js";
 import { readAnswer, type AnswerShape } from "../src/answers.js";
-import { fakeAccount, fakeAddress, fakePayment, signedHex } from "./fakeSigner.js";
+import { fakeAccount, fakeAddress, fakePayment, planResponse, signedHex } from "./fakeSigner.js";
 import {
   FakeAlgod,
   SendSigner,
@@ -699,20 +699,10 @@ describe("sendPrepared", () => {
   });
 });
 
-/**
- * A signer holding one cosigned account, its cosigner, and a node. fault
- * names a user-signer path and how it fails: "<path> drop" closes the
- * connection with no answer, "<path> truncate" answers 200 with a body cut
- * short.
- */
-function cosignedFixture(
-  fault: string,
-  cosignerFault = "",
-  edit: { user?: (path: string, body: any) => void; cosigner?: (body: any) => void } = {},
-) {
-  const bounded = fakeAddress(21);
-  const key: WireKey = {
-    address: bounded,
+/** A cosigned account's /keys record. */
+function cosignedKey(address: string): WireKey {
+  return {
+    address,
     key_type: "aplane.falcon1024.v1",
     signing_flow: SIGNING_FLOW_COSIGNED1,
     logic_sig_resources: {
@@ -725,14 +715,31 @@ function cosignedFixture(
       cosigner: { component_key_type: KEY_TYPE_WITNESS_FALCON1024, public_key_hex: "aabb" },
     },
   };
+}
+
+/**
+ * A signer holding one cosigned account, its cosigner, and a node. fault
+ * names a user-signer path and how it fails: "<path> drop" closes the
+ * connection with no answer, "<path> truncate" answers 200 with a body cut
+ * short.
+ */
+function cosignedFixture(
+  fault: string,
+  cosignerFault = "",
+  edit: { user?: (path: string, body: any) => void; cosigner?: (body: any) => void } = {},
+) {
+  const bounded = fakeAddress(21);
+  const key = cosignedKey(bounded);
   const userPaths: string[] = [];
   const user = (path: string, body: any): FakeReply => {
     const reply = answerUser(path, body);
     if (edit.user && typeof reply === "object" && "body" in reply) edit.user(path, reply.body);
     return reply;
   };
+  const requestIds: Record<string, string> = {};
   const answerUser = (path: string, body: any): FakeReply => {
     userPaths.push(path);
+    if (body?.request_id) requestIds[path] = body.request_id;
     if (fault === `${path} drop`) return "drop";
     if (fault === `${path} truncate`) return { raw: '{"request_id": "x", "signed_gr' };
     if (fault.startsWith(`${path} body `)) return { raw: fault.slice(`${path} body `.length) };
@@ -779,6 +786,7 @@ function cosignedFixture(
   let cosignerCalls = 0;
   const cosigner = (path: string, body: any): FakeReply => {
     cosignerCalls++;
+    if (body?.request_id) requestIds[`cosigner ${path}`] = body.request_id;
     if (cosignerFault === "drop") return "drop";
     if (cosignerFault.startsWith("body ")) return { raw: cosignerFault.slice("body ".length) };
     assert.equal(path, "/sign/component");
@@ -814,6 +822,7 @@ function cosignedFixture(
     txn,
     cosignerCalls: () => cosignerCalls,
     userPaths,
+    requestIds,
   };
 }
 
@@ -859,7 +868,7 @@ describe("sendPrepared with a cosigned account", () => {
     ];
     for (const [fault, unknown] of cases) {
       it(fault, async () => {
-        const { userClient, cosignerClient, algod, node, txn } = cosignedFixture(fault);
+        const { userClient, cosignerClient, algod, node, txn, requestIds } = cosignedFixture(fault);
         await assert.rejects(
           userClient.sendPrepared(algod, preparedFor(txn), {
             cosignerClient,
@@ -867,6 +876,13 @@ describe("sendPrepared with a cosigned account", () => {
           }),
           (error: unknown) => {
             assert.equal(error instanceof SignOutcomeUnknownError, unknown, String(error));
+            if (error instanceof SignOutcomeUnknownError) {
+              // The error names the request whose answer was lost.
+              const path = fault.split(" ")[0];
+              assert.ok(requestIds[path], `no request ID was posted to ${path}`);
+              assert.equal(error.requestId, requestIds[path]);
+              assert.ok(error.message.includes(`sign request ${requestIds[path]}:`), error.message);
+            }
             return true;
           },
         );
@@ -968,13 +984,78 @@ describe("sendPrepared with a cosigned account", () => {
 
   it("a lost answer from the cosigner is an unknown outcome", async () => {
     // The cosigner's component request releases a signature too.
-    const { userClient, cosignerClient, algod, node, txn } = cosignedFixture("", "drop");
+    const { userClient, cosignerClient, algod, node, txn, requestIds } = cosignedFixture("", "drop");
     await assert.rejects(
       userClient.sendPrepared(algod, preparedFor(txn), {
         cosignerClient,
         cosignerComponentKey: "COSIGNER_COMPONENT",
       }),
-      SignOutcomeUnknownError,
+      (error: unknown) => {
+        assert.ok(error instanceof SignOutcomeUnknownError, String(error));
+        assert.ok(requestIds["cosigner /sign/component"], "no request ID was posted to the cosigner");
+        assert.equal(error.requestId, requestIds["cosigner /sign/component"]);
+        return true;
+      },
+    );
+    assert.equal(node.submitted.length, 0);
+  });
+
+  it("a lost answer to the primary /sign names that request", async () => {
+    // A group of a cosigned spend and an ordinary payment: the ordinary
+    // position is signed through /sign, which releases its signature.
+    const { userClient, cosignerClient, algod, node, txn } = cosignedFixture("");
+    const ordinary = fakePayment(41, 42, 1);
+    const wireKeys: WireKey[] = [];
+    let signRequestId = "";
+    restore?.();
+    restore = installSigners({
+      [SIGNER]: (path, body) => {
+        switch (path) {
+          case "/status":
+            return { body: statusBody() };
+          case "/keys":
+            return { body: { count: 2, keys: wireKeys } };
+          case "/plan":
+            return { body: planResponse(body.requests) };
+          case "/sign/component":
+            return {
+              body: {
+                request_id: body.request_id,
+                components: [{
+                  target_index: 0,
+                  kind: "bounded-base",
+                  auth_address: txn.sender.toString(),
+                  base_signatures: ["base-sig"],
+                  assembly_receipt: "receipt",
+                  signature_scheme: "aplane.falcon1024.v1",
+                  path: "spend",
+                }],
+              },
+            };
+          case "/sign":
+            signRequestId = body.request_id;
+            return "drop";
+          case "/sign/cancel":
+            return { body: { success: true, state: "canceled" } };
+          default:
+            throw new Error(`unexpected user path ${path}`);
+        }
+      },
+    });
+    wireKeys.push(cosignedKey(txn.sender.toString()), ordinaryKey(ordinary));
+    await assert.rejects(
+      userClient.sendPrepared(algod, {
+        transactions: [
+          { transaction: txn, authAddress: txn.sender.toString() },
+          { transaction: ordinary, authAddress: ordinary.sender.toString() },
+        ],
+      }, { cosignerClient, cosignerComponentKey: "COSIGNER_COMPONENT" }),
+      (error: unknown) => {
+        assert.ok(error instanceof SignOutcomeUnknownError, String(error));
+        assert.notEqual(signRequestId, "", "the primary /sign was not posted");
+        assert.equal(error.requestId, signRequestId);
+        return true;
+      },
     );
     assert.equal(node.submitted.length, 0);
   });
@@ -1133,7 +1214,7 @@ describe("the lost-answer mark", () => {
     assert.equal(error.message, "Failed to connect: fetch failed");
     assert.deepEqual(Object.keys(error), keys, "the mark is enumerable");
     assert.equal(JSON.stringify(error), json);
-    assert.equal((error as any)[Symbol.for("aplanesdk.lostAnswer")], true);
+    assert.deepEqual((error as any)[Symbol.for("aplanesdk.lostAnswer")], { requestId: "" });
     assert.equal(isLostAnswer(new SignerError("refused")), false);
     assert.equal(isLostAnswer(undefined), false);
     assert.equal(isLostAnswer("text"), false);
@@ -1157,7 +1238,17 @@ describe("the lost-answer mark", () => {
     // Another build (ESM or CommonJS) has its own module state but the same
     // registered symbol.
     const error = new Error("fetch failed");
-    Object.defineProperty(error, Symbol.for("aplanesdk.lostAnswer"), { value: true });
+    Object.defineProperty(error, Symbol.for("aplanesdk.lostAnswer"), { value: { requestId: "sdk-other" } });
     assert.ok(isLostAnswer(error), "want isLostAnswer(error)");
+    assert.equal(lostAnswerRequestId(error), "sdk-other");
+  });
+
+  it("carries the ID of the request whose answer was lost", () => {
+    const lost = markLostAnswer(new SignerError("Server returned invalid JSON"), "sdk-assembly");
+    assert.equal(lostAnswerRequestId(lost), "sdk-assembly");
+    const wrapped = new SignerError("assembly failed");
+    (wrapped as any).cause = lost;
+    assert.equal(lostAnswerRequestId(wrapped), "sdk-assembly");
+    assert.equal(lostAnswerRequestId(new SignerError("refused")), "");
   });
 });

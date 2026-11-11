@@ -204,10 +204,12 @@ export class UnsupportedGroupError extends SignerError {
  * approval-bearing step of the cosigned or rotating sequence. The signer may
  * or may not have released a signature. Nothing was submitted by this call.
  *
- * `requestId` and `requests` are set for the ordinary /sign flow; `rotating`
- * is the prepared group of a rotating account, and calling
- * signPreparedRotating with it again asks for the same transaction and is the
- * safe recovery. Do not build and sign a replacement transaction on the
+ * `requestId` is the request whose answer was lost: the /sign request of the
+ * ordinary flow, the rotating sign request, or the cosigned sequence's
+ * /sign/component, /sign/assemble or primary /sign request. `requests` is
+ * set for the ordinary /sign flow; `rotating` is the prepared group of a
+ * rotating account, and calling signPreparedRotating with it again asks for
+ * the same transaction and is the safe recovery. Do not build and sign a replacement transaction on the
  * strength of this error alone: check the request with the operator or the
  * signer's audit log first. `cause` is the failure that ended the exchange.
  */
@@ -318,17 +320,27 @@ export class RotatingPreflightError extends SignerError {
 // the exchange failed, or a 200 arrived whose body could not be read as the
 // answer. The signer may have acted on the request. The error itself keeps its
 // class and message, so the lower-level calls report it as before; a send
-// reads the mark. The mark is a property of the error under a registered
-// symbol, so it survives wrapping as another error's cause and is the same
-// mark whichever build of the package (ESM or CommonJS) made the error.
+// reads the mark, and the ID of the request whose answer was lost from it.
+// The mark is a property of the error under a registered symbol, so it
+// survives wrapping as another error's cause and is the same mark whichever
+// build of the package (ESM or CommonJS) made the error.
 const LOST_ANSWER = Symbol.for("aplanesdk.lostAnswer");
 
-/** Mark error as a lost answer of an approval-bearing request, and return it. */
-export function markLostAnswer<T>(error: T): T {
+/** What the lost-answer mark holds. */
+interface LostAnswerMark {
+  /** The ID of the request whose answer was lost. */
+  requestId: string;
+}
+
+/**
+ * Mark error as the lost answer of the approval-bearing request requestId,
+ * and return it.
+ */
+export function markLostAnswer<T>(error: T, requestId: string = ""): T {
   if ((typeof error === "object" && error !== null) || typeof error === "function") {
     try {
       Object.defineProperty(error, LOST_ANSWER, {
-        value: true,
+        value: Object.freeze({ requestId }),
         enumerable: false,
         configurable: true,
       });
@@ -339,20 +351,37 @@ export function markLostAnswer<T>(error: T): T {
   return error;
 }
 
+/** The first lost-answer mark on error or its cause chain. */
+function lostAnswerMark(error: unknown): LostAnswerMark | undefined {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  while ((typeof current === "object" && current !== null) || typeof current === "function") {
+    if (seen.has(current)) return undefined;
+    seen.add(current);
+    const mark = (current as Record<symbol, unknown>)[LOST_ANSWER];
+    if (typeof mark === "object" && mark !== null) {
+      const requestId = (mark as { requestId?: unknown }).requestId;
+      return { requestId: typeof requestId === "string" ? requestId : "" };
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
+
 /**
  * Whether error, or an error in its cause chain, is a lost answer of an
  * approval-bearing request.
  */
 export function isLostAnswer(error: unknown): boolean {
-  const seen = new Set<unknown>();
-  let current: unknown = error;
-  while ((typeof current === "object" && current !== null) || typeof current === "function") {
-    if (seen.has(current)) return false;
-    seen.add(current);
-    if ((current as Record<symbol, unknown>)[LOST_ANSWER] === true) return true;
-    current = (current as { cause?: unknown }).cause;
-  }
-  return false;
+  return lostAnswerMark(error) !== undefined;
+}
+
+/**
+ * The ID of the approval-bearing request whose answer error lost, or "" when
+ * error is not a lost answer or the mark names no request.
+ */
+export function lostAnswerRequestId(error: unknown): string {
+  return lostAnswerMark(error)?.requestId ?? "";
 }
 
 /**
