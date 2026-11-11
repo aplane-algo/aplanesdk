@@ -107,6 +107,13 @@ func (p *PreparedRotating) TxIDs() []string {
 	return ids
 }
 
+// lastValid is the earliest last valid round of the prepared group. The group
+// has been verified, so it decodes.
+func (p *PreparedRotating) lastValid() uint64 {
+	txns, _ := p.decoded()
+	return earliestLastValid(txns)
+}
+
 func (p *PreparedRotating) decoded() ([]types.Transaction, error) {
 	txns := make([]types.Transaction, len(p.transactions))
 	for i, h := range p.transactions {
@@ -419,9 +426,9 @@ func (c *SignerClient) SignPreparedRotating(ctx context.Context, prepared *Prepa
 		var apiErr *APIError
 		switch {
 		case errors.As(err, &transport):
-			return nil, &SignOutcomeUnknownError{RequestID: requestID, Rotating: prepared, Err: transport.err}
+			return nil, &SignOutcomeUnknownError{RequestID: requestID, Rotating: prepared, LastValid: prepared.lastValid(), Err: transport.err}
 		case errors.As(err, &unread):
-			return nil, &SignOutcomeUnknownError{RequestID: requestID, Rotating: prepared, Err: err}
+			return nil, &SignOutcomeUnknownError{RequestID: requestID, Rotating: prepared, LastValid: prepared.lastValid(), Err: err}
 		case errors.As(err, &apiErr):
 			apiErr.Op = "rotating sign failed"
 			return nil, rotatingAPIError(apiErr)

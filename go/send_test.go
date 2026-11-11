@@ -484,6 +484,26 @@ func TestSendPreparedSignFailures(t *testing.T) {
 		}
 	})
 
+	t.Run("an unknown outcome carries the group's earliest last valid round", func(t *testing.T) {
+		other := verifyTestPayment(t, 43, 42, 2)
+		other.LastValid = 700
+		signer := &sendSigner{keys: []KeyInfo{ordinaryKey(txn), ordinaryKey(other)}, sign: func(w http.ResponseWriter, r *http.Request) {
+			if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+				conn.Close()
+			}
+		}}
+		client, algodClient := newSendFixture(t, signer, &sendAlgod{})
+		group := NewPreparedGroup(
+			PreparedTransaction{Transaction: &txn, AuthAddress: txn.Sender.String()},
+			PreparedTransaction{Transaction: &other, AuthAddress: other.Sender.String()},
+		)
+		_, err := client.SendPrepared(context.Background(), algodClient, group, nil)
+		var unknown *SignOutcomeUnknownError
+		if !errors.As(err, &unknown) || unknown.LastValid != 700 {
+			t.Fatalf("error = %v (%+v), want an unknown outcome with LastValid 700", err, unknown)
+		}
+	})
+
 	t.Run("an unreadable answer is an unknown outcome", func(t *testing.T) {
 		signer := &sendSigner{keys: []KeyInfo{ordinaryKey(txn)}, sign: func(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte(`{"signed": ["ab`))
@@ -493,8 +513,8 @@ func TestSendPreparedSignFailures(t *testing.T) {
 
 		_, err := client.SendPrepared(context.Background(), algodClient, preparedFor(txn), nil)
 		var unknown *SignOutcomeUnknownError
-		if !errors.As(err, &unknown) {
-			t.Fatalf("error = %v, want *SignOutcomeUnknownError", err)
+		if !errors.As(err, &unknown) || unknown.LastValid != uint64(txn.LastValid) {
+			t.Fatalf("error = %v, want *SignOutcomeUnknownError with LastValid %d", err, txn.LastValid)
 		}
 		if len(node.submissions()) != 0 {
 			t.Fatalf("submissions = %d, want none", len(node.submissions()))
@@ -617,6 +637,9 @@ func TestSendPreparedSubmissionFailuresKeepSignedBytes(t *testing.T) {
 			case errors.As(err, &uncertain):
 				if tt.rejected || uncertain.Stage != tt.stage {
 					t.Fatalf("error = %v (stage %q), want rejected=%v stage %q", err, uncertain.Stage, tt.rejected, tt.stage)
+				}
+				if uncertain.LastValid != uint64(txn.LastValid) {
+					t.Fatalf("LastValid = %d, want the signed group's %d", uncertain.LastValid, txn.LastValid)
 				}
 				signedGroup, txIDs = uncertain.SignedGroup, uncertain.TxIDs
 			default:
@@ -804,6 +827,9 @@ func TestSubmitFailuresThatAreNotAnswers(t *testing.T) {
 		if !errors.As(err, &uncertain) || uncertain.Stage != SendStageUnsent || !errors.Is(err, context.Canceled) {
 			t.Fatalf("error = %v, want the unsent stage", err)
 		}
+		if uncertain.LastValid != uint64(txn.LastValid) {
+			t.Fatalf("LastValid = %d, want %d", uncertain.LastValid, txn.LastValid)
+		}
 		if len(node.submissions()) != 0 {
 			t.Fatalf("an ended context still submitted")
 		}
@@ -910,6 +936,8 @@ func cosignedSendFixture(t *testing.T, fault string, primary bool) *cosignedSend
 		if err != nil {
 			t.Fatalf("MakePaymentTxn() error = %v", err)
 		}
+		// It expires first, so the group's earliest last valid round is its.
+		other.LastValid = 90
 		keys = append(keys, ordinaryKey(other))
 		positions = append(positions, PreparedTransaction{Transaction: &other, AuthAddress: other.Sender.String()})
 	}
@@ -1080,6 +1108,13 @@ func TestSendPreparedCosignedLostAnswers(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), want) {
 				t.Fatalf("error %q does not name request %s", err, want)
+			}
+			wantLastValid := uint64(100)
+			if tt.primary {
+				wantLastValid = 90
+			}
+			if unknown.LastValid != wantLastValid {
+				t.Fatalf("LastValid = %d, want the group's earliest %d", unknown.LastValid, wantLastValid)
 			}
 		})
 	}
