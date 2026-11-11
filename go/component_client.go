@@ -91,7 +91,7 @@ func (c *SignerClient) RequestComponentsWithContext(ctx context.Context, reqBody
 		return nil, signerHTTPError(resp)
 	}
 	var result ComponentResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := readAnswer(resp.Body, &result); err != nil {
 		return nil, fmt.Errorf("failed to decode component response: %w", &lostAnswer{err: err})
 	}
 	if err := result.ValidateForRequest(reqBody); err != nil {

@@ -379,7 +379,7 @@ Failures:
 | Error | Meaning | What to do |
 |---|---|---|
 | The signing call's own error | The signer refused (policy, operator, locked), or the SDK refused the signer's answer (`verify signer response: ...`, `ErrMaxFeeIncreaseExceeded`). Nothing was submitted. | Read the reason. If the SDK refused a sign answer, the signer did sign and the SDK discarded the result. |
-| `*SignOutcomeUnknownError` | A signing exchange ended with no answer. A signature may have been released; nothing was submitted. | Check with the operator or the audit log before signing again. For the ordinary flow the error carries the request ID; for a rotating account it carries the prepared group (see below). |
+| `*SignOutcomeUnknownError` | A signing exchange ended with no answer, or with a 200 answer that could not be read (not one JSON object of the expected shape). A signature may have been released; nothing was submitted. | Check with the operator or the audit log before signing again. For the ordinary flow the error carries the request ID; for a rotating account it carries the prepared group (see below). |
 | `*SubmissionRejectedError` | The node refused the group or dropped it from its pool. | Read the reason. The signed bytes and IDs are in the error. |
 | `*SubmissionUncertainError` | `Stage` says where it stopped: `unsent` (signed, never sent: your context ended), `submit` (the submission's answer never arrived), or `confirm` (not confirmed within the wait). Except for `unsent`, it may still confirm. | Look up `TxIDs`, or submit the same `SignedGroup` again. Do not sign a replacement until the outcome is known: both could execute. |
 
@@ -421,7 +421,9 @@ What to know:
   signs only while `FirstValid` is at most 2 rounds ahead and at least 10
   rounds remain. Every `Prepare*` helper builds such a window when the sender
   is a rotating account. A transaction whose rounds are not current is
-  refused before the operator is asked. For a transaction you built yourself,
+  refused before the operator is asked, and that includes one a helper built
+  that has since gone stale: only `SendPayment` rebuilds rounds without the
+  option. For a transaction you built yourself,
   set `SendOptions.RefreshValidity` to let the SDK rebuild the rounds; that
   changes the transaction ID, so leave it off if anything outside the
   transaction binds its rounds.
@@ -433,6 +435,9 @@ What to know:
   attempts. Each attempt needs approval again. A timing refusal is retried
   only when the rounds may be rebuilt, and the retry uses the longest window
   to give the operator time.
+- **`ResolveAuthAddress` returns the account itself** as the `AuthAddress` of
+  a rotating account at every stage; the stage address the chain reports is
+  in `ChainAuthAddress`. The `Prepare*` helpers use it.
 - **The SDK cannot derive stage addresses.** It binds the next stage's
   address the signer reports to the prepared transaction; the signer derives
   it again from the seed before it signs.
