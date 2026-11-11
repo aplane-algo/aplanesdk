@@ -5,7 +5,9 @@
 Hashlock claim example - demonstrates generic LogicSig with runtime arguments.
 
 This example shows how to claim funds from a hashlock LogicSig by providing
-the preimage that hashes to the stored hash.
+the preimage that hashes to the stored hash. The argument travels with the
+prepared transaction, and SendPrepared signs, submits and confirms it as it
+does any other.
 
 Setup:
 
@@ -33,11 +35,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 
 	"github.com/algorand/go-algorand-sdk/v2/client/v2/algod"
-	"github.com/algorand/go-algorand-sdk/v2/transaction"
 	"github.com/aplane-algo/aplanesdk/go"
 )
 
@@ -52,6 +54,7 @@ const recipient = "RECIPIENTEXAMPLE777777777777777777777777777777777777777"
 var preimage = []byte("my_secret_preimage_32_bytes_long")
 
 func main() {
+	ctx := context.Background()
 	// Connect using config from $APCLIENT_DATA
 	signer, err := aplane.FromEnv(nil)
 	if err != nil {
@@ -77,43 +80,38 @@ func main() {
 	}
 
 	// Build claim transaction (send all funds to recipient)
-	params, err := algodClient.SuggestedParams().Do(context.Background())
+	prepared, err := signer.PrepareAccountClose(ctx, algodClient, aplane.AccountClosePrepParams{
+		Sender: hashlockAddress, CloseTo: recipient,
+	})
 	if err != nil {
-		log.Fatalf("Failed to get params: %v", err)
+		log.Fatalf("Failed to prepare the claim: %v", err)
 	}
-
-	txn, err := transaction.MakePaymentTxn(hashlockAddress, recipient, 0, nil, recipient, params)
-	if err != nil {
-		log.Fatalf("Failed to create transaction: %v", err)
-	}
-
 	// Sign with the preimage argument
-	fmt.Println("Signing hashlock claim with preimage...")
-	signed, err := signer.SignTransaction(
-		txn,
-		hashlockAddress,
-		aplane.LsigArgs{"preimage": preimage},
-	)
-	if err != nil {
-		log.Fatalf("Failed to sign: %v", err)
-	}
+	prepared.LsigArgs = aplane.LsigArgs{"preimage": preimage}
 
-	// Submit using standard go-algorand-sdk (signed is base64)
-	signedBytes, err := aplane.Base64ToBytes(signed)
+	fmt.Println("Sending hashlock claim with preimage...")
+	result, err := signer.SendPrepared(ctx, algodClient, aplane.NewPreparedGroup(*prepared), nil)
 	if err != nil {
-		log.Fatalf("Failed to decode signed txn: %v", err)
+		// A group that was signed, or a signature that may have been
+		// released: never build a replacement until the outcome is known,
+		// because both could execute.
+		var uncertain *aplane.SubmissionUncertainError
+		var unknown *aplane.SignOutcomeUnknownError
+		if errors.As(err, &uncertain) || errors.As(err, &unknown) {
+			log.Fatalf("Outcome unknown: %v\n%s", err, advice(ctx, signer, algodClient, err))
+		}
+		log.Fatalf("Failed to send: %v", err)
 	}
-	txid, err := algodClient.SendRawTransaction(signedBytes).Do(context.Background())
-	if err != nil {
-		log.Fatalf("Failed to submit: %v", err)
-	}
-	fmt.Printf("Submitted: %s\n", txid)
-
-	// Wait for confirmation
-	result, err := transaction.WaitForConfirmation(algodClient, txid, 4, context.Background())
-	if err != nil {
-		log.Fatalf("Failed to confirm: %v", err)
-	}
-	fmt.Printf("Confirmed in round %d\n", result.ConfirmedRound)
+	fmt.Printf("Confirmed %s in round %d\n", result.TxIDs[0], result.ConfirmedRound)
 	fmt.Println("Hashlock claimed successfully!")
+}
+
+// advice asks the node where an uncertain outcome stands. It signs and
+// submits nothing.
+func advice(ctx context.Context, signer *aplane.SignerClient, algodClient *algod.Client, err error) string {
+	report, resolveErr := signer.ResolveOutcome(ctx, algodClient, err)
+	if resolveErr != nil {
+		return fmt.Sprintf("Could not check the outcome (%v); look the transaction up before sending again.", resolveErr)
+	}
+	return fmt.Sprintf("%s: %s", report.State, report.Advice)
 }
