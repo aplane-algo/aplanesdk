@@ -747,6 +747,14 @@ func (c *SignerClient) RequestAssembleWithContext(ctx context.Context, reqBody A
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// A context that has already ended sends nothing, as in postApproval: it
+	// is a plain stop, not an exchange whose outcome is unknown.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	reqCtx, cancel := c.requestContext(ctx, cosignedAssemblyTimeout)
 	defer cancel()
@@ -756,6 +764,9 @@ func (c *SignerClient) RequestAssembleWithContext(ctx context.Context, reqBody A
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if err := reqCtx.Err(); err != nil {
+		return nil, err
+	}
 
 	resp, err := c.client.Do(req)
 	if err != nil {

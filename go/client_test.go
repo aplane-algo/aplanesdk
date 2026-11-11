@@ -661,6 +661,36 @@ func TestApprovalRequestWithEndedContextSendsNothing(t *testing.T) {
 			})
 			return err
 		},
+		"cosigner component": func(ctx context.Context, c *SignerClient) error {
+			_, err := c.RequestComponentsWithContext(ctx, ComponentRequest{
+				GroupBytesHex: []string{"545801"},
+				Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindCosigner, ComponentKey: "COMPONENT"}},
+			})
+			return err
+		},
+		"assemble": func(ctx context.Context, c *SignerClient) error {
+			_, err := c.RequestAssembleWithContext(ctx, AssemblyRequest{
+				GroupBytesHex: []string{"5458aa"},
+				Targets: []AssemblyTarget{{
+					TargetIndex: 0, Kind: AssemblyTargetKindBoundedCosigner, AuthAddress: "BOUNDED",
+					BaseSignatures: []string{"aabb"}, AssemblyReceipt: "eeff", CosignerSignature: "bbcc",
+				}},
+			})
+			return err
+		},
+		"rotating sign": func(ctx context.Context, c *SignerClient) error {
+			vector := loadRotatingVectors(t).Cases["wotsc_stage0"]
+			prepared, err := preparedFromVector(vector, vector.Prepare)
+			if err != nil {
+				t.Fatalf("captured prepare answer refused: %v", err)
+			}
+			_, err = c.SignPreparedRotating(ctx, prepared, nil)
+			var unknown *SignOutcomeUnknownError
+			if errors.As(err, &unknown) {
+				t.Errorf("rotating sign with an ended context = %v, want a plain stop", err)
+			}
+			return err
+		},
 	}
 	for name, call := range calls {
 		for _, waitKnown := range []bool{true, false} {
