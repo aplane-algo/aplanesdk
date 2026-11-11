@@ -38,16 +38,12 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 		if item.Transaction == nil {
 			return nil, fmt.Errorf("prepared transaction %d: transaction is required", i)
 		}
-		if item.SignerKey != nil && item.SignerKey.Address != item.AuthAddress {
-			return nil, fmt.Errorf("prepared transaction %d: signer key is for %s, not the position's auth address %s", i, item.SignerKey.Address, item.AuthAddress)
-		}
 		if item.AuthAddress == "" {
 			return nil, fmt.Errorf("prepared transaction %d: auth address is required", i)
 		}
 		// The key's flow, resources and fee ceiling decide how the position
 		// is signed, so they come from the signer's own record of the key,
-		// never from the caller. A key supplied on the prepared transaction
-		// is only checked for the right address.
+		// looked up by the position's auth address, never from the caller.
 		key, err := opts.UserClient.getKeyInfoWithContext(ctx, item.AuthAddress)
 		if err != nil {
 			return nil, fmt.Errorf("prepared transaction %d: resolve signer key: %w", i, err)

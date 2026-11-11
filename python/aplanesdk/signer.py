@@ -877,7 +877,6 @@ class PreparedTransaction:
     transaction: Optional[transaction.Transaction] = None
     auth_address: Optional[str] = None
     txn_sender: str = ""
-    signer_key: Optional[KeyInfo] = None
     lsig_args: Optional[Dict[str, bytes]] = None
     lsig_resources: Optional[LogicSigResourceUsage] = None
     pq_scheme: str = ""
@@ -3912,7 +3911,6 @@ class SignerClient:
         return PreparedTransaction(
             transaction=txn,
             auth_address=resolved.auth_address,
-            signer_key=resolved.key_info,
             checks=[
                 PreparedCheck(
                     name="payment_balance",
@@ -3982,7 +3980,6 @@ class SignerClient:
         return PreparedTransaction(
             transaction=txn,
             auth_address=resolved.auth_address,
-            signer_key=resolved.key_info,
             checks=[
                 PreparedCheck(
                     name="asa_transfer",
@@ -4037,7 +4034,6 @@ class SignerClient:
         return PreparedTransaction(
             transaction=txn,
             auth_address=resolved.auth_address,
-            signer_key=resolved.key_info,
             checks=checks,
         )
 
@@ -4083,7 +4079,6 @@ class SignerClient:
         return PreparedTransaction(
             transaction=txn,
             auth_address=resolved.auth_address,
-            signer_key=resolved.key_info,
             checks=checks,
         )
 
@@ -4125,7 +4120,6 @@ class SignerClient:
         return PreparedTransaction(
             transaction=txn,
             auth_address=resolved.auth_address,
-            signer_key=resolved.key_info,
             checks=checks,
         )
 
@@ -4171,7 +4165,6 @@ class SignerClient:
         return PreparedTransaction(
             transaction=txn,
             auth_address=resolved.auth_address,
-            signer_key=resolved.key_info,
             checks=checks,
         )
 
@@ -4275,7 +4268,6 @@ class SignerClient:
         return PreparedTransaction(
             transaction=txn,
             auth_address=resolved.auth_address,
-            signer_key=resolved.key_info,
             checks=[PreparedCheck(name="keyreg", status="ok", message=message, data=data)],
         )
 
@@ -4434,7 +4426,6 @@ class SignerClient:
         return PreparedTransaction(
             transaction=txn,
             auth_address=resolved.auth_address,
-            signer_key=resolved.key_info,
             app_call_info=app_call_info,
             checks=_app_call_checks(
                 app_id,
@@ -4503,7 +4494,6 @@ class SignerClient:
         return PreparedTransaction(
             transaction=txn,
             auth_address=resolved.auth_address,
-            signer_key=resolved.key_info,
             app_call_info={"mode": "raw"},
             checks=[
                 PreparedCheck(
@@ -5991,15 +5981,9 @@ def sign_prepared_cosigned_group(
             )
         if item.transaction is None:
             raise ValueError(f"prepared transaction {index}: transaction is required")
-        if item.signer_key is not None and item.signer_key.address != item.auth_address:
-            raise ValueError(
-                f"prepared transaction {index}: signer key is for {item.signer_key.address}, "
-                f"not the position's auth address {item.auth_address}"
-            )
         # The key's flow, resources and fee ceiling decide how the position
         # is signed, so they come from the signer's own record of the key,
-        # never from the caller. A key supplied on the prepared transaction is
-        # only checked for the right address.
+        # looked up by the position's auth address, never from the caller.
         key = user_client.get_key_info(item.auth_address) if item.auth_address else None
         if key is None:
             raise ValueError(

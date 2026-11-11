@@ -1058,30 +1058,36 @@ def record_call_order(events, **mocks):
         mock.side_effect = side_effect
 
 
+# The keys the signer of a cosigned test holds, by address.
+HELD_KEYS: dict = {}
+
+
+def held(position, key):
+    """Record key as the signer's key for a position; return the position."""
+    if key is not None:
+        HELD_KEYS[key.address] = key
+    return position
+
+
 class TestSignPreparedCosignedGroup:
     @pytest.fixture(autouse=True)
-    def _signer_holds_the_groups_keys(self, monkeypatch):
-        """The cosigned flow reads each key from the signer, not from the group.
+    def _signer_holds_the_named_keys(self, monkeypatch):
+        """The cosigned flow reads each key from the signer by auth address.
 
-        These tests describe the signer's keys on the prepared transactions, so
-        the user client here answers key lookups with exactly those.
+        A test names the signer's key beside the position that uses it with
+        held(), and the user client here answers key lookups with those.
         """
+        HELD_KEYS.clear()
         real = sign_prepared_cosigned_group
 
         def sign(*args, **kwargs):
             user = kwargs.get("user_client")
-            group = kwargs.get("prepared_group")
             # A test that sets its own key lookup on a real client keeps it.
             own_lookup = not isinstance(user, MagicMock) and isinstance(
                 getattr(user, "__dict__", {}).get("get_key_info"), MagicMock
             )
-            if user is not None and group is not None and not own_lookup:
-                held = {
-                    item.signer_key.address: item.signer_key
-                    for item in group.transactions
-                    if item.signer_key is not None
-                }
-                user.get_key_info = held.get
+            if user is not None and not own_lookup:
+                user.get_key_info = HELD_KEYS.get
             return real(*args, **kwargs)
 
         monkeypatch.setitem(globals(), "sign_prepared_cosigned_group", sign)
@@ -1140,20 +1146,18 @@ class TestSignPreparedCosignedGroup:
 
         user.plan_requests = MagicMock(side_effect=assert_per_slot_requests)
         prepared = PreparedGroup([
-            PreparedTransaction(
+            held(PreparedTransaction(
                 transaction=transaction.PaymentTxn(cosigned, params, receiver, 1),
                 auth_address=cosigned,
-                signer_key=signer_key,
                 lsig_args={"preimage": b"alpha"},
                 app_call_info={"mode": "raw", "method": "first"},
-            ),
-            PreparedTransaction(
+            ), signer_key),
+            held(PreparedTransaction(
                 transaction=transaction.PaymentTxn(cosigned, params, receiver, 2),
                 auth_address=cosigned,
-                signer_key=signer_key,
                 lsig_args={"preimage": b"beta"},
                 app_call_info={"mode": "abi", "method": "second"},
-            ),
+            ), signer_key),
         ])
 
         with pytest.raises(RuntimeError, match="stop after per-slot plan assertion"):
@@ -1422,7 +1426,7 @@ class TestSignPreparedCosignedGroup:
             cosigner_client=cosigner,
             cosigner_component_key="COSIGNER_COMPONENT",
             prepared_group=PreparedGroup([
-                PreparedTransaction(transaction=txn, auth_address=bounded, signer_key=key)
+                held(PreparedTransaction(transaction=txn, auth_address=bounded, ), key)
             ]),
         )
         assert result.signed_group == [signed_txn_hex(txn)]
@@ -1523,14 +1527,13 @@ class TestSignPreparedCosignedGroup:
                 ],
             ))
             prepared = PreparedGroup([
-                PreparedTransaction(transaction=txns[0], auth_address=listed,
-                                    signer_key=cosigned_key(listed), app_call_info={"mode": "listed"}),
-                PreparedTransaction(transaction=txns[1], auth_address=spend_a, signer_key=cosigned_key(spend_a)),
-                PreparedTransaction(transaction=txns[2], auth_address=spend_b, signer_key=cosigned_key(spend_b)),
-                PreparedTransaction(
+                held(PreparedTransaction(transaction=txns[0], auth_address=listed,
+                                     app_call_info={"mode": "listed"}), cosigned_key(listed)),
+                held(PreparedTransaction(transaction=txns[1], auth_address=spend_a, ), cosigned_key(spend_a)),
+                held(PreparedTransaction(transaction=txns[2], auth_address=spend_b, ), cosigned_key(spend_b)),
+                held(PreparedTransaction(
                     transaction=txns[3], auth_address=primary, app_call_info={"mode": "primary"},
-                    signer_key=KeyInfo(address=primary, key_type="ed25519", authorization_kind="ed25519"),
-                ),
+                ), KeyInfo(address=primary, key_type="ed25519", authorization_kind="ed25519")),
             ])
             sign = lambda: sign_prepared_cosigned_group(
                 user_client=user,
@@ -1643,11 +1646,11 @@ class TestSignPreparedCosignedGroup:
         txn = transaction.PaymentTxn(bounded, params, receiver, 1000)
         prepared_group = PreparedGroup(
             [
-                PreparedTransaction(
+                held(PreparedTransaction(
                     transaction=txn,
                     auth_address=bounded,
                     app_call_info={"mode": "raw"},
-                    signer_key=KeyInfo(
+                ), KeyInfo(
                         address=bounded,
                         key_type="aplane.falcon1024.v1",
                         signing_flow=SIGNING_FLOW_COSIGNED1,
@@ -1673,8 +1676,7 @@ class TestSignPreparedCosignedGroup:
                                 public_key_hex="aabb",
                             ),
                         ),
-                    ),
-                )
+                    ))
             ]
         )
         assembled_txn[0] = transaction.PaymentTxn(
@@ -1708,7 +1710,7 @@ class TestSignPreparedCosignedGroup:
         assert cosigner_req.targets[0]["app_call_info"] == {"mode": "raw"}
 
         user.request_components.reset_mock()
-        prepared_group.transactions[0].signer_key.bounded_authorization.max_fee = 999
+        HELD_KEYS[prepared_group.transactions[0].auth_address].bounded_authorization.max_fee = 999
         with pytest.raises(SignerError, match="exceeds advertised max_fee"):
             sign_prepared_cosigned_group(
                 user_client=user,
@@ -1828,10 +1830,10 @@ class TestSignPreparedCosignedGroup:
                 cosigner_client=cosigner,
                 cosigner_component_key="COSIGNER_COMPONENT",
                 prepared_group=PreparedGroup([
-                    PreparedTransaction(
+                    held(PreparedTransaction(
                         transaction=bounded_txn,
                         auth_address=bounded,
-                        signer_key=KeyInfo(
+                    ), KeyInfo(
                             address=bounded,
                             key_type="aplane.falcon1024.v1",
                             authorization_kind=AUTHORIZATION_KIND_LOGIC_SIG,
@@ -1858,17 +1860,15 @@ class TestSignPreparedCosignedGroup:
                                     public_key_hex="aabb",
                                 ),
                             ),
-                        ),
-                    ),
-                    PreparedTransaction(
+                        )),
+                    held(PreparedTransaction(
                         transaction=native_txn,
                         auth_address=native_pq,
-                        signer_key=KeyInfo(
+                    ), KeyInfo(
                             address=native_pq,
                             key_type="falcon1024",
                             authorization_kind=AUTHORIZATION_KIND_NATIVE_PQ,
-                        ),
-                    ),
+                        )),
                 ]),
             )
 
@@ -1908,18 +1908,17 @@ class TestSignPreparedCosignedGroup:
             sign_prepared_cosigned_group(
                 user_client=user,
                 prepared_group=PreparedGroup([
-                    PreparedTransaction(
+                    held(PreparedTransaction(
                         transaction=txn,
                         auth_address=cosigned,
-                        signer_key=KeyInfo(
+                    ), KeyInfo(
                             address=cosigned,
                             key_type="aplane.future-cosigned.v1",
                             signing_flow="cosigner2",
                             logic_sig_resources=LogicSigResourceProfile(
                                 spend=LogicSigResourceUsage(1612, 1423, 20000)
                             ),
-                        ),
-                    )
+                        ))
                 ]),
             )
 
@@ -1942,12 +1941,11 @@ class TestSignPreparedCosignedGroup:
             sign_prepared_cosigned_group(
                 user_client=MagicMock(),
                 prepared_group=PreparedGroup([
-                    PreparedTransaction(
+                    held(PreparedTransaction(
                         transaction=txn,
                         auth_address=account,
                         pq_scheme="f1",
-                        signer_key=KeyInfo(address=account, key_type="falcon1024"),
-                    )
+                    ), KeyInfo(address=account, key_type="falcon1024"))
                 ]),
             )
 
@@ -1971,10 +1969,10 @@ class TestSignPreparedCosignedGroup:
                 sign_prepared_cosigned_group(
                     user_client=user,
                     prepared_group=PreparedGroup([
-                        PreparedTransaction(
+                        held(PreparedTransaction(
                             transaction=txn,
                             auth_address=account,
-                            signer_key=KeyInfo(
+                        ), KeyInfo(
                                 address=account,
                                 key_type="aplane.falcon1024-cosigner1024.v1",
                                 signing_flow="cosigner1",
@@ -1982,8 +1980,7 @@ class TestSignPreparedCosignedGroup:
                                 logic_sig_resources=LogicSigResourceProfile(
                                     spend=LogicSigResourceUsage(1612, 1423, 20000)
                                 ),
-                            ),
-                        )
+                            ))
                     ]),
                 )
         mock_post.assert_not_called()
@@ -2797,7 +2794,7 @@ class TestPrepHelpers:
             )
 
         assert prepared.auth_address == sender
-        assert prepared.signer_key.address == sender
+        assert not hasattr(prepared, "signer_key")
         assert prepared.transaction.receiver == receiver
         assert prepared.transaction.fee == 1000
         assert prepared.checks[0].name == "payment_balance"
@@ -2846,7 +2843,6 @@ class TestPrepHelpers:
             )
 
         assert prepared.auth_address == sender
-        assert prepared.signer_key.address == sender
         assert prepared.transaction.index == 1001
         assert prepared.transaction.amount == 5
         assert prepared.checks[0].name == "asa_transfer"

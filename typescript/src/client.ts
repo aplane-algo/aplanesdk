@@ -429,15 +429,9 @@ export async function signPreparedCosignedGroup(
     if (!item.transaction) {
       throw new SignerError(`prepared transaction ${index}: transaction is required`);
     }
-    if (item.signerKey && item.signerKey.address !== item.authAddress) {
-      throw new SignerError(
-        `prepared transaction ${index}: signer key is for ${item.signerKey.address}, not the position's auth address ${item.authAddress}`,
-      );
-    }
     // The key's flow, resources and fee ceiling decide how the position is
-    // signed, so they come from the signer's own record of the key, never
-    // from the caller. A key supplied on the prepared transaction is only
-    // checked for the right address.
+    // signed, so they come from the signer's own record of the key, looked up
+    // by the position's auth address, never from the caller.
     const key = item.authAddress
       ? await options.userClient.getKeyInfo(item.authAddress)
       : undefined;
@@ -2670,7 +2664,6 @@ export class SignerClient {
     return {
       transaction: txn,
       authAddress: resolved.authAddress,
-      signerKey: resolved.keyInfo,
       checks: [{
         name: "payment_balance",
         status: "ok",
@@ -2737,7 +2730,6 @@ export class SignerClient {
     return {
       transaction: txn,
       authAddress: resolved.authAddress,
-      signerKey: resolved.keyInfo,
       checks: [{
         name: "asa_transfer",
         status: "ok",
@@ -2790,7 +2782,6 @@ export class SignerClient {
     return {
       transaction: txn,
       authAddress: resolved.authAddress,
-      signerKey: resolved.keyInfo,
       checks,
     };
   }
@@ -2839,7 +2830,6 @@ export class SignerClient {
     return {
       transaction: txn,
       authAddress: resolved.authAddress,
-      signerKey: resolved.keyInfo,
       checks,
     };
   }
@@ -2884,7 +2874,6 @@ export class SignerClient {
     return {
       transaction: txn,
       authAddress: resolved.authAddress,
-      signerKey: resolved.keyInfo,
       checks,
     };
   }
@@ -2933,7 +2922,6 @@ export class SignerClient {
     return {
       transaction: txn,
       authAddress: resolved.authAddress,
-      signerKey: resolved.keyInfo,
       checks,
     };
   }
@@ -2999,7 +2987,6 @@ export class SignerClient {
     return {
       transaction: txn,
       authAddress: resolved.authAddress,
-      signerKey: resolved.keyInfo,
       checks: [{
         name: "keyreg",
         status: "ok",
@@ -3117,7 +3104,6 @@ export class SignerClient {
     return {
       transaction: txn,
       authAddress: resolved.authAddress,
-      signerKey: resolved.keyInfo,
       appCallInfo,
       checks: appCallChecks(params, appCallInfo),
     };
@@ -3174,7 +3160,6 @@ export class SignerClient {
     return {
       transaction: txn,
       authAddress: resolved.authAddress,
-      signerKey: resolved.keyInfo,
       appCallInfo: { mode: "raw" },
       checks: [{
         name: "app_deploy",

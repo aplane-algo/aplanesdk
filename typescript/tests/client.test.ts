@@ -201,21 +201,32 @@ function mockAlgod(accounts: Record<string, any>): any {
   };
 }
 
-// signPreparedCosignedGroup against a signer that holds the keys the group
-// names. The flow reads each key from the signer, not from the group, so these
-// tests, which describe the signer's keys on the prepared transactions, have
-// the user client answer key lookups with exactly those. A test that sets its
-// own lookup keeps it.
+// The keys the signer of a cosigned test holds, by address. The cosigned flow
+// reads each key from the signer by the position's auth address, so a test
+// names the signer's key beside the position that uses it with held(), and
+// signCosignedWithHeldKeys has the user client answer key lookups with those.
+const heldKeys = new Map<string, unknown>();
+beforeEach(() => {
+  heldKeys.clear();
+});
+
+/** Record key as the signer's key for a position; return the position. */
+function held<T>(position: T, key?: { address: string }): T {
+  if (key) heldKeys.set(key.address, key);
+  return position;
+}
+
+const lookupHeldKey = async (address: string) => heldKeys.get(address);
+
+// A test that sets its own key lookup on the client keeps it.
 function signCosignedWithHeldKeys(
   options: Parameters<typeof signPreparedCosignedGroup>[0],
 ): ReturnType<typeof signPreparedCosignedGroup> {
   const user = options.userClient as any;
-  if (user && !Object.prototype.hasOwnProperty.call(user, "getKeyInfo")) {
-    const held = new Map<string, unknown>();
-    for (const item of options.preparedGroup?.transactions ?? []) {
-      if (item.signerKey) held.set(item.signerKey.address, item.signerKey);
-    }
-    user.getKeyInfo = async (address: string) => held.get(address);
+  const ownLookup =
+    user && Object.prototype.hasOwnProperty.call(user, "getKeyInfo") && user.getKeyInfo !== lookupHeldKey;
+  if (user && !ownLookup) {
+    user.getKeyInfo = lookupHeldKey;
   }
   return signPreparedCosignedGroup(options);
 }
@@ -607,7 +618,7 @@ describe("SignerClient", () => {
       });
 
       assert.equal(prepared.authAddress, sender);
-      assert.equal(prepared.signerKey?.address, sender);
+      assert.equal("signerKey" in prepared, false);
       assert.equal((prepared.transaction as any).payment.receiver.toString(), receiver);
       assert.equal(String((prepared.transaction as any).fee), "1000");
       assert.equal(prepared.checks?.[0].name, "payment_balance");
@@ -636,7 +647,6 @@ describe("SignerClient", () => {
       });
 
       assert.equal(prepared.authAddress, auth);
-      assert.equal(prepared.signerKey?.address, auth);
       assert.equal((prepared.transaction as any).sender.toString(), sender);
     });
 
@@ -740,7 +750,6 @@ describe("SignerClient", () => {
       });
 
       assert.equal(prepared.authAddress, sender);
-      assert.equal(prepared.signerKey?.address, sender);
       assert.equal(String((prepared.transaction as any).assetTransfer.assetIndex), "1001");
       assert.equal(String((prepared.transaction as any).assetTransfer.amount), "5");
       assert.equal(prepared.checks?.[0].name, "asa_transfer");
@@ -2024,24 +2033,22 @@ describe("SignerClient", () => {
           userClient: user,
           preparedGroup: {
             transactions: [
-              {
+              held({
                 transaction: algosdk.makePaymentTxnWithSuggestedParamsFromObject({
                   sender: cosigned, receiver, amount: 1n, suggestedParams,
                 }),
                 authAddress: cosigned,
-                signerKey,
                 lsigArgs: { preimage: new TextEncoder().encode("alpha") },
                 appCallInfo: { mode: "raw", method: "first" },
-              },
-              {
+              }, signerKey),
+              held({
                 transaction: algosdk.makePaymentTxnWithSuggestedParamsFromObject({
                   sender: cosigned, receiver, amount: 2n, suggestedParams,
                 }),
                 authAddress: cosigned,
-                signerKey,
                 lsigArgs: { preimage: new TextEncoder().encode("beta") },
                 appCallInfo: { mode: "abi", method: "second" },
-              },
+              }, signerKey),
             ],
           },
         }),
@@ -2095,10 +2102,10 @@ describe("SignerClient", () => {
         cosignerClient: cosigner,
         cosignerComponentKey: "COSIGNER_COMPONENT",
         preparedGroup: {
-          transactions: [{
+          transactions: [held({
             transaction: txn,
             authAddress: bounded,
-            signerKey: {
+          }, {
               address: bounded,
               publicKeyHex: "",
               keyType: "aplane.falcon1024.v1",
@@ -2129,8 +2136,7 @@ describe("SignerClient", () => {
                 argumentLayout: [],
                 layer3Policy: "merkle_allowlist",
               },
-            },
-          }],
+            })],
         },
       } as any);
       assert.equal(result.signedGroup.length, 1);
@@ -2247,13 +2253,12 @@ describe("SignerClient", () => {
           cosignerComponentKey: "COSIGNER_COMPONENT",
           preparedGroup: {
             transactions: [
-              { transaction: txns[0], authAddress: listed, signerKey: cosignedKey(listed), appCallInfo: { mode: "listed" } },
-              { transaction: txns[1], authAddress: spendA, signerKey: cosignedKey(spendA) },
-              { transaction: txns[2], authAddress: spendB, signerKey: cosignedKey(spendB) },
-              {
+              held({ transaction: txns[0], authAddress: listed, appCallInfo: { mode: "listed" } }, cosignedKey(listed)),
+              held({ transaction: txns[1], authAddress: spendA, }, cosignedKey(spendA)),
+              held({ transaction: txns[2], authAddress: spendB, }, cosignedKey(spendB)),
+              held({
                 transaction: txns[3], authAddress: primary, appCallInfo: { mode: "primary" },
-                signerKey: { address: primary, publicKeyHex: "", keyType: "ed25519", authorizationKind: "ed25519", isGenericLsig: false },
-              },
+              }, { address: primary, publicKeyHex: "", keyType: "ed25519", authorizationKind: "ed25519", isGenericLsig: false }),
             ],
           },
         } as any);
@@ -2396,11 +2401,11 @@ describe("SignerClient", () => {
         cosignerClient: cosigner,
         cosignerComponentKey: "COSIGNER_COMPONENT",
         preparedGroup: {
-          transactions: [{
+          transactions: [held({
             transaction: txn,
             authAddress: bounded,
             appCallInfo: { mode: "raw" },
-            signerKey: {
+          }, {
               address: bounded,
               publicKeyHex: "",
               keyType: "aplane.falcon1024.v1",
@@ -2428,8 +2433,7 @@ describe("SignerClient", () => {
                 argumentLayout: [],
                 layer3Policy: "merkle_allowlist",
               },
-            },
-          }],
+            })],
         },
       };
       const fabricatedFirst = algosdk.decodeUnsignedTransaction(txn.toByte());
@@ -2654,10 +2658,10 @@ describe("SignerClient", () => {
               throw new Error(`observed ${item.name}`);
             },
             preparedGroup: {
-              transactions: [{
+              transactions: [held({
                 transaction: txn,
                 authAddress: bounded,
-                signerKey: {
+              }, {
                   address: bounded,
                   publicKeyHex: "",
                   keyType: "aplane.falcon1024.v1",
@@ -2684,8 +2688,7 @@ describe("SignerClient", () => {
                     argumentLayout: [],
                     layer3Policy: "fixed_allowlist",
                   },
-                },
-              }],
+                })],
             },
           }),
           item.error ?? new RegExp(`observed ${item.name}`),
@@ -2700,7 +2703,7 @@ describe("SignerClient", () => {
           userClient: new SignerClient("http://localhost:11270"),
           preparedGroup: {
             transactions: [
-              {
+              held({
                 transaction: algosdk.makePaymentTxnWithSuggestedParamsFromObject({
                   sender: account,
                   receiver: testAddress(42),
@@ -2717,13 +2720,12 @@ describe("SignerClient", () => {
                 }),
                 authAddress: account,
                 pqScheme: "f1",
-                signerKey: {
+              }, {
                   address: account,
                   publicKeyHex: "",
                   keyType: "falcon1024",
                   isGenericLsig: false,
-                },
-              },
+                }),
             ],
           },
         }),
@@ -2748,12 +2750,12 @@ describe("SignerClient", () => {
           userClient: user,
           preparedGroup: {
             transactions: [
-              {
+              held({
                 transaction: algosdk.makePaymentTxnWithSuggestedParamsFromObject({
                   sender: account, receiver: testAddress(42), amount: 1n, suggestedParams,
                 }),
                 authAddress: account,
-                signerKey: {
+              }, {
                   address: account,
                   publicKeyHex: "",
                   keyType: "aplane.falcon1024-cosigner1024.v1",
@@ -2763,8 +2765,7 @@ describe("SignerClient", () => {
                     spend: { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 },
                   },
                   isGenericLsig: false,
-                },
-              },
+                }),
             ],
           },
         }),
@@ -2872,10 +2873,10 @@ describe("SignerClient", () => {
         cosignerComponentKey: "COSIGNER_COMPONENT",
         preparedGroup: {
           transactions: [
-            {
+            held({
               transaction: boundedTxn,
               authAddress: bounded,
-              signerKey: {
+            }, {
                 address: bounded,
                 publicKeyHex: "",
                 keyType: "aplane.falcon1024.v1",
@@ -2902,19 +2903,17 @@ describe("SignerClient", () => {
                   derivedArgs: [],
                   argumentLayout: [],
                 },
-              },
-            },
-            {
+              }),
+            held({
               transaction: primaryTxn,
               authAddress: primary,
-              signerKey: {
+            }, {
                 address: primary,
                 publicKeyHex: "",
                 keyType: "aplane.falcon1024.v1",
                 signingFlow: "",
                 isGenericLsig: false,
-              },
-            },
+              }),
           ],
         },
       };
@@ -3044,10 +3043,10 @@ describe("SignerClient", () => {
         cosignerComponentKey: "COSIGNER_COMPONENT",
         preparedGroup: {
           transactions: [
-            {
+            held({
               transaction: boundedTxn,
               authAddress: bounded,
-              signerKey: {
+            }, {
                 address: bounded,
                 publicKeyHex: "",
                 keyType: "aplane.falcon1024.v1",
@@ -3075,19 +3074,17 @@ describe("SignerClient", () => {
                   derivedArgs: [],
                   argumentLayout: [],
                 },
-              },
-            },
-            {
+              }),
+            held({
               transaction: nativeTxn,
               authAddress: nativePq,
-              signerKey: {
+            }, {
                 address: nativePq,
                 publicKeyHex: "",
                 keyType: "falcon1024",
                 authorizationKind: "native_pq",
                 isGenericLsig: false,
-              },
-            },
+              }),
           ],
         },
       } as any);
@@ -3134,10 +3131,10 @@ describe("SignerClient", () => {
           userClient: user,
           preparedGroup: {
             transactions: [
-              {
+              held({
                 transaction: txn,
                 authAddress: cosigned,
-                signerKey: {
+              }, {
                   address: cosigned,
                   publicKeyHex: "",
                   keyType: "aplane.future-cosigned.v1",
@@ -3146,8 +3143,7 @@ describe("SignerClient", () => {
                     spend: { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 },
                   },
                   isGenericLsig: false,
-                },
-              },
+                }),
             ],
           },
         }),

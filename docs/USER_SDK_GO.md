@@ -566,9 +566,9 @@ error. Apply the key's document before retrying. See the
 
 The helper reads each position's key (its signing flow, LogicSig resources
 and fee ceiling) from the user signer's `/keys` record, by the position's
-auth address. A `SignerKey` set on a prepared transaction is only checked to be
-for that address. The record is cached on the client, so this costs one
-`/keys` request at most.
+auth address. A prepared transaction carries no key of its own. The record is
+cached on the client, so a key already seen costs no request and a new one
+costs one `/keys` request.
 
 For manual orchestration, use `RequestComponents` on the user client with a
 bounded-base target and on the cosigner client, then `RequestAssemble` on the
@@ -658,6 +658,8 @@ error and never trigger another signing request automatically.
   mutation report, already checked against the request.
 - Amounts and fees in the `*PrepParams` types are in microAlgos; an asset
   amount is in the asset's base units, not adjusted for its decimals.
+- A foreign app or asset reference, and an ABI `application` or `asset`
+  argument, must not be zero. A box's app index may be zero (the called app).
 - Group helpers check every sender against everything it pays across the
   group: the ALGO it sends plus the fee of every position it sends, asset
   transfers included. The check is named `group_algo_balance`.
@@ -842,7 +844,9 @@ if err != nil {
   build an `algod` client with `Config.NewAlgodClient(...)`. When
   `networks_allowed` is set in `config.yaml`, `NewAlgodClient` refuses a network
   that is not on it, and loading the config refuses a default network that is
-  not on it.
+  not on it. The list must hold network IDs written as text: a bare
+  number, `true`/`false` or an empty entry is refused, so quote a name such as
+  `"1"`.
 - `ResolveDataDir(...)`,
   `ResolvePath(...)`, `Base64ToBytes(...)`, `BytesToBase64(...)`,
   `HexToBytes(...)`, and `BytesToHex(...)` are exported for integration code.

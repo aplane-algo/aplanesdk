@@ -912,8 +912,6 @@ export interface PreparedTransaction {
   authAddress?: string | null;
   /** Optional sender display override. Defaults to transaction sender. */
   txnSender?: string;
-  /** Optional signer key metadata found during preparation. */
-  signerKey?: KeyInfo;
   /** Optional LogicSig runtime arguments. */
   lsigArgs?: LsigArgs;
   /** Optional selected-path LogicSig resources for foreign planning. */

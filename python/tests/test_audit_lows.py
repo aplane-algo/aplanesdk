@@ -4,6 +4,7 @@
 """Prepare-helper argument checks, preflight fees, and the smaller client checks."""
 
 import base64
+import dataclasses
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -388,46 +389,26 @@ def test_box_references_with_integer_indexes_are_accepted():
     assert len(prepared.transaction.boxes) == 2
 
 
-def test_cosigned_group_refuses_a_signer_key_for_another_address():
-    txn = fake_signer.payment()
-    other_key = KeyInfo(address=sdk_test_address(9), key_type="ed25519")
-    user = MagicMock()
-    with pytest.raises(ValueError, match="signer key is for .* not the position's auth address"):
-        sign_prepared_cosigned_group(
-            user_client=user,
-            prepared_group=PreparedGroup(
-                [
-                    PreparedTransaction(
-                        transaction=txn, auth_address=txn.sender, signer_key=other_key
-                    )
-                ]
-            ),
-        )
-    user.plan_requests.assert_not_called()
+def test_cosigned_group_takes_the_key_from_the_signer():
+    """The key's flow, resources and ceiling come from the signer's record.
 
-
-def test_cosigned_group_takes_the_key_from_the_signer_not_the_caller():
-    """A supplied key's flow, resources and ceiling are not what the flow uses."""
+    The flow looks the key up by the position's auth address; a prepared
+    transaction carries no key of its own.
+    """
+    assert "signer_key" not in {field.name for field in dataclasses.fields(PreparedTransaction)}
     txn = fake_signer.payment()
-    # The caller's copy claims an ordinary key; the signer's record says the
-    # key needs a flow this SDK does not have.
-    supplied = KeyInfo(address=txn.sender, key_type="ed25519", signing_flow="")
-    held = KeyInfo(address=txn.sender, key_type="ed25519", signing_flow="cosigner9")
+    # The signer's record: this key needs a flow this SDK does not have.
+    record = KeyInfo(address=txn.sender, key_type="ed25519", signing_flow="cosigner9")
     user = make_client()
-    user.get_key_info = MagicMock(return_value=held)
+    user.get_key_info = MagicMock(return_value=record)
     user.plan_requests = MagicMock()
-    group = PreparedGroup(
-        [PreparedTransaction(transaction=txn, auth_address=txn.sender, signer_key=supplied)]
-    )
+    group = PreparedGroup([PreparedTransaction(transaction=txn, auth_address=txn.sender)])
     with pytest.raises(ValueError, match="signing flow 'cosigner9'"):
         sign_prepared_cosigned_group(user_client=user, prepared_group=group)
     user.get_key_info.assert_called_once_with(txn.sender)
     user.plan_requests.assert_not_called()
 
-    # The same path when no key is supplied, and a key the signer does not hold.
-    group.transactions[0].signer_key = None
-    with pytest.raises(ValueError, match="signing flow 'cosigner9'"):
-        sign_prepared_cosigned_group(user_client=user, prepared_group=group)
+    # A key the signer does not hold stops the flow.
     user.get_key_info = MagicMock(return_value=None)
     with pytest.raises(ValueError, match="the signer holds no key for auth address"):
         sign_prepared_cosigned_group(user_client=user, prepared_group=group)

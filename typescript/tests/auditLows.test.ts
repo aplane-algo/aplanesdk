@@ -347,34 +347,11 @@ describe("IDs, counts and indexes everywhere", () => {
   });
 });
 
-describe("cosigned group", () => {
-  it("refuses a signer key for another address", async () => {
-    const txn = fakePayment();
-    const userClient = new SignerClient("http://localhost:11270");
-    globalThis.fetch = (async () => {
-      throw new Error("the signer was contacted for a group with a mismatched signer key");
-    }) as any;
-    await assert.rejects(
-      signPreparedCosignedGroup({
-        userClient,
-        preparedGroup: {
-          transactions: [{
-            transaction: txn,
-            authAddress: txn.sender.toString(),
-            signerKey: { address: fakeAddress(9), keyType: "ed25519" } as any,
-          }],
-        },
-      }),
-      /signer key is for .*, not the position's auth address/,
-    );
-  });
-});
-
 describe("cosigned group key record", () => {
   // The flow takes each key's flow, resources and fee ceiling from the
-  // signer's own record. A key supplied on the prepared transaction is
-  // checked for the right address and nothing more.
-  it("comes from the signer, not the caller", async () => {
+  // signer's own record, looked up by the position's auth address. A prepared
+  // transaction carries no key of its own.
+  it("comes from the signer", async () => {
     const txn = fakePayment();
     const auth = txn.sender.toString();
     const userClient = new SignerClient("http://localhost:11270");
@@ -389,13 +366,11 @@ describe("cosigned group key record", () => {
         json: async () => ({ count: 1, keys: [{ address: auth, key_type: "ed25519", signing_flow: "cosigner9" }] }),
       };
     }) as any;
-    // The caller's copy claims an ordinary key.
-    const supplied = { address: auth, keyType: "ed25519" } as any;
-    for (const signerKey of [supplied, undefined]) {
+    for (let attempt = 0; attempt < 2; attempt++) {
       await assert.rejects(
         signPreparedCosignedGroup({
           userClient,
-          preparedGroup: { transactions: [{ transaction: txn, authAddress: auth, signerKey }] },
+          preparedGroup: { transactions: [{ transaction: txn, authAddress: auth }] },
         }),
         /signing flow "cosigner9"/,
       );
@@ -403,6 +378,7 @@ describe("cosigned group key record", () => {
     // The record is cached: two groups, one lookup.
     assert.equal(lookups, 1);
 
+    // A key the signer does not hold stops the flow.
     const other = fakePayment(43, 44);
     await assert.rejects(
       signPreparedCosignedGroup({

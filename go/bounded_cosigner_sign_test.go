@@ -122,24 +122,23 @@ func TestSignPreparedCosignedGroupOneTarget(t *testing.T) {
 	options := PreparedCosignedGroupOptions{
 		UserClient: userClient, CosignerClient: cosignerClient,
 		CosignerComponentKey: "COSIGNER_COMPONENT",
-		PreparedGroup: NewPreparedGroup(PreparedTransaction{
+		PreparedGroup: NewPreparedGroup(held(PreparedTransaction{
 			Transaction: &txn, AuthAddress: bounded,
 			AppCallInfo: &AppCallInfo{Mode: "raw"},
-			SignerKey: &KeyInfo{
-				Address: bounded, KeyType: "aplane.falcon1024.v1",
-				SigningFlow: SigningFlowCosigned1,
-				LogicSigResources: &LogicSigResourceProfile{
-					Spend: &LogicSigResourceUsage{ProgramBytes: 5308, ArgumentBytes: 3358, MaxOpcodeCost: 20000},
-				},
-				CosignerComponentKeyType: KeyTypeWitnessFalcon1024,
-				BoundedAuthorization: &BoundedAuthorizationInfo{
-					Contract: BoundedContractBounded2, MaxFee: new(uint64(1000)),
-					Cosigner: &BoundedCosignerAuthorizationInfo{
-						ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: "aabb",
-					},
+		}, &KeyInfo{
+			Address: bounded, KeyType: "aplane.falcon1024.v1",
+			SigningFlow: SigningFlowCosigned1,
+			LogicSigResources: &LogicSigResourceProfile{
+				Spend: &LogicSigResourceUsage{ProgramBytes: 5308, ArgumentBytes: 3358, MaxOpcodeCost: 20000},
+			},
+			CosignerComponentKeyType: KeyTypeWitnessFalcon1024,
+			BoundedAuthorization: &BoundedAuthorizationInfo{
+				Contract: BoundedContractBounded2, MaxFee: new(uint64(1000)),
+				Cosigner: &BoundedCosignerAuthorizationInfo{
+					ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: "aabb",
 				},
 			},
-		}),
+		})),
 	}
 	result, err := signCosignedWithHeldKeys(options)
 	if err != nil {
@@ -150,7 +149,7 @@ func TestSignPreparedCosignedGroupOneTarget(t *testing.T) {
 		t.Fatalf("result = %+v", result)
 	}
 	componentCalls = 0
-	options.PreparedGroup.Transactions[0].SignerKey.BoundedAuthorization.MaxFee = new(uint64(999))
+	testHeldKeys[bounded].BoundedAuthorization.MaxFee = new(uint64(999))
 	if _, err := signCosignedWithHeldKeys(options); err == nil ||
 		!strings.Contains(err.Error(), "exceeds advertised max_fee") {
 		t.Fatalf("SignPreparedCosignedGroup() error = %v, want max_fee rejection", err)
@@ -238,7 +237,7 @@ func TestSignPreparedCosignedGroupSkipsTheCosignerOnAListedRekey(t *testing.T) {
 	}
 	result, err := signCosignedWithHeldKeys(PreparedCosignedGroupOptions{
 		UserClient: userClient, CosignerClient: cosignerClient, CosignerComponentKey: "COSIGNER_COMPONENT",
-		PreparedGroup: NewPreparedGroup(PreparedTransaction{Transaction: &txn, AuthAddress: bounded, SignerKey: key}),
+		PreparedGroup: NewPreparedGroup(held(PreparedTransaction{Transaction: &txn, AuthAddress: bounded}, key)),
 	})
 	if err != nil {
 		t.Fatalf("SignPreparedCosignedGroup() error = %v", err)
@@ -408,31 +407,29 @@ func TestSignPreparedCosignedGroupSendsAHeldPrimaryAsTheSignersOwn(t *testing.T)
 				UserClient: userClient, CosignerClient: cosignerClient,
 				CosignerComponentKey: "COSIGNER_COMPONENT",
 				PreparedGroup: NewPreparedGroup(
-					PreparedTransaction{
+					held(PreparedTransaction{
 						Transaction: &corridorTxn, AuthAddress: bounded,
-						SignerKey: &KeyInfo{
-							Address: bounded, KeyType: "aplane.falcon1024.v1",
-							AuthorizationKind: AuthorizationKindLogicSig,
-							SigningFlow:       SigningFlowCosigned1,
-							LogicSigResources: &LogicSigResourceProfile{
-								Spend: &LogicSigResourceUsage{ProgramBytes: 5308, ArgumentBytes: 3358, MaxOpcodeCost: 20000},
-							},
-							CosignerComponentKeyType: KeyTypeWitnessFalcon1024,
-							BoundedAuthorization: &BoundedAuthorizationInfo{
-								Contract: BoundedContractBounded2, MaxFee: new(uint64(1000)),
-								Cosigner: &BoundedCosignerAuthorizationInfo{
-									ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: "aabb",
-								},
+					}, &KeyInfo{
+						Address: bounded, KeyType: "aplane.falcon1024.v1",
+						AuthorizationKind: AuthorizationKindLogicSig,
+						SigningFlow:       SigningFlowCosigned1,
+						LogicSigResources: &LogicSigResourceProfile{
+							Spend: &LogicSigResourceUsage{ProgramBytes: 5308, ArgumentBytes: 3358, MaxOpcodeCost: 20000},
+						},
+						CosignerComponentKeyType: KeyTypeWitnessFalcon1024,
+						BoundedAuthorization: &BoundedAuthorizationInfo{
+							Contract: BoundedContractBounded2, MaxFee: new(uint64(1000)),
+							Cosigner: &BoundedCosignerAuthorizationInfo{
+								ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: "aabb",
 							},
 						},
-					},
-					PreparedTransaction{
+					}),
+					held(PreparedTransaction{
 						Transaction: &nativeTxn, AuthAddress: nativePQ,
-						SignerKey: &KeyInfo{
-							Address: nativePQ, KeyType: "falcon1024",
-							AuthorizationKind: AuthorizationKindNativePQ,
-						},
-					},
+					}, &KeyInfo{
+						Address: nativePQ, KeyType: "falcon1024",
+						AuthorizationKind: AuthorizationKindNativePQ,
+					}),
 				),
 			})
 			if rejectSign {
@@ -1048,13 +1045,12 @@ func TestSignPreparedCosignedGroupMixedPaths(t *testing.T) {
 			result, err := signCosignedWithHeldKeys(PreparedCosignedGroupOptions{
 				UserClient: userClient, CosignerClient: cosignerClient, CosignerComponentKey: "COSIGNER_COMPONENT",
 				PreparedGroup: NewPreparedGroup(
-					PreparedTransaction{Transaction: &rekeyTxn, AuthAddress: listed, SignerKey: cosignedKey(listed), AppCallInfo: appInfo[0]},
-					PreparedTransaction{Transaction: &spendATxn, AuthAddress: spendA, SignerKey: cosignedKey(spendA)},
-					PreparedTransaction{Transaction: &spendBTxn, AuthAddress: spendB, SignerKey: cosignedKey(spendB)},
-					PreparedTransaction{
+					held(PreparedTransaction{Transaction: &rekeyTxn, AuthAddress: listed, AppCallInfo: appInfo[0]}, cosignedKey(listed)),
+					held(PreparedTransaction{Transaction: &spendATxn, AuthAddress: spendA}, cosignedKey(spendA)),
+					held(PreparedTransaction{Transaction: &spendBTxn, AuthAddress: spendB}, cosignedKey(spendB)),
+					held(PreparedTransaction{
 						Transaction: &primaryTxn, AuthAddress: primary, AppCallInfo: appInfo[3],
-						SignerKey: &KeyInfo{Address: primary, KeyType: "ed25519", AuthorizationKind: AuthorizationKindEd25519},
-					},
+					}, &KeyInfo{Address: primary, KeyType: "ed25519", AuthorizationKind: AuthorizationKindEd25519}),
 				),
 			})
 			if wrongScheme {

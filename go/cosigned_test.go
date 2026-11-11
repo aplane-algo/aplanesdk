@@ -158,18 +158,17 @@ func TestSignPreparedCosignedGroupRejectsUnsupportedSigningFlow(t *testing.T) {
 
 	_, err = signCosignedWithHeldKeys(PreparedCosignedGroupOptions{
 		UserClient: &SignerClient{},
-		PreparedGroup: NewPreparedGroup(PreparedTransaction{
+		PreparedGroup: NewPreparedGroup(held(PreparedTransaction{
 			Transaction: &txn,
 			AuthAddress: cosigned,
-			SignerKey: &KeyInfo{
-				Address:     cosigned,
-				KeyType:     "aplane.future-cosigned.v1",
-				SigningFlow: "cosigner2",
-				LogicSigResources: &LogicSigResourceProfile{
-					Spend: &LogicSigResourceUsage{ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000},
-				},
+		}, &KeyInfo{
+			Address:     cosigned,
+			KeyType:     "aplane.future-cosigned.v1",
+			SigningFlow: "cosigner2",
+			LogicSigResources: &LogicSigResourceProfile{
+				Spend: &LogicSigResourceUsage{ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000},
 			},
-		}),
+		})),
 	})
 	if err == nil || !strings.Contains(err.Error(), `signing flow "cosigner2"`) {
 		t.Fatalf("SignPreparedCosignedGroup() error = %v, want unsupported signing flow rejection", err)
@@ -197,17 +196,16 @@ func TestSignPreparedCosignedGroupRefusesCosigner1AsUnknown(t *testing.T) {
 	defer server.Close()
 	_, err = signCosignedWithHeldKeys(PreparedCosignedGroupOptions{
 		UserClient: client,
-		PreparedGroup: NewPreparedGroup(PreparedTransaction{
+		PreparedGroup: NewPreparedGroup(held(PreparedTransaction{
 			Transaction: &txn,
 			AuthAddress: account,
-			SignerKey: &KeyInfo{
-				Address: account, KeyType: "aplane.falcon1024-cosigner1024.v1", SigningFlow: "cosigner1",
-				CosignerComponentKeyType: KeyTypeWitnessFalcon1024,
-				LogicSigResources: &LogicSigResourceProfile{
-					Spend: &LogicSigResourceUsage{ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000},
-				},
+		}, &KeyInfo{
+			Address: account, KeyType: "aplane.falcon1024-cosigner1024.v1", SigningFlow: "cosigner1",
+			CosignerComponentKeyType: KeyTypeWitnessFalcon1024,
+			LogicSigResources: &LogicSigResourceProfile{
+				Spend: &LogicSigResourceUsage{ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000},
 			},
-		}),
+		})),
 	})
 	if err == nil || !strings.Contains(err.Error(), `signing flow "cosigner1", which this SDK does not support`) {
 		t.Fatalf("SignPreparedCosignedGroup() error = %v, want cosigner1 refused as an unknown flow", err)
@@ -236,21 +234,32 @@ func TestSelectedPreparedResourcesUsesTheListedPathForOnlyThese(t *testing.T) {
 	}
 }
 
+// testHeldKeys are the keys the signer of a cosigned test holds, by address.
+// The cosigned flow reads each key from the signer by the position's auth
+// address, so a test names the signer's key beside the position that uses it
+// with held, and signCosignedWithHeldKeys serves those to the flow.
+var testHeldKeys = map[string]*KeyInfo{}
+
+// held records key as the signer's key for a position and returns the
+// position unchanged.
+func held(position PreparedTransaction, key *KeyInfo) PreparedTransaction {
+	if key != nil {
+		testHeldKeys[key.Address] = key
+	}
+	return position
+}
+
 // signCosignedWithHeldKeys is SignPreparedCosignedGroup against a signer that
-// holds the keys the group names. The flow reads each key from the signer,
-// not from the group, so these tests, which describe the signer's keys on the
-// prepared transactions, put exactly those in the user client's key cache.
+// holds the keys named with held.
 func signCosignedWithHeldKeys(opts PreparedCosignedGroupOptions) (*CosignedSignResult, error) {
 	if opts.UserClient != nil {
-		held := map[string]*KeyInfo{}
-		for _, item := range opts.PreparedGroup.Transactions {
-			if item.SignerKey != nil {
-				key := *item.SignerKey
-				held[key.Address] = &key
-			}
+		cache := make(map[string]*KeyInfo, len(testHeldKeys))
+		for address, key := range testHeldKeys {
+			copied := *key
+			cache[address] = &copied
 		}
 		opts.UserClient.keyMu.Lock()
-		opts.UserClient.keyCache = held
+		opts.UserClient.keyCache = cache
 		opts.UserClient.keyMu.Unlock()
 	}
 	return SignPreparedCosignedGroup(opts)

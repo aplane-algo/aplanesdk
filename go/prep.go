@@ -226,7 +226,6 @@ func (c *SignerClient) PreparePayment(ctx context.Context, algodClient *algod.Cl
 	return &PreparedTransaction{
 		Transaction: &txn,
 		AuthAddress: resolved.AuthAddress,
-		SignerKey:   &resolved.KeyInfo,
 		Checks:      checks,
 	}, nil
 }
@@ -288,7 +287,6 @@ func (c *SignerClient) PrepareAsaTransfer(ctx context.Context, algodClient *algo
 	return &PreparedTransaction{
 		Transaction: &txn,
 		AuthAddress: resolved.AuthAddress,
-		SignerKey:   &resolved.KeyInfo,
 		Checks:      checks,
 	}, nil
 }
@@ -336,7 +334,6 @@ func (c *SignerClient) PrepareAsaOptIn(ctx context.Context, algodClient *algod.C
 	return &PreparedTransaction{
 		Transaction: &txn,
 		AuthAddress: resolved.AuthAddress,
-		SignerKey:   &resolved.KeyInfo,
 		Checks:      checks,
 	}, nil
 }
@@ -393,7 +390,6 @@ func (c *SignerClient) PrepareAsaOptOut(ctx context.Context, algodClient *algod.
 	return &PreparedTransaction{
 		Transaction: &txn,
 		AuthAddress: resolved.AuthAddress,
-		SignerKey:   &resolved.KeyInfo,
 		Checks:      checks,
 	}, nil
 }
@@ -472,7 +468,6 @@ func (c *SignerClient) PrepareAccountClose(ctx context.Context, algodClient *alg
 	return &PreparedTransaction{
 		Transaction: &txn,
 		AuthAddress: resolved.AuthAddress,
-		SignerKey:   &resolved.KeyInfo,
 		Checks:      checks,
 	}, nil
 }
@@ -541,7 +536,6 @@ func (c *SignerClient) PrepareRekey(ctx context.Context, algodClient *algod.Clie
 	return &PreparedTransaction{
 		Transaction: &txn,
 		AuthAddress: resolved.AuthAddress,
-		SignerKey:   &resolved.KeyInfo,
 		Checks:      checks,
 	}, nil
 }
@@ -607,7 +601,6 @@ func (c *SignerClient) PrepareKeyReg(ctx context.Context, algodClient *algod.Cli
 	return &PreparedTransaction{
 		Transaction: &txn,
 		AuthAddress: resolved.AuthAddress,
-		SignerKey:   &resolved.KeyInfo,
 		Checks: []PreparedCheck{{
 			Name:    "keyreg",
 			Status:  "ok",
@@ -683,7 +676,6 @@ func (c *SignerClient) PrepareAppDeploy(ctx context.Context, algodClient *algod.
 	return &PreparedTransaction{
 		Transaction: &txn,
 		AuthAddress: resolved.AuthAddress,
-		SignerKey:   &resolved.KeyInfo,
 		AppCallInfo: &AppCallInfo{Mode: "raw"},
 		Checks: []PreparedCheck{{
 			Name:   "app_deploy",
@@ -898,7 +890,6 @@ func (c *SignerClient) prepareAppCallWithInfo(ctx context.Context, algodClient *
 	return &PreparedTransaction{
 		Transaction: &txn,
 		AuthAddress: resolved.AuthAddress,
-		SignerKey:   &resolved.KeyInfo,
 		AppCallInfo: info,
 		Checks:      appCallChecks(params, info),
 	}, nil

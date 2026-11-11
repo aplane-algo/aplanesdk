@@ -26,7 +26,6 @@ type PreparedTransaction struct {
 	Transaction             *types.Transaction
 	AuthAddress             string
 	TxnSender               string
-	SignerKey               *KeyInfo
 	LsigArgs                LsigArgs
 	LsigResources           *LogicSigResourceUsage
 	PQScheme                string

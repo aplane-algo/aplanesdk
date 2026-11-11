@@ -197,7 +197,9 @@ This path:
 - resolves the client data dir,
 - refuses a `config.yaml` whose `network` is not in its `networks_allowed`,
   when that list is set, and one whose `networks_allowed` is not a list of
-  network IDs (a malformed list is an error, never an empty one)
+  network IDs written as text (a malformed list is an error, never an empty
+  one; a bare number, `true`/`false` or an empty entry is refused, so quote a
+  name such as `"1"`)
 - validates `config.yaml` contains no obsolete routing,
 - loads and selects an endpoint from `endpoints.yaml`,
 - resolves SSH paths relative to the client data dir,
@@ -717,9 +719,9 @@ See the [compatibility note](COMPATIBILITY.md) for policy format and provisionin
 
 The helper reads each position's key (its signing flow, LogicSig resources
 and fee ceiling) from the user signer's `/keys` record, by the position's
-auth address. A `signer_key` set on a prepared transaction is only checked to
-be for that address. The record is cached on the client, so this costs one
-`/keys` request at most.
+auth address. A prepared transaction carries no key of its own. The record is
+cached on the client, so a key already seen costs no request and a new one
+costs one `/keys` request.
 
 For manual orchestration, use `request_components()` on the user client with a
 bounded-base target and on the cosigner client, then `request_assemble()` on the

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -165,24 +166,6 @@ func TestGroupBalanceSumsDoNotWrap(t *testing.T) {
 	}
 }
 
-func TestCosignedGroupRefusesASignerKeyForAnotherAddress(t *testing.T) {
-	txn := verifyTestPayment(t, 41, 42, 1)
-	client, server := newTestClient(func(http.ResponseWriter, *http.Request) {
-		t.Error("the signer was contacted for a group with a mismatched signer key")
-	})
-	defer server.Close()
-	_, err := SignPreparedCosignedGroup(PreparedCosignedGroupOptions{
-		UserClient: client,
-		PreparedGroup: NewPreparedGroup(PreparedTransaction{
-			Transaction: &txn, AuthAddress: txn.Sender.String(),
-			SignerKey: &KeyInfo{Address: sdkTestAddress(9), KeyType: "ed25519"},
-		}),
-	})
-	if err == nil || !strings.Contains(err.Error(), "signer key is for "+sdkTestAddress(9)+", not the position's auth address") {
-		t.Fatalf("SignPreparedCosignedGroup() error = %v", err)
-	}
-}
-
 func TestRequestAssembleRefusesAnotherRequestsAnswer(t *testing.T) {
 	answerWith := ""
 	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
@@ -239,9 +222,9 @@ func TestNewAlgodClientEnforcesNetworksAllowed(t *testing.T) {
 }
 
 // The cosigned flow takes each key's flow, resources and fee ceiling from the
-// signer's own record. A key supplied on the prepared transaction is checked
-// for the right address and nothing more.
-func TestCosignedGroupTakesTheKeyFromTheSignerNotTheCaller(t *testing.T) {
+// signer's own record, looked up by the position's auth address. A prepared
+// transaction carries no key of its own.
+func TestCosignedGroupTakesTheKeyFromTheSigner(t *testing.T) {
 	txn := verifyTestPayment(t, 41, 42, 1)
 	sender := txn.Sender.String()
 	lookups := 0
@@ -256,15 +239,13 @@ func TestCosignedGroupTakesTheKeyFromTheSignerNotTheCaller(t *testing.T) {
 	})
 	defer server.Close()
 
-	// The caller's copy claims an ordinary key.
-	supplied := &KeyInfo{Address: sender, KeyType: "ed25519"}
-	for name, key := range map[string]*KeyInfo{"a supplied key": supplied, "no supplied key": nil} {
+	for attempt := 0; attempt < 2; attempt++ {
 		_, err := SignPreparedCosignedGroup(PreparedCosignedGroupOptions{
 			UserClient:    client,
-			PreparedGroup: NewPreparedGroup(PreparedTransaction{Transaction: &txn, AuthAddress: sender, SignerKey: key}),
+			PreparedGroup: NewPreparedGroup(PreparedTransaction{Transaction: &txn, AuthAddress: sender}),
 		})
 		if err == nil || !strings.Contains(err.Error(), `signing flow "cosigner9"`) {
-			t.Fatalf("%s: error = %v, want the signer's record to decide the flow", name, err)
+			t.Fatalf("error = %v, want the signer's record to decide the flow", err)
 		}
 	}
 	// The record is cached: two groups, one lookup.
@@ -272,17 +253,25 @@ func TestCosignedGroupTakesTheKeyFromTheSignerNotTheCaller(t *testing.T) {
 		t.Fatalf("/keys was fetched %d times, want 1", lookups)
 	}
 
-	// A key the signer does not hold stops the flow.
+	// A key the signer does not hold stops the flow, as does a position with
+	// no auth address to look one up by.
 	other := verifyTestPayment(t, 43, 44, 1)
 	_, err := SignPreparedCosignedGroup(PreparedCosignedGroupOptions{
-		UserClient: client,
-		PreparedGroup: NewPreparedGroup(PreparedTransaction{
-			Transaction: &other, AuthAddress: other.Sender.String(),
-			SignerKey: &KeyInfo{Address: other.Sender.String(), KeyType: "ed25519", SigningFlow: SigningFlowCosigned1},
-		}),
+		UserClient:    client,
+		PreparedGroup: NewPreparedGroup(PreparedTransaction{Transaction: &other, AuthAddress: other.Sender.String()}),
 	})
 	if !errors.Is(err, ErrKeyNotFound) {
 		t.Fatalf("a key the signer does not hold: error = %v, want ErrKeyNotFound", err)
+	}
+	_, err = SignPreparedCosignedGroup(PreparedCosignedGroupOptions{
+		UserClient:    client,
+		PreparedGroup: NewPreparedGroup(PreparedTransaction{Transaction: &other}),
+	})
+	if err == nil || !strings.Contains(err.Error(), "auth address is required") {
+		t.Fatalf("a position with no auth address: error = %v", err)
+	}
+	if _, has := reflect.TypeOf(PreparedTransaction{}).FieldByName("SignerKey"); has {
+		t.Fatal("PreparedTransaction still has a SignerKey field")
 	}
 }
 
