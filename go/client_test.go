@@ -158,7 +158,7 @@ func TestBuildSignRequests(t *testing.T) {
 	txn.Type = types.PaymentTx
 	txn.Sender = types.Address{}
 
-	requests, _, err := buildSignRequests(
+	requests, err := buildSignRequests(
 		[]types.Transaction{txn},
 		[]string{sdkTestAddress(0xA2)},
 		nil,
@@ -179,7 +179,7 @@ func TestBuildSignRequests_DefaultAuthAddress(t *testing.T) {
 	txn := types.Transaction{}
 	txn.Type = types.PaymentTx
 
-	requests, _, err := buildSignRequests(
+	requests, err := buildSignRequests(
 		[]types.Transaction{txn},
 		nil,
 		nil,
@@ -202,7 +202,7 @@ func TestBuildSignRequests_WithLsigArgs(t *testing.T) {
 	txn.Type = types.PaymentTx
 	authAddr := txn.Sender.String()
 
-	requests, _, err := buildSignRequests(
+	requests, err := buildSignRequests(
 		[]types.Transaction{txn},
 		nil,
 		LsigArgsMap{authAddr: LsigArgs{"preimage": []byte("secret")}},
@@ -1180,7 +1180,7 @@ func TestBuildSignRequestsWithOptions_Passthrough(t *testing.T) {
 	}
 	signed := base64.StdEncoding.EncodeToString(presigned)
 
-	requests, _, err := buildSignRequestsWithOptions(
+	requests, err := buildSignRequestsWithOptions(
 		[]types.Transaction{txn, txn},
 		[]string{sdkTestAddress(0xA3), sdkTestAddress(0xA5)},
 		nil,
@@ -1215,7 +1215,7 @@ func TestBuildSignRequestsWithOptions_Passthrough(t *testing.T) {
 func TestBuildSignRequestsWithOptions_Foreign(t *testing.T) {
 	txn := types.Transaction{Type: types.PaymentTx}
 
-	requests, _, err := buildSignRequestsWithOptions(
+	requests, err := buildSignRequestsWithOptions(
 		[]types.Transaction{txn, txn},
 		[]string{sdkTestAddress(0xA3), ""},
 		nil,
@@ -1248,7 +1248,7 @@ func TestBuildSignRequestsWithOptionsRejectsInvalidIndexedResources(t *testing.T
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, _, err := buildSignRequestsWithOptions(
+			_, err := buildSignRequestsWithOptions(
 				[]types.Transaction{txn},
 				[]string{""},
 				nil,
@@ -1263,7 +1263,7 @@ func TestBuildSignRequestsWithOptionsRejectsInvalidIndexedResources(t *testing.T
 
 func TestBuildSignRequestsWithOptionsRejectsIndexedResourcesForSignMode(t *testing.T) {
 	txn := types.Transaction{Type: types.PaymentTx}
-	_, _, err := buildSignRequestsWithOptions(
+	_, err := buildSignRequestsWithOptions(
 		[]types.Transaction{txn},
 		[]string{sdkTestAddress(0xA2)},
 		nil,
@@ -1279,7 +1279,7 @@ func TestBuildSignRequestsWithOptionsRejectsIndexedResourcesForSignMode(t *testi
 func TestBuildSignRequestsWithOptions_InvalidPassthroughBase64(t *testing.T) {
 	txn := types.Transaction{Type: types.PaymentTx}
 
-	_, _, err := buildSignRequestsWithOptions(
+	_, err := buildSignRequestsWithOptions(
 		[]types.Transaction{txn},
 		[]string{sdkTestAddress(0xA3)},
 		nil,

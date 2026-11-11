@@ -56,11 +56,11 @@ func (c *SignerClient) SimulateGroupWithContext(
 	if algodClient == nil {
 		return nil, fmt.Errorf("algod client is required")
 	}
-	requests, slots, err := buildSignRequestsWithOptions(txns, authAddresses, lsigArgsMap, opts)
+	requests, err := buildSignRequestsWithOptions(txns, authAddresses, lsigArgsMap, opts)
 	if err != nil {
 		return nil, err
 	}
-	return c.simulateRequestsWithContext(ctx, algodClient, requests, slots)
+	return c.simulateRequestsWithContext(ctx, algodClient, requests)
 }
 
 // SimulatePreparedTransaction signs and simulates one prepared transaction.
@@ -86,19 +86,18 @@ func (c *SignerClient) SimulatePreparedGroup(
 	if err != nil {
 		return nil, err
 	}
-	return c.simulateRequestsWithContext(ctx, algodClient, requests, nil)
+	return c.simulateRequestsWithContext(ctx, algodClient, requests)
 }
 
 func (c *SignerClient) simulateRequestsWithContext(
 	ctx context.Context,
 	algodClient *algod.Client,
 	requests []SignRequest,
-	slots []requestSlot,
 ) (*SimulationResult, error) {
 	if algodClient == nil {
 		return nil, fmt.Errorf("algod client is required")
 	}
-	response, err := c.signGroup(ctx, GroupSignRequest{Requests: requests}, slots)
+	response, err := c.SignRequestsWithContext(ctx, requests)
 	if err != nil {
 		return nil, err
 	}

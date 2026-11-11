@@ -4,14 +4,11 @@
 package aplane
 
 import (
-	"bytes"
 	"context"
 	"encoding/hex"
 	"fmt"
 	"sort"
 
-	algocrypto "github.com/algorand/go-algorand-sdk/v2/crypto"
-	"github.com/algorand/go-algorand-sdk/v2/encoding/msgpack"
 	"github.com/algorand/go-algorand-sdk/v2/types"
 )
 
@@ -363,6 +360,9 @@ func requestBoundedPrimaryPassthrough(
 	return &primaryCosignedPassthrough{response: response, passthrough: passthrough}, nil
 }
 
+// decodeCanonicalGroup decodes a frozen cosigned group. Beyond the shared
+// canonical-bytes and canonical-group-ID checks, a single transaction must
+// carry no group ID.
 func decodeCanonicalGroup(groupHex []string) ([]types.Transaction, error) {
 	if len(groupHex) == 0 {
 		return nil, fmt.Errorf("canonical group is empty")
@@ -376,47 +376,19 @@ func decodeCanonicalGroup(groupHex []string) ([]types.Transaction, error) {
 		if err != nil {
 			return nil, fmt.Errorf("transaction %d is invalid hex: %w", i, err)
 		}
-		if len(raw) < 3 || raw[0] != 'T' || raw[1] != 'X' {
-			return nil, fmt.Errorf("transaction %d is missing TX prefix", i)
-		}
-		if err := msgpack.Decode(raw[2:], &txns[i]); err != nil {
-			return nil, fmt.Errorf("transaction %d is invalid: %w", i, err)
-		}
-		if !bytes.Equal(raw, encodeTxn(txns[i])) {
-			return nil, fmt.Errorf("transaction %d bytes are not canonical", i)
+		txns[i], err = decodeCanonicalTxn(raw)
+		if err != nil {
+			return nil, fmt.Errorf("transaction %d: %w", i, err)
 		}
 	}
-
-	var empty types.Digest
 	if len(txns) == 1 {
-		if txns[0].Group != empty {
+		if txns[0].Group != (types.Digest{}) {
 			return nil, fmt.Errorf("singleton transaction must not have a group ID")
 		}
 		return txns, nil
 	}
-
-	groupID := txns[0].Group
-	if groupID == empty {
-		return nil, fmt.Errorf("group transaction 0 has empty group ID")
-	}
-	for i := 1; i < len(txns); i++ {
-		if txns[i].Group == empty {
-			return nil, fmt.Errorf("group transaction %d has empty group ID", i)
-		}
-		if txns[i].Group != groupID {
-			return nil, fmt.Errorf("group transaction %d has divergent group ID", i)
-		}
-	}
-	cleared := append([]types.Transaction(nil), txns...)
-	for i := range cleared {
-		cleared[i].Group = empty
-	}
-	computed, err := algocrypto.ComputeGroupID(cleared)
-	if err != nil {
-		return nil, fmt.Errorf("compute group ID: %w", err)
-	}
-	if computed != groupID {
-		return nil, fmt.Errorf("group ID does not match decoded transactions")
+	if _, err := validateCanonicalGroupID(txns); err != nil {
+		return nil, err
 	}
 	return txns, nil
 }
