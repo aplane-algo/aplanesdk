@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/algorand/go-algorand-sdk/v2/client/v2/algod"
-	"github.com/algorand/go-algorand-sdk/v2/client/v2/common/models"
 	"github.com/algorand/go-algorand-sdk/v2/crypto"
 	"github.com/algorand/go-algorand-sdk/v2/types"
 )
@@ -354,11 +353,12 @@ func (c *SignerClient) SimulatePreparedRotating(ctx context.Context, algodClient
 		return nil, err
 	}
 	return &SimulationResult{
-		TxIDs:        prepared.TxIDs(),
-		Transactions: prepared.Transactions(),
-		Mutations:    prepared.Mutations(),
-		Response:     response,
-		Failed:       simulationFailed(response),
+		TxIDs:          prepared.TxIDs(),
+		Transactions:   prepared.Transactions(),
+		Mutations:      prepared.Mutations(),
+		Response:       response,
+		Failed:         simulationFailed(response),
+		FailureMessage: simulationFailure(response),
 	}, nil
 }
 
@@ -610,7 +610,7 @@ func (c *SignerClient) sendRotating(ctx context.Context, algodClient *algod.Clie
 			return nil, fmt.Errorf("simulate prepared rotating group; nothing was signed: %w", err)
 		}
 		if simulation.Failed {
-			return nil, &RotatingPreflightError{Prepared: prepared, Message: simulationFailure(simulation.Response)}
+			return nil, &RotatingPreflightError{Prepared: prepared, Message: simulation.FailureMessage}
 		}
 		// Nothing has been asked to sign yet, so an ended context is a plain
 		// stop, not an unknown outcome.
@@ -670,23 +670,6 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 	case <-timer.C:
 		return nil
 	}
-}
-
-// simulationFailed reports whether a simulation of one group did anything
-// but pass. An answer without exactly one group result checked nothing, and
-// counts as failed.
-func simulationFailed(response *models.SimulateResponse) bool {
-	return response == nil || len(response.TxnGroups) != 1 || response.TxnGroups[0].FailureMessage != ""
-}
-
-func simulationFailure(response *models.SimulateResponse) string {
-	switch {
-	case !simulationFailed(response):
-		return ""
-	case response == nil || len(response.TxnGroups) != 1:
-		return "the node returned no result for the group"
-	}
-	return response.TxnGroups[0].FailureMessage
 }
 
 // prepSuggestedParams fetches suggested parameters for a transaction sender

@@ -1221,8 +1221,8 @@ func TestSendPreparedRotatingStopsBeforeSigning(t *testing.T) {
 			t.Fatal(err)
 		}
 		simulation, err := client.SimulatePreparedRotating(context.Background(), algodClient, prepared)
-		if err != nil || !simulation.Failed {
-			t.Fatalf("SimulatePreparedRotating() = %+v, %v; want Failed", simulation, err)
+		if err != nil || !simulation.Failed || simulation.FailureMessage != "the node returned no result for the group" {
+			t.Fatalf("SimulatePreparedRotating() = %+v, %v; want Failed with no result", simulation, err)
 		}
 	})
 }

@@ -16,13 +16,18 @@ import (
 
 // SimulationResult contains the executable signed group released through the
 // ordinary signing flow and the response returned by the caller's algod.
+//
+// Failed is true unless the node returned exactly one group result and that
+// result reports no failure: an answer without one checked nothing.
+// FailureMessage says why, and is empty when Failed is false.
 type SimulationResult struct {
-	TxIDs        []string
-	Transactions []string
-	SignedGroup  []string
-	Mutations    *MutationReport
-	Response     *models.SimulateResponse
-	Failed       bool
+	TxIDs          []string
+	Transactions   []string
+	SignedGroup    []string
+	Mutations      *MutationReport
+	Response       *models.SimulateResponse
+	Failed         bool
+	FailureMessage string
 }
 
 // CosignedSimulationResult contains both the complete cosigned signing result
@@ -155,15 +160,36 @@ func simulateSignedGroupWithContext(
 		return nil, err
 	}
 
-	failed := len(response.TxnGroups) > 0 && response.TxnGroups[0].FailureMessage != ""
 	return &SimulationResult{
-		TxIDs:        txIDs,
-		Transactions: transactions,
-		SignedGroup:  append([]string(nil), signedGroup...),
-		Mutations:    mutations,
-		Response:     response,
-		Failed:       failed,
+		TxIDs:          txIDs,
+		Transactions:   transactions,
+		SignedGroup:    append([]string(nil), signedGroup...),
+		Mutations:      mutations,
+		Response:       response,
+		Failed:         simulationFailed(response),
+		FailureMessage: simulationFailure(response),
 	}, nil
+}
+
+// simulationFailed reports whether a simulation of one group did anything
+// but pass. An answer without exactly one group result checked nothing, and
+// counts as failed.
+func simulationFailed(response *models.SimulateResponse) bool {
+	return response == nil || len(response.TxnGroups) != 1 || response.TxnGroups[0].FailureMessage != ""
+}
+
+// simulationFailure says why simulationFailed reports a failure, or is empty
+// when it does not.
+func simulationFailure(response *models.SimulateResponse) string {
+	switch {
+	case !simulationFailed(response):
+		return ""
+	case response == nil || len(response.TxnGroups) == 0:
+		return "the node returned no result for the group"
+	case len(response.TxnGroups) != 1:
+		return fmt.Sprintf("the node returned %d results for one group", len(response.TxnGroups))
+	}
+	return response.TxnGroups[0].FailureMessage
 }
 
 func decodeExecutableSignedGroup(signedGroup []string) ([]types.SignedTxn, []string, []string, error) {
