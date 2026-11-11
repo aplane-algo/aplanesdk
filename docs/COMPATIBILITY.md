@@ -86,3 +86,77 @@ rotation history. No legacy `cached_stages` field is provided. The Python SDK
 ignores fields it does not declare inside `/status` rotating entries, their
 recovery state and `protocol_version`, and leaves `preparation` empty when the
 signer does not report it.
+
+The one-call send (`SendPrepared`/`SendPayment` in Go, `sendPrepared`/
+`sendPayment` in TypeScript, `send_prepared`/`send_payment` in Python) is new.
+When upgrading to the release that adds it, know what it needs from the
+signer and what changed for callers of the existing calls:
+
+- Rotating sends need a signer that refuses a spend whose validity window is
+  not current at signing with the `rotating_window_not_current` code (HTTP
+  409), added in aplane PR #250 after APlane `v0.49.0`. The SDK rebuilds the
+  rounds and prepares again only on that code. An older signer refuses with
+  `bad_request`, and the send returns that refusal without retrying.
+- Every 200 answer is read strictly, in all three SDKs: exactly one JSON
+  value (one object in TypeScript and Python), so a `null` body, an empty or
+  cut-off body, or anything after the value is an error, never an empty
+  answer. A field left out or `null`, at any depth, reads as its zero value;
+  a field of the wrong type or out of range makes the answer unreadable. An
+  answer whose `error` field is set is a refusal: component, assembly, key
+  generation and key deletion answers as well as `/sign` and `/plan`. A key
+  generation answer without an address is refused, and a key deletion answer
+  is read as `{success, error}`. A `/keys` answer that spells an Algorand
+  address non-canonically is refused whole. In TypeScript and Python an
+  unreadable answer to a request that releases no signature is a plain
+  `SignerError`, never a raw parse, type or attribute error, and in Python an
+  unreadable `/status` no longer stops a sign request: the default approval
+  wait is used. Each SDK's README says how its reader differs from the
+  others'.
+- The cosigned flow resolves the cosigner before asking for approval. A
+  caller's `CosignerResolver`/`cosignerResolver`/`cosigner_resolver` is now
+  called before the group is planned and before the user signer's base
+  component, for every target that cannot take the listed-rekey path, so a
+  resolver that fails leaves nothing signed. A rekey that may take the listed
+  path is resolved after the base component, and only when it needs the
+  cosigner. A resolver's own error is passed on as it is, never as an
+  unknown outcome.
+- A client created from a data directory (`FromEnv`, `fromEnv`, `from_env`)
+  now finds a cosigned account's cosigner among the `role: cosigner`
+  endpoints of its `endpoints.yaml` when no cosigner client or resolver is
+  given, and opens SSH connections to them, closed with the client. Before,
+  such a call failed with "cosigner client or resolver is required"; a client
+  made any other way still does.
+- `SimulationResult` gained a failure message: `FailureMessage` (Go),
+  `failureMessage` (TypeScript), `failure_message` (Python). A simulation now
+  fails unless the node returned exactly one group result, that result
+  reports no failure, and it holds one transaction result per transaction
+  simulated. Before, an answer with no group result read as a pass.
+- `ResolveAuthAddress`/`resolveAuthAddress`/`resolve_auth_address` returns a
+  rotating account itself as its auth address at every stage, with the stage
+  address the chain reports in `ChainAuthAddress`/`chainAuthAddress`/
+  `chain_auth_address`. Before, a rotating account that had rotated failed to
+  resolve, since the signer does not list stage addresses. The prepare
+  helpers also cap a rotating sender's validity window at 100 rounds.
+- TypeScript and Python refuse, before any request is sent, an address that
+  is not spelled canonically (another spelling that decodes to the same
+  bytes, which the Go SDK's decoder already refused): a prepare helper's
+  sender, receiver, close-to and rekey-to, a sign request's auth address, and
+  an app call's account references and ABI account arguments. TypeScript's
+  prepare helpers also refuse an address argument that is not a string.
+- An approval-bearing request that is not posted, because its context had
+  ended (Go), its signal was already aborted (TypeScript) or its body cannot
+  be encoded as JSON (Python), is a plain error, and no `/sign/cancel` is
+  sent for it.
+- In Go, an error body's `code` is now kept only beside a message that is
+  not blank, as TypeScript and Python keep it. In Python, a non-200 body that
+  is JSON but not an object now carries no code, where it raised
+  `AttributeError`.
+- In Python, a `KeyboardInterrupt` while an approval-bearing request is
+  pending now sends the best-effort `/sign/cancel` first, as a timeout does,
+  and still propagates. It carries the request's ID as `aplane_request_id`;
+  during a send it may also carry the prepared rotating group as
+  `aplane_rotating`, or the signed group as `aplane_signed_group` and
+  `aplane_tx_ids`.
+- In TypeScript, an SSH identity file that cannot be parsed, holds no private
+  key or needs a passphrase fails at once with a `SignerError`, instead of
+  hanging.
