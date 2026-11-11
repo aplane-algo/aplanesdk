@@ -853,3 +853,47 @@ class TestCosignedOrder:
         assert str(excinfo.value) == (
             "cosigner resolver returned no client for prepared transaction 0"
         )
+
+
+def test_an_unreadable_identity_file_is_a_configuration_error(tmp_path):
+    # Through the real connection code: the key is read before anything is
+    # dialed.
+    registry = ClientEndpointRegistry(
+        endpoints={
+            "cosign": ClientEndpointConfig(
+                role="cosigner",
+                url="ssh://127.0.0.1:9",
+                identity_file=str(tmp_path / "missing_key"),
+                known_hosts_path=str(tmp_path / "known_hosts"),
+            )
+        }
+    )
+    with EndpointCosignerResolver(registry=registry) as resolver:
+        with pytest.raises(CosignerDiscoveryError) as excinfo:
+            resolver.resolve(PUBLIC_A.hex(), WITNESS)
+    assert str(excinfo.value).endswith('endpoints: "cosign" configuration invalid')
+
+
+def test_an_endpoint_nobody_answers_at_is_unreachable(tmp_path):
+    import paramiko
+
+    key_path = tmp_path / "id_ed25519"
+    paramiko.ECDSAKey.generate().write_private_key_file(str(key_path))
+    listener = __import__("socket").socket()
+    listener.bind(("127.0.0.1", 0))
+    port = listener.getsockname()[1]
+    listener.close()  # nothing listens there now
+    registry = ClientEndpointRegistry(
+        endpoints={
+            "cosign": ClientEndpointConfig(
+                role="cosigner",
+                url=f"ssh://127.0.0.1:{port}",
+                identity_file=str(key_path),
+                known_hosts_path=str(tmp_path / "known_hosts"),
+            )
+        }
+    )
+    with EndpointCosignerResolver(registry=registry) as resolver:
+        with pytest.raises(CosignerDiscoveryError) as excinfo:
+            resolver.resolve(PUBLIC_A.hex(), WITNESS)
+    assert str(excinfo.value).endswith('endpoints: "cosign" unreachable')
