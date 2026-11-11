@@ -335,24 +335,6 @@ export function mutationReportFromWire(raw: Record<string, any>): MutationReport
   };
 }
 
-/**
- * The typed camelCase form of a /plan mutation report, which also takes the
- * camelCase keys.
- */
-export function normalizeMutationReport(raw: any): MutationReport {
-  return {
-    dummiesAdded: raw.dummies_added ?? raw.dummiesAdded,
-    groupIdChanged: raw.group_id_changed ?? raw.groupIdChanged,
-    feesModified: raw.fees_modified ?? raw.feesModified,
-    totalFeesDelta: raw.total_fees_delta ?? raw.totalFeesDelta,
-    originalCount: raw.original_count ?? raw.originalCount,
-    finalCount: raw.final_count ?? raw.finalCount,
-    passthroughCount: raw.passthrough_count ?? raw.passthroughCount,
-    foreignCount: raw.foreign_count ?? raw.foreignCount,
-    reason: raw.reason,
-  };
-}
-
 function mutationInteger(mutations: MutationReport, name: keyof MutationReport, wire: string): number {
   const value = mutations[name] ?? 0;
   if (typeof value !== "number" || !Number.isSafeInteger(value)) {

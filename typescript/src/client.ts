@@ -34,19 +34,15 @@ import type {
   GroupSignResponse,
   SimulationResult,
   StatusResponse,
-  RotatingAccountStatus,
   ResolvedAuthAddress,
   PreparedTransaction,
   PreparedGroup,
   PreparedCheck,
-  KeysResponse,
-  KeyTypesResponse,
   KeyTypeInfo,
   CreationParam,
   GenerateResult,
   PlanGroupResponse,
   RuntimeArg,
-  SigningArg,
   MutationReport,
   CancelSignResponse,
   ComponentRequest,
@@ -127,7 +123,6 @@ import {
   validateSignResponse,
   wholeNumber,
   mutationReportFromWire,
-  normalizeMutationReport,
 } from "./verify.js";
 import {
   SEND_OUTCOME_SUBMITTED,
@@ -162,9 +157,16 @@ import {
 } from "./rotating.js";
 import {
   ASSEMBLY_ANSWER,
+  CANCEL_ANSWER,
   COMPONENT_ANSWER,
+  DELETE_KEY_ANSWER,
+  GENERATE_ANSWER,
   GROUP_SIGN_ANSWER,
+  KEYS_ANSWER,
+  KEYTYPES_ANSWER,
+  PLAN_ANSWER,
   ROTATING_SIGN_ANSWER,
+  STATUS_ANSWER,
   readAnswer,
   type AnswerShape,
 } from "./answers.js";
@@ -886,15 +888,16 @@ function validateComponentResponse(response: ComponentResponse, request?: Compon
   });
 }
 
+/** A runtime or signing argument as read from an answer; an empty field is absent. */
 function mapRuntimeArg(raw: any): RuntimeArg {
   return {
-    name: raw.name || "",
+    name: raw.name,
     type: raw.type || "bytes",
-    description: raw.description || "",
-    label: raw.label,
-    required: raw.required,
-    byteLength: raw.byte_length,
-    maxSize: raw.max_size,
+    description: raw.description,
+    label: raw.label || undefined,
+    required: raw.required || undefined,
+    byteLength: raw.byte_length || undefined,
+    maxSize: raw.max_size || undefined,
   };
 }
 
@@ -1562,6 +1565,24 @@ async function readApprovalAnswer<T>(response: Response, shape: AnswerShape): Pr
   const read = readAnswer<T>(shape, data);
   if ("problem" in read) {
     throw markLostAnswer(new SignerError(`Server returned a malformed response: ${read.problem}`));
+  }
+  return read.answer;
+}
+
+/**
+ * Read a 200 answer of a request that releases no signature. A body that
+ * does not parse, or parses to the wrong shape, is a plain error.
+ */
+async function readPlainAnswer<T>(response: Response, shape: AnswerShape): Promise<T> {
+  let data: unknown;
+  try {
+    data = await response.json();
+  } catch {
+    throw new SignerError("Server returned invalid JSON");
+  }
+  const read = readAnswer<T>(shape, data);
+  if ("problem" in read) {
+    throw new SignerError(`Server returned a malformed response: ${read.problem}`);
   }
   return read.answer;
 }
@@ -2562,37 +2583,22 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Failed to get signer status: HTTP ${response.status}`);
     }
 
-    const data = (await response.json()) as Record<string, unknown>;
-    const rawProtocolVersion = data.protocol_version as Record<string, unknown> | undefined;
+    const data = await readPlainAnswer<Record<string, any>>(response, STATUS_ANSWER);
     const status: StatusResponse = {
-      nodeRole: typeof data.node_role === "string" ? data.node_role : undefined,
-      protocolVersion:
-        rawProtocolVersion && typeof rawProtocolVersion === "object"
-          ? {
-              major: Number(rawProtocolVersion.major || 0),
-              minor: Number(rawProtocolVersion.minor || 0),
-            }
-          : undefined,
-      buildVersion: typeof data.build_version === "string" ? data.build_version : undefined,
-      state: String(data.state || ""),
-      signerLocked: Boolean(data.signer_locked),
-      readyForSigning: Boolean(data.ready_for_signing),
-      keyCount: Number(data.key_count || 0),
-      keysetRevision: Number(data.keyset_revision || 0),
-      approvalWaitSeconds:
-        typeof data.approval_wait_seconds === "number" ? data.approval_wait_seconds : undefined,
-      warnings: Array.isArray(data.warnings)
-        ? data.warnings.filter((warning): warning is string => typeof warning === "string")
+      nodeRole: data.node_role || undefined,
+      protocolVersion: data.protocol_version
+        ? { major: data.protocol_version.major, minor: data.protocol_version.minor }
         : undefined,
-      notes: Array.isArray(data.notes)
-        ? data.notes.filter((note): note is string => typeof note === "string")
-        : undefined,
-      rotating: Array.isArray(data.rotating)
-        ? (data.rotating.filter(
-            (entry): entry is RotatingAccountStatus =>
-              typeof entry === "object" && entry !== null && typeof (entry as RotatingAccountStatus).account === "string",
-          ) as RotatingAccountStatus[])
-        : undefined,
+      buildVersion: data.build_version || undefined,
+      state: data.state,
+      signerLocked: data.signer_locked,
+      readyForSigning: data.ready_for_signing,
+      keyCount: data.key_count,
+      keysetRevision: data.keyset_revision,
+      approvalWaitSeconds: data.approval_wait_seconds || undefined,
+      warnings: data.warnings,
+      notes: data.notes,
+      rotating: data.rotating,
     };
     this.cacheApprovalWait(status.approvalWaitSeconds);
     return status;
@@ -2671,42 +2677,27 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Failed to list keys: HTTP ${response.status}`);
     }
 
-    const data = (await response.json()) as KeysResponse;
+    const data = await readPlainAnswer<{ keys?: Record<string, any>[] }>(response, KEYS_ANSWER);
+    const records = data.keys ?? [];
     const keys: KeyInfo[] = [];
     this.keyCache.clear();
     this.keyCacheRevision = undefined;
 
-    for (const k of data.keys || []) {
-      // Parse signing_args, mapping snake_case API fields to camelCase TypeScript
-      let signingArgs: SigningArg[] | undefined;
-      const rawArgs = (k as any).signing_args;
-      if (rawArgs) {
-        signingArgs = rawArgs.map((arg: any) => ({
-          name: arg.name,
-          type: arg.type || "bytes",
-          description: arg.description || "",
-          label: arg.label,
-          required: arg.required,
-          byteLength: arg.byte_length,
-          maxSize: arg.max_size,
-        }));
-      }
-
+    for (const raw of records) {
       // Map snake_case API fields to camelCase TypeScript interface
-      const raw = k as any;
       const keyInfo: KeyInfo = {
-        address: k.address,
-        publicKeyHex: raw.public_key_hex || "",
-        keyType: raw.key_type || "",
+        address: raw.address,
+        publicKeyHex: raw.public_key_hex,
+        keyType: raw.key_type,
         authorizationKind: raw.authorization_kind || undefined,
         signingFlow: raw.signing_flow || undefined,
         cosignerComponentKeyType: raw.cosigner_component_key_type || undefined,
         logicSigResources: mapLogicSigResourceProfile(raw.logic_sig_resources),
-        isGenericLsig: raw.is_generic_lsig || false,
-        isWitnessKey: raw.is_witness_key || false,
-        isSpendingAccount: typeof raw.is_spending_account === "boolean" ? raw.is_spending_account : undefined,
+        isGenericLsig: raw.is_generic_lsig,
+        isWitnessKey: raw.is_witness_key,
+        isSpendingAccount: raw.is_spending_account,
         boundedAuthorization: mapBoundedAuthorization(raw.bounded_authorization),
-        signingArgs,
+        signingArgs: raw.signing_args ? raw.signing_args.map(mapRuntimeArg) : undefined,
         parameters: raw.parameters,
         templateProvenanceStatus: raw.template_provenance_status || undefined,
         templateProvenanceNote: raw.template_provenance_note || undefined,
@@ -3590,58 +3581,41 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Failed to list key types: HTTP ${response.status}`);
     }
 
-    const data = (await response.json()) as KeyTypesResponse;
+    const data = await readPlainAnswer<{ key_types?: Record<string, any>[] }>(response, KEYTYPES_ANSWER);
     const result: KeyTypeInfo[] = [];
 
-    for (const kt of (data as any).key_types || []) {
-      let creationParams: CreationParam[] | undefined;
-      if (kt.creation_params) {
-        creationParams = kt.creation_params.map((p: any) => ({
-          name: p.name,
-          label: p.label || "",
-          description: p.description,
-          paramType: p.type,
-          required: p.required,
-          maxLength: p.max_length,
-          inputModes: Array.isArray(p.input_modes)
-            ? p.input_modes.map((mode: any) => ({
-                name: mode.name,
-                label: mode.label,
-                transform: mode.transform,
-                byteLength: mode.byte_length,
-                inputType: mode.input_type,
-              }))
-            : undefined,
-          minItems: p.min_items,
-          maxItems: p.max_items,
-          options: p.options,
-          min: p.min,
-          max: p.max,
-          example: p.example,
-          placeholder: p.placeholder,
-          default: p.default,
-        }));
-      }
-
-      let runtimeArgs: RuntimeArg[] | undefined;
-      if (kt.runtime_args) {
-        runtimeArgs = kt.runtime_args.map((arg: any) => ({
-          name: arg.name,
-          type: arg.type || "bytes",
-          description: arg.description || "",
-          label: arg.label,
-          required: arg.required,
-          byteLength: arg.byte_length,
-          maxSize: arg.max_size,
-        }));
-      }
+    for (const kt of data.key_types ?? []) {
+      const creationParams: CreationParam[] | undefined = kt.creation_params?.map((p: any) => ({
+        name: p.name,
+        label: p.label,
+        description: p.description || undefined,
+        paramType: p.type || undefined,
+        required: p.required,
+        maxLength: p.max_length || undefined,
+        inputModes: p.input_modes?.map((mode: any) => ({
+          name: mode.name,
+          label: mode.label || undefined,
+          transform: mode.transform || undefined,
+          byteLength: mode.byte_length || undefined,
+          inputType: mode.input_type || undefined,
+        })),
+        minItems: p.min_items || undefined,
+        maxItems: p.max_items || undefined,
+        options: p.options,
+        min: p.min,
+        max: p.max,
+        example: p.example || undefined,
+        placeholder: p.placeholder || undefined,
+        default: p.default || undefined,
+      }));
+      const runtimeArgs: RuntimeArg[] | undefined = kt.runtime_args?.map(mapRuntimeArg);
 
       result.push({
         keyType: kt.key_type,
-        family: kt.family || "",
+        family: kt.family,
         displayName: kt.display_name,
         description: kt.description,
-        authorizationKind: kt.authorization_kind,
+        authorizationKind: kt.authorization_kind || undefined,
         requiresLogicsig: kt.requires_logicsig,
         mnemonicWordCount: kt.mnemonic_word_count,
         mnemonicImport: kt.mnemonic_import,
@@ -3694,22 +3668,26 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Key generation failed: HTTP ${response.status}`);
     }
 
-    const data = (await response.json()) as Record<string, unknown>;
+    const data = await readPlainAnswer<Record<string, any>>(response, GENERATE_ANSWER);
     if (data.error) {
-      throw new SignerError(String(data.error));
+      throw new SignerError(data.error);
     }
 
-    // Invalidate key cache
+    // Invalidate key cache: the signer may hold a new key even when its
+    // answer is refused below.
     this.keyCache.clear();
     this.keyCacheRevision = undefined;
 
+    if (data.address === "") {
+      throw new SignerError("Key generation response missing address");
+    }
     return {
-      address: String(data.address || ""),
-      publicKeyHex: typeof data.public_key_hex === "string" ? data.public_key_hex : undefined,
-      keyType: String(data.key_type || ""),
-      isWitnessKey: Boolean(data.is_witness_key),
-      isSpendingAccount: typeof data.is_spending_account === "boolean" ? data.is_spending_account : undefined,
-      parameters: data.parameters as Record<string, string> | undefined,
+      address: data.address,
+      publicKeyHex: data.public_key_hex || undefined,
+      keyType: data.key_type,
+      isWitnessKey: data.is_witness_key,
+      isSpendingAccount: data.is_spending_account,
+      parameters: data.parameters,
     };
   }
 
@@ -3737,14 +3715,16 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Key deletion failed: HTTP ${response.status}`);
     }
 
-    const data = await this.safeJson(response);
-    if (data.error) {
-      throw new SignerError(String(data.error));
-    }
-
-    // Invalidate key cache
+    // Invalidate key cache: whatever the answer, the key may be gone.
     this.keyCache.clear();
     this.keyCacheRevision = undefined;
+
+    // The signer answers {"success": true}: an empty or unreadable answer is
+    // not one.
+    const data = await readPlainAnswer<{ error: string }>(response, DELETE_KEY_ANSWER);
+    if (data.error) {
+      throw new SignerError(data.error);
+    }
   }
 
   /**
@@ -3768,7 +3748,7 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Sign cancel failed: HTTP ${response.status}`);
     }
 
-    const data = (await response.json()) as CancelSignResponse;
+    const data = await readPlainAnswer<CancelSignResponse>(response, CANCEL_ANSWER);
     if (data.error) {
       throw new SignerError(data.error);
     }
@@ -3977,21 +3957,18 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Plan failed: HTTP ${response.status}`);
     }
 
-    let data: PlanGroupResponse;
-    try {
-      data = (await response.json()) as PlanGroupResponse;
-    } catch {
-      throw new SignerError("Server returned invalid JSON");
-    }
+    let data = await readPlainAnswer<PlanGroupResponse>(response, PLAN_ANSWER);
 
     if (data.error) {
       throw new SignerError(data.error);
     }
 
+    // The wire report is snake_case, and only its snake_case keys are read,
+    // as the Go SDK reads them; callers read the typed camelCase fields.
     if (data.mutations) {
       data = {
         ...data,
-        mutations: normalizeMutationReport(data.mutations),
+        mutations: mutationReportFromWire(data.mutations),
       };
     }
 
@@ -5025,17 +5002,6 @@ export class SignerClient {
     }
 
     return signedHexes;
-  }
-
-  /**
-   * Parse JSON response safely, returning empty object on failure.
-   */
-  private async safeJson(response: Response): Promise<Record<string, unknown>> {
-    try {
-      return (await response.json()) as Record<string, unknown>;
-    } catch {
-      return {};
-    }
   }
 
   /**

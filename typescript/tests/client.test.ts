@@ -296,7 +296,7 @@ describe("SignerClient", () => {
           key_count: 37,
           keyset_revision: 4,
           approval_wait_seconds: 60,
-          warnings: ["authenticated prune is required", 7],
+          warnings: ["authenticated prune is required"],
         }),
       });
 
@@ -1577,7 +1577,7 @@ describe("SignerClient", () => {
       mockFetch.mockResolvedValueOnce({
         status: 200,
         ok: true,
-        json: async () => ({}),
+        json: async () => ({ success: true }),
       });
 
       const client = new SignerClient("http://localhost:11270");
@@ -2462,12 +2462,12 @@ describe("SignerClient", () => {
         encodeTransaction(fabricatedSecond)[0],
       ];
       plannedMutations = {
-        dummiesAdded: 1,
-        groupIdChanged: true,
-        feesModified: [],
-        totalFeesDelta: 0,
-        originalCount: 1,
-        finalCount: 2,
+        dummies_added: 1,
+        group_id_changed: true,
+        fees_modified: [],
+        total_fees_delta: 0,
+        original_count: 1,
+        final_count: 2,
       };
       await assert.rejects(
         signCosignedWithHeldKeys(options),
@@ -2511,12 +2511,12 @@ describe("SignerClient", () => {
       });
       plannedTransactions = [encodeTransaction(inflatedFeeTxn)[0]];
       plannedMutations = {
-        dummiesAdded: 0,
-        groupIdChanged: false,
-        feesModified: [0],
-        totalFeesDelta: 1000,
-        originalCount: 1,
-        finalCount: 1,
+        dummies_added: 0,
+        group_id_changed: false,
+        fees_modified: [0],
+        total_fees_delta: 1000,
+        original_count: 1,
+        final_count: 1,
       };
       const callsBeforeInflatedFee = baseComponentCalls;
       await assert.rejects(
@@ -2547,12 +2547,12 @@ describe("SignerClient", () => {
       algosdk.assignGroupID(badDummyGroup);
       plannedTransactions = badDummyGroup.map((item) => encodeTransaction(item)[0]);
       plannedMutations = {
-        dummiesAdded: 1,
-        groupIdChanged: true,
-        feesModified: [],
-        totalFeesDelta: 0,
-        originalCount: 1,
-        finalCount: 2,
+        dummies_added: 1,
+        group_id_changed: true,
+        fees_modified: [],
+        total_fees_delta: 0,
+        original_count: 1,
+        final_count: 2,
       };
       await assert.rejects(
         signCosignedWithHeldKeys(options),
@@ -4009,6 +4009,111 @@ describe("SignerClient", () => {
       const client = new SignerClient("http://localhost:11270");
       await assert.rejects(client.cancelSignRequest(""), { message: /request_id is required/ });
       await assert.rejects(client.cancelSignRequest("bad id"), { message: /invalid character/ });
+    });
+  });
+
+  // Every 200 answer is read against its declared shape. An answer that
+  // cannot be read, at a request that releases no signature, is a plain
+  // SignerError: never a TypeError or SyntaxError, and never coerced.
+  describe("answers of requests that release no signature", () => {
+    /** A 200 whose body is raw, read as Response.json() reads it. */
+    const answerRaw = (raw: string) => mockFetch.mockResolvedValueOnce({
+      status: 200,
+      ok: true,
+      json: async () => JSON.parse(raw),
+    });
+    const client = () => new SignerClient("http://localhost:11270");
+    const plain = (error: unknown) => {
+      assert.ok(error instanceof SignerError, `want a SignerError, got ${String(error)}`);
+      assert.match((error as Error).message, /^Server returned (invalid JSON|a malformed response: )/);
+      return true;
+    };
+    const txn = fakePayment();
+    const cases: Array<[string, () => Promise<unknown>, string[]]> = [
+      ["/status", () => client().getStatus(), [
+        "", "null", "[]", '"ok"', '{"signer_locked":"yes"}', '{"ready_for_signing":1}', '{"key_count":"3"}',
+        '{"keyset_revision":-1}', '{"warnings":["a",7]}', '{"rotating":[{"account":5}]}', '{"protocol_version":2}',
+      ]],
+      ["/keys", () => client().listKeys(true), [
+        "", "null", '{"keys":"x"}', '{"keys":[{"address":42}]}', '{"keys":[{"is_spending_account":"no"}]}',
+        '{"count":"1"}', '{"keys":[{"bounded_authorization":{"max_fee":"1000"}}]}',
+      ]],
+      ["/keytypes", () => client().listKeyTypes(), [
+        "", "null", '{"key_types":"x"}', '{"key_types":[{"creation_params":[{"min":-1}]}]}',
+        '{"key_types":[{"requires_logicsig":"yes"}]}',
+      ]],
+      ["/admin/generate", () => client().generateKey("ed25519"), [
+        "", "null", '{"address":5}', '{"is_witness_key":"true"}', '{"error":7}',
+      ]],
+      ["DELETE /admin/keys", () => client().deleteKey(fakeAddress(9)), [
+        "", "null", '{"success":"yes"}', '{"error":5}',
+      ]],
+      ["/sign/cancel", () => client().cancelSignRequest("sdk-test"), [
+        "", "null", '{"success":1}', '{"state":5}',
+      ]],
+      ["/plan", () => client().planGroup([txn]), [
+        "", "null", '{"transactions":"x"}', '{"mutations":{"fees_modified":"x"}}', '{"error":false}',
+      ]],
+    ];
+    for (const [path, call, bodies] of cases) {
+      for (const body of bodies) {
+        it(`${path} answering ${JSON.stringify(body)} is a plain error`, async () => {
+          answerRaw(body);
+          await assert.rejects(call(), plain);
+        });
+      }
+    }
+
+    it("/status reads null and missing fields as their zero values", async () => {
+      answerRaw('{"state":null,"key_count":null,"signer_locked":null,"rotating":[{"account":"A","stage":null,"recovery":{"active":null}}]}');
+      const status = await client().getStatus();
+      assert.equal(status.state, "");
+      assert.equal(status.keyCount, 0);
+      assert.equal(status.signerLocked, false);
+      assert.equal(status.readyForSigning, false);
+      assert.equal(status.rotating?.[0].stage, undefined, "a null stage is left out, not stage 0");
+      assert.equal(status.rotating?.[0].cached_entries, 0);
+      assert.equal(status.rotating?.[0].recovery?.active, false);
+    });
+
+    it("/admin/generate refuses an answer without an address", async () => {
+      for (const body of ["{}", '{"key_type":"ed25519"}', '{"address":null,"key_type":"ed25519"}']) {
+        answerRaw(body);
+        await assert.rejects(client().generateKey("ed25519"), (error: unknown) => {
+          assert.ok(error instanceof SignerError, String(error));
+          assert.equal((error as Error).message, "Key generation response missing address");
+          return true;
+        });
+      }
+      answerRaw('{"error":"no such key type","address":""}');
+      await assert.rejects(client().generateKey("x"), { message: "no such key type" });
+    });
+
+    it("DELETE /admin/keys takes the signer's success answer and refuses its error", async () => {
+      answerRaw('{"success":true}');
+      assert.equal(await client().deleteKey(fakeAddress(9)), undefined);
+      answerRaw('{"success":false,"error":"key is in use"}');
+      await assert.rejects(client().deleteKey(fakeAddress(9)), (error: unknown) => {
+        assert.ok(error instanceof SignerError, String(error));
+        assert.equal((error as Error).message, "key is in use");
+        return true;
+      });
+    });
+
+    it("/plan reads only the snake_case keys of the report", async () => {
+      // A report with camelCase keys alone reports nothing the Go SDK reads,
+      // so the raised fee is an unreported change.
+      mockFetch.mockImplementationOnce(signerFetch({
+        feeRaise: { 0: 500 },
+        tamper: (body) => {
+          body.mutations = { feesModified: [0], totalFeesDelta: 500, originalCount: 1, finalCount: 1 };
+        },
+      }));
+      await assert.rejects(client().planGroup([txn]), /verify signer plan: mutation original_count 0 does not match request count 1/);
+      mockFetch.mockImplementationOnce(signerFetch({ feeRaise: { 0: 500 } }));
+      const plan = await client().planGroup([txn]);
+      assert.equal(plan.mutations?.totalFeesDelta, 500);
+      assert.deepEqual(plan.mutations?.feesModified, [0]);
     });
   });
 });

@@ -191,3 +191,230 @@ export const COMPONENT_ANSWER: AnswerShape = {
 export const ASSEMBLY_ANSWER: AnswerShape = {
   fields: { request_id: "string", signed_group: { list: "string" }, error: "string" },
 };
+
+// The shapes below follow the Go SDK's types (go/types.go), field for field:
+// a field Go does not declare is not read, and a Go pointer is optional.
+
+/** /plan */
+export const PLAN_ANSWER: AnswerShape = {
+  fields: { transactions: { list: "string" }, mutations: MUTATION_REPORT, error: "string" },
+};
+
+/** /sign/cancel */
+export const CANCEL_ANSWER: AnswerShape = {
+  fields: { success: "bool", state: "string", error: "string" },
+};
+
+/** DELETE /admin/keys */
+export const DELETE_KEY_ANSWER: AnswerShape = {
+  fields: { success: "bool", error: "string" },
+};
+
+/** /admin/generate */
+export const GENERATE_ANSWER: AnswerShape = {
+  fields: {
+    address: "string",
+    public_key_hex: "string",
+    key_type: "string",
+    is_witness_key: "bool",
+    is_spending_account: { optional: "bool" },
+    parameters: { map: "string" },
+    error: "string",
+  },
+};
+
+const ROTATING_RECOVERY_STATUS: AnswerShape = {
+  fields: {
+    active: "bool",
+    kind: "string",
+    grant_id: "uint",
+    stages_charged: "uint",
+    max_stages: "uint",
+    active_seconds: "int",
+    hint: { optional: "uint" },
+    found_stage: { optional: "uint" },
+    stopped: "string",
+    stopped_kind: "string",
+    stopped_grant_id: "uint",
+    stopped_stage: { optional: "uint" },
+    allowance_spent: "uint",
+    allowance_max: "uint",
+    suppressed_authorizer: "string",
+  },
+};
+
+const ROTATING_ACCOUNT_STATUS: AnswerShape = {
+  fields: {
+    account: "string",
+    authorizer: "string",
+    round: "uint",
+    classification: "string",
+    stage: { optional: "uint" },
+    preparation: "string",
+    cached_entries: "uint",
+    recovery: ROTATING_RECOVERY_STATUS,
+  },
+};
+
+/** /status */
+export const STATUS_ANSWER: AnswerShape = {
+  fields: {
+    node_role: "string",
+    protocol_version: { fields: { major: "int", minor: "int" } },
+    build_version: "string",
+    state: "string",
+    signer_locked: "bool",
+    ready_for_signing: "bool",
+    key_count: "int",
+    keyset_revision: "uint",
+    approval_wait_seconds: "int",
+    warnings: { list: "string" },
+    notes: { list: "string" },
+    rotating: { list: ROTATING_ACCOUNT_STATUS },
+  },
+};
+
+const RUNTIME_ARG: AnswerShape = {
+  fields: {
+    name: "string",
+    type: "string",
+    label: "string",
+    description: "string",
+    required: "bool",
+    byte_length: "int",
+    max_size: "int",
+  },
+};
+
+const LOGIC_SIG_RESOURCE_USAGE: AnswerShape = {
+  fields: { program_bytes: "uint", argument_bytes: "uint", max_opcode_cost: "uint" },
+};
+
+const LOGIC_SIG_RESOURCE_PROFILE: AnswerShape = {
+  fields: {
+    default: LOGIC_SIG_RESOURCE_USAGE,
+    spend: LOGIC_SIG_RESOURCE_USAGE,
+    spending_rekey: LOGIC_SIG_RESOURCE_USAGE,
+    listed_rekey: LOGIC_SIG_RESOURCE_USAGE,
+  },
+};
+
+const BOUNDED_AUTHORIZATION: AnswerShape = {
+  fields: {
+    contract: "string",
+    base_signature_arg_layout: { fields: { count: "int", max_sizes: { list: "int" } } },
+    spend_effects: { list: "string" },
+    max_fee: { optional: "uint" },
+    rekey: "string",
+    rekey_list: { fields: { contract: "string", depth: "int", root: "string" } },
+    cosigner: {
+      fields: {
+        contract: "string",
+        component_key_type: "string",
+        public_key_hex: "string",
+        component_key_id: "string",
+        signature_max_size: "int",
+        required_on: { list: "string" },
+      },
+    },
+    runtime_args: { list: RUNTIME_ARG },
+    derived_args: {
+      list: { fields: { name: "string", kind: "string", parameter: "string", max_size: "int" } },
+    },
+    argument_layout: {
+      list: {
+        fields: {
+          index: "int",
+          name: "string",
+          source: "string",
+          max_size: "int",
+          paths: { fields: { spend: "string", spending_rekey: "string", listed_rekey: "string" } },
+        },
+      },
+    },
+    layer3_policy: "string",
+  },
+};
+
+const KEY_INFO: AnswerShape = {
+  fields: {
+    address: "string",
+    public_key_hex: "string",
+    key_type: "string",
+    authorization_kind: "string",
+    signing_flow: "string",
+    cosigner_component_key_type: "string",
+    logic_sig_resources: LOGIC_SIG_RESOURCE_PROFILE,
+    is_generic_lsig: "bool",
+    is_witness_key: "bool",
+    bounded_authorization: BOUNDED_AUTHORIZATION,
+    is_spending_account: { optional: "bool" },
+    signing_args: { list: RUNTIME_ARG },
+    parameters: { map: "string" },
+    template_provenance_status: "string",
+    template_provenance_note: "string",
+  },
+};
+
+/** /keys */
+export const KEYS_ANSWER: AnswerShape = {
+  fields: { count: "int", keys: { list: KEY_INFO } },
+};
+
+const CREATION_PARAM: AnswerShape = {
+  fields: {
+    name: "string",
+    label: "string",
+    description: "string",
+    type: "string",
+    required: "bool",
+    max_length: "int",
+    input_modes: {
+      list: {
+        fields: {
+          name: "string",
+          label: "string",
+          transform: "string",
+          byte_length: "int",
+          input_type: "string",
+        },
+      },
+    },
+    min_items: "int",
+    max_items: "int",
+    options: { list: "string" },
+    min: { optional: "uint" },
+    max: { optional: "uint" },
+    example: "string",
+    placeholder: "string",
+    default: "string",
+  },
+};
+
+/** /keytypes */
+export const KEYTYPES_ANSWER: AnswerShape = {
+  fields: {
+    key_types: {
+      list: {
+        fields: {
+          key_type: "string",
+          family: "string",
+          display_name: "string",
+          description: "string",
+          authorization_kind: "string",
+          requires_logicsig: "bool",
+          mnemonic_word_count: "int",
+          mnemonic_import: "bool",
+          mnemonic_scheme: "string",
+          signing_flow: "string",
+          cosigner_component_key_type: "string",
+          per_key_contract: "bool",
+          boundary_schema: "string",
+          bounded_authorization: BOUNDED_AUTHORIZATION,
+          creation_params: { list: CREATION_PARAM },
+          runtime_args: { list: RUNTIME_ARG },
+        },
+      },
+    },
+  },
+};
