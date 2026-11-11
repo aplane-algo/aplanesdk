@@ -230,7 +230,7 @@ func (c *SignerClient) PrepareRotating(ctx context.Context, txn types.Transactio
 		return nil, rotatingAPIError(signerHTTPErrorOp(resp, "rotating prepare failed"))
 	}
 	var response RotatingPrepareResponse
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+	if err := readAnswer(resp.Body, &response); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 

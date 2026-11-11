@@ -777,7 +777,7 @@ func (c *SignerClient) RequestAssembleWithContext(ctx context.Context, reqBody A
 	}
 
 	var assemblyResp AssemblyResponse
-	if err := json.NewDecoder(resp.Body).Decode(&assemblyResp); err != nil {
+	if err := readAnswer(resp.Body, &assemblyResp); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", &lostAnswer{err: err})
 	}
 	if err := assemblyResp.Validate(); err != nil {
@@ -1112,6 +1112,20 @@ func (c *SignerClient) SignGroupWithContext(ctx context.Context, groupReq GroupS
 	return resp, err
 }
 
+// readAnswer reads a 200 body as exactly one JSON value of out's shape. A
+// null body, or anything after the value, is not an answer: json.Decoder
+// would read null as an empty answer and stop at the end of the first value.
+func readAnswer(body io.Reader, out any) error {
+	raw, err := io.ReadAll(body)
+	if err != nil {
+		return err
+	}
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return errors.New("the answer is null")
+	}
+	return json.Unmarshal(raw, out)
+}
+
 // lostAnswer marks an approval-bearing request that ended with no usable
 // answer: the exchange failed, or a 200 arrived whose body could not be read.
 // The signer may have acted on the request. It reads as the error it wraps.
@@ -1239,7 +1253,7 @@ func (c *SignerClient) postApproval(ctx context.Context, path, requestID string,
 	if resp.StatusCode != http.StatusOK {
 		return signerHTTPError(resp)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+	if err := readAnswer(resp.Body, out); err != nil {
 		return &signUnreadError{err: err}
 	}
 	return nil
