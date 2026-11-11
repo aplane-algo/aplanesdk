@@ -1,13 +1,16 @@
 /**
- * Minimal validation transaction example.
+ * Send a payment from any account the signer holds.
  *
- * Sends a 0 ALGO self-payment to validate that signing works.
- * Works with any key type (Ed25519, Falcon, etc.).
+ * sendPayment builds the payment, signs it through the flow the sender's key
+ * needs, checks the signed result, submits it and waits for confirmation. The
+ * same call works for an Ed25519, native Falcon, LogicSig, bounded or rotating
+ * account, and for a rekeyed sender. A cosigned account also needs its
+ * cosigner: set cosignerClient and cosignerComponentKey in the options.
  *
  * Setup:
  *   1. Create data directory: mkdir -p ~/aplane/apclient/.ssh
- *   2. Copy token: cp /path/to/aplane.token ~/aplane/apclient/
- *   3. Generate APlane SSH key: ssh-keygen -t ed25519 -f ~/aplane/apclient/.ssh/id_ed25519 -N ''
+ *   2. Generate APlane SSH key: ssh-keygen -t ed25519 -f ~/aplane/apclient/.ssh/id_ed25519 -N ''
+ *   3. Enroll it at the signer: run apshell enroll and approve in apadmin
  *   4. Create endpoints.yaml (see below)
  *   5. Set env: export APCLIENT_DATA=~/aplane/apclient
  *
@@ -21,11 +24,12 @@
  * */
 
 import algosdk from "algosdk";
-import { SignerClient, sendRawTransaction } from "aplanesdk";
+import { SignOutcomeUnknownError, SignerClient, SubmissionUncertainError } from "aplanesdk";
 
-// The address to validate (must exist in apsigner keystore)
-// Replace with your actual address
+// The account to pay from (the signer must hold its key) and the account to
+// pay. Replace both.
 const SENDER = "ED255ACCOUNTEXAMPLE77777777777777777777777777777777777777777";
+const RECEIVER = "ED255ACCOUNTEXAMPLE77777777777777777777777777777777777777777";
 
 async function main() {
   // Connect using config from $APCLIENT_DATA
@@ -34,30 +38,35 @@ async function main() {
   try {
     const algodClient = new algosdk.Algodv2("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "http://localhost", 4001);
 
-    // Build 0-ALGO self-send (validation transaction)
-    const params = await algodClient.getTransactionParams().do();
-    const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+    // 1 ALGO, in microAlgos.
+    const result = await signer.sendPayment(algodClient, {
       sender: SENDER,
-      receiver: SENDER,
-      amount: 0,
-      suggestedParams: params,
+      receiver: RECEIVER,
+      amount: 1_000_000,
     });
 
-    // Resolve auth address (handles rekeyed accounts)
-    const acctInfo = await algodClient.accountInformation(SENDER).do();
-    const authAddr = acctInfo.authAddr?.toString();
-
-    // Sign and submit (server handles fee pooling automatically)
-    console.log(`Signing validation txn for ${SENDER.slice(0, 12)}...`);
-    const signed = await signer.signTransaction(txn, authAddr);
-
-    // Submit (handles concatenated group bytes from Falcon/LogicSig keys)
-    const txid = await sendRawTransaction(algodClient, signed);
-    console.log(`Submitted: ${txid}`);
-
-    // Wait for confirmation
-    const result = await algosdk.waitForConfirmation(algodClient, txid, 4);
-    console.log(`Confirmed in round ${result.confirmedRound}`);
+    // The signer may raise the fee or add transactions, so the ID comes from
+    // the signed group, not from the payment as it was built.
+    console.log(`Confirmed ${result.txIds[0]} in round ${result.confirmedRound}, fee ${result.fees[0]} microAlgos`);
+    if (result.rotating) {
+      console.log(`Rotated from stage ${result.rotating.stage} to stage ${result.rotating.target}`);
+    }
+  } catch (error) {
+    // A group that was signed keeps its bytes and IDs in the error. Never
+    // send again until its outcome is known: both could execute.
+    if (error instanceof SubmissionUncertainError) {
+      console.error(`Outcome unknown for ${error.txIds} (${error.stage}); look it up before sending again`);
+    } else if (error instanceof SignOutcomeUnknownError) {
+      // The signer may have released a signature that was never submitted.
+      // Do not build and sign a replacement: both could execute. Sign the
+      // same prepared group again (a rotating account's is error.rotating,
+      // for signPreparedRotating) or check the chain first.
+      const what = error.rotating
+        ? `rotating spend ${error.rotating.txIds()[0]}`
+        : `sign request ${error.requestId || "(no ID)"}`;
+      console.error(`No answer for ${what}; a signature may have been released, so do not sign a replacement`);
+    }
+    throw error;
   } finally {
     signer.close();
   }

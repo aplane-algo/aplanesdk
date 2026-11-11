@@ -73,12 +73,18 @@ export interface RequestSlot {
 }
 
 /**
- * The slot of a sign-mode position. The auth address must be a real address:
- * the returned authorization is checked against it.
+ * The slot of a sign-mode position. The auth address must be a real address,
+ * spelled canonically: the returned authorization is checked against it, as
+ * a string. algosdk also reads the spellings that differ only in the unused
+ * low bits of the last character, which the Go SDK's decoder refuses.
  */
 export function signSlot(txn: Transaction, authAddress: string | undefined): RequestSlot {
   if (typeof authAddress !== "string" || !algosdk.isValidAddress(authAddress)) {
     throw new SignerError(`auth_address ${JSON.stringify(authAddress)} is not a valid address`);
+  }
+  const canonical = algosdk.Address.fromString(authAddress).toString();
+  if (canonical !== authAddress) {
+    throw new SignerError(`auth_address ${authAddress} is not the canonical spelling of ${canonical}`);
   }
   return { mode: "sign", txn, auth: authAddress };
 }
@@ -315,6 +321,24 @@ export function decodeRequestSlots(requests: SignRequest[]): RequestSlot[] {
       throw new SignerError(`transaction ${position}: ${errorText(error)}`);
     }
   });
+}
+
+/**
+ * The typed camelCase form of a wire mutation report that was read with its
+ * answer's shape: only the snake_case keys, as the Go SDK reads them.
+ */
+export function mutationReportFromWire(raw: Record<string, any>): MutationReport {
+  return {
+    dummiesAdded: raw.dummies_added,
+    groupIdChanged: raw.group_id_changed,
+    feesModified: raw.fees_modified,
+    totalFeesDelta: raw.total_fees_delta,
+    originalCount: raw.original_count,
+    finalCount: raw.final_count,
+    passthroughCount: raw.passthrough_count,
+    foreignCount: raw.foreign_count,
+    reason: raw.reason,
+  };
 }
 
 function mutationInteger(mutations: MutationReport, name: keyof MutationReport, wire: string): number {
@@ -659,16 +683,20 @@ export function validateSignResponse(
       }
       return slot.txn;
     }
+    // A check's refusal is reworded with the position; anything else thrown
+    // is a fault in the SDK, not a refusal, and is left as it is.
     let decoded: algosdk.SignedTransaction;
     try {
       decoded = decodeCanonicalSignedTransaction(raw);
     } catch (error) {
+      if (!(error instanceof SignerError)) throw error;
       throw new SignerError(`signed transaction ${position}: ${errorText(error)}`);
     }
     if (slot) {
       try {
         validateAuthorization(decoded, slot.auth as string);
       } catch (error) {
+        if (!(error instanceof SignerError)) throw error;
         throw new SignerError(`signed transaction ${position} ${errorText(error)}`);
       }
     }
@@ -731,6 +759,8 @@ export function signedTransactionMatchesCanonical(
   try {
     signed = decodeCanonicalSignedTransaction(decodeHex(signedHex, "signed transaction"));
   } catch (error) {
+    // Anything but a refusal is a fault in the SDK, left as it is.
+    if (!(error instanceof SignerError)) throw error;
     throw new SignerError(`${label} ${index}: ${errorText(error)}`);
   }
   if (encodeTransaction(signed.txn)[0] !== canonicalHex.toLowerCase()) {

@@ -34,19 +34,15 @@ import type {
   GroupSignResponse,
   SimulationResult,
   StatusResponse,
-  RotatingAccountStatus,
   ResolvedAuthAddress,
   PreparedTransaction,
   PreparedGroup,
   PreparedCheck,
-  KeysResponse,
-  KeyTypesResponse,
   KeyTypeInfo,
   CreationParam,
   GenerateResult,
   PlanGroupResponse,
   RuntimeArg,
-  SigningArg,
   MutationReport,
   CancelSignResponse,
   ComponentRequest,
@@ -60,6 +56,8 @@ import type {
   LogicSigResourceUsage,
   LogicSigResourceProfile,
   AppCallInfo,
+  RotatingPrepareRequest,
+  RotatingSignResponse,
 } from "./types.js";
 import {
   ErrorCodes,
@@ -86,6 +84,14 @@ import {
   SignerUnavailableError,
   KeyNotFoundError,
   KeyDeletionError,
+  RotatingPreflightError,
+  SignOutcomeUnknownError,
+  UnsupportedGroupError,
+  UnsupportedSigningFlowError,
+  callerAborted,
+  isLostAnswer,
+  lostAnswerRequestId,
+  markLostAnswer,
 } from "./errors.js";
 import {
   encodeTransaction,
@@ -102,7 +108,7 @@ import {
   DUMMY_PROGRAM as COSIGNED_DUMMY_PROGRAM,
   MAX_GROUP_SIZE,
   checkMaxFeeIncrease,
-  decodeCanonicalSignedTransaction,
+  cloneTransaction,
   decodeCanonicalTransaction,
   decodePassthroughSlot,
   decodeRequestSlots,
@@ -116,7 +122,54 @@ import {
   validatePlanResponse,
   validateSignResponse,
   wholeNumber,
+  mutationReportFromWire,
 } from "./verify.js";
+import {
+  SEND_OUTCOME_SUBMITTED,
+  algodOptions,
+  algodRound,
+  checkSendOptions,
+  decodeExecutableSignedGroup,
+  describeSignedGroup,
+  runSimulation,
+  signedGroupTransactions,
+  simulationFailure,
+  submitAndTrack,
+  type CheckedSendOptions,
+  type SendOptions,
+  type SendResult,
+} from "./send.js";
+import {
+  PreparedRotating,
+  ROTATING_MAX_LEAD,
+  ROTATING_MAX_VALIDITY_WINDOW,
+  ROTATING_MIN_REMAINING,
+  ROTATING_SEND_ATTEMPTS,
+  checkRotatingShape,
+  checkRotatingWindow,
+  newPreparedRotating,
+  refreshRotatingValidity,
+  rotatingTiming,
+  rotatingWindowCurrent,
+  type RotatingPrepareOptions,
+  type RotatingSignOptions,
+  type RotatingSignResult,
+} from "./rotating.js";
+import {
+  ASSEMBLY_ANSWER,
+  CANCEL_ANSWER,
+  COMPONENT_ANSWER,
+  DELETE_KEY_ANSWER,
+  GENERATE_ANSWER,
+  GROUP_SIGN_ANSWER,
+  KEYS_ANSWER,
+  KEYTYPES_ANSWER,
+  PLAN_ANSWER,
+  ROTATING_SIGN_ANSWER,
+  STATUS_ANSWER,
+  readAnswer,
+  type AnswerShape,
+} from "./answers.js";
 import {
   SSH_USERNAME,
   normalizeSSHSetupTimeout,
@@ -356,9 +409,9 @@ async function requestBoundedPrimaryPassthrough(
   targetResources: Map<number, LogicSigResourceUsage | undefined>,
   primaryTargets: CosignedPrimarySignTarget[],
   signal?: AbortSignal,
-): Promise<{ response?: GroupSignResponse; passthrough: CosignedPassthroughItem[] }> {
+): Promise<{ response?: GroupSignResponse; passthrough: CosignedPassthroughItem[]; requestId: string }> {
   if (primaryTargets.length === 0) {
-    return { passthrough: [] };
+    return { passthrough: [], requestId: "" };
   }
   const primaryByIndex = new Map(primaryTargets.map((target) => [target.targetIndex, target]));
   const requests: SignRequest[] = groupBytesHex.map((txnHex, index) => {
@@ -386,21 +439,58 @@ async function requestBoundedPrimaryPassthrough(
       app_call_info: target.appCallInfo,
     };
   });
-  const response = await userClient.signRequests(requests, { signal });
+  const requestId = newSignRequestId();
+  const response = await userClient.signRequests(requests, { requestId, signal });
   const passthrough: CosignedPassthroughItem[] = [];
-  for (const index of Array.from(primaryByIndex.keys()).sort((a, b) => a - b)) {
-    if (!response.signed?.[index]) {
-      throw new SignerError(`primary signer returned no signed transaction for target ${index}`);
+  try {
+    for (const index of Array.from(primaryByIndex.keys()).sort((a, b) => a - b)) {
+      if (!response.signed?.[index]) {
+        throw new SignerError(`primary signer returned no signed transaction for target ${index}`);
+      }
+      signedTransactionMatchesCanonical(
+        "primary passthrough",
+        index,
+        response.signed[index],
+        groupBytesHex[index],
+      );
+      passthrough.push({ target_index: index, signed_txn_hex: response.signed[index] });
     }
-    signedTransactionMatchesCanonical(
-      "primary passthrough",
-      index,
-      response.signed[index],
-      groupBytesHex[index],
-    );
-    passthrough.push({ target_index: index, signed_txn_hex: response.signed[index] });
+  } catch (error) {
+    throw faultAfterAnswer(error, requestId);
   }
-  return { response, passthrough };
+  return { response, passthrough, requestId };
+}
+
+/**
+ * A fault raised after the approval-bearing request requestId answered 200:
+ * an error that is not the SDK's own, thrown while the answer was checked,
+ * decoded or described. It is not a refusal, because a signature may be out,
+ * so it is marked as the request's lost answer, keeping its class and
+ * message. The SDK's own error (a refusal), an error already marked, and any
+ * error before a request has answered (requestId "") pass as they are.
+ */
+function faultAfterAnswer(error: unknown, requestId: string): unknown {
+  if (requestId === "" || error instanceof SignerError || isLostAnswer(error)) {
+    return error;
+  }
+  markLostAnswer(error, requestId);
+  if (isLostAnswer(error)) {
+    return error;
+  }
+  // A value that cannot carry the mark is carried by an error that can.
+  const carrier = new SignerError(`checking the signer's answer failed: ${errorText(error)}`);
+  (carrier as { cause?: unknown }).cause = error;
+  return markLostAnswer(carrier, requestId);
+}
+
+/**
+ * A failed check of an approval-bearing request's answer, worded by wrap. A
+ * refusal (the SDK's own error) is a plain error; a fault is marked as the
+ * request's lost answer, since the signer did answer.
+ */
+function answerCheckError(error: unknown, requestId: string, wrap: (error: unknown) => SignerError): SignerError {
+  const worded = wrap(error);
+  return error instanceof SignerError ? worded : markLostAnswer(worded, requestId);
 }
 
 /**
@@ -424,7 +514,7 @@ export async function signPreparedCosignedGroup(
   const targetMaxFees = new Map<number, number>();
   // One read of the signer's keys for the whole call, refreshed when the
   // signer's keyset revision has changed: the lookup the prepare helpers make.
-  const signerKeys = await options.userClient.listKeysIfKeysetChanged();
+  const signerKeys = await options.userClient.listKeysIfKeysetChanged({ signal: options.signal });
   for (let index = 0; index < prepared.length; index++) {
     const item = prepared[index];
     if (item.signedTransactionBase64) {
@@ -499,7 +589,7 @@ export async function signPreparedCosignedGroup(
     throw new SignerError("prepared group has no bounded-cosigner targets");
   }
 
-  const planResponse = await options.userClient.planRequests(requests);
+  const planResponse = await options.userClient.planRequests(requests, { signal: options.signal });
   const frozenGroup = [...(planResponse.transactions || [])];
   if (frozenGroup.length < prepared.length) {
     throw new SignerError(
@@ -512,6 +602,9 @@ export async function signPreparedCosignedGroup(
   // canonical resource dummies after them.
   validateBoundedTargetFees(planned, targetMaxFees);
   const targetIndices = new Set(targets.map((target) => target.targetIndex));
+  // The ID of the last approval-bearing request that answered. A fault in
+  // the SDK after an answer arrived is not a refusal: a signature may be out.
+  let answered = "";
   const componentResponse = await options.userClient.requestComponents(
     {
       group_bytes_hex: frozenGroup,
@@ -535,41 +628,48 @@ export async function signPreparedCosignedGroup(
     },
     { signal: options.signal },
   );
+  answered = componentResponse.request_id;
   const targetsByIndex = new Map(targets.map((target) => [target.targetIndex, target]));
   const components = new Map<number, (typeof componentResponse.components)[number]>();
-  for (const component of componentResponse.components) {
-    const target = targetsByIndex.get(component.target_index);
-    if (!target || component.kind !== "bounded-base" ||
-        component.auth_address !== target.cosignedAccount) {
-      throw new SignerError(`signer returned unexpected bounded component target ${component.target_index}`);
+  let primary: Awaited<ReturnType<typeof requestBoundedPrimaryPassthrough>>;
+  try {
+    for (const component of componentResponse.components) {
+      const target = targetsByIndex.get(component.target_index);
+      if (!target || component.kind !== "bounded-base" ||
+          component.auth_address !== target.cosignedAccount) {
+        throw new SignerError(`signer returned unexpected bounded component target ${component.target_index}`);
+      }
+      if (components.has(component.target_index)) {
+        throw new SignerError(`signer returned duplicate bounded component target ${component.target_index}`);
+      }
+      components.set(component.target_index, component);
     }
-    if (components.has(component.target_index)) {
-      throw new SignerError(`signer returned duplicate bounded component target ${component.target_index}`);
+    for (const target of targets) {
+      const component = components.get(target.targetIndex);
+      if (!component) {
+        throw new SignerError(`signer returned no bounded component for target index ${target.targetIndex}`);
+      }
+      // Budget the position on the path the signer named, which only the signer
+      // can choose: whether a rekey target is listed is not public.
+      targetResources.set(
+        target.targetIndex,
+        componentPathResources(targetKeys.get(target.targetIndex), component.path, `prepared transaction ${target.targetIndex}`),
+      );
     }
-    components.set(component.target_index, component);
-  }
-  for (const target of targets) {
-    const component = components.get(target.targetIndex);
-    if (!component) {
-      throw new SignerError(`signer returned no bounded component for target index ${target.targetIndex}`);
-    }
-    // Budget the position on the path the signer named, which only the signer
-    // can choose: whether a rekey target is listed is not public.
-    targetResources.set(
-      target.targetIndex,
-      componentPathResources(targetKeys.get(target.targetIndex), component.path, `prepared transaction ${target.targetIndex}`),
-    );
-  }
 
-  const primary = await requestBoundedPrimaryPassthrough(
-    options.userClient,
-    frozenGroup,
-    prepared.length,
-    new Set(targetsByIndex.keys()),
-    targetResources,
-    primaryTargets,
-    options.signal,
-  );
+    primary = await requestBoundedPrimaryPassthrough(
+      options.userClient,
+      frozenGroup,
+      prepared.length,
+      new Set(targetsByIndex.keys()),
+      targetResources,
+      primaryTargets,
+      options.signal,
+    );
+  } catch (error) {
+    throw faultAfterAnswer(error, answered);
+  }
+  if (primary.requestId !== "") answered = primary.requestId;
 
   // The user side is complete, including ordinary primary positions. Only
   // now may the SDK disclose the frozen group to the cosigner endpoint, and
@@ -589,84 +689,90 @@ export async function signPreparedCosignedGroup(
     }
     group.indices.push(target.targetIndex);
   }
-  const cosignerComponentResponses: ComponentResponse[] = [];
-  const cosignerSignatures: ComponentSignatureByIndex = new Map();
-  // Every original position's app call description, as the caller gave it: a
-  // primary slot's /plan request does not carry it.
-  const appCallInfo = new Map<number, AppCallInfo | undefined>(
-    prepared.map((item, index) => [index, item.appCallInfo]),
-  );
-  const cosignerSchemes = new Map(
-    targets.map((target) => [target.targetIndex, target.cosignerComponentKeyType || ""]),
-  );
-  for (const group of cosignerGroups) {
-    const response = await group.client.requestComponents(
-      componentRequestForIndices(
-        frozenGroup,
-        group.indices.sort((a, b) => a - b),
-        group.componentKey,
-        frozenGroup.slice(prepared.length).map((_, offset) => prepared.length + offset),
-        appCallInfo,
-      ),
-      { signal: options.signal },
+  try {
+    const cosignerComponentResponses: ComponentResponse[] = [];
+    const cosignerSignatures: ComponentSignatureByIndex = new Map();
+    // Every original position's app call description, as the caller gave it: a
+    // primary slot's /plan request does not carry it.
+    const appCallInfo = new Map<number, AppCallInfo | undefined>(
+      prepared.map((item, index) => [index, item.appCallInfo]),
     );
-    cosignerComponentResponses.push(response);
-    for (const [index, signature] of componentSignaturesByIndex(response, cosignerSchemes)) {
-      cosignerSignatures.set(index, signature);
-    }
-  }
-
-  const passthrough = [
-    ...primary.passthrough,
-    ...signCosignedDummies(
-      prepared[0].transaction as Transaction,
-      groupIDBytes(planned[0]),
-      planned.slice(prepared.length),
-      prepared.length,
-    ),
-  ];
-  const assemblyTargets: AssemblyTarget[] = targets.map((target) => {
-    const component = components.get(target.targetIndex);
-    if (!component) {
-      throw new SignerError(`missing bounded base component for target ${target.targetIndex}`);
-    }
-    const assemblyTarget: AssemblyTarget = {
-      target_index: target.targetIndex,
-      kind: "bounded-cosigner",
-      auth_address: component.auth_address || "",
-      base_signatures: [...(component.base_signatures || [])],
-      bounded_runtime_args: component.runtime_args ? { ...component.runtime_args } : undefined,
-      assembly_receipt: component.assembly_receipt || "",
-      base_source_request_id: componentResponse.request_id,
-    };
-    if (componentNeedsCosigner(component)) {
-      const cosigner = cosignerSignatures.get(target.targetIndex);
-      if (!cosigner) {
-        throw new SignerError(`missing cosigner component signature for target ${target.targetIndex}`);
+    const cosignerSchemes = new Map(
+      targets.map((target) => [target.targetIndex, target.cosignerComponentKeyType || ""]),
+    );
+    for (const group of cosignerGroups) {
+      const response = await group.client.requestComponents(
+        componentRequestForIndices(
+          frozenGroup,
+          group.indices.sort((a, b) => a - b),
+          group.componentKey,
+          frozenGroup.slice(prepared.length).map((_, offset) => prepared.length + offset),
+          appCallInfo,
+        ),
+        { signal: options.signal },
+      );
+      answered = response.request_id;
+      cosignerComponentResponses.push(response);
+      for (const [index, signature] of componentSignaturesByIndex(response, cosignerSchemes)) {
+        cosignerSignatures.set(index, signature);
       }
-      assemblyTarget.cosigner_signature = cosigner.signature;
-      assemblyTarget.cosigner_source_request_id = cosigner.requestId;
     }
-    return assemblyTarget;
-  });
-  const assemblyResponse = await options.userClient.requestAssemble({
-    request_id: options.assemblyRequestId,
-    group_bytes_hex: [...frozenGroup],
-    targets: assemblyTargets,
-    passthrough,
-  }, { signal: options.signal });
-  verifyBoundedAssembledGroup(
-    frozenGroup,
-    assemblyResponse.signed_group,
-  );
-  return {
-    signedGroup: [...assemblyResponse.signed_group],
-    cosignerComponentResponses,
-    primarySignResponse: primary.response,
-    boundedComponentResponse: componentResponse,
-    boundedAssemblyResponse: assemblyResponse,
-    planMutations: planResponse.mutations,
-  };
+
+    const passthrough = [
+      ...primary.passthrough,
+      ...signCosignedDummies(
+        prepared[0].transaction as Transaction,
+        groupIDBytes(planned[0]),
+        planned.slice(prepared.length),
+        prepared.length,
+      ),
+    ];
+    const assemblyTargets: AssemblyTarget[] = targets.map((target) => {
+      const component = components.get(target.targetIndex);
+      if (!component) {
+        throw new SignerError(`missing bounded base component for target ${target.targetIndex}`);
+      }
+      const assemblyTarget: AssemblyTarget = {
+        target_index: target.targetIndex,
+        kind: "bounded-cosigner",
+        auth_address: component.auth_address || "",
+        base_signatures: [...(component.base_signatures || [])],
+        bounded_runtime_args: component.runtime_args ? { ...component.runtime_args } : undefined,
+        assembly_receipt: component.assembly_receipt || "",
+        base_source_request_id: componentResponse.request_id,
+      };
+      if (componentNeedsCosigner(component)) {
+        const cosigner = cosignerSignatures.get(target.targetIndex);
+        if (!cosigner) {
+          throw new SignerError(`missing cosigner component signature for target ${target.targetIndex}`);
+        }
+        assemblyTarget.cosigner_signature = cosigner.signature;
+        assemblyTarget.cosigner_source_request_id = cosigner.requestId;
+      }
+      return assemblyTarget;
+    });
+    const assemblyResponse = await options.userClient.requestAssemble({
+      request_id: options.assemblyRequestId,
+      group_bytes_hex: [...frozenGroup],
+      targets: assemblyTargets,
+      passthrough,
+    }, { signal: options.signal });
+    answered = assemblyResponse.request_id;
+    verifyBoundedAssembledGroup(
+      frozenGroup,
+      assemblyResponse.signed_group,
+    );
+    return {
+      signedGroup: [...assemblyResponse.signed_group],
+      cosignerComponentResponses,
+      primarySignResponse: primary.response,
+      boundedComponentResponse: componentResponse,
+      boundedAssemblyResponse: assemblyResponse,
+      planMutations: planResponse.mutations,
+    };
+  } catch (error) {
+    throw faultAfterAnswer(error, answered);
+  }
 }
 
 /**
@@ -695,57 +801,18 @@ async function simulateSignedGroup(
   if (!algodClient) {
     throw new SignerError("algodClient is required");
   }
-  if (signedGroup.length === 0) {
-    throw new SignerError("signed group is empty");
-  }
-
-  const signedTransactions = signedGroup.map((signedHex, index) => {
-    if (!signedHex) {
-      throw new SignerError(`signed group position ${index + 1} is empty`);
-    }
-    // The raw hex is what gets submitted and the decoded value is what gets
-    // simulated, so the two must be the same transaction exactly.
-    try {
-      return decodeCanonicalSignedTransaction(hexToBytes(signedHex));
-    } catch (error) {
-      throw new SignerError(
-        `signed group position ${index + 1}: ${errorText(error)}`
-      );
-    }
-  });
-
-  const makeRequest = (trace: boolean) => new algosdk.modelsv2.SimulateRequest({
-    txnGroups: [new algosdk.modelsv2.SimulateRequestTransactionGroup({
-      txns: signedTransactions,
-    })],
-    allowEmptySignatures: false,
-    fixSigners: false,
-    allowMoreLogging: trace,
-    execTraceConfig: trace
-      ? new algosdk.modelsv2.SimulateTraceConfig({ enable: true, stateChange: true })
-      : undefined,
-  });
-
-  let response: algosdk.modelsv2.SimulateResponse;
-  try {
-    response = await algodClient.simulateTransactions(makeRequest(true)).do();
-  } catch {
-    try {
-      response = await algodClient.simulateTransactions(makeRequest(false)).do();
-    } catch (error) {
-      throw new SignerError(
-        `simulation API call failed: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-  }
+  const { decoded: signedTransactions } = decodeExecutableSignedGroup(signedGroup);
+  const response = await runSimulation(algodClient, signedTransactions, false);
+  const failureMessage = simulationFailure(response, signedTransactions.length);
 
   return {
     txIds: signedTransactions.map((signed) => signed.txn.txID()),
-    transactions: signedTransactions.map((signed) => encodeTransaction(signed.txn)[0]),
+    transactions: signedGroupTransactions(signedTransactions),
     signedGroup: [...signedGroup],
     mutations,
     response,
-    failed: (response.txnGroups?.[0]?.failureMessage ?? "") !== "",
+    failed: failureMessage !== "",
+    failureMessage,
   };
 }
 
@@ -874,15 +941,16 @@ function validateComponentResponse(response: ComponentResponse, request?: Compon
   });
 }
 
+/** A runtime or signing argument as read from an answer; an empty field is absent. */
 function mapRuntimeArg(raw: any): RuntimeArg {
   return {
-    name: raw.name || "",
+    name: raw.name,
     type: raw.type || "bytes",
-    description: raw.description || "",
-    label: raw.label,
-    required: raw.required,
-    byteLength: raw.byte_length,
-    maxSize: raw.max_size,
+    description: raw.description,
+    label: raw.label || undefined,
+    required: raw.required || undefined,
+    byteLength: raw.byte_length || undefined,
+    maxSize: raw.max_size || undefined,
   };
 }
 
@@ -1484,6 +1552,131 @@ function findSpendableKey(keys: KeyInfo[], address: string): KeyInfo | undefined
   ));
 }
 
+/** What a prepare helper reads before it builds: suggested parameters and the signer's keys. */
+interface PrepParams {
+  suggestedParams: any;
+  /** Resolve the auth address from the keys read with the parameters. */
+  resolve: (address: string, accountInfo: AccountInfoResult) => ResolvedAuthAddress;
+}
+
+/**
+ * Require an address argument to be a string, spelled canonically. The SDK
+ * compares addresses and looks them up among the signer's keys as strings.
+ * Anything else, such as an algosdk Address, equals none of them and would
+ * skip the checks those comparisons drive, so it is refused, as the Python
+ * SDK refuses it. algosdk reads the spellings that differ only in the unused
+ * low bits of the last character as the same address, and the Go SDK's
+ * decoder refuses them; such a spelling could pass a check the canonical one
+ * fails, so it is refused too. A string that is not an address at all is left
+ * to the check that already reports it. An optional argument that was not
+ * given is the caller's to skip.
+ */
+function requireCanonicalAddress(value: unknown, name: string): void {
+  if (typeof value !== "string") {
+    throw new SignerError(`${name} must be an address string, not ${nonStringKind(value)}`);
+  }
+  if (!algosdk.isValidAddress(value)) return;
+  const canonical = algosdk.Address.fromString(value).toString();
+  if (canonical !== value) {
+    throw new SignerError(`${name} ${value} is not the canonical spelling of ${canonical}`);
+  }
+}
+
+/** What a value that is not a string is, for an error message. */
+function nonStringKind(value: unknown): string {
+  if (value instanceof algosdk.Address) return "an algosdk Address: pass its toString()";
+  if (value === null || value === undefined) return String(value);
+  return typeof value === "object" ? "an object" : `a ${typeof value}`;
+}
+
+/** A send's result before signing fills it and submission settles its outcome. */
+function emptySendResult(flow: string, originalCount: number): SendResult {
+  return {
+    flow,
+    signedGroup: [],
+    originalCount,
+    txIds: [],
+    groupId: "",
+    fees: [],
+    outcome: SEND_OUTCOME_SUBMITTED,
+    confirmedRound: 0n,
+  };
+}
+
+/**
+ * Read a 200 answer of the approval-bearing request requestId. A body that
+ * does not parse, or parses to the wrong shape, is unreadable: the signer may
+ * have acted, so it is marked as the request's lost answer.
+ */
+async function readApprovalAnswer<T>(response: Response, shape: AnswerShape, requestId: string): Promise<T> {
+  let data: unknown;
+  try {
+    data = await response.json();
+  } catch {
+    throw markLostAnswer(new SignerError("Server returned invalid JSON"), requestId);
+  }
+  const read = readAnswer<T>(shape, data);
+  if ("problem" in read) {
+    throw markLostAnswer(new SignerError(`Server returned a malformed response: ${read.problem}`), requestId);
+  }
+  return read.answer;
+}
+
+/**
+ * A request body as JSON, before anything is posted. A body that cannot be
+ * encoded, such as one holding a bigint, is a plain error: the request is
+ * never posted.
+ */
+function encodeRequestBody(body: unknown, what: string): string {
+  try {
+    return JSON.stringify(body);
+  } catch (error) {
+    throw new SignerError(`failed to encode ${what} request: ${errorText(error)}`);
+  }
+}
+
+/**
+ * Read a 200 answer of a request that releases no signature. A body that
+ * does not parse, or parses to the wrong shape, is a plain error.
+ */
+async function readPlainAnswer<T>(response: Response, shape: AnswerShape): Promise<T> {
+  let data: unknown;
+  try {
+    data = await response.json();
+  } catch {
+    throw new SignerError("Server returned invalid JSON");
+  }
+  const read = readAnswer<T>(shape, data);
+  if ("problem" in read) {
+    throw new SignerError(`Server returned a malformed response: ${read.problem}`);
+  }
+  return read.answer;
+}
+
+/** The stable signer error code an error carries, or "". */
+function signerErrorCode(error: unknown): string {
+  return error instanceof SignerError ? error.code : "";
+}
+
+/** Wait ms milliseconds, or until signal aborts. */
+function sleepWithSignal(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(callerAborted());
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(callerAborted());
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 /**
  * The check that records what a position's sender can spend in ALGO. A
  * group's ALGO check reads it by this name and no other.
@@ -1681,12 +1874,34 @@ function requireBoxReferences(boxes: unknown): void {
   });
 }
 
-/** Require every app, asset and box reference of an app call to be a whole number. */
+/**
+ * Require a referenced account to be an address string, spelled canonically.
+ * Account references are compared as strings, with the sender and with each
+ * other, so another spelling of an address would be a different reference.
+ */
+function requireAccountReference(value: unknown, name: string): string {
+  if (typeof value !== "string") {
+    throw new SignerError(`${name} must be an address string, not ${nonStringKind(value)}`);
+  }
+  if (!algosdk.isValidAddress(value)) {
+    throw new SignerError(`${name} ${JSON.stringify(value)} is not a valid address`);
+  }
+  requireCanonicalAddress(value, name);
+  return value;
+}
+
+/**
+ * Require every account reference of an app call to be a canonical address
+ * string, and every app, asset and box reference a whole number.
+ */
 function requireAppReferences(params: {
+  accounts?: unknown[];
   foreignApps?: unknown[];
   foreignAssets?: unknown[];
   boxes?: unknown;
 }): void {
+  (params.accounts ?? []).forEach((reference, position) =>
+    requireAccountReference(reference, `accounts[${position}]`));
   (params.foreignApps ?? []).forEach((reference, position) =>
     requireUint(reference, `foreignApps[${position}]`, true));
   (params.foreignAssets ?? []).forEach((reference, position) =>
@@ -2104,7 +2319,7 @@ function resolveAbiReferenceArgs(
   for (let index = 0; index < argTypes.length; index++) {
     switch (argTypes[index]) {
       case "account": {
-        const address = marshalAbiAddress(values[index]);
+        const address = marshalAbiAddress(values[index], "ABI account argument");
         if (address === sender) {
           resolved.push(0);
         } else {
@@ -2151,23 +2366,26 @@ function resolveAbiReferenceArgs(
   return resolved;
 }
 
-function marshalAbiAddress(value: unknown): string {
+/**
+ * An ABI account argument as the address string it references: a canonical
+ * address string, an algosdk Address, or a 32-byte public key, as the Go SDK
+ * takes them. Anything else, such as another spelling of an address or an
+ * object that merely has a toString, is refused.
+ */
+function marshalAbiAddress(value: unknown, name: string): string {
   if (typeof value === "string") {
-    algosdk.decodeAddress(value);
-    return value;
+    return requireAccountReference(value, name);
+  }
+  if (value instanceof algosdk.Address) {
+    return value.toString();
   }
   if (value instanceof Uint8Array) {
     if (value.length !== 32) {
-      throw new SignerError("decoded value is not a 32-byte address");
+      throw new SignerError(`${name}: decoded value is not a 32-byte address`);
     }
     return algosdk.encodeAddress(value);
   }
-  if (value && typeof (value as { toString?: unknown }).toString === "function") {
-    const address = (value as { toString: () => string }).toString();
-    algosdk.decodeAddress(address);
-    return address;
-  }
-  throw new SignerError("account reference arguments must be Algorand addresses");
+  throw new SignerError(`${name}: account reference arguments must be Algorand addresses`);
 }
 
 function indexOfUint64(values: Array<number | bigint>, target: bigint): number {
@@ -2440,10 +2658,11 @@ export class SignerClient {
    * /status is authenticated but does not require the signer to be unlocked.
    * A locked state in a 200 response is returned as normal data.
    */
-  async getStatus(): Promise<StatusResponse> {
+  async getStatus(options?: { signal?: AbortSignal }): Promise<StatusResponse> {
     const response = await this.fetch("/status", {
       method: "GET",
       timeout: this.timeoutFor(STATUS_TIMEOUT),
+      signal: options?.signal,
     });
 
     if (response.status === 401) {
@@ -2456,37 +2675,22 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Failed to get signer status: HTTP ${response.status}`);
     }
 
-    const data = (await response.json()) as Record<string, unknown>;
-    const rawProtocolVersion = data.protocol_version as Record<string, unknown> | undefined;
+    const data = await readPlainAnswer<Record<string, any>>(response, STATUS_ANSWER);
     const status: StatusResponse = {
-      nodeRole: typeof data.node_role === "string" ? data.node_role : undefined,
-      protocolVersion:
-        rawProtocolVersion && typeof rawProtocolVersion === "object"
-          ? {
-              major: Number(rawProtocolVersion.major || 0),
-              minor: Number(rawProtocolVersion.minor || 0),
-            }
-          : undefined,
-      buildVersion: typeof data.build_version === "string" ? data.build_version : undefined,
-      state: String(data.state || ""),
-      signerLocked: Boolean(data.signer_locked),
-      readyForSigning: Boolean(data.ready_for_signing),
-      keyCount: Number(data.key_count || 0),
-      keysetRevision: Number(data.keyset_revision || 0),
-      approvalWaitSeconds:
-        typeof data.approval_wait_seconds === "number" ? data.approval_wait_seconds : undefined,
-      warnings: Array.isArray(data.warnings)
-        ? data.warnings.filter((warning): warning is string => typeof warning === "string")
+      nodeRole: data.node_role || undefined,
+      protocolVersion: data.protocol_version
+        ? { major: data.protocol_version.major, minor: data.protocol_version.minor }
         : undefined,
-      notes: Array.isArray(data.notes)
-        ? data.notes.filter((note): note is string => typeof note === "string")
-        : undefined,
-      rotating: Array.isArray(data.rotating)
-        ? (data.rotating.filter(
-            (entry): entry is RotatingAccountStatus =>
-              typeof entry === "object" && entry !== null && typeof (entry as RotatingAccountStatus).account === "string",
-          ) as RotatingAccountStatus[])
-        : undefined,
+      buildVersion: data.build_version || undefined,
+      state: data.state,
+      signerLocked: data.signer_locked,
+      readyForSigning: data.ready_for_signing,
+      keyCount: data.key_count,
+      keysetRevision: data.keyset_revision,
+      approvalWaitSeconds: data.approval_wait_seconds || undefined,
+      warnings: data.warnings,
+      notes: data.notes,
+      rotating: data.rotating,
     };
     this.cacheApprovalWait(status.approvalWaitSeconds);
     return status;
@@ -2545,9 +2749,10 @@ export class SignerClient {
    * List available signing keys.
    *
    * @param refresh - If true, bypass cache and fetch fresh data
+   * @param options - Optional caller cancellation signal for the request
    * @returns List of KeyInfo with address, keyType, etc.
    */
-  async listKeys(refresh: boolean = false): Promise<KeyInfo[]> {
+  async listKeys(refresh: boolean = false, options?: { signal?: AbortSignal }): Promise<KeyInfo[]> {
     if (!refresh && this.keyCache.size > 0) {
       return Array.from(this.keyCache.values());
     }
@@ -2555,6 +2760,7 @@ export class SignerClient {
     const response = await this.fetch("/keys", {
       method: "GET",
       timeout: this.timeoutFor(INVENTORY_TIMEOUT),
+      signal: options?.signal,
     });
 
     if (response.status === 401) {
@@ -2565,42 +2771,43 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Failed to list keys: HTTP ${response.status}`);
     }
 
-    const data = (await response.json()) as KeysResponse;
+    const data = await readPlainAnswer<{ keys?: Record<string, any>[] }>(response, KEYS_ANSWER);
+    const records = data.keys ?? [];
+    // An address that algosdk reads as an Algorand address but that is not
+    // its canonical spelling would be compared and looked up as another
+    // address than the one it stands for, so the whole answer is refused.
+    // Any other string is kept as sent: a witness key's record carries its
+    // Witness Key ID, which is not an Algorand address, and it can only be
+    // matched by an exact lookup.
+    records.forEach((record, index) => {
+      const address = record.address as string;
+      if (!algosdk.isValidAddress(address)) return;
+      const canonical = algosdk.Address.fromString(address).toString();
+      if (canonical !== address) {
+        throw new SignerError(
+          `Server returned a malformed response: key ${index + 1} address ${address} is not the canonical spelling of ${canonical}`,
+        );
+      }
+    });
     const keys: KeyInfo[] = [];
     this.keyCache.clear();
     this.keyCacheRevision = undefined;
 
-    for (const k of data.keys || []) {
-      // Parse signing_args, mapping snake_case API fields to camelCase TypeScript
-      let signingArgs: SigningArg[] | undefined;
-      const rawArgs = (k as any).signing_args;
-      if (rawArgs) {
-        signingArgs = rawArgs.map((arg: any) => ({
-          name: arg.name,
-          type: arg.type || "bytes",
-          description: arg.description || "",
-          label: arg.label,
-          required: arg.required,
-          byteLength: arg.byte_length,
-          maxSize: arg.max_size,
-        }));
-      }
-
+    for (const raw of records) {
       // Map snake_case API fields to camelCase TypeScript interface
-      const raw = k as any;
       const keyInfo: KeyInfo = {
-        address: k.address,
-        publicKeyHex: raw.public_key_hex || "",
-        keyType: raw.key_type || "",
+        address: raw.address,
+        publicKeyHex: raw.public_key_hex,
+        keyType: raw.key_type,
         authorizationKind: raw.authorization_kind || undefined,
         signingFlow: raw.signing_flow || undefined,
         cosignerComponentKeyType: raw.cosigner_component_key_type || undefined,
         logicSigResources: mapLogicSigResourceProfile(raw.logic_sig_resources),
-        isGenericLsig: raw.is_generic_lsig || false,
-        isWitnessKey: raw.is_witness_key || false,
-        isSpendingAccount: typeof raw.is_spending_account === "boolean" ? raw.is_spending_account : undefined,
+        isGenericLsig: raw.is_generic_lsig,
+        isWitnessKey: raw.is_witness_key,
+        isSpendingAccount: raw.is_spending_account,
         boundedAuthorization: mapBoundedAuthorization(raw.bounded_authorization),
-        signingArgs,
+        signingArgs: raw.signing_args ? raw.signing_args.map(mapRuntimeArg) : undefined,
         parameters: raw.parameters,
         templateProvenanceStatus: raw.template_provenance_status || undefined,
         templateProvenanceNote: raw.template_provenance_note || undefined,
@@ -2623,8 +2830,8 @@ export class SignerClient {
   /**
    * Return cached keys when /status.keyset_revision is unchanged.
    */
-  async listKeysIfKeysetChanged(): Promise<KeyInfo[]> {
-    const status = await this.getStatus();
+  async listKeysIfKeysetChanged(options?: { signal?: AbortSignal }): Promise<KeyInfo[]> {
+    const status = await this.getStatus(options);
     if (status.signerLocked) {
       throw new SignerUnavailableError("signer is locked");
     }
@@ -2635,7 +2842,7 @@ export class SignerClient {
     ) {
       return Array.from(this.keyCache.values());
     }
-    const keys = await this.listKeys(true);
+    const keys = await this.listKeys(true, options);
     this.keyCacheRevision = status.keysetRevision;
     return keys;
   }
@@ -2655,6 +2862,13 @@ export class SignerClient {
 
   /**
    * Resolve sender -> effective signer and verify signer key ownership.
+   *
+   * A rotating account is authorized by its current stage, which the signer
+   * derives from the account's key and never lists; the signer holds the
+   * account itself and signs for it at any stage, so its authAddress is the
+   * account and chainAuthAddress the stage's address. A rotating account
+   * rekeyed to an ordinary key the signer holds has left rotation, and that
+   * key signs for it like any rekey.
    */
   async resolveAuthAddress(
     address: string,
@@ -2671,14 +2885,32 @@ export class SignerClient {
       const message = error instanceof Error ? error.message : String(error);
       throw new SignerError(`failed to query account info: ${message}`);
     }
+    return this.resolveFromAccountInfo(address, accountInfo, await this.listKeysIfKeysetChanged());
+  }
 
+  /** resolveAuthAddress, from account information and a key listing already read. */
+  private resolveFromAccountInfo(
+    address: string,
+    accountInfo: AccountInfoResult,
+    keys: KeyInfo[],
+  ): ResolvedAuthAddress {
     const authAddress = extractAuthAddress(accountInfo);
     const signingAddress =
       authAddress && authAddress !== address ? authAddress : address;
-    const keyInfo = findSpendableKey(
-      await this.listKeysIfKeysetChanged(),
-      signingAddress,
-    );
+
+    const own = findSpendableKey(keys, address);
+    const leftRotation = signingAddress !== address && findSpendableKey(keys, signingAddress) !== undefined;
+    if (own?.signingFlow === SIGNING_FLOW_ROTATING1 && !leftRotation) {
+      return {
+        address,
+        authAddress: address,
+        isRekeyed: false,
+        chainAuthAddress: authAddress && authAddress !== address ? authAddress : "",
+        keyInfo: own,
+      };
+    }
+
+    const keyInfo = findSpendableKey(keys, signingAddress);
     if (!keyInfo) {
       if (signingAddress === address) {
         throw new KeyNotFoundError(`${address} is not available for signing`);
@@ -2692,7 +2924,48 @@ export class SignerClient {
       address,
       authAddress: signingAddress,
       isRekeyed: signingAddress !== address,
+      chainAuthAddress: signingAddress !== address ? signingAddress : "",
       keyInfo,
+    };
+  }
+
+  /**
+   * Fetch suggested parameters for a transaction sender is about to send.
+   * For a rotating account it shortens the validity window to what the
+   * account's stage program accepts, so every prepare helper builds a
+   * transaction a rotating account can send.
+   *
+   * It reads the signer's keys once for the helper: the same listing
+   * resolves the sender's auth address afterwards. A signer that cannot be
+   * asked is not reported here; resolution reports that failure in its
+   * usual form, where it always has.
+   */
+  private async prepSuggestedParams(algodClient: any, sender: string): Promise<PrepParams> {
+    // The sender is looked up as a string, for the rotating check and for
+    // resolution: it must be a string, in the spelling the signer lists.
+    requireCanonicalAddress(sender, "sender");
+    const suggestedParams = await algodClient.getTransactionParams().do();
+    let keys: KeyInfo[] | undefined;
+    let keysError: unknown;
+    try {
+      keys = await this.listKeysIfKeysetChanged();
+    } catch (error) {
+      keysError = error;
+    }
+    const own = keys && sender ? findSpendableKey(keys, sender) : undefined;
+    if (own?.signingFlow === SIGNING_FLOW_ROTATING1) {
+      const first = wholeNumber(suggestedParams.firstValid);
+      const last = wholeNumber(suggestedParams.lastValid);
+      if (first !== undefined && last !== undefined && last - first > BigInt(ROTATING_MAX_VALIDITY_WINDOW)) {
+        suggestedParams.lastValid = first + BigInt(ROTATING_MAX_VALIDITY_WINDOW);
+      }
+    }
+    return {
+      suggestedParams,
+      resolve: (address: string, accountInfo: AccountInfoResult) => {
+        if (!keys) throw keysError;
+        return this.resolveFromAccountInfo(address, accountInfo, keys);
+      },
     };
   }
 
@@ -2712,9 +2985,10 @@ export class SignerClient {
     if (!params.receiver) {
       throw new SignerError("receiver is required");
     }
+    requireCanonicalAddress(params.receiver, "receiver");
     requireUint(params.amount, "amount");
 
-    const suggestedParams = await algodClient.getTransactionParams().do();
+    const { suggestedParams, resolve } = await this.prepSuggestedParams(algodClient, params.sender);
     applyPrepFee(suggestedParams, params.fee);
 
     const senderInfo = await algodClient.accountInformation(params.sender).do();
@@ -2733,7 +3007,7 @@ export class SignerClient {
       throw new SignerError(`insufficient funds: available ${available}, required ${required}`);
     }
 
-    const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
+    const resolved = resolve(params.sender, senderInfo);
     return {
       transaction: txn,
       authAddress: resolved.authAddress,
@@ -2765,13 +3039,14 @@ export class SignerClient {
     if (!params.receiver) {
       throw new SignerError("receiver is required");
     }
+    requireCanonicalAddress(params.receiver, "receiver");
     if (params.assetId === undefined || params.assetId === null) {
       throw new SignerError("assetId is required");
     }
     requireUint(params.assetId, "assetId", true);
     requireUint(params.amount, "amount");
 
-    const suggestedParams = await algodClient.getTransactionParams().do();
+    const { suggestedParams, resolve } = await this.prepSuggestedParams(algodClient, params.sender);
     applyPrepFee(suggestedParams, params.fee);
 
     const senderInfo = await algodClient.accountInformation(params.sender).do();
@@ -2808,7 +3083,7 @@ export class SignerClient {
       );
     }
 
-    const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
+    const resolved = resolve(params.sender, senderInfo);
     return {
       transaction: txn,
       authAddress: resolved.authAddress,
@@ -2843,7 +3118,7 @@ export class SignerClient {
     }
     requireUint(params.assetId, "assetId", true);
 
-    const suggestedParams = await algodClient.getTransactionParams().do();
+    const { suggestedParams, resolve } = await this.prepSuggestedParams(algodClient, params.sender);
     applyPrepFee(suggestedParams, params.fee);
 
     const senderInfo = await algodClient.accountInformation(params.sender).do();
@@ -2859,7 +3134,7 @@ export class SignerClient {
     // suggested fee is per byte, usually zero, and would check nothing.
     const checks = asaOptInChecks(senderInfo, params.assetId, Number(txn.fee));
 
-    const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
+    const resolved = resolve(params.sender, senderInfo);
     return {
       transaction: txn,
       authAddress: resolved.authAddress,
@@ -2883,6 +3158,10 @@ export class SignerClient {
     if (!params.closeTo) {
       throw new SignerError("closeTo is required");
     }
+    // Compared as a string: an Address object, or an alternate spelling of
+    // the sender, would pass.
+    requireCanonicalAddress(params.closeTo, "closeTo");
+    requireCanonicalAddress(params.sender, "sender");
     if (params.closeTo === params.sender) {
       throw new SignerError("closeTo must differ from sender");
     }
@@ -2891,7 +3170,7 @@ export class SignerClient {
     }
     requireUint(params.assetId, "assetId", true);
 
-    const suggestedParams = await algodClient.getTransactionParams().do();
+    const { suggestedParams, resolve } = await this.prepSuggestedParams(algodClient, params.sender);
     applyPrepFee(suggestedParams, params.fee);
 
     const senderInfo = await algodClient.accountInformation(params.sender).do();
@@ -2907,7 +3186,7 @@ export class SignerClient {
       suggestedParams,
     });
 
-    const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
+    const resolved = resolve(params.sender, senderInfo);
     return {
       transaction: txn,
       authAddress: resolved.authAddress,
@@ -2931,11 +3210,15 @@ export class SignerClient {
     if (!params.closeTo) {
       throw new SignerError("closeTo is required");
     }
+    // Compared as a string: an Address object, or an alternate spelling of
+    // the sender, would pass.
+    requireCanonicalAddress(params.closeTo, "closeTo");
+    requireCanonicalAddress(params.sender, "sender");
     if (params.closeTo === params.sender) {
       throw new SignerError("closeTo must differ from sender");
     }
 
-    const suggestedParams = await algodClient.getTransactionParams().do();
+    const { suggestedParams, resolve } = await this.prepSuggestedParams(algodClient, params.sender);
     applyPrepFee(suggestedParams, params.fee);
 
     const senderInfo = await algodClient.accountInformation(params.sender).do();
@@ -2951,7 +3234,7 @@ export class SignerClient {
     // per-byte fee.
     const checks = accountCloseChecks(senderInfo, Number(txn.fee));
 
-    const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
+    const resolved = resolve(params.sender, senderInfo);
     return {
       transaction: txn,
       authAddress: resolved.authAddress,
@@ -2975,8 +3258,12 @@ export class SignerClient {
     if (!params.rekeyTo) {
       throw new SignerError("rekeyTo is required");
     }
+    // Compared with the sender and looked up among the signer's keys as a
+    // string: an Address object, or an alternate spelling of a rotating
+    // account, would skip the check that refuses a rekey to one.
+    requireCanonicalAddress(params.rekeyTo, "rekeyTo");
 
-    const suggestedParams = await algodClient.getTransactionParams().do();
+    const { suggestedParams, resolve } = await this.prepSuggestedParams(algodClient, params.sender);
     applyPrepFee(suggestedParams, params.fee);
 
     const senderInfo = await algodClient.accountInformation(params.sender).do();
@@ -2993,7 +3280,7 @@ export class SignerClient {
       suggestedParams,
     });
 
-    const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
+    const resolved = resolve(params.sender, senderInfo);
     // Resolution just refreshed the inventory, so the cache answers for the
     // target without another round trip.
     const target = params.rekeyTo === params.sender ? undefined : this.keyCache.get(params.rekeyTo);
@@ -3022,7 +3309,7 @@ export class SignerClient {
     }
     validateKeyregParams(params);
 
-    const suggestedParams = await algodClient.getTransactionParams().do();
+    const { suggestedParams, resolve } = await this.prepSuggestedParams(algodClient, params.sender);
     applyPrepFee(suggestedParams, params.fee);
 
     const senderInfo = await algodClient.accountInformation(params.sender).do();
@@ -3058,7 +3345,7 @@ export class SignerClient {
       throw new SignerError(`insufficient funds for keyreg fee: available ${available}, fee ${txn.fee}`);
     }
 
-    const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
+    const resolved = resolve(params.sender, senderInfo);
     let message: string | undefined;
     if (chargeIncentiveFee) {
       message = "the 2 ALGO incentive eligibility fee is included";
@@ -3106,6 +3393,11 @@ export class SignerClient {
     if (!params.methodSignature) {
       throw new SignerError("methodSignature is required");
     }
+    if (!params.sender) {
+      throw new SignerError("sender is required");
+    }
+    // Encoding compares account arguments with the sender as strings.
+    requireCanonicalAddress(params.sender, "sender");
     // Checked before the arguments are encoded, so a bad ID is reported as
     // one and never reaches BigInt() or the encoder.
     if (params.appId === undefined || params.appId === null) {
@@ -3158,7 +3450,7 @@ export class SignerClient {
       throw new SignerError(`invalid onComplete: ${onComplete}`);
     }
 
-    const suggestedParams = await algodClient.getTransactionParams().do();
+    const { suggestedParams, resolve } = await this.prepSuggestedParams(algodClient, params.sender);
     applyPrepFee(suggestedParams, params.fee);
 
     const senderInfo = await algodClient.accountInformation(params.sender).do();
@@ -3182,7 +3474,7 @@ export class SignerClient {
       suggestedParams,
     });
 
-    const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
+    const resolved = resolve(params.sender, senderInfo);
     return {
       transaction: txn,
       authAddress: resolved.authAddress,
@@ -3213,7 +3505,7 @@ export class SignerClient {
     requireAppCreateCounts(params);
     requireAppReferences(params);
 
-    const suggestedParams = await algodClient.getTransactionParams().do();
+    const { suggestedParams, resolve } = await this.prepSuggestedParams(algodClient, params.sender);
     applyPrepFee(suggestedParams, params.fee);
 
     const senderInfo = await algodClient.accountInformation(params.sender).do();
@@ -3236,7 +3528,7 @@ export class SignerClient {
       suggestedParams,
     });
 
-    const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
+    const resolved = resolve(params.sender, senderInfo);
     return {
       transaction: txn,
       authAddress: resolved.authAddress,
@@ -3399,58 +3691,41 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Failed to list key types: HTTP ${response.status}`);
     }
 
-    const data = (await response.json()) as KeyTypesResponse;
+    const data = await readPlainAnswer<{ key_types?: Record<string, any>[] }>(response, KEYTYPES_ANSWER);
     const result: KeyTypeInfo[] = [];
 
-    for (const kt of (data as any).key_types || []) {
-      let creationParams: CreationParam[] | undefined;
-      if (kt.creation_params) {
-        creationParams = kt.creation_params.map((p: any) => ({
-          name: p.name,
-          label: p.label || "",
-          description: p.description,
-          paramType: p.type,
-          required: p.required,
-          maxLength: p.max_length,
-          inputModes: Array.isArray(p.input_modes)
-            ? p.input_modes.map((mode: any) => ({
-                name: mode.name,
-                label: mode.label,
-                transform: mode.transform,
-                byteLength: mode.byte_length,
-                inputType: mode.input_type,
-              }))
-            : undefined,
-          minItems: p.min_items,
-          maxItems: p.max_items,
-          options: p.options,
-          min: p.min,
-          max: p.max,
-          example: p.example,
-          placeholder: p.placeholder,
-          default: p.default,
-        }));
-      }
-
-      let runtimeArgs: RuntimeArg[] | undefined;
-      if (kt.runtime_args) {
-        runtimeArgs = kt.runtime_args.map((arg: any) => ({
-          name: arg.name,
-          type: arg.type || "bytes",
-          description: arg.description || "",
-          label: arg.label,
-          required: arg.required,
-          byteLength: arg.byte_length,
-          maxSize: arg.max_size,
-        }));
-      }
+    for (const kt of data.key_types ?? []) {
+      const creationParams: CreationParam[] | undefined = kt.creation_params?.map((p: any) => ({
+        name: p.name,
+        label: p.label,
+        description: p.description || undefined,
+        paramType: p.type || undefined,
+        required: p.required,
+        maxLength: p.max_length || undefined,
+        inputModes: p.input_modes?.map((mode: any) => ({
+          name: mode.name,
+          label: mode.label || undefined,
+          transform: mode.transform || undefined,
+          byteLength: mode.byte_length || undefined,
+          inputType: mode.input_type || undefined,
+        })),
+        minItems: p.min_items || undefined,
+        maxItems: p.max_items || undefined,
+        options: p.options,
+        min: p.min,
+        max: p.max,
+        example: p.example || undefined,
+        placeholder: p.placeholder || undefined,
+        default: p.default || undefined,
+      }));
+      const runtimeArgs: RuntimeArg[] | undefined = kt.runtime_args?.map(mapRuntimeArg);
 
       result.push({
         keyType: kt.key_type,
-        family: kt.family || "",
+        family: kt.family,
         displayName: kt.display_name,
         description: kt.description,
-        authorizationKind: kt.authorization_kind,
+        authorizationKind: kt.authorization_kind || undefined,
         requiresLogicsig: kt.requires_logicsig,
         mnemonicWordCount: kt.mnemonic_word_count,
         mnemonicImport: kt.mnemonic_import,
@@ -3503,22 +3778,26 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Key generation failed: HTTP ${response.status}`);
     }
 
-    const data = (await response.json()) as Record<string, unknown>;
+    const data = await readPlainAnswer<Record<string, any>>(response, GENERATE_ANSWER);
     if (data.error) {
-      throw new SignerError(String(data.error));
+      throw new SignerError(data.error);
     }
 
-    // Invalidate key cache
+    // Invalidate key cache: the signer may hold a new key even when its
+    // answer is refused below.
     this.keyCache.clear();
     this.keyCacheRevision = undefined;
 
+    if (data.address === "") {
+      throw new SignerError("Key generation response missing address");
+    }
     return {
-      address: String(data.address || ""),
-      publicKeyHex: typeof data.public_key_hex === "string" ? data.public_key_hex : undefined,
-      keyType: String(data.key_type || ""),
-      isWitnessKey: Boolean(data.is_witness_key),
-      isSpendingAccount: typeof data.is_spending_account === "boolean" ? data.is_spending_account : undefined,
-      parameters: data.parameters as Record<string, string> | undefined,
+      address: data.address,
+      publicKeyHex: data.public_key_hex || undefined,
+      keyType: data.key_type,
+      isWitnessKey: data.is_witness_key,
+      isSpendingAccount: data.is_spending_account,
+      parameters: data.parameters,
     };
   }
 
@@ -3546,14 +3825,16 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Key deletion failed: HTTP ${response.status}`);
     }
 
-    const data = await this.safeJson(response);
-    if (data.error) {
-      throw new SignerError(String(data.error));
-    }
-
-    // Invalidate key cache
+    // Invalidate key cache: whatever the answer, the key may be gone.
     this.keyCache.clear();
     this.keyCacheRevision = undefined;
+
+    // The signer answers {"success": true}: an empty or unreadable answer is
+    // not one.
+    const data = await readPlainAnswer<{ error: string }>(response, DELETE_KEY_ANSWER);
+    if (data.error) {
+      throw new SignerError(data.error);
+    }
   }
 
   /**
@@ -3577,7 +3858,7 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Sign cancel failed: HTTP ${response.status}`);
     }
 
-    const data = (await response.json()) as CancelSignResponse;
+    const data = await readPlainAnswer<CancelSignResponse>(response, CANCEL_ANSWER);
     if (data.error) {
       throw new SignerError(data.error);
     }
@@ -3597,48 +3878,63 @@ export class SignerClient {
     } catch (error) {
       throw new SignerError(`invalid component request: ${error instanceof Error ? error.message : String(error)}`);
     }
+    // A request that is never posted is a plain stop: nothing was asked, so
+    // nothing is canceled. A body that cannot be encoded is never posted.
+    const body = encodeRequestBody(requestBody, "component");
+    const signal = options?.signal;
+    if (signal?.aborted) {
+      throw callerAborted();
+    }
     const approvalBearing = requestBody.targets[0].kind !== "cosigner";
     let timeout = this.timeoutFor(COMPONENT_SIGN_TIMEOUT);
     if (approvalBearing) {
       await this.discoverApprovalWait();
       timeout = Math.max(timeout, this.signRequestTimeout());
     }
+    // Checked again after the discovery, the last wait before posting.
+    if (signal?.aborted) {
+      throw callerAborted();
+    }
     let response: Response;
     try {
       response = await this.fetch("/sign/component", {
         method: "POST",
-        body: JSON.stringify(requestBody),
+        body,
         timeout,
-        signal: options?.signal,
+        signal,
       });
     } catch (error) {
       if (approvalBearing) await this.bestEffortCancelSignRequest(requestBody.request_id || "");
-      throw error;
+      // A component request releases a signature: one whose answer never
+      // arrived may have released it.
+      throw markLostAnswer(error, requestBody.request_id);
     }
     if (response.status === 401) throw new AuthenticationError();
     if (response.status === 403) throw await this.forbiddenRejectedError(response, "Component signing request rejected");
     if (response.status === 503) throw new SignerUnavailableError(await this.errorMessage(response, "Signer unavailable"));
     if (response.status === 400) throw await this.badRequestError(response);
     if (response.status !== 200) throw await this.signerHTTPError(response, `Component signing failed: HTTP ${response.status}`);
-    let data: ComponentResponse & { error?: string };
-    try {
-      data = (await response.json()) as ComponentResponse & { error?: string };
-    } catch {
-      throw new SignerError("Server returned invalid JSON");
-    }
+    const data = await readApprovalAnswer<ComponentResponse & { error?: string }>(
+      response,
+      COMPONENT_ANSWER,
+      requestBody.request_id || "",
+    );
     if (data.error) throw new SignerError(data.error);
+    const requestId = requestBody.request_id || "";
     try {
       validateComponentResponse(data, requestBody);
     } catch (error) {
-      throw new SignerError(
-        `invalid component response: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      throw answerCheckError(error, requestId, (cause) => new SignerError(`invalid component response: ${errorText(cause)}`));
     }
-    if (data.request_id !== requestBody.request_id) throw new SignerError("component response request_id does not match request");
-    const expected = new Map(requestBody.targets.map((target) => [target.target_index, target.kind]));
-    const actual = new Map(data.components.map((component) => [component.target_index, component.kind]));
-    if (expected.size !== actual.size || [...expected].some(([index, kind]) => actual.get(index) !== kind)) {
-      throw new SignerError("component response target indices or kinds do not match request");
+    try {
+      if (data.request_id !== requestBody.request_id) throw new SignerError("component response request_id does not match request");
+      const expected = new Map(requestBody.targets.map((target) => [target.target_index, target.kind]));
+      const actual = new Map(data.components.map((component) => [component.target_index, component.kind]));
+      if (expected.size !== actual.size || [...expected].some(([index, kind]) => actual.get(index) !== kind)) {
+        throw new SignerError("component response target indices or kinds do not match request");
+      }
+    } catch (error) {
+      throw faultAfterAnswer(error, requestId);
     }
     return data;
   }
@@ -3663,12 +3959,25 @@ export class SignerClient {
       );
     }
 
-    const response = await this.fetch("/sign/assemble", {
-      method: "POST",
-      body: JSON.stringify(requestBody),
-      timeout: this.timeoutFor(COSIGNED_ASSEMBLY_TIMEOUT),
-      signal: options?.signal,
-    });
+    // A request that is never posted is a plain stop. A body that cannot be
+    // encoded is never posted.
+    const body = encodeRequestBody(requestBody, "assembly");
+    if (options?.signal?.aborted) {
+      throw callerAborted();
+    }
+    let response: Response;
+    try {
+      response = await this.fetch("/sign/assemble", {
+        method: "POST",
+        body,
+        timeout: this.timeoutFor(COSIGNED_ASSEMBLY_TIMEOUT),
+        signal: options?.signal,
+      });
+    } catch (error) {
+      // Assembly releases the whole group: an answer that never arrived may
+      // have released it.
+      throw markLostAnswer(error, requestBody.request_id);
+    }
 
     if (response.status === 401) {
       throw new AuthenticationError();
@@ -3686,12 +3995,11 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Assembly failed: HTTP ${response.status}`);
     }
 
-    let data: AssemblyResponse & { error?: string };
-    try {
-      data = (await response.json()) as AssemblyResponse & { error?: string };
-    } catch {
-      throw new SignerError("Server returned invalid JSON");
-    }
+    const data = await readApprovalAnswer<AssemblyResponse & { error?: string }>(
+      response,
+      ASSEMBLY_ANSWER,
+      requestBody.request_id || "",
+    );
 
     if (data.error) {
       throw new SignerError(data.error);
@@ -3706,14 +4014,21 @@ export class SignerClient {
         );
       }
     } catch (error) {
-      throw new SignerError(
-        `invalid assembly response: ${error instanceof Error ? error.message : String(error)}`
+      throw answerCheckError(
+        error,
+        requestBody.request_id || "",
+        (cause) => new SignerError(`invalid assembly response: ${errorText(cause)}`),
       );
     }
 
     return data;
   }
 
+  /**
+   * Cancel a request whose answer was lost, best-effort: a cancel that fails,
+   * or whose answer cannot be read, neither fails the request in its place
+   * nor replaces its error. Only the public cancelSignRequest reports one.
+   */
   private async bestEffortCancelSignRequest(requestId: string): Promise<void> {
     try {
       await this.cancelSignRequest(requestId);
@@ -3761,7 +4076,7 @@ export class SignerClient {
    * Preview raw per-slot signer requests without rebuilding them through the
    * address-keyed convenience API.
    */
-  async planRequests(requests: SignRequest[]): Promise<PlanGroupResponse> {
+  async planRequests(requests: SignRequest[], options?: { signal?: AbortSignal }): Promise<PlanGroupResponse> {
     validateSignRequests(requests);
     // The slots the plan is checked against are decoded here, from the very
     // entries that are sent.
@@ -3770,8 +4085,9 @@ export class SignerClient {
 
     const response = await this.fetch("/plan", {
       method: "POST",
-      body: JSON.stringify({ requests }),
+      body: encodeRequestBody({ requests }, "plan"),
       timeout: this.timeoutFor(GROUP_PLAN_TIMEOUT),
+      signal: options?.signal,
     });
 
     if (response.status === 401) {
@@ -3787,21 +4103,18 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Plan failed: HTTP ${response.status}`);
     }
 
-    let data: PlanGroupResponse;
-    try {
-      data = (await response.json()) as PlanGroupResponse;
-    } catch {
-      throw new SignerError("Server returned invalid JSON");
-    }
+    let data = await readPlainAnswer<PlanGroupResponse>(response, PLAN_ANSWER);
 
     if (data.error) {
       throw new SignerError(data.error);
     }
 
+    // The wire report is snake_case, and only its snake_case keys are read,
+    // as the Go SDK reads them; callers read the typed camelCase fields.
     if (data.mutations) {
       data = {
         ...data,
-        mutations: this.normalizeMutationReport(data.mutations),
+        mutations: mutationReportFromWire(data.mutations),
       };
     }
 
@@ -3812,20 +4125,6 @@ export class SignerClient {
     }
 
     return data;
-  }
-
-  private normalizeMutationReport(raw: any): MutationReport {
-    return {
-      dummiesAdded: raw.dummies_added ?? raw.dummiesAdded,
-      groupIdChanged: raw.group_id_changed ?? raw.groupIdChanged,
-      feesModified: raw.fees_modified ?? raw.feesModified,
-      totalFeesDelta: raw.total_fees_delta ?? raw.totalFeesDelta,
-      originalCount: raw.original_count ?? raw.originalCount,
-      finalCount: raw.final_count ?? raw.finalCount,
-      passthroughCount: raw.passthrough_count ?? raw.passthroughCount,
-      foreignCount: raw.foreign_count ?? raw.foreignCount,
-      reason: raw.reason,
-    };
   }
 
   /**
@@ -3983,72 +4282,103 @@ export class SignerClient {
     const maxFeeIncrease = this.feeCeilingSnapshot();
     const signBody: GroupSignRequest = { request_id: requestId, requests };
 
-    await this.discoverApprovalWait();
-
-    let response: Response;
-    try {
-      response = await this.fetch("/sign", {
-        method: "POST",
-        body: JSON.stringify(signBody),
-        timeout: this.signRequestTimeout(),
-        signal: options?.signal,
-      });
-    } catch (error) {
-      await this.bestEffortCancelSignRequest(requestId);
-      throw error;
-    }
-
-    if (response.status === 401) {
-      throw new AuthenticationError();
-    }
-
-    if (response.status === 400) {
-      throw await this.badRequestError(response);
-    }
-
-    if (response.status === 403) {
-      throw await this.forbiddenRejectedError(response, "Signing request rejected by operator");
-    }
-
-    if (response.status === 503) {
-      const error = await this.errorMessage(response, "Signer unavailable");
-      throw new SignerUnavailableError(error);
-    }
-
-    if (response.status !== 200) {
-      throw await this.signerHTTPError(response, `Signing failed: HTTP ${response.status}`);
-    }
-
-    let data: GroupSignResponse;
-    try {
-      data = (await response.json()) as GroupSignResponse;
-    } catch {
-      throw new SignerError("Server returned invalid JSON");
-    }
+    const data = await this.postApproval<GroupSignResponse>(
+      "/sign",
+      requestId,
+      encodeRequestBody(signBody, "sign"),
+      options?.signal,
+      GROUP_SIGN_ANSWER,
+      async (response) => {
+        if (response.status === 401) {
+          return new AuthenticationError();
+        }
+        if (response.status === 400) {
+          return this.badRequestError(response);
+        }
+        if (response.status === 403) {
+          return this.forbiddenRejectedError(response, "Signing request rejected by operator");
+        }
+        if (response.status === 503) {
+          return new SignerUnavailableError(await this.errorMessage(response, "Signer unavailable"));
+        }
+        return this.signerHTTPError(response, `Signing failed: HTTP ${response.status}`);
+      },
+    );
 
     if (data.error) {
       throw new SignerError(data.error);
     }
 
     // The wire report is snake_case; callers read the typed camelCase fields.
-    if (data.mutations) {
-      data = { ...data, mutations: this.normalizeMutationReport(data.mutations) };
-    }
+    const result: GroupSignResponse = data.mutations
+      ? { ...data, mutations: mutationReportFromWire(data.mutations) }
+      : data;
 
     // Every sign path goes through here, so a truncated, altered or padded
-    // group can never be returned for submission or simulation.
+    // group can never be returned for submission or simulation. A check that
+    // refuses the answer is a plain error; a fault in it is the signer's
+    // answer lost, since a signature may be out.
     try {
-      validateSignResponse(slots, data.signed ?? [], data.mutations, maxFeeIncrease);
+      validateSignResponse(slots, result.signed ?? [], result.mutations, maxFeeIncrease);
     } catch (error) {
-      throw verificationError("verify signer response: ", error);
+      throw answerCheckError(error, requestId, (cause) => verificationError("verify signer response: ", cause));
     }
 
-    return data;
+    return result;
+  }
+
+  /**
+   * Post an approval-bearing request and return its 200 answer, parsed. It
+   * waits as long as the signer's approval wait allows, and cancels the
+   * pending approval when the timeout or the caller's signal ends it first.
+   * A signal already aborted sends nothing and is a plain stop. A non-200
+   * answer is the error `refuse` makes of it. An exchange that failed, and a
+   * 200 whose body cannot be read as `shape`, are marked as lost answers: the
+   * signer may have acted on the request.
+   */
+  private async postApproval<T>(
+    path: string,
+    requestId: string,
+    body: string,
+    signal: AbortSignal | undefined,
+    shape: AnswerShape,
+    refuse: (response: Response) => Promise<SignerError>,
+  ): Promise<T> {
+    // A signal already aborted sends nothing, not even the status discovery.
+    if (signal?.aborted) {
+      throw callerAborted();
+    }
+    await this.discoverApprovalWait();
+    // Checked again after the discovery, the last wait before posting.
+    if (signal?.aborted) {
+      throw callerAborted();
+    }
+
+    let response: Response;
+    try {
+      response = await this.fetch(path, {
+        method: "POST",
+        body,
+        timeout: this.signRequestTimeout(),
+        signal,
+      });
+    } catch (error) {
+      await this.bestEffortCancelSignRequest(requestId);
+      throw markLostAnswer(error, requestId);
+    }
+
+    if (response.status !== 200) {
+      throw await refuse(response);
+    }
+    return readApprovalAnswer<T>(response, shape, requestId);
   }
 
   /**
    * Sign a prepared group through the ordinary approval path, then send the
    * exact executable group to the caller-provided algod simulation endpoint.
+   * A failed simulation, or an answer without exactly one group result
+   * holding one transaction result per transaction, is reported in the
+   * result's `failed` and `failureMessage` fields.
    */
   async simulatePreparedGroup(
     algodClient: Algodv2,
@@ -4077,6 +4407,613 @@ export class SignerClient {
     options?: SignOptions,
   ): Promise<SimulationResult> {
     return this.simulatePreparedGroup(algodClient, { transactions: [prepared] }, options);
+  }
+
+  /**
+   * Build an ALGO payment, then sign, submit and track it with sendPrepared.
+   * It works the same way for every account type sendPrepared supports.
+   */
+  async sendPayment(
+    algodClient: Algodv2,
+    params: PaymentPrepParams,
+    options?: SendOptions,
+  ): Promise<SendResult> {
+    checkSendOptions(options);
+    const prepared = await this.preparePayment(algodClient, params);
+    return this.sendPreparedGroup(algodClient, { transactions: [prepared] }, options, true);
+  }
+
+  /**
+   * Sign a prepared transaction or group with the signing flow each account
+   * needs, check the signed result against what was prepared, submit exactly
+   * those bytes, and by default wait for confirmation.
+   *
+   * The flow is chosen from the signer's own record of each key, never from
+   * the caller. A rotating account is signed for by another key only when
+   * the chain says it is rekeyed to that key. A group of ordinary and bounded
+   * accounts goes through /sign; a group with a cosigned account goes through
+   * the cosigned sequence, which needs the cosigner named in options when a
+   * position requires its signature. A rotating account's transaction, which
+   * must be alone and ungrouped, goes through the rotating sequence: prepare,
+   * check, simulate unsigned, then sign. An unknown flow, or a pre-signed or
+   * foreign position, is refused before anything is signed.
+   *
+   * Every position must be one whose key this signer holds, and must name it
+   * in authAddress, as the prepare helpers do.
+   *
+   * A refusal by the signer, and an answer of the signer's that the SDK
+   * refuses, come back as the signing call's own error; nothing was
+   * submitted. The other failures are typed: SignOutcomeUnknownError (an
+   * approval-bearing request ended with no usable answer, or the SDK failed
+   * while checking or describing one), SubmissionRejectedError
+   * and SubmissionUncertainError (the group was signed, and the error keeps
+   * the signed bytes and their IDs), RotatingPreflightError,
+   * UnsupportedSigningFlowError and UnsupportedGroupError. A rotating send
+   * may prepare and seek approval again, a bounded number of times, when the
+   * signer says an attempt released no signature. No send ever builds a
+   * replacement for a transaction whose outcome is unknown.
+   */
+  async sendPrepared(
+    algodClient: Algodv2,
+    group: PreparedGroup,
+    options?: SendOptions,
+  ): Promise<SendResult> {
+    return this.sendPreparedGroup(algodClient, group, options, false);
+  }
+
+  /**
+   * sendPrepared. intentBuilt says the SDK built the group's transactions
+   * itself, so it may rebuild their validity rounds.
+   */
+  private async sendPreparedGroup(
+    algodClient: Algodv2,
+    group: PreparedGroup,
+    options: SendOptions | undefined,
+    intentBuilt: boolean,
+  ): Promise<SendResult> {
+    if (!algodClient) {
+      throw new SignerError("algodClient is required");
+    }
+    const checked = checkSendOptions(options);
+    const opts = options ?? {};
+    const signal = opts.signal;
+    // An aborted signal stops the send before the signer is asked anything.
+    if (signal?.aborted) {
+      throw callerAborted();
+    }
+    const { flow, leftRotation } = await this.classifySend(group);
+    // A rotating account is signed for by another key only when the chain
+    // says it is rekeyed to that key. Without this a caller could have an
+    // ordinary key sign a rotating account's transaction, outside the
+    // rotating rules: refused by the network today, but signed.
+    for (const index of leftRotation) {
+      const item = group.transactions[index];
+      const sender = (item.transaction as Transaction).sender.toString();
+      let info: AccountInfoResult;
+      try {
+        info = await (algodClient as any).accountInformation(sender).do(undefined, algodOptions(signal));
+      } catch (error) {
+        throw new SignerError(
+          `prepared transaction ${index}: read the authorizer of rotating account ${sender}: ${errorText(error)}`,
+        );
+      }
+      if (extractAuthAddress(info) !== item.authAddress) {
+        throw new UnsupportedGroupError(
+          `prepared transaction ${index}: group not supported by unified sending: it names auth address ` +
+            `${item.authAddress}, but rotating account ${sender} is not rekeyed to it`,
+        );
+      }
+    }
+    // Nothing has been asked of the signer yet, so an aborted signal is a
+    // plain stop, not an unknown outcome.
+    if (signal?.aborted) {
+      throw callerAborted();
+    }
+
+    if (flow === SIGNING_FLOW_ROTATING1) {
+      return this.sendRotating(
+        algodClient,
+        group.transactions[0],
+        checked,
+        intentBuilt || Boolean(opts.refreshValidity),
+      );
+    }
+
+    const result = emptySendResult(flow, group.transactions.length);
+    // The approval-bearing request whose answer released the group, for a
+    // fault in describing what it signed.
+    let released: { requestId: string; requests?: SignRequest[] };
+    if (flow === SIGNING_FLOW_COSIGNED1) {
+      let signed: CosignedSignResult;
+      try {
+        signed = await signPreparedCosignedGroup({
+          userClient: this,
+          cosignerClient: opts.cosignerClient,
+          cosignerResolver: opts.cosignerResolver,
+          cosignerComponentKey: opts.cosignerComponentKey,
+          preparedGroup: group,
+          signal,
+        });
+      } catch (error) {
+        // The sequence makes several approval-bearing requests. One that
+        // ended with no answer may have released a signature, and the last
+        // of them releases the whole group. The mark names the request.
+        if (isLostAnswer(error)) {
+          throw new SignOutcomeUnknownError({ requestId: lostAnswerRequestId(error), cause: error });
+        }
+        throw error;
+      }
+      result.signedGroup = [...signed.signedGroup];
+      result.mutations = signed.planMutations;
+      result.cosigned = signed;
+      released = { requestId: signed.boundedAssemblyResponse?.request_id ?? "" };
+    } else {
+      const { response, requestId, requests } = await this.signForSend(group, signal);
+      result.signedGroup = [...(response.signed ?? [])];
+      result.mutations = response.mutations;
+      released = { requestId, requests };
+    }
+
+    let raw: Uint8Array[];
+    try {
+      raw = describeSignedGroup(result);
+    } catch (error) {
+      // A fault in describing a signed group is not a refusal of it: the
+      // signature is out.
+      if (!(error instanceof SignerError)) {
+        throw new SignOutcomeUnknownError({ ...released, cause: error });
+      }
+      throw new SignerError(`verify signed group: ${errorText(error)}`);
+    }
+    await submitAndTrack(algodClient, raw, result, checked);
+    return result;
+  }
+
+  /**
+   * Pick the one signing flow for the whole group from the signer's records,
+   * or refuse a group unified sending does not cover. Nothing has been signed
+   * when it returns.
+   *
+   * leftRotation lists the positions whose sender is a rotating account and
+   * which name another held key: the caller must confirm on the chain that
+   * the account is rekeyed to that key before anything is signed.
+   */
+  private async classifySend(group: PreparedGroup): Promise<{ flow: string; leftRotation: number[] }> {
+    const items = group?.transactions ?? [];
+    if (!Array.isArray(items) || items.length === 0) {
+      throw new SignerError("prepared group is empty");
+    }
+    const keys = await this.listKeysIfKeysetChanged();
+    let flow = "";
+    const leftRotation: number[] = [];
+    for (let index = 0; index < items.length; index++) {
+      const item = items[index];
+      if (item.signedTransactionBase64) {
+        throw new UnsupportedGroupError(
+          `prepared transaction ${index}: group not supported by unified sending: it is already signed; ` +
+            "use the lower-level signing calls for a pre-signed position",
+        );
+      }
+      if (!item.transaction) {
+        throw new SignerError(`prepared transaction ${index}: transaction is required`);
+      }
+      const authAddress = item.authAddress;
+      if (!authAddress) {
+        throw new UnsupportedGroupError(
+          `prepared transaction ${index}: group not supported by unified sending: it names no auth address, ` +
+            "so this signer does not sign it",
+        );
+      }
+      // A rotating account is recognised by its own record: once it has
+      // rotated, its on-chain authorizer is a stage address the signer does
+      // not list. It signs alone, and as itself.
+      const sender = item.transaction.sender.toString();
+      // A position that names another key the signer holds says the account
+      // left rotation for that key. It is routed by that key once the chain
+      // confirms the rekey.
+      const namesAnotherKey = authAddress !== sender && findSpendableKey(keys, authAddress) !== undefined;
+      const own = findSpendableKey(keys, sender);
+      const rotatingSender = own?.signingFlow === SIGNING_FLOW_ROTATING1;
+      if (rotatingSender && namesAnotherKey) {
+        leftRotation.push(index);
+      }
+      if (rotatingSender && !namesAnotherKey) {
+        if (items.length !== 1) {
+          throw new UnsupportedGroupError(
+            `prepared transaction ${index}: group not supported by unified sending: ${sender} is a rotating ` +
+              "account, which sends one transaction alone; the signer forms its group",
+          );
+        }
+        if (authAddress !== sender) {
+          throw new UnsupportedGroupError(
+            `prepared transaction ${index}: group not supported by unified sending: it names auth address ` +
+              `${authAddress}, but ${sender} is a rotating account and signs as itself`,
+          );
+        }
+        return { flow: SIGNING_FLOW_ROTATING1, leftRotation: [] };
+      }
+      const key = findSpendableKey(keys, authAddress);
+      if (!key) {
+        throw new KeyNotFoundError(`prepared transaction ${index}: ${authAddress} is not available for signing`);
+      }
+      switch (key.signingFlow ?? "") {
+        case "":
+        case SIGNING_FLOW_BOUNDED1:
+          break;
+        case SIGNING_FLOW_COSIGNED1:
+          flow = SIGNING_FLOW_COSIGNED1;
+          break;
+        case SIGNING_FLOW_ROTATING1:
+          throw new UnsupportedGroupError(
+            `prepared transaction ${index}: group not supported by unified sending: it names rotating account ` +
+              `${authAddress} as the auth address of another sender; a rotating account signs only its own transactions`,
+          );
+        default:
+          throw new UnsupportedSigningFlowError(
+            `prepared transaction ${index}: unsupported signing flow: key ${authAddress} requires signing flow ` +
+              `${JSON.stringify(key.signingFlow)}; upgrade the SDK`,
+          );
+      }
+    }
+    return { flow, leftRotation };
+  }
+
+  /**
+   * The ordinary /sign flow for a send: signRequests, with an exchange that
+   * ended with no usable answer told apart from a refusal.
+   */
+  private async signForSend(
+    group: PreparedGroup,
+    signal?: AbortSignal,
+  ): Promise<{ response: GroupSignResponse; requestId: string; requests: SignRequest[] }> {
+    const requests = preparedGroupToSignRequests(group);
+    const requestId = newSignRequestId();
+    try {
+      return { response: await this.signRequests(requests, { requestId, signal }), requestId, requests };
+    } catch (error) {
+      if (isLostAnswer(error)) {
+        throw new SignOutcomeUnknownError({ requestId, requests, cause: error });
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Submit a signed group exactly as given and, unless told not to, wait for
+   * confirmation. It signs nothing. Use it to submit a group from
+   * signPreparedRotating, or to submit again the signedGroup a
+   * SubmissionUncertainError kept: the same bytes can execute only once.
+   *
+   * Each entry must be one canonically encoded signed transaction, hex
+   * msgpack, and a group of several must carry the group ID computed over
+   * itself.
+   */
+  async submitSignedGroup(
+    algodClient: Algodv2,
+    signedGroup: string[],
+    options?: SendOptions,
+  ): Promise<SendResult> {
+    if (!algodClient) {
+      throw new SignerError("algodClient is required");
+    }
+    const checked = checkSendOptions(options);
+    if (!Array.isArray(signedGroup)) {
+      throw new SignerError("verify signed group: signed group is empty");
+    }
+    const result = emptySendResult("", signedGroup.length);
+    result.signedGroup = [...signedGroup];
+    let raw: Uint8Array[];
+    try {
+      raw = describeSignedGroup(result);
+    } catch (error) {
+      throw new SignerError(`verify signed group: ${errorText(error)}`);
+    }
+    await submitAndTrack(algodClient, raw, result, checked);
+    return result;
+  }
+
+  /**
+   * Ask the signer to prepare one transaction from a rotating account and
+   * check the group it returns. The transaction must be ungrouped, set no
+   * rekeyTo, not close the account, and have a validity window of at most
+   * ROTATING_MAX_VALIDITY_WINDOW rounds. Nothing is signed.
+   *
+   * The signer may set rekeyTo to the next stage's address, raise the fee,
+   * assign a group ID and append canonical resource dummies. Any other
+   * change, a report that disagrees with the bytes, or a fee raise above the
+   * client's max fee increase is an error.
+   */
+  async prepareRotating(
+    txn: Transaction,
+    options?: RotatingPrepareOptions,
+  ): Promise<PreparedRotating> {
+    if (!txn) {
+      throw new SignerError("transaction is required");
+    }
+    checkRotatingShape(txn);
+    checkRotatingWindow(txn);
+    const [originalHex] = encodeTransaction(txn);
+    const request: RotatingPrepareRequest = {
+      account: txn.sender.toString(),
+      txn_bytes_hex: originalHex,
+    };
+    const maxFeeIncrease = this.feeCeilingSnapshot();
+
+    const response = await this.fetch("/sign/rotating/prepare", {
+      method: "POST",
+      body: JSON.stringify(request),
+      timeout: this.timeoutFor(GROUP_PLAN_TIMEOUT),
+      signal: options?.signal,
+    });
+    if (response.status !== 200) {
+      throw await this.rotatingAPIError(response, "rotating prepare failed");
+    }
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      throw new SignerError("Server returned invalid JSON");
+    }
+    // The prepare answer is read, bound and checked in one place.
+    return newPreparedRotating(originalHex, body, maxFeeIncrease, options?.appCallInfo);
+  }
+
+  /**
+   * Simulate the prepared group, unsigned, through the caller's algod. It
+   * never signs. A failed simulation, or an answer without exactly one group
+   * result holding one transaction result per transaction, is reported in
+   * the result's `failed` and `failureMessage` fields, not as an error.
+   *
+   * It checks the group's effects. It does not prove the stage's signatures
+   * will pass: the node runs the stage program only on the signed group.
+   */
+  async simulatePreparedRotating(
+    algodClient: Algodv2,
+    prepared: PreparedRotating,
+    options?: { signal?: AbortSignal },
+  ): Promise<SimulationResult> {
+    if (!algodClient) {
+      throw new SignerError("algodClient is required");
+    }
+    // Only a PreparedRotating prepareRotating made is used: an object built
+    // on its prototype could carry its own checks or none.
+    if (!PreparedRotating.isGenuine(prepared)) {
+      throw new SignerError("prepared rotating group is required: pass the PreparedRotating prepareRotating returned");
+    }
+    try {
+      PreparedRotating.verifyBinding(prepared);
+    } catch (error) {
+      throw verificationError("verify prepared rotating group: ", error);
+    }
+    const unsigned = prepared.decoded().map((txn) => new algosdk.SignedTransaction({ txn }));
+    const response = await runSimulation(algodClient, unsigned, true, options?.signal);
+    const failureMessage = simulationFailure(response, unsigned.length);
+    return {
+      txIds: prepared.txIds(),
+      transactions: prepared.transactions(),
+      signedGroup: [],
+      mutations: prepared.mutations(),
+      response,
+      failed: failureMessage !== "",
+      failureMessage,
+    };
+  }
+
+  /**
+   * Ask the signer to sign a prepared rotating group, wait for operator
+   * approval, and check the signed group against the prepared one. It does
+   * not submit.
+   *
+   * If the answer never arrives, or cannot be read, or the SDK fails (a
+   * fault, not a refusal) while checking it, it throws a
+   * SignOutcomeUnknownError that carries the request ID and the prepared
+   * group. Calling signPreparedRotating again with that
+   * same prepared group is the safe recovery: it asks for the same
+   * transaction, with the same IDs, and builds no second spend. It needs
+   * approval again, and it succeeds only while the stage is still live and
+   * the window still acceptable. If that retry is refused, do not prepare a
+   * replacement until the first attempt's outcome is known;
+   * rotating_stage_changed in particular means a transaction from that stage
+   * has confirmed.
+   */
+  async signPreparedRotating(
+    prepared: PreparedRotating,
+    options?: RotatingSignOptions,
+  ): Promise<RotatingSignResult> {
+    // Only a PreparedRotating prepareRotating made is signed: an object built
+    // on its prototype could carry its own checks or none.
+    if (!PreparedRotating.isGenuine(prepared)) {
+      throw new SignerError("prepared rotating group is required: pass the PreparedRotating prepareRotating returned");
+    }
+    // The binding is checked again at the signing boundary.
+    try {
+      PreparedRotating.verifyBinding(prepared);
+    } catch (error) {
+      throw verificationError("verify prepared rotating group: ", error);
+    }
+    const requestId = options?.requestId || newSignRequestId();
+    validateSignRequestId(requestId, true);
+
+    let data: RotatingSignResponse;
+    try {
+      data = await this.postApproval<RotatingSignResponse>(
+        "/sign/rotating/sign",
+        requestId,
+        encodeRequestBody(prepared.signRequestBody(requestId), "rotating sign"),
+        options?.signal,
+        ROTATING_SIGN_ANSWER,
+        (response) => this.rotatingAPIError(response, "rotating sign failed"),
+      );
+    } catch (error) {
+      if (isLostAnswer(error)) {
+        throw new SignOutcomeUnknownError({ requestId, rotating: prepared, cause: error });
+      }
+      throw error;
+    }
+    let result: RotatingSignResult;
+    try {
+      result = prepared.verifySigned(data);
+    } catch (error) {
+      // A check that refuses the signed group is a plain error. A fault in
+      // checking it is not: the signer answered, and the signature is out.
+      if (!(error instanceof SignerError)) {
+        throw new SignOutcomeUnknownError({ requestId, rotating: prepared, cause: error });
+      }
+      throw verificationError("verify signer response: ", error);
+    }
+    result.requestId = requestId;
+    return result;
+  }
+
+  /**
+   * Run the rotating1 flow for one transaction: prepare, check the prepared
+   * group, simulate it unsigned, then sign and submit exactly those bytes. A
+   * failed check or simulation happens before any key is used.
+   *
+   * refresh says the validity rounds may be rebuilt: always for a
+   * transaction the SDK built from an intent, and for a supplied one only
+   * when the caller set refreshValidity. A supplied transaction is otherwise
+   * sent as given.
+   *
+   * An attempt is repeated, at most ROTATING_SEND_ATTEMPTS times, only when
+   * the signer said that attempt released no signature: it has not found the
+   * live stage yet, the account's authorizer moved between prepare and sign,
+   * or the window was not current at signing. Every attempt needs approval
+   * again. A sign whose answer never arrived, and any failure after
+   * submission, ends the send: it never builds a replacement spend on its
+   * own.
+   */
+  private async sendRotating(
+    algodClient: Algodv2,
+    item: PreparedTransaction,
+    checked: CheckedSendOptions,
+    refresh: boolean,
+  ): Promise<SendResult> {
+    if (item.lsigArgs && Object.keys(item.lsigArgs).length > 0) {
+      throw new UnsupportedGroupError(
+        "group not supported by unified sending: a rotating account takes no LogicSig arguments from the caller",
+      );
+    }
+    const algod = algodClient as any;
+    const signal = checked.signal;
+    let txn = item.transaction as Transaction;
+    // prepareRotating refuses a spend of the wrong shape, or with a window
+    // over the limit, before it asks the signer anything.
+    const prepareOptions: RotatingPrepareOptions = { appCallInfo: item.appCallInfo, signal };
+
+    for (let attempt = 1; ; attempt++) {
+      const last = attempt === ROTATING_SEND_ATTEMPTS;
+      // The signer signs only while the window is current. Checking here
+      // saves the operator an approval that could not lead to a signature.
+      let round: bigint;
+      try {
+        const status = await algod.status().do(undefined, algodOptions(signal));
+        round = algodRound(status?.lastRound, "last round");
+      } catch (error) {
+        throw new SignerError(`read current round: ${errorText(error)}`);
+      }
+      if (!rotatingWindowCurrent(txn, round)) {
+        if (!refresh) {
+          checkRotatingWindow(txn);
+          throw new SignerError(
+            `validity rounds ${txn.firstValid}-${txn.lastValid} are not current at round ${round}: ` +
+              `a rotating account signs only while first valid is at most ${ROTATING_MAX_LEAD} rounds ahead ` +
+              `and at least ${ROTATING_MIN_REMAINING} rounds remain (rebuild the transaction, or set refreshValidity)`,
+          );
+        }
+        txn = await refreshRotatingValidity(algod, txn, false, algodOptions(signal));
+      }
+
+      let prepared: PreparedRotating;
+      try {
+        prepared = await this.prepareRotating(txn, prepareOptions);
+      } catch (error) {
+        if (signerErrorCode(error) === ErrorCodes.RotatingStageUnproven && !last) {
+          try {
+            await sleepWithSignal(attempt * rotatingTiming.unprovenBackoffMs, signal);
+          } catch (waitError) {
+            throw new SignerError(
+              `${errorText(error)} (and the wait to retry ended: ${errorText(waitError)})`,
+              signerErrorCode(error),
+            );
+          }
+          continue;
+        }
+        throw error;
+      }
+
+      let simulation: SimulationResult;
+      try {
+        simulation = await this.simulatePreparedRotating(algodClient, prepared, { signal });
+      } catch (error) {
+        throw new SignerError(`simulate prepared rotating group; nothing was signed: ${errorText(error)}`);
+      }
+      if (simulation.failed) {
+        throw new RotatingPreflightError(prepared, simulation.failureMessage);
+      }
+      // Nothing has been asked to sign yet, so an aborted signal is a plain
+      // stop, not an unknown outcome.
+      if (signal?.aborted) {
+        throw callerAborted();
+      }
+
+      let signed: RotatingSignResult;
+      try {
+        signed = await this.signPreparedRotating(prepared, { signal });
+      } catch (error) {
+        const code = signerErrorCode(error);
+        if (code === ErrorCodes.RotatingStageChanged && !last) {
+          continue;
+        }
+        if (code === ErrorCodes.RotatingWindowNotCurrent && refresh && !last) {
+          txn = await refreshRotatingValidity(algod, txn, true, algodOptions(signal));
+          continue;
+        }
+        throw error;
+      }
+
+      const result = emptySendResult(SIGNING_FLOW_ROTATING1, 1);
+      let raw: Uint8Array[];
+      try {
+        result.signedGroup = [...signed.signedGroup];
+        result.mutations = prepared.mutations();
+        result.rotating = {
+          stage: signed.stage,
+          target: signed.target,
+          rekeyTo: prepared.rekeyTo,
+          attempts: attempt,
+          transaction: cloneTransaction(txn),
+          requestId: signed.requestId,
+        };
+        raw = describeSignedGroup(result);
+      } catch (error) {
+        // A fault in describing the signed group is not a refusal of it.
+        if (!(error instanceof SignerError)) {
+          throw new SignOutcomeUnknownError({ requestId: signed.requestId, rotating: prepared, cause: error });
+        }
+        throw new SignerError(`verify signed group: ${errorText(error)}`);
+      }
+      await submitAndTrack(algodClient, raw, result, checked);
+      return result;
+    }
+  }
+
+  /**
+   * The error for a refused rotating request: the statuses every signing
+   * call maps, and otherwise a SignerError that keeps the stable code.
+   */
+  private async rotatingAPIError(response: Response, fallback: string): Promise<SignerError> {
+    if (response.status === 401) {
+      return new AuthenticationError();
+    }
+    if (response.status === 403) {
+      return this.forbiddenRejectedError(response, fallback);
+    }
+    if (response.status === 503) {
+      const { code, message } = await this.errorParts(response, "Signer unavailable");
+      return new SignerUnavailableError(message, code);
+    }
+    return this.signerHTTPError(response, `${fallback}: HTTP ${response.status}`);
   }
 
   /**
@@ -4243,17 +5180,6 @@ export class SignerClient {
     }
 
     return signedHexes;
-  }
-
-  /**
-   * Parse JSON response safely, returning empty object on failure.
-   */
-  private async safeJson(response: Response): Promise<Record<string, unknown>> {
-    try {
-      return (await response.json()) as Record<string, unknown>;
-    } catch {
-      return {};
-    }
   }
 
   /**
