@@ -200,7 +200,13 @@ for key in keys:
 ```
 
 Returns list of `KeyInfo`:
-- `address`: Algorand address
+- `address`: the account's Algorand address, kept exactly as the signer sent
+  it and matched by its exact text. A witness key's record carries its
+  Witness Key ID here, which is not an Algorand address. A key list that
+  spells an Algorand address non-canonically (the same 32 bytes and checksum,
+  other text) is refused whole with a `SignerError`, as the Go and TypeScript
+  SDKs refuse it, since a lookup by the canonical address would never find
+  that key.
 - `key_type`: "ed25519", "aplane.falcon1024.v1", "aplane.htlc.v1", etc.
 - `logic_sig_resources`: independent program-byte, argument-byte, and
   maximum-opcode-cost demand by authorization path.
@@ -306,6 +312,13 @@ signed = client.sign_transaction(txn, request_id=request_id)
 # elsewhere, if the user aborts while approval is pending:
 client.cancel_sign_request(request_id)
 ```
+
+The cancel a signing call sends itself, when its request times out or
+disconnects, is best effort: its failure, or an answer to it the SDK cannot
+read, never fails the call or replaces its error. Only
+`cancel_sign_request()` reports a cancel's outcome. A request whose body
+cannot be encoded as JSON (one holding `NaN`, say) is never sent: it is a
+plain `ValueError`, with no cancel and no unknown outcome.
 
 #### `send_prepared(algod_client, group, *, no_wait=False, wait_rounds=0, ...) -> SendResult`
 
@@ -627,6 +640,43 @@ except KeyNotFoundError:
 except SignerError as e:
     print(f"Signing failed: {e}")
 ```
+
+### How Signer Answers Are Read
+
+Every 200 answer from the signer is read as exactly one JSON object of the
+shape the Go SDK declares for it. A field left out or `null`, at any depth,
+reads as its zero value; an unknown field is ignored. A body that is not one
+object (empty, cut off, `null`, a list, text after it, `NaN`) or a field of
+the wrong type or out of range is an answer that could not be read:
+
+- at a request that releases no signature (`/status`, `/keys`, `/keytypes`,
+  `/plan`, `/admin/generate`, `/sign/cancel`, `DELETE /admin/keys`) it is a
+  plain `SignerError` beginning "failed to decode ... response". A `/status`
+  that cannot be read never stops a sign request: the SDK then uses its
+  default approval wait;
+- at an approval-bearing request (`/sign`, `/sign/component`,
+  `/sign/assemble`, `/sign/rotating/sign`) a signature may be out, so a send
+  reports it as `SignOutcomeUnknownError`.
+
+An answer whose `error` field is set is a refusal, and a key generation
+answer that names no address is refused too ("missing address"). A non-200
+body that is JSON but not an object carries no error code; its text is the
+message.
+
+The three SDKs' JSON readers differ in known ways that a real signer never
+reaches:
+
+- Go matches keys case-insensitively, so of two keys that differ only in case
+  (`signed` and `Signed`) the later one wins where TypeScript and Python read
+  only the exact name.
+- Go refuses `-0` for an unsigned field where the others read it as 0.
+- Of a key given twice, the later value is read, except that a later `null`
+  leaves Go's earlier string, number or boolean in place (a list, object or
+  pointer it does empty); Python and TypeScript read that `null` as zero.
+- A body that starts with a UTF-8 byte order mark is readable in TypeScript
+  only.
+- An integer of more than 4300 digits is unreadable in Python only (Python's
+  integer conversion limit).
 
 ### Submission Exceptions
 
