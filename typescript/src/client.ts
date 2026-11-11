@@ -173,6 +173,13 @@ import {
   type AnswerShape,
 } from "./answers.js";
 import {
+  resolveOutcome as resolveUncertainOutcome,
+  waitForOutcome as waitForUncertainOutcome,
+  type OutcomeReport,
+  type ResolveOutcomeOptions,
+  type WaitForOutcomeOptions,
+} from "./outcome.js";
+import {
   SSH_USERNAME,
   normalizeSSHSetupTimeout,
   sshConnectionFailedMessage,
@@ -4717,6 +4724,36 @@ export class SignerClient {
     }
     await submitAndTrack(algodClient, raw, result, checked);
     return result;
+  }
+
+  /**
+   * Say where things stand after a SignOutcomeUnknownError or a
+   * SubmissionUncertainError, from the node alone: the outcome's state,
+   * whether a replacement is safe now, and one sentence of advice. It never
+   * signs, never submits and never calls the signer. Any other error, null
+   * included, is refused with "not an uncertain outcome". A node failure
+   * other than a lookup's "not found" is thrown, never turned into a state.
+   */
+  async resolveOutcome(
+    algodClient: Algodv2,
+    error: unknown,
+    options?: ResolveOutcomeOptions,
+  ): Promise<OutcomeReport> {
+    return resolveUncertainOutcome(algodClient, error, options);
+  }
+
+  /**
+   * resolveOutcome once per round, until the state is "confirmed",
+   * "expired" or "too_old". If options.signal is aborted or
+   * options.timeoutMs passes first, it throws a WaitForOutcomeError whose
+   * `report` is the last report. It never signs or submits anything.
+   */
+  async waitForOutcome(
+    algodClient: Algodv2,
+    error: unknown,
+    options?: WaitForOutcomeOptions,
+  ): Promise<OutcomeReport> {
+    return waitForUncertainOutcome(algodClient, error, options);
   }
 
   /**

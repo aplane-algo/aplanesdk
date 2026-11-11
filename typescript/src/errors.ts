@@ -3,6 +3,7 @@
 
 import type { SignRequest } from "./types.js";
 import type { PreparedRotating } from "./rotating.js";
+import type { OutcomeReport } from "./outcome.js";
 
 /**
  * Base exception for signer errors.
@@ -315,6 +316,24 @@ export class SubmissionUncertainError extends SignerError {
     this.signedGroup = [...signedGroup];
     this.txIds = [...txIds];
     this.lastValid = lastValid;
+    this.cause = cause;
+  }
+}
+
+/**
+ * waitForOutcome ended before the outcome settled: the caller's signal was
+ * aborted or its time limit passed. `report` is the last report it made, if
+ * it made one; `cause` says why the wait ended. Nothing was signed or
+ * submitted by the wait.
+ */
+export class WaitForOutcomeError extends SignerError {
+  readonly report?: OutcomeReport;
+  readonly cause: unknown;
+
+  constructor(report: OutcomeReport | undefined, cause: unknown) {
+    super(`waiting for the outcome ended before it settled: ${errorText(cause)}`);
+    this.name = "WaitForOutcomeError";
+    this.report = report;
     this.cause = cause;
   }
 }
