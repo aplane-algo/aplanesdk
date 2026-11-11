@@ -4,8 +4,9 @@
  * sendPayment builds the payment, signs it through the flow the sender's key
  * needs, checks the signed result, submits it and waits for confirmation. The
  * same call works for an Ed25519, native Falcon, LogicSig, bounded or rotating
- * account, and for a rekeyed sender. A cosigned account also needs its
- * cosigner: set cosignerClient and cosignerComponentKey in the options.
+ * account, and for a rekeyed sender. A cosigned account needs nothing extra
+ * when endpoints.yaml lists its cosigner (an endpoint with role: cosigner);
+ * otherwise set cosignerClient and cosignerComponentKey in the options.
  *
  * Setup:
  *   1. Create data directory: mkdir -p ~/aplane/apclient/.ssh
@@ -34,10 +35,9 @@ const RECEIVER = "ED255ACCOUNTEXAMPLE77777777777777777777777777777777777777777";
 async function main() {
   // Connect using config from $APCLIENT_DATA
   const signer = await SignerClient.fromEnv();
+  const algodClient = new algosdk.Algodv2("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "http://localhost", 4001);
 
   try {
-    const algodClient = new algosdk.Algodv2("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "http://localhost", 4001);
-
     // 1 ALGO, in microAlgos.
     const result = await signer.sendPayment(algodClient, {
       sender: SENDER,
@@ -52,23 +52,39 @@ async function main() {
       console.log(`Rotated from stage ${result.rotating.stage} to stage ${result.rotating.target}`);
     }
   } catch (error) {
-    // A group that was signed keeps its bytes and IDs in the error. Never
-    // send again until its outcome is known: both could execute.
+    // Neither of these errors means "send again": a second payment and the
+    // first could both execute. Ask the node where things stand instead.
     if (error instanceof SubmissionUncertainError) {
-      console.error(`Outcome unknown for ${error.txIds} (${error.stage}); look it up before sending again`);
+      // The group was signed; its bytes and IDs are in the error.
+      console.error(`Outcome unknown for ${error.txIds.join(", ")} (${error.stage}): ${error.message}`);
+      console.error(await advice(signer, algodClient, error));
     } else if (error instanceof SignOutcomeUnknownError) {
       // The signer may have released a signature that was never submitted.
-      // Do not build and sign a replacement: both could execute. Sign the
-      // same prepared group again (a rotating account's is error.rotating,
-      // for signPreparedRotating) or check the chain first.
-      const what = error.rotating
-        ? `rotating spend ${error.rotating.txIds()[0]}`
-        : `sign request ${error.requestId || "(no ID)"}`;
-      console.error(`No answer for ${what}; a signature may have been released, so do not sign a replacement`);
+      console.error(`Sign outcome unknown (request ${error.requestId || "(no ID)"}): ${error.message}`);
+      console.error(await advice(signer, algodClient, error));
     }
     throw error;
   } finally {
-    signer.close();
+    await signer.close();
+  }
+}
+
+/**
+ * Where an uncertain outcome stands, asked of the node; it signs and submits
+ * nothing. A check that fails is said as such, and the error it was asked
+ * about is still the one that is thrown.
+ */
+async function advice(
+  signer: SignerClient,
+  algodClient: algosdk.Algodv2,
+  error: SubmissionUncertainError | SignOutcomeUnknownError,
+): Promise<string> {
+  try {
+    const report = await signer.resolveOutcome(algodClient, error);
+    return `${report.state}: ${report.advice}`;
+  } catch (checkError) {
+    const reason = checkError instanceof Error ? checkError.message : String(checkError);
+    return `Could not check the outcome (${reason}); look the transaction up before sending again.`;
   }
 }
 

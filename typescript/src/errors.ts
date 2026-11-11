@@ -3,6 +3,7 @@
 
 import type { SignRequest } from "./types.js";
 import type { PreparedRotating } from "./rotating.js";
+import type { OutcomeReport } from "./outcome.js";
 
 /**
  * Base exception for signer errors.
@@ -200,6 +201,26 @@ export class UnsupportedGroupError extends SignerError {
 }
 
 /**
+ * Cosigner discovery could not route a cosigned account's witness key to
+ * exactly one cosigner endpoint of endpoints.yaml: no endpoint lists it, more
+ * than one does, none is configured, or an endpoint's SSH host key differs
+ * from the pinned one. It is a plain error, never an unknown outcome: the
+ * cosigned sequence resolves a target that cannot take the listed-rekey path
+ * before any approval-bearing request, and one that may take it only after
+ * the base component answer says it needs the cosigner, before the cosigner
+ * is asked. `cause` is the underlying failure, when there is one.
+ */
+export class CosignerDiscoveryError extends SignerError {
+  readonly cause?: unknown;
+
+  constructor(message: string, cause?: unknown) {
+    super(message);
+    this.name = "CosignerDiscoveryError";
+    this.cause = cause;
+  }
+}
+
+/**
  * A signing exchange ended with no usable answer: a /sign request, or an
  * approval-bearing step of the cosigned or rotating sequence, got no answer,
  * an answer that could not be read, or one the SDK failed while checking
@@ -213,18 +234,26 @@ export class UnsupportedGroupError extends SignerError {
  * rotating account, and calling signPreparedRotating with it again asks for
  * the same transaction and is the safe recovery. Do not build and sign a replacement transaction on the
  * strength of this error alone: check the request with the operator or the
- * signer's audit log first. `cause` is the failure that ended the exchange.
+ * signer's audit log first, or call SignerClient.resolveOutcome with it.
+ * `cause` is the failure that ended the exchange.
+ *
+ * `lastValid` is the earliest last valid round among the transactions sent to
+ * be signed (of the prepared group, for a rotating account). The signer never
+ * changes a validity round, so after that round no signature the request
+ * released can execute.
  */
 export class SignOutcomeUnknownError extends SignerError {
   readonly requestId: string;
   readonly requests?: SignRequest[];
   readonly rotating?: PreparedRotating;
+  readonly lastValid: bigint;
   readonly cause: unknown;
 
   constructor(options: {
     requestId?: string;
     requests?: SignRequest[];
     rotating?: PreparedRotating;
+    lastValid?: bigint;
     cause: unknown;
   }) {
     const requestId = options.requestId ?? "";
@@ -237,6 +266,7 @@ export class SignOutcomeUnknownError extends SignerError {
     this.requestId = requestId;
     this.requests = options.requests;
     this.rotating = options.rotating;
+    this.lastValid = options.lastValid ?? 0n;
     this.cause = options.cause;
   }
 }
@@ -280,22 +310,50 @@ export const SEND_STAGE_UNSENT = "unsent";
 
 /**
  * A signed group this call did not see confirmed or refused. Unless `stage`
- * is "unsent" the group may still confirm. Look its IDs up, or submit the
- * same `signedGroup` again while it is valid; never sign a replacement until
- * the outcome is known, because both could execute.
+ * is "unsent" the group may still confirm. Look its IDs up (or call
+ * SignerClient.resolveOutcome with this error), or submit the same
+ * `signedGroup` again while it is valid; never sign a replacement until the
+ * outcome is known, because both could execute. `lastValid` is the earliest
+ * last valid round of the signed group: after it, the group cannot execute.
  */
 export class SubmissionUncertainError extends SignerError {
   readonly stage: SendStage;
   readonly signedGroup: string[];
   readonly txIds: string[];
+  readonly lastValid: bigint;
   readonly cause: unknown;
 
-  constructor(stage: SendStage, signedGroup: string[], txIds: string[], cause: unknown) {
+  constructor(
+    stage: SendStage,
+    signedGroup: string[],
+    txIds: string[],
+    cause: unknown,
+    lastValid: bigint = 0n,
+  ) {
     super(`outcome of transaction ${firstOrEmpty(txIds)} is unknown (${stage}): ${errorText(cause)}`);
     this.name = "SubmissionUncertainError";
     this.stage = stage;
     this.signedGroup = [...signedGroup];
     this.txIds = [...txIds];
+    this.lastValid = lastValid;
+    this.cause = cause;
+  }
+}
+
+/**
+ * waitForOutcome ended before the outcome settled: the caller's signal was
+ * aborted, its time limit passed, or the node failed. `report` is the last
+ * report it made, if it made one; `cause` says why the wait ended. Nothing
+ * was signed or submitted by the wait.
+ */
+export class WaitForOutcomeError extends SignerError {
+  readonly report?: OutcomeReport;
+  readonly cause: unknown;
+
+  constructor(report: OutcomeReport | undefined, cause: unknown) {
+    super(`waiting for the outcome ended before it settled: ${errorText(cause)}`);
+    this.name = "WaitForOutcomeError";
+    this.report = report;
     this.cause = cause;
   }
 }
@@ -384,6 +442,33 @@ export function isLostAnswer(error: unknown): boolean {
  */
 export function lostAnswerRequestId(error: unknown): string {
   return lostAnswerMark(error)?.requestId ?? "";
+}
+
+// An error a cosigner resolver threw. A resolver runs before the request that
+// needs its answer, so its error is never an unknown outcome, even when it
+// carries a lost-answer mark from a call the resolver made: the mark there
+// says nothing of this send. The error is marked in place and passed on as it
+// is; a value that cannot take a property is remembered instead.
+const RESOLVER_ERROR = Symbol.for("aplanesdk.resolverError");
+const unmarkableResolverErrors = new WeakSet<object>();
+
+/** Mark error as one a cosigner resolver threw, and return it. */
+export function markResolverError<T>(error: T): T {
+  if ((typeof error === "object" && error !== null) || typeof error === "function") {
+    try {
+      Object.defineProperty(error, RESOLVER_ERROR, { value: true, enumerable: false, configurable: true });
+    } catch {
+      unmarkableResolverErrors.add(error as object);
+    }
+  }
+  return error;
+}
+
+/** Whether error itself is one a cosigner resolver threw. */
+export function isResolverError(error: unknown): boolean {
+  if ((typeof error !== "object" || error === null) && typeof error !== "function") return false;
+  return (error as Record<symbol, unknown>)[RESOLVER_ERROR] === true ||
+    unmarkableResolverErrors.has(error as object);
 }
 
 /**

@@ -375,8 +375,11 @@ payment.
   the IDs of the transactions you prepared.
 - **Options.** `NoWait` returns once the node accepts the group, with outcome
   `submitted`. `WaitRounds` is how many further rounds to wait for
-  confirmation (default 10). A cosigned account needs `CosignerClient` with `CosignerComponentKey`, or a
-  `CosignerResolver`; the SDK does not close a cosigner client you pass.
+  confirmation (default 10). A cosigned account needs nothing extra when
+  the client came from `FromEnv` and `endpoints.yaml` lists its cosigner (see
+  [Cosigner discovery](#cosigner-discovery)). Otherwise give
+  `CosignerClient` with `CosignerComponentKey`, or a `CosignerResolver`; the
+  SDK does not close a cosigner client you pass.
 - **Refused before signing:** an unknown signing flow
   (`ErrUnsupportedSigningFlow`), and a pre-signed or foreign position
   (`ErrUnsupportedGroup`). Use the lower-level signing calls for those groups.
@@ -389,9 +392,9 @@ Failures:
 | Error | Meaning | What to do |
 |---|---|---|
 | The signing call's own error | The signer refused (policy, operator, locked), or the SDK refused the signer's answer (`verify signer response: ...`, `ErrMaxFeeIncreaseExceeded`). Nothing was submitted. | Read the reason. If the SDK refused a sign answer, the signer did sign and the SDK discarded the result. |
-| `*SignOutcomeUnknownError` | A signing exchange ended with no answer, or with a 200 answer that could not be read (not one JSON object of the expected shape). A signature may have been released; nothing was submitted. | Check with the operator or the audit log before signing again. The error carries the ID of the request whose answer was lost (for a cosigned account, the step's `/sign/component`, `/sign/assemble` or `/sign` request); for a rotating account it also carries the prepared group (see below). |
+| `*SignOutcomeUnknownError` | A signing exchange ended with no answer, or with a 200 answer that could not be read (not one JSON object of the expected shape). A signature may have been released; nothing was submitted. | Call `ResolveOutcome` (below), or check with the operator or the audit log, before signing again. The error carries the ID of the request whose answer was lost (for a cosigned account, the step's `/sign/component`, `/sign/assemble` or `/sign` request) and `LastValid`, the earliest last valid round of what was sent to be signed; for a rotating account it also carries the prepared group (see below). |
 | `*SubmissionRejectedError` | The node refused the group or dropped it from its pool. | Read the reason. The signed bytes and IDs are in the error. |
-| `*SubmissionUncertainError` | `Stage` says where it stopped: `unsent` (signed, never sent: your context ended), `submit` (the submission's answer never arrived), or `confirm` (not confirmed within the wait). Except for `unsent`, it may still confirm. | Look up `TxIDs`, or submit the same `SignedGroup` again. Do not sign a replacement until the outcome is known: both could execute. |
+| `*SubmissionUncertainError` | `Stage` says where it stopped: `unsent` (signed, never sent: your context ended), `submit` (the submission's answer never arrived), or `confirm` (not confirmed within the wait). Except for `unsent`, it may still confirm. | Call `ResolveOutcome` (below), or submit the same `SignedGroup` again. Do not sign a replacement until the outcome is known: both could execute. `LastValid` is the signed group's earliest last valid round. |
 
 Every 200 answer from the signer, the key list included, is read as exactly
 one non-null JSON value: a `null` body or anything after the value is an
@@ -403,11 +406,13 @@ refusal; a key generation answer that names no address is refused too.
 The three SDKs' JSON readers differ in known ways that a real signer never
 reaches:
 
-- Go matches keys case-insensitively, so of two keys that differ only in case
-  (`signed` and `Signed`) the later one wins where TypeScript and Python read
-  only the exact name.
+- Go matches answer field names case-insensitively, so of two fields whose
+  names differ only in case (`signed` and `Signed`) the later one wins where
+  TypeScript and Python read only the exact name. This holds for the `/keys`
+  records cosigner discovery reads too: Go reads `IS_WITNESS_KEY` as
+  `is_witness_key`.
 - Go refuses `-0` for an unsigned field where the others read it as 0.
-- Of a key given twice, the later value is read, except that a later `null`
+- Of a field given twice, the later value is read, except that a later `null`
   leaves Go's earlier string, number or boolean in place (a list, object or
   pointer it does empty); the others read that `null` as zero.
 - A body that starts with a UTF-8 byte order mark is readable in TypeScript
@@ -431,6 +436,53 @@ group", "the node returned N results for one group", "the node reported a
 failure without a message" or "the node returned M transaction results for N
 transactions". Go's algod client reads a `null` group result as an empty one,
 so it fails on its count of transaction results.
+
+#### After an uncertain outcome
+
+`ResolveOutcome(ctx, algodClient, err)` takes either "do not just send again"
+error (`*SubmissionUncertainError` or `*SignOutcomeUnknownError`, wrapped or
+not) and says where things stand; any other error is refused with
+`ErrNotUncertainOutcome`. It reads the node's current round, looks up the
+group's first transaction ID when the IDs are known, and returns an
+`*OutcomeReport`: `State`, `ConfirmedRound`, `TxIDs`, `LastValid`,
+`CurrentRound`, `SafeToReplace`, the error's `SignedGroup` or `Rotating`
+group, and one sentence of `Advice`. It never signs, never submits and never
+calls the signer; a node failure is returned as an error, not a state.
+`WaitForOutcome(ctx, algodClient, err, opts)` checks once per round until the
+state is `confirmed`, `expired` or `too_old`, and when the context or
+`WaitOutcomeOptions.Timeout` ends first returns the last report with that
+error. A zero `Timeout` means no limit beyond the context; a negative one is
+refused (`timeout must not be negative`). It refuses what `ResolveOutcome`
+refuses first, then a negative `Timeout`, and only then looks at the context,
+so an ended context never hides a refusal.
+
+The signer never changes validity rounds, so after `LastValid` nothing from
+the request can execute. For a signed group (`*SubmissionUncertainError`):
+
+- found in a block: `confirmed`; do not send it again;
+- in the node's pool: `pending`; wait;
+- not found, or dropped from the pool, while the current round is at most
+  `LastValid`: `not_seen`; submit the same signed group again, or wait until
+  `LastValid` has passed;
+- not found, or dropped, within 500 rounds after `LastValid`: `expired`, and
+  `SafeToReplace`;
+- more than 500 rounds after `LastValid`: `too_old`; a node only answers for
+  recent rounds, so look the ID up on an indexer before sending again.
+
+For a signing exchange (`*SignOutcomeUnknownError`, nothing submitted by the
+call): a rotating group's IDs are known, so it is looked up first and is
+`confirmed` or `pending` when the node says so. Otherwise, while the current
+round is at most `LastValid`, it is `signable`: a signature may have been
+released (for a rotating account, sign the same prepared group again or wait;
+for any other, wait until `LastValid` has passed before building a
+replacement). After `LastValid` it is `expired`, and `SafeToReplace`, with one
+exception: a rotating group not found, or dropped, more than 500 rounds after
+`LastValid` is `too_old`. Signing the same prepared group again gives the same
+transaction IDs, which may have been submitted, and a node only answers for
+recent rounds, so look the ID up on an indexer before sending again. An
+ordinary or cosigned group is not looked up and its `TxIDs` are empty: the
+signer may have changed its transactions, and its signed bytes never left the
+SDK, so it is `expired` as soon as `LastValid` has passed.
 
 #### Rotating accounts
 
@@ -588,9 +640,8 @@ automatically:
 
 ```go
 result, err := aplane.SignPreparedCosignedGroup(aplane.PreparedCosignedGroupOptions{
-	UserClient:     userClient,
-	CosignerResolver: cosignerResolver,
-	PreparedGroup:  preparedGroup,
+	UserClient:    userClient, // from FromEnv: the cosigner is found in endpoints.yaml
+	PreparedGroup: preparedGroup,
 })
 signedGroup := result.SignedGroup
 ```
@@ -618,6 +669,52 @@ reported group mutations for the cosigned flow.
 Applications that own orchestration can call `RequestComponents` and
 `RequestAssemble` directly. The cosigner signs spends and
 cosigned rekeys, never a rekey to a listed address.
+
+#### Cosigner discovery
+
+A cosigned account needs nothing extra when the signer client came from
+`FromEnv` and `endpoints.yaml` lists the account's cosigner as an endpoint
+with role `cosigner`. With no `CosignerClient` and no `CosignerResolver`,
+`SendPrepared` and `SignPreparedCosignedGroup` then use an
+`EndpointCosignerResolver` for that data directory, made on first use, kept
+on the client and closed by its `Close`; after `Close` it is not made again,
+so a closed client opens no new connections. A client from `NewSignerClient` or
+`ConnectSSH` has none, and a cosigned send without a cosigner is refused
+("cosigner client or resolver is required"). An explicit client or resolver
+always wins.
+
+Build one yourself with `NewEndpointCosignerResolver(dataDir, opts)` or
+`NewEndpointCosignerResolverFromRegistry(registry, opts)`; it is a
+`CosignedCosignerResolver`, owns the connections it opens, and has its own
+`Close`. On first use it connects to every cosigner endpoint (at most 12),
+each with its own identity file and known hosts file, as a signer endpoint is
+connected, and reads its `/keys`: 10 seconds per endpoint, 30 for the whole
+sweep, at most 4 at once. A record counts when `is_witness_key` is true and
+`key_type` is set; its `public_key_hex` must be hex and its `address` the
+Witness Key ID of its key type and public key (`WitnessKeyID`), or the whole
+listing is invalid. The witness key must be listed by exactly one live
+endpoint, whose client and record address are used. Otherwise the call fails
+with an error matching `ErrCosignerDiscovery`, naming the endpoints that list
+it, or, when none does, every cosigner endpoint with its state (`ok`,
+`unreachable`, `locked`, `authentication failed`, `invalid cosigner
+metadata`, `configuration invalid`). An SSH host key that differs from the
+pinned one on any cosigner endpoint ends the discovery with that error. The
+sweep is kept; a key it does not hold makes one fresh sweep per call, and so
+does a key whose endpoint's kept connection has been closed or whose SSH link
+is down (a local check; no request is made for it). The
+default resolver connects with the trust-on-first-use, SSH setup timeout and
+request timeout the client was created with.
+
+Every cosigner a position is sure to need is resolved before anything is
+asked to sign, so a cosigner that cannot be found fails with nothing signed,
+and a resolver's failure is never an unknown outcome. A rekey of an account
+with a rekey-to list may take the listed path, which needs no cosigner: its
+cosigner is resolved only if the signer's base component names a path that
+needs one, so a listed rekey works with no cosigner configured and with the
+cosigner down. Both at the start and after the base component, cosigners are
+resolved in order of key type, then public key in lowercase hex, then
+position, so of several missing the first in that order is the one reported;
+they are asked to sign in the order of their first position.
 
 ## Error Handling
 

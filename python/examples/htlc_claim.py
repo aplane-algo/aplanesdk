@@ -3,12 +3,14 @@
 Hashlock claim example - demonstrates generic LogicSig with runtime arguments.
 
 This example shows how to claim funds from a hashlock LogicSig by providing
-the preimage that hashes to the stored hash.
+the preimage that hashes to the stored hash. The argument travels with the
+prepared transaction, and send_prepared signs, submits and confirms it as it
+does any other.
 
 Setup:
     1. Create data directory: mkdir -p ~/aplane/apclient/.ssh
-    2. Copy token: cp /path/to/aplane.token ~/aplane/apclient/
-    3. Generate APlane SSH key: ssh-keygen -t ed25519 -f ~/aplane/apclient/.ssh/id_ed25519 -N ''
+    2. Generate APlane SSH key: ssh-keygen -t ed25519 -f ~/aplane/apclient/.ssh/id_ed25519 -N ''
+    3. Enroll it at the signer: run apshell enroll and approve in apadmin
     4. Create endpoints.yaml (see below)
     5. Set env: export APCLIENT_DATA=~/aplane/apclient
 
@@ -26,9 +28,8 @@ Prerequisites:
     - You must know the preimage that hashes to the stored hash
 """
 
-from algosdk import transaction
 from algosdk.v2client import algod
-from aplanesdk import SignerClient, send_raw_transaction
+from aplanesdk import SignerClient, SignOutcomeUnknownError, SubmissionUncertainError
 
 # The hashlock address (must exist in apsigner keystore)
 HASHLOCK_ADDRESS = "HASHLOCKEXAMPLE7777777777777777777777777777777777777777"
@@ -44,7 +45,7 @@ PREIMAGE = b"my_secret_preimage_32_bytes_long"
 def main():
     # Connect using config from $APCLIENT_DATA
     with SignerClient.from_env() as signer:
-        algod_client = algod.AlgodClient("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "http://localhost:4001")
+        algod_client = algod.AlgodClient("a" * 64, "http://localhost:4001")
 
         # Discover required arguments for this LogicSig
         key_info = signer.get_key_info(HASHLOCK_ADDRESS)
@@ -54,31 +55,44 @@ def main():
                 print(f"  - {arg.name}: {arg.arg_type} ({arg.description})")
 
         # Build claim transaction (send all funds to recipient)
-        params = algod_client.suggested_params()
-        txn = transaction.PaymentTxn(
-            sender=HASHLOCK_ADDRESS,
-            receiver=RECIPIENT,
-            amt=0,  # Use close_remainder_to to send all funds
-            close_remainder_to=RECIPIENT,
-            sp=params
+        prepared = signer.prepare_account_close(
+            algod_client, sender=HASHLOCK_ADDRESS, close_to=RECIPIENT
         )
-
         # Sign with the preimage argument
-        print("Signing hashlock claim with preimage...")
-        signed = signer.sign_transaction(
-            txn,
-            auth_address=HASHLOCK_ADDRESS,
-            lsig_args={"preimage": PREIMAGE},
-        )
+        prepared.lsig_args = {"preimage": PREIMAGE}
 
-        # Submit (handles concatenated group bytes from Falcon/LogicSig keys)
-        txid = send_raw_transaction(algod_client, signed)
-        print(f"Submitted: {txid}")
+        print("Sending hashlock claim with preimage...")
+        try:
+            result = signer.send_prepared(algod_client, prepared)
+        except (SubmissionUncertainError, SignOutcomeUnknownError) as error:
+            # A group that was signed, or a signature that may have been
+            # released: never build a replacement until the outcome is
+            # known, because both could execute. The node says where it
+            # stands.
+            print_outcome(signer, algod_client, error)
+            raise
 
-        # Wait for confirmation
-        result = transaction.wait_for_confirmation(algod_client, txid, 4)
-        print(f"Confirmed in round {result['confirmed-round']}")
+        print(f"Confirmed {result.tx_ids[0]} in round {result.confirmed_round}")
         print("Hashlock claimed successfully!")
+
+
+def print_outcome(signer, algod_client, error):
+    """Print an uncertain outcome and where the node says it stands. It signs
+    and submits nothing. When the node cannot be asked, the error still
+    stands, and is raised next as it was."""
+    if isinstance(error, SubmissionUncertainError):
+        print(f"Outcome unknown for {', '.join(error.tx_ids)} ({error.stage}): {error}")
+    else:
+        print(f"Sign outcome unknown (request {error.request_id or 'unnamed'}): {error}")
+    try:
+        report = signer.resolve_outcome(algod_client, error)
+    except Exception as check_error:
+        print(
+            f"Could not check the outcome ({check_error}); look the transaction up "
+            "before sending again."
+        )
+        return
+    print(f"{report.state}: {report.advice}")
 
 
 if __name__ == "__main__":

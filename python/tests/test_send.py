@@ -36,6 +36,7 @@ from aplanesdk import (
     UnsupportedGroupError,
     UnsupportedSigningFlowError,
 )
+from aplanesdk import signer as signer_module
 from aplanesdk.signer import COSIGNED_DUMMY_PROGRAM, _UINT64_MAX
 from tests import fake_signer
 from tests.send_fakes import (
@@ -623,28 +624,35 @@ class CosignedFixture:
     closes the connection with no answer, "<path> truncate" answers 200 with
     a body cut short."""
 
-    def __init__(self, fakes, fault="", cosigner_fault=""):
+    def __init__(self, fakes, fault="", cosigner_fault="", rekey_path=""):
+        """``rekey_path``, when set, makes the transaction a rekey of an
+        account with a rekey list, which the signer's base component answers
+        with that path ("spending_rekey" or "listed_rekey")."""
         self.bounded = fake_signer.test_address(21)
         self.fault = fault
         self.cosigner_fault = cosigner_fault
         self.cosigner_calls = 0
+        self.path = rekey_path or "spend"
+        usage = {"program_bytes": 5308, "argument_bytes": 3358, "max_opcode_cost": 20000}
+        authorization = {
+            "contract": "bounded2",
+            "max_fee": 1000,
+            "rekey": "refused",
+            "cosigner": {
+                "component_key_type": KEY_TYPE_WITNESS_FALCON1024,
+                "public_key_hex": "aabb",
+            },
+        }
+        if rekey_path:
+            authorization["rekey"] = "spending_key"
+            authorization["rekey_list"] = {"contract": "rekey_list1", "depth": 4}
         bounded_key = key(
             self.bounded,
             SIGNING_FLOW_COSIGNED1,
             key_type="aplane.falcon1024.v1",
-            logic_sig_resources={
-                "spend": {"program_bytes": 5308, "argument_bytes": 3358, "max_opcode_cost": 20000}
-            },
+            logic_sig_resources={"spend": usage, "spending_rekey": usage, "listed_rekey": usage},
             cosigner_component_key_type=KEY_TYPE_WITNESS_FALCON1024,
-            bounded_authorization={
-                "contract": "bounded2",
-                "max_fee": 1000,
-                "rekey": "refused",
-                "cosigner": {
-                    "component_key_type": KEY_TYPE_WITNESS_FALCON1024,
-                    "public_key_hex": "aabb",
-                },
-            },
+            bounded_authorization=authorization,
         )
         self.keys = [bounded_key]
         self.user = fakes(_Fake(self.user_app))
@@ -655,7 +663,13 @@ class CosignedFixture:
         params = transaction.SuggestedParams(
             1000, 1, 100, base64.b64encode(bytes(32)).decode(), "testnet-v1.0", flat_fee=True
         )
-        self.txn = transaction.PaymentTxn(self.bounded, params, fake_signer.test_address(22), 1000)
+        self.txn = transaction.PaymentTxn(
+            self.bounded,
+            params,
+            fake_signer.test_address(22),
+            1000,
+            rekey_to=fake_signer.test_address(23) if rekey_path else None,
+        )
 
     def user_app(self, method, path, body):
         if self.fault == f"{path} drop":
@@ -687,7 +701,7 @@ class CosignedFixture:
                             "runtime_args": {"proof": "aabb"},
                             "assembly_receipt": "receipt",
                             "signature_scheme": "aplane.falcon1024.v1",
-                            "path": "spend",
+                            "path": self.path,
                         }
                     ],
                 },
@@ -1033,12 +1047,43 @@ class TestAFaultAfterTheSignerAnswered:
 
     def test_a_cosigner_resolver_fault_is_raised_as_itself(self, fakes):
         # The caller's resolver raised it, not the SDK, so it is no fault of
-        # the sequence's, even after the base components have answered.
+        # the sequence's. A spend's cosigner is resolved before anything is
+        # asked to sign.
         fixture = CosignedFixture(fakes)
         with pytest.raises(LookupError, match="no cosigner") as excinfo:
             fixture.send(cosigner_resolver=_raises(LookupError("no cosigner for this account")))
         assert not isinstance(excinfo.value, SignerError)
+        assert "/sign/component" not in fixture.user.paths and fixture.cosigner_calls == 0
+
+    def test_a_late_cosigner_resolver_fault_is_raised_as_itself(self, fakes):
+        # A rekey that could have taken the listed path is resolved only
+        # after its base component answered, and its resolver's fault is
+        # still no fault of the sequence's.
+        fixture = CosignedFixture(fakes, rekey_path="spending_rekey")
+        with pytest.raises(LookupError, match="no cosigner") as excinfo:
+            fixture.send(cosigner_resolver=_raises(LookupError("no cosigner for this account")))
+        assert not isinstance(excinfo.value, SignerError)
         assert "/sign/component" in fixture.user.paths and fixture.cosigner_calls == 0
+
+    @pytest.mark.parametrize("rekey_path", ["", "spending_rekey"], ids=["up front", "late"])
+    def test_a_resolver_error_raised_from_a_lost_answer_is_its_own(self, fakes, rekey_path):
+        # What the resolver raises is never an unknown outcome, even when it
+        # was raised from one of the SDK's lost-answer marks; it comes back
+        # unchanged.
+        fixture = CosignedFixture(fakes, rekey_path=rekey_path)
+
+        def resolver(_target):
+            try:
+                raise signer_module._AnswerLostError("lost", request_id="other-request")
+            except signer_module._AnswerLostError as lost:
+                raise SignerError("cosigner lookup failed") from lost
+
+        with pytest.raises(SignerError, match="^cosigner lookup failed$") as excinfo:
+            fixture.send(cosigner_resolver=resolver)
+        assert type(excinfo.value) is SignerError
+        assert isinstance(excinfo.value.__cause__, signer_module._AnswerLostError)
+        assert fixture.cosigner_calls == 0
+        assert ("/sign/component" in fixture.user.paths) == bool(rekey_path)
 
     def test_an_interrupt_between_the_cosigned_requests_is_not_caught(self, fakes, monkeypatch):
         fixture = CosignedFixture(fakes)

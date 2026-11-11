@@ -254,29 +254,50 @@ def test_live_native_falcon_signature_verifies_on_localnet():
 
 LIVE_ROTATING_KEY_TYPE = "aplane.rotating-triple-wotsc.v1"
 
+# The rotating families the live test runs, each with a limit, in seconds, on
+# its whole run. SLH-DSA signs slowly.
+LIVE_ROTATING_FAMILIES = [
+    ("aplane.rotating-triple-wotsc.v1", 5 * 60),
+    ("aplane.rotating-triple-xmss.v1", 5 * 60),
+    ("aplane.rotating-triple-slhdsa.v1", 20 * 60),
+]
+
 
 @pytest.mark.skipif(not _integration_enabled(), reason="set APLANE_SDK_INTEGRATION=1")
-def test_live_rotating_send_on_localnet():
-    """A rotating account spends through send_payment on a real node, twice
-    in a row. The second spend is the one that shows the flow works after
-    stage 0: the account's authorizer is then a stage address the signer does
-    not list, and the unsigned simulation has to accept it."""
+@pytest.mark.parametrize(
+    "key_type,limit", LIVE_ROTATING_FAMILIES, ids=[key_type for key_type, _ in LIVE_ROTATING_FAMILIES]
+)
+def test_live_rotating_send_on_localnet(key_type, limit):
+    """A rotating account of each family the signer has enabled spends
+    through send_payment on a real node, twice in a row. The second spend is
+    the one that shows the flow works after stage 0: the account's authorizer
+    is then a stage address the signer does not list, and the unsigned
+    simulation has to accept it. A family the signer does not list is skipped
+    by name."""
     if not _localnet_available():
         pytest.skip("needs a LocalNet algod and KMD (ALGOD_URL, APLANE_LOCALNET_KMD_URL)")
     algod_client = algod.AlgodClient(
         os.environ.get("ALGOD_TOKEN", ""), os.environ["ALGOD_URL"].strip()
     )
+    deadline = time.monotonic() + limit
+
+    def remaining() -> float:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise AssertionError(f"{key_type}: the family's {limit} second limit passed")
+        return left
+
     client = _live_signer_client()
     account = ""
     try:
-        if not any(item.key_type == LIVE_ROTATING_KEY_TYPE for item in client.list_key_types()):
+        if not any(item.key_type == key_type for item in client.list_key_types()):
             pytest.skip(
-                f"key type {LIVE_ROTATING_KEY_TYPE} is not enabled at the signer "
-                f"(apadmin keytype enable {LIVE_ROTATING_KEY_TYPE})"
+                f"key type {key_type} is not enabled at the signer "
+                f"(apadmin keytype enable {key_type})"
             )
         genesis_hash = algod_client.suggested_params().gh
         before = client.get_status()
-        account = client.generate_key(LIVE_ROTATING_KEY_TYPE, {"network": genesis_hash}).address
+        account = client.generate_key(key_type, {"network": genesis_hash}).address
         assert account
         _wait_for_keyset_revision(client, before.keyset_revision, "rotating generate")
         _fund_from_localnet_kmd(algod_client, account, 2_000_000)
@@ -285,7 +306,9 @@ def test_live_rotating_send_on_localnet():
         last_target = 0
         last_rekey_to = ""
         for spend in range(2):
-            result = client.send_payment(algod_client, sender=account, receiver=receiver, amount=0)
+            result = client.send_payment(
+                algod_client, sender=account, receiver=receiver, amount=0, timeout=remaining()
+            )
             details = result.rotating
             assert result.flow == "rotating1" and details is not None, result
             assert result.outcome == "confirmed" and result.confirmed_round > 0, result
@@ -299,13 +322,16 @@ def test_live_rotating_send_on_localnet():
             assert info.get("auth-addr") == details.rekey_to
             last_target, last_rekey_to = details.target, details.rekey_to
 
+        if key_type != LIVE_ROTATING_KEY_TYPE:
+            return
+
         # A third spend, one step at a time, as a caller managing submission
         # itself would do it.
         payment = client.prepare_payment(algod_client, sender=account, receiver=account, amount=0)
-        prepared = client.prepare_rotating(payment.transaction)
+        prepared = client.prepare_rotating(payment.transaction, timeout=remaining())
         simulation = client.simulate_prepared_rotating(algod_client, prepared)
         assert not simulation.failed, _simulation_failure(simulation.response)
-        signed = client.sign_prepared_rotating(prepared)
+        signed = client.sign_prepared_rotating(prepared, timeout=remaining())
         assert signed.stage == last_target
         submitted = client.submit_signed_group(algod_client, signed.signed_group)
         assert submitted.outcome == "confirmed" and submitted.tx_ids[0] == signed.txid
@@ -314,7 +340,7 @@ def test_live_rotating_send_on_localnet():
         # The steps on their own: prepare and simulate use no key.
         payment = client.prepare_payment(algod_client, sender=account, receiver=account, amount=0)
         assert payment.auth_address == account, "want the rotating account itself"
-        prepared = client.prepare_rotating(payment.transaction)
+        prepared = client.prepare_rotating(payment.transaction, timeout=remaining())
         assert prepared.stage == last_target
         simulation = client.simulate_prepared_rotating(algod_client, prepared)
         assert not simulation.failed, _simulation_failure(simulation.response)

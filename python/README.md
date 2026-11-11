@@ -347,9 +347,12 @@ steps for an ALGO payment.
   differ from the IDs of the transactions you prepared.
 - **Options.** `no_wait=True` returns once the node accepts the group, with
   outcome `"submitted"`. `wait_rounds` is how many further rounds to wait for
-  confirmation (0 means the default, 10). A cosigned account needs
-  `cosigner_client` with `cosigner_component_key`, or a `cosigner_resolver`;
-  the SDK does not close a cosigner client you pass.
+  confirmation (0 means the default, 10). A cosigned account needs nothing
+  extra when the client came from `SignerClient.from_env` and its
+  `endpoints.yaml` lists the account's cosigner: the SDK finds it there (see
+  "Finding the cosigner" below). Otherwise pass `cosigner_client` with
+  `cosigner_component_key`, or a `cosigner_resolver`; either one wins over
+  the registry. The SDK does not close a cosigner client you pass.
 - **Refused before signing:** an unknown signing flow
   (`UnsupportedSigningFlowError`), and a pre-signed or foreign position
   (`UnsupportedGroupError`). Use the lower-level signing calls for those
@@ -365,7 +368,7 @@ Failures:
 | The signing call's own `SignerError` | The signer refused (policy, operator, locked), or the SDK refused the signer's answer (`verify signer response: ...`, `MaxFeeIncreaseError`). Nothing was submitted. | Read the reason. If the SDK refused a sign answer, the signer did sign and the SDK discarded the result. |
 | `SignOutcomeUnknownError` | A signing exchange ended with no usable answer: none arrived, the signer's 200 answer could not be read (not exactly one JSON object of the expected shape: empty, cut off, `null`, not an object, text after it, or a field of the wrong type or out of range), or checking, decoding or describing it raised an exception that is not one of the SDK's own refusals (a fault in the SDK's checks, not a verdict on the answer). A signature may have been released; nothing was submitted. | Check with the operator or the audit log before signing again. The error's `request_id` names the request whose answer was lost: the `/sign` of the ordinary flow (which also carries `requests`), the `/sign/component`, `/sign/assemble` or primary `/sign` of the cosigned sequence (for a fault between its requests, the last of them that answered), or the rotating sign request, whose error carries the prepared group in `rotating` (see below). |
 | `SubmissionRejectedError` | The node refused the group or dropped it from its pool. | Read the reason. The signed bytes and IDs are in `signed_group` and `tx_ids`. |
-| `SubmissionUncertainError` | `stage` says where it stopped: `"submit"` (the submission's answer never arrived) or `"confirm"` (not confirmed within the wait). It may still confirm. | Look up `tx_ids`, or submit the same `signed_group` again with `submit_signed_group`. Do not sign a replacement until the outcome is known: both could execute. |
+| `SubmissionUncertainError` | `stage` says where it stopped: `"submit"` (the submission's answer never arrived), `"confirm"` (not confirmed within the wait), or `"unsent"` (the call's `timeout` passed after signing, before submission; the node does not have it). Unless unsent, it may still confirm. | Look up `tx_ids`, or submit the same `signed_group` again with `submit_signed_group`. Do not sign a replacement until the outcome is known: both could execute. |
 
 A node that answers "already in ledger" has a transaction with the same ID
 from an earlier submission of the group. The SDK treats that as submitted and
@@ -373,10 +376,31 @@ looks for the outcome; it is not a rejection. A committed transaction that
 carries a lease is the exception: the node refuses it for its lease, and the
 SDK reports a rejection.
 
-The call has no deadline of its own. Each signer request keeps its usual
-timeout, and a request that times out or disconnects while approval is
-pending is canceled with a best-effort `/sign/cancel`, as for the other
-signing calls; such an ending is a `SignOutcomeUnknownError`.
+By default the call has no deadline of its own. Each signer request keeps
+its usual timeout, and a request that times out or disconnects while
+approval is pending is canceled with a best-effort `/sign/cancel`, as for the
+other signing calls; such an ending is a `SignOutcomeUnknownError`.
+
+`timeout=` (seconds, the whole call) sets one, on `send_prepared`,
+`send_payment`, `prepare_rotating`, `sign_prepared_rotating` and
+`wait_for_outcome`. Every HTTP request to a signer, a cosigner or the node is
+held to what remains, and the steps check it in between; it does not
+interrupt a call already blocked outside HTTP. Where it passes decides what
+you get, as in the Go SDK when its context deadline passes:
+
+- before any approval-bearing request is posted: `SendTimeoutError` (a
+  `SignerError`), nothing signed, nothing canceled;
+- while an approval-bearing request is waiting: a best-effort `/sign/cancel`,
+  then `SignOutcomeUnknownError` with the request ID (the prepared group for
+  a rotating account, and `last_valid`), whose `error` is the
+  `SendTimeoutError`;
+- after signing, before submission: `SubmissionUncertainError` with stage
+  `"unsent"` (`SEND_STAGE_UNSENT`): the node does not have the group, and
+  `signed_group` holds it;
+- during submission or the confirmation wait: `SubmissionUncertainError` with
+  stage `"submit"` or `"confirm"`.
+
+`timeout=None` (the default) behaves exactly as before.
 
 A `KeyboardInterrupt`, or any other exception that is not an `Exception`, is
 not turned into an SDK error: it still stops the program. What it carries
@@ -420,6 +444,81 @@ the group is not an object", "the node reported a failure without a message"
 or "the node returned M transaction results for N transactions". Each field
 is chosen by presence: `txn-groups` is read when present, even empty, and
 `txn_groups` only when it is not, and so for the failure message.
+
+#### After an uncertain outcome
+
+`client.resolve_outcome(algod_client, error)` takes a
+`SignOutcomeUnknownError` or a `SubmissionUncertainError` and says where
+things stand, from the node alone: it never signs, never submits and never
+calls the signer. Both errors carry `last_valid`, the earliest last valid
+round of what was sent to be signed (the signer never changes validity
+rounds, so it is the signed group's too); after it nothing that request
+released can execute. The helper reads the node's current round, then looks
+up the first transaction ID when the IDs are known (a group is atomic). The
+`OutcomeReport` it returns has `state`, `confirmed_round` (0 unless
+confirmed), `tx_ids`, `last_valid`, `current_round`, `safe_to_replace`,
+`signed_group` and `rotating` (when the error carried them) and `advice`, one
+sentence on what to do.
+
+For a `SubmissionUncertainError`, whose signed bytes and IDs are known:
+
+- the node has it in a block: `confirmed`;
+- it is in the node's pool: `pending`;
+- the node does not have it (or dropped it with a pool error) and the current
+  round is at most `last_valid`: `not_seen`, it can still execute; submit the
+  same signed group again, or wait until `last_valid` has passed;
+- not found, or a pool error, and the current round is past `last_valid` by
+  at most 500 rounds: `expired`, and `safe_to_replace` is true;
+- past `last_valid` by more than 500 rounds: `too_old`; a node answers only
+  for recent rounds, so a confirmed transaction can look not found. Look the
+  ID up on an indexer before sending again.
+
+For a `SignOutcomeUnknownError`, where this call submitted nothing:
+
+- a rotating account's prepared group is looked up first: `confirmed` or
+  `pending` as above; not found, or a pool error, falls through to the rounds;
+- the current round is at most `last_valid`: `signable`, a signature may have
+  been released and can still execute (for a rotating account, sign the same
+  prepared group again; otherwise wait until `last_valid` has passed before
+  building a replacement);
+- for a rotating account, the current round is past `last_valid` by at most
+  500 rounds: `expired`, `safe_to_replace`; past it by more than 500 rounds:
+  `too_old`. Signing the same prepared group again gives the same IDs, which
+  may then have been submitted, so the group can have confirmed, and the node
+  may no longer remember it. Look the ID up on an indexer before sending
+  again;
+- for an account that is not rotating, the current round is past
+  `last_valid`: `expired`, `safe_to_replace`. There is no `too_old` here: this
+  call never submitted, and the signed bytes never left the SDK, so expiry
+  alone settles it. There are no IDs to look up (the signer may have changed
+  the transactions), so `tx_ids` is empty.
+
+The state names are the constants `OUTCOME_CONFIRMED`, `OUTCOME_PENDING`,
+`OUTCOME_NOT_SEEN`, `OUTCOME_SIGNABLE`, `OUTCOME_EXPIRED` and
+`OUTCOME_TOO_OLD`. Any other error, or `None`, is refused with `SignerError`
+"not an uncertain outcome"; so is an error with no last valid round, or a
+submission error with no transaction IDs. A node failure other than the
+lookup's "not found" is raised, never turned into a state.
+
+`client.wait_for_outcome(algod_client, error, timeout=None)` resolves once a
+round, waiting for each next round with the node's status-after-block call,
+until the state is `confirmed`, `expired` or `too_old`. `timeout` is in
+seconds, for the whole call: `None` (the default) sets no limit; 0, a
+negative or a non-finite number is refused with `ValueError`, but only after
+the refusals of the error above, which come first. The limit is checked
+before each check of the node: when it passes, `SendTimeoutError` is raised
+with the last report as its `report`, or `None`, with nothing asked of the
+node, when it passed before the first.
+
+```python
+try:
+    result = client.send_prepared(algod_client, prepared)
+except (SignOutcomeUnknownError, SubmissionUncertainError) as error:
+    report = client.resolve_outcome(algod_client, error)
+    print(report.state, report.advice)
+    if not report.safe_to_replace:
+        raise
+```
 
 #### Rotating accounts
 
@@ -613,6 +712,88 @@ reported group mutations for the cosigned flow.
 Applications that own orchestration can call `request_components()` and
 `request_assemble()` directly. The cosigner signs spends and
 cosigned rekeys, never a rekey to a listed address.
+
+### Finding the cosigner
+
+A cosigned account needs nothing extra when `endpoints.yaml` lists its
+cosigner. A `SignerClient` made by `from_env` (or `from_env(data_dir=...)`),
+given no `cosigner_client` and no `cosigner_resolver`, finds the cosigner
+with an `EndpointCosignerResolver` over the same registry, connecting with the
+same `timeout`, `trust_on_first_use` and `ssh_setup_timeout`. It makes the
+resolver on first use, keeps it, and closes it, with its connections, when
+the client is closed; a closed client makes none again, so a later cosigned
+call fails as with no cosigner and opens no connection. A client not made
+from a data directory still needs a cosigner passed to it.
+
+```yaml
+schema_version: 2
+endpoints:
+  primary:  {role: signer,   url: "ssh://signer.example.com:1127"}
+  cosign-a: {role: cosigner, url: "ssh://cosigner-a.example.com:1127"}
+```
+
+On first use the resolver connects to every endpoint with role `cosigner` (at
+most 12), each with its own `identity_file` and `known_hosts_path`, and reads
+its `/keys`: at most 4 endpoints at once, 10 seconds per endpoint, 30 seconds
+for the whole sweep. A record counts when `is_witness_key` is true and it has
+a `key_type`; its `public_key_hex` must be hex (compared in either case) and
+its `address` must be the Witness Key ID derived from its key type and public
+key, or the whole endpoint's listing is invalid. The witness key an account
+names must be listed by exactly one endpoint; the resolver then uses that
+endpoint's client, with the listed Witness Key ID as the component key. The
+sweep is kept, and a key it does not hold makes one fresh sweep, which reads
+`/keys` again through the connections still live and reconnects the endpoints
+that had failed. A kept connection that has been closed, or whose SSH link is
+down, counts as not holding its keys (a local check, with no request), so it
+too makes one fresh sweep, which connects that endpoint again.
+`witness_key_id(key_type, public_key)` derives the ID: the unpadded base32 of
+SHA-512/256 over `APLANE_WITNESS_KEY_ID_V1`, the key type and the public key,
+each prefixed by its length as 4 bytes big-endian.
+
+Otherwise it raises `CosignerDiscoveryError` (a `SignerError`):
+
+- more than one endpoint lists the key: `cosigner discovery: Witness Key ID
+  <id> (<key type>) is listed by endpoints "a", "b"; each witness key needs
+  exactly one endpoint`;
+- none does: `cosigner discovery: no endpoint lists Witness Key ID <id> (<key
+  type>); endpoints: "a" ok, "b" unreachable`, every cosigner endpoint by
+  alias, each `ok`, `unreachable`, `locked`, `authentication failed`,
+  `invalid cosigner metadata` or `configuration invalid`;
+- no cosigner endpoint is configured: `cosigner discovery: endpoints.yaml
+  lists no cosigner endpoint`;
+- any cosigner endpoint's SSH host key differs from the pinned one, needed or
+  not: `cosigner discovery: endpoint "<alias>": <the mismatch error>`, and
+  nothing from that sweep is kept;
+- the account's cosigner public key is not hex, or it names no cosigner key
+  type, or the resolver is closed, or a hand-built registry lists more than 12
+  cosigner endpoints, each with its own message;
+- the call's `timeout` passed during discovery: an error that is both a
+  `CosignerDiscoveryError` and a `SendTimeoutError`.
+
+The public key in the not-hex message, and the aliases in the list of
+endpoints and in the host key message, are quoted as Go's `%q` quotes them
+(`\"`, `\\`, `\n`, `\t`, `\xNN` for other control characters, and so on), so
+the three SDKs word the same failure alike.
+
+The cosigned sequence resolves the cosigner of every target that cannot take
+the listed path (a spend, or a rekey of an account without a rekey list)
+before anything is asked to sign, with any resolver, so a failure is a plain
+error with nothing signed. A rekey of an account with a rekey list may take
+the listed path, which needs no cosigner, so its cosigner is resolved only
+after the base component, and only when the signer's path needs one: the
+rekey-list escape hatch keeps working with the cosigner down or not
+configured. A resolver's own exception is passed on as it is, never as an
+unknown outcome, even when it was raised from an SDK error that is one.
+
+To use the resolver yourself, build it from a data directory or a loaded
+registry and close it when done:
+
+```python
+from aplanesdk import EndpointCosignerResolver
+
+with EndpointCosignerResolver(data_dir="~/aplane/apclient") as resolver:
+    result = client.send_prepared(algod_client, prepared, cosigner_resolver=resolver)
+```
 
 ## Error Handling
 

@@ -4,9 +4,10 @@ Send a payment from any account the signer holds.
 
 send_payment builds the payment, signs it through the flow the sender's key
 needs, checks the signed result, submits it and waits for confirmation. The
-same call works for an Ed25519, native Falcon, LogicSig, bounded or rotating
-account, and for a rekeyed sender. A cosigned account also needs its cosigner:
-pass cosigner_client and cosigner_component_key.
+same call works for an Ed25519, native Falcon, LogicSig, bounded, cosigned or
+rotating account, and for a rekeyed sender. A cosigned account needs nothing
+extra when endpoints.yaml lists its cosigner (a role: cosigner endpoint, as
+below): the SDK finds the cosigner there.
 
 Setup:
     1. Create data directory: mkdir -p ~/aplane/apclient/.ssh
@@ -22,6 +23,10 @@ Example endpoints.yaml (SSH tunnel):
         role: signer
         url: ssh://192.168.86.73:1127
         identity_file: .ssh/id_ed25519
+      # Only for a cosigned account: the node holding its cosigner.
+      cosigner:
+        role: cosigner
+        url: ssh://192.168.86.74:1127
 """
 
 from algosdk.v2client import algod
@@ -46,20 +51,16 @@ def main():
         except SubmissionUncertainError as error:
             # A group that was signed keeps its bytes and IDs in the error.
             # Never send again until its outcome is known: both could execute.
-            print(f"Outcome unknown for {error.tx_ids} ({error.stage}); look it up before sending again")
+            # The node says where it stands.
+            print_outcome(signer, algod_client, error)
             raise
         except SignOutcomeUnknownError as error:
             # The signer may have released a signature this call never saw.
-            # Do NOT build and sign a replacement: both could execute. Sign
-            # the same prepared group again (a rotating account's is in
-            # error.rotating, for signer.sign_prepared_rotating), or check the
-            # chain and the signer's audit log for the request first.
-            print(
-                f"A signature may have been released (request {error.request_id or 'unnamed'}); "
-                "do not sign a replacement"
-            )
-            if error.rotating is not None:
-                print(f"Re-sign prepared group {error.rotating.tx_ids} with sign_prepared_rotating")
+            # Do NOT build and sign a replacement while it can still execute
+            # (until error.last_valid): both could. A rotating account's
+            # prepared group, in error.rotating, can be signed again with
+            # signer.sign_prepared_rotating.
+            print_outcome(signer, algod_client, error)
             raise
 
         # The signer may raise the fee or add transactions, so the ID comes
@@ -70,6 +71,25 @@ def main():
         )
         if result.rotating is not None:
             print(f"Rotated from stage {result.rotating.stage} to stage {result.rotating.target}")
+
+
+def print_outcome(signer, algod_client, error):
+    """Print an uncertain outcome and where the node says it stands. It signs
+    and submits nothing. When the node cannot be asked, the error still
+    stands, and is raised next as it was."""
+    if isinstance(error, SubmissionUncertainError):
+        print(f"Outcome unknown for {', '.join(error.tx_ids)} ({error.stage}): {error}")
+    else:
+        print(f"Sign outcome unknown (request {error.request_id or 'unnamed'}): {error}")
+    try:
+        report = signer.resolve_outcome(algod_client, error)
+    except Exception as check_error:
+        print(
+            f"Could not check the outcome ({check_error}); look the transaction up "
+            "before sending again."
+        )
+        return
+    print(f"{report.state}: {report.advice}")
 
 
 if __name__ == "__main__":

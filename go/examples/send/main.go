@@ -6,9 +6,10 @@ Send a payment from any account the signer holds.
 
 SendPayment builds the payment, signs it through the flow the sender's key
 needs, checks the signed result, submits it and waits for confirmation. The
-same call works for an Ed25519, native Falcon, LogicSig, bounded or rotating
-account, and for a rekeyed sender. A cosigned account also needs its cosigner:
-set SendOptions.CosignerClient and CosignerComponentKey.
+same call works for an Ed25519, native Falcon, LogicSig, bounded, cosigned or
+rotating account, and for a rekeyed sender. A cosigned account needs nothing
+extra when endpoints.yaml lists its cosigner, as in the example below: the
+client finds the cosigner there.
 
 Setup:
 
@@ -18,13 +19,18 @@ Setup:
  4. Create endpoints.yaml (see below)
  5. Set env: export APCLIENT_DATA=~/aplane/apclient
 
-Example endpoints.yaml (SSH tunnel):
+Example endpoints.yaml (SSH tunnel; the cosigner entry is needed only for a
+cosigned account):
 
 	schema_version: 2
 	endpoints:
 	  primary:
 	    role: signer
 	    url: ssh://192.168.86.73:1127
+	    identity_file: .ssh/id_ed25519
+	  cosigner:
+	    role: cosigner
+	    url: ssh://192.168.86.74:1127
 	    identity_file: .ssh/id_ed25519
 */
 package main
@@ -47,6 +53,7 @@ const (
 )
 
 func main() {
+	ctx := context.Background()
 	// Connect using config from $APCLIENT_DATA
 	signer, err := aplane.FromEnv(nil)
 	if err != nil {
@@ -60,7 +67,7 @@ func main() {
 	}
 
 	// 1 ALGO, in microAlgos.
-	result, err := signer.SendPayment(context.Background(), algodClient, aplane.PaymentPrepParams{
+	result, err := signer.SendPayment(ctx, algodClient, aplane.PaymentPrepParams{
 		Sender: sender, Receiver: receiver, Amount: 1_000_000,
 	}, nil)
 	if err != nil {
@@ -68,18 +75,14 @@ func main() {
 		// send again until its outcome is known: both could execute.
 		var uncertain *aplane.SubmissionUncertainError
 		if errors.As(err, &uncertain) {
-			log.Fatalf("Outcome unknown for %v (%s); look it up before sending again: %v", uncertain.TxIDs, uncertain.Stage, err)
+			log.Fatalf("Outcome unknown for %v (%s): %v\n%s", uncertain.TxIDs, uncertain.Stage, err, advice(ctx, signer, algodClient, err))
 		}
 		// The sign answer was lost, so the signer may have released a
-		// signature. Do not build and sign a replacement: both could execute.
-		// Sign the same prepared group again (a rotating account's is in
-		// Rotating, for SignPreparedRotating), or check the chain first.
+		// signature. Do not build and sign a replacement while it can still
+		// execute.
 		var unknown *aplane.SignOutcomeUnknownError
 		if errors.As(err, &unknown) {
-			if unknown.Rotating != nil {
-				log.Printf("Prepared rotating group: %v", unknown.Rotating.TxIDs())
-			}
-			log.Fatalf("Sign outcome unknown (request %q); re-sign the same group or check the chain, never sign a replacement: %v", unknown.RequestID, err)
+			log.Fatalf("Sign outcome unknown (request %q): %v\n%s", unknown.RequestID, err, advice(ctx, signer, algodClient, err))
 		}
 		log.Fatalf("Failed to send: %v", err)
 	}
@@ -90,4 +93,14 @@ func main() {
 	if result.Rotating != nil {
 		fmt.Printf("Rotated from stage %d to stage %d\n", result.Rotating.Stage, result.Rotating.Target)
 	}
+}
+
+// advice asks the node where an uncertain outcome stands. It signs and
+// submits nothing.
+func advice(ctx context.Context, signer *aplane.SignerClient, algodClient *algod.Client, err error) string {
+	report, resolveErr := signer.ResolveOutcome(ctx, algodClient, err)
+	if resolveErr != nil {
+		return fmt.Sprintf("Could not check the outcome (%v); look the transaction up before sending again.", resolveErr)
+	}
+	return fmt.Sprintf("%s: %s", report.State, report.Advice)
 }

@@ -484,6 +484,43 @@ func TestSendPreparedSignFailures(t *testing.T) {
 		}
 	})
 
+	// Unlike a cosigner's /keys, which is unreachable then, a sign answer cut
+	// off inside its body may follow a released signature.
+	t.Run("a 200 cut off inside its body is an unknown outcome", func(t *testing.T) {
+		signer := &sendSigner{keys: []KeyInfo{ordinaryKey(txn)}, sign: func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Length", "1000")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"signed": [`))
+		}}
+		node := &sendAlgod{}
+		client, algodClient := newSendFixture(t, signer, node)
+		_, err := client.SendPrepared(context.Background(), algodClient, preparedFor(txn), nil)
+		var unknown *SignOutcomeUnknownError
+		if !errors.As(err, &unknown) || len(node.submissions()) != 0 {
+			t.Fatalf("error = %v, submissions %d; want *SignOutcomeUnknownError and none", err, len(node.submissions()))
+		}
+	})
+
+	t.Run("an unknown outcome carries the group's earliest last valid round", func(t *testing.T) {
+		other := verifyTestPayment(t, 43, 42, 2)
+		other.LastValid = 700
+		signer := &sendSigner{keys: []KeyInfo{ordinaryKey(txn), ordinaryKey(other)}, sign: func(w http.ResponseWriter, r *http.Request) {
+			if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+				conn.Close()
+			}
+		}}
+		client, algodClient := newSendFixture(t, signer, &sendAlgod{})
+		group := NewPreparedGroup(
+			PreparedTransaction{Transaction: &txn, AuthAddress: txn.Sender.String()},
+			PreparedTransaction{Transaction: &other, AuthAddress: other.Sender.String()},
+		)
+		_, err := client.SendPrepared(context.Background(), algodClient, group, nil)
+		var unknown *SignOutcomeUnknownError
+		if !errors.As(err, &unknown) || unknown.LastValid != 700 {
+			t.Fatalf("error = %v (%+v), want an unknown outcome with LastValid 700", err, unknown)
+		}
+	})
+
 	t.Run("an unreadable answer is an unknown outcome", func(t *testing.T) {
 		signer := &sendSigner{keys: []KeyInfo{ordinaryKey(txn)}, sign: func(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte(`{"signed": ["ab`))
@@ -493,8 +530,8 @@ func TestSendPreparedSignFailures(t *testing.T) {
 
 		_, err := client.SendPrepared(context.Background(), algodClient, preparedFor(txn), nil)
 		var unknown *SignOutcomeUnknownError
-		if !errors.As(err, &unknown) {
-			t.Fatalf("error = %v, want *SignOutcomeUnknownError", err)
+		if !errors.As(err, &unknown) || unknown.LastValid != uint64(txn.LastValid) {
+			t.Fatalf("error = %v, want *SignOutcomeUnknownError with LastValid %d", err, txn.LastValid)
 		}
 		if len(node.submissions()) != 0 {
 			t.Fatalf("submissions = %d, want none", len(node.submissions()))
@@ -617,6 +654,9 @@ func TestSendPreparedSubmissionFailuresKeepSignedBytes(t *testing.T) {
 			case errors.As(err, &uncertain):
 				if tt.rejected || uncertain.Stage != tt.stage {
 					t.Fatalf("error = %v (stage %q), want rejected=%v stage %q", err, uncertain.Stage, tt.rejected, tt.stage)
+				}
+				if uncertain.LastValid != uint64(txn.LastValid) {
+					t.Fatalf("LastValid = %d, want the signed group's %d", uncertain.LastValid, txn.LastValid)
 				}
 				signedGroup, txIDs = uncertain.SignedGroup, uncertain.TxIDs
 			default:
@@ -804,6 +844,9 @@ func TestSubmitFailuresThatAreNotAnswers(t *testing.T) {
 		if !errors.As(err, &uncertain) || uncertain.Stage != SendStageUnsent || !errors.Is(err, context.Canceled) {
 			t.Fatalf("error = %v, want the unsent stage", err)
 		}
+		if uncertain.LastValid != uint64(txn.LastValid) {
+			t.Fatalf("LastValid = %d, want %d", uncertain.LastValid, txn.LastValid)
+		}
 		if len(node.submissions()) != 0 {
 			t.Fatalf("an ended context still submitted")
 		}
@@ -825,6 +868,26 @@ type cosignedSend struct {
 	// requestIDs is the request_id last posted to each path, the cosigner's
 	// under "cosigner <path>".
 	requestIDs map[string]string
+	// componentKey is the Witness Key ID the cosigner expects to be asked
+	// under; empty means COSIGNER_COMPONENT.
+	componentKey string
+}
+
+// cosignerPublicKeyHex is the cosigned account's cosigner public key in the
+// cosigned fixtures.
+const cosignerPublicKeyHex = "aabb"
+
+// posted reports whether any of paths was posted to the user signer.
+func (f *cosignedSend) posted(paths ...string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var found []string
+	for _, path := range paths {
+		if _, ok := f.requestIDs[path]; ok {
+			found = append(found, path)
+		}
+	}
+	return found
 }
 
 func (f *cosignedSend) requestID(path string) string {
@@ -889,7 +952,7 @@ func cosignedSendFixture(t *testing.T, fault string, primary bool) *cosignedSend
 		CosignerComponentKeyType: KeyTypeWitnessFalcon1024,
 		BoundedAuthorization: &BoundedAuthorizationInfo{
 			Contract: BoundedContractBounded2, MaxFee: new(uint64(1000)),
-			Cosigner: &BoundedCosignerAuthorizationInfo{ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: "aabb"},
+			Cosigner: &BoundedCosignerAuthorizationInfo{ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: cosignerPublicKeyHex},
 		},
 	}
 	keys := []KeyInfo{key}
@@ -910,6 +973,8 @@ func cosignedSendFixture(t *testing.T, fault string, primary bool) *cosignedSend
 		if err != nil {
 			t.Fatalf("MakePaymentTxn() error = %v", err)
 		}
+		// It expires first, so the group's earliest last valid round is its.
+		other.LastValid = 90
 		keys = append(keys, ordinaryKey(other))
 		positions = append(positions, PreparedTransaction{Transaction: &other, AuthAddress: other.Sender.String()})
 	}
@@ -965,6 +1030,12 @@ func cosignedSendFixture(t *testing.T, fault string, primary bool) *cosignedSend
 	})
 	t.Cleanup(userServer.Close)
 	cosignerClient, cosignerServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/keys" {
+			// What discovery reads: the cosigner's witness key.
+			publicKey, _ := hex.DecodeString(cosignerPublicKeyHex)
+			json.NewEncoder(w).Encode(KeysResponse{Count: 1, Keys: []KeyInfo{witnessRecord(KeyTypeWitnessFalcon1024, publicKey)}})
+			return
+		}
 		f.mu.Lock()
 		f.cosignerCalls++
 		f.mu.Unlock()
@@ -977,8 +1048,14 @@ func cosignedSendFixture(t *testing.T, fault string, primary bool) *cosignedSend
 			t.Errorf("decode cosigner request: %v", err)
 			return
 		}
-		if req.ComponentKey != "COSIGNER_COMPONENT" {
-			t.Errorf("cosigner component key = %q", req.ComponentKey)
+		want := "COSIGNER_COMPONENT"
+		f.mu.Lock()
+		if f.componentKey != "" {
+			want = f.componentKey
+		}
+		f.mu.Unlock()
+		if req.ComponentKey != want {
+			t.Errorf("cosigner component key = %q, want %q", req.ComponentKey, want)
 		}
 		json.NewEncoder(w).Encode(ComponentResponse{RequestID: req.RequestID, Components: []Component{{
 			Kind: ComponentTargetKindCosigner, TargetIndex: 0, Signature: "cosigner-sig", SignatureScheme: KeyTypeWitnessFalcon1024,
@@ -1080,6 +1157,13 @@ func TestSendPreparedCosignedLostAnswers(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), want) {
 				t.Fatalf("error %q does not name request %s", err, want)
+			}
+			wantLastValid := uint64(100)
+			if tt.primary {
+				wantLastValid = 90
+			}
+			if unknown.LastValid != wantLastValid {
+				t.Fatalf("LastValid = %d, want the group's earliest %d", unknown.LastValid, wantLastValid)
 			}
 		})
 	}

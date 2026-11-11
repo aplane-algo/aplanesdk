@@ -44,6 +44,17 @@ type SignerClient struct {
 	approvalWaitKnown   bool
 
 	maxFeeIncrease atomic.Pointer[uint64]
+
+	// endpoints and endpointOptions are set when the client was created from
+	// a data directory: its endpoint registry, and the connection options it
+	// was created with, for its own cosigner resolver.
+	endpoints        *ClientEndpointRegistry
+	endpointOptions  EndpointCosignerResolverOptions
+	resolverMu       sync.Mutex
+	cosignerResolver *EndpointCosignerResolver
+
+	// closed is set by Close.
+	closed atomic.Bool
 }
 
 const (
@@ -326,7 +337,36 @@ func FromEnvWithContext(ctx context.Context, opts *FromEnvOptions) (*SignerClien
 		return nil, err
 	}
 	sshOpts := fromEnvSSHOptions(opts, sshPort, endpoint.KnownHostsPath)
-	return ConnectSSHWithContext(ctx, host, endpoint.IdentityFile, sshOpts)
+	client, err := ConnectSSHWithContext(ctx, host, endpoint.IdentityFile, sshOpts)
+	if err != nil {
+		return nil, err
+	}
+	client.endpoints = registry
+	client.endpointOptions = EndpointCosignerResolverOptions{
+		Timeout:         sshOpts.Timeout,
+		SSHSetupTimeout: sshOpts.SSHSetupTimeout,
+		TrustOnFirstUse: sshOpts.TrustOnFirstUse,
+	}
+	return client, nil
+}
+
+// defaultCosignerResolver is the client's own cosigner resolver, over the
+// endpoint registry it was created from, made on first use. It is nil for a
+// client not created from a data directory. Once the client is closed, the
+// resolver is closed too, even one made after: it opens no connections.
+func (c *SignerClient) defaultCosignerResolver() *EndpointCosignerResolver {
+	if c == nil || c.endpoints == nil {
+		return nil
+	}
+	c.resolverMu.Lock()
+	defer c.resolverMu.Unlock()
+	if c.cosignerResolver == nil {
+		c.cosignerResolver = NewEndpointCosignerResolverFromRegistry(c.endpoints, &c.endpointOptions)
+		if c.closed.Load() {
+			c.cosignerResolver.Close()
+		}
+	}
+	return c.cosignerResolver
 }
 
 // fromEnvSSHOptions carries a FromEnv caller's options over to the SSH
@@ -345,11 +385,27 @@ func fromEnvSSHOptions(opts *FromEnvOptions, sshPort int, knownHostsPath string)
 	return sshOpts
 }
 
-// Close closes the client and any SSH tunnel.
+// Close closes the client and any SSH tunnel, and the connections its own
+// cosigner resolver opened.
 func (c *SignerClient) Close() {
+	c.resolverMu.Lock()
+	c.closed.Store(true)
+	resolver := c.cosignerResolver
+	c.resolverMu.Unlock()
+	if resolver != nil {
+		resolver.Close()
+	}
 	if c.sshTunnel != nil {
 		c.sshTunnel.close()
 	}
+}
+
+// connectionOpen reports, asking nothing of the signer, whether the client
+// can still reach it: it has not been closed, and its SSH tunnel, if it has
+// one, is up. A client on a caller's own base URL has no connection of its
+// own to lose, so it is open until it is closed.
+func (c *SignerClient) connectionOpen() bool {
+	return !c.closed.Load() && (c.sshTunnel == nil || c.sshTunnel.open())
 }
 
 // Health checks if the signer is reachable.
@@ -579,16 +635,22 @@ func (c *SignerClient) GetKeysResponseWithContext(ctx context.Context) (*KeysRes
 		return nil, signerHTTPError(resp)
 	}
 
+	// A body that stalls or is cut off is a failed exchange, as a request that
+	// never got an answer is; only a body read in full can be unreadable.
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read keys: %w", err)
+	}
 	var keysResp keysResponse
-	if err := readAnswer(resp.Body, &keysResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
+	if err := decodeAnswer(raw, &keysResp); err != nil {
+		return nil, &unreadableAnswer{err: fmt.Errorf("failed to decode response: %w", err)}
 	}
 	// An address is looked up by its exact text, so an Algorand address the
 	// signer spelled another way would never match the key's account. Any
 	// other text, such as a witness key's ID, is kept as sent.
 	for i, key := range keysResp.Keys {
 		if canonical, ok := alternateAddressSpelling(key.Address); ok {
-			return nil, fmt.Errorf("failed to decode response: key %d address %q is a non-canonical spelling of address %s", i, key.Address, canonical)
+			return nil, &unreadableAnswer{err: fmt.Errorf("failed to decode response: key %d address %q is a non-canonical spelling of address %s", i, key.Address, canonical)}
 		}
 	}
 
@@ -1184,18 +1246,33 @@ func (c *SignerClient) SignGroupWithContext(ctx context.Context, groupReq GroupS
 }
 
 // readAnswer reads a 200 body as exactly one JSON value of out's shape. A
-// null body, or anything after the value, is not an answer: json.Decoder
-// would read null as an empty answer and stop at the end of the first value.
+// failure to read the body and a body that does not decode are both errors;
+// decodeAnswer is the decoding alone, for a caller that tells them apart.
 func readAnswer(body io.Reader, out any) error {
 	raw, err := io.ReadAll(body)
 	if err != nil {
 		return err
 	}
+	return decodeAnswer(raw, out)
+}
+
+// decodeAnswer decodes a 200 body, read in full, as exactly one JSON value of
+// out's shape. A null body, or anything after the value, is not an answer:
+// json.Decoder would read null as an empty answer and stop at the end of the
+// first value.
+func decodeAnswer(raw []byte, out any) error {
 	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return errors.New("the answer is null")
 	}
 	return json.Unmarshal(raw, out)
 }
+
+// unreadableAnswer marks a 200 answer the SDK could not read, or refused as
+// malformed. It reads as the error it wraps.
+type unreadableAnswer struct{ err error }
+
+func (e *unreadableAnswer) Error() string { return e.err.Error() }
+func (e *unreadableAnswer) Unwrap() error { return e.err }
 
 // lostAnswer marks an approval-bearing request that ended with no usable
 // answer: the exchange failed, or a 200 arrived whose body could not be read.

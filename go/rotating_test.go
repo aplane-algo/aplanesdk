@@ -920,6 +920,9 @@ func TestSignPreparedRotatingLostAnswerThenIdenticalRetry(t *testing.T) {
 	if !errors.As(err, &unknown) || unknown.Rotating == nil || unknown.RequestID == "" {
 		t.Fatalf("error = %v, want *SignOutcomeUnknownError carrying the prepared group", err)
 	}
+	if want := preparedLastValid(t, unknown.Rotating); want == 0 || unknown.LastValid != want {
+		t.Fatalf("LastValid = %d, want the prepared group's %d", unknown.LastValid, want)
+	}
 	// The send stops: no second prepare, no second sign, nothing submitted.
 	if signer.count("/sign/rotating/prepare") != 1 || signer.count("/sign/rotating/sign") != 1 || len(node.submissions()) != 0 {
 		t.Fatalf("a lost sign answer was followed by another attempt")
@@ -1136,6 +1139,10 @@ func TestSendPreparedRotatingRetryBounds(t *testing.T) {
 		if apiErrorCode(err) != ErrCodeRotatingStageUnproven || signer.count("/sign/rotating/prepare") != 1 {
 			t.Fatalf("error = %v after %d prepares; want the refusal after one", err, signer.count("/sign/rotating/prepare"))
 		}
+		// Both are readable: the signer's refusal and the deadline.
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("error = %v, want it to match context.DeadlineExceeded too", err)
+		}
 	})
 }
 
@@ -1311,6 +1318,9 @@ func TestSignPreparedRotatingAnswerClassification(t *testing.T) {
 		if !errors.As(err, &unknown) || unknown.Rotating != prepared {
 			t.Fatalf("error = %v, want *SignOutcomeUnknownError carrying the prepared group", err)
 		}
+		if want := preparedLastValid(t, prepared); want == 0 || unknown.LastValid != want {
+			t.Fatalf("LastValid = %d, want the prepared group's %d", unknown.LastValid, want)
+		}
 	})
 	t.Run("an unauthenticated connection is ErrAuthentication", func(t *testing.T) {
 		signer, _, client, _, txn := newRotatingFixture(t)
@@ -1409,4 +1419,25 @@ func TestSignPreparedRotatingWithAnEndedContextSendsNothing(t *testing.T) {
 	if signer.count("/sign/rotating/sign") != 0 {
 		t.Fatalf("a sign request went out on an ended context")
 	}
+}
+
+// preparedLastValid is the earliest last valid round of a prepared rotating
+// group, read from its bytes.
+func preparedLastValid(t *testing.T, prepared *PreparedRotating) uint64 {
+	t.Helper()
+	var earliest uint64
+	for i, h := range prepared.Transactions() {
+		raw, err := hex.DecodeString(h)
+		if err != nil {
+			t.Fatal(err)
+		}
+		txn, err := decodeCanonicalTxn(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 || uint64(txn.LastValid) < earliest {
+			earliest = uint64(txn.LastValid)
+		}
+	}
+	return earliest
 }

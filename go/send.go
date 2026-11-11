@@ -54,6 +54,8 @@ type SendOptions struct {
 	// A cosigned account's cosigner, used only when the group has a position
 	// that needs one. Give a client, with the Witness Key ID it signs under,
 	// or a resolver. The caller owns these clients; a send never closes them.
+	// With neither, a client created from a data directory (FromEnv) finds
+	// the cosigner among the cosigner endpoints of its endpoints.yaml.
 	CosignerClient       *SignerClient
 	CosignerComponentKey string
 	CosignerResolver     CosignedCosignerResolver
@@ -89,6 +91,9 @@ type SendResult struct {
 	Cosigned *CosignedSignResult
 	// Rotating carries the rotation a rotating account's send performed.
 	Rotating *RotatingSendDetails
+
+	// lastValid is the earliest last valid round of the signed group.
+	lastValid uint64
 }
 
 // RotatingSendDetails describes the rotation a rotating account's send
@@ -124,7 +129,7 @@ var (
 // signer may or may not have released a signature. Nothing was submitted by
 // this call. Do not build and sign a replacement transaction on the strength
 // of this error alone: check the request with the operator or the signer's
-// audit log first.
+// audit log first, or ask ResolveOutcome where things stand.
 type SignOutcomeUnknownError struct {
 	// RequestID is the ID of the request whose answer was lost, as the
 	// signer's audit log records it: the /sign request, or for a cosigned
@@ -137,7 +142,12 @@ type SignOutcomeUnknownError struct {
 	// rotating account. Calling SignPreparedRotating with it again asks for
 	// the same transaction and is the safe recovery.
 	Rotating *PreparedRotating
-	Err      error
+	// LastValid is the earliest last valid round among the transactions
+	// that were sent to be signed (for a rotating account, of the prepared
+	// group). The signer never changes validity rounds, so after this round
+	// no signature released by the request can execute.
+	LastValid uint64
+	Err       error
 }
 
 func (e *SignOutcomeUnknownError) Error() string {
@@ -147,7 +157,14 @@ func (e *SignOutcomeUnknownError) Error() string {
 	return fmt.Sprintf("sign request %s: no answer from the signer, so a signature may have been released: %v", e.RequestID, e.Err)
 }
 
-func (e *SignOutcomeUnknownError) Unwrap() error { return e.Err }
+// Unwrap returns the cause. A nil error has none, so errors.As can look past
+// one in a chain.
+func (e *SignOutcomeUnknownError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
 
 // SubmissionRejectedError reports that the network refused the signed group:
 // the node rejected it on submission, or dropped it from its pool. The signed
@@ -180,21 +197,31 @@ const (
 
 // SubmissionUncertainError reports a signed group that this call did not see
 // confirmed or refused. Unless Stage is SendStageUnsent the group may still
-// confirm. Look its IDs up, or submit the same SignedGroup again while it is
-// valid; never sign a replacement until the outcome is known, because both
-// could execute.
+// confirm. Look its IDs up (ResolveOutcome does), or submit the same
+// SignedGroup again while it is valid; never sign a replacement until the
+// outcome is known, because both could execute.
 type SubmissionUncertainError struct {
 	Stage       string
 	SignedGroup []string
 	TxIDs       []string
-	Err         error
+	// LastValid is the earliest last valid round in SignedGroup: after it,
+	// the group can no longer execute.
+	LastValid uint64
+	Err       error
 }
 
 func (e *SubmissionUncertainError) Error() string {
 	return fmt.Sprintf("outcome of transaction %s is unknown (%s): %v", firstOrEmpty(e.TxIDs), e.Stage, e.Err)
 }
 
-func (e *SubmissionUncertainError) Unwrap() error { return e.Err }
+// Unwrap returns the cause. A nil error has none, so errors.As can look past
+// one in a chain.
+func (e *SubmissionUncertainError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
 
 func firstOrEmpty(values []string) string {
 	if len(values) == 0 {
@@ -297,7 +324,7 @@ func (c *SignerClient) sendPrepared(ctx context.Context, algodClient *algod.Clie
 			// ended with no answer may have released a signature, and the
 			// last of them releases the whole group.
 			if requestID, lost := lostRequest(err); lost {
-				return nil, &SignOutcomeUnknownError{RequestID: requestID, Err: err}
+				return nil, &SignOutcomeUnknownError{RequestID: requestID, LastValid: group.earliestLastValid(), Err: err}
 			}
 			return nil, err
 		}
@@ -329,6 +356,10 @@ func (c *SignerClient) sendPrepared(ctx context.Context, algodClient *algod.Clie
 // request's ID. Planning and key listing release nothing, so a failure there
 // is not one.
 func lostRequest(err error) (requestID string, lost bool) {
+	var resolve *cosignerResolveError
+	if errors.As(err, &resolve) {
+		return "", false
+	}
 	var mark *lostAnswer
 	if errors.As(err, &mark) {
 		return mark.requestID, true
@@ -426,9 +457,9 @@ func (c *SignerClient) signForSend(ctx context.Context, group PreparedGroup) (*G
 	var apiErr *APIError
 	switch {
 	case errors.As(err, &transport):
-		return nil, &SignOutcomeUnknownError{RequestID: requestID, Requests: requests, Err: transport.err}
+		return nil, &SignOutcomeUnknownError{RequestID: requestID, Requests: requests, LastValid: group.earliestLastValid(), Err: transport.err}
 	case errors.As(err, &unread):
-		return nil, &SignOutcomeUnknownError{RequestID: requestID, Requests: requests, Err: err}
+		return nil, &SignOutcomeUnknownError{RequestID: requestID, Requests: requests, LastValid: group.earliestLastValid(), Err: err}
 	case errors.As(err, &body):
 		return nil, fmt.Errorf("signing failed: %s", body.message)
 	case errors.As(err, &apiErr):
@@ -476,7 +507,33 @@ func describeSignedGroup(result *SendResult) ([][]byte, error) {
 		result.GroupID = base64.StdEncoding.EncodeToString(groupID[:])
 	}
 	result.TxIDs = txIDs
+	result.lastValid = earliestLastValid(txns)
 	return raw, nil
+}
+
+// earliestLastValid is the earliest last valid round among txns. A group is
+// atomic, so after that round none of it can execute.
+func earliestLastValid(txns []types.Transaction) uint64 {
+	var earliest uint64
+	for i, txn := range txns {
+		if last := uint64(txn.LastValid); i == 0 || last < earliest {
+			earliest = last
+		}
+	}
+	return earliest
+}
+
+// earliestLastValid is the earliest last valid round among the group's
+// transactions. The signer never changes validity rounds: the dummies it
+// appends take the first transaction's.
+func (g PreparedGroup) earliestLastValid() uint64 {
+	txns := make([]types.Transaction, 0, len(g.Transactions))
+	for _, item := range g.Transactions {
+		if item.Transaction != nil {
+			txns = append(txns, *item.Transaction)
+		}
+	}
+	return earliestLastValid(txns)
 }
 
 // submitAndTrack is the one submission path of every send. It submits the
@@ -489,7 +546,7 @@ func submitAndTrack(ctx context.Context, algodClient *algod.Client, raw [][]byte
 	}
 	txID := result.TxIDs[0]
 	uncertain := func(stage string, err error) error {
-		return &SubmissionUncertainError{Stage: stage, SignedGroup: result.SignedGroup, TxIDs: result.TxIDs, Err: err}
+		return &SubmissionUncertainError{Stage: stage, SignedGroup: result.SignedGroup, TxIDs: result.TxIDs, LastValid: result.lastValid, Err: err}
 	}
 	if err := ctx.Err(); err != nil {
 		return uncertain(SendStageUnsent, err)

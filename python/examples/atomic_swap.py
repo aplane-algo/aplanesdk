@@ -3,12 +3,14 @@
 Atomic swap example - exchange ALGO between two accounts in a single group.
 
 This demonstrates signing a transaction group where both parties must sign.
-Works with any combination of key types (Ed25519, Falcon, etc.).
+Works with any combination of key types (Ed25519, Falcon, etc.), and with a
+cosigned account. A rotating account cannot take part: it sends one
+transaction alone, and the signer forms its group.
 
 Setup:
     1. Create data directory: mkdir -p ~/aplane/apclient/.ssh
-    2. Copy token: cp /path/to/aplane.token ~/aplane/apclient/
-    3. Generate APlane SSH key: ssh-keygen -t ed25519 -f ~/aplane/apclient/.ssh/id_ed25519 -N ''
+    2. Generate APlane SSH key: ssh-keygen -t ed25519 -f ~/aplane/apclient/.ssh/id_ed25519 -N ''
+    3. Enroll it at the signer: run apshell enroll and approve in apadmin
     4. Create endpoints.yaml (see below)
     5. Set env: export APCLIENT_DATA=~/aplane/apclient
 
@@ -23,12 +25,11 @@ Example endpoints.yaml (SSH tunnel):
 Important:
     - Do NOT pre-assign group IDs with assign_group_id()
     - The server computes the group ID after adding any required dummy transactions
-    - The return value can be passed directly to send_raw_transaction()
+    - send_prepared submits exactly the group the signer returned, after checking it
 """
 
-from algosdk import transaction
 from algosdk.v2client import algod
-from aplanesdk import SignerClient, send_raw_transaction
+from aplanesdk import SignerClient, SignOutcomeUnknownError, SubmissionUncertainError
 
 # Swap parameters (replace with your actual addresses)
 ALICE = "ALICEED255EXAMPLE777777777777777777777777777777777777777777"  # Ed25519 account
@@ -39,47 +40,52 @@ SWAP_AMOUNT = 100000  # 0.1 ALGO in microAlgos
 def main():
     # Connect using config from $APCLIENT_DATA
     with SignerClient.from_env() as signer:
-        algod_client = algod.AlgodClient("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "http://localhost:4001")
-        params = algod_client.suggested_params()
+        algod_client = algod.AlgodClient("a" * 64, "http://localhost:4001")
 
-        # Build transactions (do NOT call assign_group_id)
-        txn_alice_to_bob = transaction.PaymentTxn(
-            sender=ALICE,
-            receiver=BOB,
-            amt=SWAP_AMOUNT,
-            sp=params
+        # Build both payments, ungrouped, each naming the key that signs it
+        # (a rekeyed account's authorizer included).
+        group = signer.prepare_payment_group(
+            algod_client,
+            [
+                {"sender": ALICE, "receiver": BOB, "amount": SWAP_AMOUNT},
+                {"sender": BOB, "receiver": ALICE, "amount": SWAP_AMOUNT},
+            ],
         )
 
-        txn_bob_to_alice = transaction.PaymentTxn(
-            sender=BOB,
-            receiver=ALICE,
-            amt=SWAP_AMOUNT,
-            sp=params
-        )
+        # Sign the group (server handles grouping and dummies for Falcon),
+        # then submit and confirm it.
+        print(f"Sending atomic swap: {ALICE[:8]}... <-> {BOB[:8]}...")
+        try:
+            result = signer.send_prepared(algod_client, group)
+        except (SubmissionUncertainError, SignOutcomeUnknownError) as error:
+            # A group that was signed, or a signature that may have been
+            # released: never build a replacement until the outcome is
+            # known, because both could execute. The node says where it
+            # stands.
+            print_outcome(signer, algod_client, error)
+            raise
 
-        # Resolve auth addresses (handles rekeyed accounts)
-        alice_info = algod_client.account_info(ALICE)
-        bob_info = algod_client.account_info(BOB)
-        auth_addresses = [
-            alice_info.get("auth-addr") or ALICE,
-            bob_info.get("auth-addr") or BOB,
-        ]
-
-        # Sign the group (server handles grouping and dummies for Falcon)
-        print(f"Signing atomic swap: {ALICE[:8]}... <-> {BOB[:8]}...")
-        signed = signer.sign_transactions(
-            [txn_alice_to_bob, txn_bob_to_alice],
-            auth_addresses=auth_addresses,
-        )
-
-        # Submit (handles concatenated group bytes from Falcon/LogicSig keys)
-        txid = send_raw_transaction(algod_client, signed)
-        print(f"Submitted: {txid}")
-
-        # Wait for confirmation
-        result = transaction.wait_for_confirmation(algod_client, txid, 4)
-        print(f"Confirmed in round {result['confirmed-round']}")
+        print(f"Confirmed group {result.group_id} in round {result.confirmed_round}")
         print("Atomic swap complete!")
+
+
+def print_outcome(signer, algod_client, error):
+    """Print an uncertain outcome and where the node says it stands. It signs
+    and submits nothing. When the node cannot be asked, the error still
+    stands, and is raised next as it was."""
+    if isinstance(error, SubmissionUncertainError):
+        print(f"Outcome unknown for {', '.join(error.tx_ids)} ({error.stage}): {error}")
+    else:
+        print(f"Sign outcome unknown (request {error.request_id or 'unnamed'}): {error}")
+    try:
+        report = signer.resolve_outcome(algod_client, error)
+    except Exception as check_error:
+        print(
+            f"Could not check the outcome ({check_error}); look the transaction up "
+            "before sending again."
+        )
+        return
+    print(f"{report.state}: {report.advice}")
 
 
 if __name__ == "__main__":

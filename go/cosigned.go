@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/algorand/go-algorand-sdk/v2/types"
 )
@@ -59,6 +60,10 @@ type cosignedSignTarget struct {
 	CosignerComponentKeyType string
 	LogicSigResources        *LogicSigResourceUsage
 	AppCallInfo              *AppCallInfo
+	// MayTakeListedPath says the position is a rekey of an account with a
+	// rekey-to list. If the target is listed, the signer signs it on the
+	// listed path, which needs no cosigner; only its base component says.
+	MayTakeListedPath bool
 }
 
 // cosignedPrimarySignTarget describes one non-cosigned group position that the
@@ -75,12 +80,20 @@ type cosignedPrimarySignTarget struct {
 // prepared cosigned group: where the cosigner is, the frozen group it signs
 // over, and the app call description of every original position.
 type cosignerRequestOptions struct {
-	CosignerClient       *SignerClient
-	CosignerResolver     CosignedCosignerResolver
-	CosignerComponentKey string
-	GroupBytesHex        []string
-	AppCallInfo          map[int]*AppCallInfo
-	DummyPositions       []int
+	// Resolver finds the cosigner of a target not in Resolved, the
+	// cosigners found before anything was asked to sign.
+	Resolver       CosignedCosignerResolver
+	Resolved       map[int]resolvedCosigner
+	GroupBytesHex  []string
+	AppCallInfo    map[int]*AppCallInfo
+	DummyPositions []int
+}
+
+// resolvedCosigner is the cosigner of one target: the client that signs its
+// cosigner component, and the Witness Key ID it signs under.
+type resolvedCosigner struct {
+	client       *SignerClient
+	componentKey string
 }
 
 // CosignedSignResult contains the final assembled group and intermediate
@@ -98,6 +111,12 @@ type CosignedSignResult struct {
 }
 
 // PreparedCosignedGroupOptions configures SignPreparedCosignedGroup.
+//
+// The cosigner is CosignerResolver when set, otherwise CosignerClient with
+// CosignerComponentKey. With neither, a UserClient created from a data
+// directory (FromEnv) finds it among the cosigner endpoints of that
+// directory's endpoints.yaml, with an EndpointCosignerResolver it keeps and
+// closes on Close; any other client has no cosigner.
 type PreparedCosignedGroupOptions struct {
 	UserClient           *SignerClient
 	CosignerClient       *SignerClient
@@ -244,20 +263,23 @@ func signCosignedDummies(firstOriginal types.Transaction, groupID types.Digest, 
 func requestCosignerComponentSignatures(ctx context.Context, opts cosignerRequestOptions, targets []cosignedSignTarget, result *CosignedSignResult) (map[int]cosignedComponentSignature, error) {
 	groups := make(map[cosignerSignGroupKey][]int)
 	schemes := make(map[int]string, len(targets))
-	for _, target := range targets {
+	for _, target := range inResolveOrder(targets) {
 		schemes[target.TargetIndex] = target.CosignerComponentKeyType
-		client, componentKey, err := resolveCosignedCosigner(ctx, opts, target)
-		if err != nil {
-			return nil, err
+		cosigner, ok := opts.Resolved[target.TargetIndex]
+		if !ok {
+			// A target that could have taken the listed path, and did not.
+			var err error
+			if cosigner, err = resolveCosigner(ctx, opts.Resolver, target); err != nil {
+				return nil, err
+			}
 		}
-		groups[cosignerSignGroupKey{client: client, componentKey: componentKey}] = append(
-			groups[cosignerSignGroupKey{client: client, componentKey: componentKey}],
-			target.TargetIndex,
-		)
+		key := cosignerSignGroupKey(cosigner)
+		groups[key] = append(groups[key], target.TargetIndex)
 	}
 
 	signatures := make(map[int]cosignedComponentSignature)
-	for group, indices := range groups {
+	for _, group := range sortedCosignerGroups(groups) {
+		indices := groups[group]
 		sort.Ints(indices)
 		resp, err := group.client.RequestComponentsWithContext(ctx, componentRequestForIndices(opts.GroupBytesHex, indices, opts.DummyPositions, group.componentKey, opts.AppCallInfo))
 		if err != nil {
@@ -310,14 +332,83 @@ func contiguousIndices(start, end int) []int {
 	return indices
 }
 
-func resolveCosignedCosigner(ctx context.Context, opts cosignerRequestOptions, target cosignedSignTarget) (*SignerClient, string, error) {
-	if opts.CosignerResolver != nil {
-		return opts.CosignerResolver.ResolveCosigner(ctx, target.CosignerPublicKeyHex, target.CosignerComponentKeyType)
+// sortedCosignerGroups orders the cosigner requests by their first target,
+// so the cosigners are asked in group order.
+func sortedCosignerGroups(groups map[cosignerSignGroupKey][]int) []cosignerSignGroupKey {
+	keys := make([]cosignerSignGroupKey, 0, len(groups))
+	first := make(map[cosignerSignGroupKey]int, len(groups))
+	for key, indices := range groups {
+		keys = append(keys, key)
+		first[key] = indices[0]
+		for _, index := range indices {
+			first[key] = min(first[key], index)
+		}
 	}
-	if opts.CosignerClient == nil {
-		return nil, "", fmt.Errorf("cosigner client or resolver is required")
+	sort.Slice(keys, func(i, j int) bool { return first[keys[i]] < first[keys[j]] })
+	return keys
+}
+
+// cosignerResolverFor is the resolver a cosigned sign uses: the caller's
+// resolver, else the caller's client, else the user client's own endpoint
+// resolver when it was created from a data directory. With none of them, it
+// is a resolver that refuses.
+func cosignerResolverFor(opts PreparedCosignedGroupOptions) CosignedCosignerResolver {
+	switch {
+	case opts.CosignerResolver != nil:
+		return opts.CosignerResolver
+	case opts.CosignerClient != nil:
+		return StaticCosignerResolver{Client: opts.CosignerClient, ComponentKey: opts.CosignerComponentKey}
 	}
-	return opts.CosignerClient, opts.CosignerComponentKey, nil
+	if resolver := opts.UserClient.defaultCosignerResolver(); resolver != nil {
+		return resolver
+	}
+	return noCosignerResolver{}
+}
+
+// noCosignerResolver is the resolver of a sign given no cosigner.
+type noCosignerResolver struct{}
+
+func (noCosignerResolver) ResolveCosigner(context.Context, string, string) (*SignerClient, string, error) {
+	return nil, "", fmt.Errorf("cosigner client or resolver is required")
+}
+
+// cosignerResolveError is a resolver's failure. Nothing was asked of the
+// cosigner it did not find, so it is never an unknown outcome, whatever it
+// wraps. It reads as the resolver's error.
+type cosignerResolveError struct{ err error }
+
+func (e *cosignerResolveError) Error() string { return e.err.Error() }
+func (e *cosignerResolveError) Unwrap() error { return e.err }
+
+// inResolveOrder returns targets in the order their cosigners are resolved:
+// by component key type, then public key in lowercase hex, then position, so
+// the first cosigner found missing is the same in every SDK. The cosigners
+// are still asked to sign in the order of their first position.
+func inResolveOrder(targets []cosignedSignTarget) []cosignedSignTarget {
+	ordered := append([]cosignedSignTarget(nil), targets...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		a, b := ordered[i], ordered[j]
+		if a.CosignerComponentKeyType != b.CosignerComponentKeyType {
+			return a.CosignerComponentKeyType < b.CosignerComponentKeyType
+		}
+		if aKey, bKey := strings.ToLower(a.CosignerPublicKeyHex), strings.ToLower(b.CosignerPublicKeyHex); aKey != bKey {
+			return aKey < bKey
+		}
+		return a.TargetIndex < b.TargetIndex
+	})
+	return ordered
+}
+
+// resolveCosigner asks the resolver for a target's cosigner.
+func resolveCosigner(ctx context.Context, resolver CosignedCosignerResolver, target cosignedSignTarget) (resolvedCosigner, error) {
+	client, componentKey, err := resolver.ResolveCosigner(ctx, target.CosignerPublicKeyHex, target.CosignerComponentKeyType)
+	if err != nil {
+		return resolvedCosigner{}, &cosignerResolveError{err: err}
+	}
+	if client == nil {
+		return resolvedCosigner{}, &cosignerResolveError{err: fmt.Errorf("cosigner resolver returned no client for prepared transaction %d", target.TargetIndex)}
+	}
+	return resolvedCosigner{client: client, componentKey: componentKey}, nil
 }
 
 type primaryCosignedPassthrough struct {

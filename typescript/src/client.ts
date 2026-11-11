@@ -6,7 +6,7 @@ import * as path from "path";
 import * as net from "net";
 import { randomBytes } from "crypto";
 import algosdk, { type Algodv2, type Transaction } from "algosdk";
-import type { Client as SSHClient, ClientChannel } from "ssh2";
+import type { Client as SSHClient, ClientChannel, ConnectConfig } from "ssh2";
 import type {
   KeyInfo,
   AccountInfoLookup,
@@ -58,6 +58,7 @@ import type {
   AppCallInfo,
   RotatingPrepareRequest,
   RotatingSignResponse,
+  ClientEndpointRegistry,
 } from "./types.js";
 import {
   ErrorCodes,
@@ -90,8 +91,10 @@ import {
   UnsupportedSigningFlowError,
   callerAborted,
   isLostAnswer,
+  isResolverError,
   lostAnswerRequestId,
   markLostAnswer,
+  markResolverError,
 } from "./errors.js";
 import {
   encodeTransaction,
@@ -132,6 +135,7 @@ import {
   checkSendOptions,
   decodeExecutableSignedGroup,
   describeSignedGroup,
+  earliestLastValid,
   runSimulation,
   signedGroupTransactions,
   simulationFailure,
@@ -172,10 +176,20 @@ import {
   type AnswerShape,
 } from "./answers.js";
 import {
+  resolveOutcome as resolveUncertainOutcome,
+  waitForOutcome as waitForUncertainOutcome,
+  type OutcomeReport,
+  type ResolveOutcomeOptions,
+  type WaitForOutcomeOptions,
+} from "./outcome.js";
+import {
   SSH_USERNAME,
+  markSshSetupFailure,
   normalizeSSHSetupTimeout,
   sshConnectionFailedMessage,
+  type SshSetupFailure,
 } from "./ssh.js";
+import { EndpointCosignerResolver, type EndpointCosignerResolverOptions } from "./discovery.js";
 import {
   loadConfig,
   loadClientEndpointRegistry,
@@ -285,14 +299,37 @@ function componentRequestForIndices(
   };
 }
 
+/**
+ * The cosigner client for a target: the caller's resolver, else the caller's
+ * client, else, for a user client created from a data directory, the
+ * endpoint registry's. An explicit client or resolver always wins. A
+ * resolver's own error is passed on as it is.
+ */
 async function resolveCosignerForTarget(
   target: CosignedSignTarget,
-  options: Pick<PreparedCosignedGroupOptions, "cosignerClient" | "cosignerResolver" | "cosignerComponentKey">,
+  options: PreparedCosignedGroupOptions,
 ): Promise<CosignedCosignerResolution> {
-  if (options.cosignerResolver) {
-    const resolved = await options.cosignerResolver(target);
-    if (!resolved.client) {
-      throw new SignerError("cosigner resolver returned no client");
+  const resolver = options.cosignerResolver
+    ?? (options.cosignerClient ? undefined : defaultCosignerResolver(options.userClient));
+  if (resolver) {
+    const resolveOptions: CosignedCosignerResolveOptions = { signal: options.signal };
+    let resolve: () => CosignedCosignerResolution | Promise<CosignedCosignerResolution>;
+    if (typeof resolver === "function") {
+      resolve = () => resolver(target, resolveOptions);
+    } else if (resolver && typeof resolver.resolve === "function") {
+      resolve = () => resolver.resolve(target, resolveOptions);
+    } else {
+      throw new SignerError("cosignerResolver must be a function or an object with a resolve method");
+    }
+    let resolved: CosignedCosignerResolution;
+    try {
+      resolved = await resolve();
+    } catch (error) {
+      // Never an unknown outcome, whatever it carries: see markResolverError.
+      throw markResolverError(error);
+    }
+    if (!resolved?.client) {
+      throw new SignerError(`cosigner resolver returned no client for prepared transaction ${target.targetIndex}`);
     }
     return resolved;
   }
@@ -303,6 +340,32 @@ async function resolveCosignerForTarget(
     client: options.cosignerClient,
     componentKey: options.cosignerComponentKey || "",
   };
+}
+
+/** Whether txn sets a rekey: an address other than the zero address. */
+function setsRekeyTo(txn: Transaction | null | undefined): boolean {
+  const rekeyTo = txn?.rekeyTo;
+  return rekeyTo !== undefined && rekeyTo.publicKey.some((byte) => byte !== 0);
+}
+
+/**
+ * Whether a cosigned target may take the listed-rekey path, which needs no
+ * cosigner: its transaction sets a rekey and its key has a rekey list. Only
+ * the base component answer says whether it does.
+ */
+function mayTakeListedPath(key: KeyInfo | undefined, txn: Transaction | null | undefined): boolean {
+  return setsRekeyTo(txn) && key?.boundedAuthorization?.rekeyList !== undefined;
+}
+
+/** Order targets by the witness key they need: key type, then lowercase public key hex. */
+function byRequiredWitnessKey(a: CosignedSignTarget, b: CosignedSignTarget): number {
+  const typeA = a.cosignerComponentKeyType ?? "";
+  const typeB = b.cosignerComponentKeyType ?? "";
+  if (typeA !== typeB) return typeA < typeB ? -1 : 1;
+  const keyA = (a.cosignerPublicKeyHex ?? "").toLowerCase();
+  const keyB = (b.cosignerPublicKeyHex ?? "").toLowerCase();
+  if (keyA !== keyB) return keyA < keyB ? -1 : 1;
+  return a.targetIndex - b.targetIndex;
 }
 
 /** Sign the resource dummies a plan appended, after checking each is canonical. */
@@ -467,11 +530,12 @@ async function requestBoundedPrimaryPassthrough(
  * an error that is not the SDK's own, thrown while the answer was checked,
  * decoded or described. It is not a refusal, because a signature may be out,
  * so it is marked as the request's lost answer, keeping its class and
- * message. The SDK's own error (a refusal), an error already marked, and any
- * error before a request has answered (requestId "") pass as they are.
+ * message. The SDK's own error (a refusal), an error already marked, a
+ * cosigner resolver's error, and any error before a request has answered
+ * (requestId "") pass as they are.
  */
 function faultAfterAnswer(error: unknown, requestId: string): unknown {
-  if (requestId === "" || error instanceof SignerError || isLostAnswer(error)) {
+  if (requestId === "" || error instanceof SignerError || isLostAnswer(error) || isResolverError(error)) {
     return error;
   }
   markLostAnswer(error, requestId);
@@ -590,6 +654,20 @@ export async function signPreparedCosignedGroup(
     throw new SignerError("prepared group has no bounded-cosigner targets");
   }
 
+  // A target that cannot take the listed-rekey path needs the cosigner
+  // whatever the signer answers, so its cosigner is found now, before the
+  // group is planned and before any approval-bearing request: a resolver
+  // that fails leaves nothing signed. They are resolved in the order of the
+  // witness key each needs. A target that may take the listed path is
+  // resolved only once its base component says it needs the cosigner: a
+  // listed rekey needs none, and must work with no cosigner configured or
+  // reachable.
+  const cosigners = new Map<number, CosignedCosignerResolution>();
+  for (const target of [...targets].sort(byRequiredWitnessKey)) {
+    if (mayTakeListedPath(targetKeys.get(target.targetIndex), prepared[target.targetIndex].transaction)) continue;
+    cosigners.set(target.targetIndex, await resolveCosignerForTarget(target, options));
+  }
+
   const planResponse = await options.userClient.planRequests(requests, { signal: options.signal });
   const frozenGroup = [...(planResponse.transactions || [])];
   if (frozenGroup.length < prepared.length) {
@@ -602,6 +680,7 @@ export async function signPreparedCosignedGroup(
   // reported fee raises and group assignment on original positions, and
   // canonical resource dummies after them.
   validateBoundedTargetFees(planned, targetMaxFees);
+
   const targetIndices = new Set(targets.map((target) => target.targetIndex));
   // The ID of the last approval-bearing request that answered. A fault in
   // the SDK after an answer arrived is not a refusal: a signature may be out.
@@ -675,11 +754,20 @@ export async function signPreparedCosignedGroup(
   // The user side is complete, including ordinary primary positions. Only
   // now may the SDK disclose the frozen group to the cosigner endpoint, and
   // only for the targets that need it: a listed rekey takes no cosigner.
-  const cosignerGroups: Array<{ client: SignerClient; componentKey: string; indices: number[] }> = [];
-  for (const target of targets) {
+  const needsCosigner = targets.filter((target) => {
     const component = components.get(target.targetIndex);
-    if (component && !componentNeedsCosigner(component)) continue;
-    const resolved = await resolveCosignerForTarget(target, options);
+    return !component || componentNeedsCosigner(component);
+  });
+  // The targets not resolved up front are resolved now, in the order of the
+  // witness key each needs, as the up-front ones were.
+  for (const target of [...needsCosigner].sort(byRequiredWitnessKey)) {
+    if (cosigners.has(target.targetIndex)) continue;
+    cosigners.set(target.targetIndex, await resolveCosignerForTarget(target, options));
+  }
+  // The requests go out in the order of their first target position.
+  const cosignerGroups: Array<{ client: SignerClient; componentKey: string; indices: number[] }> = [];
+  for (const target of needsCosigner) {
+    const resolved = cosigners.get(target.targetIndex) as CosignedCosignerResolution;
     let group = cosignerGroups.find(
       (candidate) => candidate.client === resolved.client &&
         candidate.componentKey === (resolved.componentKey || ""),
@@ -1313,30 +1401,65 @@ class SSHTunnel {
     signal?: AbortSignal;
   }): Promise<void> {
     if (!options.knownHostsPath) {
-      throw new SignerError(
+      throw markSshSetupFailure(new SignerError(
         "known_hosts path is required for SSH host key verification"
-      );
+      ), "known-hosts");
     }
 
-    // Dynamically import ssh2
-    const { Client } = await import("ssh2");
+    // Dynamically import ssh2. It is CommonJS, and Node's ESM loader does not
+    // see every name it exports (utils among them): read those from its
+    // module object.
+    const ssh2 = await import("ssh2");
+    const { Client } = ssh2;
+    const { utils } = ssh2.default ?? ssh2;
 
-    const privateKey = fs.readFileSync(options.privateKeyPath, "utf-8");
+    let privateKey: string;
+    try {
+      privateKey = fs.readFileSync(options.privateKeyPath, "utf-8");
+    } catch (error) {
+      throw markSshSetupFailure(
+        new SignerError(`cannot read SSH key ${options.privateKeyPath}: ${errorText(error)}`),
+        "identity",
+      );
+    }
+    // A key that cannot be parsed, or that needs a passphrase, is the
+    // client's own configuration: it fails here, before any connection.
+    const parsedKey = utils.parseKey(privateKey);
+    if (parsedKey instanceof Error) {
+      throw markSshSetupFailure(
+        new SignerError(`cannot parse SSH key ${options.privateKeyPath}: ${parsedKey.message}`),
+        "identity",
+      );
+    }
+    const firstKey = Array.isArray(parsedKey) ? parsedKey[0] : parsedKey;
+    if (!firstKey || firstKey.getPrivatePEM() === null) {
+      throw markSshSetupFailure(
+        new SignerError(`cannot parse SSH key ${options.privateKeyPath}: it holds no private key`),
+        "identity",
+      );
+    }
     this.localPort = options.localPort || await findFreePort();
 
-    // Track host key error for meaningful rejection messages
+    // Track host key error for meaningful rejection messages, and its kind
     let hostKeyError = "";
+    let hostKeyFailure: SshSetupFailure | undefined;
+    const hostKeyRefusal = (): SignerUnavailableError => {
+      const error = new SignerUnavailableError(hostKeyError);
+      return hostKeyFailure ? markSshSetupFailure(error, hostKeyFailure) : error;
+    };
 
     const connection = new Promise<void>((resolve, reject) => {
       this.sshClient = new Client();
-      this.sshClosed = false;
+      // Closed until connect() has opened a socket: before that, ssh2 never
+      // emits close, so close() must not wait for it.
+      this.sshClosed = true;
       // ssh2 reports a peer that disconnects mid-handshake with close alone
       // and clears readyTimeout, so an unsettled setup must fail here.
       this.sshClient.once("close", () => {
         this.sshClosed = true;
-        failSetup(new SignerUnavailableError(
-          hostKeyError || "SSH connection closed before setup completed"
-        ));
+        failSetup(hostKeyError
+          ? hostKeyRefusal()
+          : new SignerUnavailableError("SSH connection closed before setup completed"));
       });
       let settled = false;
       const cleanupSetup = () => {
@@ -1394,26 +1517,36 @@ class SSHTunnel {
       });
 
       this.sshClient.on("error", (err: Error) => {
-        const msg = hostKeyError || sshConnectionFailedMessage(err);
+        if (hostKeyError) {
+          failSetup(hostKeyRefusal());
+          return;
+        }
+        const msg = sshConnectionFailedMessage(err);
         // A refused key under the client username is an authentication
         // failure (the key is not enrolled), not an unavailable signer.
-        const notEnrolled = !hostKeyError &&
-          (err as Error & { level?: string }).level === "client-authentication";
+        const notEnrolled = (err as Error & { level?: string }).level === "client-authentication";
         failSetup(notEnrolled ? new AuthenticationError(msg) : new SignerUnavailableError(msg));
       });
 
       // The enrolled key is the only credential: public-key authentication
       // under the fixed client username, nothing else.
-      this.sshClient.connect({
+      const connectOptions: ConnectConfig = {
         host: options.host,
         port: options.sshPort,
         username: SSH_USERNAME,
         privateKey: privateKey,
         readyTimeout: options.setupTimeout,
         hostVerifier: (key: Buffer): boolean => {
-          const storedKey = loadKnownHostKey(
-            options.knownHostsPath, options.host, options.sshPort
-          );
+          let storedKey: Buffer | null;
+          try {
+            storedKey = loadKnownHostKey(
+              options.knownHostsPath, options.host, options.sshPort
+            );
+          } catch (error) {
+            hostKeyError = `cannot read known_hosts file ${options.knownHostsPath}: ${errorText(error)}`;
+            hostKeyFailure = "known-hosts";
+            return false;
+          }
 
           if (storedKey === null) {
             if (!options.trustOnFirstUse) {
@@ -1421,10 +1554,17 @@ class SSHTunnel {
                 `Unknown SSH host key for ${formatHostEntry(options.host, options.sshPort)}; ` +
                 `pass trustOnFirstUse: true for explicit first-use trust, ` +
                 `or connect via apshell first to save the host key to ${options.knownHostsPath}`;
+              hostKeyFailure = "unknown-host-key";
               return false;
             }
             // TOFU enabled — trust and save key
-            saveHostKey(options.knownHostsPath, options.host, options.sshPort, key);
+            try {
+              saveHostKey(options.knownHostsPath, options.host, options.sshPort, key);
+            } catch (error) {
+              hostKeyError = `cannot save the host key to known_hosts file ${options.knownHostsPath}: ${errorText(error)}`;
+              hostKeyFailure = "known-hosts";
+              return false;
+            }
             return true;
           }
 
@@ -1436,12 +1576,30 @@ class SSHTunnel {
           hostKeyError =
             `SSH host key mismatch for ${formatHostEntry(options.host, options.sshPort)} ` +
             `(possible MITM attack); remove the old key from ${options.knownHostsPath} to connect`;
+          hostKeyFailure = "host-key-mismatch";
           return false;
         },
-      });
+      };
+      try {
+        this.sshClient.connect(connectOptions);
+      } catch (error) {
+        // ssh2 refuses options it cannot use by throwing, before a socket
+        // exists: no event follows, so the setup fails here.
+        failSetup(markSshSetupFailure(
+          new SignerError(`cannot set up the SSH connection: ${errorText(error)}`),
+          "options",
+        ));
+        return;
+      }
+      if (!settled) this.sshClosed = false;
     });
 
     await connection;
+  }
+
+  /** Whether the SSH connection is up. */
+  get open(): boolean {
+    return this.sshClient !== null && !this.sshClosed;
   }
 
   async close(): Promise<void> {
@@ -1489,13 +1647,104 @@ export interface CosignedCosignerResolution {
   componentKey?: string;
 }
 
-export type CosignedCosignerResolver = (
-  target: CosignedSignTarget
-) => CosignedCosignerResolution | Promise<CosignedCosignerResolution>;
+/** What a cosigner resolver is told besides the target. */
+export interface CosignedCosignerResolveOptions {
+  /** The cosigned call's cancellation signal, if it has one. */
+  signal?: AbortSignal;
+}
+
+/** A cosigner resolver as an object, such as an EndpointCosignerResolver. */
+export interface CosignedCosignerResolverObject {
+  resolve(
+    target: CosignedSignTarget,
+    options?: CosignedCosignerResolveOptions,
+  ): CosignedCosignerResolution | Promise<CosignedCosignerResolution>;
+}
+
+/**
+ * Finds the cosigner client, and the Witness Key ID it signs under, for a
+ * cosigned target: a function, or an object with a resolve method. The
+ * client it returns is the resolver's; a cosigned call never closes it.
+ */
+export type CosignedCosignerResolver =
+  | ((
+      target: CosignedSignTarget,
+      options?: CosignedCosignerResolveOptions,
+    ) => CosignedCosignerResolution | Promise<CosignedCosignerResolution>)
+  | CosignedCosignerResolverObject;
+
+/** One read of /keys: the records, or the refusal of a non-200 answer. */
+export type KeyRecordsRead =
+  | { records: Record<string, any>[] }
+  | { status: number; code: string; message: string };
+
+/**
+ * Not for callers: one read of client's /keys, for cosigner discovery. See
+ * SignerClient's readKeyRecords.
+ */
+export function readKeyRecordsOf(client: SignerClient, signal?: AbortSignal): Promise<KeyRecordsRead> {
+  return (client as unknown as { readKeyRecords(signal?: AbortSignal): Promise<KeyRecordsRead> })
+    .readKeyRecords(signal);
+}
+
+/**
+ * Not for callers: whether client is still usable for cosigner discovery's
+ * cache. A client that was closed, or whose SSH connection went down, is not;
+ * a client on a caller's own base URL has no connection of its own to lose.
+ */
+export function clientConnectionOpen(client: SignerClient): boolean {
+  const tunnel = (client as unknown as { tunnel: SSHTunnel | null }).tunnel;
+  return !closedClients.has(client) && (tunnel === null || tunnel.open);
+}
+
+/** The clients whose close() was called. */
+const closedClients = new WeakSet<SignerClient>();
+
+/** The endpoint registry a client was created from, and its default resolver. */
+interface DataDirOrigin {
+  registry: ClientEndpointRegistry;
+  options: EndpointCosignerResolverOptions;
+  resolver?: EndpointCosignerResolver;
+}
+
+const dataDirOrigins = new WeakMap<SignerClient, DataDirOrigin>();
+
+/**
+ * Not for callers: record that client was created from a data directory's
+ * endpoint registry, so a cosigned call that names no cosigner finds it there.
+ */
+export function rememberDataDirOrigin(
+  client: SignerClient,
+  registry: ClientEndpointRegistry,
+  options: EndpointCosignerResolverOptions,
+): void {
+  dataDirOrigins.set(client, { registry, options: { ...options } });
+}
+
+/**
+ * The resolver a client created from a data directory uses when a cosigned
+ * call names no cosigner: made on first use, kept on the client, and closed
+ * with it. Undefined for any other client.
+ */
+function defaultCosignerResolver(client: SignerClient): EndpointCosignerResolver | undefined {
+  const origin = dataDirOrigins.get(client);
+  if (!origin) return undefined;
+  if (!origin.resolver) {
+    origin.resolver = new EndpointCosignerResolver(origin.registry, origin.options);
+  }
+  return origin.resolver;
+}
 
 export interface PreparedCosignedGroupOptions {
   userClient: SignerClient;
   preparedGroup: PreparedGroup;
+  /**
+   * The cosigner, used only for a target whose base component needs it: a
+   * client with the Witness Key ID it signs under (cosignerComponentKey), or
+   * a resolver, which wins over a client. With neither, a userClient made
+   * with SignerClient.fromEnv finds the cosigner in its endpoints.yaml; any
+   * other userClient is refused for a target that needs a cosigner.
+   */
   cosignerClient?: SignerClient;
   cosignerResolver?: CosignedCosignerResolver;
   cosignerComponentKey?: string;
@@ -1617,28 +1866,39 @@ function emptySendResult(flow: string, originalCount: number): SendResult {
 }
 
 /**
- * Read a 200 answer as shape. A body that does not parse, or parses to the
- * wrong shape, is unreadable. Given requestId, the answer is that of an
- * approval-bearing request: the signer may have acted, so the error is marked
- * as the request's lost answer. Without one, the request releases no
- * signature and the error is a plain one.
+ * Read a 200 answer as shape. A body that does not arrive whole (the
+ * connection fails while it is read) is a failed exchange, a
+ * SignerUnavailableError; a body that arrives but does not parse, or parses to
+ * the wrong shape, is unreadable, a SignerError. Given requestId, the answer
+ * is that of an approval-bearing request: the signer may have acted, so
+ * either error is marked as the request's lost answer. Without one, the
+ * request releases no signature and the error is a plain one.
  */
 async function readSignerAnswer<T>(response: Response, shape: AnswerShape, requestId?: string): Promise<T> {
-  const unreadable = (message: string): SignerError => {
-    const error = new SignerError(message);
-    return requestId === undefined ? error : markLostAnswer(error, requestId);
-  };
+  const lost = <E extends SignerError>(error: E): E =>
+    requestId === undefined ? error : markLostAnswer(error, requestId);
   let data: unknown;
   try {
     data = await response.json();
-  } catch {
-    throw unreadable("Server returned invalid JSON");
+  } catch (error) {
+    // Decoding refuses a body that arrived with a SyntaxError, and only so;
+    // any other failure came while the body was read.
+    if (isSyntaxError(error)) {
+      throw lost(new SignerError("Server returned invalid JSON"));
+    }
+    throw lost(new SignerUnavailableError(`Failed to read the signer's answer: ${errorText(error)}`));
   }
   const read = readAnswer<T>(shape, data);
   if ("problem" in read) {
-    throw unreadable(`Server returned a malformed response: ${read.problem}`);
+    throw lost(new SignerError(`Server returned a malformed response: ${read.problem}`));
   }
   return read.answer;
+}
+
+/** Whether error is JSON decoding's refusal: a SyntaxError, from any realm. */
+function isSyntaxError(error: unknown): boolean {
+  return error instanceof SyntaxError ||
+    (typeof error === "object" && error !== null && (error as { name?: unknown }).name === "SyntaxError");
 }
 
 /**
@@ -2529,13 +2789,13 @@ export class SignerClient {
       ? expandPath(options.knownHostsPath)
       : "";
     if (!knownHostsPath) {
-      throw new SignerError("known_hosts path is required");
+      throw markSshSetupFailure(new SignerError("known_hosts path is required"), "known-hosts");
     }
 
     const expandedKeyPath = expandPath(sshKeyPath);
 
     if (!fs.existsSync(expandedKeyPath)) {
-      throw new SignerError(`SSH key not found: ${expandedKeyPath}`);
+      throw markSshSetupFailure(new SignerError(`SSH key not found: ${expandedKeyPath}`), "identity");
     }
 
     const trustOnFirstUse = options.trustOnFirstUse ?? false;
@@ -2618,7 +2878,7 @@ export class SignerClient {
         `SSH key not found at ${endpoint.identityFile}`,
       );
     }
-    return SignerClient.connectSsh(host, endpoint.identityFile, {
+    const client = await SignerClient.connectSsh(host, endpoint.identityFile, {
       sshPort,
       timeout,
       sshSetupTimeout: options.sshSetupTimeout,
@@ -2627,15 +2887,32 @@ export class SignerClient {
       trustOnFirstUse: options.trustOnFirstUse ?? false,
       maxFeeIncrease: options.maxFeeIncrease,
     });
+    // A cosigned account's cosigner is found from this registry when a call
+    // names none, and reached with the options this client was made with.
+    rememberDataDirOrigin(client, registry, {
+      trustOnFirstUse: options.trustOnFirstUse ?? false,
+      sshSetupTimeout: options.sshSetupTimeout,
+      timeout,
+    });
+    return client;
   }
 
   /**
    * Close the client and any SSH tunnel.
    */
   async close(): Promise<void> {
+    closedClients.add(this);
+    // The cosigner connections a default resolver opened for this client
+    // close with it.
+    const origin = dataDirOrigins.get(this);
+    dataDirOrigins.delete(this);
+    const resolver = origin?.resolver;
     if (this.tunnel) {
       await this.tunnel.close();
       this.tunnel = null;
+    }
+    if (resolver) {
+      await resolver.close();
     }
   }
 
@@ -2761,37 +3038,14 @@ export class SignerClient {
       return Array.from(this.keyCache.values());
     }
 
-    const response = await this.fetch("/keys", {
-      method: "GET",
-      timeout: this.timeoutFor(INVENTORY_TIMEOUT),
-      signal: options?.signal,
-    });
-
-    if (response.status === 401) {
-      throw new AuthenticationError();
-    }
-
-    if (response.status !== 200) {
-      throw await this.signerHTTPError(response, `Failed to list keys: HTTP ${response.status}`);
-    }
-
-    const data = await readSignerAnswer<{ keys?: Record<string, any>[] }>(response, KEYS_ANSWER);
-    const records = data.keys ?? [];
-    // An address that algosdk reads as an Algorand address but that is not
-    // its canonical spelling would be compared and looked up as another
-    // address than the one it stands for, so the whole answer is refused.
-    // Any other string is kept as sent: a witness key's record carries its
-    // Witness Key ID, which is not an Algorand address, and it can only be
-    // matched by an exact lookup.
-    records.forEach((record, index) => {
-      const address = record.address as string;
-      const canonical = alternateAddressSpelling(address);
-      if (canonical !== undefined) {
-        throw new SignerError(
-          `Server returned a malformed response: key ${index} address ${JSON.stringify(address)} is a non-canonical spelling of address ${canonical}`,
-        );
+    const read = await this.readKeyRecords(options?.signal);
+    if ("status" in read) {
+      if (read.status === 401) {
+        throw new AuthenticationError();
       }
-    });
+      throw new SignerError(read.message, read.code);
+    }
+    const records = read.records;
     const keys: KeyInfo[] = [];
     this.keyCache.clear();
     this.keyCacheRevision = undefined;
@@ -2828,6 +3082,43 @@ export class SignerClient {
     }
 
     return keys;
+  }
+
+  /**
+   * One read of /keys: its records, or the refusal's HTTP status, code and
+   * message. A failed exchange throws a SignerUnavailableError and an
+   * unreadable answer a SignerError. Cosigner discovery reads endpoints
+   * through it too.
+   */
+  private async readKeyRecords(signal?: AbortSignal): Promise<KeyRecordsRead> {
+    const response = await this.fetch("/keys", {
+      method: "GET",
+      timeout: this.timeoutFor(INVENTORY_TIMEOUT),
+      signal,
+    });
+    if (response.status !== 200) {
+      const { code, message } = await this.errorParts(response, `Failed to list keys: HTTP ${response.status}`);
+      return { status: response.status, code, message };
+    }
+
+    const data = await readSignerAnswer<{ keys?: Record<string, any>[] }>(response, KEYS_ANSWER);
+    const records = data.keys ?? [];
+    // An address that algosdk reads as an Algorand address but that is not
+    // its canonical spelling would be compared and looked up as another
+    // address than the one it stands for, so the whole answer is refused.
+    // Any other string is kept as sent: a witness key's record carries its
+    // Witness Key ID, which is not an Algorand address, and it can only be
+    // matched by an exact lookup.
+    records.forEach((record, index) => {
+      const address = record.address as string;
+      const canonical = alternateAddressSpelling(address);
+      if (canonical !== undefined) {
+        throw new SignerError(
+          `Server returned a malformed response: key ${index} address ${JSON.stringify(address)} is a non-canonical spelling of address ${canonical}`,
+        );
+      }
+    });
+    return { records };
   }
 
   /**
@@ -4522,6 +4813,9 @@ export class SignerClient {
     }
 
     const result = emptySendResult(flow, group.transactions.length);
+    // The signer changes no validity round, so the prepared transactions say
+    // until when anything it releases for them can execute.
+    const lastValid = earliestLastValid(group.transactions.map((item) => item.transaction as Transaction));
     // The approval-bearing request whose answer released the group, for a
     // fault in describing what it signed.
     let released: { requestId: string; requests?: SignRequest[] };
@@ -4539,9 +4833,10 @@ export class SignerClient {
       } catch (error) {
         // The sequence makes several approval-bearing requests. One that
         // ended with no answer may have released a signature, and the last
-        // of them releases the whole group. The mark names the request.
-        if (isLostAnswer(error)) {
-          throw new SignOutcomeUnknownError({ requestId: lostAnswerRequestId(error), cause: error });
+        // of them releases the whole group. The mark names the request. A
+        // cosigner resolver's own error is passed on as it is.
+        if (isLostAnswer(error) && !isResolverError(error)) {
+          throw new SignOutcomeUnknownError({ requestId: lostAnswerRequestId(error), lastValid, cause: error });
         }
         throw error;
       }
@@ -4550,7 +4845,7 @@ export class SignerClient {
       result.cosigned = signed;
       released = { requestId: signed.boundedAssemblyResponse?.request_id ?? "" };
     } else {
-      const { response, requestId, requests } = await this.signForSend(group, signal);
+      const { response, requestId, requests } = await this.signForSend(group, lastValid, signal);
       result.signedGroup = [...(response.signed ?? [])];
       result.mutations = response.mutations;
       released = { requestId, requests };
@@ -4563,7 +4858,7 @@ export class SignerClient {
       // A fault in describing a signed group is not a refusal of it: the
       // signature is out.
       if (!(error instanceof SignerError)) {
-        throw new SignOutcomeUnknownError({ ...released, cause: error });
+        throw new SignOutcomeUnknownError({ ...released, lastValid, cause: error });
       }
       throw new SignerError(`verify signed group: ${errorText(error)}`);
     }
@@ -4666,6 +4961,7 @@ export class SignerClient {
    */
   private async signForSend(
     group: PreparedGroup,
+    lastValid: bigint,
     signal?: AbortSignal,
   ): Promise<{ response: GroupSignResponse; requestId: string; requests: SignRequest[] }> {
     const requests = preparedGroupToSignRequests(group);
@@ -4674,7 +4970,7 @@ export class SignerClient {
       return { response: await this.signRequests(requests, { requestId, signal }), requestId, requests };
     } catch (error) {
       if (isLostAnswer(error)) {
-        throw new SignOutcomeUnknownError({ requestId, requests, cause: error });
+        throw new SignOutcomeUnknownError({ requestId, requests, lastValid, cause: error });
       }
       throw error;
     }
@@ -4712,6 +5008,37 @@ export class SignerClient {
     }
     await submitAndTrack(algodClient, raw, result, checked);
     return result;
+  }
+
+  /**
+   * Say where things stand after a SignOutcomeUnknownError or a
+   * SubmissionUncertainError, from the node alone: the outcome's state,
+   * whether a replacement is safe now, and one sentence of advice. It never
+   * signs, never submits and never calls the signer. Any other error, null
+   * included, is refused with "not an uncertain outcome". A node failure
+   * other than a lookup's "not found" is thrown, never turned into a state.
+   */
+  async resolveOutcome(
+    algodClient: Algodv2,
+    error: unknown,
+    options?: ResolveOutcomeOptions,
+  ): Promise<OutcomeReport> {
+    return resolveUncertainOutcome(algodClient, error, options);
+  }
+
+  /**
+   * resolveOutcome once per round, until the state is "confirmed",
+   * "expired" or "too_old". If options.signal is aborted, options.timeoutMs
+   * passes or the node fails first, it throws a WaitForOutcomeError whose
+   * `report` is the last report (none if the wait ended before the first
+   * check) and whose `cause` says why. It never signs or submits anything.
+   */
+  async waitForOutcome(
+    algodClient: Algodv2,
+    error: unknown,
+    options?: WaitForOutcomeOptions,
+  ): Promise<OutcomeReport> {
+    return waitForUncertainOutcome(algodClient, error, options);
   }
 
   /**
@@ -4835,6 +5162,8 @@ export class SignerClient {
     }
     const requestId = options?.requestId || newSignRequestId();
     validateSignRequestId(requestId, true);
+    // The prepared group's rounds, which the signer does not change.
+    const lastValid = earliestLastValid(prepared.decoded());
 
     let data: RotatingSignResponse;
     try {
@@ -4848,7 +5177,7 @@ export class SignerClient {
       );
     } catch (error) {
       if (isLostAnswer(error)) {
-        throw new SignOutcomeUnknownError({ requestId, rotating: prepared, cause: error });
+        throw new SignOutcomeUnknownError({ requestId, rotating: prepared, lastValid, cause: error });
       }
       throw error;
     }
@@ -4859,7 +5188,7 @@ export class SignerClient {
       // A check that refuses the signed group is a plain error. A fault in
       // checking it is not: the signer answered, and the signature is out.
       if (!(error instanceof SignerError)) {
-        throw new SignOutcomeUnknownError({ requestId, rotating: prepared, cause: error });
+        throw new SignOutcomeUnknownError({ requestId, rotating: prepared, lastValid, cause: error });
       }
       throw verificationError("verify signer response: ", error);
     }
@@ -4953,6 +5282,8 @@ export class SignerClient {
       if (simulation.failed) {
         throw new RotatingPreflightError(prepared, simulation.failureMessage);
       }
+      // Read before anything is signed, so a later fault cannot lose it.
+      const preparedLastValid = earliestLastValid(prepared.decoded());
       // Nothing has been asked to sign yet, so an aborted signal is a plain
       // stop, not an unknown outcome.
       if (signal?.aborted) {
@@ -4991,7 +5322,12 @@ export class SignerClient {
       } catch (error) {
         // A fault in describing the signed group is not a refusal of it.
         if (!(error instanceof SignerError)) {
-          throw new SignOutcomeUnknownError({ requestId: signed.requestId, rotating: prepared, cause: error });
+          throw new SignOutcomeUnknownError({
+            requestId: signed.requestId,
+            rotating: prepared,
+            lastValid: preparedLastValid,
+            cause: error,
+          });
         }
         throw new SignerError(`verify signed group: ${errorText(error)}`);
       }

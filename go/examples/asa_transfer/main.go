@@ -4,8 +4,10 @@
 /*
 ASA (Algorand Standard Asset) transfer example.
 
-Works with any key type (Ed25519, Falcon, etc.).
-The server automatically handles fee pooling for large LogicSigs.
+Works with any key type (Ed25519, Falcon, etc.), and for a rekeyed sender:
+PrepareAsaTransfer finds the key that signs, and SendPrepared signs through
+the flow that key needs, submits and waits for confirmation. The server
+automatically handles fee pooling for large LogicSigs.
 
 Setup:
 
@@ -28,11 +30,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 
 	"github.com/algorand/go-algorand-sdk/v2/client/v2/algod"
-	"github.com/algorand/go-algorand-sdk/v2/transaction"
 	"github.com/aplane-algo/aplanesdk/go"
 )
 
@@ -45,6 +47,7 @@ const (
 )
 
 func main() {
+	ctx := context.Background()
 	// Connect using config from $APCLIENT_DATA
 	signer, err := aplane.FromEnv(nil)
 	if err != nil {
@@ -57,49 +60,38 @@ func main() {
 		log.Fatalf("Failed to create algod client: %v", err)
 	}
 
-	// Build ASA transfer transaction
-	params, err := algodClient.SuggestedParams().Do(context.Background())
+	// Build the ASA transfer. The helper checks the sender holds the asset
+	// and the receiver has opted in, and names the key that signs.
+	prepared, err := signer.PrepareAsaTransfer(ctx, algodClient, aplane.AsaTransferPrepParams{
+		Sender: sender, Receiver: receiver, AssetID: assetID, Amount: amount,
+	})
 	if err != nil {
-		log.Fatalf("Failed to get params: %v", err)
+		log.Fatalf("Failed to prepare the transfer: %v", err)
 	}
 
-	txn, err := transaction.MakeAssetTransferTxn(sender, receiver, amount, nil, params, "", assetID)
+	// Sign (server handles fee pooling automatically), submit and confirm.
+	fmt.Printf("Sending ASA transfer from %s...\n", sender[:12])
+	result, err := signer.SendPrepared(ctx, algodClient, aplane.NewPreparedGroup(*prepared), nil)
 	if err != nil {
-		log.Fatalf("Failed to create transaction: %v", err)
+		// A group that was signed, or a signature that may have been
+		// released: never build a replacement until the outcome is known,
+		// because both could execute.
+		var uncertain *aplane.SubmissionUncertainError
+		var unknown *aplane.SignOutcomeUnknownError
+		if errors.As(err, &uncertain) || errors.As(err, &unknown) {
+			log.Fatalf("Outcome unknown: %v\n%s", err, advice(ctx, signer, algodClient, err))
+		}
+		log.Fatalf("Failed to send: %v", err)
 	}
+	fmt.Printf("Confirmed %s in round %d\n", result.TxIDs[0], result.ConfirmedRound)
+}
 
-	// Resolve auth address (handles rekeyed accounts)
-	acctInfo, err := algodClient.AccountInformation(sender).Do(context.Background())
-	if err != nil {
-		log.Fatalf("Failed to get account info: %v", err)
+// advice asks the node where an uncertain outcome stands. It signs and
+// submits nothing.
+func advice(ctx context.Context, signer *aplane.SignerClient, algodClient *algod.Client, err error) string {
+	report, resolveErr := signer.ResolveOutcome(ctx, algodClient, err)
+	if resolveErr != nil {
+		return fmt.Sprintf("Could not check the outcome (%v); look the transaction up before sending again.", resolveErr)
 	}
-	authAddr := acctInfo.AuthAddr
-	if authAddr == "" {
-		authAddr = sender
-	}
-
-	// Sign (server handles fee pooling automatically)
-	fmt.Printf("Signing ASA transfer for %s...\n", sender[:12])
-	signed, err := signer.SignTransaction(txn, authAddr, nil)
-	if err != nil {
-		log.Fatalf("Failed to sign: %v", err)
-	}
-
-	// Submit using standard go-algorand-sdk (signed is base64)
-	signedBytes, err := aplane.Base64ToBytes(signed)
-	if err != nil {
-		log.Fatalf("Failed to decode signed txn: %v", err)
-	}
-	txid, err := algodClient.SendRawTransaction(signedBytes).Do(context.Background())
-	if err != nil {
-		log.Fatalf("Failed to submit: %v", err)
-	}
-	fmt.Printf("Submitted: %s\n", txid)
-
-	// Wait for confirmation
-	result, err := transaction.WaitForConfirmation(algodClient, txid, 4, context.Background())
-	if err != nil {
-		log.Fatalf("Failed to confirm: %v", err)
-	}
-	fmt.Printf("Confirmed in round %d\n", result.ConfirmedRound)
+	return fmt.Sprintf("%s: %s", report.State, report.Advice)
 }

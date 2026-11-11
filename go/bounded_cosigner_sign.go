@@ -19,6 +19,7 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 	if opts.UserClient == nil {
 		return nil, fmt.Errorf("user client is required")
 	}
+	resolver := cosignerResolverFor(opts)
 	prepared := opts.PreparedGroup.Transactions
 	if len(prepared) == 0 {
 		return nil, fmt.Errorf("prepared group is empty")
@@ -91,6 +92,7 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 				CosignerComponentKeyType: boundedCosignerComponentKeyType(key),
 				LogicSigResources:        resources,
 				AppCallInfo:              item.AppCallInfo,
+				MayTakeListedPath:        !item.Transaction.RekeyTo.IsZero() && key.BoundedAuthorization.RekeyList != nil,
 			})
 		default:
 			if key.SigningFlow != "" && key.SigningFlow != SigningFlowBounded1 {
@@ -118,6 +120,22 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 	}
 	if len(targets) == 0 {
 		return nil, fmt.Errorf("prepared group has no bounded-cosigner targets")
+	}
+	// Every cosigner a target is sure to need is found before anything is
+	// asked to sign, so a cosigner that cannot be found fails the call with
+	// nothing signed. A target that may take the listed path needs none if
+	// it does, and the listed rekey must work with no cosigner at all, so its
+	// cosigner is found only once its base component says it needs one.
+	resolved := make(map[int]resolvedCosigner, len(targets))
+	for _, target := range inResolveOrder(targets) {
+		if target.MayTakeListedPath {
+			continue
+		}
+		cosigner, err := resolveCosigner(ctx, resolver, target)
+		if err != nil {
+			return nil, err
+		}
+		resolved[target.TargetIndex] = cosigner
 	}
 
 	planResp, err := opts.UserClient.PlanRequestsWithContext(ctx, requests)
@@ -198,12 +216,11 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 	// The user side is complete, including ordinary primary positions. Only
 	// now may the SDK disclose the frozen group to the cosigner endpoint.
 	cosignerOpts := cosignerRequestOptions{
-		CosignerClient:       opts.CosignerClient,
-		CosignerResolver:     opts.CosignerResolver,
-		CosignerComponentKey: opts.CosignerComponentKey,
-		GroupBytesHex:        planResp.Transactions,
-		AppCallInfo:          appCallInfo,
-		DummyPositions:       contiguousIndices(len(prepared), len(planResp.Transactions)),
+		Resolver:       resolver,
+		Resolved:       resolved,
+		GroupBytesHex:  planResp.Transactions,
+		AppCallInfo:    appCallInfo,
+		DummyPositions: contiguousIndices(len(prepared), len(planResp.Transactions)),
 	}
 	// A listed rekey takes no cosigner component, so the cosigner sees only
 	// the targets that need it, and none at all when no target does.

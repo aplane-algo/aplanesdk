@@ -5,7 +5,9 @@
 Atomic swap example - exchange ALGO between two accounts in a single group.
 
 This demonstrates signing a transaction group where both parties must sign.
-Works with any combination of key types (Ed25519, Falcon, etc.).
+Works with any combination of key types (Ed25519, Falcon, etc.), and with a
+cosigned account. A rotating account cannot take part: it sends one
+transaction alone, and the signer forms its group.
 
 Setup:
 
@@ -27,18 +29,17 @@ Example endpoints.yaml (SSH tunnel):
 Important:
   - Do NOT pre-assign group IDs with transaction.AssignGroupID()
   - The server computes the group ID after adding any required dummy transactions
-  - The return value can be submitted directly to algod
+  - SendPrepared submits exactly the group the signer returned, after checking it
 */
 package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 
 	"github.com/algorand/go-algorand-sdk/v2/client/v2/algod"
-	"github.com/algorand/go-algorand-sdk/v2/transaction"
-	"github.com/algorand/go-algorand-sdk/v2/types"
 	"github.com/aplane-algo/aplanesdk/go"
 )
 
@@ -50,6 +51,7 @@ const (
 )
 
 func main() {
+	ctx := context.Background()
 	// Connect using config from $APCLIENT_DATA
 	signer, err := aplane.FromEnv(nil)
 	if err != nil {
@@ -62,68 +64,40 @@ func main() {
 		log.Fatalf("Failed to create algod client: %v", err)
 	}
 
-	params, err := algodClient.SuggestedParams().Do(context.Background())
+	// Build both payments, ungrouped, each naming the key that signs it.
+	group, err := signer.PreparePaymentGroup(ctx, algodClient, []aplane.PaymentPrepParams{
+		{Sender: alice, Receiver: bob, Amount: swapAmount},
+		{Sender: bob, Receiver: alice, Amount: swapAmount},
+	})
 	if err != nil {
-		log.Fatalf("Failed to get params: %v", err)
+		log.Fatalf("Failed to prepare the swap: %v", err)
 	}
 
-	// Build transactions (do NOT call AssignGroupID)
-	txnAliceToBob, err := transaction.MakePaymentTxn(alice, bob, swapAmount, nil, "", params)
+	// Sign the group (server handles grouping and dummies for Falcon), then
+	// submit and confirm it.
+	fmt.Printf("Sending atomic swap: %s... <-> %s...\n", alice[:8], bob[:8])
+	result, err := signer.SendPrepared(ctx, algodClient, *group, nil)
 	if err != nil {
-		log.Fatalf("Failed to create Alice->Bob txn: %v", err)
+		// A group that was signed, or a signature that may have been
+		// released: never build a replacement until the outcome is known,
+		// because both could execute.
+		var uncertain *aplane.SubmissionUncertainError
+		var unknown *aplane.SignOutcomeUnknownError
+		if errors.As(err, &uncertain) || errors.As(err, &unknown) {
+			log.Fatalf("Outcome unknown: %v\n%s", err, advice(ctx, signer, algodClient, err))
+		}
+		log.Fatalf("Failed to send: %v", err)
 	}
-
-	txnBobToAlice, err := transaction.MakePaymentTxn(bob, alice, swapAmount, nil, "", params)
-	if err != nil {
-		log.Fatalf("Failed to create Bob->Alice txn: %v", err)
-	}
-
-	// Resolve auth addresses (handles rekeyed accounts)
-	aliceInfo, err := algodClient.AccountInformation(alice).Do(context.Background())
-	if err != nil {
-		log.Fatalf("Failed to get Alice account info: %v", err)
-	}
-	bobInfo, err := algodClient.AccountInformation(bob).Do(context.Background())
-	if err != nil {
-		log.Fatalf("Failed to get Bob account info: %v", err)
-	}
-
-	aliceAuth := aliceInfo.AuthAddr
-	if aliceAuth == "" {
-		aliceAuth = alice
-	}
-	bobAuth := bobInfo.AuthAddr
-	if bobAuth == "" {
-		bobAuth = bob
-	}
-
-	// Sign the group (server handles grouping and dummies for Falcon)
-	fmt.Printf("Signing atomic swap: %s... <-> %s...\n", alice[:8], bob[:8])
-	signed, err := signer.SignTransactions(
-		[]types.Transaction{txnAliceToBob, txnBobToAlice},
-		[]string{aliceAuth, bobAuth},
-		nil,
-	)
-	if err != nil {
-		log.Fatalf("Failed to sign: %v", err)
-	}
-
-	// Submit using standard go-algorand-sdk (signed is base64)
-	signedBytes, err := aplane.Base64ToBytes(signed)
-	if err != nil {
-		log.Fatalf("Failed to decode signed txn: %v", err)
-	}
-	txid, err := algodClient.SendRawTransaction(signedBytes).Do(context.Background())
-	if err != nil {
-		log.Fatalf("Failed to submit: %v", err)
-	}
-	fmt.Printf("Submitted: %s\n", txid)
-
-	// Wait for confirmation
-	result, err := transaction.WaitForConfirmation(algodClient, txid, 4, context.Background())
-	if err != nil {
-		log.Fatalf("Failed to confirm: %v", err)
-	}
-	fmt.Printf("Confirmed in round %d\n", result.ConfirmedRound)
+	fmt.Printf("Confirmed group %s in round %d\n", result.GroupID, result.ConfirmedRound)
 	fmt.Println("Atomic swap complete!")
+}
+
+// advice asks the node where an uncertain outcome stands. It signs and
+// submits nothing.
+func advice(ctx context.Context, signer *aplane.SignerClient, algodClient *algod.Client, err error) string {
+	report, resolveErr := signer.ResolveOutcome(ctx, algodClient, err)
+	if resolveErr != nil {
+		return fmt.Sprintf("Could not check the outcome (%v); look the transaction up before sending again.", resolveErr)
+	}
+	return fmt.Sprintf("%s: %s", report.State, report.Advice)
 }

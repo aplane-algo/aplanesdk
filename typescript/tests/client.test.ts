@@ -2035,6 +2035,8 @@ describe("SignerClient", () => {
       await assert.rejects(
         signCosignedWithHeldKeys({
           userClient: user,
+          // Spends need the cosigner, which is found before the plan.
+          cosignerClient: new SignerClient("http://cosigner:11270"),
           preparedGroup: {
             transactions: [
               held({
