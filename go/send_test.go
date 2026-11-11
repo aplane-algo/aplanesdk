@@ -851,6 +851,26 @@ type cosignedSend struct {
 	// requestIDs is the request_id last posted to each path, the cosigner's
 	// under "cosigner <path>".
 	requestIDs map[string]string
+	// componentKey is the Witness Key ID the cosigner expects to be asked
+	// under; empty means COSIGNER_COMPONENT.
+	componentKey string
+}
+
+// cosignerPublicKeyHex is the cosigned account's cosigner public key in the
+// cosigned fixtures.
+const cosignerPublicKeyHex = "aabb"
+
+// posted reports whether any of paths was posted to the user signer.
+func (f *cosignedSend) posted(paths ...string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var found []string
+	for _, path := range paths {
+		if _, ok := f.requestIDs[path]; ok {
+			found = append(found, path)
+		}
+	}
+	return found
 }
 
 func (f *cosignedSend) requestID(path string) string {
@@ -915,7 +935,7 @@ func cosignedSendFixture(t *testing.T, fault string, primary bool) *cosignedSend
 		CosignerComponentKeyType: KeyTypeWitnessFalcon1024,
 		BoundedAuthorization: &BoundedAuthorizationInfo{
 			Contract: BoundedContractBounded2, MaxFee: new(uint64(1000)),
-			Cosigner: &BoundedCosignerAuthorizationInfo{ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: "aabb"},
+			Cosigner: &BoundedCosignerAuthorizationInfo{ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: cosignerPublicKeyHex},
 		},
 	}
 	keys := []KeyInfo{key}
@@ -993,6 +1013,12 @@ func cosignedSendFixture(t *testing.T, fault string, primary bool) *cosignedSend
 	})
 	t.Cleanup(userServer.Close)
 	cosignerClient, cosignerServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/keys" {
+			// What discovery reads: the cosigner's witness key.
+			publicKey, _ := hex.DecodeString(cosignerPublicKeyHex)
+			json.NewEncoder(w).Encode(KeysResponse{Count: 1, Keys: []KeyInfo{witnessRecord(KeyTypeWitnessFalcon1024, publicKey)}})
+			return
+		}
 		f.mu.Lock()
 		f.cosignerCalls++
 		f.mu.Unlock()
@@ -1005,8 +1031,14 @@ func cosignedSendFixture(t *testing.T, fault string, primary bool) *cosignedSend
 			t.Errorf("decode cosigner request: %v", err)
 			return
 		}
-		if req.ComponentKey != "COSIGNER_COMPONENT" {
-			t.Errorf("cosigner component key = %q", req.ComponentKey)
+		want := "COSIGNER_COMPONENT"
+		f.mu.Lock()
+		if f.componentKey != "" {
+			want = f.componentKey
+		}
+		f.mu.Unlock()
+		if req.ComponentKey != want {
+			t.Errorf("cosigner component key = %q, want %q", req.ComponentKey, want)
 		}
 		json.NewEncoder(w).Encode(ComponentResponse{RequestID: req.RequestID, Components: []Component{{
 			Kind: ComponentTargetKindCosigner, TargetIndex: 0, Signature: "cosigner-sig", SignatureScheme: KeyTypeWitnessFalcon1024,

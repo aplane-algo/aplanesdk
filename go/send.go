@@ -54,6 +54,8 @@ type SendOptions struct {
 	// A cosigned account's cosigner, used only when the group has a position
 	// that needs one. Give a client, with the Witness Key ID it signs under,
 	// or a resolver. The caller owns these clients; a send never closes them.
+	// With neither, a client created from a data directory (FromEnv) finds
+	// the cosigner among the cosigner endpoints of its endpoints.yaml.
 	CosignerClient       *SignerClient
 	CosignerComponentKey string
 	CosignerResolver     CosignedCosignerResolver
@@ -340,6 +342,10 @@ func (c *SignerClient) sendPrepared(ctx context.Context, algodClient *algod.Clie
 // request's ID. Planning and key listing release nothing, so a failure there
 // is not one.
 func lostRequest(err error) (requestID string, lost bool) {
+	var resolve *cosignerResolveError
+	if errors.As(err, &resolve) {
+		return "", false
+	}
 	var mark *lostAnswer
 	if errors.As(err, &mark) {
 		return mark.requestID, true

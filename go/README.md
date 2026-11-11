@@ -375,8 +375,11 @@ payment.
   the IDs of the transactions you prepared.
 - **Options.** `NoWait` returns once the node accepts the group, with outcome
   `submitted`. `WaitRounds` is how many further rounds to wait for
-  confirmation (default 10). A cosigned account needs `CosignerClient` with `CosignerComponentKey`, or a
-  `CosignerResolver`; the SDK does not close a cosigner client you pass.
+  confirmation (default 10). A cosigned account needs nothing extra when
+  the client came from `FromEnv` and `endpoints.yaml` lists its cosigner (see
+  [Cosigner discovery](#cosigner-discovery)). Otherwise give
+  `CosignerClient` with `CosignerComponentKey`, or a `CosignerResolver`; the
+  SDK does not close a cosigner client you pass.
 - **Refused before signing:** an unknown signing flow
   (`ErrUnsupportedSigningFlow`), and a pre-signed or foreign position
   (`ErrUnsupportedGroup`). Use the lower-level signing calls for those groups.
@@ -627,9 +630,8 @@ automatically:
 
 ```go
 result, err := aplane.SignPreparedCosignedGroup(aplane.PreparedCosignedGroupOptions{
-	UserClient:     userClient,
-	CosignerResolver: cosignerResolver,
-	PreparedGroup:  preparedGroup,
+	UserClient:    userClient, // from FromEnv: the cosigner is found in endpoints.yaml
+	PreparedGroup: preparedGroup,
 })
 signedGroup := result.SignedGroup
 ```
@@ -657,6 +659,46 @@ reported group mutations for the cosigned flow.
 Applications that own orchestration can call `RequestComponents` and
 `RequestAssemble` directly. The cosigner signs spends and
 cosigned rekeys, never a rekey to a listed address.
+
+#### Cosigner discovery
+
+A cosigned account needs nothing extra when the signer client came from
+`FromEnv` and `endpoints.yaml` lists the account's cosigner as an endpoint
+with role `cosigner`. With no `CosignerClient` and no `CosignerResolver`,
+`SendPrepared` and `SignPreparedCosignedGroup` then use an
+`EndpointCosignerResolver` for that data directory, made on first use, kept
+on the client and closed by its `Close`. A client from `NewSignerClient` or
+`ConnectSSH` has none, and a cosigned send without a cosigner is refused
+("cosigner client or resolver is required"). An explicit client or resolver
+always wins.
+
+Build one yourself with `NewEndpointCosignerResolver(dataDir, opts)` or
+`NewEndpointCosignerResolverFromRegistry(registry, opts)`; it is a
+`CosignedCosignerResolver`, owns the connections it opens, and has its own
+`Close`. On first use it connects to every cosigner endpoint (at most 12),
+each with its own identity file and known hosts file, as a signer endpoint is
+connected, and reads its `/keys`: 10 seconds per endpoint, 30 for the whole
+sweep, at most 4 at once. A record counts when `is_witness_key` is true and
+`key_type` is set; its `public_key_hex` must be hex and its `address` the
+Witness Key ID of its key type and public key (`WitnessKeyID`), or the whole
+listing is invalid. The witness key must be listed by exactly one live
+endpoint, whose client and record address are used. Otherwise the call fails
+with an error matching `ErrCosignerDiscovery`, naming the endpoints that list
+it, or, when none does, every cosigner endpoint with its state (`ok`,
+`unreachable`, `locked`, `authentication failed`, `invalid cosigner
+metadata`, `configuration invalid`). An SSH host key that differs from the
+pinned one on any cosigner endpoint ends the discovery with that error. The
+sweep is kept; a key it does not hold makes one fresh sweep per call. The
+default resolver connects with the trust-on-first-use, SSH setup timeout and
+request timeout the client was created with.
+
+Every cosigner a position is sure to need is resolved before anything is
+asked to sign, so a cosigner that cannot be found fails with nothing signed,
+and a resolver's failure is never an unknown outcome. A rekey of an account
+with a rekey-to list may take the listed path, which needs no cosigner: its
+cosigner is resolved only if the signer's base component names a path that
+needs one, so a listed rekey works with no cosigner configured and with the
+cosigner down.
 
 ## Error Handling
 
