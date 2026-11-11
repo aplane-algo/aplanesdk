@@ -5,6 +5,9 @@
 
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import algosdk, { type Transaction } from "algosdk";
 import { SignerClient } from "../src/client.js";
 import { MaxFeeIncreaseError, SignerError } from "../src/index.js";
@@ -877,5 +880,124 @@ describe("authorization of a signed position", () => {
     );
     const client = new SignerClient("http://localhost:11270");
     await assert.rejects(client.signTransaction(txn, "AUTH"), /is not a valid address/);
+  });
+});
+
+// A request that already carries a group ID is immutable to the signer, so a
+// response that regroups it, raises a fee on it or appends to it is refused:
+// the positions the signer did not return stay bound to the original group.
+describe("a request that is already grouped", () => {
+  const groupedSingle = () => signEntries(pregroupedPair()[0]);
+  const ungroupedWithForeign = () => {
+    const entries = pair();
+    entries[1] = { txn_bytes_hex: entries[1].txn_bytes_hex };
+    return entries;
+  };
+  const regrouped = /group ID change for a request that was already grouped/;
+
+  const refused: Array<[string, () => SignRequest[], FakeSignerOptions, RegExp]> = [
+    ["fee raised and regrouped, with a foreign position", foreign, { feeRaise: { 0: 2000 } }, regrouped],
+    ["a dummy appended, with a foreign position", foreign, { dummies: 1 }, regrouped],
+    ["fee raised and regrouped, every position signed", pregrouped, { feeRaise: { 0: 2000 } }, regrouped],
+    [
+      "fee raised on a single grouped transaction", groupedSingle, { feeRaise: { 0: 2000 } },
+      /fee change for a request that was already grouped/,
+    ],
+  ];
+  for (const [name, entries, options, error] of refused) {
+    it(`refuses ${name}`, () => {
+      const requests = entries();
+      assert.throws(() => checkSign(requests, signResponse(requests, options)), error);
+      assert.throws(() => checkPlan(requests, planResponse(requests, options)), error);
+    });
+  }
+
+  const accepted: Array<[string, () => SignRequest[], FakeSignerOptions]> = [
+    ["a grouped request returned as sent, with a foreign position", foreign, {}],
+    ["a grouped request returned as sent, every position signed", pregrouped, {}],
+    // The signer does group an ungrouped request that has a foreign position,
+    // and may raise the fee of a position it signs in it.
+    ["an ungrouped request with a foreign position, grouped", ungroupedWithForeign, {}],
+    [
+      "an ungrouped request with a foreign position, fee raised and a dummy",
+      ungroupedWithForeign, { feeRaise: { 0: 2000 }, dummies: 1 },
+    ],
+  ];
+  for (const [name, entries, options] of accepted) {
+    it(`accepts ${name}`, () => {
+      const requests = entries();
+      checkSign(requests, signResponse(requests, options));
+    });
+  }
+});
+
+// Requests and the responses a live signer returned for them. The fake signer
+// builds its dummies with the helpers under test, so these are what show the
+// SDK's idea of a canonical dummy is the signer's.
+describe("captured signer responses", () => {
+  const vectors = JSON.parse(
+    fs.readFileSync(
+      path.resolve(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "../../contracts/signerapi_vectors/real_sign_responses.json",
+      ),
+      "utf8",
+    ),
+  ) as Record<string, { request: { requests: SignRequest[] }; response: any }>;
+  // The slot whose last byte is flipped: the appended dummy where there is
+  // one, otherwise the first signed transaction.
+  const tamperSlot: Record<string, number> = {
+    logicsig_falcon_single: 1,
+    logicsig_falcon_pair: 2,
+    native_falcon_single: 0,
+    ed25519_pair: 0,
+  };
+
+  it("are the expected cases", () => {
+    assert.deepEqual(Object.keys(vectors).sort(), Object.keys(tamperSlot).sort());
+  });
+
+  for (const name of Object.keys(tamperSlot)) {
+    it(`accepts ${name}, and refuses it with one byte flipped`, () => {
+      const { request, response } = vectors[name];
+      checkSign(request.requests, response);
+
+      const raw = hexToBytes(response.signed[tamperSlot[name]]);
+      raw[raw.length - 1] ^= 0x01;
+      const signed = [...response.signed];
+      signed[tamperSlot[name]] = bytesToHex(raw);
+      assert.throws(() => checkSign(request.requests, { ...response, signed }));
+    });
+  }
+
+  const rewrite = (signedHexValue: string, edit: (fields: Record<string, any>) => void): string => {
+    const fields = algosdk.msgpackRawDecode(hexToBytes(signedHexValue)) as Record<string, any>;
+    edit(fields);
+    return bytesToHex(algosdk.msgpackRawEncode(fields));
+  };
+
+  it("refuses an Ed25519 signature with one byte flipped", () => {
+    const { request, response } = vectors.ed25519_pair;
+    const signed = [...response.signed];
+    signed[0] = rewrite(signed[0], (fields) => {
+      fields.sig = Uint8Array.from(fields.sig);
+      fields.sig[0] ^= 0x01;
+    });
+    assert.throws(
+      () => checkSign(request.requests, { ...response, signed }),
+      /signature does not verify under the requested auth address/,
+    );
+  });
+
+  it("refuses a dummy whose authorization is changed", () => {
+    const { request, response } = vectors.logicsig_falcon_single;
+    const signed = [...response.signed];
+    signed[1] = rewrite(signed[1], (fields) => {
+      fields.lsig = { ...fields.lsig, arg: [new Uint8Array([1])] };
+    });
+    assert.throws(
+      () => checkSign(request.requests, { ...response, signed }),
+      /appended transaction 1 does not carry the canonical resource dummy authorization/,
+    );
   });
 });

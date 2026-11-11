@@ -293,9 +293,15 @@ func TestSignPreparedCosignedGroupSendsAHeldPrimaryAsTheSignersOwn(t *testing.T)
 						t.Fatalf("decode plan request: %v", err)
 					}
 					primaryRequest = req.Requests[1]
-					planned, err := decodeCanonicalGroup([]string{req.Requests[0].TxnBytesHex, req.Requests[1].TxnBytesHex})
-					if err != nil {
-						t.Fatalf("decode planned group: %v", err)
+					planned := make([]types.Transaction, 2)
+					for i := range planned {
+						raw, err := hex.DecodeString(req.Requests[i].TxnBytesHex)
+						if err != nil {
+							t.Fatalf("decode planned transaction: %v", err)
+						}
+						if planned[i], err = decodeCanonicalTxn(raw); err != nil {
+							t.Fatalf("decode planned transaction: %v", err)
+						}
 					}
 					// The bounded target stays at its 1000 fee ceiling; the
 					// held primary carries the charge.
@@ -395,12 +401,8 @@ func TestSignPreparedCosignedGroupSendsAHeldPrimaryAsTheSignersOwn(t *testing.T)
 			if err != nil {
 				t.Fatalf("MakePaymentTxn() error = %v", err)
 			}
-			groupID, err := algocrypto.ComputeGroupID([]types.Transaction{corridorTxn, nativeTxn})
-			if err != nil {
-				t.Fatalf("ComputeGroupID() error = %v", err)
-			}
-			corridorTxn.Group = groupID
-			nativeTxn.Group = groupID
+			// The group is sent ungrouped: the signer raises no fee on a group
+			// that already carries an ID.
 
 			_, err = SignPreparedCosignedGroup(PreparedCosignedGroupOptions{
 				UserClient: userClient, CosignerClient: cosignerClient,
@@ -721,7 +723,7 @@ func TestDecodeCanonicalGroupAnchorsGroupID(t *testing.T) {
 		hex.EncodeToString(encodeTxn(grouped[1])),
 	}
 	if _, err := decodeCanonicalGroup(invalid); err == nil ||
-		!strings.Contains(err.Error(), "does not match decoded transactions") {
+		!strings.Contains(err.Error(), "does not carry the canonical group ID") {
 		t.Fatalf("decode fabricated group error = %v", err)
 	}
 

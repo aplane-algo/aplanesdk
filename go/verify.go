@@ -288,6 +288,26 @@ func validateGroupMutations(slots []requestSlot, returned []*types.Transaction, 
 		feeModified[index] = struct{}{}
 	}
 
+	// A request that already carries a group ID is immutable to the signer:
+	// its planner raises no fee on it, appends no dummy to it and never
+	// regroups it, whatever the modes of its positions. A response that
+	// reports any of these could not be submitted, because positions the
+	// signer did not return stay bound to the original group.
+	for _, slot := range slots {
+		if slot.txn.Group == (types.Digest{}) {
+			continue
+		}
+		switch {
+		case report.GroupIDChanged:
+			return fmt.Errorf("signer reported a group ID change for a request that was already grouped")
+		case len(feeModified) > 0:
+			return fmt.Errorf("signer reported a fee change for a request that was already grouped")
+		case appended > 0:
+			return fmt.Errorf("signer appended %d transaction(s) to a request that was already grouped", appended)
+		}
+		break
+	}
+
 	var assigned types.Digest
 	if report.GroupIDChanged {
 		observed := false

@@ -651,6 +651,10 @@ Anything else fails with `SignerError` whose message starts with
   from the sender, or that is present when the sender signs for itself
 - a fee change that is unreported, is not an increase, or does not add up to
   the reported total
+- any reported change (a fee raise, a group ID, an appended dummy) to a
+  request whose transactions already carried a group ID. The signer never
+  changes such a group, and positions it does not return would stay bound to
+  the original one.
 - report counts (`original_count`, `final_count`, `dummies_added`,
   `passthrough_count`, `foreign_count`) that disagree with the request and
   the returned group

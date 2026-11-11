@@ -12,6 +12,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -805,21 +807,21 @@ func TestBuildSignRequestsRejectsLsigArgsNoPositionMatches(t *testing.T) {
 	stray := LsigArgsMap{sdkTestAddress(45): LsigArgs{"preimage": []byte("secret")}}
 	const want = "no transaction in the request has auth address"
 
-	if _, _, err := buildSignRequests([]types.Transaction{txn}, nil, stray); err == nil || !strings.Contains(err.Error(), want) {
+	if _, err := buildSignRequests([]types.Transaction{txn}, nil, stray); err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("buildSignRequests() error = %v, want %q", err, want)
 	}
-	if _, _, err := buildSignRequests([]types.Transaction{txn}, nil, LsigArgsMap{"": LsigArgs{"a": []byte{1}}}); err == nil || !strings.Contains(err.Error(), want) {
+	if _, err := buildSignRequests([]types.Transaction{txn}, nil, LsigArgsMap{"": LsigArgs{"a": []byte{1}}}); err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("buildSignRequests() with an empty key error = %v, want %q", err, want)
 	}
-	if _, _, err := buildSignRequestsWithOptions([]types.Transaction{txn}, []string{txn.Sender.String()}, stray, nil); err == nil || !strings.Contains(err.Error(), want) {
+	if _, err := buildSignRequestsWithOptions([]types.Transaction{txn}, []string{txn.Sender.String()}, stray, nil); err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("buildSignRequestsWithOptions() error = %v, want %q", err, want)
 	}
 	// An entry with no args has nothing to drop, so it is ignored.
 	empty := LsigArgsMap{sdkTestAddress(45): nil, sdkTestAddress(46): LsigArgs{}}
-	if _, _, err := buildSignRequests([]types.Transaction{txn}, nil, empty); err != nil {
+	if _, err := buildSignRequests([]types.Transaction{txn}, nil, empty); err != nil {
 		t.Fatalf("buildSignRequests() with empty args error = %v", err)
 	}
-	if _, _, err := buildSignRequestsWithOptions([]types.Transaction{txn}, []string{txn.Sender.String()}, empty, nil); err != nil {
+	if _, err := buildSignRequestsWithOptions([]types.Transaction{txn}, []string{txn.Sender.String()}, empty, nil); err != nil {
 		t.Fatalf("buildSignRequestsWithOptions() with empty args error = %v", err)
 	}
 }
@@ -841,7 +843,7 @@ func TestBuildSignRequestsAcceptsAReusedLsigArgsMap(t *testing.T) {
 	wantFirst := hex.EncodeToString([]byte("one"))
 
 	// Position 2 is foreign: its sender is still a position of the group.
-	requests, _, err := buildSignRequestsWithOptions(grouped, []string{first, ""}, args, nil)
+	requests, err := buildSignRequestsWithOptions(grouped, []string{first, ""}, args, nil)
 	if err != nil {
 		t.Fatalf("plan with a foreign position: %v", err)
 	}
@@ -861,7 +863,7 @@ func TestBuildSignRequestsAcceptsAReusedLsigArgsMap(t *testing.T) {
 		"sender of the slot":    {grouped, []string{first, ""}},
 		"only the signed bytes": {[]types.Transaction{grouped[0], {}}, []string{first, ""}},
 	} {
-		requests, _, err := buildSignRequestsWithOptions(tc.txns, tc.auths, args, opts)
+		requests, err := buildSignRequestsWithOptions(tc.txns, tc.auths, args, opts)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -1257,5 +1259,157 @@ func TestMaxFeeIncreaseRefusalIsTyped(t *testing.T) {
 	defer otherServer.Close()
 	if _, err := other.SignTransactions(txns, nil, nil); err == nil || errors.Is(err, ErrMaxFeeIncreaseExceeded) {
 		t.Fatalf("an unrelated verification failure = %v, want an error that is not a ceiling refusal", err)
+	}
+}
+
+// A request that already carries a group ID is immutable to the signer, so a
+// response that regroups it, raises a fee on it or appends to it is refused:
+// the positions the signer did not return stay bound to the original group.
+func TestValidateSignResponseRefusesMutatingAGroupedRequest(t *testing.T) {
+	pregrouped, err := transaction.AssignGroupID([]types.Transaction{
+		verifyTestPayment(t, 41, 42, 1_000_000), verifyTestPayment(t, 43, 44, 5),
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	withForeign := signRequestsFor(pregrouped...)
+	withForeign[1] = SignRequest{TxnBytesHex: withForeign[1].TxnBytesHex}
+	allSigned := signRequestsFor(pregrouped...)
+	single := pregrouped[:1]
+
+	refused := []struct {
+		name     string
+		requests []SignRequest
+		signer   fakeSigner
+		want     string
+	}{
+		{"fee raised and regrouped, with a foreign position", withForeign, fakeSigner{feeRaise: map[int]uint64{0: 2000}}, "group ID change for a request that was already grouped"},
+		{"a dummy appended, with a foreign position", withForeign, fakeSigner{dummies: 1}, "group ID change for a request that was already grouped"},
+		{"fee raised and regrouped, every position signed", allSigned, fakeSigner{feeRaise: map[int]uint64{0: 2000}}, "group ID change for a request that was already grouped"},
+		{"fee raised on a single grouped transaction", signRequestsFor(single...), fakeSigner{feeRaise: map[int]uint64{0: 2000}}, "fee change for a request that was already grouped"},
+	}
+	for _, tc := range refused {
+		t.Run("refuses "+tc.name, func(t *testing.T) {
+			resp := tc.signer.sign(t, tc.requests)
+			err := validateSignResponse(mustDecodeSlots(t, tc.requests), resp.Signed, resp.Mutations, feeCeiling{})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("validateSignResponse() error = %v, want %q", err, tc.want)
+			}
+			plan := tc.signer.plan(t, tc.requests)
+			err = validatePlanResponse(mustDecodeSlots(t, tc.requests), plan.Transactions, plan.Mutations, feeCeiling{})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("validatePlanResponse() error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+
+	// The signer does group an ungrouped request that has a foreign position,
+	// and may raise the fee of a position it signs in it.
+	ungrouped := signRequestsFor(verifyTestPayment(t, 41, 42, 1_000_000), verifyTestPayment(t, 43, 44, 5))
+	ungrouped[1] = SignRequest{TxnBytesHex: ungrouped[1].TxnBytesHex}
+	accepted := []struct {
+		name     string
+		requests []SignRequest
+		signer   fakeSigner
+	}{
+		{"a grouped request returned as sent, with a foreign position", withForeign, fakeSigner{}},
+		{"a grouped request returned as sent, every position signed", allSigned, fakeSigner{}},
+		{"an ungrouped request with a foreign position, grouped", ungrouped, fakeSigner{}},
+		{"an ungrouped request with a foreign position, fee raised and a dummy", ungrouped, fakeSigner{feeRaise: map[int]uint64{0: 2000}, dummies: 1}},
+	}
+	for _, tc := range accepted {
+		t.Run("accepts "+tc.name, func(t *testing.T) {
+			resp := tc.signer.sign(t, tc.requests)
+			if err := validateSignResponse(mustDecodeSlots(t, tc.requests), resp.Signed, resp.Mutations, feeCeiling{}); err != nil {
+				t.Fatalf("validateSignResponse() error = %v", err)
+			}
+		})
+	}
+}
+
+// realSignVectors are requests and the responses a live signer returned for
+// them. The fake signer builds its dummies with the helpers under test, so
+// these are what show the SDK's idea of a canonical dummy is the signer's.
+func realSignVectors(t *testing.T) map[string]struct {
+	KeyType string `json:"key_type"`
+	Request struct {
+		Requests []SignRequest `json:"requests"`
+	} `json:"request"`
+	Response GroupSignResponse `json:"response"`
+} {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "contracts", "signerapi_vectors", "real_sign_responses.json"))
+	if err != nil {
+		t.Fatalf("read captured signer responses: %v", err)
+	}
+	var vectors map[string]struct {
+		KeyType string `json:"key_type"`
+		Request struct {
+			Requests []SignRequest `json:"requests"`
+		} `json:"request"`
+		Response GroupSignResponse `json:"response"`
+	}
+	if err := json.Unmarshal(raw, &vectors); err != nil {
+		t.Fatalf("parse captured signer responses: %v", err)
+	}
+	return vectors
+}
+
+func TestValidateSignResponseAcceptsCapturedSignerResponses(t *testing.T) {
+	vectors := realSignVectors(t)
+	// flipByte changes one byte of a hex string, counted from its end.
+	flipByte := func(value string, fromEnd int) string {
+		raw := mustDecodeHex(t, value)
+		raw[len(raw)-fromEnd] ^= 0x01
+		return hex.EncodeToString(raw)
+	}
+	// The slot whose last byte is flipped: the appended dummy where there is
+	// one, otherwise the first signed transaction.
+	tampers := map[string]int{
+		"logicsig_falcon_single": 1,
+		"logicsig_falcon_pair":   2,
+		"native_falcon_single":   0,
+		"ed25519_pair":           0,
+	}
+	if len(vectors) != len(tampers) {
+		t.Fatalf("captured vectors = %d cases, want %d", len(vectors), len(tampers))
+	}
+	for name, vector := range vectors {
+		t.Run(name, func(t *testing.T) {
+			slots := mustDecodeSlots(t, vector.Request.Requests)
+			if err := validateSignResponse(slots, vector.Response.Signed, vector.Response.Mutations, feeCeiling{}); err != nil {
+				t.Fatalf("a real signer response was refused: %v", err)
+			}
+			slot, ok := tampers[name]
+			if !ok {
+				t.Fatalf("no tamper case for vector %q", name)
+			}
+			signed := append([]string(nil), vector.Response.Signed...)
+			signed[slot] = flipByte(signed[slot], 1)
+			if err := validateSignResponse(slots, signed, vector.Response.Mutations, feeCeiling{}); err == nil {
+				t.Fatalf("a real response with one byte of slot %d flipped was accepted", slot+1)
+			}
+		})
+	}
+
+	// An Ed25519 signature with one byte changed no longer verifies.
+	ed := vectors["ed25519_pair"]
+	stxn := mustDecodeSigned(t, ed.Response.Signed[0])
+	stxn.Sig[0] ^= 0x01
+	signed := append([]string(nil), ed.Response.Signed...)
+	signed[0] = hex.EncodeToString(msgpack.Encode(stxn))
+	err := validateSignResponse(mustDecodeSlots(t, ed.Request.Requests), signed, ed.Response.Mutations, feeCeiling{})
+	if err == nil || !strings.Contains(err.Error(), "signature does not verify under the requested auth address") {
+		t.Fatalf("flipped Ed25519 signature byte: error = %v", err)
+	}
+	// A dummy whose authorization differs by one byte is not the signer's.
+	lsig := vectors["logicsig_falcon_single"]
+	dummy := mustDecodeSigned(t, lsig.Response.Signed[1])
+	dummy.Lsig.Args = [][]byte{{0x01}}
+	signed = append([]string(nil), lsig.Response.Signed...)
+	signed[1] = hex.EncodeToString(msgpack.Encode(dummy))
+	err = validateSignResponse(mustDecodeSlots(t, lsig.Request.Requests), signed, lsig.Response.Mutations, feeCeiling{})
+	if err == nil || !strings.Contains(err.Error(), "appended transaction 1 does not carry the canonical resource dummy authorization") {
+		t.Fatalf("dummy with a changed authorization: error = %v", err)
 	}
 }
