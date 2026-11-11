@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 APlane Project LLC
 
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -283,116 +283,130 @@ test(
   }
 );
 
-const LIVE_ROTATING_KEY_TYPE = "aplane.rotating-triple-wotsc.v1";
+// The rotating families the live test runs, each with the time its sends may
+// take. SLH-DSA signing is slow, so it gets far longer.
+const LIVE_ROTATING_FAMILIES: Array<{ keyType: string; limitMs: number }> = [
+  { keyType: "aplane.rotating-triple-wotsc.v1", limitMs: 5 * 60_000 },
+  { keyType: "aplane.rotating-triple-xmss.v1", limitMs: 5 * 60_000 },
+  { keyType: "aplane.rotating-triple-slhdsa.v1", limitMs: 30 * 60_000 },
+];
 
 // A rotating account spends through sendPayment on a real node, twice in a
-// row. The second spend is the one that shows the flow works after stage 0:
-// the account's authorizer is then a stage address the signer does not list,
-// and the unsigned simulation has to accept it. A third spend runs the steps
-// one at a time, as a caller managing submission itself would.
-test(
-  "integration: rotating account sends on LocalNet",
-  {
-    skip: !integrationEnabled()
-      ? "set APLANE_SDK_INTEGRATION=1"
-      : localnetAvailable()
-        ? false
-        : "needs a LocalNet algod and KMD (ALGOD_URL, APLANE_LOCALNET_KMD_URL)",
-  },
-  async (t) => {
-    const algodClient = clientFromUrl(
-      algosdk.Algodv2,
-      process.env.ALGOD_TOKEN || "",
-      process.env.ALGOD_URL || ""
-    );
-    const client = await liveSignerClient();
-    let account = "";
-    const signal = AbortSignal.timeout(5 * 60_000);
-
-    try {
-      const keyTypes = await client.listKeyTypes();
-      if (!keyTypes.some((item) => item.keyType === LIVE_ROTATING_KEY_TYPE)) {
-        t.skip(
-          `key type ${LIVE_ROTATING_KEY_TYPE} is not enabled at the signer (apadmin keytype enable ${LIVE_ROTATING_KEY_TYPE})`
-        );
-        return;
-      }
-      const params = await algodClient.getTransactionParams().do();
-      const before = await client.getStatus();
-      account = (
-        await client.generateKey(LIVE_ROTATING_KEY_TYPE, {
-          network: Buffer.from(params.genesisHash).toString("base64"),
-        })
-      ).address;
-      assert.ok(account);
-      await waitForKeysetRevision(client, before.keysetRevision, "rotating generate");
-      await fundFromLocalnetKmd(algodClient, account, 2_000_000);
-
-      const receiver = account; // a self-payment moves nothing and still rotates
-      let lastTarget = 0;
-      let lastRekeyTo = "";
-      for (let spend = 0; spend < 2; spend++) {
-        const result = await client.sendPayment(
-          algodClient,
-          { sender: account, receiver, amount: 0 },
-          { signal }
-        );
-        const details = result.rotating;
-        assert.equal(result.flow, SIGNING_FLOW_ROTATING1, `spend ${spend + 1}`);
-        assert.ok(details, `spend ${spend + 1}: no rotating details`);
-        assert.equal(result.outcome, "confirmed");
-        assert.ok(result.confirmedRound > 0n);
-        assert.equal(details.stage, spend, `spend ${spend + 1}: stage`);
-        assert.equal(details.target, spend + 1, `spend ${spend + 1}: target`);
-        if (spend > 0) {
-          assert.equal(details.stage, lastTarget, "signed with a stage other than the one the account was handed to");
-        }
-        // The chain agrees with what the SDK bound: the account is now
-        // authorized by the address the signer reported.
-        const info = await algodClient.accountInformation(account).do();
-        assert.equal(info.authAddr?.toString(), details.rekeyTo, `spend ${spend + 1}: chain authorizer`);
-        if (spend > 0) {
-          assert.notEqual(details.rekeyTo, lastRekeyTo, "rotated to the same address as the spend before");
-        }
-        t.diagnostic(
-          `spend ${spend + 1}: stage ${details.stage} -> ${details.target}, ${result.signedGroup.length} ` +
-            `transaction(s), fee ${result.fees[0]}, attempts ${details.attempts}, confirmed in round ${result.confirmedRound}`
-        );
-        lastTarget = details.target;
-        lastRekeyTo = details.rekeyTo;
-      }
-
-      // A third spend, one step at a time.
-      const payment = await client.preparePayment(algodClient, { sender: account, receiver, amount: 0 });
-      const stepped = await client.prepareRotating(payment.transaction as algosdk.Transaction, { signal });
-      const steppedSimulation = await client.simulatePreparedRotating(algodClient, stepped, { signal });
-      assert.equal(steppedSimulation.failed, false, steppedSimulation.response.txnGroups?.[0]?.failureMessage);
-      const signed = await client.signPreparedRotating(stepped, { signal });
-      assert.equal(signed.stage, lastTarget);
-      const submitted = await client.submitSignedGroup(algodClient, signed.signedGroup, { signal });
-      assert.equal(submitted.outcome, "confirmed");
-      assert.equal(submitted.txIds[0], signed.txId);
-      lastTarget = signed.target;
-
-      // The steps on their own: prepare and simulate use no key.
-      const prepared = await client.preparePayment(algodClient, { sender: account, receiver, amount: 0 });
-      assert.equal(prepared.authAddress, account, "the auth address is the rotating account itself");
-      const rotating = await client.prepareRotating(prepared.transaction as algosdk.Transaction, { signal });
-      assert.equal(rotating.stage, lastTarget);
-      const simulation = await client.simulatePreparedRotating(algodClient, rotating, { signal });
-      assert.equal(simulation.failed, false, simulation.response.txnGroups?.[0]?.failureMessage);
-    } finally {
-      if (account) {
-        try {
-          await client.deleteKey(account);
-        } catch (error) {
-          t.diagnostic(`cleanup delete rotating key ${account} failed: ${String(error)}`);
-        }
-      }
-      await client.close();
+// row, once per family the signer has enabled; a family it does not list in
+// /keytypes is skipped by name. The second spend is the one that shows the
+// flow works after stage 0: the account's authorizer is then a stage address
+// the signer does not list, and the unsigned simulation has to accept it. A
+// third spend runs the steps one at a time, as a caller managing submission
+// itself would.
+for (const { keyType, limitMs } of LIVE_ROTATING_FAMILIES) {
+  test(
+    `integration: rotating account ${keyType} sends on LocalNet`,
+    {
+      skip: !integrationEnabled()
+        ? "set APLANE_SDK_INTEGRATION=1"
+        : localnetAvailable()
+          ? false
+          : "needs a LocalNet algod and KMD (ALGOD_URL, APLANE_LOCALNET_KMD_URL)",
+      timeout: limitMs + 60_000,
+    },
+    async (t) => {
+      await liveRotatingSends(t, keyType, limitMs);
     }
+  );
+}
+
+async function liveRotatingSends(t: TestContext, keyType: string, limitMs: number): Promise<void> {
+  const algodClient = clientFromUrl(
+    algosdk.Algodv2,
+    process.env.ALGOD_TOKEN || "",
+    process.env.ALGOD_URL || ""
+  );
+  const client = await liveSignerClient();
+  let account = "";
+  const signal = AbortSignal.timeout(limitMs);
+
+  try {
+    const keyTypes = await client.listKeyTypes();
+    if (!keyTypes.some((item) => item.keyType === keyType)) {
+      t.skip(`key type ${keyType} is not enabled at the signer (apadmin keytype enable ${keyType})`);
+      return;
+    }
+    const params = await algodClient.getTransactionParams().do();
+    const before = await client.getStatus();
+    account = (
+      await client.generateKey(keyType, {
+        network: Buffer.from(params.genesisHash).toString("base64"),
+      })
+    ).address;
+    assert.ok(account, `${keyType}: no account was generated`);
+    await waitForKeysetRevision(client, before.keysetRevision, `${keyType} generate`);
+    await fundFromLocalnetKmd(algodClient, account, 2_000_000);
+
+    const receiver = account; // a self-payment moves nothing and still rotates
+    let lastTarget = 0;
+    let lastRekeyTo = "";
+    for (let spend = 0; spend < 2; spend++) {
+      const label = `${keyType} spend ${spend + 1}`;
+      const result = await client.sendPayment(
+        algodClient,
+        { sender: account, receiver, amount: 0 },
+        { signal }
+      );
+      const details = result.rotating;
+      assert.equal(result.flow, SIGNING_FLOW_ROTATING1, `${label}: flow`);
+      assert.ok(details, `${label}: no rotating details`);
+      assert.equal(result.outcome, "confirmed", `${label}: outcome`);
+      assert.ok(result.confirmedRound > 0n, `${label}: confirmed round`);
+      assert.equal(details.stage, spend, `${label}: stage`);
+      assert.equal(details.target, spend + 1, `${label}: target`);
+      if (spend > 0) {
+        assert.equal(details.stage, lastTarget, `${label}: signed with a stage other than the one the account was handed to`);
+      }
+      // The chain agrees with what the SDK bound: the account is now
+      // authorized by the address the signer reported.
+      const info = await algodClient.accountInformation(account).do();
+      assert.equal(info.authAddr?.toString(), details.rekeyTo, `${label}: chain authorizer`);
+      if (spend > 0) {
+        assert.notEqual(details.rekeyTo, lastRekeyTo, `${label}: rotated to the same address as the spend before`);
+      }
+      t.diagnostic(
+        `${label}: stage ${details.stage} -> ${details.target}, ${result.signedGroup.length} ` +
+          `transaction(s), fee ${result.fees[0]}, attempts ${details.attempts}, confirmed in round ${result.confirmedRound}`
+      );
+      lastTarget = details.target;
+      lastRekeyTo = details.rekeyTo;
+    }
+
+    // A third spend, one step at a time.
+    const payment = await client.preparePayment(algodClient, { sender: account, receiver, amount: 0 });
+    const stepped = await client.prepareRotating(payment.transaction as algosdk.Transaction, { signal });
+    const steppedSimulation = await client.simulatePreparedRotating(algodClient, stepped, { signal });
+    assert.equal(steppedSimulation.failed, false, steppedSimulation.response.txnGroups?.[0]?.failureMessage);
+    const signed = await client.signPreparedRotating(stepped, { signal });
+    assert.equal(signed.stage, lastTarget, `${keyType}: stepped spend stage`);
+    const submitted = await client.submitSignedGroup(algodClient, signed.signedGroup, { signal });
+    assert.equal(submitted.outcome, "confirmed", `${keyType}: stepped spend outcome`);
+    assert.equal(submitted.txIds[0], signed.txId, `${keyType}: stepped spend ID`);
+    lastTarget = signed.target;
+
+    // The steps on their own: prepare and simulate use no key.
+    const prepared = await client.preparePayment(algodClient, { sender: account, receiver, amount: 0 });
+    assert.equal(prepared.authAddress, account, `${keyType}: the auth address is the rotating account itself`);
+    const rotating = await client.prepareRotating(prepared.transaction as algosdk.Transaction, { signal });
+    assert.equal(rotating.stage, lastTarget, `${keyType}: prepared stage`);
+    const simulation = await client.simulatePreparedRotating(algodClient, rotating, { signal });
+    assert.equal(simulation.failed, false, simulation.response.txnGroups?.[0]?.failureMessage);
+  } finally {
+    if (account) {
+      try {
+        await client.deleteKey(account);
+      } catch (error) {
+        t.diagnostic(`cleanup delete rotating key ${account} failed: ${String(error)}`);
+      }
+    }
+    await client.close();
   }
-);
+}
 
 test(
   "integration: endpoints.yaml connection",
