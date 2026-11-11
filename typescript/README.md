@@ -817,7 +817,6 @@ cosigned rekeys, never a rekey to a listed address.
 ```typescript
 import {
   SignerError,
-
   AuthenticationError,
   SigningRejectedError,
   SignerUnavailableError,
