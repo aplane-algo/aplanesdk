@@ -696,7 +696,9 @@ it, or, when none does, every cosigner endpoint with its state (`ok`,
 `unreachable`, `locked`, `authentication failed`, `invalid cosigner
 metadata`, `configuration invalid`). An SSH host key that differs from the
 pinned one on any cosigner endpoint ends the discovery with that error. The
-sweep is kept; a key it does not hold makes one fresh sweep per call. The
+sweep is kept; a key it does not hold makes one fresh sweep per call, and so
+does a key whose endpoint's kept connection has been closed or whose SSH link
+is down (a local check; no request is made for it). The
 default resolver connects with the trust-on-first-use, SSH setup timeout and
 request timeout the client was created with.
 

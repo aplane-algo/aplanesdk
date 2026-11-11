@@ -52,6 +52,9 @@ type SignerClient struct {
 	endpointOptions  EndpointCosignerResolverOptions
 	resolverMu       sync.Mutex
 	cosignerResolver *EndpointCosignerResolver
+
+	// closed is set by Close.
+	closed atomic.Bool
 }
 
 const (
@@ -382,6 +385,7 @@ func fromEnvSSHOptions(opts *FromEnvOptions, sshPort int, knownHostsPath string)
 // cosigner resolver opened.
 func (c *SignerClient) Close() {
 	c.resolverMu.Lock()
+	c.closed.Store(true)
 	resolver := c.cosignerResolver
 	c.resolverMu.Unlock()
 	if resolver != nil {
@@ -390,6 +394,14 @@ func (c *SignerClient) Close() {
 	if c.sshTunnel != nil {
 		c.sshTunnel.close()
 	}
+}
+
+// connectionOpen reports, asking nothing of the signer, whether the client
+// can still reach it: it has not been closed, and its SSH tunnel, if it has
+// one, is up. A client on a caller's own base URL has no connection of its
+// own to lose, so it is open until it is closed.
+func (c *SignerClient) connectionOpen() bool {
+	return !c.closed.Load() && (c.sshTunnel == nil || c.sshTunnel.open())
 }
 
 // Health checks if the signer is reachable.

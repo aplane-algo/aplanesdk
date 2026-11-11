@@ -81,7 +81,8 @@ type EndpointCosignerResolverOptions struct {
 // endpoint.
 //
 // The connections it opens belong to it: Close closes them. The sweep's
-// result is kept; a key it does not hold makes one fresh sweep per
+// result is kept; a key it does not hold, or holds only on a connection that
+// has since been closed or whose SSH link is down, makes one fresh sweep per
 // ResolveCosigner call. Every failure matches ErrCosignerDiscovery.
 type EndpointCosignerResolver struct {
 	registry *ClientEndpointRegistry
@@ -208,15 +209,23 @@ func (r *EndpointCosignerResolver) ResolveCosigner(ctx context.Context, cosigner
 }
 
 // listingLocked returns the live endpoints that list key, sorted by alias.
+// An endpoint whose kept connection has since been closed, or whose SSH link
+// is down, is not live: the key counts as missing, which makes a fresh sweep.
 func (r *EndpointCosignerResolver) listingLocked(key witnessKey) []*cosignerEndpoint {
 	var matches []*cosignerEndpoint
 	for _, alias := range sortedEndpointAliases(r.endpoints) {
 		endpoint := r.endpoints[alias]
-		if _, ok := endpoint.keys[key]; ok && endpoint.state == cosignerEndpointOK {
+		if _, ok := endpoint.keys[key]; ok && endpoint.state == cosignerEndpointOK && endpoint.connectionOpen() {
 			matches = append(matches, endpoint)
 		}
 	}
 	return matches
+}
+
+// connectionOpen reports, with no request, whether the endpoint's kept
+// connection can still be used.
+func (e *cosignerEndpoint) connectionOpen() bool {
+	return e.client != nil && e.client.connectionOpen()
 }
 
 // notListedLocked is the error for a key no live endpoint lists. It names
@@ -243,8 +252,9 @@ func sortedEndpointAliases(endpoints map[string]*cosignerEndpoint) []string {
 // cosignerDiscoveryEndpointTimeout and all within
 // cosignerDiscoveryTotalTimeout. It replaces the kept result. An endpoint
 // that was live keeps its connection and is read again; if that read fails,
-// it is connected afresh. An SSH host key that differs from the pinned one
-// on any endpoint ends the sweep with that error, and nothing is kept.
+// or the connection is no longer open, it is connected afresh. An SSH host
+// key that differs from the pinned one on any endpoint ends the sweep with
+// that error, and nothing is kept.
 func (r *EndpointCosignerResolver) sweepLocked(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -282,8 +292,10 @@ func (r *EndpointCosignerResolver) sweepLocked(ctx context.Context) error {
 			defer workers.Done()
 			for index := range jobs {
 				alias := aliases[index]
+				// A kept connection that is no longer open is not read again:
+				// the endpoint is connected afresh, and the old one closed below.
 				var reuse *SignerClient
-				if earlier := previous[alias]; earlier != nil {
+				if earlier := previous[alias]; earlier != nil && earlier.connectionOpen() {
 					reuse = earlier.client
 				}
 				endpointCtx, endpointCancel := context.WithTimeout(sweepCtx, cosignerDiscoveryEndpointTimeout)

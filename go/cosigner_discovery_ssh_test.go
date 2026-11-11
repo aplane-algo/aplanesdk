@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -32,6 +33,20 @@ import (
 type testSSHNode struct {
 	addr    string
 	hostKey ssh.PublicKey
+
+	mu    sync.Mutex
+	conns []net.Conn
+}
+
+// drop ends every SSH connection the node has accepted, as a server that
+// restarts or a network that fails does.
+func (n *testSSHNode) drop() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	for _, conn := range n.conns {
+		_ = conn.Close()
+	}
+	n.conns = nil
 }
 
 func startTestSSHNode(t *testing.T, enrolled ssh.PublicKey, backend http.HandlerFunc) *testSSHNode {
@@ -59,16 +74,20 @@ func startTestSSHNode(t *testing.T, enrolled ssh.PublicKey, backend http.Handler
 	}
 	t.Cleanup(func() { _ = listener.Close() })
 	backendAddr := server.Listener.Addr().String()
+	node := &testSSHNode{addr: listener.Addr().String(), hostKey: hostSigner.PublicKey()}
 	go func() {
 		for {
 			conn, err := listener.Accept()
 			if err != nil {
 				return
 			}
+			node.mu.Lock()
+			node.conns = append(node.conns, conn)
+			node.mu.Unlock()
 			go serveTestSSH(conn, config, backendAddr)
 		}
 	}()
-	return &testSSHNode{addr: listener.Addr().String(), hostKey: hostSigner.PublicKey()}
+	return node
 }
 
 func serveTestSSH(conn net.Conn, config *ssh.ServerConfig, backend string) {
@@ -204,9 +223,13 @@ endpoints:
 				t.Fatalf("the cosigner client's request timeout is not the client's")
 			}
 			client.Close()
-			// The cosigner connection closed with the client.
+			// The cosigner connection closed with the client, and its tunnel
+			// says so.
 			if _, err := cosignerClient.GetKeysResponseWithContext(context.Background()); err == nil {
 				t.Fatal("the cosigner connection outlived the client")
+			}
+			if cosignerClient.sshTunnel.open() || cosignerClient.connectionOpen() {
+				t.Fatal("a closed tunnel reports itself open")
 			}
 		})
 	}
@@ -274,5 +297,48 @@ func TestConnectCosignerEndpointClassifiesFailures(t *testing.T) {
 	_, _, err = resolver.ResolveCosigner(context.Background(), hex.EncodeToString(witnessOne), KeyTypeWitnessFalcon1024)
 	if !errors.Is(err, ErrCosignerDiscovery) || !strings.HasPrefix(err.Error(), `cosigner discovery: endpoint "bad": SSH host key mismatch for `) {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+// When the SSH server ends a kept cosigner connection, its tunnel goes down
+// with no request made, and the next resolve sweeps afresh and reconnects.
+func TestEndpointCosignerResolverReconnectsWhenTheSSHLinkEnds(t *testing.T) {
+	dir := t.TempDir()
+	clientKey := writeClientKey(t, filepath.Join(dir, "client"))
+	node := startTestSSHNode(t, clientKey, witnessKeysBackend(witnessOne))
+	knownHosts := filepath.Join(dir, "known_hosts")
+	writeKnownHost(t, knownHosts, node.addr, node.hostKey)
+	resolver := NewEndpointCosignerResolverFromRegistry(&ClientEndpointRegistry{Endpoints: map[string]ClientEndpointConfig{
+		"cos": {Role: ClientEndpointRoleCosigner, URL: "ssh://" + node.addr, IdentityFile: filepath.Join(dir, "client"), KnownHostsPath: knownHosts},
+	}}, nil)
+	defer resolver.Close()
+	ctx := context.Background()
+	publicKey := hex.EncodeToString(witnessOne)
+
+	first, _, err := resolver.ResolveCosigner(ctx, publicKey, KeyTypeWitnessFalcon1024)
+	if err != nil || !first.connectionOpen() {
+		t.Fatalf("ResolveCosigner() error = %v, open %v", err, err == nil && first.connectionOpen())
+	}
+	node.drop()
+	deadline := time.Now().Add(5 * time.Second)
+	for first.sshTunnel.open() {
+		if time.Now().After(deadline) {
+			t.Fatal("the tunnel did not see its SSH connection end")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if first.connectionOpen() {
+		t.Fatal("a client whose SSH link is down reports itself open")
+	}
+
+	second, componentKey, err := resolver.ResolveCosigner(ctx, publicKey, KeyTypeWitnessFalcon1024)
+	if err != nil || componentKey != WitnessKeyID(KeyTypeWitnessFalcon1024, witnessOne) {
+		t.Fatalf("ResolveCosigner() after the link ended = %s, %v", componentKey, err)
+	}
+	if second == first || !second.connectionOpen() || resolver.sweeps != 2 {
+		t.Fatalf("same client %v, open %v, sweeps %d; want a fresh sweep and a new connection", second == first, second.connectionOpen(), resolver.sweeps)
+	}
+	if _, err := second.GetKeysResponseWithContext(ctx); err != nil {
+		t.Fatalf("the new connection does not work: %v", err)
 	}
 }

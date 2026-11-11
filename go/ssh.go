@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -76,7 +77,14 @@ type sshTunnel struct {
 	knownHostsPath  string
 	trustOnFirstUse bool
 	closeOnce       sync.Once
+	// down is set once the tunnel can carry nothing: it was closed, or its
+	// SSH connection ended.
+	down atomic.Bool
 }
+
+// open reports whether the tunnel can still carry requests: it has not been
+// closed and its SSH connection has not ended. It asks the server nothing.
+func (t *sshTunnel) open() bool { return !t.down.Load() }
 
 // connect establishes an SSH tunnel to the signer. The client's enrolled
 // SSH key is its only credential; the server verifies it at the handshake
@@ -121,6 +129,12 @@ func (t *sshTunnel) connect(
 		return 0, fmt.Errorf("failed to connect to SSH server: %w", err)
 	}
 	t.client = client
+	// The server or the network can end the SSH connection on its own; from
+	// then on the tunnel is down.
+	go func() {
+		_ = client.Wait()
+		t.down.Store(true)
+	}()
 
 	// Create local listener on random port
 	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", localPort))
@@ -219,6 +233,7 @@ func dialSSHHandshake(
 // close closes the SSH tunnel. Closing it again does nothing.
 func (t *sshTunnel) close() {
 	t.closeOnce.Do(func() {
+		t.down.Store(true)
 		if t.done != nil {
 			close(t.done)
 		}

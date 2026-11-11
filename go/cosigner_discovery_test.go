@@ -374,6 +374,68 @@ func TestEndpointCosignerResolverSweepsOncePerMiss(t *testing.T) {
 	}
 }
 
+// A kept connection that was closed, or whose SSH link went down, counts as a
+// miss: one fresh sweep, which connects that endpoint again without reading
+// the dead connection. Telling it is dead takes no request.
+func TestEndpointCosignerResolverSweepsAgainForADeadConnection(t *testing.T) {
+	for name, kill := range map[string]func(*SignerClient){
+		"closed":        func(client *SignerClient) { client.Close() },
+		"SSH link down": func(client *SignerClient) { client.sshTunnel.down.Store(true) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFakeCosigners(t)
+			f.keys["alpha"] = []KeyInfo{witnessRecord(KeyTypeWitnessFalcon1024, witnessOne)}
+			f.keys["beta"] = []KeyInfo{witnessRecord(KeyTypeWitnessFalcon1024, witnessTwo)}
+			r := f.resolver("alpha", "beta")
+			defer r.Close()
+			ctx := context.Background()
+			one := hex.EncodeToString(witnessOne)
+
+			first, _, err := r.ResolveCosigner(ctx, one, KeyTypeWitnessFalcon1024)
+			if err != nil {
+				t.Fatal(err)
+			}
+			kill(first)
+			if first.connectionOpen() {
+				t.Fatal("a dead connection reports itself open")
+			}
+			second, componentKey, err := r.ResolveCosigner(ctx, one, KeyTypeWitnessFalcon1024)
+			if err != nil || componentKey != WitnessKeyID(KeyTypeWitnessFalcon1024, witnessOne) {
+				t.Fatalf("ResolveCosigner() = %s, %v", componentKey, err)
+			}
+			if second == first || !second.connectionOpen() {
+				t.Fatal("the resolver returned the dead connection")
+			}
+			// One fresh sweep: alpha connected again and read once on the new
+			// connection, never on the dead one; beta read again on its own.
+			if r.sweeps != 2 || f.count(f.connects, "alpha") != 2 || f.count(f.reads, "alpha") != 2 ||
+				f.count(f.connects, "beta") != 1 || f.count(f.reads, "beta") != 2 {
+				t.Fatalf("sweeps %d, alpha connects %d reads %d, beta connects %d reads %d",
+					r.sweeps, f.count(f.connects, "alpha"), f.count(f.reads, "alpha"), f.count(f.connects, "beta"), f.count(f.reads, "beta"))
+			}
+			// The dead connection was closed; the new one is kept.
+			if open := f.open(); open != 2 {
+				t.Fatalf("%d connections open, want alpha's new one and beta's", open)
+			}
+			if third, _, err := r.ResolveCosigner(ctx, one, KeyTypeWitnessFalcon1024); err != nil || third != second || r.sweeps != 2 {
+				t.Fatalf("a hit after the fresh sweep: same client %v, %v, sweeps %d", third == second, err, r.sweeps)
+			}
+		})
+	}
+}
+
+// A client with no tunnel of its own is open until it is closed.
+func TestSignerClientWithoutATunnelIsOpenUntilClosed(t *testing.T) {
+	client := NewSignerClient("http://127.0.0.1:1")
+	if !client.connectionOpen() {
+		t.Fatal("a new client reports itself closed")
+	}
+	client.Close()
+	if client.connectionOpen() {
+		t.Fatal("a closed client reports itself open")
+	}
+}
+
 func TestEndpointCosignerResolverCloseClosesItsConnections(t *testing.T) {
 	f := newFakeCosigners(t)
 	f.keys["alpha"] = []KeyInfo{witnessRecord(KeyTypeWitnessFalcon1024, witnessOne)}
