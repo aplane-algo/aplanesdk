@@ -17,9 +17,11 @@ import (
 // SimulationResult contains the executable signed group released through the
 // ordinary signing flow and the response returned by the caller's algod.
 //
-// Failed is true unless the node returned exactly one group result and that
-// result reports no failure: an answer without one checked nothing.
-// FailureMessage says why, and is empty when Failed is false.
+// Failed is true unless the node returned exactly one group result, that
+// result reports no failure (no failure-message and no failed-at), and it
+// holds one transaction result per transaction simulated: any other answer
+// checked less than the group. FailureMessage says why, and is empty when
+// Failed is false: the node's own failure-message, or which of those it was.
 type SimulationResult struct {
 	TxIDs          []string
 	Transactions   []string
@@ -160,36 +162,46 @@ func simulateSignedGroupWithContext(
 		return nil, err
 	}
 
+	failure := simulationFailure(response, len(decoded))
 	return &SimulationResult{
 		TxIDs:          txIDs,
 		Transactions:   transactions,
 		SignedGroup:    append([]string(nil), signedGroup...),
 		Mutations:      mutations,
 		Response:       response,
-		Failed:         simulationFailed(response),
-		FailureMessage: simulationFailure(response),
+		Failed:         failure != "",
+		FailureMessage: failure,
 	}, nil
 }
 
-// simulationFailed reports whether a simulation of one group did anything
-// but pass. An answer without exactly one group result checked nothing, and
-// counts as failed.
-func simulationFailed(response *models.SimulateResponse) bool {
-	return response == nil || len(response.TxnGroups) != 1 || response.TxnGroups[0].FailureMessage != ""
-}
-
-// simulationFailure says why simulationFailed reports a failure, or is empty
-// when it does not.
-func simulationFailure(response *models.SimulateResponse) string {
-	switch {
-	case !simulationFailed(response):
-		return ""
-	case response == nil || len(response.TxnGroups) == 0:
+// simulationFailure says why a simulation of one group of submitted
+// transactions did anything but pass, or is empty when it passed. It passes
+// only when the node returned exactly one group result, with no failure
+// message and no failed-at, holding one transaction result per transaction
+// submitted: anything else checked less than the group, so it is a failure.
+// The reason is the node's own failure message, or which of those it was.
+//
+// The node's answer is decoded before it is seen here, and the decoder reads
+// a null group result as an empty one, so a result that is not an object
+// fails on its count of transaction results.
+func simulationFailure(response *models.SimulateResponse, submitted int) string {
+	if response == nil || len(response.TxnGroups) == 0 {
 		return "the node returned no result for the group"
-	case len(response.TxnGroups) != 1:
+	}
+	if len(response.TxnGroups) != 1 {
 		return fmt.Sprintf("the node returned %d results for one group", len(response.TxnGroups))
 	}
-	return response.TxnGroups[0].FailureMessage
+	group := response.TxnGroups[0]
+	if group.FailureMessage != "" {
+		return group.FailureMessage
+	}
+	if len(group.FailedAt) > 0 {
+		return "the node reported a failure without a message"
+	}
+	if len(group.TxnResults) != submitted {
+		return fmt.Sprintf("the node returned %d transaction results for %d transactions", len(group.TxnResults), submitted)
+	}
+	return ""
 }
 
 func decodeExecutableSignedGroup(signedGroup []string) ([]types.SignedTxn, []string, []string, error) {

@@ -52,7 +52,8 @@ and refuse every altered one.
 
   The reading rule they pin: the body is exactly one JSON object; a field left
   out or null takes its zero value (so a null entry in `signed` is an empty
-  string, which is then refused); an unknown field is ignored; a field of the
+  string, which is then refused, and a null `stage` is stage 0, accepted only
+  for a stage 0 spend); an unknown field is ignored; a field of the
   wrong type, a number outside the field's range, a null or non-object body,
   an empty or cut-off body, and anything after the object make the answer
   unreadable. Feed each body through the real transport with a fake server,

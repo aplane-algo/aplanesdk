@@ -287,6 +287,12 @@ Fetch the raw `/keys` response plus local locked-state reporting. `Locked` is
 derived from a locked-signer HTTP response and is not part of the `/keys` JSON
 payload.
 
+Each key's `address` is kept exactly as the signer sent it and is matched by
+its exact text. A witness key's row carries its Witness Key ID there, not an
+Algorand address. An answer that spells an Algorand address non-canonically
+(the same 36 bytes and checksum, other text) is refused whole, since a lookup
+by the canonical address would never find that key.
+
 ```go
 keysResp, err := client.GetKeysResponseWithContext(ctx)
 if err != nil {
@@ -337,7 +343,11 @@ Go is the reference SDK shape for caller-initiated synchronous cancellation:
 pass a cancelable `context.Context` to `SignRequestsWithContext` or
 `SignGroupWithContext`. If that context is canceled before apsigner responds,
 the SDK sends best-effort `/sign/cancel` for the generated or supplied
-`request_id`.
+`request_id`. That cancel's own failure, or an answer to it the SDK cannot
+read, never fails the call or replaces its error; only
+`CancelSignRequestWithContext` reports a cancel's outcome. A context that has
+already ended when a call starts sends nothing, so it is a plain error, not
+an unknown outcome.
 
 #### `SendPrepared(ctx, algodClient, group, opts) (*SendResult, error)`
 
@@ -379,17 +389,30 @@ Failures:
 | Error | Meaning | What to do |
 |---|---|---|
 | The signing call's own error | The signer refused (policy, operator, locked), or the SDK refused the signer's answer (`verify signer response: ...`, `ErrMaxFeeIncreaseExceeded`). Nothing was submitted. | Read the reason. If the SDK refused a sign answer, the signer did sign and the SDK discarded the result. |
-| `*SignOutcomeUnknownError` | A signing exchange ended with no answer, or with a 200 answer that could not be read (not one JSON object of the expected shape). A signature may have been released; nothing was submitted. | Check with the operator or the audit log before signing again. For the ordinary flow the error carries the request ID; for a rotating account it carries the prepared group (see below). |
+| `*SignOutcomeUnknownError` | A signing exchange ended with no answer, or with a 200 answer that could not be read (not one JSON object of the expected shape). A signature may have been released; nothing was submitted. | Check with the operator or the audit log before signing again. The error carries the ID of the request whose answer was lost (for a cosigned account, the step's `/sign/component`, `/sign/assemble` or `/sign` request); for a rotating account it also carries the prepared group (see below). |
 | `*SubmissionRejectedError` | The node refused the group or dropped it from its pool. | Read the reason. The signed bytes and IDs are in the error. |
 | `*SubmissionUncertainError` | `Stage` says where it stopped: `unsent` (signed, never sent: your context ended), `submit` (the submission's answer never arrived), or `confirm` (not confirmed within the wait). Except for `unsent`, it may still confirm. | Look up `TxIDs`, or submit the same `SignedGroup` again. Do not sign a replacement until the outcome is known: both could execute. |
 
 Every 200 answer from the signer, the key list included, is read as exactly
 one non-null JSON value: a `null` body or anything after the value is an
-error, never an empty answer. Go's reader differs from the TypeScript and
-Python SDKs in two known ways: it matches keys case-insensitively, so of two
-keys that differ only in case (`signed` and `Signed`) the later one wins where
-they read only the exact name, and it refuses `-0` for an unsigned field where
-they read it as 0.
+error, never an empty answer. A field left out or `null`, at any depth, reads
+as its zero value. An answer whose `error` field is set (component, assembly,
+key generation and key deletion answers as well as `/sign` and `/plan`) is a
+refusal; a key generation answer that names no address is refused too.
+
+The three SDKs' JSON readers differ in known ways that a real signer never
+reaches:
+
+- Go matches keys case-insensitively, so of two keys that differ only in case
+  (`signed` and `Signed`) the later one wins where TypeScript and Python read
+  only the exact name.
+- Go refuses `-0` for an unsigned field where the others read it as 0.
+- Of a key given twice, the later value is read, except that a later `null`
+  leaves Go's earlier string, number or boolean in place (a list, object or
+  pointer it does empty); the others read that `null` as zero.
+- A body that starts with a UTF-8 byte order mark is readable in TypeScript
+  only.
+- An integer of more than 4300 digits is unreadable in Python only.
 
 A node that answers "already in ledger" has a transaction with the same ID
 from an earlier submission of the group. The SDK treats that as submitted and
@@ -398,8 +421,16 @@ carries a lease is the exception: the node refuses it for its lease, and the
 SDK reports a rejection.
 
 The existing `Sign*` and `Simulate*` calls are unchanged. A `Simulate*`
-result is `Failed` unless the node returned exactly one group result and it
-reports no failure; `FailureMessage` says why.
+result is `Failed` unless the node returned exactly one group result, that
+result reports no failure (no `failure-message` and no `failed-at`), and it
+holds one transaction result per transaction simulated: an answer without
+exactly one result, or with the wrong count of transaction results, checked
+less than the group. `FailureMessage` says why: the node's `failure-message`
+when it gave one, otherwise one of "the node returned no result for the
+group", "the node returned N results for one group", "the node reported a
+failure without a message" or "the node returned M transaction results for N
+transactions". Go's algod client reads a `null` group result as an empty one,
+so it fails on its count of transaction results.
 
 #### Rotating accounts
 
@@ -414,9 +445,10 @@ and `SendPayment` run the whole sequence:
    rekey, a reported fee raise within your max fee increase, the group ID and
    canonical dummies.
 3. **Simulate, unsigned,** through your algod. A group that fails returns
-   `*RotatingPreflightError`, as does an answer with no result for the
-   group; a simulation that cannot be run returns a plain error. Either way
-   no one-time key has been used.
+   `*RotatingPreflightError`, as does an answer without exactly one result
+   for the group, or with the wrong count of transaction results; a
+   simulation that cannot be run returns a plain error. Either way no
+   one-time key has been used.
 4. **Sign,** with operator approval, then check the signed group is exactly
    the prepared one.
 5. **Submit at once** and wait for confirmation. `SendResult.Rotating` reports

@@ -144,6 +144,9 @@ func (c Component) NeedsCosigner() bool {
 type ComponentResponse struct {
 	RequestID  string      `json:"request_id"`
 	Components []Component `json:"components"`
+	// Error, when set, is a refusal carried in a 200 answer. The current
+	// signer never sets it; RequestComponents refuses an answer that does.
+	Error string `json:"error,omitempty"`
 }
 
 type AssemblyTargetKind string
@@ -185,6 +188,9 @@ type AssemblyPassthroughItem struct {
 type AssemblyResponse struct {
 	RequestID   string   `json:"request_id"`
 	SignedGroup []string `json:"signed_group"`
+	// Error, when set, is a refusal carried in a 200 answer. The current
+	// signer never sets it; RequestAssemble refuses an answer that does.
+	Error string `json:"error,omitempty"`
 }
 
 // CosignedPassthroughAuthorization declares the authorization shape used to

@@ -661,6 +661,36 @@ func TestApprovalRequestWithEndedContextSendsNothing(t *testing.T) {
 			})
 			return err
 		},
+		"cosigner component": func(ctx context.Context, c *SignerClient) error {
+			_, err := c.RequestComponentsWithContext(ctx, ComponentRequest{
+				GroupBytesHex: []string{"545801"},
+				Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindCosigner, ComponentKey: "COMPONENT"}},
+			})
+			return err
+		},
+		"assemble": func(ctx context.Context, c *SignerClient) error {
+			_, err := c.RequestAssembleWithContext(ctx, AssemblyRequest{
+				GroupBytesHex: []string{"5458aa"},
+				Targets: []AssemblyTarget{{
+					TargetIndex: 0, Kind: AssemblyTargetKindBoundedCosigner, AuthAddress: "BOUNDED",
+					BaseSignatures: []string{"aabb"}, AssemblyReceipt: "eeff", CosignerSignature: "bbcc",
+				}},
+			})
+			return err
+		},
+		"rotating sign": func(ctx context.Context, c *SignerClient) error {
+			vector := loadRotatingVectors(t).Cases["wotsc_stage0"]
+			prepared, err := preparedFromVector(vector, vector.Prepare)
+			if err != nil {
+				t.Fatalf("captured prepare answer refused: %v", err)
+			}
+			_, err = c.SignPreparedRotating(ctx, prepared, nil)
+			var unknown *SignOutcomeUnknownError
+			if errors.As(err, &unknown) {
+				t.Errorf("rotating sign with an ended context = %v, want a plain stop", err)
+			}
+			return err
+		},
 	}
 	for name, call := range calls {
 		for _, waitKnown := range []bool{true, false} {
@@ -808,6 +838,98 @@ func TestListKeysRefusesNullAndTrailingData(t *testing.T) {
 	}
 }
 
+// otherSpelling is address with a padding bit of its last character set: the
+// same 36 bytes, checksum and all, spelled another way.
+func otherSpelling(t *testing.T, address string) string {
+	t.Helper()
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+	last := strings.IndexByte(alphabet, address[len(address)-1])
+	other := address[:len(address)-1] + string(alphabet[last^1])
+	if _, err := types.DecodeAddress(other); err == nil {
+		t.Fatalf("%s decodes as an address", other)
+	}
+	return other
+}
+
+// A /keys answer that lists an Algorand address spelled another way is
+// refused whole: a lookup by the canonical address would never find the key.
+// Text that is not an Algorand address, such as a witness key's ID, is kept
+// exactly as sent.
+func TestListKeysRefusesAnAddressSpelledAnotherWay(t *testing.T) {
+	canonical := sdkTestAddress(0xA3)
+	other := otherSpelling(t, canonical)
+	badChecksum := canonical[:len(canonical)-2] + "AA"
+	if canonical[len(canonical)-2:] == "AA" {
+		badChecksum = canonical[:len(canonical)-2] + "BA"
+	}
+	answer := func(addresses ...string) func(http.ResponseWriter, *http.Request) {
+		return func(w http.ResponseWriter, r *http.Request) {
+			keys := make([]KeyInfo, len(addresses))
+			for i, address := range addresses {
+				keys[i] = KeyInfo{Address: address, KeyType: "ed25519"}
+			}
+			json.NewEncoder(w).Encode(KeysResponse{Count: len(keys), Keys: keys})
+		}
+	}
+
+	t.Run("an alternate spelling", func(t *testing.T) {
+		client, server := newTestClient(answer(sdkTestAddress(0xA4), other))
+		defer server.Close()
+		result, err := client.GetKeysResponseWithContext(context.Background())
+		want := fmt.Sprintf("failed to decode response: key 1 address %q is a non-canonical spelling of address %s", other, canonical)
+		if result != nil || err == nil || err.Error() != want {
+			t.Fatalf("GetKeysResponseWithContext() = %+v, %v; want %q", result, err, want)
+		}
+		if client.cachedKeys() != nil {
+			t.Fatal("a refused answer was cached")
+		}
+		if _, err := client.ListKeys(true); err == nil {
+			t.Fatal("ListKeys() accepted the answer")
+		}
+	})
+
+	witnessID := "ROGAFDACF7ASC3EMZRWNKVM73NXHO4P6O4EB7ZXWER37SM63BMFQ"
+	kept := []string{canonical, witnessID, "BOUNDEDADDR000000000000000000000000000000000000000000000", strings.ToLower(canonical), badChecksum, ""}
+	t.Run("anything else is kept as sent", func(t *testing.T) {
+		client, server := newTestClient(answer(kept...))
+		defer server.Close()
+		result, err := client.GetKeysResponseWithContext(context.Background())
+		if err != nil {
+			t.Fatalf("GetKeysResponseWithContext() error = %v", err)
+		}
+		for i, address := range kept {
+			if result.Keys[i].Address != address {
+				t.Fatalf("key %d address = %q, want %q as sent", i, result.Keys[i].Address, address)
+			}
+			if info, err := client.GetKeyInfo(address); err != nil || info.Address != address {
+				t.Fatalf("GetKeyInfo(%q) = %+v, %v", address, info, err)
+			}
+		}
+	})
+}
+
+// Every /keys contract fixture is an answer the client reads.
+func TestListKeysReadsTheContractFixtures(t *testing.T) {
+	matches, err := filepath.Glob(sdkContractFixturePath(t, "keys_response_*.json"))
+	if err != nil || len(matches) == 0 {
+		t.Fatalf("keys fixtures = %v, %v", matches, err)
+	}
+	for _, path := range matches {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) { w.Write(raw) })
+			defer server.Close()
+			result, err := client.GetKeysResponseWithContext(context.Background())
+			if err != nil || len(result.Keys) == 0 {
+				t.Fatalf("GetKeysResponseWithContext() = %+v, %v", result, err)
+			}
+		})
+	}
+}
+
 // Every other 200 answer is read by the same rule.
 func TestSignerAnswersRefuseNullAndTrailingData(t *testing.T) {
 	txn := verifyTestPayment(t, 41, 42, 1)
@@ -840,6 +962,9 @@ func TestSignerAnswersRefuseNullAndTrailingData(t *testing.T) {
 		{"/sign/cancel", `{"success":true,"state":"canceled"}`, func(c *SignerClient) error {
 			_, err := c.CancelSignRequestWithContext(context.Background(), "sdk-test")
 			return err
+		}},
+		{"/admin/keys", `{"success":true}`, func(c *SignerClient) error {
+			return c.DeleteKey(sdkTestAddress(0xA3))
 		}},
 	}
 	for _, endpoint := range endpoints {
@@ -991,13 +1116,64 @@ func TestDeleteKey_Success(t *testing.T) {
 		if r.URL.Query().Get("address") != "TESTADDR" {
 			t.Fatalf("expected address=TESTADDR, got %s", r.URL.Query().Get("address"))
 		}
-		json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+		// What the signer's handler writes.
+		w.Write([]byte("{\"success\":true}\n"))
 	})
 	defer server.Close()
 
 	err := client.DeleteKey("TESTADDR")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// A generate answer is the new key: one that carries an error, or names no
+// address, is refused.
+func TestGenerateKeyRefusesAnErrorOrNoAddress(t *testing.T) {
+	for _, tc := range []struct{ body, want string }{
+		{`{"address":"` + sdkTestAddress(0xA3) + `","error":"denied"}`, "key generation failed: denied"},
+		{`{}`, "key generation failed: missing address"},
+		{`{"address":"","key_type":"ed25519"}`, "key generation failed: missing address"},
+		{`{"address":null}`, "key generation failed: missing address"},
+	} {
+		t.Run(tc.body, func(t *testing.T) {
+			client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+				w.Write([]byte(tc.body))
+			})
+			defer server.Close()
+			if result, err := client.GenerateKey("ed25519", nil); err == nil || err.Error() != tc.want {
+				t.Fatalf("GenerateKey() = %+v, %v; want %q", result, err, tc.want)
+			}
+		})
+	}
+}
+
+// A delete answer is read as {success, error}: an error is a refusal, and a
+// body that is not one such object is no answer. The signer always sends one.
+func TestDeleteKeyReadsItsAnswer(t *testing.T) {
+	for _, tc := range []struct{ body, want string }{
+		{`{"success":true}`, ""},
+		{`{"success":true,"extra":1}`, ""},
+		{`{"success":false,"error":"denied"}`, "key deletion failed: denied"},
+		{``, "failed to decode response"},
+		{`null`, "failed to decode response"},
+		{`[]`, "failed to decode response"},
+		{`{"success":"yes"}`, "failed to decode response"},
+		{`{"success":true} x`, "failed to decode response"},
+	} {
+		t.Run(tc.body, func(t *testing.T) {
+			client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+				w.Write([]byte(tc.body))
+			})
+			defer server.Close()
+			err := client.DeleteKey(sdkTestAddress(0xA3))
+			switch {
+			case tc.want == "" && err != nil:
+				t.Fatalf("DeleteKey() = %v, want success", err)
+			case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
+				t.Fatalf("DeleteKey() = %v, want %q", err, tc.want)
+			}
+		})
 	}
 }
 
@@ -1162,6 +1338,47 @@ func TestRequestAssemblePostsToAssembleEndpoint(t *testing.T) {
 	}
 	if len(resp.SignedGroup) != 1 || resp.SignedGroup[0] != "ccdd" {
 		t.Fatalf("assembly response = %+v", resp)
+	}
+}
+
+// An error in a 200 component or assembly answer is a refusal, whatever else
+// the answer holds, and never a lost answer.
+func TestComponentAndAssemblyAnswersWithAnErrorAreRefused(t *testing.T) {
+	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			RequestID string `json:"request_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		switch r.URL.Path {
+		case "/sign/component":
+			json.NewEncoder(w).Encode(ComponentResponse{RequestID: req.RequestID, Error: "denied", Components: []Component{{
+				Kind: ComponentTargetKindCosigner, TargetIndex: 0, Signature: "aabb", SignatureScheme: KeyTypeWitnessFalcon1024,
+			}}})
+		case "/sign/assemble":
+			json.NewEncoder(w).Encode(AssemblyResponse{RequestID: req.RequestID, Error: "denied", SignedGroup: []string{"ccdd"}})
+		}
+	})
+	defer server.Close()
+
+	_, err := client.RequestComponents(ComponentRequest{
+		GroupBytesHex: []string{"5458aa"},
+		Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindCosigner, ComponentKey: "COMPONENT"}},
+	})
+	var lost *lostAnswer
+	if err == nil || err.Error() != "component signing failed: denied" || errors.As(err, &lost) {
+		t.Fatalf("RequestComponents() error = %v, want the refusal", err)
+	}
+	_, err = client.RequestAssemble(AssemblyRequest{
+		GroupBytesHex: []string{"5458aa"},
+		Targets: []AssemblyTarget{{
+			TargetIndex: 0, Kind: AssemblyTargetKindBoundedCosigner, AuthAddress: "BOUNDED",
+			BaseSignatures: []string{"aabb"}, AssemblyReceipt: "eeff", CosignerSignature: "bbcc",
+		}},
+	})
+	if err == nil || err.Error() != "assembly failed: denied" || errors.As(err, &lost) {
+		t.Fatalf("RequestAssemble() error = %v, want the refusal", err)
 	}
 }
 
