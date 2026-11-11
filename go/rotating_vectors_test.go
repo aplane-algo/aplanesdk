@@ -5,8 +5,11 @@ package aplane
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -41,10 +44,22 @@ type rotatingTamperedSign struct {
 	Sign RotatingSignResponse `json:"sign"`
 }
 
+// rotatingAnswerBody is a raw 200 body for /sign/rotating/sign and how a
+// client must class it: "accepted", "refused" (the answer was read and failed
+// its checks) or "unknown" (the answer could not be read, so a signature may
+// have been released).
+type rotatingAnswerBody struct {
+	Name   string `json:"name"`
+	Case   string `json:"case"`
+	Body   string `json:"body"`
+	Expect string `json:"expect"`
+}
+
 type rotatingVectors struct {
-	Cases           map[string]rotatingVectorCase `json:"cases"`
-	PrepareTampered []rotatingTamperedPrepare     `json:"prepare_tampered"`
-	SignTampered    []rotatingTamperedSign        `json:"sign_tampered"`
+	Cases            map[string]rotatingVectorCase `json:"cases"`
+	PrepareTampered  []rotatingTamperedPrepare     `json:"prepare_tampered"`
+	SignTampered     []rotatingTamperedSign        `json:"sign_tampered"`
+	SignAnswerBodies []rotatingAnswerBody          `json:"sign_answer_bodies"`
 }
 
 func rotatingVectorsPath() string {
@@ -184,6 +199,127 @@ func tamperedRotatingVectors(t *testing.T, cases map[string]rotatingVectorCase) 
 	return prepares, signs
 }
 
+// rotatingAnswerBodies builds raw sign answers from each captured one: how a
+// client reads a 200 body is where three JSON libraries differ, and the
+// altered answers above cannot show it, because they are written from typed
+// values. A field left out or null takes its zero value; a field of the wrong
+// type, a null or non-object body, and anything after the answer make it
+// unreadable.
+func rotatingAnswerBodies(t *testing.T, cases map[string]rotatingVectorCase) []rotatingAnswerBody {
+	t.Helper()
+	names := make([]string, 0, len(cases))
+	for name := range cases {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var bodies []rotatingAnswerBody
+	for _, name := range names {
+		c := cases[name]
+		base, err := json.Marshal(c.Sign)
+		if err != nil {
+			t.Fatal(err)
+		}
+		with := func(change func(fields map[string]json.RawMessage)) string {
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(base, &fields); err != nil {
+				t.Fatal(err)
+			}
+			change(fields)
+			out, err := json.Marshal(fields)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return string(out)
+		}
+		set := func(key, value string) string {
+			return with(func(fields map[string]json.RawMessage) { fields[key] = json.RawMessage(value) })
+		}
+		var signed []json.RawMessage
+		if err := json.Unmarshal(mustField(t, base, "signed"), &signed); err != nil {
+			t.Fatal(err)
+		}
+		signed[0] = json.RawMessage("null")
+		nullEntry, err := json.Marshal(signed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, body := range []rotatingAnswerBody{
+			{Name: "the captured answer", Body: string(base), Expect: "accepted"},
+			{Name: "an extra field the client does not know", Body: set("extra", `{"a":1}`), Expect: "accepted"},
+			{Name: "a null body", Body: "null", Expect: "unknown"},
+			{Name: "an array body", Body: "[]", Expect: "unknown"},
+			{Name: "a string body", Body: `"ok"`, Expect: "unknown"},
+			{Name: "a number body", Body: "123", Expect: "unknown"},
+			{Name: "an empty body", Body: "", Expect: "unknown"},
+			{Name: "text after the answer", Body: string(base) + " x", Expect: "unknown"},
+			{Name: "the answer twice", Body: string(base) + string(base), Expect: "unknown"},
+			{Name: "the answer cut short", Body: string(base[:len(base)/2]), Expect: "unknown"},
+			{Name: "signed is a string", Body: set("signed", `"x"`), Expect: "unknown"},
+			{Name: "signed holds a number", Body: set("signed", "[1]"), Expect: "unknown"},
+			{Name: "stage is a string", Body: set("stage", `"3"`), Expect: "unknown"},
+			{Name: "stage is negative", Body: set("stage", "-1"), Expect: "unknown"},
+			{Name: "stage is beyond 64 bits", Body: set("stage", "18446744073709551616"), Expect: "unknown"},
+			{Name: "txid is a number", Body: set("txid", "5"), Expect: "unknown"},
+			{Name: "a null entry in signed", Body: set("signed", string(nullEntry)), Expect: "refused"},
+			{Name: "signed left out", Body: with(func(fields map[string]json.RawMessage) { delete(fields, "signed") }), Expect: "refused"},
+			{Name: "signed is null", Body: set("signed", "null"), Expect: "refused"},
+			{Name: "txid left out", Body: with(func(fields map[string]json.RawMessage) { delete(fields, "txid") }), Expect: "refused"},
+		} {
+			body.Case = name
+			bodies = append(bodies, body)
+		}
+	}
+	return bodies
+}
+
+func mustField(t *testing.T, object []byte, key string) json.RawMessage {
+	t.Helper()
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(object, &fields); err != nil {
+		t.Fatal(err)
+	}
+	return fields[key]
+}
+
+// TestRotatingAnswerBodies answers a real sign request with each raw body and
+// requires the outcome class the vectors name.
+func TestRotatingAnswerBodies(t *testing.T) {
+	vectors := loadRotatingVectors(t)
+	if len(vectors.SignAnswerBodies) == 0 {
+		t.Fatal("no raw sign answers in the vectors")
+	}
+	for _, body := range vectors.SignAnswerBodies {
+		t.Run(body.Case+"/"+body.Name, func(t *testing.T) {
+			c := vectors.Cases[body.Case]
+			prepared, err := preparedFromVector(c, c.Prepare)
+			if err != nil {
+				t.Fatalf("captured prepare answer refused: %v", err)
+			}
+			client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/status":
+					json.NewEncoder(w).Encode(StatusResponse{State: "unlocked"})
+				case "/sign/rotating/sign":
+					w.Write([]byte(body.Body))
+				}
+			})
+			defer server.Close()
+			_, err = client.SignPreparedRotating(context.Background(), prepared, nil)
+			got := "accepted"
+			var unknown *SignOutcomeUnknownError
+			switch {
+			case errors.As(err, &unknown):
+				got = "unknown"
+			case err != nil:
+				got = "refused"
+			}
+			if got != body.Expect {
+				t.Fatalf("outcome %s (%v), want %s", got, err, body.Expect)
+			}
+		})
+	}
+}
+
 func TestRotatingVectors(t *testing.T) {
 	vectors := loadRotatingVectors(t)
 	if len(vectors.Cases) == 0 {
@@ -193,6 +329,7 @@ func TestRotatingVectors(t *testing.T) {
 
 	if os.Getenv("APLANE_UPDATE_ROTATING_VECTORS") == "1" {
 		vectors.PrepareTampered, vectors.SignTampered = wantPrepares, wantSigns
+		vectors.SignAnswerBodies = rotatingAnswerBodies(t, vectors.Cases)
 		raw, err := json.MarshalIndent(vectors, "", "  ")
 		if err != nil {
 			t.Fatal(err)
@@ -204,7 +341,8 @@ func TestRotatingVectors(t *testing.T) {
 	}
 	// The file's altered answers are the ones the tables produce, so a check
 	// added to the tables reaches the other SDKs through the file.
-	if !sameJSON(t, vectors.PrepareTampered, wantPrepares) || !sameJSON(t, vectors.SignTampered, wantSigns) {
+	if !sameJSON(t, vectors.PrepareTampered, wantPrepares) || !sameJSON(t, vectors.SignTampered, wantSigns) ||
+		!sameJSON(t, vectors.SignAnswerBodies, rotatingAnswerBodies(t, vectors.Cases)) {
 		t.Fatalf("rotating_vectors.json is out of date with the tamper tables; run with APLANE_UPDATE_ROTATING_VECTORS=1")
 	}
 	if len(vectors.PrepareTampered) < len(rotatingPrepareTampers) || len(vectors.SignTampered) < len(rotatingSignTampers) {

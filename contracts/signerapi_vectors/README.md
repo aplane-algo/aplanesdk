@@ -42,6 +42,22 @@ and refuse every altered one.
 - `sign_tampered`: entries of `name`, `case` and an altered `sign`. Checked
   against the case's own, unaltered `prepare`, each must be refused.
 
+- `sign_answer_bodies`: entries of `name`, `case`, `body` and `expect`. `body`
+  is a raw 200 body for `/sign/rotating/sign`, answered to a sign request for
+  the case's own `prepare`. `expect` is the class the client must report:
+  - `accepted`: the signed group is returned.
+  - `refused`: the answer was read and failed its checks. A plain error.
+  - `unknown`: the answer could not be read, so a signature may have been
+    released. The client's "sign outcome unknown" error.
+
+  The reading rule they pin: the body is exactly one JSON object; a field left
+  out or null takes its zero value (so a null entry in `signed` is an empty
+  string, which is then refused); an unknown field is ignored; a field of the
+  wrong type, a number outside the field's range, a null or non-object body,
+  an empty or cut-off body, and anything after the object make the answer
+  unreadable. Feed each body through the real transport with a fake server,
+  not through the verifier alone.
+
 The altered answers are generated, not written by hand: the Go SDK's tamper
 tables (`go/rotating_test.go`) are applied to each captured case, and
 `TestRotatingVectors` fails when the file and the tables disagree. To add a

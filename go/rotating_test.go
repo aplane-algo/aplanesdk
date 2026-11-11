@@ -381,6 +381,16 @@ func TestSendPreparedRotatingStageZeroWithoutDummies(t *testing.T) {
 // rotatingTestElsewhere is an address no fixture uses.
 var rotatingTestElsewhere = types.Address{0x55}
 
+// alternateSpelling writes an address another way. The last base32 character
+// of an address has two bits that carry nothing, so three other strings
+// decode to the same 32 bytes and checksum under a lenient decoder. The
+// Algorand Go library refuses them; the JavaScript and Python ones do not.
+func alternateSpelling(address string) string {
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+	last := strings.IndexByte(alphabet, address[len(address)-1])
+	return address[:len(address)-1] + string(alphabet[last^1])
+}
+
 // respendPrepared changes the prepared spend, regroups, and writes the group
 // back into the response, as a signer that altered the spend would have to.
 func respendPrepared(t *testing.T, response *RotatingPrepareResponse, txns []types.Transaction, change func(*types.Transaction)) {
@@ -427,6 +437,12 @@ var rotatingPrepareTampers = []struct {
 	{"reported rekey target is the account", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
 		r.RekeyTo = r.Account
 	}, "rekey_to must be another, non-zero address"},
+	{"reported rekey target in another spelling of its address", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
+		r.RekeyTo = alternateSpelling(r.RekeyTo)
+	}, "invalid rekey_to"},
+	{"account in another spelling of the sender", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
+		r.Account = alternateSpelling(r.Account)
+	}, "is not the sender"},
 	{"reported rekey target is not an address", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
 		r.RekeyTo = "nonsense"
 	}, "invalid rekey_to"},
