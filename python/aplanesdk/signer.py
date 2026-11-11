@@ -571,6 +571,11 @@ class SendTimeoutError(SignerError):
         self.report = report
 
 
+class _CosignerDiscoveryTimeoutError(CosignerDiscoveryError, SendTimeoutError):
+    """Cosigner discovery ended by the call's time limit: both a discovery
+    error and a SendTimeoutError, as Go's error matches both."""
+
+
 class _AnswerLostError(SignerUnavailableError):
     """An approval-bearing request whose exchange failed, so no answer
     arrived. The signer may have acted on it. Raised in place of the plain
@@ -7424,7 +7429,9 @@ class SignerClient:
 
         ``timeout`` is a limit in seconds on the whole call; None waits as
         long as it takes. When it passes, SendTimeoutError is raised with the
-        last report made as its ``report`` (None when none was made yet).
+        last report made as its ``report`` (None when none was made yet). A
+        node failure is raised as a SignerError that carries the last report
+        the same way.
         """
         return _wait_for_outcome(algod_client, error, timeout)
 
@@ -7973,8 +7980,8 @@ _ENDPOINT_INVALID_METADATA = "invalid cosigner metadata"
 _ENDPOINT_CONFIGURATION_INVALID = "configuration invalid"
 
 
-def _witness_key_id(key_type: str, public_key: bytes) -> str:
-    """The Witness Key ID of a witness key: base32 (RFC 4648 alphabet,
+def witness_key_id(key_type: str, public_key: bytes) -> str:
+    """The 52-character Witness Key ID of a witness key: base32 (RFC 4648 alphabet,
     uppercase, no padding) of SHA-512/256 over the domain
     APLANE_WITNESS_KEY_ID_V1, the key type (UTF-8) and the raw public key,
     each prefixed by its length as a 4-byte big-endian integer. Key types are
@@ -8092,11 +8099,9 @@ class EndpointCosignerResolver:
         self._trust_on_first_use = trust_on_first_use
         self._ssh_setup_timeout = ssh_setup_timeout
         self._lock = threading.RLock()
+        # The last sweep, by alias; None before one, and after a sweep that
+        # failed.
         self._probes: Optional[Dict[str, _CosignerProbe]] = None
-        # Clients a resolve has returned, by id: still in use when a fresh
-        # sweep replaces them, so they are closed only with the resolver.
-        self._handed_out: set = set()
-        self._retired: List["SignerClient"] = []
         self._closed = False
         self._sweeps = 0
         # How an endpoint is connected; a test replaces it.
@@ -8119,33 +8124,37 @@ class EndpointCosignerResolver:
         public_key = _witness_public_key_hex(cosigner_public_key_hex)
         if public_key is None:
             raise CosignerDiscoveryError(
-                f"cosigner discovery: the cosigner public key {cosigner_public_key_hex!r} "
-                "is not hex"
+                f"cosigner discovery: the account's cosigner public key "
+                f'"{cosigner_public_key_hex}" is not valid hex'
             )
-        key_type = component_key_type if isinstance(component_key_type, str) else ""
+        if not component_key_type or not isinstance(component_key_type, str):
+            raise CosignerDiscoveryError("cosigner discovery: the account names no cosigner key type")
+        key_type = component_key_type
         with self._lock:
             if self._closed:
                 raise CosignerDiscoveryError("cosigner discovery: the resolver is closed")
-            if self._probes is not None and self._listing(self._probes, key_type, public_key):
-                return self._choose(self._probes, key_type, public_key)
-            # First use, or a key the kept sweep does not hold: one fresh sweep.
-            self._replace(self._sweep())
-            return self._choose(cast(Dict[str, _CosignerProbe], self._probes), key_type, public_key)
+            swept = False
+            if self._probes is None:
+                self._sweep()
+                swept = True
+            while True:
+                probes = cast(Dict[str, _CosignerProbe], self._probes)
+                listing = self._listing(probes, key_type, public_key)
+                if listing or swept:
+                    return self._choose(probes, listing, key_type, public_key)
+                # A key the kept sweep does not hold: one fresh sweep.
+                self._sweep()
+                swept = True
 
     def close(self) -> None:
         """Close every connection the resolver opened. It cannot be used
         after."""
         with self._lock:
             self._closed = True
-            clients = list(self._retired)
-            for probe in (self._probes or {}).values():
-                if probe.client is not None:
-                    clients.append(probe.client)
-            self._probes = None
-            self._retired = []
-            self._handed_out = set()
-        for client in clients:
-            client.close()
+            probes, self._probes = self._probes or {}, None
+        for probe in probes.values():
+            if probe.client is not None:
+                probe.client.close()
 
     def __enter__(self) -> "EndpointCosignerResolver":
         return self
@@ -8156,7 +8165,8 @@ class EndpointCosignerResolver:
 
     @staticmethod
     def _listing(probes: Dict[str, _CosignerProbe], key_type: str, public_key: str) -> List[str]:
-        """The aliases of the live endpoints that list the key, sorted."""
+        """The aliases of the live endpoints that list the key, sorted. A key
+        an endpoint lists twice counts once."""
         return [
             alias
             for alias in sorted(probes)
@@ -8164,11 +8174,11 @@ class EndpointCosignerResolver:
             and any(key[0] == key_type and key[1] == public_key for key in probes[alias].keys)
         ]
 
+    @staticmethod
     def _choose(
-        self, probes: Dict[str, _CosignerProbe], key_type: str, public_key: str
+        probes: Dict[str, _CosignerProbe], listing: List[str], key_type: str, public_key: str
     ) -> tuple:
-        key_id = _witness_key_id(key_type, bytes.fromhex(public_key))
-        listing = self._listing(probes, key_type, public_key)
+        key_id = witness_key_id(key_type, bytes.fromhex(public_key))
         if len(listing) > 1:
             names = ", ".join(f'"{alias}"' for alias in listing)
             raise CosignerDiscoveryError(
@@ -8185,26 +8195,15 @@ class EndpointCosignerResolver:
         address = next(
             key[2] for key in probe.keys if key[0] == key_type and key[1] == public_key
         )
-        client = cast("SignerClient", probe.client)
-        self._handed_out.add(id(client))
-        return client, address
+        return cast("SignerClient", probe.client), address
 
-    def _replace(self, probes: Dict[str, _CosignerProbe]) -> None:
-        """Keep a fresh sweep. The clients of the one it replaces are closed,
-        except those a resolve returned, which a send may still be using."""
-        old, self._probes = self._probes, probes
-        for probe in (old or {}).values():
-            if probe.client is None:
-                continue
-            if id(probe.client) in self._handed_out:
-                self._retired.append(probe.client)
-            else:
-                probe.client.close()
-
-    def _sweep(self) -> Dict[str, _CosignerProbe]:
-        """Probe every cosigner endpoint. A host key mismatch anywhere aborts
-        the sweep, and so does the call's own time limit passing; either way
-        every connection it opened is closed."""
+    def _sweep(self) -> None:
+        """Probe every cosigner endpoint and keep the result. An endpoint the
+        last sweep found live keeps its connection and is read again; if that
+        read fails, it is connected afresh. A connection the last sweep kept
+        and this one does not is closed. A host key mismatch anywhere ends
+        the sweep with that error, and so does the call's own time limit
+        passing; then nothing is kept and every connection is closed."""
         endpoints = {
             alias: endpoint
             for alias, endpoint in self._registry.endpoints.items()
@@ -8216,11 +8215,15 @@ class EndpointCosignerResolver:
             )
         if len(endpoints) > _MAX_COSIGNER_ENDPOINTS:
             raise CosignerDiscoveryError(
-                f"cosigner discovery: {CLIENT_ENDPOINTS_FILE} configures {len(endpoints)} "
-                f"cosigner endpoints; maximum is {_MAX_COSIGNER_ENDPOINTS}; remove or "
-                "consolidate endpoint profiles"
+                f"cosigner discovery: {CLIENT_ENDPOINTS_FILE} lists {len(endpoints)} cosigner "
+                f"endpoints; the limit is {_MAX_COSIGNER_ENDPOINTS}"
+            )
+        if _time_limit_passed():
+            raise _CosignerDiscoveryTimeoutError(
+                f"cosigner discovery: {_time_limit_error('before cosigner discovery')}"
             )
         self._sweeps += 1
+        previous, self._probes = self._probes or {}, None
         aliases = sorted(endpoints)
         sweep_deadline = time.monotonic() + _COSIGNER_SWEEP_TIMEOUT
         outer = _CALL_DEADLINE.get()
@@ -8238,9 +8241,12 @@ class EndpointCosignerResolver:
             deadline = (at, at - now)
             if outer is not None and outer[0] < at:
                 deadline = outer
+            earlier = previous.get(alias)
             token = _CALL_DEADLINE.set(deadline)
             try:
-                result = self._probe(alias, endpoints[alias])
+                result = self._probe(
+                    alias, endpoints[alias], earlier.client if earlier is not None else None
+                )
             finally:
                 _CALL_DEADLINE.reset(token)
             if result.host_key_mismatch:
@@ -8253,6 +8259,10 @@ class EndpointCosignerResolver:
                 pool.submit(contextvars.copy_context().run, probe, alias) for alias in aliases
             ]
             results = [future.result() for future in futures]
+        live = {id(result.client) for result in results if result.client is not None}
+        for earlier in previous.values():
+            if earlier.client is not None and id(earlier.client) not in live:
+                earlier.client.close()
         mismatch = next((result for result in results if result.host_key_mismatch), None)
         if mismatch is not None or _time_limit_passed():
             for result in results:
@@ -8263,11 +8273,27 @@ class EndpointCosignerResolver:
                     f'cosigner discovery: endpoint "{mismatch.alias}": '
                     f"{mismatch.host_key_mismatch}"
                 )
-            raise _time_limit_error("during cosigner discovery")
-        return {result.alias: result for result in results}
+            raise _CosignerDiscoveryTimeoutError(
+                f"cosigner discovery: {_time_limit_error('during cosigner discovery')}"
+            )
+        self._probes = {result.alias: result for result in results}
 
-    def _probe(self, alias: str, endpoint: ClientEndpointConfig) -> _CosignerProbe:
-        """Connect to one endpoint and read the witness keys it lists."""
+    def _probe(
+        self, alias: str, endpoint: ClientEndpointConfig, reuse: Optional["SignerClient"]
+    ) -> _CosignerProbe:
+        """Read the witness keys one endpoint lists: through its live
+        connection from the last sweep when there is one and it still
+        answers, else through a new one. A connection it does not keep is
+        closed by the sweep."""
+        if reuse is not None:
+            try:
+                return _CosignerProbe(
+                    alias, _ENDPOINT_OK, client=reuse, keys=_read_witness_keys(reuse)
+                )
+            except Exception as e:
+                if _time_limit_passed():
+                    state = e.state if isinstance(e, _ProbeFailed) else _ENDPOINT_UNREACHABLE
+                    return _CosignerProbe(alias, state, detail=str(e))
         client: Optional["SignerClient"] = None
         try:
             client = self._connect(endpoint)
@@ -8353,7 +8379,7 @@ def _read_witness_keys(client: "SignerClient") -> List[tuple]:
             raise _ProbeFailed(
                 _ENDPOINT_INVALID_METADATA, f"witness key {address!r} has no hex public key"
             )
-        key_id = _witness_key_id(record["key_type"], bytes.fromhex(public_key))
+        key_id = witness_key_id(record["key_type"], bytes.fromhex(public_key))
         if address != key_id:
             raise _ProbeFailed(
                 _ENDPOINT_INVALID_METADATA,
@@ -8468,7 +8494,10 @@ def _resolve_cosigner_for_target(
         else:
             client, component_key = resolved
         if client is None:
-            raise SignerError("cosigner resolver returned no client")
+            raise SignerError(
+                f"cosigner resolver returned no client for prepared transaction "
+                f"{target['target_index']}"
+            )
         return client, component_key or ""
     if cosigner_client is None:
         raise SignerError("cosigner_client or cosigner_resolver is required")
@@ -9681,7 +9710,7 @@ def _node_round(algod_client: Any) -> int:
         timeout = _timed_out("reading the node's current round", e)
         if timeout is not None:
             raise timeout from e
-        raise SignerError(f"read current round: {e}") from e
+        raise SignerError(f"read the node's current round: {e}") from e
 
 
 def _look_up_outcome(algod_client: Any, txid: str) -> tuple:
@@ -9740,7 +9769,7 @@ def _resolve_outcome(algod_client: Any, error: Any) -> OutcomeReport:
     rotating = None if submission else cast(SignOutcomeUnknownError, error).rotating
     if submission:
         tx_ids = list(cast(SubmissionUncertainError, error).tx_ids)
-        if not tx_ids:
+        if not tx_ids or not tx_ids[0]:
             raise SignerError("the error carries no transaction IDs")
     elif rotating is not None:
         try:
@@ -9752,7 +9781,7 @@ def _resolve_outcome(algod_client: Any, error: Any) -> OutcomeReport:
         # what it signed are not known, and there is nothing to look up.
         tx_ids = []
     if algod_client is None:
-        raise ValueError("algod_client is required")
+        raise ValueError("algod client is required")
 
     current = _node_round(algod_client)
     report = OutcomeReport(
@@ -9764,7 +9793,9 @@ def _resolve_outcome(algod_client: Any, error: Any) -> OutcomeReport:
         rotating=rotating,
     )
     lookup, confirmed_round = (
-        _look_up_outcome(algod_client, tx_ids[0]) if tx_ids else (_LOOKUP_NOT_FOUND, 0)
+        _look_up_outcome(algod_client, tx_ids[0])
+        if tx_ids and tx_ids[0]
+        else (_LOOKUP_NOT_FOUND, 0)
     )
     if lookup == _LOOKUP_CONFIRMED:
         report.state = OUTCOME_CONFIRMED
@@ -9803,14 +9834,15 @@ def _resolve_outcome(algod_client: Any, error: Any) -> OutcomeReport:
 
 
 def _wait_for_outcome(algod_client: Any, error: Any, timeout: Optional[float]) -> OutcomeReport:
-    """SignerClient.wait_for_outcome."""
+    """SignerClient.wait_for_outcome. An error raised once a report has been
+    made carries the last one as ``report``."""
     with _time_limit(timeout):
         report: Optional[OutcomeReport] = None
         while True:
             try:
                 report = _resolve_outcome(algod_client, error)
-            except SendTimeoutError as e:
-                e.report = report
+            except SignerError as e:
+                setattr(e, "report", report)
                 raise
             if report.state in _OUTCOME_FINAL:
                 return report
@@ -9826,7 +9858,9 @@ def _wait_for_outcome(algod_client: Any, error: Any, timeout: Optional[float]) -
                 if timed_out is not None:
                     timed_out.report = report
                     raise timed_out from e
-                raise SignerError(f"wait for round {report.current_round + 1}: {e}") from e
+                failed = SignerError(f"wait for round {report.current_round + 1}: {e}")
+                setattr(failed, "report", report)
+                raise failed from e
 
 
 def send_raw_transaction(algod_client, signed_txn: str) -> str:

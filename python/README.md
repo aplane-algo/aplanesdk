@@ -708,7 +708,11 @@ its `address` must be the Witness Key ID derived from its key type and public
 key, or the whole endpoint's listing is invalid. The witness key an account
 names must be listed by exactly one endpoint; the resolver then uses that
 endpoint's client, with the listed Witness Key ID as the component key. The
-sweep is kept, and a key it does not hold makes one fresh sweep.
+sweep is kept, and a key it does not hold makes one fresh sweep, which reads
+`/keys` again through the connections still live and reconnects the endpoints
+that had failed. `witness_key_id(key_type, public_key)` derives the ID: the
+unpadded base32 of SHA-512/256 over `APLANE_WITNESS_KEY_ID_V1`, the key type
+and the public key, each prefixed by its length as 4 bytes big-endian.
 
 Otherwise it raises `CosignerDiscoveryError` (a `SignerError`):
 
@@ -722,7 +726,13 @@ Otherwise it raises `CosignerDiscoveryError` (a `SignerError`):
 - no cosigner endpoint is configured: `cosigner discovery: endpoints.yaml
   lists no cosigner endpoint`;
 - any cosigner endpoint's SSH host key differs from the pinned one, needed or
-  not: `cosigner discovery: endpoint "<alias>": <the mismatch error>`.
+  not: `cosigner discovery: endpoint "<alias>": <the mismatch error>`, and
+  nothing from that sweep is kept;
+- the account's cosigner public key is not hex, or it names no cosigner key
+  type, or the resolver is closed, or a hand-built registry lists more than 12
+  cosigner endpoints, each with its own message;
+- the call's `timeout` passed during discovery: an error that is both a
+  `CosignerDiscoveryError` and a `SendTimeoutError`.
 
 The cosigned sequence resolves the cosigner of every target that cannot take
 the listed path (a spend, or a rekey of an account without a rekey list)

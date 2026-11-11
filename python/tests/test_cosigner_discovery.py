@@ -26,11 +26,8 @@ from aplanesdk import (
     SignerUnavailableError,
 )
 from aplanesdk import signer as signer_module
-from aplanesdk.signer import (
-    _SSHConfigError,
-    _SSHHostKeyMismatchError,
-    _witness_key_id,
-)
+from aplanesdk import witness_key_id
+from aplanesdk.signer import SendTimeoutError, _SSHConfigError, _SSHHostKeyMismatchError
 from tests import fake_signer
 from tests.send_fakes import HTTPFake, reply, truncated
 from tests.test_send import CosignedFixture, fakes  # noqa: F401 (fixture)
@@ -44,23 +41,23 @@ FIXTURE_PUBLIC = bytes.fromhex("aabb")
 
 def witness_record(public_key, key_type=WITNESS, address=None, public_key_hex=None):
     return {
-        "address": address if address is not None else _witness_key_id(key_type, public_key),
+        "address": address if address is not None else witness_key_id(key_type, public_key),
         "key_type": key_type,
         "public_key_hex": public_key_hex if public_key_hex is not None else public_key.hex(),
         "is_witness_key": True,
     }
 
 
-def test_witness_key_id_vectors():
+def testwitness_key_id_vectors():
     assert (
-        _witness_key_id(WITNESS, bytes(1793))
+        witness_key_id(WITNESS, bytes(1793))
         == "ROGAFDACF7ASC3EMZRWNKVM73NXHO4P6O4EB7ZXWER37SM63BMFQ"
     )
     assert (
-        _witness_key_id(WITNESS, bytes(i % 251 for i in range(1793)))
+        witness_key_id(WITNESS, bytes(i % 251 for i in range(1793)))
         == "HJPRU4QEGLKF7RD6FYHQSG4SFAADHULJYVCVFPSCMIYZLAYW5MNA"
     )
-    assert len(_witness_key_id(WITNESS, b"\x01")) == 52
+    assert len(witness_key_id(WITNESS, b"\x01")) == 52
 
 
 class Endpoint:
@@ -191,7 +188,7 @@ class TestChoosing:
         with net.resolver() as resolver:
             client, component_key = resolver.resolve(PUBLIC_B.hex(), WITNESS)
         assert client.alias == "beta"
-        assert component_key == _witness_key_id(WITNESS, PUBLIC_B)
+        assert component_key == witness_key_id(WITNESS, PUBLIC_B)
         # Each endpoint was connected with its own identity and known hosts.
         connected = {alias: (key, port, options) for alias, key, port, options in net.connects}
         assert connected["alpha"][0] == "/keys/alpha" and connected["alpha"][1] == 2222
@@ -208,7 +205,7 @@ class TestChoosing:
         with net.resolver() as resolver:
             client, component_key = resolver.resolve(PUBLIC_A.hex(), WITNESS)
             assert client.alias == "alpha"
-            assert component_key == _witness_key_id(WITNESS, PUBLIC_A)
+            assert component_key == witness_key_id(WITNESS, PUBLIC_A)
             client, _ = resolver.resolve(PUBLIC_B.hex().upper(), WITNESS)
             assert client.alias == "beta"
 
@@ -239,7 +236,7 @@ class TestChoosing:
                 "mid": Endpoint([witness_record(PUBLIC_B)]),
             }
         )
-        key_id = _witness_key_id(WITNESS, PUBLIC_A)
+        key_id = witness_key_id(WITNESS, PUBLIC_A)
         with net.resolver() as resolver, pytest.raises(CosignerDiscoveryError) as excinfo:
             resolver.resolve(PUBLIC_A.hex(), WITNESS)
         assert str(excinfo.value) == (
@@ -264,7 +261,7 @@ class TestChoosing:
                 "missing": Endpoint(answer=reply(404, {"error": "no such path"})),
             }
         )
-        key_id = _witness_key_id(WITNESS, PUBLIC_A)
+        key_id = witness_key_id(WITNESS, PUBLIC_A)
         with net.resolver() as resolver, pytest.raises(CosignerDiscoveryError) as excinfo:
             resolver.resolve(PUBLIC_A.hex(), WITNESS)
         # Registry order is not alias order; the message sorts by alias.
@@ -291,7 +288,7 @@ class TestChoosing:
             },
             extra={"badurl": ClientEndpointConfig(role="cosigner", url="ssh://:99999")},
         )
-        key_id = _witness_key_id(WITNESS, PUBLIC_A)
+        key_id = witness_key_id(WITNESS, PUBLIC_A)
         with net.resolver() as resolver, pytest.raises(CosignerDiscoveryError) as excinfo:
             resolver.resolve(PUBLIC_A.hex(), WITNESS)
         assert str(excinfo.value) == (
@@ -351,10 +348,44 @@ class TestChoosing:
         # The good endpoint's connection was closed with the aborted sweep.
         assert "good" in net.closed
 
-    def test_a_public_key_that_is_not_hex_is_refused(self, network):
+    @pytest.mark.parametrize("public_key", ["xyz", "abc", ""])
+    def test_a_required_public_key_that_is_not_hex_is_refused(self, network, public_key):
         net = network({"alpha": Endpoint([witness_record(PUBLIC_A)])})
-        with net.resolver() as resolver, pytest.raises(CosignerDiscoveryError, match="not hex"):
-            resolver.resolve("xyz", WITNESS)
+        with net.resolver() as resolver, pytest.raises(CosignerDiscoveryError) as excinfo:
+            resolver.resolve(public_key, WITNESS)
+        assert str(excinfo.value) == (
+            f'cosigner discovery: the account\'s cosigner public key "{public_key}" is not '
+            "valid hex"
+        )
+        assert net.connects == []
+
+    def test_a_required_key_type_is_needed(self, network):
+        net = network({"alpha": Endpoint([witness_record(PUBLIC_A)])})
+        with net.resolver() as resolver, pytest.raises(CosignerDiscoveryError) as excinfo:
+            resolver.resolve(PUBLIC_A.hex(), "")
+        assert str(excinfo.value) == "cosigner discovery: the account names no cosigner key type"
+        assert net.connects == []
+
+    def test_an_empty_listed_public_key_makes_the_listing_invalid(self, network):
+        net = network(
+            {
+                # Its address is even the Witness Key ID of an empty key.
+                "empty": Endpoint([witness_record(b"")]),
+                "ok": Endpoint([witness_record(PUBLIC_A)]),
+            }
+        )
+        with net.resolver() as resolver, pytest.raises(CosignerDiscoveryError) as excinfo:
+            resolver.resolve(PUBLIC_B.hex(), WITNESS)
+        assert str(excinfo.value).endswith(
+            'endpoints: "empty" invalid cosigner metadata, "ok" ok'
+        )
+
+    def test_a_key_listed_twice_by_one_endpoint_is_one_listing(self, network):
+        record = witness_record(PUBLIC_A)
+        net = network({"alpha": Endpoint([record, dict(record)])})
+        with net.resolver() as resolver:
+            client, _ = resolver.resolve(PUBLIC_A.hex(), WITNESS)
+        assert client.alias == "alpha"
 
     def test_the_errors_are_sdk_errors(self):
         assert issubclass(CosignerDiscoveryError, SignerError)
@@ -404,8 +435,34 @@ class TestLimits:
 
     def test_more_than_twelve_cosigner_endpoints_are_refused(self, network):
         net = network({f"e{index:02}": Endpoint([]) for index in range(13)})
-        with net.resolver() as resolver, pytest.raises(CosignerDiscoveryError, match="maximum is 12"):
+        with net.resolver() as resolver, pytest.raises(CosignerDiscoveryError) as excinfo:
             resolver.resolve(PUBLIC_A.hex(), WITNESS)
+        assert str(excinfo.value) == (
+            "cosigner discovery: endpoints.yaml lists 13 cosigner endpoints; the limit is 12"
+        )
+        assert net.connects == []
+
+    def test_the_calls_time_limit_ends_discovery(self, network):
+        net = network({"slow": Endpoint([witness_record(PUBLIC_A)], delay=1.0)})
+        with net.resolver() as resolver:
+            with signer_module._time_limit(0.3):
+                with pytest.raises(CosignerDiscoveryError) as excinfo:
+                    resolver.resolve(PUBLIC_A.hex(), WITNESS)
+            # It is the call's timeout as well as a discovery error, and
+            # nothing from that sweep is kept.
+            assert isinstance(excinfo.value, SendTimeoutError)
+            assert str(excinfo.value).startswith(
+                "cosigner discovery: the time limit of 0.3 seconds passed"
+            )
+            assert resolver._probes is None
+            assert "slow" in net.closed or net.clients == []
+
+    def test_a_time_limit_already_passed_connects_to_nothing(self, network):
+        net = network({"alpha": Endpoint([witness_record(PUBLIC_A)])})
+        with net.resolver() as resolver, signer_module._time_limit(0.01):
+            time.sleep(0.05)
+            with pytest.raises(SendTimeoutError, match="^cosigner discovery: "):
+                resolver.resolve(PUBLIC_A.hex(), WITNESS)
         assert net.connects == []
 
 
@@ -428,15 +485,54 @@ class TestCache:
             # error.
             with pytest.raises(CosignerDiscoveryError, match="no endpoint"):
                 resolver.resolve(PUBLIC_B.hex(), WITNESS)
-            assert alpha.key_reads == 2
+            assert alpha.key_reads == 2 and resolver._sweeps == 2
             # The new key appears: one more sweep finds it.
             alpha.keys.append(witness_record(PUBLIC_B))
             client, _ = resolver.resolve(PUBLIC_B.hex(), WITNESS)
-            assert alpha.key_reads == 3
-            # The client a resolve returned before is kept open until the
-            # resolver closes.
-            assert net.closed.count("alpha") == 1
-        assert net.closed.count("alpha") == 3
+            assert alpha.key_reads == 3 and resolver._sweeps == 3
+            # A live connection is read again, not reopened.
+            assert client is first
+            assert len(net.connects) == 1 and net.closed == []
+        assert net.closed == ["alpha"]
+
+    def test_a_fresh_sweep_reconnects_what_failed_and_closes_what_it_drops(self, network):
+        alpha = Endpoint([witness_record(PUBLIC_A)])
+        beta = Endpoint(connect_error=SignerUnavailableError("SSH tunnel failed"))
+        net = network({"alpha": alpha, "beta": beta})
+        with net.resolver() as resolver:
+            resolver.resolve(PUBLIC_A.hex(), WITNESS)
+            # beta comes up and lists the key; alpha's connection stops
+            # answering, so the fresh sweep connects to it again.
+            beta.connect_error = None
+            beta.keys = [witness_record(PUBLIC_B)]
+            alpha.answer = reply(500, {"error": "gone"})
+            client, _ = resolver.resolve(PUBLIC_B.hex(), WITNESS)
+            assert client.alias == "beta"
+            connected = [alias for alias, *_ in net.connects]
+            assert sorted(connected) == ["alpha", "alpha", "beta", "beta"]
+            # The old alpha connection was closed, and so was the new one,
+            # which did not answer either.
+            assert net.closed == ["alpha", "alpha"]
+        assert sorted(net.closed) == ["alpha", "alpha", "beta"]
+
+    def test_nothing_from_a_mismatched_sweep_is_kept(self, network):
+        mismatch = _SSHHostKeyMismatchError("SSH host key mismatch for rogue.example:2222")
+        net = network(
+            {
+                "good": Endpoint([witness_record(PUBLIC_A)]),
+                "rogue": Endpoint(connect_error=mismatch),
+                "zrogue": Endpoint(connect_error=_SSHHostKeyMismatchError("second mismatch")),
+            }
+        )
+        with net.resolver() as resolver:
+            with pytest.raises(CosignerDiscoveryError, match='endpoint "rogue"'):
+                resolver.resolve(PUBLIC_A.hex(), WITNESS)
+            assert resolver._probes is None
+            net.endpoints["rogue"].connect_error = None
+            net.endpoints["zrogue"].connect_error = None
+            client, _ = resolver.resolve(PUBLIC_A.hex(), WITNESS)
+            assert client.alias == "good"
+            assert [alias for alias, *_ in net.connects].count("good") == 2
 
     def test_close_closes_every_connection(self, network):
         net = network(
@@ -518,7 +614,7 @@ class TestCosignedFlow:
         result = fixture.send()
         assert result.signed_group
         (request,) = cosigner.components
-        assert request["targets"][0]["component_key"] == _witness_key_id(WITNESS, FIXTURE_PUBLIC)
+        assert request["targets"][0]["component_key"] == witness_key_id(WITNESS, FIXTURE_PUBLIC)
         # It connects as the signer client was created.
         options = net.connects[0][3]
         assert options["timeout"] == 7
@@ -601,3 +697,159 @@ class TestCosignedFlow:
         assert fixture.send().signed_group
         assert len(seen) == 1 and "/sign/component" in seen[0]
         assert len(cosigner.components) == 1
+
+
+def _cosigned_key(address, public_key_hex):
+    from aplanesdk import (
+        SIGNING_FLOW_COSIGNED1,
+        BoundedAuthorizationInfo,
+        BoundedCosignerAuthorizationInfo,
+        BoundedSignatureArgLayout,
+        KeyInfo,
+        LogicSigResourceProfile,
+        LogicSigResourceUsage,
+    )
+
+    return KeyInfo(
+        address=address,
+        key_type="aplane.falcon1024.v1",
+        signing_flow=SIGNING_FLOW_COSIGNED1,
+        cosigner_component_key_type=WITNESS,
+        logic_sig_resources=LogicSigResourceProfile(spend=LogicSigResourceUsage(5308, 3358, 20000)),
+        bounded_authorization=BoundedAuthorizationInfo(
+            contract="plain1",
+            base_signature_arg_layout=BoundedSignatureArgLayout(count=1, max_sizes=[1280]),
+            spend_effects=[],
+            max_fee=None,
+            rekey="refused",
+            runtime_args=[],
+            derived_args=[],
+            argument_layout=[],
+            layer3_policy="",
+            cosigner=BoundedCosignerAuthorizationInfo(
+                contract="cosigner1", component_key_type=WITNESS, public_key_hex=public_key_hex
+            ),
+        ),
+    )
+
+
+class TestCosignedOrder:
+    """Two cosigned accounts with different cosigners: the cosigners are
+    resolved in (key type, public key) order, and asked in the order of
+    their first target position."""
+
+    def _run(self, resolver):
+        from unittest.mock import MagicMock
+
+        from algosdk import transaction
+
+        from aplanesdk import (
+            AssemblyResponse,
+            ComponentResponse,
+            PreparedGroup,
+            PreparedTransaction,
+            sign_prepared_cosigned_group,
+        )
+        from tests.test_send import _signed_group_for
+
+        first = fake_signer.test_address(61)
+        second = fake_signer.test_address(62)
+        params = transaction.SuggestedParams(
+            1000, 1, 100, "A" * 43 + "=", "testnet-v1.0", flat_fee=True
+        )
+        txns = transaction.assign_group_id(
+            [
+                transaction.PaymentTxn(first, params, fake_signer.test_address(63), 1),
+                transaction.PaymentTxn(second, params, fake_signer.test_address(63), 2),
+            ]
+        )
+        user = SignerClient("http://127.0.0.1:9")
+        user.list_keys_if_keyset_changed = MagicMock(
+            return_value=[_cosigned_key(first, "bbbb"), _cosigned_key(second, "aaaa")]
+        )
+        user.plan_requests = MagicMock(
+            side_effect=lambda requests: {
+                "transactions": [request["txn_bytes_hex"] for request in requests]
+            }
+        )
+        user.request_components = MagicMock(
+            return_value=ComponentResponse(
+                request_id="base-id",
+                components=[
+                    {
+                        "target_index": index,
+                        "kind": "bounded-base",
+                        "auth_address": account,
+                        "base_signatures": ["base-sig"],
+                        "assembly_receipt": "receipt",
+                        "signature_scheme": "aplane.falcon1024.v1",
+                        "path": "spend",
+                    }
+                    for index, account in enumerate((first, second))
+                ],
+            )
+        )
+        user.request_assemble = MagicMock(
+            side_effect=lambda request: AssemblyResponse(
+                request_id="assembly-id",
+                signed_group=_signed_group_for(request.group_bytes_hex),
+            )
+        )
+        asked = []
+
+        def cosigner(name):
+            client = SignerClient(f"http://{name}:9")
+
+            def answer(request):
+                asked.append(name)
+                return ComponentResponse(
+                    request_id=f"{name}-id",
+                    components=[
+                        {
+                            "kind": "cosigner",
+                            "target_index": target["target_index"],
+                            "signature": "sig",
+                            "signature_scheme": WITNESS,
+                        }
+                        for target in request.targets
+                    ],
+                )
+
+            client.request_components = MagicMock(side_effect=answer)
+            return client
+
+        clients = {"bbbb": cosigner("b"), "aaaa": cosigner("a")}
+        resolved = []
+
+        def resolve(target):
+            resolved.append(target["cosigner_public_key_hex"])
+            return resolver(target, clients)
+
+        prepared = PreparedGroup(
+            [
+                PreparedTransaction(transaction=txns[0], auth_address=first),
+                PreparedTransaction(transaction=txns[1], auth_address=second),
+            ]
+        )
+        result = sign_prepared_cosigned_group(
+            user_client=user, prepared_group=prepared, cosigner_resolver=resolve
+        )
+        return result, resolved, asked
+
+    def test_resolution_and_request_order(self):
+        _, resolved, asked = self._run(
+            lambda target, clients: (clients[target["cosigner_public_key_hex"]], "KEY")
+        )
+        assert resolved == ["aaaa", "bbbb"]
+        assert asked == ["b", "a"]
+
+    def test_a_resolver_that_returns_no_client(self):
+        with pytest.raises(SignerError) as excinfo:
+            self._run(
+                lambda target, clients: (None, "KEY")
+                if target["cosigner_public_key_hex"] == "bbbb"
+                else (clients["aaaa"], "KEY")
+            )
+        assert str(excinfo.value) == (
+            "cosigner resolver returned no client for prepared transaction 0"
+        )

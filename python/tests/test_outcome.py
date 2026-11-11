@@ -279,12 +279,33 @@ class TestRefusals:
         assert str(excinfo.value) == "the error carries no last valid round"
         assert algod.calls == []
 
-    def test_a_submission_without_ids_is_refused(self, node):
+    @pytest.mark.parametrize("tx_ids", [(), ("",), ("", "SECOND")])
+    def test_a_submission_without_ids_is_refused(self, node, tx_ids):
         algod = node(10)
         with pytest.raises(SignerError) as excinfo:
-            client().resolve_outcome(algod.client, submission_error(tx_ids=()))
+            client().resolve_outcome(algod.client, submission_error(tx_ids=tx_ids))
         assert str(excinfo.value) == "the error carries no transaction IDs"
         assert algod.calls == []
+
+    def test_the_order_of_the_checks(self):
+        # Type, then last valid round, then IDs, then the algod client.
+        with pytest.raises(SignerError, match="^not an uncertain outcome$"):
+            client().resolve_outcome(None, None)
+        with pytest.raises(SignerError, match="no last valid round"):
+            client().resolve_outcome(None, submission_error(last_valid=0, tx_ids=()))
+        with pytest.raises(SignerError, match="no transaction IDs"):
+            client().resolve_outcome(None, submission_error(tx_ids=()))
+        for error in (submission_error(), sign_error()):
+            with pytest.raises(ValueError, match="^algod client is required$"):
+                client().resolve_outcome(None, error)
+
+    def test_a_rotating_group_whose_first_id_is_empty_is_not_looked_up(self, node):
+        algod = node(990, CONFIRMED)
+        error = sign_error(rotating=True)
+        error.rotating = type("Prepared", (), {"tx_ids": ["", "DUMMY"]})()
+        report = client().resolve_outcome(algod.client, error)
+        assert report.state == OUTCOME_SIGNABLE and report.tx_ids == ["", "DUMMY"]
+        assert algod.lookups() == []
 
     @pytest.mark.parametrize(
         "options,error",
@@ -351,10 +372,32 @@ class TestWaitForOutcome:
         assert time.monotonic() - started < 1.2
         assert excinfo.value.report.state == OUTCOME_SIGNABLE
 
-    def test_a_failed_wait_is_an_error(self, node):
+    def test_a_failed_wait_is_an_error_with_the_last_report(self, node):
         algod = node(900, wait=lambda: reply(500, {"message": "down"}))
-        with pytest.raises(SignerError, match="wait for round 901"):
+        with pytest.raises(SignerError, match="wait for round 901") as excinfo:
             client().wait_for_outcome(algod.client, sign_error())
+        assert excinfo.value.report.state == OUTCOME_SIGNABLE
+        assert excinfo.value.report.current_round == 900
+
+    def test_a_node_failure_after_a_report_carries_it(self, node):
+        algod = node(900)
+        checks = []
+
+        def lookup(current):
+            checks.append(current)
+            return IN_POOL if len(checks) == 1 else NODE_FAILS
+
+        algod.lookup = lookup
+        with pytest.raises(SignerError, match="look up transaction FIRSTID") as excinfo:
+            client().wait_for_outcome(algod.client, submission_error(), timeout=10)
+        assert excinfo.value.report.state == OUTCOME_PENDING
+        assert excinfo.value.report.current_round == 900
+
+    def test_a_first_failure_carries_no_report(self, node):
+        algod = node(900, status=NODE_FAILS)
+        with pytest.raises(SignerError, match="read the node's current round") as excinfo:
+            client().wait_for_outcome(algod.client, sign_error())
+        assert excinfo.value.report is None
 
     def test_a_bad_time_limit_is_refused(self, node):
         algod = node(900)

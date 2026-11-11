@@ -32,6 +32,7 @@ from .signer import (
 
     # Cosigner discovery
     EndpointCosignerResolver,
+    witness_key_id,
 
     # Unified sending and rotating accounts
     SendResult,
@@ -178,6 +179,7 @@ __all__ = [
 
     # Cosigner discovery
     "EndpointCosignerResolver",
+    "witness_key_id",
 
     # Unified sending and rotating accounts
     "SendResult",
