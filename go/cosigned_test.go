@@ -4,6 +4,7 @@
 package aplane
 
 import (
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -281,4 +282,76 @@ func signCosignedWithHeldKeys(opts PreparedCosignedGroupOptions) (*CosignedSignR
 		opts.UserClient.keyMu.Unlock()
 	}
 	return SignPreparedCosignedGroup(opts)
+}
+
+// cosignedDummyProgramOpcodes holds exactly the opcodes the dummy program
+// uses: the immediate bytes each takes and its cost, which is 1 in every AVM
+// version. None branches, so a program built only from them is straight-line
+// and the sum of its opcode costs is the cost of every run. An opcode missing
+// here fails the test rather than being guessed at.
+var cosignedDummyProgramOpcodes = map[byte]struct {
+	name       string
+	immediates int
+	cost       uint64
+	fields     map[byte]string
+}{
+	0x12: {name: "==", cost: 1},
+	0x31: {name: "txn", immediates: 1, cost: 1, fields: map[byte]string{32: "RekeyTo"}},
+	0x32: {name: "global", immediates: 1, cost: 1, fields: map[byte]string{3: "ZeroAddress"}},
+}
+
+func TestCosignedDummyOpcodeCostMatchesProgram(t *testing.T) {
+	program := cosignedDummyProgram
+	version, pc := binary.Uvarint(program)
+	if pc <= 0 || version != 3 {
+		t.Fatalf("dummy program version = %d (prefix %d bytes), want 3", version, pc)
+	}
+	var cost uint64
+	var listing []string
+	for pc < len(program) {
+		op, ok := cosignedDummyProgramOpcodes[program[pc]]
+		if !ok {
+			t.Fatalf("dummy program opcode 0x%02x at pc %d has no cost in this test's table", program[pc], pc)
+		}
+		if pc+1+op.immediates > len(program) {
+			t.Fatalf("dummy program opcode %s at pc %d is truncated", op.name, pc)
+		}
+		text := op.name
+		if op.immediates == 1 {
+			field, known := op.fields[program[pc+1]]
+			if !known {
+				t.Fatalf("dummy program %s field %d at pc %d is not in this test's table", op.name, program[pc+1], pc)
+			}
+			text += " " + field
+		}
+		listing = append(listing, text)
+		cost += op.cost
+		pc += 1 + op.immediates
+	}
+	if got, want := strings.Join(listing, "; "), "txn RekeyTo; global ZeroAddress; =="; got != want {
+		t.Fatalf("dummy program = %q, want %q", got, want)
+	}
+	if cost != cosignedDummyOpcodeCost {
+		t.Fatalf("dummy program costs %d, cosignedDummyOpcodeCost is %d", cost, cosignedDummyOpcodeCost)
+	}
+}
+
+// The signer plans one LogicSig declaring 39,999 with two dummies, not one:
+// counted at the program's real 3, one dummy leaves the group at 40,002, over
+// two transactions' 40,000, and two give 40,005 within three transactions'
+// 60,000. apsigner's planner tests pin the same case. The SDK declares each
+// dummy it hands back at /sign the same way, so the signer re-plans the frozen
+// group at the size it planned it.
+func TestCosignedDummyDeclarationCountsTheProgramCost(t *testing.T) {
+	dummy := cosignedDummyLogicSigResources()
+	if dummy.ProgramBytes != uint64(len(cosignedDummyProgram)) || dummy.ArgumentBytes != 0 || dummy.MaxOpcodeCost != cosignedDummyOpcodeCost {
+		t.Fatalf("dummy declaration = %+v, want the program's %d bytes, no arguments and cost %d", dummy, len(cosignedDummyProgram), cosignedDummyOpcodeCost)
+	}
+	const target, perTransaction = 39_999, 20_000
+	if total := target + dummy.MaxOpcodeCost; total != 40_002 || total <= 2*perTransaction {
+		t.Fatalf("one LogicSig at %d and one dummy declare %d, want 40002, over two transactions' budget", target, total)
+	}
+	if total := target + 2*dummy.MaxOpcodeCost; total != 40_005 || total > 3*perTransaction {
+		t.Fatalf("one LogicSig at %d and two dummies declare %d, want 40005, within three transactions' budget", target, total)
+	}
 }

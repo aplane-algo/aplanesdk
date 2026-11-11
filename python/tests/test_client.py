@@ -3899,3 +3899,68 @@ def test_bounded_authorization_parses_an_absent_fee_ceiling():
     assert info is not None and info.max_fee is None
     with pytest.raises(SignerError, match="non-negative integer"):
         _parse_bounded_authorization({"contract": "bounded2", "max_fee": -1})
+
+
+# Exactly the opcodes the dummy program uses: the immediate bytes each takes and
+# its cost, which is 1 in every AVM version. None branches, so a program built
+# only from them is straight-line and the sum of its opcode costs is the cost of
+# every run. An opcode missing here fails the test rather than being guessed at.
+_DUMMY_PROGRAM_OPCODES = {
+    0x12: ("==", 0, 1, {}),
+    0x31: ("txn", 1, 1, {32: "RekeyTo"}),
+    0x32: ("global", 1, 1, {3: "ZeroAddress"}),
+}
+
+
+def test_dummy_opcode_cost_is_derived_from_the_program():
+    from aplanesdk.signer import COSIGNED_DUMMY_OPCODE_COST, COSIGNED_DUMMY_PROGRAM
+
+    program = COSIGNED_DUMMY_PROGRAM
+    # A version below 128 is a one-byte varuint.
+    assert program[0] == 3, "dummy program version"
+    cost = 0
+    listing = []
+    pc = 1
+    while pc < len(program):
+        op = _DUMMY_PROGRAM_OPCODES.get(program[pc])
+        assert op is not None, f"dummy program opcode {program[pc]:#04x} at pc {pc} has no cost in this test's table"
+        name, immediates, op_cost, fields = op
+        assert pc + 1 + immediates <= len(program), f"dummy program opcode {name} at pc {pc} is truncated"
+        text = name
+        if immediates == 1:
+            field = fields.get(program[pc + 1])
+            assert field is not None, f"dummy program {name} field {program[pc + 1]} at pc {pc} is not in this test's table"
+            text += f" {field}"
+        listing.append(text)
+        cost += op_cost
+        pc += 1 + immediates
+    assert "; ".join(listing) == "txn RekeyTo; global ZeroAddress; =="
+    assert cost == COSIGNED_DUMMY_OPCODE_COST
+
+
+def test_cosigned_dummy_declaration_counts_the_program_cost():
+    """The signer plans one LogicSig declaring 39,999 with two dummies, not one.
+
+    Counted at the program's real 3, one dummy leaves the group at 40,002, over
+    two transactions' 40,000, and two give 40,005 within three transactions'
+    60,000. apsigner's planner tests pin the same case. The SDK declares each
+    dummy it hands back at /sign the same way, so the signer re-plans the frozen
+    group at the size it planned it.
+    """
+    from aplanesdk.signer import (
+        COSIGNED_DUMMY_OPCODE_COST,
+        COSIGNED_DUMMY_PROGRAM,
+        _cosigned_dummy_lsig_resources,
+    )
+
+    dummy = _cosigned_dummy_lsig_resources()
+    assert dummy == LogicSigResourceUsage(
+        program_bytes=len(COSIGNED_DUMMY_PROGRAM),
+        argument_bytes=0,
+        max_opcode_cost=COSIGNED_DUMMY_OPCODE_COST,
+    )
+    target, per_transaction = 39_999, 20_000
+    one_dummy = target + dummy.max_opcode_cost
+    assert one_dummy == 40_002 and one_dummy > 2 * per_transaction
+    two_dummies = target + 2 * dummy.max_opcode_cost
+    assert two_dummies == 40_005 and two_dummies <= 3 * per_transaction

@@ -111,6 +111,10 @@ MAX_COMPONENT_GROUP_SIZE = 16
 APP_CALL_MAX_APP_ARGS = 16
 APP_CALL_METHOD_ARGS_TUPLE_THRESHOLD = APP_CALL_MAX_APP_ARGS - 2
 COSIGNED_DUMMY_PROGRAM = bytes.fromhex("033120320312")
+# Opcode cost of one run of COSIGNED_DUMMY_PROGRAM: txn RekeyTo, global
+# ZeroAddress and ==, three opcodes costing 1 each, with no branch. It matches
+# apsigner's signing.DummyOpcodeCost. A test derives it from the program bytes.
+COSIGNED_DUMMY_OPCODE_COST = 3
 PQ_SCHEME_FALCON1024 = "f1"
 
 AUTHORIZATION_KIND_ED25519 = "ed25519"
@@ -2076,7 +2080,7 @@ def _cosigned_dummy_lsig_resources() -> LogicSigResourceUsage:
     return LogicSigResourceUsage(
         program_bytes=len(COSIGNED_DUMMY_PROGRAM),
         argument_bytes=0,
-        max_opcode_cost=1,
+        max_opcode_cost=COSIGNED_DUMMY_OPCODE_COST,
     )
 
 
