@@ -70,6 +70,17 @@ func main() {
 		if errors.As(err, &uncertain) {
 			log.Fatalf("Outcome unknown for %v (%s); look it up before sending again: %v", uncertain.TxIDs, uncertain.Stage, err)
 		}
+		// The sign answer was lost, so the signer may have released a
+		// signature. Do not build and sign a replacement: both could execute.
+		// Sign the same prepared group again (a rotating account's is in
+		// Rotating, for SignPreparedRotating), or check the chain first.
+		var unknown *aplane.SignOutcomeUnknownError
+		if errors.As(err, &unknown) {
+			if unknown.Rotating != nil {
+				log.Printf("Prepared rotating group: %v", unknown.Rotating.TxIDs())
+			}
+			log.Fatalf("Sign outcome unknown (request %q); re-sign the same group or check the chain, never sign a replacement: %v", unknown.RequestID, err)
+		}
 		log.Fatalf("Failed to send: %v", err)
 	}
 
