@@ -13,6 +13,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1152,29 +1153,55 @@ func TestSendPreparedRotatingStopsBeforeSigning(t *testing.T) {
 		signer, node, client, algodClient, txn := newRotatingFixture(t)
 		node.simulate = func(w http.ResponseWriter) { w.Write([]byte(`{"last-round":10,"version":2}`)) }
 		_, err := client.SendPrepared(context.Background(), algodClient, rotatingGroup(txn), nil)
-		if err == nil || !strings.Contains(err.Error(), "nothing was signed") || signer.count("/sign/rotating/sign") != 0 {
+		var preflight *RotatingPreflightError
+		if !errors.As(err, &preflight) || !strings.Contains(err.Error(), "no result for the group") || signer.count("/sign/rotating/sign") != 0 {
 			t.Fatalf("error = %v, sign calls %d", err, signer.count("/sign/rotating/sign"))
 		}
 	})
 	t.Run("context ended after simulation", func(t *testing.T) {
 		signer, node, client, algodClient, txn := newRotatingFixture(t)
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		// A context that reports itself ended once the simulation has been
+		// answered, without interrupting the requests already made.
+		ctx := &endsAfter{Context: context.Background()}
 		node.simulate = func(w http.ResponseWriter) {
 			json.NewEncoder(w).Encode(map[string]any{"last-round": 10, "version": 2, "txn-groups": []map[string]any{{}}})
-			w.(http.Flusher).Flush()
-			time.Sleep(20 * time.Millisecond) // let the client read the answer
-			cancel()
+			ctx.ended.Store(true)
 		}
 		_, err := client.SendPrepared(ctx, algodClient, rotatingGroup(txn), nil)
 		var unknown *SignOutcomeUnknownError
-		if err == nil || errors.As(err, &unknown) {
+		if !errors.Is(err, context.Canceled) || errors.As(err, &unknown) {
 			t.Fatalf("error = %v, want a plain stop, not an unknown sign outcome", err)
 		}
-		if signer.count("/sign/rotating/sign") != 0 {
-			t.Fatalf("a sign request went out after the context ended")
+		if len(node.simulations()) != 1 || signer.count("/sign/rotating/sign") != 0 {
+			t.Fatalf("simulations %d, sign calls %d; want 1 and 0", len(node.simulations()), signer.count("/sign/rotating/sign"))
 		}
 	})
+	t.Run("the steps report an empty simulation answer as failed", func(t *testing.T) {
+		_, node, client, algodClient, txn := newRotatingFixture(t)
+		node.simulate = func(w http.ResponseWriter) { w.Write([]byte(`{"last-round":10,"version":2}`)) }
+		prepared, err := client.PrepareRotating(context.Background(), txn, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		simulation, err := client.SimulatePreparedRotating(context.Background(), algodClient, prepared)
+		if err != nil || !simulation.Failed {
+			t.Fatalf("SimulatePreparedRotating() = %+v, %v; want Failed", simulation, err)
+		}
+	})
+}
+
+// endsAfter is a context whose Err reports cancellation once ended is set.
+// Its Done channel never closes, so requests in flight are not interrupted.
+type endsAfter struct {
+	context.Context
+	ended atomic.Bool
+}
+
+func (c *endsAfter) Err() error {
+	if c.ended.Load() {
+		return context.Canceled
+	}
+	return nil
 }
 
 func TestSignPreparedRotatingAnswerClassification(t *testing.T) {
@@ -1261,5 +1288,41 @@ func TestResolveAuthAddressReportsTheChainAuthorizer(t *testing.T) {
 	own, err := client.ResolveAuthAddress(context.Background(), sender, func(context.Context, string) (string, error) { return "", nil })
 	if err != nil || own.ChainAuthAddress != "" || own.AuthAddress != sender || own.IsRekeyed {
 		t.Fatalf("self-signing = %+v, %v", own, err)
+	}
+}
+
+func TestSendPreparedRotatingWidensTheWindowAfterATimingRefusal(t *testing.T) {
+	signer, node, client, algodClient, _ := newRotatingFixture(t)
+	signer.signErrors = []*ErrorResponse{rotatingRefusal(ErrCodeRotatingWindowNotCurrent, "too few rounds remain")}
+	node.round = 40
+	// A 12-round window is current, and leaves the operator two rounds.
+	result, err := client.SendPrepared(context.Background(), algodClient, rotatingGroup(rotatingPayment(t, signer.account, 40, 52)), &SendOptions{RefreshValidity: true})
+	if err != nil || result.Rotating.Attempts != 2 {
+		t.Fatalf("SendPrepared() = %+v, %v", result, err)
+	}
+	first, second := signer.prepareSeen[0], signer.prepareSeen[1]
+	if first.LastValid-first.FirstValid != 12 {
+		t.Fatalf("a current window was changed before the first attempt: %d-%d", first.FirstValid, first.LastValid)
+	}
+	if second.LastValid-second.FirstValid != RotatingMaxValidityWindow {
+		t.Fatalf("after a timing refusal the window is %d rounds, want the longest", second.LastValid-second.FirstValid)
+	}
+}
+
+func TestSignPreparedRotatingWithAnEndedContextSendsNothing(t *testing.T) {
+	signer, _, client, _, txn := newRotatingFixture(t)
+	prepared, err := client.PrepareRotating(context.Background(), txn, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = client.SignPreparedRotating(ctx, prepared, nil)
+	var unknown *SignOutcomeUnknownError
+	if !errors.Is(err, context.Canceled) || errors.As(err, &unknown) {
+		t.Fatalf("error = %v, want a plain context error", err)
+	}
+	if signer.count("/sign/rotating/sign") != 0 {
+		t.Fatalf("a sign request went out on an ended context")
 	}
 }

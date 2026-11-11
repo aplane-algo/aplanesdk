@@ -1220,6 +1220,12 @@ func (c *SignerClient) postApproval(ctx context.Context, path, requestID string,
 	}
 	req.Header.Set("Content-Type", "application/json")
 
+	// A context that has already ended sends nothing, so it is a plain stop
+	// and not an exchange whose outcome is unknown.
+	if err := reqCtx.Err(); err != nil {
+		close(done)
+		return err
+	}
 	resp, err := c.client.Do(req)
 	close(done)
 	if err != nil {

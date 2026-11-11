@@ -404,8 +404,9 @@ and `SendPayment` run the whole sequence:
    rekey, a reported fee raise within your max fee increase, the group ID and
    canonical dummies.
 3. **Simulate, unsigned,** through your algod. A group that fails returns
-   `*RotatingPreflightError`; a simulation that cannot be run returns a plain
-   error. Either way no one-time key has been used.
+   `*RotatingPreflightError`, as does an answer with no result for the
+   group; a simulation that cannot be run returns a plain error. Either way
+   no one-time key has been used.
 4. **Sign,** with operator approval, then check the signed group is exactly
    the prepared one.
 5. **Submit at once** and wait for confirmation. `SendResult.Rotating` reports
@@ -430,7 +431,8 @@ What to know:
   (`rotating_stage_unproven`, `rotating_stage_changed`,
   `rotating_window_not_current`), the send prepares again, up to three
   attempts. Each attempt needs approval again. A timing refusal is retried
-  only when the rounds may be rebuilt.
+  only when the rounds may be rebuilt, and the retry uses the longest window
+  to give the operator time.
 - **The SDK cannot derive stage addresses.** It binds the next stage's
   address the signer reports to the prepared transaction; the signer derives
   it again from the seed before it signs.
@@ -465,7 +467,9 @@ do not prepare a replacement until the first attempt's outcome is known:
 
 A rotating account that was rekeyed to an ordinary key the signer holds has
 left rotation. The `Prepare*` helpers name that key as its `AuthAddress`, and
-it is then signed like any rekeyed account. Recovery of an unknown stage is an
+it is then signed like any rekeyed account. `SendPrepared` confirms the rekey
+on the chain first, so an ordinary key is never asked to sign for an account
+that is still rotating. Recovery of an unknown stage is an
 operator action (`rotate recover` in apshell).
 
 ### Config Helpers

@@ -82,6 +82,8 @@ type sendAlgod struct {
 	// pending answers the pending-transaction lookup; nil confirms in round 12.
 	pending func() models.PendingTransactionInfoResponse
 
+	// authAddrs is the chain's auth address per account, for account lookups.
+	authAddrs map[string]string
 	// simulate answers the simulate endpoint; nil reports success.
 	simulate func(w http.ResponseWriter)
 	// round is the node's current round; zero means 10.
@@ -144,6 +146,13 @@ func (a *sendAlgod) handle(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]uint64{"last-round": a.currentRound()})
 	case r.URL.Path == "/v2/status":
 		json.NewEncoder(w).Encode(map[string]uint64{"last-round": a.currentRound()})
+	case strings.HasPrefix(r.URL.Path, "/v2/accounts/"):
+		address := strings.TrimPrefix(r.URL.Path, "/v2/accounts/")
+		account := map[string]any{"address": address, "amount": 5_000_000, "min-balance": 100_000}
+		if auth := a.authAddrs[address]; auth != "" {
+			account["auth-addr"] = auth
+		}
+		json.NewEncoder(w).Encode(account)
 	case r.URL.Path == "/v2/transactions/params":
 		var genesisHash types.Digest
 		genesisHash[0] = 7
@@ -413,7 +422,7 @@ func TestClassifySendRoutesWholeGroup(t *testing.T) {
 				{Address: second.Sender.String(), SigningFlow: tt.secondFlow},
 			}}
 			client, _ := newSendFixture(t, signer, &sendAlgod{})
-			flow, err := client.classifySend(context.Background(), group)
+			flow, _, err := client.classifySend(context.Background(), group)
 			if err != nil || flow != tt.wantGroupAs {
 				t.Fatalf("classifySend() = %q, %v; want %q", flow, err, tt.wantGroupAs)
 			}
@@ -953,27 +962,52 @@ func TestSendPreparedCosignedLostAnswers(t *testing.T) {
 }
 
 // A rotating account rekeyed to an ordinary key the signer holds has left
-// rotation: that key signs for it through the ordinary flow.
+// rotation: that key signs for it through the ordinary flow, once the chain
+// confirms the rekey.
 func TestSendPreparedRoutesAnAccountThatLeftRotationByItsKey(t *testing.T) {
 	txn := verifyTestPayment(t, 41, 42, 1)
+	sender := txn.Sender.String()
 	holder := fakeAccount(45)
-	signer := &sendSigner{keys: []KeyInfo{{Address: txn.Sender.String(), SigningFlow: SigningFlowRotating1}, {Address: holder, KeyType: "ed25519"}}}
-	node := &sendAlgod{}
-	client, algodClient := newSendFixture(t, signer, node)
+	keys := []KeyInfo{{Address: sender, SigningFlow: SigningFlowRotating1}, {Address: holder, KeyType: "ed25519"}}
+	group := NewPreparedGroup(PreparedTransaction{Transaction: &txn, AuthAddress: holder})
 
-	result, err := client.SendPrepared(context.Background(), algodClient, NewPreparedGroup(PreparedTransaction{Transaction: &txn, AuthAddress: holder}), nil)
-	if err != nil || result.Flow != "" || signer.count("/sign") != 1 {
-		t.Fatalf("SendPrepared() = %+v, %v; want the ordinary flow", result, err)
-	}
-	var sent types.SignedTxn
-	if err := msgpack.Decode(node.submissions()[0], &sent); err != nil {
-		t.Fatal(err)
-	}
-	if sent.AuthAddr.String() != holder {
-		t.Fatalf("signed by %s, want the key the position named", sent.AuthAddr)
+	t.Run("the chain confirms the rekey", func(t *testing.T) {
+		signer := &sendSigner{keys: keys}
+		node := &sendAlgod{authAddrs: map[string]string{sender: holder}}
+		client, algodClient := newSendFixture(t, signer, node)
+		result, err := client.SendPrepared(context.Background(), algodClient, group, nil)
+		if err != nil || result.Flow != "" || signer.count("/sign") != 1 {
+			t.Fatalf("SendPrepared() = %+v, %v; want the ordinary flow", result, err)
+		}
+		var sent types.SignedTxn
+		if err := msgpack.Decode(node.submissions()[0], &sent); err != nil {
+			t.Fatal(err)
+		}
+		if sent.AuthAddr.String() != holder {
+			t.Fatalf("signed by %s, want the key the position named", sent.AuthAddr)
+		}
+	})
+
+	// A caller cannot have an ordinary key sign for an account that is still
+	// rotating: nothing is asked of the signer.
+	for name, chainAuth := range map[string]string{"still at stage 0": "", "rotated to a stage": sdkTestAddress(77)} {
+		t.Run("refused when "+name, func(t *testing.T) {
+			signer := &sendSigner{keys: keys}
+			node := &sendAlgod{authAddrs: map[string]string{sender: chainAuth}}
+			client, algodClient := newSendFixture(t, signer, node)
+			_, err := client.SendPrepared(context.Background(), algodClient, group, nil)
+			if !errors.Is(err, ErrUnsupportedGroup) || !strings.Contains(err.Error(), "is not rekeyed to it") {
+				t.Fatalf("error = %v", err)
+			}
+			if signer.count("/sign") != 0 || len(node.submissions()) != 0 {
+				t.Fatalf("an ordinary key was asked to sign for a rotating account")
+			}
+		})
 	}
 
-	resolved, err := client.ResolveAuthAddress(context.Background(), txn.Sender.String(), func(context.Context, string) (string, error) { return holder, nil })
+	signer := &sendSigner{keys: keys}
+	client, _ := newSendFixture(t, signer, &sendAlgod{})
+	resolved, err := client.ResolveAuthAddress(context.Background(), sender, func(context.Context, string) (string, error) { return holder, nil })
 	if err != nil || resolved.AuthAddress != holder || !resolved.IsRekeyed || resolved.ChainAuthAddress != holder {
 		t.Fatalf("ResolveAuthAddress() = %+v, %v; want the held key", resolved, err)
 	}

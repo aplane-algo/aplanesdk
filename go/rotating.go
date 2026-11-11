@@ -507,7 +507,9 @@ func rotatingWindowCurrent(txn types.Transaction, round uint64) bool {
 // refreshRotatingValidity rebuilds txn's validity rounds from current
 // suggested parameters, keeping everything else. The window keeps its length
 // unless that is over the rotating limit or too short to ever be signed.
-func refreshRotatingValidity(ctx context.Context, algodClient *algod.Client, txn types.Transaction) (types.Transaction, error) {
+// widen takes the longest window instead: after the signer found the window
+// not current, the same length would leave the operator no more time.
+func refreshRotatingValidity(ctx context.Context, algodClient *algod.Client, txn types.Transaction, widen bool) (types.Transaction, error) {
 	sp, err := algodClient.SuggestedParams().Do(ctx)
 	if err != nil {
 		return txn, fmt.Errorf("failed to get suggested params: %w", err)
@@ -515,7 +517,7 @@ func refreshRotatingValidity(ctx context.Context, algodClient *algod.Client, txn
 	// A window shorter than the rounds that must remain can never be signed,
 	// so it is not kept either.
 	window := uint64(RotatingMaxValidityWindow)
-	if txn.LastValid > txn.FirstValid {
+	if !widen && txn.LastValid > txn.FirstValid {
 		if length := uint64(txn.LastValid - txn.FirstValid); length >= RotatingMinRemaining && length < window {
 			window = length
 		}
@@ -577,7 +579,7 @@ func (c *SignerClient) sendRotating(ctx context.Context, algodClient *algod.Clie
 				return nil, fmt.Errorf("validity rounds %d-%d are not current at round %d: a rotating account signs only while first valid is at most %d rounds ahead and at least %d rounds remain (rebuild the transaction, or set RefreshValidity)",
 					txn.FirstValid, txn.LastValid, status.LastRound, RotatingMaxLead, RotatingMinRemaining)
 			}
-			if txn, err = refreshRotatingValidity(ctx, algodClient, txn); err != nil {
+			if txn, err = refreshRotatingValidity(ctx, algodClient, txn, false); err != nil {
 				return nil, err
 			}
 		}
@@ -600,9 +602,6 @@ func (c *SignerClient) sendRotating(ctx context.Context, algodClient *algod.Clie
 		if simulation.Failed {
 			return nil, &RotatingPreflightError{Prepared: prepared, Message: simulationFailure(simulation.Response)}
 		}
-		if len(simulation.Response.TxnGroups) != 1 {
-			return nil, fmt.Errorf("simulation returned %d group results for one group; nothing was signed", len(simulation.Response.TxnGroups))
-		}
 		// Nothing has been asked to sign yet, so an ended context is a plain
 		// stop, not an unknown outcome.
 		if err := ctx.Err(); err != nil {
@@ -618,7 +617,7 @@ func (c *SignerClient) sendRotating(ctx context.Context, algodClient *algod.Clie
 				}
 			case ErrCodeRotatingWindowNotCurrent:
 				if refresh && !last {
-					if txn, err = refreshRotatingValidity(ctx, algodClient, txn); err != nil {
+					if txn, err = refreshRotatingValidity(ctx, algodClient, txn, true); err != nil {
 						return nil, err
 					}
 					continue
@@ -663,13 +662,19 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 	}
 }
 
+// simulationFailed reports whether a simulation of one group did anything
+// but pass. An answer without exactly one group result checked nothing, and
+// counts as failed.
 func simulationFailed(response *models.SimulateResponse) bool {
-	return response != nil && len(response.TxnGroups) > 0 && response.TxnGroups[0].FailureMessage != ""
+	return response == nil || len(response.TxnGroups) != 1 || response.TxnGroups[0].FailureMessage != ""
 }
 
 func simulationFailure(response *models.SimulateResponse) string {
-	if !simulationFailed(response) {
+	switch {
+	case !simulationFailed(response):
 		return ""
+	case response == nil || len(response.TxnGroups) != 1:
+		return "the node returned no result for the group"
 	}
 	return response.TxnGroups[0].FailureMessage
 }

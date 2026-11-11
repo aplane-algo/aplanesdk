@@ -216,7 +216,8 @@ func (c *SignerClient) SendPayment(ctx context.Context, algodClient *algod.Clien
 // submits exactly those bytes, and by default waits for confirmation.
 //
 // The flow is chosen from the signer's own record of each key, never from
-// the caller. A group of ordinary and bounded accounts goes through /sign; a
+// the caller. A rotating account is signed for by another key only when the
+// chain says it is rekeyed to that key. A group of ordinary and bounded accounts goes through /sign; a
 // group with a cosigned account goes through the cosigned sequence, which
 // needs the cosigner named in opts when a position requires its signature.
 // A rotating account's transaction, which must be alone and ungrouped, goes
@@ -249,9 +250,24 @@ func (c *SignerClient) sendPrepared(ctx context.Context, algodClient *algod.Clie
 	if opts == nil {
 		opts = &SendOptions{}
 	}
-	flow, err := c.classifySend(ctx, group)
+	flow, leftRotation, err := c.classifySend(ctx, group)
 	if err != nil {
 		return nil, err
+	}
+	// A rotating account is signed for by another key only when the chain
+	// says it is rekeyed to that key. Without this a caller could have an
+	// ordinary key sign a rotating account's transaction, outside the
+	// rotating rules: refused by the network today, but signed.
+	for _, i := range leftRotation {
+		item := group.Transactions[i]
+		sender := item.Transaction.Sender.String()
+		info, err := algodClient.AccountInformation(sender).Do(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("prepared transaction %d: read the authorizer of rotating account %s: %w", i, sender, err)
+		}
+		if info.AuthAddr != item.AuthAddress {
+			return nil, fmt.Errorf("prepared transaction %d: %w: it names auth address %s, but rotating account %s is not rekeyed to it", i, ErrUnsupportedGroup, item.AuthAddress, sender)
+		}
 	}
 	// Nothing has been asked of the signer yet, so an ended context is a
 	// plain stop, not an unknown outcome.
@@ -317,58 +333,65 @@ func answerLost(err error) bool {
 // classifySend picks the one signing flow for the whole group from the
 // signer's records, or refuses a group unified sending does not cover.
 // Nothing has been signed when it returns.
-func (c *SignerClient) classifySend(ctx context.Context, group PreparedGroup) (string, error) {
+//
+// leftRotation lists the positions whose sender is a rotating account and
+// which name another held key: the caller must confirm on the chain that the
+// account is rekeyed to that key before anything is signed.
+func (c *SignerClient) classifySend(ctx context.Context, group PreparedGroup) (flow string, leftRotation []int, err error) {
 	if len(group.Transactions) == 0 {
-		return "", fmt.Errorf("prepared group is empty")
+		return "", nil, fmt.Errorf("prepared group is empty")
 	}
 	keys, err := c.ListKeysIfKeysetChangedWithContext(ctx)
 	if err != nil {
-		return "", fmt.Errorf("resolve signer keys: %w", err)
+		return "", nil, fmt.Errorf("resolve signer keys: %w", err)
 	}
-	flow := ""
 	for i, item := range group.Transactions {
 		if item.SignedTransactionBase64 != "" {
-			return "", fmt.Errorf("prepared transaction %d: %w: it is already signed; use the lower-level signing calls for a pre-signed position", i, ErrUnsupportedGroup)
+			return "", nil, fmt.Errorf("prepared transaction %d: %w: it is already signed; use the lower-level signing calls for a pre-signed position", i, ErrUnsupportedGroup)
 		}
 		if item.Transaction == nil {
-			return "", fmt.Errorf("prepared transaction %d: transaction is required", i)
+			return "", nil, fmt.Errorf("prepared transaction %d: transaction is required", i)
 		}
 		if item.AuthAddress == "" {
-			return "", fmt.Errorf("prepared transaction %d: %w: it names no auth address, so this signer does not sign it", i, ErrUnsupportedGroup)
+			return "", nil, fmt.Errorf("prepared transaction %d: %w: it names no auth address, so this signer does not sign it", i, ErrUnsupportedGroup)
 		}
 		// A rotating account is recognised by its own record: once it has
 		// rotated, its on-chain authorizer is a stage address the signer
 		// does not list. It signs alone, and as itself.
 		sender := item.Transaction.Sender.String()
 		// A position that names another key the signer holds says the
-		// account left rotation for that key; it is routed by that key, and
-		// the network refuses it if the account is still rotating.
+		// account left rotation for that key. It is routed by that key once
+		// the chain confirms the rekey.
 		_, namesHeldKey := findSpendableKey(keys, item.AuthAddress)
-		leftRotation := item.AuthAddress != sender && namesHeldKey
-		if own, ok := findSpendableKey(keys, sender); ok && own.SigningFlow == SigningFlowRotating1 && !leftRotation {
+		namesAnotherKey := item.AuthAddress != sender && namesHeldKey
+		own, senderHeld := findSpendableKey(keys, sender)
+		if senderHeld && own.SigningFlow == SigningFlowRotating1 && namesAnotherKey {
+			leftRotation = append(leftRotation, i)
+		}
+		if senderHeld && own.SigningFlow == SigningFlowRotating1 && !namesAnotherKey {
 			if len(group.Transactions) != 1 {
-				return "", fmt.Errorf("prepared transaction %d: %w: %s is a rotating account, which sends one transaction alone; the signer forms its group", i, ErrUnsupportedGroup, sender)
+				return "", nil, fmt.Errorf("prepared transaction %d: %w: %s is a rotating account, which sends one transaction alone; the signer forms its group", i, ErrUnsupportedGroup, sender)
 			}
 			if item.AuthAddress != sender {
-				return "", fmt.Errorf("prepared transaction %d: %w: it names auth address %s, but %s is a rotating account and signs as itself", i, ErrUnsupportedGroup, item.AuthAddress, sender)
+				return "", nil, fmt.Errorf("prepared transaction %d: %w: it names auth address %s, but %s is a rotating account and signs as itself", i, ErrUnsupportedGroup, item.AuthAddress, sender)
 			}
-			return SigningFlowRotating1, nil
+			return SigningFlowRotating1, nil, nil
 		}
 		key, ok := findSpendableKey(keys, item.AuthAddress)
 		if !ok {
-			return "", fmt.Errorf("prepared transaction %d: %w: %s is not available for signing", i, ErrKeyNotFound, item.AuthAddress)
+			return "", nil, fmt.Errorf("prepared transaction %d: %w: %s is not available for signing", i, ErrKeyNotFound, item.AuthAddress)
 		}
 		switch key.SigningFlow {
 		case "", SigningFlowBounded1:
 		case SigningFlowCosigned1:
 			flow = SigningFlowCosigned1
 		case SigningFlowRotating1:
-			return "", fmt.Errorf("prepared transaction %d: %w: it names rotating account %s as the auth address of another sender; a rotating account signs only its own transactions", i, ErrUnsupportedGroup, item.AuthAddress)
+			return "", nil, fmt.Errorf("prepared transaction %d: %w: it names rotating account %s as the auth address of another sender; a rotating account signs only its own transactions", i, ErrUnsupportedGroup, item.AuthAddress)
 		default:
-			return "", fmt.Errorf("prepared transaction %d: %w: key %s requires signing flow %q; upgrade the SDK", i, ErrUnsupportedSigningFlow, item.AuthAddress, key.SigningFlow)
+			return "", nil, fmt.Errorf("prepared transaction %d: %w: key %s requires signing flow %q; upgrade the SDK", i, ErrUnsupportedSigningFlow, item.AuthAddress, key.SigningFlow)
 		}
 	}
-	return flow, nil
+	return flow, leftRotation, nil
 }
 
 // signForSend runs the ordinary /sign flow for a send. It is postSign with
