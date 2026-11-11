@@ -818,16 +818,6 @@ cosigned rekeys, never a rekey to a listed address.
 import {
   SignerError,
 
-## Project
-
-This SDK is part of the APlane project:
-
-- Repository: https://github.com/aplane-algo/aplanesdk
-- SDK path: `typescript`
-
-APlane is an open-source project stewarded by the APlane Project.
-
-See the repository [README](https://github.com/aplane-algo/aplanesdk/blob/main/README.md) for project overview and alpha-status guidance, and [DISCLAIMER.md](https://github.com/aplane-algo/aplanesdk/blob/main/DISCLAIMER.md) for risk, liability, and usage information.
   AuthenticationError,
   SigningRejectedError,
   SignerUnavailableError,

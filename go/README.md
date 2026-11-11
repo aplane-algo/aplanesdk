@@ -439,7 +439,7 @@ so it fails on its count of transaction results.
 
 #### After an uncertain outcome
 
-`ResolveOutcome(ctx, algodClient, err)` takes either "do not just send again"
+`client.ResolveOutcome(ctx, algodClient, err)` takes either "do not just send again"
 error (`*SubmissionUncertainError` or `*SignOutcomeUnknownError`, wrapped or
 not) and says where things stand; any other error is refused with
 `ErrNotUncertainOutcome`. It reads the node's current round, looks up the
