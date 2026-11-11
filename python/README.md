@@ -347,9 +347,12 @@ steps for an ALGO payment.
   differ from the IDs of the transactions you prepared.
 - **Options.** `no_wait=True` returns once the node accepts the group, with
   outcome `"submitted"`. `wait_rounds` is how many further rounds to wait for
-  confirmation (0 means the default, 10). A cosigned account needs
-  `cosigner_client` with `cosigner_component_key`, or a `cosigner_resolver`;
-  the SDK does not close a cosigner client you pass.
+  confirmation (0 means the default, 10). A cosigned account needs nothing
+  extra when the client came from `SignerClient.from_env` and its
+  `endpoints.yaml` lists the account's cosigner: the SDK finds it there (see
+  "Finding the cosigner" below). Otherwise pass `cosigner_client` with
+  `cosigner_component_key`, or a `cosigner_resolver`; either one wins over
+  the registry. The SDK does not close a cosigner client you pass.
 - **Refused before signing:** an unknown signing flow
   (`UnsupportedSigningFlowError`), and a pre-signed or foreign position
   (`UnsupportedGroupError`). Use the lower-level signing calls for those
@@ -613,6 +616,69 @@ reported group mutations for the cosigned flow.
 Applications that own orchestration can call `request_components()` and
 `request_assemble()` directly. The cosigner signs spends and
 cosigned rekeys, never a rekey to a listed address.
+
+### Finding the cosigner
+
+A cosigned account needs nothing extra when `endpoints.yaml` lists its
+cosigner. A `SignerClient` made by `from_env` (or `from_env(data_dir=...)`),
+given no `cosigner_client` and no `cosigner_resolver`, finds the cosigner
+with an `EndpointCosignerResolver` over the same registry, connecting with the
+same `timeout`, `trust_on_first_use` and `ssh_setup_timeout`. It makes the
+resolver on first use, keeps it, and closes it, with its connections, when
+the client is closed. A client not made from a data directory still needs a
+cosigner passed to it.
+
+```yaml
+schema_version: 2
+endpoints:
+  primary:  {role: signer,   url: "ssh://signer.example.com:1127"}
+  cosign-a: {role: cosigner, url: "ssh://cosigner-a.example.com:1127"}
+```
+
+On first use the resolver connects to every endpoint with role `cosigner` (at
+most 12), each with its own `identity_file` and `known_hosts_path`, and reads
+its `/keys`: at most 4 endpoints at once, 10 seconds per endpoint, 30 seconds
+for the whole sweep. A record counts when `is_witness_key` is true and it has
+a `key_type`; its `public_key_hex` must be hex (compared in either case) and
+its `address` must be the Witness Key ID derived from its key type and public
+key, or the whole endpoint's listing is invalid. The witness key an account
+names must be listed by exactly one endpoint; the resolver then uses that
+endpoint's client, with the listed Witness Key ID as the component key. The
+sweep is kept, and a key it does not hold makes one fresh sweep.
+
+Otherwise it raises `CosignerDiscoveryError` (a `SignerError`):
+
+- more than one endpoint lists the key: `cosigner discovery: Witness Key ID
+  <id> (<key type>) is listed by endpoints "a", "b"; each witness key needs
+  exactly one endpoint`;
+- none does: `cosigner discovery: no endpoint lists Witness Key ID <id> (<key
+  type>); endpoints: "a" ok, "b" unreachable`, every cosigner endpoint by
+  alias, each `ok`, `unreachable`, `locked`, `authentication failed`,
+  `invalid cosigner metadata` or `configuration invalid`;
+- no cosigner endpoint is configured: `cosigner discovery: endpoints.yaml
+  lists no cosigner endpoint`;
+- any cosigner endpoint's SSH host key differs from the pinned one, needed or
+  not: `cosigner discovery: endpoint "<alias>": <the mismatch error>`.
+
+The cosigned sequence resolves the cosigner of every target that cannot take
+the listed path (a spend, or a rekey of an account without a rekey list)
+before anything is asked to sign, with any resolver, so a failure is a plain
+error with nothing signed. A rekey of an account with a rekey list may take
+the listed path, which needs no cosigner, so its cosigner is resolved only
+after the base component, and only when the signer's path needs one: the
+rekey-list escape hatch keeps working with the cosigner down or not
+configured. A resolver's own exception is passed on as it is, never as an
+unknown outcome.
+
+To use the resolver yourself, build it from a data directory or a loaded
+registry and close it when done:
+
+```python
+from aplanesdk import EndpointCosignerResolver
+
+with EndpointCosignerResolver(data_dir="~/aplane/apclient") as resolver:
+    result = client.send_prepared(algod_client, prepared, cosigner_resolver=resolver)
+```
 
 ## Error Handling
 

@@ -4,9 +4,10 @@ Send a payment from any account the signer holds.
 
 send_payment builds the payment, signs it through the flow the sender's key
 needs, checks the signed result, submits it and waits for confirmation. The
-same call works for an Ed25519, native Falcon, LogicSig, bounded or rotating
-account, and for a rekeyed sender. A cosigned account also needs its cosigner:
-pass cosigner_client and cosigner_component_key.
+same call works for an Ed25519, native Falcon, LogicSig, bounded, cosigned or
+rotating account, and for a rekeyed sender. A cosigned account needs nothing
+extra when endpoints.yaml lists its cosigner (a role: cosigner endpoint, as
+below): the SDK finds the cosigner there.
 
 Setup:
     1. Create data directory: mkdir -p ~/aplane/apclient/.ssh
@@ -22,6 +23,10 @@ Example endpoints.yaml (SSH tunnel):
         role: signer
         url: ssh://192.168.86.73:1127
         identity_file: .ssh/id_ed25519
+      # Only for a cosigned account: the node holding its cosigner.
+      cosigner:
+        role: cosigner
+        url: ssh://192.168.86.74:1127
 """
 
 from algosdk.v2client import algod
