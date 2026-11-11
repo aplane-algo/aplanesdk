@@ -187,6 +187,9 @@ const SIGNABLE =
   "A signature may have been released and can execute until round 200. " +
   "Wait until round 200 has passed before building a replacement.";
 const SIGN_EXPIRED = "No signature released by that request can execute any more. It is safe to build a new one.";
+const ROTATING_TOO_OLD =
+  "The prepared group's validity ended more than 500 rounds ago and this node may no longer remember it. " +
+  "Look the transaction ID up on an indexer before sending again.";
 
 describe("resolveOutcome after a SubmissionUncertainError", () => {
   const rows: Array<[string, bigint, Found, Want]> = [
@@ -228,11 +231,21 @@ describe("resolveOutcome after a SignOutcomeUnknownError", () => {
     ["rotating, not found, still valid", true, 200n, "not_found", { state: "signable", safe: false, advice: SIGNABLE_ROTATING, lookups: 1 }],
     ["rotating, a pool error, still valid", true, 150n, "pool_error", { state: "signable", safe: false, advice: SIGNABLE_ROTATING, lookups: 1 }],
     ["rotating, not found, one round past", true, 201n, "not_found", { state: "expired", safe: true, advice: SIGN_EXPIRED, lookups: 1 }],
-    ["rotating, a pool error, long past", true, 5000n, "pool_error", { state: "expired", safe: true, advice: SIGN_EXPIRED, lookups: 1 }],
+    ["rotating, a pool error, one round past", true, 201n, "pool_error", { state: "expired", safe: true, advice: SIGN_EXPIRED, lookups: 1 }],
+    // A signed retry of the prepared group has the same IDs and may have been
+    // submitted, so the 500-round margin holds here too, on both sides.
+    ["rotating, not found, 500 rounds past", true, 700n, "not_found", { state: "expired", safe: true, advice: SIGN_EXPIRED, lookups: 1 }],
+    ["rotating, not found, 501 rounds past", true, 701n, "not_found", { state: "too_old", safe: false, advice: ROTATING_TOO_OLD, lookups: 1 }],
+    ["rotating, a pool error, 500 rounds past", true, 700n, "pool_error", { state: "expired", safe: true, advice: SIGN_EXPIRED, lookups: 1 }],
+    ["rotating, a pool error, 501 rounds past", true, 701n, "pool_error", { state: "too_old", safe: false, advice: ROTATING_TOO_OLD, lookups: 1 }],
+    ["rotating, a pool error, long past", true, 5000n, "pool_error", { state: "too_old", safe: false, advice: ROTATING_TOO_OLD, lookups: 1 }],
+    ["rotating, confirmed long ago", true, 5000n, "confirmed", { state: "confirmed", safe: false, advice: CONFIRMED, confirmedRound: 150n, lookups: 1 }],
     // No IDs, so no lookup, whatever the node would find.
     ["not rotating, still valid", false, 200n, "confirmed", { state: "signable", safe: false, advice: SIGNABLE, lookups: 0 }],
     ["not rotating, one round past", false, 201n, "pool", { state: "expired", safe: true, advice: SIGN_EXPIRED, lookups: 0 }],
-    // There is no too_old for a sign outcome.
+    // There is no too_old for a non-rotating sign outcome: its signed bytes
+    // never left the SDK.
+    ["not rotating, 501 rounds past", false, 701n, "not_found", { state: "expired", safe: true, advice: SIGN_EXPIRED, lookups: 0 }],
     ["not rotating, long past", false, 5000n, "not_found", { state: "expired", safe: true, advice: SIGN_EXPIRED, lookups: 0 }],
   ];
   for (const [name, isRotating, round, found, want] of rows) {

@@ -249,6 +249,7 @@ export async function resolveOutcome(
   if (rotating) {
     txIds = rotating.txIds();
   }
+  let lookedUp = false;
   if (rotating && txIds.length > 0 && txIds[0] !== "") {
     const found = await lookUp(algodClient, txIds[0], signal);
     if (found.found === "confirmed") {
@@ -258,6 +259,7 @@ export async function resolveOutcome(
       return report(OUTCOME_PENDING, PENDING_ADVICE, { txIds, rotating });
     }
     // Not found, or dropped from the pool: the rounds decide.
+    lookedUp = true;
   }
   const fields: Partial<OutcomeReport> = rotating ? { txIds, rotating } : {};
   if (current <= lastValid) {
@@ -270,7 +272,19 @@ export async function resolveOutcome(
       fields,
     );
   }
-  // This call never submitted, so expiry alone settles it.
+  // Signing the same prepared group again gives the same IDs, which the
+  // caller may then have submitted: a rotating group can have confirmed, and
+  // past the margin the node may no longer remember it.
+  if (lookedUp && current > lastValid + NODE_MEMORY_ROUNDS) {
+    return report(
+      OUTCOME_TOO_OLD,
+      "The prepared group's validity ended more than 500 rounds ago and this node may no longer remember it. " +
+        "Look the transaction ID up on an indexer before sending again.",
+      fields,
+    );
+  }
+  // Within the margin, or for a group whose signed bytes never left the SDK,
+  // expiry settles it.
   return report(
     OUTCOME_EXPIRED,
     "No signature released by that request can execute any more. It is safe to build a new one.",

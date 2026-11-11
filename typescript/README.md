@@ -465,8 +465,14 @@ are no IDs and no lookup (`txIds` is empty):
 - the last round is at most `lastValid`: `signable`. A released signature can
   still execute: for a rotating account sign the same prepared group again,
   otherwise wait until `lastValid` has passed before building a replacement;
-- the last round is past `lastValid`: `expired`, and safe to replace. There is
-  no `too_old` here: expiry alone settles it.
+- a rotating account, not found or dropped, more than 500 rounds past
+  `lastValid`: `too_old`. Signing the same prepared group again gives the
+  same transaction IDs, which may since have been submitted, and past that
+  margin the node may no longer remember them: look the ID up on an indexer;
+- the last round is past `lastValid` (for a rotating account, by at most 500
+  rounds): `expired`, and safe to replace. Any other account has no
+  `too_old`: its signed bytes never leave the SDK, so expiry alone settles
+  it.
 
 Any other node failure is thrown, never turned into a state. Before the node
 is asked anything, these are refused, in this order: any other error, `null`
