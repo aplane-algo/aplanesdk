@@ -51,20 +51,20 @@ def main():
         except SubmissionUncertainError as error:
             # A group that was signed keeps its bytes and IDs in the error.
             # Never send again until its outcome is known: both could execute.
-            print(f"Outcome unknown for {error.tx_ids} ({error.stage}); look it up before sending again")
+            # The node says where it stands.
+            report = signer.resolve_outcome(algod_client, error)
+            print(f"Outcome of {error.tx_ids[0]} ({error.stage}): {report.state}. {report.advice}")
             raise
         except SignOutcomeUnknownError as error:
             # The signer may have released a signature this call never saw.
-            # Do NOT build and sign a replacement: both could execute. Sign
-            # the same prepared group again (a rotating account's is in
-            # error.rotating, for signer.sign_prepared_rotating), or check the
-            # chain and the signer's audit log for the request first.
+            # Do NOT build and sign a replacement while it can still execute
+            # (until error.last_valid): both could. A rotating account's
+            # prepared group, in error.rotating, can be signed again with
+            # signer.sign_prepared_rotating.
+            report = signer.resolve_outcome(algod_client, error)
             print(
-                f"A signature may have been released (request {error.request_id or 'unnamed'}); "
-                "do not sign a replacement"
+                f"Sign request {error.request_id or 'unnamed'}: {report.state}. {report.advice}"
             )
-            if error.rotating is not None:
-                print(f"Re-sign prepared group {error.rotating.tx_ids} with sign_prepared_rotating")
             raise
 
         # The signer may raise the fee or add transactions, so the ID comes

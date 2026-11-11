@@ -424,6 +424,70 @@ or "the node returned M transaction results for N transactions". Each field
 is chosen by presence: `txn-groups` is read when present, even empty, and
 `txn_groups` only when it is not, and so for the failure message.
 
+#### After an uncertain outcome
+
+`client.resolve_outcome(algod_client, error)` takes a
+`SignOutcomeUnknownError` or a `SubmissionUncertainError` and says where
+things stand, from the node alone: it never signs, never submits and never
+calls the signer. Both errors carry `last_valid`, the earliest last valid
+round of what was sent to be signed (the signer never changes validity
+rounds, so it is the signed group's too); after it nothing that request
+released can execute. The helper reads the node's current round, then looks
+up the first transaction ID when the IDs are known (a group is atomic). The
+`OutcomeReport` it returns has `state`, `confirmed_round` (0 unless
+confirmed), `tx_ids`, `last_valid`, `current_round`, `safe_to_replace`,
+`signed_group` and `rotating` (when the error carried them) and `advice`, one
+sentence on what to do.
+
+For a `SubmissionUncertainError`, whose signed bytes and IDs are known:
+
+- the node has it in a block: `confirmed`;
+- it is in the node's pool: `pending`;
+- the node does not have it (or dropped it with a pool error) and the current
+  round is at most `last_valid`: `not_seen`, it can still execute; submit the
+  same signed group again, or wait until `last_valid` has passed;
+- not found, or a pool error, and the current round is past `last_valid` by
+  at most 500 rounds: `expired`, and `safe_to_replace` is true;
+- past `last_valid` by more than 500 rounds: `too_old`; a node answers only
+  for recent rounds, so a confirmed transaction can look not found. Look the
+  ID up on an indexer before sending again.
+
+For a `SignOutcomeUnknownError`, where this call submitted nothing:
+
+- a rotating account's prepared group is looked up first: `confirmed` or
+  `pending` as above; not found, or a pool error, falls through to the rounds;
+- the current round is at most `last_valid`: `signable`, a signature may have
+  been released and can still execute (for a rotating account, sign the same
+  prepared group again; otherwise wait until `last_valid` has passed before
+  building a replacement);
+- the current round is past `last_valid`: `expired`, `safe_to_replace`. There
+  is no `too_old` here: this call never submitted, so expiry alone settles it.
+  An account that is not rotating has no IDs to look up (the signer may have
+  changed its transactions), so `tx_ids` is empty.
+
+The state names are the constants `OUTCOME_CONFIRMED`, `OUTCOME_PENDING`,
+`OUTCOME_NOT_SEEN`, `OUTCOME_SIGNABLE`, `OUTCOME_EXPIRED` and
+`OUTCOME_TOO_OLD`. Any other error, or `None`, is refused with `SignerError`
+"not an uncertain outcome"; so is an error with no last valid round, or a
+submission error with no transaction IDs. A node failure other than the
+lookup's "not found" is raised, never turned into a state.
+
+`client.wait_for_outcome(algod_client, error, timeout=None)` resolves once a
+round, waiting for each next round with the node's status-after-block call,
+until the state is `confirmed`, `expired` or `too_old`. `timeout` is in
+seconds; when it passes, `SendTimeoutError` is raised with the last report as
+its `report`.
+
+```python
+try:
+    result = client.send_prepared(algod_client, prepared)
+except (SignOutcomeUnknownError, SubmissionUncertainError) as error:
+    report = client.resolve_outcome(algod_client, error)
+    print(report.state, report.advice)
+    if not report.safe_to_replace:
+        raise
+```
+
 #### Rotating accounts
 
 A rotating account (`signing_flow` `rotating1`) hands itself to a fresh stage
