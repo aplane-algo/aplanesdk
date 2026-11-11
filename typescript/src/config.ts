@@ -39,6 +39,13 @@ export function expandPath(filePath: string): string {
 }
 
 /**
+ * Whether config permits the network. An empty allowlist permits all.
+ */
+export function isNetworkAllowed(config: ClientConfig, network: string): boolean {
+  return config.networksAllowed.length === 0 || config.networksAllowed.includes(network);
+}
+
+/**
  * Load client configuration from data_dir/config.yaml.
  *
  * @param dataDir - Path to data directory
@@ -76,6 +83,11 @@ export function loadConfig(dataDir: string): ClientConfig {
       config.networksAllowed = data.networks_allowed;
     }
     if (typeof data.theme === "string" && data.theme) config.theme = data.theme;
+    if (!isNetworkAllowed(config, config.network)) {
+      throw new SignerError(
+        `network ${JSON.stringify(config.network)} is not in networks_allowed ${JSON.stringify(config.networksAllowed)}`,
+      );
+    }
   } catch (error) {
     if (error instanceof SignerError) throw error;
     throw new SignerError(`failed to parse config.yaml: ${errorMessage(error)}`);

@@ -94,6 +94,7 @@ import {
   bytesToBase64,
   bytesToHex,
   hexToBytes,
+  base64ToBytes,
 } from "./encoding.js";
 import { preparedGroupToSignRequests, preparedTransactionToSignRequest } from "./prepared.js";
 import {
@@ -429,6 +430,13 @@ export async function signPreparedCosignedGroup(
       throw new SignerError(`prepared transaction ${index}: transaction is required`);
     }
     let key = item.signerKey;
+    if (key && key.address !== item.authAddress) {
+      // The key's flow, resources and fee ceiling decide how the position is
+      // signed, so it must be the key that signs it.
+      throw new SignerError(
+        `prepared transaction ${index}: signer key is for ${key.address}, not the position's auth address ${item.authAddress}`,
+      );
+    }
     if (!key && item.authAddress) {
       key = await options.userClient.getKeyInfo(item.authAddress);
     }
@@ -658,6 +666,7 @@ export async function signPreparedCosignedGroup(
     primarySignResponse: primary.response,
     boundedComponentResponse: componentResponse,
     boundedAssemblyResponse: assemblyResponse,
+    planMutations: planResponse.mutations,
   };
 }
 
@@ -1432,6 +1441,12 @@ export interface CosignedSignResult {
   primarySignResponse?: GroupSignResponse;
   boundedComponentResponse?: ComponentResponse;
   boundedAssemblyResponse?: AssemblyResponse;
+  /**
+   * The plan's mutation report, checked against the prepared group: what the
+   * signer added to it (fees, group ID, dummies). Undefined when it changed
+   * nothing.
+   */
+  planMutations?: MutationReport;
 }
 
 export interface CosignedSimulationResult {
@@ -1568,6 +1583,33 @@ function accountStatus(accountInfo: AccountInfoResult | Record<string, any>): st
   return String((accountInfo as Record<string, any>).status || "");
 }
 
+const UINT64_LIMIT = 1n << 64n;
+
+/**
+ * Require a whole number for an ID, an amount or a fee: a safe-integer number
+ * or a bigint, below 2**64. algosdk and BigInt() would turn "123" into 123 and
+ * throw an unrelated error on 123.9; a string, a fraction or a boolean is a
+ * mistake in the caller, not a number to be converted.
+ */
+function requireUint(value: unknown, name: string, positive = false): bigint {
+  const whole =
+    typeof value === "bigint" || (typeof value === "number" && Number.isSafeInteger(value));
+  if (!whole) {
+    throw new SignerError(
+      `${name} must be a whole number (a safe integer or a bigint), not ${
+        typeof value === "number" ? value : typeof value
+      }`,
+    );
+  }
+  const big = BigInt(value as number | bigint);
+  if (big < 0n || big >= UINT64_LIMIT || (positive && big === 0n)) {
+    throw new SignerError(
+      `${name} must be ${positive ? "a positive" : "a non-negative"} whole number below 2**64`,
+    );
+  }
+  return big;
+}
+
 function applyPrepFee(params: Record<string, any>, fee?: number): void {
   // No fee-per-byte mode: fee is always flat microAlgos, so a set fee can never
   // be silently reinterpreted as EstimateSize*fee. undefined means unset (keep
@@ -1576,6 +1618,7 @@ function applyPrepFee(params: Record<string, any>, fee?: number): void {
   if (fee === undefined) {
     return;
   }
+  requireUint(fee, "fee");
   params.fee = fee;
   params.flatFee = true;
   params.flat_fee = true;
@@ -1768,7 +1811,15 @@ function validateKeyregParams(params: KeyregPrepParams): void {
   }
 }
 
-function validatePaymentGroup(transactions: PreparedTransaction[]): PreparedCheck {
+/**
+ * Check each paying sender can cover its payments and every fee it pays.
+ * `otherPositions` are the group's non-payment positions: they move no ALGO,
+ * but a sender that also pays from this group pays their fees too.
+ */
+function validatePaymentGroup(
+  transactions: PreparedTransaction[],
+  otherPositions: PreparedTransaction[] = [],
+): PreparedCheck {
   const totals = new Map<string, { available: bigint; required: bigint }>();
   for (const item of transactions) {
     if (!item.transaction) {
@@ -1785,6 +1836,16 @@ function validatePaymentGroup(transactions: PreparedTransaction[]): PreparedChec
       total.available = BigInt((check.data.available as number | bigint | undefined) || 0);
     }
     totals.set(sender, total);
+  }
+  for (const item of otherPositions) {
+    if (!item.transaction) {
+      throw new SignerError("group transaction is required");
+    }
+    const txn = item.transaction as any;
+    const total = totals.get(txn.sender.toString());
+    if (total) {
+      total.required += BigInt(txn.fee || 0);
+    }
   }
   for (const [sender, total] of totals) {
     if (total.available < total.required) {
@@ -2553,6 +2614,7 @@ export class SignerClient {
     if (!params.receiver) {
       throw new SignerError("receiver is required");
     }
+    requireUint(params.amount, "amount");
 
     const suggestedParams = await algodClient.getTransactionParams().do();
     applyPrepFee(suggestedParams, params.fee);
@@ -2606,9 +2668,11 @@ export class SignerClient {
     if (!params.receiver) {
       throw new SignerError("receiver is required");
     }
-    if (!params.assetId) {
+    if (params.assetId === undefined || params.assetId === null) {
       throw new SignerError("assetId is required");
     }
+    requireUint(params.assetId, "assetId", true);
+    requireUint(params.amount, "amount");
 
     const suggestedParams = await algodClient.getTransactionParams().do();
     applyPrepFee(suggestedParams, params.fee);
@@ -2668,15 +2732,15 @@ export class SignerClient {
     if (!params.sender) {
       throw new SignerError("sender is required");
     }
-    if (!params.assetId) {
+    if (params.assetId === undefined || params.assetId === null) {
       throw new SignerError("assetId is required");
     }
+    requireUint(params.assetId, "assetId", true);
 
     const suggestedParams = await algodClient.getTransactionParams().do();
     applyPrepFee(suggestedParams, params.fee);
 
     const senderInfo = await algodClient.accountInformation(params.sender).do();
-    const checks = asaOptInChecks(senderInfo, params.assetId, Number(suggestedParams.fee || 0));
     const txn = algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
       sender: params.sender,
       receiver: params.sender,
@@ -2685,6 +2749,9 @@ export class SignerClient {
       note: params.note,
       suggestedParams,
     });
+    // The balance is checked against the fee the built transaction pays. The
+    // suggested fee is per byte, usually zero, and would check nothing.
+    const checks = asaOptInChecks(senderInfo, params.assetId, Number(txn.fee));
 
     const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
     return {
@@ -2714,9 +2781,10 @@ export class SignerClient {
     if (params.closeTo === params.sender) {
       throw new SignerError("closeTo must differ from sender");
     }
-    if (!params.assetId) {
+    if (params.assetId === undefined || params.assetId === null) {
       throw new SignerError("assetId is required");
     }
+    requireUint(params.assetId, "assetId", true);
 
     const suggestedParams = await algodClient.getTransactionParams().do();
     applyPrepFee(suggestedParams, params.fee);
@@ -2767,7 +2835,6 @@ export class SignerClient {
     applyPrepFee(suggestedParams, params.fee);
 
     const senderInfo = await algodClient.accountInformation(params.sender).do();
-    const checks = accountCloseChecks(senderInfo, Number(suggestedParams.fee || 0));
     const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
       sender: params.sender,
       receiver: params.closeTo,
@@ -2776,6 +2843,9 @@ export class SignerClient {
       note: params.note,
       suggestedParams,
     });
+    // Checked against the fee the built transaction pays, not the suggested
+    // per-byte fee.
+    const checks = accountCloseChecks(senderInfo, Number(txn.fee));
 
     const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
     return {
@@ -2969,9 +3039,14 @@ export class SignerClient {
     if (!params.sender) {
       throw new SignerError("sender is required");
     }
-    if (!params.appId || BigInt(params.appId) === 0n) {
+    if (params.appId === undefined || params.appId === null) {
       throw new SignerError("appId is required");
     }
+    requireUint(params.appId, "appId", true);
+    (params.foreignApps ?? []).forEach((reference, position) =>
+      requireUint(reference, `foreignApps[${position}]`, true));
+    (params.foreignAssets ?? []).forEach((reference, position) =>
+      requireUint(reference, `foreignAssets[${position}]`, true));
     const onComplete = params.onComplete ?? algosdk.OnApplicationComplete.NoOpOC;
     if (!Number.isInteger(onComplete) || onComplete < 0 || onComplete > algosdk.OnApplicationComplete.DeleteApplicationOC) {
       throw new SignerError(`invalid onComplete: ${onComplete}`);
@@ -3116,7 +3191,10 @@ export class SignerClient {
       checks.push(validateAsaTransferGroup(transactions.slice(0, asaTransfers.length)));
     }
     if (payments.length > 0) {
-      checks.push(validatePaymentGroup(transactions.slice(asaTransfers.length)));
+      checks.push(validatePaymentGroup(
+        transactions.slice(asaTransfers.length),
+        transactions.slice(0, asaTransfers.length),
+      ));
     }
     return { transactions, checks };
   }
@@ -3520,6 +3598,12 @@ export class SignerClient {
 
     try {
       validateAssemblyResponse(data);
+      // The answer must be to this request, not merely carry a well-formed ID.
+      if (data.request_id !== requestBody.request_id) {
+        throw new SignerError(
+          `request_id ${JSON.stringify(data.request_id)} does not match the request's ${JSON.stringify(requestBody.request_id)}`,
+        );
+      }
     } catch (error) {
       throw new SignerError(
         `invalid assembly response: ${error instanceof Error ? error.message : String(error)}`
@@ -3727,8 +3811,9 @@ export class SignerClient {
     if (signedList.some((s) => s === "")) {
       throw new SignerError(
         "signTransactions() cannot produce a complete group when foreign " +
-        "entries are present (some slots are unsigned). Use " +
-        "signTransactionsList() + assembleGroup() instead."
+        "entries are present (some slots are unsigned). Plan the group with " +
+        "planGroup(), have the other party sign its transaction, then sign " +
+        "with that signed transaction as a passthrough position."
       );
     }
 
@@ -3931,7 +4016,7 @@ export class SignerClient {
       // LogicSig args; what is decoded goes no further.
       const passthroughEntry = passthroughByIndex.get(i);
       if (passthroughEntry !== undefined) {
-        const signedBytes = Buffer.from(passthroughEntry, "base64");
+        const signedBytes = Buffer.from(base64ToBytes(passthroughEntry, `passthrough[${i}]`));
         let slot: RequestSlot;
         try {
           slot = decodePassthroughSlot(new Uint8Array(signedBytes));

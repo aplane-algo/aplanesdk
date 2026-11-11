@@ -99,6 +99,29 @@ export function concatenateSignedTxns(signedHexes: string[]): string {
   return bytesToBase64(combined);
 }
 
+const STRICT_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
+/**
+ * Decode standard base64, strictly: the standard alphabet, with padding, and
+ * nothing else. Buffer.from(value, "base64") stops at the first "=", skips
+ * characters it does not know and accepts the URL-safe alphabet, so it takes
+ * strings the Go and Python SDKs refuse.
+ */
+export function base64ToBytes(value: string, label = "value"): Uint8Array {
+  if (typeof value !== "string" || !STRICT_BASE64.test(value)) {
+    throw new SignerError(`${label} is not valid base64`);
+  }
+  if (typeof Buffer !== "undefined") {
+    return new Uint8Array(Buffer.from(value, "base64"));
+  }
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
 // bytesToBase64 encodes bytes as base64, using Buffer in Node.js and a chunked
 // btoa fallback in the browser. The chunking matters: String.fromCharCode(...big)
 // spreads every byte as a function argument and throws on large inputs (e.g. a

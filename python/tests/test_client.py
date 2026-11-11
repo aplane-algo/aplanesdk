@@ -1850,8 +1850,12 @@ class TestSignPreparedCosignedGroup:
                 run()
             assert events == ["base", "sign"]
             return
-        run()
+        result = run()
         assert events == ["base", "sign", "cosigner", "assemble"]
+        # The result carries what the plan added, so the caller can read the
+        # fee the signer charged.
+        assert result.plan_mutations["total_fees_delta"] == 2000
+        assert result.plan_mutations["fees_modified"] == [1]
 
         # A held position is sent as the signer's own: sign mode on /plan,
         # with no size hint.

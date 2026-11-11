@@ -25,7 +25,6 @@ import {
 } from "../src/errors.js";
 import { parseEnrollmentReply, requestEnrollment, requestEnrollmentFromEnv } from "../src/utils.js";
 import { bytesToHex, hexToBytes, concatenateSignedTxns, encodeTransaction, encodeLsigArgs } from "../src/encoding.js";
-import { assembleGroup } from "../src/utils.js";
 import {
   loadClientEndpointRegistry,
   loadConfig,
@@ -1716,19 +1715,32 @@ describe("SignerClient", () => {
       });
 
       const client = new SignerClient("http://localhost:11270");
-      const result = await client.requestAssemble({
+      const assembly = {
+        request_id: "sdk-assembly",
         group_bytes_hex: ["5458aa"],
         targets: [
           {
             target_index: 0,
-            kind: "bounded-cosigner",
+            kind: "bounded-cosigner" as const,
             auth_address: "BOUNDED",
             base_signatures: ["aabb"],
             assembly_receipt: "eeff",
             cosigner_signature: "bbcc",
           },
         ],
+      };
+      const result = await client.requestAssemble(assembly);
+
+      // An answer to some other request is refused.
+      mockFetch.mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: async () => ({ request_id: "sdk-someone-elses", signed_group: ["ccdd"] }),
       });
+      await assert.rejects(
+        client.requestAssemble(assembly),
+        /invalid assembly response: request_id "sdk-someone-elses" does not match the request's "sdk-assembly"/,
+      );
 
       assert.deepEqual(result.signed_group, ["ccdd"]);
       assert.equal(mockFetch.mock.calls[0][0], "http://localhost:11270/sign/assemble");
@@ -3065,8 +3077,12 @@ describe("SignerClient", () => {
         assert.deepEqual(events, ["base", "sign"]);
         return;
       }
-      await run();
+      const result = await run();
       assert.deepEqual(events, ["base", "sign", "cosigner", "assemble"]);
+      // The result carries what the plan added, so the caller can read the
+      // fee the signer charged.
+      assert.equal(result.planMutations?.totalFeesDelta, 2000);
+      assert.deepEqual(result.planMutations?.feesModified, [1]);
       // Sign mode on /plan, with no size hint.
       assert.equal(primaryRequest.auth_address, nativePq);
       assert.equal(primaryRequest.pq_scheme, undefined);
@@ -4793,42 +4809,6 @@ describe("sign return format", () => {
     const client = new SignerClient("http://localhost:11270");
     const mockTxn = createMockTxn() as Parameters<typeof client.planGroup>[0][0];
     await assert.rejects(client.planGroup([mockTxn], ["A", "B"]), SignerError);
-  });
-});
-
-describe("assembleGroup", () => {
-  it("merges two signers into one group", () => {
-    // Alice signed slots 0,2; Bob signed slot 1
-    const aliceSigned = [
-      Buffer.from([1, 2]).toString("base64"),
-      "",
-      Buffer.from([5, 6]).toString("base64"),
-    ];
-    const bobSigned = [
-      "",
-      Buffer.from([3, 4]).toString("base64"),
-      "",
-    ];
-
-    const result = assembleGroup([aliceSigned, bobSigned]);
-    // Should be base64 of [1,2,3,4,5,6]
-    assert.equal(result, Buffer.from([1, 2, 3, 4, 5, 6]).toString("base64"));
-  });
-
-  it("throws on empty input", () => {
-    assert.throws(() => assembleGroup([]), { message: /must not be empty/ });
-  });
-
-  it("throws on mismatched lengths", () => {
-    assert.throws(() => assembleGroup([["a", "b"], ["c"]]), { message: /expected 2/ });
-  });
-
-  it("throws on slot with no signer", () => {
-    assert.throws(() => assembleGroup([["a", ""], ["", ""]]), { message: /slot 1: no signer/ });
-  });
-
-  it("throws on slot with multiple signers", () => {
-    assert.throws(() => assembleGroup([["a", "b"], ["c", "d"]]), { message: /slot 0: multiple signers/ });
   });
 });
 

@@ -8,18 +8,10 @@ import type {
 } from "./types.js";
 import { PQ_SCHEME_FALCON1024, wireLogicSigResources } from "./types.js";
 import { SignerError } from "./errors.js";
-import { encodeLsigArgs, encodeTransaction, bytesToHex } from "./encoding.js";
+import { base64ToBytes, encodeLsigArgs, encodeTransaction, bytesToHex } from "./encoding.js";
 
 function base64ToHex(value: string): string {
-  if (typeof Buffer !== "undefined") {
-    return Buffer.from(value, "base64").toString("hex");
-  }
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytesToHex(bytes);
+  return bytesToHex(base64ToBytes(value, "signedTransactionBase64"));
 }
 
 /**
