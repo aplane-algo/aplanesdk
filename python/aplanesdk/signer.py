@@ -305,6 +305,51 @@ class InvalidTransactionError(TransactionRejectedError):
     pass
 
 
+class _AnswerLostError(SignerUnavailableError):
+    """An approval-bearing request whose exchange failed, so no answer
+    arrived. The signer may have acted on it. Raised in place of the plain
+    connection failure, which it reads as."""
+
+    pass
+
+
+class _AnswerUnreadError(SignerError):
+    """An approval-bearing request answered 200 with a body that could not be
+    read. The signer may have released a signature."""
+
+    pass
+
+
+def _answer_lost(error: BaseException) -> bool:
+    """Whether error is, or was raised from, an approval-bearing request that
+    ended with no usable answer: a /sign, a component request, or an
+    assembly. Planning and key listing release nothing and never count."""
+    seen = set()
+    current: Optional[BaseException] = error
+    while current is not None and id(current) not in seen:
+        if isinstance(current, (_AnswerLostError, _AnswerUnreadError)):
+            return True
+        seen.add(id(current))
+        current = current.__cause__
+    return False
+
+
+def _approval_answer(resp: requests.Response, what: str) -> Dict[str, Any]:
+    """Read the JSON object an approval-bearing request was answered with.
+
+    A 200 whose body is not a JSON object is an answer that could not be read,
+    not a refusal: the signer may have released a signature. ``what`` begins
+    the error's message, which goes on with the start of the body.
+    """
+    try:
+        data = resp.json()
+    except ValueError as e:
+        raise _AnswerUnreadError(f"{what}: {resp.text[:200]}") from e
+    if not isinstance(data, dict):
+        raise _AnswerUnreadError(f"{what}: {resp.text[:200]}")
+    return data
+
+
 # -----------------------------------------------------------------------------
 # Types
 # -----------------------------------------------------------------------------
@@ -1297,9 +1342,32 @@ def _simulate_signed_group(
 ) -> SimulationResult:
     if algod_client is None:
         raise ValueError("algod_client is required")
+    signed_transactions = _decode_executable_signed_group(signed_group)
+    response = _run_simulation(algod_client, signed_transactions, allow_empty_signatures=False)
+    groups = response.get("txn-groups") or response.get("txn_groups") or []
+    failure = ""
+    if groups:
+        failure = groups[0].get("failure-message") or groups[0].get("failure_message", "")
+
+    return SimulationResult(
+        tx_ids=[signed.get_txid() for signed in signed_transactions],
+        transactions=[encode_transaction(signed.transaction)[0] for signed in signed_transactions],
+        signed_group=list(signed_group),
+        mutations=mutations,
+        response=response,
+        failed=bool(failure),
+    )
+
+
+def _decode_executable_signed_group(signed_group: List[str]) -> List[Any]:
+    """Decode a signed group that is to be simulated or submitted.
+
+    Every position must be one canonically encoded signed transaction: the
+    raw hex is what gets submitted and the decoded value is what gets
+    simulated, so the two must be the same transaction exactly.
+    """
     if not signed_group:
         raise SignerError("signed group is empty")
-
     signed_transactions = []
     for index, signed_hex in enumerate(signed_group, start=1):
         if not signed_hex:
@@ -1308,18 +1376,50 @@ def _simulate_signed_group(
             signed_bytes = _strict_hex(signed_hex)
         except ValueError as e:
             raise SignerError(f"signed group position {index} is invalid hex: {e}") from e
-        # The raw hex is what gets submitted and the decoded value is what gets
-        # simulated, so the two must be the same transaction exactly.
         try:
             signed = _decode_canonical_signed_txn(signed_bytes)
         except SignerError as e:
             raise SignerError(f"signed group position {index}: {e}") from e
         signed_transactions.append(signed)
+    return signed_transactions
+
+
+class _SimulateRequest(models.SimulateRequest):
+    """A simulate request that can ask the node to fix signers.
+
+    py-algorand-sdk's request has no fix-signers field; algod reads it from
+    the same msgpack map.
+    """
+
+    def __init__(self, *, fix_signers: bool = False, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.fix_signers = fix_signers
+
+    def dictify(self) -> Dict[str, Any]:
+        data = super().dictify()
+        data["fix-signers"] = self.fix_signers
+        return data
+
+
+def _run_simulation(
+    algod_client: Any, group: List[Any], *, allow_empty_signatures: bool
+) -> Dict[str, Any]:
+    """Send one group to the node's simulate endpoint, with execution traces
+    when the node allows them.
+
+    allow_empty_signatures simulates an unsigned group; signed simulation
+    leaves it off so the node checks every signature.
+    """
 
     def simulation_request(trace: bool) -> models.SimulateRequest:
-        return models.SimulateRequest(
-            txn_groups=[models.SimulateRequestTransactionGroup(txns=signed_transactions)],
-            allow_empty_signatures=False,
+        return _SimulateRequest(
+            txn_groups=[models.SimulateRequestTransactionGroup(txns=group)],
+            allow_empty_signatures=allow_empty_signatures,
+            # An unsigned transaction names no signer. fix-signers has the
+            # node take each sender's authorizer from the chain, which a
+            # rekeyed sender, such as a rotating account after its first
+            # spend, needs.
+            fix_signers=allow_empty_signatures,
             allow_more_logs=trace,
             exec_trace_config=(
                 models.SimulateTraceConfig(enable=True, state_change=True) if trace else None
@@ -1336,19 +1436,7 @@ def _simulate_signed_group(
 
     if not isinstance(response, dict):
         raise SignerError("simulation API returned an invalid response")
-    groups = response.get("txn-groups") or response.get("txn_groups") or []
-    failure = ""
-    if groups:
-        failure = groups[0].get("failure-message") or groups[0].get("failure_message", "")
-
-    return SimulationResult(
-        tx_ids=[signed.get_txid() for signed in signed_transactions],
-        transactions=[encode_transaction(signed.transaction)[0] for signed in signed_transactions],
-        signed_group=list(signed_group),
-        mutations=mutations,
-        response=response,
-        failed=bool(failure),
-    )
+    return response
 
 
 _SIGNED_TRANSACTION_TYPES = (
@@ -5116,7 +5204,9 @@ class SignerClient:
         except requests.RequestException as e:
             if kind != COMPONENT_TARGET_KIND_COSIGNER:
                 self._best_effort_cancel_sign_request(request_body["request_id"])
-            raise SignerUnavailableError(f"Failed to connect: {e}")
+            # The request may have reached the signer, which may have released
+            # its component.
+            raise _AnswerLostError(f"Failed to connect: {e}") from e
         if resp.status_code == 401:
             raise AuthenticationError("Not authenticated: connect through an enrolled SSH key")
         if resp.status_code == 403:
@@ -5127,7 +5217,7 @@ class SignerClient:
             raise self._bad_request_error(resp)
         if resp.status_code != 200:
             raise self._signer_http_error(resp, f"Component signing failed: HTTP {resp.status_code}")
-        data = self._safe_json(resp)
+        data = _approval_answer(resp, "failed to decode component response")
         if data.get("error"):
             raise SignerError(data["error"])
         try:
@@ -5180,7 +5270,9 @@ class SignerClient:
                 timeout=self._timeout_for(COSIGNED_ASSEMBLY_TIMEOUT),
             )
         except requests.RequestException as e:
-            raise SignerUnavailableError(f"Failed to connect: {e}")
+            # Assembly releases the whole group, so a request that may have
+            # reached the signer has an unknown outcome.
+            raise _AnswerLostError(f"Failed to connect: {e}") from e
 
         if resp.status_code == 401:
             raise AuthenticationError("Not authenticated: connect through an enrolled SSH key")
@@ -5197,7 +5289,7 @@ class SignerClient:
                 f"Assembly failed: HTTP {resp.status_code}",
             )
 
-        data = self._safe_json(resp)
+        data = _approval_answer(resp, "failed to decode assembly response")
         if data.get("error"):
             raise SignerError(data["error"])
         try:
@@ -5217,6 +5309,23 @@ class SignerClient:
             self.cancel_sign_request(request_id)
         except Exception:
             pass
+
+    def _post_approval(self, path: str, request_id: str, body: Dict[str, Any]) -> requests.Response:
+        """Post an approval-bearing request and return the signer's answer.
+
+        It waits as long as the signer's approval wait allows. When the
+        exchange fails, timing out included, it sends a best-effort
+        /sign/cancel for request_id and raises _AnswerLostError: the signer
+        may have acted on the request.
+        """
+        self._discover_approval_wait()
+        try:
+            return self.session.post(
+                f"{self.base_url}{path}", json=body, timeout=self._sign_request_timeout()
+            )
+        except requests.RequestException as e:
+            self._best_effort_cancel_sign_request(request_id)
+            raise _AnswerLostError(f"Failed to connect: {e}") from e
 
     def _build_sign_requests(
         self,
@@ -5471,15 +5580,7 @@ class SignerClient:
             "requests": sign_entries,
         }
 
-        self._discover_approval_wait()
-
-        try:
-            resp = self.session.post(
-                f"{self.base_url}/sign", json=request_body, timeout=self._sign_request_timeout()
-            )
-        except requests.RequestException as e:
-            self._best_effort_cancel_sign_request(request_id)
-            raise SignerUnavailableError(f"Failed to connect: {e}")
+        resp = self._post_approval("/sign", request_id, request_body)
 
         # Handle errors
         # Note: Use _safe_json() to handle both JSON and plain text error responses
@@ -5500,10 +5601,7 @@ class SignerClient:
             raise self._signer_http_error(resp, f"Signing failed: HTTP {resp.status_code}")
 
         # Parse successful response
-        try:
-            data = resp.json()
-        except json.JSONDecodeError:
-            raise SignerError(f"Server returned invalid JSON: {resp.text[:200]}")
+        data = _approval_answer(resp, "Server returned invalid JSON")
 
         if data.get("error"):
             raise SignerError(data["error"])
