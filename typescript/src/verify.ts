@@ -73,17 +73,29 @@ export interface RequestSlot {
 }
 
 /**
+ * The canonical spelling of value when value is an Algorand address spelled
+ * otherwise: algosdk also reads the spellings that differ only in the unused
+ * low bits of the last character, which the Go SDK's decoder refuses. For a
+ * canonically spelled address, and for a string that is not an address at
+ * all, it is undefined.
+ */
+export function alternateAddressSpelling(value: string): string | undefined {
+  if (!algosdk.isValidAddress(value)) return undefined;
+  const canonical = algosdk.Address.fromString(value).toString();
+  return canonical === value ? undefined : canonical;
+}
+
+/**
  * The slot of a sign-mode position. The auth address must be a real address,
  * spelled canonically: the returned authorization is checked against it, as
- * a string. algosdk also reads the spellings that differ only in the unused
- * low bits of the last character, which the Go SDK's decoder refuses.
+ * a string.
  */
 export function signSlot(txn: Transaction, authAddress: string | undefined): RequestSlot {
   if (typeof authAddress !== "string" || !algosdk.isValidAddress(authAddress)) {
     throw new SignerError(`auth_address ${JSON.stringify(authAddress)} is not a valid address`);
   }
-  const canonical = algosdk.Address.fromString(authAddress).toString();
-  if (canonical !== authAddress) {
+  const canonical = alternateAddressSpelling(authAddress);
+  if (canonical !== undefined) {
     throw new SignerError(`auth_address ${authAddress} is not the canonical spelling of ${canonical}`);
   }
   return { mode: "sign", txn, auth: authAddress };

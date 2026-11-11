@@ -107,6 +107,7 @@ import {
   DUMMY_OPCODE_COST,
   DUMMY_PROGRAM as COSIGNED_DUMMY_PROGRAM,
   MAX_GROUP_SIZE,
+  alternateAddressSpelling,
   checkMaxFeeIncrease,
   cloneTransaction,
   decodeCanonicalTransaction,
@@ -1575,9 +1576,8 @@ function requireCanonicalAddress(value: unknown, name: string): void {
   if (typeof value !== "string") {
     throw new SignerError(`${name} must be an address string, not ${nonStringKind(value)}`);
   }
-  if (!algosdk.isValidAddress(value)) return;
-  const canonical = algosdk.Address.fromString(value).toString();
-  if (canonical !== value) {
+  const canonical = alternateAddressSpelling(value);
+  if (canonical !== undefined) {
     throw new SignerError(`${name} ${value} is not the canonical spelling of ${canonical}`);
   }
 }
@@ -2797,9 +2797,8 @@ export class SignerClient {
     // matched by an exact lookup.
     records.forEach((record, index) => {
       const address = record.address as string;
-      if (!algosdk.isValidAddress(address)) return;
-      const canonical = algosdk.Address.fromString(address).toString();
-      if (canonical !== address) {
+      const canonical = alternateAddressSpelling(address);
+      if (canonical !== undefined) {
         throw new SignerError(
           `Server returned a malformed response: key ${index} address ${JSON.stringify(address)} is a non-canonical spelling of address ${canonical}`,
         );
