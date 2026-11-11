@@ -438,6 +438,13 @@ def _plain_key(signed):
     signed[0]["sig"] = _SIGNATURE
 
 
+def _field_of_answer(name, value):
+    def alter(signer, response, signed):
+        response[name] = value(response)
+
+    return alter
+
+
 def _another_stage(signer, response, signed):
     response["stage"], response["target"] = response["stage"] + 1, response["target"] + 1
 
@@ -531,6 +538,16 @@ SIGN_TAMPERS = [
         "dummy signed by another program",
         _resign(_set_in(1, "lsig", {"l": ROTATING_NEXT_PROGRAM})),
         "not the canonical signed resource dummy",
+    ),
+    (
+        "another stage reported, target unchanged",
+        _field_of_answer("stage", lambda r: r["stage"] + 1),
+        "signer reports stage 4 to 4, prepared 3 to 4",
+    ),
+    (
+        "another target reported, stage unchanged",
+        _field_of_answer("target", lambda r: r["target"] + 1),
+        "signer reports stage 3 to 5, prepared 3 to 4",
     ),
     ("another stage reported", _another_stage, "signer reports stage 4 to 5, prepared 3 to 4"),
     ("another transaction ID reported", _another_txid, "signer reports transaction ID"),
