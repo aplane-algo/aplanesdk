@@ -30,6 +30,10 @@ from .signer import (
     sign_prepared_cosigned_group,
     simulate_prepared_cosigned_group,
 
+    # Cosigner discovery
+    EndpointCosignerResolver,
+    witness_key_id,
+
     # Unified sending and rotating accounts
     SendResult,
     RotatingSendDetails,
@@ -40,9 +44,20 @@ from .signer import (
     SEND_OUTCOME_CONFIRMED,
     SEND_STAGE_SUBMIT,
     SEND_STAGE_CONFIRM,
+    SEND_STAGE_UNSENT,
     ROTATING_MAX_VALIDITY_WINDOW,
     ROTATING_MAX_LEAD,
     ROTATING_MIN_REMAINING,
+
+    # After an uncertain outcome
+    OutcomeReport,
+    OUTCOME_CONFIRMED,
+    OUTCOME_PENDING,
+    OUTCOME_NOT_SEEN,
+    OUTCOME_SIGNABLE,
+    OUTCOME_EXPIRED,
+    OUTCOME_TOO_OLD,
+    OUTCOME_NODE_MEMORY_ROUNDS,
 
     # Enrollment
     request_enrollment,
@@ -88,6 +103,8 @@ from .signer import (
     SubmissionRejectedError,
     SubmissionUncertainError,
     RotatingPreflightError,
+    CosignerDiscoveryError,
+    SendTimeoutError,
 
     # Types
     RuntimeArg,
@@ -162,6 +179,10 @@ __all__ = [
     "sign_prepared_cosigned_group",
     "simulate_prepared_cosigned_group",
 
+    # Cosigner discovery
+    "EndpointCosignerResolver",
+    "witness_key_id",
+
     # Unified sending and rotating accounts
     "SendResult",
     "RotatingSendDetails",
@@ -172,9 +193,20 @@ __all__ = [
     "SEND_OUTCOME_CONFIRMED",
     "SEND_STAGE_SUBMIT",
     "SEND_STAGE_CONFIRM",
+    "SEND_STAGE_UNSENT",
     "ROTATING_MAX_VALIDITY_WINDOW",
     "ROTATING_MAX_LEAD",
     "ROTATING_MIN_REMAINING",
+
+    # After an uncertain outcome
+    "OutcomeReport",
+    "OUTCOME_CONFIRMED",
+    "OUTCOME_PENDING",
+    "OUTCOME_NOT_SEEN",
+    "OUTCOME_SIGNABLE",
+    "OUTCOME_EXPIRED",
+    "OUTCOME_TOO_OLD",
+    "OUTCOME_NODE_MEMORY_ROUNDS",
 
     # Enrollment
     "request_enrollment",
@@ -220,6 +252,8 @@ __all__ = [
     "SubmissionRejectedError",
     "SubmissionUncertainError",
     "RotatingPreflightError",
+    "CosignerDiscoveryError",
+    "SendTimeoutError",
 
     # Types
     "RuntimeArg",

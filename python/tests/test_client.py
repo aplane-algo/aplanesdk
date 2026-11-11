@@ -1534,7 +1534,11 @@ class TestSignPreparedCosignedGroup:
         ])
 
         with pytest.raises(RuntimeError, match="stop after per-slot plan assertion"):
-            sign_prepared_cosigned_group(user_client=user, prepared_group=prepared)
+            sign_prepared_cosigned_group(
+                user_client=user,
+                cosigner_client=make_client("http://cosigner:11270"),
+                prepared_group=prepared,
+            )
 
     def test_plan_validation_rejects_unreported_changes_and_bad_dummies(self):
         sender = sdk_test_address(21)

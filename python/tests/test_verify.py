@@ -714,7 +714,7 @@ def test_connection_helpers_forward_max_fee_increase(tmp_path):
     ssh_dir = tmp_path / ".ssh"
     ssh_dir.mkdir()
     (ssh_dir / "id_ed25519").write_text("dummy-private-key")
-    with patch.object(SignerClient, "connect_ssh", return_value="client") as connect:
+    with patch.object(SignerClient, "connect_ssh", return_value=MagicMock()) as connect:
         SignerClient.from_env(data_dir=str(tmp_path), max_fee_increase=250_000)
     assert connect.call_args.kwargs["max_fee_increase"] == 250_000
 
