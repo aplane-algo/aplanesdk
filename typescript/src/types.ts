@@ -1189,12 +1189,15 @@ export interface SimulationResult {
   response: modelsv2.SimulateResponse;
   /**
    * Whether the group did anything but pass. A node answer without exactly
-   * one group result checked nothing, so it is a failure too.
+   * one group result, an object holding one transaction result per
+   * transaction, checked less than the group, so it is a failure too.
    */
   failed: boolean;
   /**
-   * Why it failed: the node's failure message, or that the node returned no
-   * result, or more than one, for the group. Empty when it passed.
+   * Why it failed: the node's failure message; "the node reported a failure
+   * without a message" when it set failed-at alone; or that the node
+   * returned no result for the group, more than one, a result that is not an
+   * object, or the wrong number of transaction results. Empty when it passed.
    */
   failureMessage: string;
 }

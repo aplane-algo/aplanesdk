@@ -45,6 +45,7 @@ import {
   alternateSpellings,
   blobHex,
   installSigners,
+  passingGroupResult,
   statusBody,
   testGenesisHash,
   type FakeReply,
@@ -1260,6 +1261,25 @@ describe("rotating stops before signing", () => {
     assert.equal(signer.count("/sign/rotating/sign"), 0);
   });
 
+  // The unsigned rotating group holds the spend and its resource dummy.
+  for (const [name, group, failure] of [
+    ["one group result without transaction results", { txnResults: [] }, "the node returned 0 transaction results for 2 transactions"],
+    ["a group result with one transaction result", { txnResults: [{}] }, "the node returned 1 transaction results for 2 transactions"],
+    ["failed-at without a message", { ...passingGroupResult(2), failedAt: [0] }, "the node reported a failure without a message"],
+    ["a group result that is not an object", "x", "the node's result for the group is not an object"],
+  ] as Array<[string, unknown, string]>) {
+    it(`when simulation reports ${name}`, async () => {
+      const { signer, node, algod, client, txn } = rotatingFixture();
+      node.simulate = () => ({ lastRound: 10n, version: 2, txnGroups: [group] });
+      await assert.rejects(client.sendPrepared(algod, rotatingGroup(txn)), (error: unknown) => {
+        assert.ok(error instanceof RotatingPreflightError, String(error));
+        assert.equal(error.failureMessage, failure);
+        return true;
+      });
+      assert.equal(signer.count("/sign/rotating/sign"), 0);
+    });
+  }
+
   it("when the signal aborts after simulation", async () => {
     const { signer, node, algod, client, txn } = rotatingFixture();
     // A signal that aborts once the simulation has been answered, without
@@ -1267,7 +1287,7 @@ describe("rotating stops before signing", () => {
     const controller = new AbortController();
     node.simulate = () => {
       controller.abort();
-      return { lastRound: 10n, version: 2, txnGroups: [{ txnResults: [] }] };
+      return { lastRound: 10n, version: 2, txnGroups: [passingGroupResult(2)] };
     };
     // The send's own check stops it before signing is attempted at all, not
     // the signing call's check on an aborted signal.

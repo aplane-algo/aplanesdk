@@ -249,12 +249,14 @@ export async function runSimulation(
 }
 
 /**
- * Why a simulation of one group did anything but pass, or "" when it passed:
- * the node's failure message, or that the node returned no result, or more
- * than one, for the group. An answer without exactly one group result checked
- * nothing, so it is a failure.
+ * Why a simulation of one group of transactionCount transactions did anything
+ * but pass, or "" when it passed. It passes only when the node returned
+ * exactly one group result, an object with no failure message and no
+ * failed-at, holding one transaction result per transaction submitted:
+ * anything else checked less than the group, so it is a failure. The reason
+ * is the node's own failure message, or which of those it was.
  */
-export function simulationFailure(response: any): string {
+export function simulationFailure(response: any, transactionCount: number): string {
   const groups = response?.txnGroups;
   if (!Array.isArray(groups) || groups.length === 0) {
     return "the node returned no result for the group";
@@ -262,7 +264,25 @@ export function simulationFailure(response: any): string {
   if (groups.length !== 1) {
     return `the node returned ${groups.length} results for one group`;
   }
-  return String(groups[0]?.failureMessage ?? "");
+  const group = groups[0];
+  if (typeof group !== "object" || group === null || Array.isArray(group)) {
+    return "the node's result for the group is not an object";
+  }
+  // A message is a failure whatever its type; only one left out, or empty,
+  // is none.
+  const message = group.failureMessage;
+  if (message !== undefined && message !== null && message !== "") {
+    return String(message);
+  }
+  const failedAt = group.failedAt;
+  if (failedAt !== undefined && failedAt !== null && !(Array.isArray(failedAt) && failedAt.length === 0)) {
+    return "the node reported a failure without a message";
+  }
+  const results = Array.isArray(group.txnResults) ? group.txnResults.length : 0;
+  if (results !== transactionCount) {
+    return `the node returned ${results} transaction results for ${transactionCount} transactions`;
+  }
+  return "";
 }
 
 /**

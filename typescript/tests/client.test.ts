@@ -3873,7 +3873,7 @@ describe("SignerClient", () => {
         simulateTransactions: (request: algosdk.modelsv2.SimulateRequest) => {
           simulationRequests.push(request);
           return {
-            do: async () => ({ lastRound: 7n, version: 2n, txnGroups: [{ txnResults: [] }] }),
+            do: async () => ({ lastRound: 7n, version: 2n, txnGroups: [{ txnResults: [{ txnResult: {} }] }] }),
           };
         },
       } as any;
@@ -3890,16 +3890,46 @@ describe("SignerClient", () => {
       assert.deepEqual(result.signedGroup, [signedHex]);
     });
 
-    // An answer without exactly one group result checked nothing.
+    // An answer without exactly one group result, an object holding one
+    // transaction result per transaction, checked less than the group.
+    const one = { txnResults: [{ txnResult: {} }] };
     const groupCounts: Array<{ name: string; answer: Record<string, unknown>; failure: string }> = [
       { name: "no group results", answer: { txnGroups: [] }, failure: "the node returned no result for the group" },
       { name: "no group result list", answer: {}, failure: "the node returned no result for the group" },
       {
         name: "two group results",
-        answer: { txnGroups: [{ txnResults: [] }, { txnResults: [] }] },
+        answer: { txnGroups: [one, one] },
         failure: "the node returned 2 results for one group",
       },
-      { name: "one passing group result", answer: { txnGroups: [{ txnResults: [] }] }, failure: "" },
+      { name: "a null group result", answer: { txnGroups: [null] }, failure: "the node's result for the group is not an object" },
+      { name: "a group result that is a list", answer: { txnGroups: [[]] }, failure: "the node's result for the group is not an object" },
+      {
+        name: "an empty group result",
+        answer: { txnGroups: [{}] },
+        failure: "the node returned 0 transaction results for 1 transactions",
+      },
+      {
+        name: "a group result with no transaction results",
+        answer: { txnGroups: [{ txnResults: [] }] },
+        failure: "the node returned 0 transaction results for 1 transactions",
+      },
+      {
+        name: "a group result with two transaction results",
+        answer: { txnGroups: [{ txnResults: [{}, {}] }] },
+        failure: "the node returned 2 transaction results for 1 transactions",
+      },
+      {
+        name: "failed-at with no message",
+        answer: { txnGroups: [{ ...one, failedAt: [0] }] },
+        failure: "the node reported a failure without a message",
+      },
+      {
+        name: "a failure message before a wrong count",
+        answer: { txnGroups: [{ failureMessage: "logic eval error", failedAt: [0], txnResults: [] }] },
+        failure: "logic eval error",
+      },
+      { name: "an empty failure message and failed-at", answer: { txnGroups: [{ ...one, failureMessage: "", failedAt: [] }] }, failure: "" },
+      { name: "one passing group result", answer: { txnGroups: [one] }, failure: "" },
     ];
     for (const testCase of groupCounts) {
       it(`reports ${testCase.name} as ${testCase.failure ? "failed" : "passed"}`, async () => {

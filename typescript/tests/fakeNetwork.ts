@@ -147,6 +147,11 @@ export const testGenesisHash = (() => {
   return hash;
 })();
 
+/** A node's passing result for a simulated group of count transactions. */
+export function passingGroupResult(count: number): { txnResults: unknown[] } {
+  return { txnResults: Array.from({ length: count }, () => ({ txnResult: {} })) };
+}
+
 /** A fake node for send tests. */
 export class FakeAlgod {
   /** The node's current round. */
@@ -157,7 +162,10 @@ export class FakeAlgod {
   pending?: () => { poolError?: string; confirmedRound?: bigint };
   /** The chain's auth address per account. */
   authAddrs: Record<string, string> = {};
-  /** Answers a simulation; unset, it reports success. */
+  /**
+   * Answers a simulation; unset, it reports success, with one transaction
+   * result per transaction simulated.
+   */
   simulate?: (request: algosdk.modelsv2.SimulateRequest) => unknown;
   /** Answers an account lookup in place of the default. */
   account?: (address: string) => unknown;
@@ -231,7 +239,7 @@ export class FakeAlgod {
       do: async () => {
         this.simulated.push(request);
         if (this.simulate) return this.simulate(request);
-        return { lastRound: this.round, version: 2, txnGroups: [{ txnResults: [] }] };
+        return { lastRound: this.round, version: 2, txnGroups: [passingGroupResult(request.txnGroups[0].txns.length)] };
       },
     };
   }
