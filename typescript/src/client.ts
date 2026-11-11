@@ -1582,9 +1582,22 @@ function requireCanonicalAddress(value: unknown, name: string): void {
   }
 }
 
+/**
+ * The public key of an algosdk Address, told by its structure: an object
+ * whose publicKey is a 32-byte Uint8Array. An Address from another copy of
+ * algosdk (its ESM and CJS builds, or another installed version) is not an
+ * instance of this copy's class, but has the same structure. Anything else
+ * is undefined.
+ */
+function addressPublicKey(value: unknown): Uint8Array | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const publicKey = (value as { publicKey?: unknown }).publicKey;
+  return publicKey instanceof Uint8Array && publicKey.length === 32 ? publicKey : undefined;
+}
+
 /** What a value that is not a string is, for an error message. */
 function nonStringKind(value: unknown): string {
-  if (value instanceof algosdk.Address) return "an algosdk Address: pass its toString()";
+  if (addressPublicKey(value)) return "an algosdk Address: pass its toString()";
   if (value === null || value === undefined) return String(value);
   return typeof value === "object" ? "an object" : `a ${typeof value}`;
 }
@@ -2369,21 +2382,24 @@ function resolveAbiReferenceArgs(
 /**
  * An ABI account argument as the address string it references: a canonical
  * address string, an algosdk Address, or a 32-byte public key, as the Go SDK
- * takes them. Anything else, such as another spelling of an address or an
+ * takes them. An Address is told by its structure, so one from another copy
+ * of algosdk is taken too, and is encoded from its public key, never from its
+ * toString. Anything else, such as another spelling of an address or an
  * object that merely has a toString, is refused.
  */
 function marshalAbiAddress(value: unknown, name: string): string {
   if (typeof value === "string") {
     return requireAccountReference(value, name);
   }
-  if (value instanceof algosdk.Address) {
-    return value.toString();
-  }
   if (value instanceof Uint8Array) {
     if (value.length !== 32) {
       throw new SignerError(`${name}: decoded value is not a 32-byte address`);
     }
     return algosdk.encodeAddress(value);
+  }
+  const publicKey = addressPublicKey(value);
+  if (publicKey) {
+    return algosdk.encodeAddress(publicKey);
   }
   throw new SignerError(`${name}: account reference arguments must be Algorand addresses`);
 }
