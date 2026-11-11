@@ -1258,7 +1258,38 @@ def test_an_interrupt_around_the_rotating_sign_carries_the_prepared_group(fakes,
 
 def test_a_fault_in_the_checks_is_not_reported_as_a_refusal(fakes, monkeypatch):
     # Only the checks' own refusals are refusals. A fault inside them is an
-    # SDK defect and surfaces as what it is.
+    # SDK defect and, before anything is signed, surfaces as what it is.
+    f = Fixture(fakes)
+    prepared = f.client.prepare_rotating(f.txn)
+
+    def fault(*args, **kwargs):
+        raise TypeError("a defect in the checks")
+
+    monkeypatch.setattr(signer_module, "_validate_group_mutations", fault)
+    with pytest.raises(TypeError, match="a defect"):
+        f.client.prepare_rotating(f.txn)
+    with pytest.raises(TypeError, match="a defect"):
+        f.client.simulate_prepared_rotating(f.node.client, prepared)
+    with pytest.raises(TypeError, match="a defect"):
+        f.client.sign_prepared_rotating(prepared)
+    with pytest.raises(TypeError, match="a defect"):
+        f.send()
+    assert f.signer.count("/sign/rotating/sign") == 0
+
+
+def _assert_unknown_after_a_fault(error, request_id, prepared):
+    assert isinstance(error, SignOutcomeUnknownError)
+    assert error.request_id == request_id
+    assert error.rotating is prepared
+    assert isinstance(error.__cause__, TypeError)
+    assert "the check itself failed with TypeError" in str(error)
+
+
+def test_a_fault_in_checking_the_signed_group_is_an_unknown_outcome(fakes, monkeypatch):
+    # The signer answered 200, so the stage has signed. A fault in checking
+    # the answer is not a refusal, and does not escape bare: it is an unknown
+    # outcome that names the request and holds the prepared group, whose
+    # identical re-sign is the recovery.
     f = Fixture(fakes)
     prepared = f.client.prepare_rotating(f.txn)
 
@@ -1266,15 +1297,37 @@ def test_a_fault_in_the_checks_is_not_reported_as_a_refusal(fakes, monkeypatch):
         raise TypeError("a defect in the checks")
 
     monkeypatch.setattr(signer_module, "_sign_canonical_dummy", fault)
-    with pytest.raises(TypeError, match="a defect"):
-        f.client.sign_prepared_rotating(prepared)
-    monkeypatch.setattr(signer_module, "_validate_group_mutations", fault)
-    with pytest.raises(TypeError, match="a defect"):
-        f.client.prepare_rotating(f.txn)
-    with pytest.raises(TypeError, match="a defect"):
-        f.client.simulate_prepared_rotating(f.node.client, prepared)
-    with pytest.raises(TypeError, match="a defect"):
+    with pytest.raises(SignerError) as excinfo:
+        f.client.sign_prepared_rotating(prepared, request_id="app-id-3")
+    _assert_unknown_after_a_fault(excinfo.value, "app-id-3", prepared)
+    assert f.signer.count("/sign/rotating/sign") == 1
+
+    # The rotating send reports it the same way, and submits nothing.
+    with pytest.raises(SignerError) as excinfo:
         f.send()
+    sent = f.signer.sign_requests[-1]
+    _assert_unknown_after_a_fault(excinfo.value, sent["request_id"], excinfo.value.rotating)
+    assert isinstance(excinfo.value.rotating, PreparedRotating)
+    assert excinfo.value.rotating.transactions == sent["transactions"]
+    assert f.signer.count("/sign/rotating/sign") == 2 and f.node.submissions() == []
+
+
+def test_a_fault_in_describing_the_signed_group_is_an_unknown_outcome(fakes, monkeypatch):
+    # After the signed group has been checked and before it is submitted.
+    f = Fixture(fakes)
+
+    def fault(*args, **kwargs):
+        raise TypeError("a defect in the checks")
+
+    monkeypatch.setattr(signer_module, "_decode_executable_signed_group", fault)
+    with pytest.raises(SignerError) as excinfo:
+        f.send()
+    sent = f.signer.sign_requests[-1]
+    _assert_unknown_after_a_fault(excinfo.value, sent["request_id"], excinfo.value.rotating)
+    # The prepared group is the one that was sent to be signed.
+    assert isinstance(excinfo.value.rotating, PreparedRotating)
+    assert excinfo.value.rotating.transactions == sent["transactions"]
+    assert f.signer.count("/sign/rotating/sign") == 1 and f.node.submissions() == []
 
 
 class _Fake:

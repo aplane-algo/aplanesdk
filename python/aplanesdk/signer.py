@@ -6991,8 +6991,10 @@ class SignerClient:
         the signer's audit log; by default the SDK creates one. It is not an
         idempotency key.
 
-        If the answer never arrives it raises SignOutcomeUnknownError, whose
-        ``rotating`` holds the prepared group. Calling sign_prepared_rotating
+        If the answer never arrives, cannot be read, or cannot be checked
+        because the check itself fails, it raises SignOutcomeUnknownError,
+        whose ``request_id`` names the request and whose ``rotating`` holds
+        the prepared group. Calling sign_prepared_rotating
         again with that same prepared group is the safe recovery: it asks for
         the same transaction, with the same IDs, and builds no second spend.
         It needs approval again, and it succeeds only while the stage is still
@@ -7035,6 +7037,15 @@ class SignerClient:
             result = prepared._verify_signed(answer)
         except SignerError as e:
             raise _verification_error("verify signer response: ", e) from e
+        except Exception as e:
+            # A fault in the check itself, after a 200: the signature is out
+            # and its group unchecked. The outcome is unknown, and the caller
+            # needs the request and the prepared group to sign it again.
+            raise SignOutcomeUnknownError(
+                _verification_error("verify signer response: ", e),
+                request_id=request_id,
+                rotating=prepared,
+            ) from e
         result.request_id = request_id
         return result
 
@@ -7150,21 +7161,33 @@ class SignerClient:
         options: "_SendOptions",
     ) -> SendResult:
         """Submit a signed rotating group exactly as signed, and track it."""
-        result = SendResult(
-            flow=SIGNING_FLOW_ROTATING1,
-            signed_group=list(signed.signed_group),
-            original_count=1,
-            mutations=prepared.mutations,
-            rotating=RotatingSendDetails(
-                stage=signed.stage,
-                target=signed.target,
-                rekey_to=prepared.rekey_to,
-                attempts=attempt,
-                transaction=copy.deepcopy(txn),
+        try:
+            result = SendResult(
+                flow=SIGNING_FLOW_ROTATING1,
+                signed_group=list(signed.signed_group),
+                original_count=1,
+                mutations=prepared.mutations,
+                rotating=RotatingSendDetails(
+                    stage=signed.stage,
+                    target=signed.target,
+                    rekey_to=prepared.rekey_to,
+                    attempts=attempt,
+                    transaction=copy.deepcopy(txn),
+                    request_id=signed.request_id,
+                ),
+            )
+            raw = _describe_signed_group(result)
+        except SignerError:
+            raise
+        except Exception as e:
+            # The stage has signed and nothing is submitted yet: as in
+            # sign_prepared_rotating, a fault here leaves the outcome unknown,
+            # and the recovery is to sign the same prepared group again.
+            raise SignOutcomeUnknownError(
+                _verification_error("verify signed group: ", e),
                 request_id=signed.request_id,
-            ),
-        )
-        raw = _describe_signed_group(result)
+                rotating=prepared,
+            ) from e
         _submit_and_track(algod_client, raw, result, options)
         return result
 
