@@ -983,3 +983,58 @@ def test_an_endpoint_nobody_answers_at_is_unreachable(tmp_path):
         with pytest.raises(CosignerDiscoveryError) as excinfo:
             resolver.resolve(PUBLIC_A.hex(), WITNESS)
     assert str(excinfo.value).endswith('endpoints: "cosign" unreachable')
+
+
+def test_a_host_key_first_use_trust_cannot_save_is_a_configuration_error(tmp_path):
+    # Through the real connection code, against a real SSH server: the key
+    # exchange works, and saving the new host key fails.
+    import socket
+
+    import paramiko
+
+    host_key = paramiko.ECDSAKey.generate()
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    servers = []
+
+    def serve():
+        try:
+            conn, _ = listener.accept()
+        except OSError:
+            return
+        transport = paramiko.Transport(conn)
+        transport.add_server_key(host_key)
+        servers.append(transport)
+        try:
+            transport.start_server(server=paramiko.ServerInterface())
+        except Exception:
+            pass
+
+    threading.Thread(target=serve, daemon=True).start()
+    key_path = tmp_path / "id_ecdsa"
+    paramiko.ECDSAKey.generate().write_private_key_file(str(key_path))
+    blocker = tmp_path / "not_a_directory"
+    blocker.write_text("")
+    registry = ClientEndpointRegistry(
+        endpoints={
+            "cosign": ClientEndpointConfig(
+                role="cosigner",
+                url=f"ssh://127.0.0.1:{port}",
+                identity_file=str(key_path),
+                known_hosts_path=str(blocker / "known_hosts"),
+            )
+        }
+    )
+    try:
+        with EndpointCosignerResolver(
+            registry=registry, trust_on_first_use=True, ssh_setup_timeout=5
+        ) as resolver:
+            with pytest.raises(CosignerDiscoveryError) as excinfo:
+                resolver.resolve(PUBLIC_A.hex(), WITNESS)
+    finally:
+        listener.close()
+        for transport in servers:
+            transport.close()
+    assert str(excinfo.value).endswith('endpoints: "cosign" configuration invalid')

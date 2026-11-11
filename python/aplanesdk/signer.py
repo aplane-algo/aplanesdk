@@ -4507,8 +4507,8 @@ def _marshal_abi_address(value: Any) -> str:
 
 class _SSHConfigError(SignerError):
     """An SSH connection that cannot be made as configured: the client key
-    or the known_hosts file cannot be read, or the host key is unknown and
-    first-use trust is off."""
+    or the known_hosts file cannot be read, the host key is unknown and
+    first-use trust is off, or first-use trust cannot save it."""
 
 
 class _SSHHostKeyMismatchError(SignerError):
@@ -4712,12 +4712,19 @@ class _SSHTunnel:
                 f"{self._known_hosts_path}"
             )
 
-        known_hosts_dir = os.path.dirname(self._known_hosts_path)
-        if known_hosts_dir:
-            os.makedirs(known_hosts_dir, mode=0o700, exist_ok=True)
         host_keys.add(host_entry, server_key.get_name(), server_key)
-        host_keys.save(self._known_hosts_path)
-        os.chmod(self._known_hosts_path, 0o600)
+        # A key that cannot be saved is the configuration's fault (where the
+        # known_hosts file is, or who may write it), not the endpoint's.
+        try:
+            known_hosts_dir = os.path.dirname(self._known_hosts_path)
+            if known_hosts_dir:
+                os.makedirs(known_hosts_dir, mode=0o700, exist_ok=True)
+            host_keys.save(self._known_hosts_path)
+            os.chmod(self._known_hosts_path, 0o600)
+        except OSError as e:
+            raise _SSHConfigError(
+                f"cannot save the host key to {self._known_hosts_path}: {e}"
+            ) from e
 
     def _accept_loop(self):
         """Accept local connections and forward through SSH channel."""
