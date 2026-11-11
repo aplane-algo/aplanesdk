@@ -14,7 +14,11 @@ The TypeScript SDK is a user-facing integration surface for:
 - enrolling the client SSH key at a signer over the `enroll` flow
 - connecting to `apsigner` over the standard SSH-backed product path
 - listing signer keys and available key types
-- planning and signing single transactions and groups
+- sending a transaction or group in one call (sign, check, submit and wait
+  for confirmation) for every account type the signer holds
+- finding a cosigned account's cosigner from `endpoints.yaml`
+- saying where an uncertain outcome stands, from the node alone
+- planning and signing single transactions and groups without submitting them
 - assembling multi-party group results
 - submitting signed transactions with cleaner algod error mapping
 
@@ -288,6 +292,282 @@ const signed = await client.signTransaction(txn, undefined, undefined, {
 controller.abort();
 ```
 
+## Sending Transactions
+
+### Send A Payment Or A Prepared Group
+
+`sendPayment()` and `sendPrepared()` are the recommended way to send. One
+call signs a transaction or group, checks the signed result, submits exactly
+those bytes and waits for confirmation:
+
+```ts
+const result = await client.sendPayment(algodClient, {
+  sender,
+  receiver,
+  amount: 1_000_000, // microAlgos
+});
+console.log(result.txIds[0], result.outcome, result.confirmedRound);
+```
+
+`sendPayment()` builds the payment with `preparePayment()` and sends it.
+`sendPrepared()` sends what a `prepare*` helper built, one transaction or a
+group:
+
+```ts
+const group = await client.preparePaymentGroup(algodClient, [
+  { sender, receiver: receiverA, amount: 1_000_000 },
+  { sender, receiver: receiverB, amount: 2_000_000 },
+]);
+const result = await client.sendPrepared(algodClient, group);
+```
+
+Pass one prepared transaction as `{ transactions: [prepared] }`.
+
+The same call works for every account type: Ed25519, native Falcon, LogicSig,
+bounded, cosigned and rotating accounts, and a rekeyed sender. You do not
+look up the auth address or choose the signing flow:
+
+- the `prepare*` helpers read each sender's auth address from the chain and
+  name the key that signs in `authAddress`;
+- the send reads the signer's own record of that key and picks the flow from
+  it: ordinary `/sign` for Ed25519, native Falcon, LogicSig and bounded
+  accounts, the cosigned sequence for an account with a cosigner, and the
+  rotating sequence for a rotating account;
+- it signs, with operator approval where the signer asks for it, and checks
+  the signed group against what was prepared, with the checks in
+  [What The SDK Checks Before Returning](#what-the-sdk-checks-before-returning);
+- it submits exactly those bytes and waits for confirmation.
+
+Every position must name, in `authAddress`, a key this signer holds, as the
+`prepare*` helpers do.
+
+`SendResult` carries:
+
+- `signedGroup`: the group as submitted, hex msgpack. The first
+  `originalCount` entries are your transactions, in order; the rest are
+  resource dummies the signer appended.
+- `txIds`, `fees` (bigint microAlgos) and `groupId`, computed from the signed
+  bytes. The signer may raise a fee or assign a group ID, so `txIds` can
+  differ from the IDs of the transactions you prepared.
+- `mutations`: the signer's report of what it changed, checked against the
+  signed bytes; undefined when it changed nothing.
+- `outcome` (`"confirmed"`, or `"submitted"` with `noWait`) and
+  `confirmedRound`, a bigint, `0n` unless confirmed.
+- `flow`: `""` for the ordinary flow, `"cosigned1"` or `"rotating1"`.
+  `cosigned` holds a cosigned send's component responses and `rotating` a
+  rotating send's stages.
+
+`SendOptions` (all optional):
+
+- `noWait`: return once the node accepts the group, with outcome
+  `"submitted"`.
+- `waitRounds`: how many further rounds to wait for confirmation; unset or
+  zero means 10.
+- `refreshValidity`: let a rotating account's send rebuild the transaction's
+  validity rounds; see [Rotating Accounts](#rotating-accounts).
+- `cosignerClient` with `cosignerComponentKey`, or `cosignerResolver`: a
+  cosigned account's cosigner, when it is not found from `endpoints.yaml`;
+  see [Finding The Cosigner](#finding-the-cosigner). The send does not close
+  a cosigner client you pass.
+- `signal`: an `AbortSignal`; see
+  [Cancellation And Time Limits](#cancellation-and-time-limits).
+
+Refused before anything is signed:
+
+- `UnsupportedSigningFlowError`: a key needs a signing flow this SDK version
+  cannot run. Upgrade the SDK.
+- `UnsupportedGroupError`: a group the send does not cover, such as a
+  pre-signed or foreign position, or a rotating account's transaction in a
+  group.
+- `KeyNotFoundError`: a position names a key the signer does not hold.
+
+The `sign*` and `plan*` calls under [Common Tasks](#common-tasks) remain for
+callers who want signed bytes without the SDK submitting them: to submit
+through their own node or pipeline, to hold a signed group, or to sign a
+group the send does not take, such as a multi-party group with passthrough
+positions. They do not submit and do not wait.
+
+### Rotating Accounts
+
+A rotating account (signing flow `rotating1`) hands itself to a fresh stage
+on every spend, so the signer adds a rekey to the next stage to your
+transaction. Inside `sendPrepared()` and `sendPayment()` the SDK:
+
+1. asks the signer to prepare the exact group it will sign: your transaction
+   with the rekey, its fee raised, and any resource dummies;
+2. refuses that group unless the only changes are the rekey, a reported fee
+   raise within your max fee increase, the group ID and canonical dummies;
+3. simulates it, unsigned, through your algod. A failure throws
+   `RotatingPreflightError`, whose `failureMessage` says why, before any
+   one-time key is used;
+4. asks the signer to sign, with operator approval, and checks that the
+   signed group is exactly the prepared one;
+5. submits at once and waits for confirmation. `result.rotating` reports the
+   stage that signed (`stage`), the stage that now controls the account
+   (`target`), its address (`rekeyTo`) and how many times the spend was
+   prepared (`attempts`).
+
+Limits:
+
+- **One transaction, alone.** It must be ungrouped, set no `rekeyTo`, not
+  close the account, and take no LogicSig arguments. The send refuses
+  anything else with `UnsupportedGroupError` before it asks the signer.
+- **Short validity window.** At most `ROTATING_MAX_VALIDITY_WINDOW` (100)
+  rounds, and the signer signs only while `firstValid` is at most
+  `ROTATING_MAX_LEAD` (2) rounds ahead of the current round and at least
+  `ROTATING_MIN_REMAINING` (10) rounds remain. The `prepare*` helpers build
+  such a window for a rotating sender. A transaction whose rounds are not
+  current is refused before the operator is asked.
+- **When the send rebuilds the rounds.** `sendPayment()` builds its own
+  transaction, so it may rebuild stale rounds. For a transaction you prepared
+  or built, set `refreshValidity: true` to allow it. That changes the
+  transaction ID, so leave it off when anything outside the transaction, such
+  as an app argument or a proof, binds its rounds.
+- **Bounded retries.** When the signer says an attempt released no signature
+  (`ErrorCodes.RotatingStageUnproven`, `ErrorCodes.RotatingStageChanged`,
+  `ErrorCodes.RotatingWindowNotCurrent`, read from `SignerError.code`), the
+  send prepares again, up to three attempts, and each attempt needs approval
+  again. A window refusal is retried only when the rounds may be rebuilt,
+  with the longest window. This needs a signer that reports
+  `rotating_window_not_current`; see the
+  [compatibility note](COMPATIBILITY.md).
+- **App calls carry the rekey**, so a contract that requires a zero
+  `rekeyTo` fails the simulation.
+- **Two sends in a row** work once the first has confirmed, which the default
+  wait ensures.
+
+The steps are also available one at a time, for callers who need them. None
+of them submits:
+
+```ts
+const prepared = await client.prepareRotating(txn);                             // nothing signed
+const simulation = await client.simulatePreparedRotating(algodClient, prepared); // never signs
+const signed = await client.signPreparedRotating(prepared);                     // waits for approval
+const result = await client.submitSignedGroup(algodClient, signed.signedGroup);
+```
+
+Submit a signed rotating group promptly: the stage's one-time keys are
+revealed until that transaction or a later rotation confirms.
+
+If a sign answer is lost (a `SignOutcomeUnknownError` whose `rotating` field
+holds the prepared group), call `signPreparedRotating()` again with that same
+prepared group. It asks for the same transaction with the same IDs and builds
+no second spend. Do not call `sendPayment()` or `sendPrepared()` again until
+the first attempt's outcome is known: that prepares a new spend from the same
+stage.
+
+For a rotating account, `resolveAuthAddress()` returns the account itself as
+`authAddress` at every stage; the stage address the chain reports is in
+`chainAuthAddress`. A rotating account rekeyed to an ordinary key the signer
+holds has left rotation, and is sent like any rekeyed account once the chain
+confirms the rekey.
+
+### Send Failures
+
+| Error | What it means | What to do |
+|---|---|---|
+| `SignOutcomeUnknownError` | A signing request ended with no answer, or with a 200 answer that could not be read, or the SDK failed while checking one. A signature may have been released. Nothing was submitted. | Do not send again. Call `resolveOutcome()` (below), or check `requestId` with the operator or the signer's audit log. |
+| `SubmissionUncertainError` | The group was signed and the call did not see it confirmed or refused. `stage` is `"unsent"` (your signal was aborted before it was sent), `"submit"` (the submission's answer never arrived) or `"confirm"` (not confirmed within the wait). Except for `"unsent"`, it may still confirm. | Do not sign a replacement. Call `resolveOutcome()`, or submit the same `signedGroup` again with `submitSignedGroup()`. |
+| `SubmissionRejectedError` | The node refused the group or dropped it from its pool. `signedGroup` and `txIds` are kept. | Read the reason. |
+| `RotatingPreflightError` | A rotating spend failed its unsigned simulation. Nothing was signed. | Read `failureMessage`. |
+| `UnsupportedSigningFlowError`, `UnsupportedGroupError`, `KeyNotFoundError`, `CosignerDiscoveryError` | Refused before anything that can execute was signed. | Read the reason. |
+| Any other error | The signer refused (policy, operator, locked), or the SDK refused its answer (`verify signer response: ...`, `MaxFeeIncreaseError`). Nothing was submitted. | Read the reason. When the SDK refused a sign answer, the signer did sign and the SDK discarded the result. |
+
+Two of these must not be answered by sending again:
+
+- `SignOutcomeUnknownError`: the signer may have released a signature that
+  never reached you. A replacement you build and sign, and that signature,
+  could both execute. Find out what happened, or wait until the error's
+  `lastValid` round has passed, first.
+- `SubmissionUncertainError`: the signed group may already be in a block or
+  in the node's pool, and a replacement could execute beside it. Submitting
+  the same `signedGroup` again is safe: the same bytes execute at most once.
+
+Any other error, `SubmissionRejectedError` aside, means nothing that was
+signed can execute: the send was refused before signing, the signer refused,
+or the SDK refused the signer's answer and discarded it. It is safe to fix
+the cause and send again.
+
+### After An Uncertain Outcome
+
+`client.resolveOutcome(algodClient, error)` takes either uncertain error and
+says where things stand. It asks the node only: it never signs, never submits
+and never calls the signer. It rests on two facts: the signer never submits,
+and a transaction cannot execute after its last valid round, which the
+signer never changes. Both errors carry that round as `lastValid`. Any other
+error is refused with a `SignerError` ("not an uncertain outcome"), and a
+node failure is thrown, never turned into a state.
+
+```ts
+try {
+  await client.sendPayment(algodClient, { sender, receiver, amount: 1_000_000 });
+} catch (error) {
+  if (error instanceof SignOutcomeUnknownError || error instanceof SubmissionUncertainError) {
+    try {
+      const report = await client.resolveOutcome(algodClient, error);
+      console.log(report.state, report.advice);
+    } catch (checkError) {
+      // The check failed; the outcome is still unknown, and error still stands.
+      console.log("could not check the outcome:", checkError);
+    }
+  }
+  throw error;
+}
+```
+
+`OutcomeReport.state` is one of six values:
+
+| State | Meaning | `safeToReplace` |
+|---|---|---|
+| `"confirmed"` (`OUTCOME_CONFIRMED`) | The group is in a block, in `confirmedRound`. Do not send it again. | false |
+| `"pending"` (`OUTCOME_PENDING`) | The group is in the node's pool. Wait. | false |
+| `"not_seen"` (`OUTCOME_NOT_SEEN`) | The node does not have the signed group, and it can still execute until `lastValid`. Submit the same `signedGroup` again, or wait until `lastValid` has passed. | false |
+| `"signable"` (`OUTCOME_SIGNABLE`) | A signature may have been released, and it can still execute until `lastValid`. Wait until that round has passed before building a replacement; for a rotating account, sign the same prepared group again. | false |
+| `"expired"` (`OUTCOME_EXPIRED`) | Nothing from the request can execute any more. | true |
+| `"too_old"` (`OUTCOME_TOO_OLD`) | Its validity ended more than 500 rounds ago, and the node may no longer remember it. Look the transaction ID up on an indexer before sending again. | false |
+
+`advice` says what to do, in one sentence. The report also carries `txIds`
+(empty for an ordinary or cosigned sign outcome, whose transactions the
+signer may have changed), `lastValid`, `currentRound`, and the error's
+`signedGroup` or `rotating` group.
+
+`client.waitForOutcome(algodClient, error, { signal, timeoutMs })` checks
+once per round until the state is `"confirmed"`, `"expired"` or `"too_old"`.
+If the signal is aborted, `timeoutMs` passes or the node fails first, it
+throws a `WaitForOutcomeError` whose `report` is the last report (none if
+the wait ended before the first check) and whose `cause` says why. Unset or
+zero `timeoutMs` means no limit.
+
+### Cancellation And Time Limits
+
+The send takes an `AbortSignal` as `signal` in its options. It sets no time
+limit of its own: each signing request waits as long as the signer's
+approval wait allows, unless the client was given a shorter `timeout`. To
+bound the whole send, abort the signal from a timer.
+Where the abort lands decides what you get:
+
+- before an approval-bearing request is posted (while keys, rounds or the
+  plan are read, or between steps): a plain error, such as
+  `SignerUnavailableError` ("Request aborted by caller"), not an unknown
+  outcome. No `/sign/cancel` is sent.
+- while an approval-bearing request (`/sign`, `/sign/component`,
+  `/sign/assemble`, `/sign/rotating/sign`) is in flight: the request is
+  aborted, a best-effort `/sign/cancel` is sent, and the send throws
+  `SignOutcomeUnknownError`.
+- after signing, before submission: `SubmissionUncertainError` with `stage`
+  `"unsent"`. The node does not have the group; `submitSignedGroup()`
+  submits it.
+- during submission or the confirmation wait: `SubmissionUncertainError`
+  with `stage` `"submit"` or `"confirm"`.
+
+A few requests do not take the signal and run to completion or their own
+timeout: the prepare step inside `sendPayment()`, the key listing that picks
+the flow, and the `/status` call that discovers the approval wait. None of
+them signs anything. [`typescript/README.md`](../typescript/README.md), under
+`sendPrepared`, lists every request the signal reaches.
+
+`waitForOutcome()` takes `signal` and `timeoutMs` (milliseconds), as above.
+
 ## Common Tasks
 
 ### Health Check
@@ -400,6 +680,11 @@ await client.deleteKey(generated.address);
 
 ### Sign One Transaction
 
+The `sign*` calls in this and the following sections return signed bytes and
+submit nothing. Use them when you want the signed transactions yourself; to
+send, use `sendPayment()` or `sendPrepared()` (see
+[Sending Transactions](#sending-transactions)).
+
 ```ts
 import algosdk from "algosdk";
 import { SignerClient, sendRawTransaction } from "aplanesdk";
@@ -418,7 +703,10 @@ const signed = await client.signTransaction(txn);
 const txid = await sendRawTransaction(algodClient, signed);
 ```
 
-For rekeyed accounts, pass the signing key explicitly:
+For a rekeyed account, these calls take the signing key explicitly. (The
+`prepare*` helpers read it from the chain for you, so `sendPayment()` and
+`sendPrepared()` need nothing extra; `resolveAuthAddress()` does that lookup
+on its own.)
 
 ```ts
 const signed = await client.signTransaction(txn, authAddress);
@@ -505,6 +793,9 @@ A group that another party also signs goes through the signer in two steps:
    planned group with `signTransactions()`, passing that signed transaction as
    a passthrough position and repeating the same `lsigResources`.
 
+`sendPrepared()` does not take passthrough positions, so a multi-party group
+is signed with these calls and you submit it:
+
 ```ts
 const signedGroup = await client.signTransactions(
   plannedTxns,
@@ -531,6 +822,72 @@ signs through ordinary `/sign`. Cosigner component selectors are public policy k
 Algorand spending accounts, and must not be used as senders, receivers, auth
 addresses, or rekey targets.
 
+`sendPrepared()` and `sendPayment()` run the whole cosigned sequence and
+submit the result. `signPreparedCosignedGroup()` runs the same sequence and
+returns the signed group without submitting it.
+
+#### Finding The Cosigner
+
+A client made with `SignerClient.fromEnv()` finds a cosigned account's
+cosigner in its own `endpoints.yaml`. List the cosigner node as an endpoint
+with role `cosigner`:
+
+```yaml
+schema_version: 2
+default: primary
+endpoints:
+  primary:
+    role: signer
+    url: ssh://signer.example.com:1127
+    identity_file: .ssh/id_ed25519
+    known_hosts_path: .ssh/known_hosts
+  cosigner:
+    role: cosigner
+    url: ssh://cosigner.example.com:1127
+    identity_file: .ssh/id_ed25519
+    known_hosts_path: .ssh/known_hosts
+```
+
+The key in `identity_file` must be enrolled at the cosigner too
+(`requestEnrollmentFromEnv({ endpoint: "cosigner" })`). When a send, or
+`signPreparedCosignedGroup()`, is given no `cosignerClient` and no
+`cosignerResolver`, the client then:
+
+- connects, on first use, to every `role: cosigner` endpoint (at most 12),
+  each with its own identity file and known_hosts path and with the client's
+  `trustOnFirstUse`, `sshSetupTimeout` and `timeout`, and reads its `/keys`;
+- signs with the one endpoint that lists the account's witness key, under its
+  Witness Key ID;
+- keeps those connections, and closes them when you `close()` the client.
+
+An explicit `cosignerClient` (with `cosignerComponentKey`) or
+`cosignerResolver` always wins. A client made with `SignerClient.connectSsh()`
+or the constructor has no endpoint registry, so it needs one of them; without
+one, a cosigned send is refused with "cosignerClient or cosignerResolver is
+required". `EndpointCosignerResolver.fromDataDir(dataDir, options)` builds the
+same resolver for you to pass as `cosignerResolver`; it owns the connections
+it opens, so `close()` it when done.
+
+Every cosigner a position is sure to need is found before anything is asked
+to sign, so a cosigner that cannot be found fails the send with nothing
+signed. The error is a `CosignerDiscoveryError`, never an unknown outcome.
+Its message says why:
+
+- no endpoint lists the witness key: the message names every cosigner
+  endpoint with its state (`ok`, `unreachable`, `locked`,
+  `authentication failed`, `invalid cosigner metadata` or
+  `configuration invalid`);
+- more than one endpoint lists it;
+- `endpoints.yaml` lists no cosigner endpoint;
+- a cosigner endpoint's SSH host key differs from the pinned one.
+
+A rekey to an address on the account's rekey-to list needs no cosigner. For
+such a rekey the cosigner is looked up only after the user signer's base
+component, and only if that component says the rekey needs one, so a listed
+rekey works with no cosigner endpoint configured and with the cosigner down.
+
+#### Cosigner Policy
+
 Before signing, an operator must apply a policy document for the selected
 cosigner Witness Key ID using `apadmin policy check` and `apadmin policy apply`.
 The cosigner stores it as `policies/<WitnessKeyID>.json` with a `.hmac`
@@ -545,6 +902,8 @@ If the cosigner holds the key but it is still on the deny-all default,
 throws `SigningRejectedError`, preserving the code and message, and the cosigned
 signing helper propagates that error. Apply the key's document before retrying.
 See the [compatibility note](COMPATIBILITY.md) for policy format and provisioning details.
+
+#### The Cosigned Sequence
 
 The helper reads each position's key (its signing flow, LogicSig resources
 and fee ceiling) from the user signer's `/keys` record, by the position's
@@ -573,16 +932,19 @@ It checks a planned fee against the account's ceiling only on `bounded2`: a
 contract it doesn't know, a `bounded2` account without a ceiling, and a `plain1`
 account that advertises one.
 `signPreparedCosignedGroup()` discovers the flow from signer inventory and
-performs the user-first sequence:
+performs the user-first sequence. With a client from `fromEnv()` the cosigner
+comes from `endpoints.yaml`:
 
 ```ts
 const result = await signPreparedCosignedGroup({
   userClient,
-  cosignerResolver,
   preparedGroup,
 });
 const signedGroup = result.signedGroup;
 ```
+
+Set `cosignerClient` and `cosignerComponentKey`, or `cosignerResolver`, in
+the options to name the cosigner yourself.
 
 The sequence is `/plan`, user approval and base-component release through
 `requestComponents()` with a bounded-base target, signing of ordinary group
@@ -614,7 +976,8 @@ const simulation = await userClient.simulatePreparedGroup(
   preparedGroup,
 );
 if (simulation.failed) {
-  // Inspect simulation.response for algod diagnostics.
+  // simulation.failureMessage says why; simulation.response has the
+  // algod diagnostics.
 }
 
 const cosigned = await simulatePreparedCosignedGroup(algodClient, cosignedOptions);
@@ -623,9 +986,12 @@ const cosigned = await simulatePreparedCosignedGroup(algodClient, cosignedOption
 `SimulationResult.signedGroup` contains fully executable signed transactions
 that remain submittable until expiry. Keep them confidential. The helper sends
 the exact signed group to the supplied algod with empty-signature overrides
-disabled. A missing algod client fails before any signing request. Algod
-execution failure sets `failed`; transport or decoding failures throw and
-never trigger another signing request automatically.
+disabled. A missing algod client fails before any signing request. A
+simulation is `failed` unless the node returned exactly one group result, an
+object that reports no failure and holds one transaction result per
+transaction simulated. `failureMessage` says why: the node's own failure
+message, or which of the other cases it was. Transport or decoding failures
+throw and never trigger another signing request automatically.
 
 ## Transaction Semantics
 
@@ -668,14 +1034,21 @@ never trigger another signing request automatically.
 - passthrough entries are base64-encoded signed transaction msgpack slots that
   already carry the intended group ID
 - foreign planning can include `lsigResources` for LogicSig resource planning
+- `sendPrepared()` and `sendPayment()` sign, submit and wait; their
+  `SendResult.signedGroup` is hex msgpack, one entry per transaction.
+- `submitSignedGroup()` submits a signed hex group exactly as given (a
+  rotating group from `signPreparedRotating()`, or the `signedGroup` a
+  `SubmissionUncertainError` kept) and waits for confirmation. It signs
+  nothing.
 
-The helper `sendRawTransaction()` accepts the base64 string returned by the SDK
-and handles common algod rejection cases with cleaner APlane error types.
+`sendPrepared()` and `sendPayment()` submit for you. For the base64 string the
+`sign*` calls return, the helper `sendRawTransaction()` submits it and handles
+common algod rejection cases with cleaner APlane error types.
 
 ### What The SDK Checks Before Returning
 
 Every `/sign` and `/plan` result is checked against the request before
-`signTransaction()`, `signTransactions()`/`signTransactionsList()`, `signRequests()`, `planGroup()`/`planRequests()` or `simulatePreparedGroup()` returns it. The
+`signTransaction()`, `signTransactions()`/`signTransactionsList()`, `signRequests()`, `planGroup()`/`planRequests()` or `simulatePreparedGroup()` returns it, and before `sendPrepared()` submits anything. The
 signer may change a request in three ways, and must report each in
 `mutations`:
 
@@ -799,19 +1172,37 @@ A passthrough transaction must round-trip through the SDK's Algorand
 library (`algosdk`), so one that uses a field newer than that library is refused
 locally.
 
+#### How Signer Answers Are Read
+
+Every 200 answer from the signer is read strictly, as the Go SDK reads it: it
+must be exactly one JSON object of the answer's declared shape, a field left
+out or `null` takes its zero value, and a field of the wrong type, a `null`
+body or anything after the object makes the answer unreadable. An answer
+whose `error` field is set is a refusal; an unreadable answer is a plain
+`SignerError` at a request that releases no signature, and at an
+approval-bearing request a lost answer, which a send reports as
+`SignOutcomeUnknownError`. The full rule and the reader's known limits are in
+[`typescript/README.md`](../typescript/README.md) under `sendPrepared`.
+
 ### Rekeyed Senders In Prep Helpers
 
 The `prepare*` helpers and `resolveAuthAddress()` read the sender's auth
 address from algod account information. algosdk v3 returns it as an `Address`
 object and raw algod JSON as a string; both are accepted, and
 `ResolvedAuthAddress.authAddress` and `PreparedTransaction.authAddress` are
-always strings.
+always strings. For a rotating account, `authAddress` is the account itself
+at every stage, and `chainAuthAddress` is the stage address the chain
+reports.
 
 ## Error Handling
 
+A send's failures are described in [Send Failures](#send-failures). Every
+call throws the signer's refusals as `SignerError` subclasses.
+
 Main SDK error classes:
 
-- `SignerError`
+- `SignerError`, whose `code` is the signer's stable error code when it sent
+  one (such as `ErrorCodes.RotatingStageChanged`)
 - `AuthenticationError`
 - `SigningRejectedError`
 - `SignerUnavailableError`
@@ -821,8 +1212,16 @@ Main SDK error classes:
 - `MaxFeeIncreaseError`: the signer raised fees by more than the client's
   `maxFeeIncrease`; carries `raised` and `limit` as bigints, and serializes
   them to JSON as decimal strings
+- `UnsupportedSigningFlowError` and `UnsupportedGroupError`: a send refused
+  the group before signing
+- `CosignerDiscoveryError`: a cosigned account's cosigner was not found in
+  `endpoints.yaml`
+- `SignOutcomeUnknownError`, `SubmissionUncertainError`,
+  `SubmissionRejectedError` and `RotatingPreflightError`: see
+  [Send Failures](#send-failures)
+- `WaitForOutcomeError`: `waitForOutcome()` ended before the outcome settled
 
-Network submission helper errors:
+Errors from the `sendRawTransaction()` helper:
 
 - `TransactionRejectedError`
 - `LogicSigRejectedError`
@@ -834,16 +1233,22 @@ Example:
 ```ts
 import {
   AuthenticationError,
+  SignOutcomeUnknownError,
   SignerUnavailableError,
   SigningRejectedError,
+  SubmissionUncertainError,
 } from "aplanesdk";
 
 try {
-  const signed = await client.signTransaction(txn);
-  const txid = await sendRawTransaction(algodClient, signed);
-  console.log(txid);
+  const result = await client.sendPayment(algodClient, { sender, receiver, amount: 1_000_000 });
+  console.log(result.txIds[0]);
 } catch (err) {
-  if (err instanceof AuthenticationError) {
+  if (err instanceof SignOutcomeUnknownError || err instanceof SubmissionUncertainError) {
+    // Do not send again: ask the node where things stand.
+    const report = await client.resolveOutcome(algodClient, err).catch(() => undefined);
+    if (report) console.error(`${report.state}: ${report.advice}`);
+    throw err;
+  } else if (err instanceof AuthenticationError) {
     console.error("connection is not authenticated by an enrolled SSH key");
   } else if (err instanceof SignerUnavailableError) {
     console.error("signer unavailable or locked");
@@ -863,16 +1268,18 @@ try {
 - If optional dependencies are omitted and `ssh2` is unavailable, the SSH
   connection and enrollment paths will fail at runtime until `ssh2` is
   installed.
-- `sendRawTransaction()` is optional. You can still call
-  `algodClient.sendRawTransaction(...)` directly if you prefer raw algod errors.
+- `sendRawTransaction()` is optional and serves the `sign*` calls; `sendPrepared()`
+  submits on its own. You can still call `algodClient.sendRawTransaction(...)`
+  directly if you prefer raw algod errors.
 - The SDK exports both runtime helpers and lower-level utilities such as
   `loadConfig`, `resolveDataDir`, `encodeTransaction`, and
   `encodeLsigArgs`.
 
 ## Compatibility Notes
 
-This SDK follows the signer API contract documented in
-the signer API contract documented by the main APlane repository.
+This SDK follows the signer API contract documented by the main APlane
+repository. Before upgrading the SDK or the signer, read the
+[compatibility note](COMPATIBILITY.md).
 
 For compatibility-sensitive changes, check:
 
