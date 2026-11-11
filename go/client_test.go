@@ -871,6 +871,9 @@ func TestSignerAnswersRefuseNullAndTrailingData(t *testing.T) {
 			_, err := c.CancelSignRequestWithContext(context.Background(), "sdk-test")
 			return err
 		}},
+		{"/admin/keys", `{"success":true}`, func(c *SignerClient) error {
+			return c.DeleteKey(sdkTestAddress(0xA3))
+		}},
 	}
 	for _, endpoint := range endpoints {
 		for name, body := range map[string]string{
@@ -1021,13 +1024,64 @@ func TestDeleteKey_Success(t *testing.T) {
 		if r.URL.Query().Get("address") != "TESTADDR" {
 			t.Fatalf("expected address=TESTADDR, got %s", r.URL.Query().Get("address"))
 		}
-		json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+		// What the signer's handler writes.
+		w.Write([]byte("{\"success\":true}\n"))
 	})
 	defer server.Close()
 
 	err := client.DeleteKey("TESTADDR")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// A generate answer is the new key: one that carries an error, or names no
+// address, is refused.
+func TestGenerateKeyRefusesAnErrorOrNoAddress(t *testing.T) {
+	for _, tc := range []struct{ body, want string }{
+		{`{"address":"` + sdkTestAddress(0xA3) + `","error":"denied"}`, "key generation failed: denied"},
+		{`{}`, "key generation failed: missing address"},
+		{`{"address":"","key_type":"ed25519"}`, "key generation failed: missing address"},
+		{`{"address":null}`, "key generation failed: missing address"},
+	} {
+		t.Run(tc.body, func(t *testing.T) {
+			client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+				w.Write([]byte(tc.body))
+			})
+			defer server.Close()
+			if result, err := client.GenerateKey("ed25519", nil); err == nil || err.Error() != tc.want {
+				t.Fatalf("GenerateKey() = %+v, %v; want %q", result, err, tc.want)
+			}
+		})
+	}
+}
+
+// A delete answer is read as {success, error}: an error is a refusal, and a
+// body that is not one such object is no answer. The signer always sends one.
+func TestDeleteKeyReadsItsAnswer(t *testing.T) {
+	for _, tc := range []struct{ body, want string }{
+		{`{"success":true}`, ""},
+		{`{"success":true,"extra":1}`, ""},
+		{`{"success":false,"error":"denied"}`, "key deletion failed: denied"},
+		{``, "failed to decode response"},
+		{`null`, "failed to decode response"},
+		{`[]`, "failed to decode response"},
+		{`{"success":"yes"}`, "failed to decode response"},
+		{`{"success":true} x`, "failed to decode response"},
+	} {
+		t.Run(tc.body, func(t *testing.T) {
+			client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+				w.Write([]byte(tc.body))
+			})
+			defer server.Close()
+			err := client.DeleteKey(sdkTestAddress(0xA3))
+			switch {
+			case tc.want == "" && err != nil:
+				t.Fatalf("DeleteKey() = %v, want success", err)
+			case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
+				t.Fatalf("DeleteKey() = %v, want %q", err, tc.want)
+			}
+		})
 	}
 }
 

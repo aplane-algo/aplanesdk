@@ -674,19 +674,35 @@ func (c *SignerClient) GenerateKey(keyType string, parameters map[string]string)
 	if resp.StatusCode != 200 {
 		return nil, signerHTTPErrorOp(resp, "key generation failed")
 	}
+	// The signer answered, so its keys may have changed whatever the answer
+	// says.
+	c.invalidateKeyCache()
 
 	var result GenerateResult
 	if err := readAnswer(resp.Body, &result); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
+	if result.Error != "" {
+		return nil, fmt.Errorf("key generation failed: %s", result.Error)
+	}
+	if result.Address == "" {
+		return nil, fmt.Errorf("key generation failed: missing address")
+	}
+	return &result, nil
+}
 
-	// Invalidate key cache
+func (c *SignerClient) invalidateKeyCache() {
 	c.keyMu.Lock()
 	c.keyCache = nil
 	c.invalidateKeyCacheRevisionLocked()
 	c.keyMu.Unlock()
+}
 
-	return &result, nil
+// deleteKeyResponse is the answer of DELETE /admin/keys. The signer answers
+// {"success":true}; an error, which it never sets today, is a refusal.
+type deleteKeyResponse struct {
+	Success bool   `json:"success"`
+	Error   string `json:"error,omitempty"`
 }
 
 // DeleteKey deletes a key from the signer.
@@ -717,13 +733,15 @@ func (c *SignerClient) DeleteKey(address string) error {
 	if resp.StatusCode != 200 {
 		return signerHTTPErrorOp(resp, "key deletion failed")
 	}
+	c.invalidateKeyCache()
 
-	// Invalidate key cache
-	c.keyMu.Lock()
-	c.keyCache = nil
-	c.invalidateKeyCacheRevisionLocked()
-	c.keyMu.Unlock()
-
+	var result deleteKeyResponse
+	if err := readAnswer(resp.Body, &result); err != nil {
+		return fmt.Errorf("failed to decode response: %w", err)
+	}
+	if result.Error != "" {
+		return fmt.Errorf("key deletion failed: %s", result.Error)
+	}
 	return nil
 }
 
