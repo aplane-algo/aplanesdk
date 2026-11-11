@@ -24,7 +24,7 @@
  * */
 
 import algosdk from "algosdk";
-import { SignerClient, SubmissionUncertainError } from "aplanesdk";
+import { SignOutcomeUnknownError, SignerClient, SubmissionUncertainError } from "aplanesdk";
 
 // The account to pay from (the signer must hold its key) and the account to
 // pay. Replace both.
@@ -56,6 +56,15 @@ async function main() {
     // send again until its outcome is known: both could execute.
     if (error instanceof SubmissionUncertainError) {
       console.error(`Outcome unknown for ${error.txIds} (${error.stage}); look it up before sending again`);
+    } else if (error instanceof SignOutcomeUnknownError) {
+      // The signer may have released a signature that was never submitted.
+      // Do not build and sign a replacement: both could execute. Sign the
+      // same prepared group again (a rotating account's is error.rotating,
+      // for signPreparedRotating) or check the chain first.
+      const what = error.rotating
+        ? `rotating spend ${error.rotating.txIds()[0]}`
+        : `sign request ${error.requestId || "(no ID)"}`;
+      console.error(`No answer for ${what}; a signature may have been released, so do not sign a replacement`);
     }
     throw error;
   } finally {
