@@ -6,7 +6,6 @@ package aplane
 import (
 	"encoding/base64"
 	"encoding/hex"
-	"fmt"
 
 	"github.com/algorand/go-algorand-sdk/v2/encoding/msgpack"
 	"github.com/algorand/go-algorand-sdk/v2/types"
@@ -36,47 +35,6 @@ func hexArrayToBase64(hexStrings []string) (string, error) {
 		}
 		combined = append(combined, decoded...)
 	}
-	return base64.StdEncoding.EncodeToString(combined), nil
-}
-
-// AssembleGroup merges multiple signers' outputs into a single signed group.
-// Each input is a []string from SignTransactionsListWithOptions, where empty
-// strings represent slots that signer didn't sign. Exactly one signer must
-// provide a non-empty value for each slot.
-// Returns concatenated base64-encoded signed transactions.
-func AssembleGroup(signedLists [][]string) (string, error) {
-	if len(signedLists) == 0 {
-		return "", fmt.Errorf("signedLists must not be empty")
-	}
-
-	groupLen := len(signedLists[0])
-	for i, sl := range signedLists {
-		if len(sl) != groupLen {
-			return "", fmt.Errorf("signedLists[%d] has %d entries, expected %d", i, len(sl), groupLen)
-		}
-	}
-
-	var combined []byte
-	for idx := 0; idx < groupLen; idx++ {
-		var found string
-		for _, sl := range signedLists {
-			if sl[idx] != "" {
-				if found != "" {
-					return "", fmt.Errorf("slot %d: multiple signers provided a signed transaction", idx)
-				}
-				found = sl[idx]
-			}
-		}
-		if found == "" {
-			return "", fmt.Errorf("slot %d: no signer provided a signed transaction", idx)
-		}
-		decoded, err := base64.StdEncoding.DecodeString(found)
-		if err != nil {
-			return "", fmt.Errorf("slot %d: invalid base64: %w", idx, err)
-		}
-		combined = append(combined, decoded...)
-	}
-
 	return base64.StdEncoding.EncodeToString(combined), nil
 }
 

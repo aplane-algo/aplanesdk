@@ -39,6 +39,11 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 			return nil, fmt.Errorf("prepared transaction %d: transaction is required", i)
 		}
 		key := item.SignerKey
+		if key != nil && key.Address != item.AuthAddress {
+			// The key's flow, resources and fee ceiling decide how the
+			// position is signed, so it must be the key that signs it.
+			return nil, fmt.Errorf("prepared transaction %d: signer key is for %s, not the position's auth address %s", i, key.Address, item.AuthAddress)
+		}
 		if key == nil && item.AuthAddress != "" {
 			var err error
 			key, err = opts.UserClient.getKeyInfoWithContext(ctx, item.AuthAddress)
@@ -182,7 +187,7 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 		targetResources[target.TargetIndex] = resources
 	}
 
-	result := &CosignedSignResult{BoundedComponentResponse: componentResp}
+	result := &CosignedSignResult{BoundedComponentResponse: componentResp, PlanMutations: planResp.Mutations}
 	primary, err := requestBoundedPrimaryPassthrough(
 		ctx, opts.UserClient, planResp.Transactions, len(prepared),
 		targetsByIndex, targetResources, primaryTargets,

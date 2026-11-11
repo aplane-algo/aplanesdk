@@ -85,6 +85,10 @@ type CosignedSignResult struct {
 	PrimarySignResponse        *GroupSignResponse
 	BoundedComponentResponse   *ComponentResponse
 	BoundedAssemblyResponse    *AssemblyResponse
+	// PlanMutations is the plan's mutation report, checked against the
+	// prepared group: what the signer added to it (fees, group ID, dummies).
+	// Nil when it changed nothing.
+	PlanMutations *MutationReport
 }
 
 // PreparedCosignedGroupOptions configures SignPreparedCosignedGroup.

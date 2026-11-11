@@ -174,6 +174,12 @@ func (c *Config) NewAlgodClient(network string) (*algod.Client, error) {
 	if c == nil {
 		return nil, fmt.Errorf("algod not configured: no config provided")
 	}
+	// networks_allowed is the operator's list of networks this client may
+	// work on. It is enforced here, where a client for a named network is
+	// made, and not only for the default network at load.
+	if !c.IsNetworkAllowed(network) {
+		return nil, fmt.Errorf("network %q is not in networks_allowed %v", network, c.NetworksAllowed)
+	}
 	algodConfig, err := c.GetAlgodConfig(network)
 	if err != nil {
 		return nil, fmt.Errorf("algod not configured for %s: %w", network, err)

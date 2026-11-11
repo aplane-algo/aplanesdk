@@ -404,7 +404,7 @@ func TestSignPreparedCosignedGroupSendsAHeldPrimaryAsTheSignersOwn(t *testing.T)
 			// The group is sent ungrouped: the signer raises no fee on a group
 			// that already carries an ID.
 
-			_, err = SignPreparedCosignedGroup(PreparedCosignedGroupOptions{
+			result, err := SignPreparedCosignedGroup(PreparedCosignedGroupOptions{
 				UserClient: userClient, CosignerClient: cosignerClient,
 				CosignerComponentKey: "COSIGNER_COMPONENT",
 				PreparedGroup: NewPreparedGroup(
@@ -449,6 +449,11 @@ func TestSignPreparedCosignedGroupSendsAHeldPrimaryAsTheSignersOwn(t *testing.T)
 			}
 			if got := eventSnapshot(); got != "base,sign,cosigner,assemble" {
 				t.Fatalf("calls = %s, want %s", got, "base,sign,cosigner,assemble")
+			}
+			// The result carries what the plan added, so the caller can read
+			// the fee the signer charged.
+			if m := result.PlanMutations; m == nil || m.TotalFeesDelta != 2000 || len(m.FeesModified) != 1 || m.FeesModified[0] != 1 {
+				t.Fatalf("PlanMutations = %+v, want the plan's 2000 raise on position 1", m)
 			}
 
 			if primaryRequest.AuthAddress != nativePQ {

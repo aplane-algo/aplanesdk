@@ -310,14 +310,15 @@ func (c *SignerClient) PrepareAsaOptIn(ctx context.Context, algodClient *algod.C
 	if err != nil {
 		return nil, fmt.Errorf("failed to get sender account info: %w", err)
 	}
-	checks, err := asaOptInChecks(senderAcct, params.AssetID, uint64(suggested.Fee))
-	if err != nil {
-		return nil, err
-	}
-
 	txn, err := transaction.MakeAssetAcceptanceTxn(params.Sender, params.Note, suggested, params.AssetID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ASA opt-in transaction: %w", err)
+	}
+	// The balance is checked against the fee the built transaction pays. The
+	// suggested fee is per byte, usually zero, and would check nothing.
+	checks, err := asaOptInChecks(senderAcct, params.AssetID, uint64(txn.Fee))
+	if err != nil {
+		return nil, err
 	}
 
 	resolved, err := c.ResolveAuthAddress(ctx, params.Sender, func(context.Context, string) (string, error) {
@@ -442,14 +443,15 @@ func (c *SignerClient) PrepareAccountClose(ctx context.Context, algodClient *alg
 	if err != nil {
 		return nil, fmt.Errorf("failed to get sender account info: %w", err)
 	}
-	checks, err := accountCloseChecks(senderAcct, uint64(suggested.Fee))
-	if err != nil {
-		return nil, err
-	}
-
 	txn, err := transaction.MakePaymentTxn(params.Sender, params.CloseTo, 0, params.Note, params.CloseTo, suggested)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create account close transaction: %w", err)
+	}
+	// Checked against the fee the built transaction pays, not the suggested
+	// per-byte fee.
+	checks, err := accountCloseChecks(senderAcct, uint64(txn.Fee))
+	if err != nil {
+		return nil, err
 	}
 
 	resolved, err := c.ResolveAuthAddress(ctx, params.Sender, func(context.Context, string) (string, error) {
@@ -724,7 +726,7 @@ func (c *SignerClient) PrepareSweepGroup(ctx context.Context, algodClient *algod
 		group.Checks = append(group.Checks, check)
 	}
 	if len(params.Payments) > 0 {
-		check, err := paymentGroupBalanceCheck(group.Transactions[len(params.AsaTransfers):])
+		check, err := paymentGroupBalanceCheck(group.Transactions[len(params.AsaTransfers):], group.Transactions[:len(params.AsaTransfers)])
 		if err != nil {
 			return nil, err
 		}
@@ -755,7 +757,7 @@ func (c *SignerClient) PreparePaymentGroup(ctx context.Context, algodClient *alg
 		}
 		group.Transactions = append(group.Transactions, *prepared)
 	}
-	check, err := paymentGroupBalanceCheck(group.Transactions)
+	check, err := paymentGroupBalanceCheck(group.Transactions, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1149,7 +1151,19 @@ func appCallChecks(params AppCallPrepParams, info *AppCallInfo) []PreparedCheck 
 	}}
 }
 
-func paymentGroupBalanceCheck(items []PreparedTransaction) (PreparedCheck, error) {
+// addChecked adds to a running total, refusing a sum that would wrap.
+func addChecked(total, value uint64, what string) (uint64, error) {
+	if total+value < total {
+		return 0, fmt.Errorf("%s overflows uint64", what)
+	}
+	return total + value, nil
+}
+
+// paymentGroupBalanceCheck checks each paying sender can cover its payments
+// and every fee it pays. otherPositions are the group's non-payment
+// positions: they move no ALGO, but a sender that also pays from this group
+// pays their fees too.
+func paymentGroupBalanceCheck(items []PreparedTransaction, otherPositions []PreparedTransaction) (PreparedCheck, error) {
 	type totals struct {
 		available uint64
 		required  uint64
@@ -1165,7 +1179,12 @@ func paymentGroupBalanceCheck(items []PreparedTransaction) (PreparedCheck, error
 			total = &totals{}
 			bySender[sender] = total
 		}
-		total.required += uint64(item.Transaction.Amount) + uint64(item.Transaction.Fee)
+		var err error
+		for _, value := range []uint64{uint64(item.Transaction.Amount), uint64(item.Transaction.Fee)} {
+			if total.required, err = addChecked(total.required, value, "payment group total for "+sender); err != nil {
+				return PreparedCheck{}, err
+			}
+		}
 		for _, check := range item.Checks {
 			if check.Name != "payment_balance" || check.Data == nil {
 				continue
@@ -1173,6 +1192,20 @@ func paymentGroupBalanceCheck(items []PreparedTransaction) (PreparedCheck, error
 			if available, ok := check.Data["available"].(uint64); ok {
 				total.available = available
 			}
+		}
+	}
+	for _, item := range otherPositions {
+		if item.Transaction == nil {
+			return PreparedCheck{}, fmt.Errorf("group transaction is required")
+		}
+		sender := item.Transaction.Sender.String()
+		total := bySender[sender]
+		if total == nil {
+			continue
+		}
+		var err error
+		if total.required, err = addChecked(total.required, uint64(item.Transaction.Fee), "payment group total for "+sender); err != nil {
+			return PreparedCheck{}, err
 		}
 	}
 	for sender, total := range bySender {
@@ -1205,7 +1238,10 @@ func asaTransferGroupBalanceCheck(items []PreparedTransaction) (PreparedCheck, e
 			total = &totals{}
 			byHolding[key] = total
 		}
-		total.amount += item.Transaction.AssetAmount
+		var err error
+		if total.amount, err = addChecked(total.amount, item.Transaction.AssetAmount, "ASA transfer group total for "+key); err != nil {
+			return PreparedCheck{}, err
+		}
 		for _, check := range item.Checks {
 			if check.Name != "asa_transfer" || check.Data == nil {
 				continue

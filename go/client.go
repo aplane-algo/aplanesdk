@@ -775,6 +775,10 @@ func (c *SignerClient) RequestAssembleWithContext(ctx context.Context, reqBody A
 	if err := assemblyResp.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid assembly response: %w", err)
 	}
+	// The answer must be to this request, not merely carry a well-formed ID.
+	if assemblyResp.RequestID != reqBody.RequestID {
+		return nil, fmt.Errorf("invalid assembly response: request_id %q does not match the request's %q", assemblyResp.RequestID, reqBody.RequestID)
+	}
 	return &assemblyResp, nil
 }
 
