@@ -1219,6 +1219,29 @@ describe("the default cosigner resolver of a client created from a data director
     assert.deepEqual(net.closed, ["alpha"], "the cosigner connection was not closed with the client");
   });
 
+  for (const usedFirst of [true, false]) {
+    it(`is not made again once the client is closed${usedFirst ? "" : ", even if it was never used"}`, async () => {
+      if (usedFirst) {
+        await client.sendPrepared(new FakeAlgod() as any, group(cosignedPayment(account)));
+      }
+      await client.close();
+      const connects = [...net.connects];
+      const keysReads = net.endpoints.get("alpha")?.count("/keys");
+      const approvals = user.approvalRequests().length;
+      const node = new FakeAlgod();
+      await assert.rejects(client.sendPrepared(node as any, group(cosignedPayment(account))), (error: unknown) => {
+        assert.ok(!(error instanceof SignOutcomeUnknownError), `error is an unknown outcome: ${String(error)}`);
+        assert.ok(!(error instanceof CosignerDiscoveryError), `discovery ran after close: ${String(error)}`);
+        return true;
+      });
+      assert.deepEqual(net.connects, connects, "a cosigner connection was opened after close");
+      assert.equal(net.endpoints.get("alpha")?.count("/keys"), keysReads, "a cosigner's keys were read after close");
+      assert.equal(net.endpoints.get("alpha")?.count("/sign/component"), usedFirst ? 1 : 0, "the cosigner was asked after close");
+      assert.equal(user.approvalRequests().length, approvals, "an approval-bearing request was made after close");
+      assert.equal(node.submitted.length, 0, "something was submitted after close");
+    });
+  }
+
   it("serves the lower-level cosigned call too", async () => {
     const { signPreparedCosignedGroup } = await import("../src/client.js");
     const signed = await signPreparedCosignedGroup({ userClient: client, preparedGroup: group(cosignedPayment(account)) });
