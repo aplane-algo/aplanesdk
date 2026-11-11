@@ -1195,6 +1195,47 @@ func TestRequestAssemblePostsToAssembleEndpoint(t *testing.T) {
 	}
 }
 
+// An error in a 200 component or assembly answer is a refusal, whatever else
+// the answer holds, and never a lost answer.
+func TestComponentAndAssemblyAnswersWithAnErrorAreRefused(t *testing.T) {
+	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			RequestID string `json:"request_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		switch r.URL.Path {
+		case "/sign/component":
+			json.NewEncoder(w).Encode(ComponentResponse{RequestID: req.RequestID, Error: "denied", Components: []Component{{
+				Kind: ComponentTargetKindCosigner, TargetIndex: 0, Signature: "aabb", SignatureScheme: KeyTypeWitnessFalcon1024,
+			}}})
+		case "/sign/assemble":
+			json.NewEncoder(w).Encode(AssemblyResponse{RequestID: req.RequestID, Error: "denied", SignedGroup: []string{"ccdd"}})
+		}
+	})
+	defer server.Close()
+
+	_, err := client.RequestComponents(ComponentRequest{
+		GroupBytesHex: []string{"5458aa"},
+		Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindCosigner, ComponentKey: "COMPONENT"}},
+	})
+	var lost *lostAnswer
+	if err == nil || err.Error() != "component signing failed: denied" || errors.As(err, &lost) {
+		t.Fatalf("RequestComponents() error = %v, want the refusal", err)
+	}
+	_, err = client.RequestAssemble(AssemblyRequest{
+		GroupBytesHex: []string{"5458aa"},
+		Targets: []AssemblyTarget{{
+			TargetIndex: 0, Kind: AssemblyTargetKindBoundedCosigner, AuthAddress: "BOUNDED",
+			BaseSignatures: []string{"aabb"}, AssemblyReceipt: "eeff", CosignerSignature: "bbcc",
+		}},
+	})
+	if err == nil || err.Error() != "assembly failed: denied" || errors.As(err, &lost) {
+		t.Fatalf("RequestAssemble() error = %v, want the refusal", err)
+	}
+}
+
 func TestRequestAssembleRejectsMissingCoverage(t *testing.T) {
 	client := &SignerClient{baseURL: "http://example.invalid", client: http.DefaultClient}
 	_, err := client.RequestAssemble(AssemblyRequest{

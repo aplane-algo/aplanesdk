@@ -106,6 +106,9 @@ func (c *SignerClient) RequestComponentsWithContext(ctx context.Context, reqBody
 	if err := readAnswer(resp.Body, &result); err != nil {
 		return nil, fmt.Errorf("failed to decode component response: %w", &lostAnswer{requestID: reqBody.RequestID, err: err})
 	}
+	if result.Error != "" {
+		return nil, fmt.Errorf("component signing failed: %s", result.Error)
+	}
 	if err := result.ValidateForRequest(reqBody); err != nil {
 		return nil, fmt.Errorf("invalid component response: %w", err)
 	}

@@ -791,6 +791,9 @@ func (c *SignerClient) RequestAssembleWithContext(ctx context.Context, reqBody A
 	if err := readAnswer(resp.Body, &assemblyResp); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", &lostAnswer{requestID: reqBody.RequestID, err: err})
 	}
+	if assemblyResp.Error != "" {
+		return nil, fmt.Errorf("assembly failed: %s", assemblyResp.Error)
+	}
 	if err := assemblyResp.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid assembly response: %w", err)
 	}
