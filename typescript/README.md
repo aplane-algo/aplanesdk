@@ -519,7 +519,10 @@ list; an unknown field is ignored. A field of the wrong type, a number outside
 the field's range, a null or non-object body, an empty or cut-off body, or
 anything after the object makes the answer unreadable. At a request that
 releases no signature an unreadable answer is a plain `SignerError`, never a
-`TypeError` or `SyntaxError`, and no field is coerced. `generateKey` refuses
+`TypeError` or `SyntaxError`, and no field is coerced. A body that never
+arrives whole, because the connection fails while it is read, is a failed
+exchange instead, a `SignerUnavailableError`; at an approval-bearing request
+either one is an unknown outcome. `generateKey` refuses
 an answer without an address; `deleteKey` reads the signer's
 `{"success": true}` answer and refuses an empty one or one with an `error`.
 A `/keys` answer listing an address in an alternate spelling (an Algorand

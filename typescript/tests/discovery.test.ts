@@ -358,6 +358,30 @@ describe("EndpointCosignerResolver", () => {
     await resolver.close();
   });
 
+  it("reads a /keys body that breaks as a transport failure, apart from one that does not decode", async () => {
+    const net = new Network();
+    const failures: Array<[string, (endpoint: CosignerEndpoint) => void, string]> = [
+      // A body that does not arrive whole is not an unreadable answer.
+      ["b-cut-off", (endpoint) => {
+        endpoint.keysReply = () => ({ brokenAfter: '{"count": 1, "keys": [' });
+      }, "unreachable"],
+      ["c-unreadable", (endpoint) => {
+        endpoint.keysReply = () => ({ raw: '{"count": 1, "keys": [' });
+      }, "invalid cosigner metadata"],
+    ];
+    for (const [alias, set] of failures) set(net.add(alias, [witnessRecord(WITNESS_B)]));
+    net.install();
+    const resolver = new EndpointCosignerResolver(registry(...failures.map(([alias]) => alias)));
+    const states = failures.map(([alias, , state]) => `"${alias}" ${state}`).join(", ");
+    await assert.rejects(
+      resolver.resolve(target(WITNESS_A)),
+      discoveryError(
+        `cosigner discovery: no endpoint lists Witness Key ID ${id(WITNESS_A)} (${KEY_TYPE_WITNESS_FALCON1024}); endpoints: ${states}`,
+      ),
+    );
+    await resolver.close();
+  });
+
   it("maps the other failures to the endpoint's state", async () => {
     discoveryTiming.endpointMs = 40;
     const net = new Network();
@@ -370,6 +394,9 @@ describe("EndpointCosignerResolver", () => {
         endpoint.keysReply = () => "drop";
       }, "unreachable"],
       ["c-hangs", () => net.behaviour.set("c-hangs", () => new Promise<SignerClient>(() => undefined)), "unreachable"],
+      ["c2-body-stalls", (endpoint) => {
+        endpoint.keysReply = () => ({ stallsAfter: '{"count": 1, "keys": [' });
+      }, "unreachable"],
       ["d-bad-hex", (endpoint) => {
         endpoint.keys.push({ ...witnessRecord(WITNESS_C), public_key_hex: "a1b" });
       }, "invalid cosigner metadata"],

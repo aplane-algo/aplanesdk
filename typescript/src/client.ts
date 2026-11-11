@@ -1857,28 +1857,39 @@ function emptySendResult(flow: string, originalCount: number): SendResult {
 }
 
 /**
- * Read a 200 answer as shape. A body that does not parse, or parses to the
- * wrong shape, is unreadable. Given requestId, the answer is that of an
- * approval-bearing request: the signer may have acted, so the error is marked
- * as the request's lost answer. Without one, the request releases no
- * signature and the error is a plain one.
+ * Read a 200 answer as shape. A body that does not arrive whole (the
+ * connection fails while it is read) is a failed exchange, a
+ * SignerUnavailableError; a body that arrives but does not parse, or parses to
+ * the wrong shape, is unreadable, a SignerError. Given requestId, the answer
+ * is that of an approval-bearing request: the signer may have acted, so
+ * either error is marked as the request's lost answer. Without one, the
+ * request releases no signature and the error is a plain one.
  */
 async function readSignerAnswer<T>(response: Response, shape: AnswerShape, requestId?: string): Promise<T> {
-  const unreadable = (message: string): SignerError => {
-    const error = new SignerError(message);
-    return requestId === undefined ? error : markLostAnswer(error, requestId);
-  };
+  const lost = <E extends SignerError>(error: E): E =>
+    requestId === undefined ? error : markLostAnswer(error, requestId);
   let data: unknown;
   try {
     data = await response.json();
-  } catch {
-    throw unreadable("Server returned invalid JSON");
+  } catch (error) {
+    // Decoding refuses a body that arrived with a SyntaxError, and only so;
+    // any other failure came while the body was read.
+    if (isSyntaxError(error)) {
+      throw lost(new SignerError("Server returned invalid JSON"));
+    }
+    throw lost(new SignerUnavailableError(`Failed to read the signer's answer: ${errorText(error)}`));
   }
   const read = readAnswer<T>(shape, data);
   if ("problem" in read) {
-    throw unreadable(`Server returned a malformed response: ${read.problem}`);
+    throw lost(new SignerError(`Server returned a malformed response: ${read.problem}`));
   }
   return read.answer;
+}
+
+/** Whether error is JSON decoding's refusal: a SyntaxError, from any realm. */
+function isSyntaxError(error: unknown): boolean {
+  return error instanceof SyntaxError ||
+    (typeof error === "object" && error !== null && (error as { name?: unknown }).name === "SyntaxError");
 }
 
 /**

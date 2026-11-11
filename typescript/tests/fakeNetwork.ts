@@ -17,7 +17,11 @@ import { signResponse, type FakeSignerOptions } from "./fakeSigner.js";
 export type FakeReply =
   | { status?: number; body: unknown }
   | "drop" // the connection closes with no answer
-  | { status?: number; raw: string }; // a body sent as is, such as one cut short
+  | { status?: number; raw: string } // a body sent as is, such as one cut short
+  // A body whose stream fails after this much of it (the connection broke
+  // while it was read), or that never ends (it stalls).
+  | { status?: number; brokenAfter: string }
+  | { status?: number; stallsAfter: string };
 
 export type FakeHandler = (path: string, body: any) => FakeReply | Promise<FakeReply>;
 
@@ -44,6 +48,18 @@ export function installSigners(handlers: Record<string, FakeHandler>): () => voi
     }
     if ("raw" in reply) {
       return new Response(reply.raw, { status: reply.status ?? 200 });
+    }
+    if ("brokenAfter" in reply || "stallsAfter" in reply) {
+      const sent = "brokenAfter" in reply ? reply.brokenAfter : reply.stallsAfter;
+      const broken = "brokenAfter" in reply;
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(sent));
+          // As undici reports a connection that closed mid-body.
+          if (broken) controller.error(new TypeError("terminated"));
+        },
+      });
+      return new Response(stream, { status: reply.status ?? 200, headers: { "Content-Type": "application/json" } });
     }
     return new Response(JSON.stringify(reply.body), {
       status: reply.status ?? 200,
