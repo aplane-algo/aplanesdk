@@ -380,14 +380,16 @@ Failures:
 
 | Error | Meaning | What to do |
 |---|---|---|
-| The signing call's own error | The signer refused (policy, operator, locked), or the SDK refused the signer's answer (`verify signer response: ...`, `ErrMaxFeeIncreaseExceeded`). Nothing was submitted. | Read the reason. A refused answer means the signer did sign; the SDK discarded it. |
+| The signing call's own error | The signer refused (policy, operator, locked), or the SDK refused the signer's answer (`verify signer response: ...`, `ErrMaxFeeIncreaseExceeded`). Nothing was submitted. | Read the reason. If the SDK refused a sign answer, the signer did sign and the SDK discarded the result. |
 | `*SignOutcomeUnknownError` | A signing exchange ended with no answer. A signature may have been released; nothing was submitted. | Check with the operator or the audit log before signing again. For the ordinary flow the error carries the request ID. |
 | `*SubmissionRejectedError` | The node refused the group or dropped it from its pool. | Read the reason. The signed bytes and IDs are in the error. |
 | `*SubmissionUncertainError` | `Stage` says where it stopped: `unsent` (signed, never sent: your context ended), `submit` (the submission's answer never arrived), or `confirm` (not confirmed within the wait). Except for `unsent`, it may still confirm. | Look up `TxIDs`, or submit the same `SignedGroup` again. Do not sign a replacement until the outcome is known: both could execute. |
 
-A node that answers "already in ledger" has the group from an earlier
-submission of the same bytes. The SDK treats that as submitted and looks for
-the outcome; it is not a rejection.
+A node that answers "already in ledger" has a transaction with the same ID
+from an earlier submission of the group. The SDK treats that as submitted and
+looks for the outcome; it is not a rejection. A committed transaction that
+carries a lease is the exception: the node refuses it for its lease, and the
+SDK reports a rejection.
 
 The existing `Sign*` and `Simulate*` calls are unchanged.
 

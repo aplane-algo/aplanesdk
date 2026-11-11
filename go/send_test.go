@@ -85,6 +85,8 @@ type sendAlgod struct {
 	mu        sync.Mutex
 	submitted [][]byte
 	lookups   int
+	// waits are the rounds each wait-for-block call asked to follow.
+	waits []string
 }
 
 func (a *sendAlgod) submissions() [][]byte {
@@ -114,7 +116,12 @@ func (a *sendAlgod) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]string{"txId": crypto.GetTxID(first.Txn)})
-	case r.URL.Path == "/v2/status" || strings.HasPrefix(r.URL.Path, "/v2/status/wait-for-block-after/"):
+	case strings.HasPrefix(r.URL.Path, "/v2/status/wait-for-block-after/"):
+		a.mu.Lock()
+		a.waits = append(a.waits, strings.TrimPrefix(r.URL.Path, "/v2/status/wait-for-block-after/"))
+		a.mu.Unlock()
+		json.NewEncoder(w).Encode(map[string]uint64{"last-round": 10})
+	case r.URL.Path == "/v2/status":
 		json.NewEncoder(w).Encode(map[string]uint64{"last-round": 10})
 	case strings.HasPrefix(r.URL.Path, "/v2/transactions/pending/"):
 		a.mu.Lock()
@@ -644,6 +651,12 @@ func TestSendPreparedConfirmationWait(t *testing.T) {
 			if uint64(node.lookups) != rounds+1 {
 				t.Fatalf("WaitRounds %d made %d lookups, want %d", rounds, node.lookups, rounds+1)
 			}
+			// At round 10 the first wait follows round 10, so it ends when
+			// round 11 exists; the wait covers exactly the next rounds.
+			want := map[uint64]string{1: "10", 3: "10,11,12"}[rounds]
+			if got := strings.Join(node.waits, ","); got != want {
+				t.Fatalf("WaitRounds %d waited after rounds %s, want %s", rounds, got, want)
+			}
 		}
 	})
 
@@ -727,8 +740,10 @@ func TestSubmitFailuresThatAreNotAnswers(t *testing.T) {
 }
 
 // cosignedSendFixture is a signer holding one cosigned account, its cosigner,
-// and a node. dropAssembly makes the last signing step end with no answer.
-func cosignedSendFixture(t *testing.T, dropAssembly bool) (*SignerClient, *SignerClient, *algod.Client, *sendAlgod, types.Transaction, *int) {
+// and a node. fault names a user-signer path and how it fails: "<path> drop"
+// closes the connection with no answer, "<path> truncate" answers 200 with a
+// body cut short.
+func cosignedSendFixture(t *testing.T, fault string) (*SignerClient, *SignerClient, *algod.Client, *sendAlgod, types.Transaction, *int) {
 	t.Helper()
 	bounded := sdkTestAddress(21)
 	key := KeyInfo{
@@ -743,6 +758,19 @@ func cosignedSendFixture(t *testing.T, dropAssembly bool) (*SignerClient, *Signe
 		},
 	}
 	userClient, userServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		switch fault {
+		case r.URL.Path + " drop":
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Errorf("hijack: %v", err)
+				return
+			}
+			conn.Close()
+			return
+		case r.URL.Path + " truncate":
+			w.Write([]byte(`{"request_id": "x", "signed_gr`))
+			return
+		}
 		switch r.URL.Path {
 		case "/status":
 			json.NewEncoder(w).Encode(StatusResponse{State: "unlocked", ApprovalWaitSeconds: 60})
@@ -767,15 +795,6 @@ func cosignedSendFixture(t *testing.T, dropAssembly bool) (*SignerClient, *Signe
 				AssemblyReceipt: "receipt", SignatureScheme: "aplane.falcon1024.v1", Path: ComponentPathSpend,
 			}}})
 		case "/sign/assemble":
-			if dropAssembly {
-				conn, _, err := w.(http.Hijacker).Hijack()
-				if err != nil {
-					t.Errorf("hijack: %v", err)
-					return
-				}
-				conn.Close()
-				return
-			}
 			var req AssemblyRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Errorf("decode assembly request: %v", err)
@@ -820,7 +839,7 @@ func cosignedSendFixture(t *testing.T, dropAssembly bool) (*SignerClient, *Signe
 }
 
 func TestSendPreparedCosignedGroup(t *testing.T) {
-	userClient, cosignerClient, algodClient, node, txn, cosignerCalls := cosignedSendFixture(t, false)
+	userClient, cosignerClient, algodClient, node, txn, cosignerCalls := cosignedSendFixture(t, "")
 
 	result, err := userClient.SendPrepared(context.Background(), algodClient, preparedFor(txn), &SendOptions{
 		CosignerClient: cosignerClient, CosignerComponentKey: "COSIGNER_COMPONENT",
@@ -841,7 +860,7 @@ func TestSendPreparedCosignedGroup(t *testing.T) {
 }
 
 func TestSendPreparedCosignedWithoutACosignerIsRefused(t *testing.T) {
-	userClient, _, algodClient, node, txn, _ := cosignedSendFixture(t, false)
+	userClient, _, algodClient, node, txn, _ := cosignedSendFixture(t, "")
 	_, err := userClient.SendPrepared(context.Background(), algodClient, preparedFor(txn), nil)
 	var unknown *SignOutcomeUnknownError
 	if err == nil || !strings.Contains(err.Error(), "cosigner client or resolver is required") || errors.As(err, &unknown) {
@@ -852,16 +871,33 @@ func TestSendPreparedCosignedWithoutACosignerIsRefused(t *testing.T) {
 	}
 }
 
-func TestSendPreparedCosignedLostAssemblyIsAnUnknownOutcome(t *testing.T) {
-	userClient, cosignerClient, algodClient, node, txn, _ := cosignedSendFixture(t, true)
-	_, err := userClient.SendPrepared(context.Background(), algodClient, preparedFor(txn), &SendOptions{
-		CosignerClient: cosignerClient, CosignerComponentKey: "COSIGNER_COMPONENT",
-	})
-	var unknown *SignOutcomeUnknownError
-	if !errors.As(err, &unknown) {
-		t.Fatalf("error = %v, want *SignOutcomeUnknownError", err)
+func TestSendPreparedCosignedLostAnswers(t *testing.T) {
+	tests := []struct {
+		fault   string
+		unknown bool
+	}{
+		// Approval-bearing steps: the signer may have acted.
+		{"/sign/component drop", true},
+		{"/sign/component truncate", true},
+		{"/sign/assemble drop", true},
+		{"/sign/assemble truncate", true},
+		// Planning releases nothing, so its failure is a plain error.
+		{"/plan drop", false},
+		{"/plan truncate", false},
 	}
-	if len(node.submissions()) != 0 {
-		t.Fatalf("submitted after a lost assembly answer")
+	for _, tt := range tests {
+		t.Run(tt.fault, func(t *testing.T) {
+			userClient, cosignerClient, algodClient, node, txn, _ := cosignedSendFixture(t, tt.fault)
+			_, err := userClient.SendPrepared(context.Background(), algodClient, preparedFor(txn), &SendOptions{
+				CosignerClient: cosignerClient, CosignerComponentKey: "COSIGNER_COMPONENT",
+			})
+			var unknown *SignOutcomeUnknownError
+			if err == nil || errors.As(err, &unknown) != tt.unknown {
+				t.Fatalf("error = %v, want unknown outcome = %v", err, tt.unknown)
+			}
+			if len(node.submissions()) != 0 {
+				t.Fatalf("submitted after a failed signing step")
+			}
+		})
 	}
 }

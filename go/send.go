@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"math"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"github.com/algorand/go-algorand-sdk/v2/client/v2/algod"
@@ -194,10 +193,12 @@ func (c *SignerClient) SendPayment(ctx context.Context, algodClient *algod.Clien
 // Every position must be one whose key this signer holds, and must name it in
 // AuthAddress, as the Prepare* helpers do.
 //
-// A refusal comes back as the signing call's own error. Once a sign request
-// has been sent, failures are typed: *SignOutcomeUnknownError,
-// *SubmissionRejectedError and *SubmissionUncertainError. The last two keep
-// the signed bytes and their IDs. This call never signs a second time.
+// A refusal by the signer, and an answer of the signer's that the SDK
+// refuses, come back as the signing call's own error; nothing was submitted.
+// The other failures are typed. *SignOutcomeUnknownError: an approval-bearing
+// request ended with no answer. *SubmissionRejectedError and
+// *SubmissionUncertainError: the group was signed, and the error keeps the
+// signed bytes and their IDs. This call never signs a second time.
 func (c *SignerClient) SendPrepared(ctx context.Context, algodClient *algod.Client, group PreparedGroup, opts *SendOptions) (*SendResult, error) {
 	if algodClient == nil {
 		return nil, fmt.Errorf("algod client is required")
@@ -229,7 +230,7 @@ func (c *SignerClient) SendPrepared(ctx context.Context, algodClient *algod.Clie
 			// The sequence makes several approval-bearing requests. One that
 			// ended with no answer may have released a signature, and the
 			// last of them releases the whole group.
-			if exchangeFailed(err) {
+			if answerLost(err) {
 				return nil, &SignOutcomeUnknownError{Err: err}
 			}
 			return nil, err
@@ -256,12 +257,14 @@ func (c *SignerClient) SendPrepared(ctx context.Context, algodClient *algod.Clie
 	return result, nil
 }
 
-// exchangeFailed reports whether err is a request that ended without an
-// answer: a transport failure, or the caller's context ending. An answer the
-// signer gave, whatever its status, is not one.
-func exchangeFailed(err error) bool {
-	var transport *url.Error
-	return errors.As(err, &transport) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+// answerLost reports whether err is an approval-bearing request of the
+// cosigned sequence that ended with no usable answer: a component request,
+// the /sign of the group's other positions, or the assembly. Planning and key
+// listing release nothing, so a failure there is not one.
+func answerLost(err error) bool {
+	var lost *lostAnswer
+	var unread *signUnreadError
+	return errors.As(err, &lost) || errors.As(err, &unread)
 }
 
 // classifySend picks the one signing flow for the whole group from the
@@ -415,9 +418,9 @@ func submitAndTrack(ctx context.Context, algodClient *algod.Client, raw [][]byte
 			return uncertain(SendStageSubmit, fmt.Errorf("node reported transaction ID %s for a group whose first transaction is %s", sentID, txID))
 		}
 	case alreadyKnownToNode(err):
-		// The node has these exact bytes already, pending or committed: an
-		// earlier submission of the same group reached it. That is not a
-		// refusal, and the lookup below finds the outcome.
+		// The node already has a transaction with this ID, pending or
+		// committed: an earlier submission of this group reached it. That is
+		// not a refusal, and the lookup below finds the outcome.
 	default:
 		var bad common.BadRequest
 		if errors.As(err, &bad) {
@@ -478,9 +481,11 @@ func submitAndTrack(ctx context.Context, algodClient *algod.Client, raw [][]byte
 }
 
 // alreadyKnownToNode reports whether a submission was refused only because
-// the node already has the transaction, in its pool or in a block. algod
-// answers that with a 400 like any refusal and no code, so the text is all
-// there is to go on.
+// the node already has a transaction with the same ID, in its pool or in a
+// block. algod answers that with a 400 like any refusal and no code, so the
+// text is all there is to go on. One case is not recognised: a committed
+// transaction that carries a lease is refused for its lease first, and that
+// answer is the same as a real lease conflict's.
 func alreadyKnownToNode(err error) bool {
 	var bad common.BadRequest
 	if !errors.As(err, &bad) {
