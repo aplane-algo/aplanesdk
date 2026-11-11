@@ -759,7 +759,7 @@ func (c *SignerClient) RequestAssembleWithContext(ctx context.Context, reqBody A
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to make request to Signer: %w", &lostAnswer{err: err})
+		return nil, fmt.Errorf("failed to make request to Signer: %w", &lostAnswer{requestID: reqBody.RequestID, err: err})
 	}
 	defer resp.Body.Close()
 
@@ -778,7 +778,7 @@ func (c *SignerClient) RequestAssembleWithContext(ctx context.Context, reqBody A
 
 	var assemblyResp AssemblyResponse
 	if err := readAnswer(resp.Body, &assemblyResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", &lostAnswer{err: err})
+		return nil, fmt.Errorf("failed to decode response: %w", &lostAnswer{requestID: reqBody.RequestID, err: err})
 	}
 	if err := assemblyResp.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid assembly response: %w", err)
@@ -1102,10 +1102,13 @@ func (c *SignerClient) SignGroupWithContext(ctx context.Context, groupReq GroupS
 	}
 	resp, err := c.postSign(ctx, groupReq)
 	var transport *signTransportError
+	var unread *signUnreadError
 	var body *signBodyError
 	switch {
 	case errors.As(err, &transport):
-		return nil, fmt.Errorf("failed to make request to Signer: %w", &lostAnswer{err: transport.err})
+		return nil, fmt.Errorf("failed to make request to Signer: %w", &lostAnswer{requestID: groupReq.RequestID, err: transport.err})
+	case errors.As(err, &unread):
+		return nil, &lostAnswer{requestID: groupReq.RequestID, err: err}
 	case errors.As(err, &body):
 		return nil, fmt.Errorf("group signing failed: %s", body.message)
 	}
@@ -1128,8 +1131,12 @@ func readAnswer(body io.Reader, out any) error {
 
 // lostAnswer marks an approval-bearing request that ended with no usable
 // answer: the exchange failed, or a 200 arrived whose body could not be read.
-// The signer may have acted on the request. It reads as the error it wraps.
-type lostAnswer struct{ err error }
+// The signer may have acted on the request. requestID is that request's ID,
+// as the signer's audit log records it. It reads as the error it wraps.
+type lostAnswer struct {
+	requestID string
+	err       error
+}
 
 func (e *lostAnswer) Error() string { return e.err.Error() }
 func (e *lostAnswer) Unwrap() error { return e.err }

@@ -4,10 +4,12 @@
 package aplane
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -798,12 +800,72 @@ func TestSubmitFailuresThatAreNotAnswers(t *testing.T) {
 	})
 }
 
-// cosignedSendFixture is a signer holding one cosigned account, its cosigner,
-// and a node. fault names a user-signer path and how it fails: "<path> drop"
-// closes the connection with no answer, "<path> truncate" answers 200 with a
-// body cut short.
-func cosignedSendFixture(t *testing.T, fault string) (*SignerClient, *SignerClient, *algod.Client, *sendAlgod, types.Transaction, *int) {
+// cosignedSend is a signer holding one cosigned account, and with primary an
+// ordinary account too, its cosigner, and a node.
+type cosignedSend struct {
+	user, cosigner *SignerClient
+	algod          *algod.Client
+	node           *sendAlgod
+	// txn is the cosigned account's transaction; group is what is sent.
+	txn   types.Transaction
+	group PreparedGroup
+
+	mu            sync.Mutex
+	cosignerCalls int
+	// requestIDs is the request_id last posted to each path, the cosigner's
+	// under "cosigner <path>".
+	requestIDs map[string]string
+}
+
+func (f *cosignedSend) requestID(path string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.requestIDs[path]
+}
+
+// record notes the request_id a request carries and leaves its body to be
+// read again.
+func (f *cosignedSend) record(t *testing.T, name string, r *http.Request) {
 	t.Helper()
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		t.Errorf("read %s request: %v", name, err)
+		return
+	}
+	r.Body = io.NopCloser(bytes.NewReader(raw))
+	var body struct {
+		RequestID string `json:"request_id"`
+	}
+	if len(raw) > 0 && json.Unmarshal(raw, &body) == nil {
+		f.mu.Lock()
+		f.requestIDs[name] = body.RequestID
+		f.mu.Unlock()
+	}
+}
+
+// failAs answers with fault when it names this request: "<name> drop" closes
+// the connection with no answer, "<name> truncate" answers 200 with a body
+// cut short. name is the path, prefixed with "cosigner " on the cosigner.
+func failAs(t *testing.T, w http.ResponseWriter, fault, name string) bool {
+	switch fault {
+	case name + " drop":
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return true
+		}
+		conn.Close()
+		return true
+	case name + " truncate":
+		w.Write([]byte(`{"request_id": "x", "signed_gr`))
+		return true
+	}
+	return false
+}
+
+func cosignedSendFixture(t *testing.T, fault string, primary bool) *cosignedSend {
+	t.Helper()
+	f := &cosignedSend{requestIDs: map[string]string{}}
 	bounded := sdkTestAddress(21)
 	key := KeyInfo{
 		Address: bounded, KeyType: "aplane.falcon1024.v1", SigningFlow: SigningFlowCosigned1,
@@ -816,32 +878,55 @@ func cosignedSendFixture(t *testing.T, fault string) (*SignerClient, *SignerClie
 			Cosigner: &BoundedCosignerAuthorizationInfo{ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: "aabb"},
 		},
 	}
+	keys := []KeyInfo{key}
+
+	var genesisHash types.Digest
+	sp := types.SuggestedParams{
+		Fee: types.MicroAlgos(1000), FirstRoundValid: 1, LastRoundValid: 100,
+		GenesisID: "testnet-v1.0", GenesisHash: genesisHash[:], FlatFee: true,
+	}
+	txn, err := transaction.MakePaymentTxn(bounded, sdkTestAddress(22), 1000, nil, "", sp)
+	if err != nil {
+		t.Fatalf("MakePaymentTxn() error = %v", err)
+	}
+	f.txn = txn
+	positions := []PreparedTransaction{{Transaction: &f.txn, AuthAddress: bounded}}
+	if primary {
+		other, err := transaction.MakePaymentTxn(fakeAccount(23), sdkTestAddress(22), 2000, nil, "", sp)
+		if err != nil {
+			t.Fatalf("MakePaymentTxn() error = %v", err)
+		}
+		keys = append(keys, ordinaryKey(other))
+		positions = append(positions, PreparedTransaction{Transaction: &other, AuthAddress: other.Sender.String()})
+	}
+	f.group = NewPreparedGroup(positions...)
+
 	userClient, userServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
-		switch fault {
-		case r.URL.Path + " drop":
-			conn, _, err := w.(http.Hijacker).Hijack()
-			if err != nil {
-				t.Errorf("hijack: %v", err)
-				return
-			}
-			conn.Close()
-			return
-		case r.URL.Path + " truncate":
-			w.Write([]byte(`{"request_id": "x", "signed_gr`))
+		if r.Method == http.MethodPost {
+			f.record(t, r.URL.Path, r)
+		}
+		if failAs(t, w, fault, r.URL.Path) {
 			return
 		}
 		switch r.URL.Path {
 		case "/status":
 			json.NewEncoder(w).Encode(StatusResponse{State: "unlocked", ApprovalWaitSeconds: 60})
 		case "/keys":
-			json.NewEncoder(w).Encode(KeysResponse{Count: 1, Keys: []KeyInfo{key}})
+			json.NewEncoder(w).Encode(KeysResponse{Count: len(keys), Keys: keys})
 		case "/plan":
 			var req GroupSignRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Errorf("decode plan request: %v", err)
 				return
 			}
-			json.NewEncoder(w).Encode(PlanGroupResponse{Transactions: []string{req.Requests[0].TxnBytesHex}})
+			json.NewEncoder(w).Encode(fakeSigner{}.plan(t, req.Requests))
+		case "/sign":
+			var req GroupSignRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Errorf("decode sign request: %v", err)
+				return
+			}
+			json.NewEncoder(w).Encode(fakeSigner{}.sign(t, req.Requests))
 		case "/sign/component":
 			var req ComponentRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -865,9 +950,14 @@ func cosignedSendFixture(t *testing.T, fault string) (*SignerClient, *SignerClie
 		}
 	})
 	t.Cleanup(userServer.Close)
-	cosignerCalls := 0
 	cosignerClient, cosignerServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
-		cosignerCalls++
+		f.mu.Lock()
+		f.cosignerCalls++
+		f.mu.Unlock()
+		f.record(t, "cosigner "+r.URL.Path, r)
+		if failAs(t, w, fault, "cosigner "+r.URL.Path) {
+			return
+		}
 		var req capturedComponentRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Errorf("decode cosigner request: %v", err)
@@ -881,81 +971,101 @@ func cosignedSendFixture(t *testing.T, fault string) (*SignerClient, *SignerClie
 		}}})
 	})
 	t.Cleanup(cosignerServer.Close)
-	node := &sendAlgod{t: t}
-	algodClient, closeAlgod := makeSimulationAlgodClient(t, node.handle)
+	f.node = &sendAlgod{t: t}
+	algodClient, closeAlgod := makeSimulationAlgodClient(t, f.node.handle)
 	t.Cleanup(closeAlgod)
+	f.user, f.cosigner, f.algod = userClient, cosignerClient, algodClient
+	return f
+}
 
-	var genesisHash types.Digest
-	sp := types.SuggestedParams{
-		Fee: types.MicroAlgos(1000), FirstRoundValid: 1, LastRoundValid: 100,
-		GenesisID: "testnet-v1.0", GenesisHash: genesisHash[:], FlatFee: true,
-	}
-	txn, err := transaction.MakePaymentTxn(bounded, sdkTestAddress(22), 1000, nil, "", sp)
-	if err != nil {
-		t.Fatalf("MakePaymentTxn() error = %v", err)
-	}
-	return userClient, cosignerClient, algodClient, node, txn, &cosignerCalls
+func (f *cosignedSend) send() (*SendResult, error) {
+	return f.user.SendPrepared(context.Background(), f.algod, f.group, &SendOptions{
+		CosignerClient: f.cosigner, CosignerComponentKey: "COSIGNER_COMPONENT",
+	})
 }
 
 func TestSendPreparedCosignedGroup(t *testing.T) {
-	userClient, cosignerClient, algodClient, node, txn, cosignerCalls := cosignedSendFixture(t, "")
-
-	result, err := userClient.SendPrepared(context.Background(), algodClient, preparedFor(txn), &SendOptions{
-		CosignerClient: cosignerClient, CosignerComponentKey: "COSIGNER_COMPONENT",
-	})
-	if err != nil {
-		t.Fatalf("SendPrepared() error = %v", err)
-	}
-	if result.Flow != SigningFlowCosigned1 || result.Cosigned == nil || result.Cosigned.BoundedAssemblyResponse == nil || *cosignerCalls != 1 {
-		t.Fatalf("result = %+v, cosigner calls = %d", result, *cosignerCalls)
-	}
-	submitted := node.submissions()
-	if len(submitted) != 1 || hex.EncodeToString(submitted[0]) != strings.Join(result.SignedGroup, "") || result.Outcome != SendOutcomeConfirmed {
-		t.Fatalf("the assembled group was not submitted once and confirmed")
-	}
-	if result.TxIDs[0] != crypto.GetTxID(txn) || result.Fees[0] != 1000 {
-		t.Fatalf("txids %v fees %v", result.TxIDs, result.Fees)
+	for _, primary := range []bool{false, true} {
+		t.Run(fmt.Sprintf("with an ordinary position %v", primary), func(t *testing.T) {
+			f := cosignedSendFixture(t, "", primary)
+			result, err := f.send()
+			if err != nil {
+				t.Fatalf("SendPrepared() error = %v", err)
+			}
+			if result.Flow != SigningFlowCosigned1 || result.Cosigned == nil || result.Cosigned.BoundedAssemblyResponse == nil || f.cosignerCalls != 1 {
+				t.Fatalf("result = %+v, cosigner calls = %d", result, f.cosignerCalls)
+			}
+			if primary != (result.Cosigned.PrimarySignResponse != nil) {
+				t.Fatalf("primary sign response = %+v", result.Cosigned.PrimarySignResponse)
+			}
+			submitted := f.node.submissions()
+			if len(submitted) != 1 || hex.EncodeToString(submitted[0]) != strings.Join(result.SignedGroup, "") || result.Outcome != SendOutcomeConfirmed {
+				t.Fatalf("the assembled group was not submitted once and confirmed")
+			}
+			// With a second position the plan groups the transaction, which
+			// changes its ID.
+			if (!primary && result.TxIDs[0] != crypto.GetTxID(f.txn)) || result.Fees[0] != 1000 {
+				t.Fatalf("txids %v fees %v", result.TxIDs, result.Fees)
+			}
+		})
 	}
 }
 
 func TestSendPreparedCosignedWithoutACosignerIsRefused(t *testing.T) {
-	userClient, _, algodClient, node, txn, _ := cosignedSendFixture(t, "")
-	_, err := userClient.SendPrepared(context.Background(), algodClient, preparedFor(txn), nil)
+	f := cosignedSendFixture(t, "", false)
+	_, err := f.user.SendPrepared(context.Background(), f.algod, f.group, nil)
 	var unknown *SignOutcomeUnknownError
 	if err == nil || !strings.Contains(err.Error(), "cosigner client or resolver is required") || errors.As(err, &unknown) {
 		t.Fatalf("error = %v, want a plain refusal naming the missing cosigner", err)
 	}
-	if len(node.submissions()) != 0 {
+	if len(f.node.submissions()) != 0 {
 		t.Fatalf("submitted without a cosigner")
 	}
 }
 
+// An approval-bearing step whose answer is lost makes the send's outcome
+// unknown, and the error names that step's request, so the operator or the
+// audit log can say whether it released anything.
 func TestSendPreparedCosignedLostAnswers(t *testing.T) {
 	tests := []struct {
 		fault   string
+		primary bool
 		unknown bool
 	}{
 		// Approval-bearing steps: the signer may have acted.
-		{"/sign/component drop", true},
-		{"/sign/component truncate", true},
-		{"/sign/assemble drop", true},
-		{"/sign/assemble truncate", true},
+		{"/sign/component drop", false, true},
+		{"/sign/component truncate", false, true},
+		{"/sign/assemble drop", false, true},
+		{"/sign/assemble truncate", false, true},
+		{"/sign drop", true, true},
+		{"/sign truncate", true, true},
+		{"cosigner /sign/component drop", false, true},
+		{"cosigner /sign/component truncate", false, true},
 		// Planning releases nothing, so its failure is a plain error.
-		{"/plan drop", false},
-		{"/plan truncate", false},
+		{"/plan drop", false, false},
+		{"/plan truncate", false, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.fault, func(t *testing.T) {
-			userClient, cosignerClient, algodClient, node, txn, _ := cosignedSendFixture(t, tt.fault)
-			_, err := userClient.SendPrepared(context.Background(), algodClient, preparedFor(txn), &SendOptions{
-				CosignerClient: cosignerClient, CosignerComponentKey: "COSIGNER_COMPONENT",
-			})
+			f := cosignedSendFixture(t, tt.fault, tt.primary)
+			_, err := f.send()
 			var unknown *SignOutcomeUnknownError
 			if err == nil || errors.As(err, &unknown) != tt.unknown {
 				t.Fatalf("error = %v, want unknown outcome = %v", err, tt.unknown)
 			}
-			if len(node.submissions()) != 0 {
+			if len(f.node.submissions()) != 0 {
 				t.Fatalf("submitted after a failed signing step")
+			}
+			if !tt.unknown {
+				return
+			}
+			name := strings.TrimSuffix(strings.TrimSuffix(tt.fault, " drop"), " truncate")
+			want := f.requestID(name)
+			if want == "" || unknown.RequestID != want {
+				t.Fatalf("RequestID = %q, want the %s request's %q", unknown.RequestID, name, want)
+			}
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("error %q does not name request %s", err, want)
 			}
 		})
 	}

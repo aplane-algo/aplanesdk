@@ -87,7 +87,7 @@ func (c *SignerClient) RequestComponentsWithContext(ctx context.Context, reqBody
 		if reqCtx.Err() != nil {
 			sendCancel()
 		}
-		return nil, fmt.Errorf("failed to make request to Signer: %w", &lostAnswer{err: err})
+		return nil, fmt.Errorf("failed to make request to Signer: %w", &lostAnswer{requestID: reqBody.RequestID, err: err})
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusUnauthorized {
@@ -104,7 +104,7 @@ func (c *SignerClient) RequestComponentsWithContext(ctx context.Context, reqBody
 	}
 	var result ComponentResponse
 	if err := readAnswer(resp.Body, &result); err != nil {
-		return nil, fmt.Errorf("failed to decode component response: %w", &lostAnswer{err: err})
+		return nil, fmt.Errorf("failed to decode component response: %w", &lostAnswer{requestID: reqBody.RequestID, err: err})
 	}
 	if err := result.ValidateForRequest(reqBody); err != nil {
 		return nil, fmt.Errorf("invalid component response: %w", err)
