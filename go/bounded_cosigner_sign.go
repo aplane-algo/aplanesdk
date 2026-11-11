@@ -38,21 +38,19 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 		if item.Transaction == nil {
 			return nil, fmt.Errorf("prepared transaction %d: transaction is required", i)
 		}
-		key := item.SignerKey
-		if key != nil && key.Address != item.AuthAddress {
-			// The key's flow, resources and fee ceiling decide how the
-			// position is signed, so it must be the key that signs it.
-			return nil, fmt.Errorf("prepared transaction %d: signer key is for %s, not the position's auth address %s", i, key.Address, item.AuthAddress)
+		if item.SignerKey != nil && item.SignerKey.Address != item.AuthAddress {
+			return nil, fmt.Errorf("prepared transaction %d: signer key is for %s, not the position's auth address %s", i, item.SignerKey.Address, item.AuthAddress)
 		}
-		if key == nil && item.AuthAddress != "" {
-			var err error
-			key, err = opts.UserClient.getKeyInfoWithContext(ctx, item.AuthAddress)
-			if err != nil {
-				return nil, fmt.Errorf("prepared transaction %d: resolve signer key: %w", i, err)
-			}
+		if item.AuthAddress == "" {
+			return nil, fmt.Errorf("prepared transaction %d: auth address is required", i)
 		}
-		if key == nil {
-			return nil, fmt.Errorf("prepared transaction %d: signer key metadata is required", i)
+		// The key's flow, resources and fee ceiling decide how the position
+		// is signed, so they come from the signer's own record of the key,
+		// never from the caller. A key supplied on the prepared transaction
+		// is only checked for the right address.
+		key, err := opts.UserClient.getKeyInfoWithContext(ctx, item.AuthAddress)
+		if err != nil {
+			return nil, fmt.Errorf("prepared transaction %d: resolve signer key: %w", i, err)
 		}
 		appCallInfo[i] = item.AppCallInfo
 

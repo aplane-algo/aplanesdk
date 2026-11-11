@@ -722,7 +722,7 @@ func TestPreparePaymentGroupRejectsAggregateInsufficientFunds(t *testing.T) {
 		{Sender: sender, Receiver: receiver1, Amount: 10_000, Fee: 1000, UseFlatFee: true},
 		{Sender: sender, Receiver: receiver2, Amount: 10_000, Fee: 1000, UseFlatFee: true},
 	})
-	if err == nil || !strings.Contains(err.Error(), "payment group insufficient funds") {
+	if err == nil || !strings.Contains(err.Error(), "group insufficient funds") {
 		t.Fatalf("expected aggregate insufficient funds error, got %v", err)
 	}
 }

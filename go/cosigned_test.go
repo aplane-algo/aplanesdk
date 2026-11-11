@@ -156,7 +156,7 @@ func TestSignPreparedCosignedGroupRejectsUnsupportedSigningFlow(t *testing.T) {
 		t.Fatalf("MakePaymentTxn() error = %v", err)
 	}
 
-	_, err = SignPreparedCosignedGroup(PreparedCosignedGroupOptions{
+	_, err = signCosignedWithHeldKeys(PreparedCosignedGroupOptions{
 		UserClient: &SignerClient{},
 		PreparedGroup: NewPreparedGroup(PreparedTransaction{
 			Transaction: &txn,
@@ -195,7 +195,7 @@ func TestSignPreparedCosignedGroupRefusesCosigner1AsUnknown(t *testing.T) {
 		http.Error(w, "unexpected request", http.StatusInternalServerError)
 	})
 	defer server.Close()
-	_, err = SignPreparedCosignedGroup(PreparedCosignedGroupOptions{
+	_, err = signCosignedWithHeldKeys(PreparedCosignedGroupOptions{
 		UserClient: client,
 		PreparedGroup: NewPreparedGroup(PreparedTransaction{
 			Transaction: &txn,
@@ -234,4 +234,24 @@ func TestSelectedPreparedResourcesUsesTheListedPathForOnlyThese(t *testing.T) {
 	if got, err := selectedPreparedResources(key, &types.Transaction{}); err != nil || *got != *spend {
 		t.Fatalf("a spend on a list account = %+v, %v", got, err)
 	}
+}
+
+// signCosignedWithHeldKeys is SignPreparedCosignedGroup against a signer that
+// holds the keys the group names. The flow reads each key from the signer,
+// not from the group, so these tests, which describe the signer's keys on the
+// prepared transactions, put exactly those in the user client's key cache.
+func signCosignedWithHeldKeys(opts PreparedCosignedGroupOptions) (*CosignedSignResult, error) {
+	if opts.UserClient != nil {
+		held := map[string]*KeyInfo{}
+		for _, item := range opts.PreparedGroup.Transactions {
+			if item.SignerKey != nil {
+				key := *item.SignerKey
+				held[key.Address] = &key
+			}
+		}
+		opts.UserClient.keyMu.Lock()
+		opts.UserClient.keyCache = held
+		opts.UserClient.keyMu.Unlock()
+	}
+	return SignPreparedCosignedGroup(opts)
 }

@@ -141,7 +141,7 @@ func TestSignPreparedCosignedGroupOneTarget(t *testing.T) {
 			},
 		}),
 	}
-	result, err := SignPreparedCosignedGroup(options)
+	result, err := signCosignedWithHeldKeys(options)
 	if err != nil {
 		t.Fatalf("SignPreparedCosignedGroup() error = %v", err)
 	}
@@ -151,7 +151,7 @@ func TestSignPreparedCosignedGroupOneTarget(t *testing.T) {
 	}
 	componentCalls = 0
 	options.PreparedGroup.Transactions[0].SignerKey.BoundedAuthorization.MaxFee = new(uint64(999))
-	if _, err := SignPreparedCosignedGroup(options); err == nil ||
+	if _, err := signCosignedWithHeldKeys(options); err == nil ||
 		!strings.Contains(err.Error(), "exceeds advertised max_fee") {
 		t.Fatalf("SignPreparedCosignedGroup() error = %v, want max_fee rejection", err)
 	}
@@ -236,7 +236,7 @@ func TestSignPreparedCosignedGroupSkipsTheCosignerOnAListedRekey(t *testing.T) {
 			Cosigner:  &BoundedCosignerAuthorizationInfo{ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: "aabb"},
 		},
 	}
-	result, err := SignPreparedCosignedGroup(PreparedCosignedGroupOptions{
+	result, err := signCosignedWithHeldKeys(PreparedCosignedGroupOptions{
 		UserClient: userClient, CosignerClient: cosignerClient, CosignerComponentKey: "COSIGNER_COMPONENT",
 		PreparedGroup: NewPreparedGroup(PreparedTransaction{Transaction: &txn, AuthAddress: bounded, SignerKey: key}),
 	})
@@ -404,7 +404,7 @@ func TestSignPreparedCosignedGroupSendsAHeldPrimaryAsTheSignersOwn(t *testing.T)
 			// The group is sent ungrouped: the signer raises no fee on a group
 			// that already carries an ID.
 
-			result, err := SignPreparedCosignedGroup(PreparedCosignedGroupOptions{
+			result, err := signCosignedWithHeldKeys(PreparedCosignedGroupOptions{
 				UserClient: userClient, CosignerClient: cosignerClient,
 				CosignerComponentKey: "COSIGNER_COMPONENT",
 				PreparedGroup: NewPreparedGroup(
@@ -1045,7 +1045,7 @@ func TestSignPreparedCosignedGroupMixedPaths(t *testing.T) {
 					},
 				}
 			}
-			result, err := SignPreparedCosignedGroup(PreparedCosignedGroupOptions{
+			result, err := signCosignedWithHeldKeys(PreparedCosignedGroupOptions{
 				UserClient: userClient, CosignerClient: cosignerClient, CosignerComponentKey: "COSIGNER_COMPONENT",
 				PreparedGroup: NewPreparedGroup(
 					PreparedTransaction{Transaction: &rekeyTxn, AuthAddress: listed, SignerKey: cosignedKey(listed), AppCallInfo: appInfo[0]},

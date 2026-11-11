@@ -6,11 +6,13 @@ package aplane
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/algorand/go-algorand-sdk/v2/client/v2/common/models"
 	"github.com/algorand/go-algorand-sdk/v2/types"
 )
 
@@ -96,7 +98,7 @@ func TestSweepCountsAsaTransferFeesAgainstThePayingSender(t *testing.T) {
 	short, algodClient, cleanup := newPrepTestClients(t, sender, receiver, needed-1, 25, true)
 	defer cleanup()
 	if _, err := short.PrepareSweepGroup(context.Background(), algodClient, params); err == nil ||
-		!strings.Contains(err.Error(), "payment group insufficient funds") {
+		!strings.Contains(err.Error(), "group insufficient funds") {
 		t.Fatalf("PrepareSweepGroup() one microAlgo short: error = %v, want the ASA transfer's fee counted", err)
 	}
 }
@@ -106,28 +108,41 @@ func TestGroupBalanceSumsDoNotWrap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	payment := func(amount uint64) PreparedTransaction {
-		txn := types.Transaction{Type: types.PaymentTx, Header: types.Header{Sender: sender, Fee: 1000}}
+	payment := func(amount, fee uint64) PreparedTransaction {
+		txn := types.Transaction{Type: types.PaymentTx, Header: types.Header{Sender: sender, Fee: types.MicroAlgos(fee)}}
 		txn.Amount = types.MicroAlgos(amount)
 		return PreparedTransaction{
 			Transaction: &txn,
 			Checks:      []PreparedCheck{{Name: "payment_balance", Data: map[string]any{"available": uint64(5000)}}},
 		}
 	}
-	// Two amounts that wrap to a small total.
-	if _, err := paymentGroupBalanceCheck([]PreparedTransaction{payment(math.MaxUint64 - 500), payment(2000)}, nil); err == nil ||
-		!strings.Contains(err.Error(), "overflows uint64") {
-		t.Fatalf("paymentGroupBalanceCheck() error = %v, want an overflow refusal", err)
+	// Two amounts that wrap to a small total, and a fee that wraps it.
+	for name, items := range map[string][]PreparedTransaction{
+		"amounts": {payment(math.MaxUint64-500, 0), payment(2000, 0)},
+		"a fee":   {payment(1000, 0), payment(0, math.MaxUint64-100)},
+	} {
+		if _, err := groupAlgoBalanceCheck(items); err == nil || !strings.Contains(err.Error(), "overflows uint64") {
+			t.Fatalf("groupAlgoBalanceCheck() with wrapping %s: error = %v, want an overflow refusal", name, err)
+		}
 	}
-	if _, err := paymentGroupBalanceCheck([]PreparedTransaction{payment(1000), payment(2000)}, nil); err != nil {
-		t.Fatalf("paymentGroupBalanceCheck() error = %v", err)
+	if _, err := groupAlgoBalanceCheck([]PreparedTransaction{payment(1000, 1000), payment(2000, 1000)}); err != nil {
+		t.Fatalf("groupAlgoBalanceCheck() error = %v", err)
 	}
-	// A fee from another position that wraps the total.
-	other := payment(0)
-	other.Transaction.Fee = math.MaxUint64 - 100
-	if _, err := paymentGroupBalanceCheck([]PreparedTransaction{payment(1000)}, []PreparedTransaction{other}); err == nil ||
-		!strings.Contains(err.Error(), "overflows uint64") {
-		t.Fatalf("paymentGroupBalanceCheck() with a wrapping fee: error = %v", err)
+	if _, err := groupAlgoBalanceCheck([]PreparedTransaction{payment(1000, 1000), payment(2001, 1000)}); err == nil ||
+		!strings.Contains(err.Error(), "available 5000, required 5001") {
+		t.Fatalf("groupAlgoBalanceCheck() one over: error = %v", err)
+	}
+	// A position with no balance on record is refused, not passed.
+	bare := payment(1, 1)
+	bare.Checks = nil
+	if _, err := groupAlgoBalanceCheck([]PreparedTransaction{bare}); err == nil || !strings.Contains(err.Error(), "no ALGO balance on record") {
+		t.Fatalf("groupAlgoBalanceCheck() with no balance: error = %v", err)
+	}
+	if sum, ok := addChecked(math.MaxUint64, 1); ok {
+		t.Fatalf("addChecked() = %d, true for a sum that wraps", sum)
+	}
+	if _, err := paymentChecks(models.Account{Amount: 10}, math.MaxUint64, 1); err == nil || !strings.Contains(err.Error(), "overflows uint64") {
+		t.Fatalf("paymentChecks() error = %v, want an overflow refusal", err)
 	}
 
 	transfer := func(amount uint64) PreparedTransaction {
@@ -218,5 +233,111 @@ func TestNewAlgodClientEnforcesNetworksAllowed(t *testing.T) {
 	config.NetworksAllowed = nil
 	if _, err := config.NewAlgodClient("mainnet"); err != nil {
 		t.Fatalf("NewAlgodClient(mainnet) with no allowlist: %v", err)
+	}
+}
+
+// The cosigned flow takes each key's flow, resources and fee ceiling from the
+// signer's own record. A key supplied on the prepared transaction is checked
+// for the right address and nothing more.
+func TestCosignedGroupTakesTheKeyFromTheSignerNotTheCaller(t *testing.T) {
+	txn := verifyTestPayment(t, 41, 42, 1)
+	sender := txn.Sender.String()
+	lookups := 0
+	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/keys" {
+			t.Errorf("unexpected request %s: the flow must stop at the signer's key record", r.URL.Path)
+			return
+		}
+		lookups++
+		// The signer's record: this key needs a flow this SDK does not have.
+		json.NewEncoder(w).Encode(KeysResponse{Count: 1, Keys: []KeyInfo{{Address: sender, KeyType: "ed25519", SigningFlow: "cosigner9"}}})
+	})
+	defer server.Close()
+
+	// The caller's copy claims an ordinary key.
+	supplied := &KeyInfo{Address: sender, KeyType: "ed25519"}
+	for name, key := range map[string]*KeyInfo{"a supplied key": supplied, "no supplied key": nil} {
+		_, err := SignPreparedCosignedGroup(PreparedCosignedGroupOptions{
+			UserClient:    client,
+			PreparedGroup: NewPreparedGroup(PreparedTransaction{Transaction: &txn, AuthAddress: sender, SignerKey: key}),
+		})
+		if err == nil || !strings.Contains(err.Error(), `signing flow "cosigner9"`) {
+			t.Fatalf("%s: error = %v, want the signer's record to decide the flow", name, err)
+		}
+	}
+	// The record is cached: two groups, one lookup.
+	if lookups != 1 {
+		t.Fatalf("/keys was fetched %d times, want 1", lookups)
+	}
+
+	// A key the signer does not hold stops the flow.
+	other := verifyTestPayment(t, 43, 44, 1)
+	_, err := SignPreparedCosignedGroup(PreparedCosignedGroupOptions{
+		UserClient: client,
+		PreparedGroup: NewPreparedGroup(PreparedTransaction{
+			Transaction: &other, AuthAddress: other.Sender.String(),
+			SignerKey: &KeyInfo{Address: other.Sender.String(), KeyType: "ed25519", SigningFlow: SigningFlowCosigned1},
+		}),
+	})
+	if !errors.Is(err, ErrKeyNotFound) {
+		t.Fatalf("a key the signer does not hold: error = %v, want ErrKeyNotFound", err)
+	}
+}
+
+// Every sender is checked against everything it pays across a group: the
+// ALGO it sends and the fee of every position, payments or not.
+func TestGroupChecksEverySenderAgainstEverythingItPays(t *testing.T) {
+	sender := sdkTestAddress(1)
+	receiver := sdkTestAddress(2)
+	ctx := context.Background()
+	transfers := []AsaTransferPrepParams{
+		{Sender: sender, Receiver: receiver, AssetID: 1001, Amount: 5},
+		{Sender: sender, Receiver: receiver, AssetID: 1001, Amount: 5},
+	}
+	rich, algodClient, cleanup := newPrepTestClients(t, sender, receiver, 2_000_000, 25, true)
+	group, err := rich.PrepareSweepGroup(ctx, algodClient, SweepPrepParams{AsaTransfers: transfers})
+	cleanup()
+	if err != nil {
+		t.Fatalf("PrepareSweepGroup() error = %v", err)
+	}
+	if last := group.Checks[len(group.Checks)-1]; last.Name != "group_algo_balance" {
+		t.Fatalf("last check = %q, want group_algo_balance", last.Name)
+	}
+	// The mock's minimum balance is 100,000. A sweep with no payments still
+	// has to cover its two fees.
+	needed := 100_000 + uint64(group.Transactions[0].Transaction.Fee) + uint64(group.Transactions[1].Transaction.Fee)
+
+	exact, algodClient, cleanup := newPrepTestClients(t, sender, receiver, needed, 25, true)
+	if _, err := exact.PrepareSweepGroup(ctx, algodClient, SweepPrepParams{AsaTransfers: transfers}); err != nil {
+		t.Fatalf("PrepareSweepGroup() with exactly enough: %v", err)
+	}
+	if _, err := exact.PrepareAsaTransferGroup(ctx, algodClient, transfers); err != nil {
+		t.Fatalf("PrepareAsaTransferGroup() with exactly enough: %v", err)
+	}
+	cleanup()
+	short, algodClient, cleanup := newPrepTestClients(t, sender, receiver, needed-1, 25, true)
+	defer cleanup()
+	if _, err := short.PrepareSweepGroup(ctx, algodClient, SweepPrepParams{AsaTransfers: transfers}); err == nil ||
+		!strings.Contains(err.Error(), "group insufficient funds for "+sender) {
+		t.Fatalf("PrepareSweepGroup() with no payments, one microAlgo short: error = %v", err)
+	}
+	if _, err := short.PrepareAsaTransferGroup(ctx, algodClient, transfers); err == nil ||
+		!strings.Contains(err.Error(), "group insufficient funds for "+sender) {
+		t.Fatalf("PrepareAsaTransferGroup() one microAlgo short: error = %v", err)
+	}
+}
+
+// Go's ABI reference arguments go through the ABI uint64 encoder, which takes
+// integers only: nothing is rounded or parsed from text.
+func TestABIReferenceArgumentsAreNotCoerced(t *testing.T) {
+	for _, bad := range []any{123.9, "123", true, -1} {
+		if _, err := marshalABIUint64(bad); err == nil {
+			t.Fatalf("marshalABIUint64(%#v) accepted a value that is not an unsigned integer", bad)
+		}
+	}
+	for _, good := range []any{uint64(123), 123, uint8(7)} {
+		if got, err := marshalABIUint64(good); err != nil || (got != 123 && got != 7) {
+			t.Fatalf("marshalABIUint64(%#v) = %d, %v", good, got, err)
+		}
 	}
 }
