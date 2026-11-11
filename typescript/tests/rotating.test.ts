@@ -107,6 +107,7 @@ class RotatingSigner {
   paths: string[] = [];
   prepareSeen: Transaction[] = [];
   signRequests: any[] = [];
+  cancelRequests: any[] = [];
 
   constructor(options: { account: string; stage: number; program: Uint8Array; dummies?: number; charge?: bigint }) {
     this.account = options.account;
@@ -166,6 +167,7 @@ class RotatingSigner {
         return { body: response };
       }
       case "/sign/cancel":
+        this.cancelRequests.push(body);
         return { body: { state: "canceled" } };
       default:
         throw new Error(`unexpected signer path ${path}`);
@@ -343,7 +345,7 @@ describe("sendPrepared with a rotating account", () => {
     assert.notEqual(result.txIds[0], txn.txID());
     assert.deepEqual(result.fees, [2000n, 0n]);
     const details = result.rotating;
-    assert.ok(details);
+    assert.ok(details, "want details");
     assert.equal(details.stage, 3);
     assert.equal(details.target, 4);
     assert.equal(details.rekeyTo, signer.nextTarget().toString());
@@ -613,7 +615,7 @@ describe("a failed preflight signs nothing", () => {
     await assert.rejects(client.sendPrepared(algod, rotatingGroup(txn)), (error: unknown) => {
       assert.ok(error instanceof RotatingPreflightError, String(error));
       assert.match(error.failureMessage, /rekey not allowed/);
-      assert.ok(error.prepared instanceof PreparedRotating);
+      assert.ok(error.prepared instanceof PreparedRotating, "want error.prepared instanceof PreparedRotating");
       return true;
     });
     assert.equal(signer.count("/sign/rotating/sign"), 0);
@@ -741,8 +743,8 @@ describe("rotating validity rounds", () => {
       const result = await client.sendPrepared(algod, rotatingGroup(rotatingPayment(signer.account, first, last)), { refreshValidity: true });
       const sent = signer.prepareSeen[0];
       assert.equal(sent.firstValid, 40n, `rounds ${first}-${last}`);
-      assert.ok(sent.lastValid >= 50n);
-      assert.ok(sent.lastValid - sent.firstValid <= BigInt(ROTATING_MAX_VALIDITY_WINDOW));
+      assert.ok(sent.lastValid >= 50n, "want sent.lastValid >= 50n");
+      assert.ok(sent.lastValid - sent.firstValid <= BigInt(ROTATING_MAX_VALIDITY_WINDOW), "want sent.lastValid - sent.firstValid <= BigInt(ROTATING_MAX_VALIDITY_WINDOW)");
       assert.equal(result.rotating?.transaction.firstValid, sent.firstValid, "the result reports the transaction that was prepared");
       restore?.();
     }
@@ -815,7 +817,7 @@ describe("lost and refused sign answers", () => {
     let unknown: SignOutcomeUnknownError | undefined;
     await assert.rejects(client.sendPrepared(algod, rotatingGroup(txn), { refreshValidity: true }), (error: unknown) => {
       assert.ok(error instanceof SignOutcomeUnknownError, String(error));
-      assert.ok(error.rotating instanceof PreparedRotating);
+      assert.ok(error.rotating instanceof PreparedRotating, "want error.rotating instanceof PreparedRotating");
       assert.notEqual(error.requestId, "");
       unknown = error;
       return true;
@@ -824,6 +826,10 @@ describe("lost and refused sign answers", () => {
     assert.equal(signer.count("/sign/rotating/prepare"), 1);
     assert.equal(signer.count("/sign/rotating/sign"), 1);
     assert.equal(node.submitted.length, 0);
+    // The pending approval is cancelled, best effort, under the same ID.
+    assert.equal(signer.count("/sign/cancel"), 1);
+    assert.equal(signer.cancelRequests[0].request_id, signer.signRequests[0].request_id);
+    assert.equal(signer.cancelRequests[0].request_id, unknown!.requestId);
 
     // The caller's recovery: the same prepared group, signed again.
     const signed = await client.signPreparedRotating(unknown!.rotating!);
@@ -878,24 +884,93 @@ describe("a prepared rotating group", () => {
     assert.deepEqual(prepared.mutations()?.feesModified, [0]);
   });
 
-  it("is checked again when it is simulated or signed", async () => {
+  it("is refused when forged, before any request is made", async () => {
     const { signer, node, algod, client, txn } = rotatingFixture();
     const prepared = await client.prepareRotating(txn);
-    // Nothing outside the module can change a prepared group. If one were
-    // forged all the same, neither simulation nor signing may use it.
-    const altered = cloneTransaction(txn);
-    writable(altered).payment!.amount = 999999n;
-    const forged = Object.freeze(
-      Object.assign(Object.create(PreparedRotating.prototype), {
-        ...(prepared as any),
-        originalHex: encodeTransaction(altered)[0],
-      }),
-    ) as PreparedRotating;
+    const pathsBefore = signer.paths.length;
+    // An object built on the class's prototype, carrying a copy of a real
+    // group's values and its own checks, passes instanceof; it is still not
+    // a PreparedRotating that prepareRotating made.
+    const own = (value: unknown) => ({ value, enumerable: true });
+    const forged = Object.create(PreparedRotating.prototype, {
+      verify: own(() => undefined),
+      verifySigned: own(() => ({ signedGroup: [], stage: 3, target: 4, txId: "", groupId: "", requestId: "" })),
+      transactions: own(() => prepared.transactions()),
+      decoded: own(() => prepared.decoded()),
+      txIds: own(() => prepared.txIds()),
+      mutations: own(() => undefined),
+      signRequestBody: own((requestId: string) => prepared.signRequestBody(requestId)),
+    }) as PreparedRotating;
+    assert.ok(forged instanceof PreparedRotating, "want forged instanceof PreparedRotating");
+    assert.equal(PreparedRotating.isGenuine(forged), false);
+    assert.equal(PreparedRotating.isGenuine(prepared), true);
 
-    await assert.rejects(client.signPreparedRotating(forged), mentions("verify prepared rotating group"));
-    await assert.rejects(client.simulatePreparedRotating(algod, forged), mentions("verify prepared rotating group"));
-    assert.equal(signer.count("/sign/rotating/sign"), 0);
-    assert.equal(node.simulated.length, 0);
+    const notGenuine = mentions("prepared rotating group is required");
+    await assert.rejects(client.signPreparedRotating(forged), notGenuine);
+    await assert.rejects(client.simulatePreparedRotating(algod, forged), notGenuine);
+    await assert.rejects(client.signPreparedRotating({} as any), notGenuine);
+    assert.equal(signer.paths.length, pathsBefore, "a forged group reached the signer");
+    assert.equal(node.simulated.length, 0, "a forged group reached the node");
+  });
+
+  it("has state no holder can reach", async () => {
+    const { client, txn } = rotatingFixture();
+    const prepared = await client.prepareRotating(txn);
+    // The state is in private fields: nothing is enumerable or settable, and
+    // the class's methods cannot be replaced.
+    assert.deepEqual(Object.keys(prepared), []);
+    assert.equal(Object.isFrozen(prepared), true);
+    assert.equal(Object.isFrozen(PreparedRotating.prototype), true);
+    assert.equal(Object.isFrozen(PreparedRotating), true);
+    assert.throws(() => {
+      (PreparedRotating as any).verifyBinding = () => undefined;
+    }, TypeError);
+  });
+});
+
+describe("prepared group checks the vectors cannot reach", () => {
+  it("refuses a last valid round before the first", async () => {
+    const { signer, algod, client } = rotatingFixture();
+    const backwards = rotatingPayment(signer.account, 110, 10);
+    await assert.rejects(client.prepareRotating(backwards), mentions("last valid round 10 is before first valid round 110"));
+    await assert.rejects(
+      client.sendPrepared(algod, rotatingGroup(backwards)),
+      mentions("last valid round 10 is before first valid round 110"),
+    );
+    assert.equal(signer.count("/sign/rotating/prepare"), 0);
+  });
+
+  it("refuses a prepared group over the maximum group size", async () => {
+    const { signer, client, txn } = rotatingFixture({ dummies: 15 });
+    const prepared = await client.prepareRotating(txn);
+    assert.equal(prepared.transactions().length, 16, "a full group of 16 is accepted");
+    // A seventeenth transaction, reported. algosdk cannot group 17, so the
+    // group ID is written by hand; the size is refused before it is read.
+    signer.alterPrepare = (response, txns) => {
+      txns.push(canonicalDummyTransaction(txns[0], undefined, 15));
+      const group = new Uint8Array(32).fill(9);
+      for (const entry of txns) entry.group = group;
+      response.mutations.final_count = 17;
+      response.mutations.dummies_added = 16;
+      setPrepared(response, txns);
+    };
+    await assert.rejects(client.prepareRotating(txn), mentions("verify prepared rotating group", "maximum group size 16"));
+  });
+
+  it("refuses prepared bytes algosdk decodes but that are not canonical", async () => {
+    // A fee written as a 32-bit integer where the canonical encoding uses 16
+    // bits: algosdk decodes it, and only the re-encode comparison refuses it.
+    const { signer, client, txn } = rotatingFixture();
+    signer.alterPrepare = (response) => {
+      const canonical = "a3666565cd07d0"; // "fee": 2000
+      assert.ok(response.transactions[0].includes(canonical), "want response.transactions[0].includes(canonical)");
+      response.transactions[0] = response.transactions[0].replace(canonical, "a3666565ce000007d0");
+    };
+    await assert.rejects(client.prepareRotating(txn), (error: unknown) => {
+      assert.ok(error instanceof SignerError, String(error));
+      assert.match(errorText(error), /verify prepared rotating group: prepared transaction 1: bytes are not canonical/);
+      return true;
+    });
   });
 });
 
@@ -1113,12 +1188,21 @@ describe("rotating stops before signing", () => {
       controller.abort();
       return { lastRound: 10n, version: 2, txnGroups: [{ txnResults: [] }] };
     };
+    // The send's own check stops it before signing is attempted at all, not
+    // the signing call's check on an aborted signal.
+    let signCalls = 0;
+    const sign = client.signPreparedRotating.bind(client);
+    (client as any).signPreparedRotating = (...args: Parameters<typeof sign>) => {
+      signCalls++;
+      return sign(...args);
+    };
     await assert.rejects(client.sendPrepared(algod, rotatingGroup(txn), { signal: controller.signal }), (error: unknown) => {
       assert.ok(error instanceof SignerUnavailableError, String(error));
       assert.ok(!(error instanceof SignOutcomeUnknownError), "a plain stop, not an unknown sign outcome");
       return true;
     });
     assert.equal(node.simulated.length, 1);
+    assert.equal(signCalls, 0, "signing was attempted after the signal aborted");
     assert.equal(signer.count("/sign/rotating/sign"), 0);
   });
 
@@ -1146,6 +1230,47 @@ describe("signPreparedRotating answer classification", () => {
     });
   });
 
+  // A 200 body that cannot be read as a sign answer may stand for a
+  // released signature, as an unparseable one does.
+  for (const body of ["123", '"ok"', "[]", "null", '{"signed":"x"}', '{"signed":[1]}', '{"stage":"3"}', '{"stage":-1}', '{"txid":7}']) {
+    it(`a 200 body ${body} is an unknown outcome`, async () => {
+      const { signer, client, txn } = rotatingFixture();
+      const prepared = await client.prepareRotating(txn);
+      restore?.();
+      restore = installSigners({
+        [SIGNER]: (path, request) => (path === "/sign/rotating/sign" ? { raw: body } : signer.handle(path, request)),
+      });
+      await assert.rejects(client.signPreparedRotating(prepared), (error: unknown) => {
+        assert.ok(error instanceof SignOutcomeUnknownError, String(error));
+        assert.equal(error.rotating, prepared);
+        return true;
+      });
+    });
+  }
+
+  it("a readable answer that fails its check is a plain refusal", async () => {
+    const { signer, client, txn } = rotatingFixture();
+    const prepared = await client.prepareRotating(txn);
+    signer.alterSign = (response) => {
+      response.signed = response.signed.slice(0, 1);
+    };
+    await assert.rejects(client.signPreparedRotating(prepared), (error: unknown) => {
+      assert.ok(!(error instanceof SignOutcomeUnknownError), String(error));
+      assert.match(errorText(error), /verify signer response/);
+      return true;
+    });
+  });
+
+  it("an unreadable answer through sendPrepared is an unknown outcome", async () => {
+    const { signer, node, algod, client, txn } = rotatingFixture();
+    restore?.();
+    restore = installSigners({
+      [SIGNER]: (path, request) => (path === "/sign/rotating/sign" ? { raw: '{"signed":[1]}' } : signer.handle(path, request)),
+    });
+    await assert.rejects(client.sendPrepared(algod, rotatingGroup(txn)), SignOutcomeUnknownError);
+    assert.equal(node.submitted.length, 0);
+  });
+
   it("an unauthenticated connection is an AuthenticationError", async () => {
     const { signer, client, txn } = rotatingFixture();
     signer.errorStatus = 401;
@@ -1160,7 +1285,7 @@ describe("signPreparedRotating answer classification", () => {
     controller.abort();
     await assert.rejects(client.signPreparedRotating(prepared, { signal: controller.signal }), (error: unknown) => {
       assert.ok(error instanceof SignerUnavailableError, String(error));
-      assert.ok(!(error instanceof SignOutcomeUnknownError));
+      assert.ok(!(error instanceof SignOutcomeUnknownError), "want !(error instanceof SignOutcomeUnknownError)");
       return true;
     });
     assert.equal(signer.count("/sign/rotating/sign"), 0, "a sign request went out on an aborted signal");

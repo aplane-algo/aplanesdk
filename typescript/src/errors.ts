@@ -314,22 +314,44 @@ export class RotatingPreflightError extends SignerError {
 }
 
 // Errors from an approval-bearing exchange that ended with no usable answer:
-// the exchange failed, or a 200 arrived whose body could not be read. The
-// signer may have acted on the request. The error itself is unchanged, so the
-// lower-level calls report it as before; a send reads the mark.
-const lostAnswers = new WeakSet<object>();
+// the exchange failed, or a 200 arrived whose body could not be read as the
+// answer. The signer may have acted on the request. The error itself keeps its
+// class and message, so the lower-level calls report it as before; a send
+// reads the mark. The mark is a property of the error under a registered
+// symbol, so it survives wrapping as another error's cause and is the same
+// mark whichever build of the package (ESM or CommonJS) made the error.
+const LOST_ANSWER = Symbol.for("aplanesdk.lostAnswer");
 
 /** Mark error as a lost answer of an approval-bearing request, and return it. */
 export function markLostAnswer<T>(error: T): T {
-  if (typeof error === "object" && error !== null) {
-    lostAnswers.add(error);
+  if ((typeof error === "object" && error !== null) || typeof error === "function") {
+    try {
+      Object.defineProperty(error, LOST_ANSWER, {
+        value: true,
+        enumerable: false,
+        configurable: true,
+      });
+    } catch {
+      // A frozen value cannot carry the mark; it is not an error the SDK made.
+    }
   }
   return error;
 }
 
-/** Whether error is a lost answer of an approval-bearing request. */
+/**
+ * Whether error, or an error in its cause chain, is a lost answer of an
+ * approval-bearing request.
+ */
 export function isLostAnswer(error: unknown): boolean {
-  return typeof error === "object" && error !== null && lostAnswers.has(error);
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  while ((typeof current === "object" && current !== null) || typeof current === "function") {
+    if (seen.has(current)) return false;
+    seen.add(current);
+    if ((current as Record<symbol, unknown>)[LOST_ANSWER] === true) return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
 }
 
 /**

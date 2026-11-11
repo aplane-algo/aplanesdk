@@ -162,6 +162,14 @@ import {
   type RotatingSignResult,
 } from "./rotating.js";
 import {
+  ASSEMBLY_ANSWER,
+  COMPONENT_ANSWER,
+  GROUP_SIGN_ANSWER,
+  ROTATING_SIGN_ANSWER,
+  answerProblem,
+  type AnswerShape,
+} from "./answers.js";
+import {
   SSH_USERNAME,
   normalizeSSHSetupTimeout,
   sshConnectionFailedMessage,
@@ -1506,6 +1514,25 @@ function emptySendResult(flow: string, originalCount: number): SendResult {
     outcome: SEND_OUTCOME_SUBMITTED,
     confirmedRound: 0n,
   };
+}
+
+/**
+ * Read a 200 answer of an approval-bearing request. A body that does not
+ * parse, or parses to the wrong shape, is unreadable: the signer may have
+ * acted, so it is marked as a lost answer.
+ */
+async function readApprovalAnswer<T>(response: Response, shape: AnswerShape): Promise<T> {
+  let data: unknown;
+  try {
+    data = await response.json();
+  } catch {
+    throw markLostAnswer(new SignerError("Server returned invalid JSON"));
+  }
+  const problem = answerProblem(shape, data);
+  if (problem) {
+    throw markLostAnswer(new SignerError(`Server returned a malformed response: ${problem}`));
+  }
+  return data as T;
 }
 
 /** The stable signer error code an error carries, or "". */
@@ -3733,12 +3760,7 @@ export class SignerClient {
     if (response.status === 503) throw new SignerUnavailableError(await this.errorMessage(response, "Signer unavailable"));
     if (response.status === 400) throw await this.badRequestError(response);
     if (response.status !== 200) throw await this.signerHTTPError(response, `Component signing failed: HTTP ${response.status}`);
-    let data: ComponentResponse & { error?: string };
-    try {
-      data = (await response.json()) as ComponentResponse & { error?: string };
-    } catch {
-      throw markLostAnswer(new SignerError("Server returned invalid JSON"));
-    }
+    const data = await readApprovalAnswer<ComponentResponse & { error?: string }>(response, COMPONENT_ANSWER);
     if (data.error) throw new SignerError(data.error);
     try {
       validateComponentResponse(data, requestBody);
@@ -3806,12 +3828,7 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Assembly failed: HTTP ${response.status}`);
     }
 
-    let data: AssemblyResponse & { error?: string };
-    try {
-      data = (await response.json()) as AssemblyResponse & { error?: string };
-    } catch {
-      throw markLostAnswer(new SignerError("Server returned invalid JSON"));
-    }
+    const data = await readApprovalAnswer<AssemblyResponse & { error?: string }>(response, ASSEMBLY_ANSWER);
 
     if (data.error) {
       throw new SignerError(data.error);
@@ -4094,6 +4111,7 @@ export class SignerClient {
       requestId,
       JSON.stringify(signBody),
       options?.signal,
+      GROUP_SIGN_ANSWER,
       async (response) => {
         if (response.status === 401) {
           return new AuthenticationError();
@@ -4137,14 +4155,15 @@ export class SignerClient {
    * pending approval when the timeout or the caller's signal ends it first.
    * A signal already aborted sends nothing and is a plain stop. A non-200
    * answer is the error `refuse` makes of it. An exchange that failed, and a
-   * 200 whose body could not be read, are marked as lost answers: the signer
-   * may have acted on the request.
+   * 200 whose body cannot be read as `shape`, are marked as lost answers: the
+   * signer may have acted on the request.
    */
   private async postApproval<T>(
     path: string,
     requestId: string,
     body: string,
     signal: AbortSignal | undefined,
+    shape: AnswerShape,
     refuse: (response: Response) => Promise<SignerError>,
   ): Promise<T> {
     await this.discoverApprovalWait();
@@ -4168,18 +4187,7 @@ export class SignerClient {
     if (response.status !== 200) {
       throw await refuse(response);
     }
-    let data: T;
-    try {
-      data = (await response.json()) as T;
-    } catch {
-      throw markLostAnswer(new SignerError("Server returned invalid JSON"));
-    }
-    // A body that parses but is not an object is an answer, and a malformed
-    // one: the caller's check of it refuses it.
-    if (data === null || typeof data !== "object") {
-      throw new SignerError("signer returned a malformed response");
-    }
-    return data;
+    return readApprovalAnswer<T>(response, shape);
   }
 
   /**
@@ -4282,6 +4290,10 @@ export class SignerClient {
     const checked = checkSendOptions(options);
     const opts = options ?? {};
     const signal = opts.signal;
+    // An aborted signal stops the send before the signer is asked anything.
+    if (signal?.aborted) {
+      throw callerAborted();
+    }
     const { flow, leftRotation } = await this.classifySend(group);
     // A rotating account is signed for by another key only when the chain
     // says it is rekeyed to that key. Without this a caller could have an
@@ -4565,11 +4577,13 @@ export class SignerClient {
     if (!algodClient) {
       throw new SignerError("algodClient is required");
     }
-    if (!(prepared instanceof PreparedRotating)) {
-      throw new SignerError("prepared rotating group is required");
+    // Only a PreparedRotating prepareRotating made is used: an object built
+    // on its prototype could carry its own checks or none.
+    if (!PreparedRotating.isGenuine(prepared)) {
+      throw new SignerError("prepared rotating group is required: pass the PreparedRotating prepareRotating returned");
     }
     try {
-      prepared.verify();
+      PreparedRotating.verifyBinding(prepared);
     } catch (error) {
       throw verificationError("verify prepared rotating group: ", error);
     }
@@ -4604,12 +4618,14 @@ export class SignerClient {
     prepared: PreparedRotating,
     options?: RotatingSignOptions,
   ): Promise<RotatingSignResult> {
-    if (!(prepared instanceof PreparedRotating)) {
-      throw new SignerError("prepared rotating group is required");
+    // Only a PreparedRotating prepareRotating made is signed: an object built
+    // on its prototype could carry its own checks or none.
+    if (!PreparedRotating.isGenuine(prepared)) {
+      throw new SignerError("prepared rotating group is required: pass the PreparedRotating prepareRotating returned");
     }
     // The binding is checked again at the signing boundary.
     try {
-      prepared.verify();
+      PreparedRotating.verifyBinding(prepared);
     } catch (error) {
       throw verificationError("verify prepared rotating group: ", error);
     }
@@ -4623,6 +4639,7 @@ export class SignerClient {
         requestId,
         JSON.stringify(prepared.signRequestBody(requestId)),
         options?.signal,
+        ROTATING_SIGN_ANSWER,
         (response) => this.rotatingAPIError(response, "rotating sign failed"),
       );
     } catch (error) {

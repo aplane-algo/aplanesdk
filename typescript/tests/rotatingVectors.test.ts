@@ -13,7 +13,7 @@ import * as path from "path";
 import { fileURLToPath } from "url";
 import type { RotatingPrepareResponse, RotatingSignResponse } from "../src/types.js";
 import { newPreparedRotating } from "../src/rotating.js";
-import { errorText } from "../src/errors.js";
+import { SignerError, errorText } from "../src/errors.js";
 
 interface RotatingVectorCase {
   key_type: string;
@@ -53,6 +53,15 @@ describe("rotating vectors", () => {
       accepted++;
     }
 
+    // A refusal must come from the verifier, as a SignerError: a TypeError or
+    // other programming error refuses nothing on purpose.
+    const notVerifier: string[] = [];
+    const refusedBy = (label: string, error: unknown) => {
+      if (!(error instanceof SignerError)) {
+        notVerifier.push(`${label}: ${error instanceof Error ? error.name : typeof error}: ${errorText(error)}`);
+      }
+    };
+
     const acceptedPrepares: string[] = [];
     let preparesRefused = 0;
     for (const altered of vectors.prepare_tampered) {
@@ -61,7 +70,8 @@ describe("rotating vectors", () => {
       try {
         preparedFrom(c, altered.prepare);
         acceptedPrepares.push(`${altered.case}: ${altered.name}`);
-      } catch {
+      } catch (error) {
+        refusedBy(`prepare ${altered.case}: ${altered.name}`, error);
         preparesRefused++;
       }
     }
@@ -76,7 +86,8 @@ describe("rotating vectors", () => {
       try {
         prepared.verifySigned(altered.sign);
         acceptedSigns.push(`${altered.case}: ${altered.name}`);
-      } catch {
+      } catch (error) {
+        refusedBy(`sign ${altered.case}: ${altered.name}`, error);
         signsRefused++;
       }
     }
@@ -88,6 +99,7 @@ describe("rotating vectors", () => {
     );
     assert.deepEqual(acceptedPrepares, [], "altered prepare answers were accepted");
     assert.deepEqual(acceptedSigns, [], "altered sign answers were accepted");
+    assert.deepEqual(notVerifier, [], "altered answers were refused by something other than the verifier");
     assert.equal(accepted, names.length);
   });
 

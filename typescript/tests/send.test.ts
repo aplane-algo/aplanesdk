@@ -27,6 +27,7 @@ import {
   type PreparedGroup,
 } from "../src/types.js";
 import { describeSignedGroup, submitAndTrack, type SendResult } from "../src/send.js";
+import { SignerError, isLostAnswer, markLostAnswer } from "../src/errors.js";
 import { bytesToBase64, hexToBytes } from "../src/encoding.js";
 import { fakeAccount, fakeAddress, fakePayment, signedHex } from "./fakeSigner.js";
 import {
@@ -296,7 +297,7 @@ describe("sendPrepared", () => {
       const { client, algod, node } = fixture(signer);
       await assert.rejects(client.sendPrepared(algod, preparedFor(txn)), (error: unknown) => {
         assert.ok(error instanceof SigningRejectedError, String(error));
-        assert.ok(!(error instanceof SignOutcomeUnknownError));
+        assert.ok(!(error instanceof SignOutcomeUnknownError), "want !(error instanceof SignOutcomeUnknownError)");
         return true;
       });
       assert.equal(node.submitted.length, 0);
@@ -312,6 +313,62 @@ describe("sendPrepared", () => {
       assert.equal(node.submitted.length, 0);
     });
 
+    for (const body of ["123", '"ok"', "[]", "null", '{"signed":"x"}', '{"signed":[1]}', '{"mutations":"x"}', '{"error":5}']) {
+      it(`a 200 body ${body} is an unknown outcome`, async () => {
+        const signer = new SendSigner([ordinaryKey(txn)], { sign: () => ({ raw: body }) });
+        const { client, algod, node } = fixture(signer);
+        await assert.rejects(client.sendPrepared(algod, preparedFor(txn)), (error: unknown) => {
+          assert.ok(error instanceof SignOutcomeUnknownError, String(error));
+          assert.equal(error.requests?.length, 1);
+          return true;
+        });
+        assert.equal(node.submitted.length, 0);
+      });
+    }
+
+    it("the same unreadable body keeps its class and message below the send", async () => {
+      const signer = new SendSigner([ordinaryKey(txn)], { sign: () => ({ raw: '{"signed":[1]}' }) });
+      const { client } = fixture(signer);
+      await assert.rejects(client.signTransaction(txn), (error: unknown) => {
+        assert.ok(error instanceof SignerError && !(error instanceof SignOutcomeUnknownError), String(error));
+        assert.match(errorText(error), /malformed response: signed\[0\] is not a string/);
+        return true;
+      });
+    });
+
+    it("an abort after the keys are read stops before signing", async () => {
+      // The send's own check stops it, not the signing call's check on an
+      // aborted signal: signRequests is never entered.
+      const controller = new AbortController();
+      const signer = new SendSigner([ordinaryKey(txn)]);
+      const { client, algod, node } = fixture(signer);
+      restore?.();
+      restore = installSigners({
+        [SIGNER]: (path, body) => {
+          const reply = signer.handle(path, body);
+          if (path === "/keys") controller.abort();
+          return reply;
+        },
+      });
+      let signCalls = 0;
+      const signRequests = client.signRequests.bind(client);
+      (client as any).signRequests = (...args: Parameters<typeof signRequests>) => {
+        signCalls++;
+        return signRequests(...args);
+      };
+      await assert.rejects(
+        client.sendPrepared(algod, preparedFor(txn), { signal: controller.signal }),
+        (error: unknown) => {
+          assert.ok(error instanceof SignerUnavailableError, String(error));
+          assert.ok(!(error instanceof SignOutcomeUnknownError), "want !(error instanceof SignOutcomeUnknownError)");
+          return true;
+        },
+      );
+      assert.equal(signer.count("/keys"), 1);
+      assert.equal(signCalls, 0, "signing was attempted after the signal aborted");
+      assert.equal(node.submitted.length, 0);
+    });
+
     it("an already aborted signal is a plain stop", async () => {
       const signer = new SendSigner([ordinaryKey(txn)]);
       const { client, algod, node } = fixture(signer);
@@ -321,11 +378,11 @@ describe("sendPrepared", () => {
         client.sendPrepared(algod, preparedFor(txn), { signal: controller.signal }),
         (error: unknown) => {
           assert.ok(error instanceof SignerUnavailableError, String(error));
-          assert.ok(!(error instanceof SignOutcomeUnknownError));
+          assert.ok(!(error instanceof SignOutcomeUnknownError), "want !(error instanceof SignOutcomeUnknownError)");
           return true;
         },
       );
-      assert.equal(signer.count("/sign"), 0);
+      assert.deepEqual(signer.paths, [], "the signer was asked something");
       assert.equal(node.submitted.length, 0);
     });
   });
@@ -547,13 +604,41 @@ describe("sendPrepared", () => {
         (error: unknown) => {
           assert.ok(error instanceof SubmissionUncertainError, String(error));
           assert.equal(error.stage, "unsent");
-          assert.ok(error.cause instanceof SignerUnavailableError);
+          assert.ok(error.cause instanceof SignerUnavailableError, "want error.cause instanceof SignerUnavailableError");
           assert.match(errorText(error.cause), /aborted by caller/);
           return true;
         },
       );
       assert.equal(node.submitted.length, 0, "an aborted signal still submitted");
     });
+  });
+
+  it("submitSignedGroup refuses a group without its canonical group ID", async () => {
+    const first = fakePayment(41, 42, 1);
+    const second = fakePayment(43, 44, 2);
+    const node = new FakeAlgod();
+    // Two signed transactions that were never grouped.
+    await assert.rejects(
+      new SignerClient(SIGNER).submitSignedGroup(node as any, [signedHex(first), signedHex(second)]),
+      /verify signed group: returned transaction 1 does not carry the canonical group ID/,
+    );
+    assert.equal(node.submitted.length, 0);
+  });
+
+  it("refuses a signed group shorter than what was prepared", () => {
+    // submitSignedGroup counts what it is given, so the check is reached
+    // directly: a signer response cannot be shorter and pass its own check.
+    const result: SendResult = {
+      flow: "",
+      signedGroup: [signedHex(fakePayment(41, 42, 1))],
+      originalCount: 2,
+      txIds: [],
+      groupId: "",
+      fees: [],
+      outcome: "submitted",
+      confirmedRound: 0n,
+    };
+    assert.throws(() => describeSignedGroup(result), /signed group has 1 transaction\(s\), fewer than the 2 prepared/);
   });
 
   it("submitSignedGroup submits a signed group as given", async () => {
@@ -597,6 +682,7 @@ function cosignedFixture(fault: string, cosignerFault = "") {
     userPaths.push(path);
     if (fault === `${path} drop`) return "drop";
     if (fault === `${path} truncate`) return { raw: '{"request_id": "x", "signed_gr' };
+    if (fault.startsWith(`${path} body `)) return { raw: fault.slice(`${path} body `.length) };
     switch (path) {
       case "/status":
         return { body: statusBody() };
@@ -641,6 +727,7 @@ function cosignedFixture(fault: string, cosignerFault = "") {
   const cosigner = (path: string, body: any): FakeReply => {
     cosignerCalls++;
     if (cosignerFault === "drop") return "drop";
+    if (cosignerFault.startsWith("body ")) return { raw: cosignerFault.slice("body ".length) };
     assert.equal(path, "/sign/component");
     assert.equal(body.targets[0].component_key, "COSIGNER_COMPONENT");
     return {
@@ -685,7 +772,7 @@ describe("sendPrepared with a cosigned account", () => {
       cosignerComponentKey: "COSIGNER_COMPONENT",
     });
     assert.equal(result.flow, SIGNING_FLOW_COSIGNED1);
-    assert.ok(result.cosigned?.boundedAssemblyResponse);
+    assert.ok(result.cosigned?.boundedAssemblyResponse, "want result.cosigned?.boundedAssemblyResponse");
     assert.equal(cosignerCalls(), 1);
     assert.equal(node.submitted.length, 1);
     assert.equal(blobHex(node.submitted[0]), result.signedGroup.join(""));
@@ -698,7 +785,7 @@ describe("sendPrepared with a cosigned account", () => {
     const { userClient, algod, node, txn } = cosignedFixture("");
     await assert.rejects(userClient.sendPrepared(algod, preparedFor(txn)), (error: unknown) => {
       assert.match(errorText(error), /cosignerClient or cosignerResolver is required/);
-      assert.ok(!(error instanceof SignOutcomeUnknownError));
+      assert.ok(!(error instanceof SignOutcomeUnknownError), "want !(error instanceof SignOutcomeUnknownError)");
       return true;
     });
     assert.equal(node.submitted.length, 0);
@@ -733,6 +820,75 @@ describe("sendPrepared with a cosigned account", () => {
         assert.equal(node.submitted.length, 0);
       });
     }
+  });
+
+  // A 200 body that cannot be read as the step's answer may stand for a
+  // released signature, as an unparseable one does. A body that reads as the
+  // answer and then fails its check is a plain refusal.
+  describe("unreadable 200 answers", () => {
+    const unreadable = ["123", '"ok"', "[]", "null"];
+    const cases: Array<[string, string, boolean]> = [
+      ...unreadable.map((body): [string, string, boolean] => ["/sign/component", body, true]),
+      ["/sign/component", '{"components":"x"}', true],
+      ["/sign/component", '{"components":[1]}', true],
+      ["/sign/component", '{"request_id":7}', true],
+      ...unreadable.map((body): [string, string, boolean] => ["/sign/assemble", body, true]),
+      ["/sign/assemble", '{"signed_group":"x"}', true],
+      ["/sign/assemble", '{"signed_group":[1]}', true],
+      // Read as an answer, as the Go SDK reads it (an unknown field is
+      // ignored), and refused by the check.
+      ["/sign/component", '{"signed":"x"}', false],
+      ["/sign/assemble", '{"signed":[1]}', false],
+    ];
+    for (const [path, body, unknown] of cases) {
+      it(`${path} answering ${body}`, async () => {
+        const { userClient, cosignerClient, algod, node, txn } = cosignedFixture(`${path} body ${body}`);
+        await assert.rejects(
+          userClient.sendPrepared(algod, preparedFor(txn), {
+            cosignerClient,
+            cosignerComponentKey: "COSIGNER_COMPONENT",
+          }),
+          (error: unknown) => {
+            assert.equal(error instanceof SignOutcomeUnknownError, unknown, String(error));
+            return true;
+          },
+        );
+        assert.equal(node.submitted.length, 0);
+      });
+    }
+    for (const body of [...unreadable, '{"components":[1]}']) {
+      it(`the cosigner answering ${body}`, async () => {
+        const { userClient, cosignerClient, algod, txn } = cosignedFixture("", `body ${body}`);
+        await assert.rejects(
+          userClient.sendPrepared(algod, preparedFor(txn), {
+            cosignerClient,
+            cosignerComponentKey: "COSIGNER_COMPONENT",
+          }),
+          SignOutcomeUnknownError,
+        );
+      });
+    }
+  });
+
+  it("an aborted signal asks the signer nothing", async () => {
+    const { userClient, cosignerClient, algod, node, txn, cosignerCalls, userPaths } = cosignedFixture("");
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(
+      userClient.sendPrepared(algod, preparedFor(txn), {
+        cosignerClient,
+        cosignerComponentKey: "COSIGNER_COMPONENT",
+        signal: controller.signal,
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof SignerUnavailableError, String(error));
+        assert.ok(!(error instanceof SignOutcomeUnknownError), "a plain stop, not an unknown outcome");
+        return true;
+      },
+    );
+    assert.deepEqual(userPaths, []);
+    assert.equal(cosignerCalls(), 0);
+    assert.equal(node.submitted.length, 0);
   });
 
   it("a lost answer from the cosigner is an unknown outcome", async () => {
@@ -794,5 +950,45 @@ describe("an account that left rotation", () => {
     assert.equal(resolved.authAddress, holder);
     assert.equal(resolved.isRekeyed, true);
     assert.equal(resolved.chainAuthAddress, holder);
+  });
+});
+
+describe("the lost-answer mark", () => {
+  it("is a hidden property under a registered symbol that keeps the error as it was", () => {
+    const error = new SignerUnavailableError("Failed to connect: fetch failed");
+    const keys = Object.keys(error);
+    const json = JSON.stringify(error);
+    assert.equal(markLostAnswer(error), error);
+    assert.ok(isLostAnswer(error), "want isLostAnswer(error)");
+    assert.ok(error instanceof SignerUnavailableError, "want error instanceof SignerUnavailableError");
+    assert.equal(error.message, "Failed to connect: fetch failed");
+    assert.deepEqual(Object.keys(error), keys, "the mark is enumerable");
+    assert.equal(JSON.stringify(error), json);
+    assert.equal((error as any)[Symbol.for("aplanesdk.lostAnswer")], true);
+    assert.equal(isLostAnswer(new SignerError("refused")), false);
+    assert.equal(isLostAnswer(undefined), false);
+    assert.equal(isLostAnswer("text"), false);
+  });
+
+  it("is recognised through a cause chain", () => {
+    const lost = markLostAnswer(new SignerError("Server returned invalid JSON"));
+    const wrapped = new SignerError("assembly failed");
+    (wrapped as any).cause = lost;
+    const outer = new Error("send failed");
+    (outer as any).cause = wrapped;
+    assert.ok(isLostAnswer(wrapped), "want isLostAnswer(wrapped)");
+    assert.ok(isLostAnswer(outer), "want isLostAnswer(outer)");
+    // A cycle ends the walk.
+    const cyclic = new Error("a");
+    (cyclic as any).cause = cyclic;
+    assert.equal(isLostAnswer(cyclic), false);
+  });
+
+  it("is read from an error another copy of the package marked", () => {
+    // Another build (ESM or CommonJS) has its own module state but the same
+    // registered symbol.
+    const error = new Error("fetch failed");
+    Object.defineProperty(error, Symbol.for("aplanesdk.lostAnswer"), { value: true });
+    assert.ok(isLostAnswer(error), "want isLostAnswer(error)");
   });
 });

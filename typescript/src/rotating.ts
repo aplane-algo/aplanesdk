@@ -153,50 +153,70 @@ function isZeroAddress(address: algosdk.Address): boolean {
 /**
  * A rotating account's spend as the signer prepared it: the exact unsigned
  * group it will sign, checked against the transaction the caller sent. It
- * cannot be changed after it is made: every value it hands out is a copy.
+ * cannot be changed after it is made: its state is held in private fields,
+ * every value it hands out is a copy, and only prepareRotating makes one.
  * Nothing has been signed and no one-time key has been used.
  */
 export class PreparedRotating {
-  private readonly accountValue: string;
-  private readonly originalHex: string;
-  private readonly stageValue: number;
-  private readonly targetValue: number;
-  private readonly rekeyToValue: string;
-  private readonly transactionHexes: readonly string[];
-  private readonly mutationReport?: MutationReport;
-  private readonly appCallInfoValue?: AppCallInfo;
-  private readonly ceiling: bigint | undefined;
+  readonly #account: string;
+  readonly #originalHex: string;
+  readonly #stage: number;
+  readonly #target: number;
+  readonly #rekeyTo: string;
+  readonly #transactions: readonly string[];
+  readonly #mutations?: MutationReport;
+  readonly #appCallInfo?: AppCallInfo;
+  readonly #ceiling: bigint | undefined;
 
   /** Not for callers: prepareRotating makes a PreparedRotating. */
   constructor(token: symbol, fields: PreparedRotatingFields) {
     if (token !== constructToken) {
       throw new SignerError("a PreparedRotating is made by prepareRotating");
     }
-    this.accountValue = fields.account;
-    this.originalHex = fields.originalHex;
-    this.stageValue = fields.stage;
-    this.targetValue = fields.target;
-    this.rekeyToValue = fields.rekeyTo;
-    this.transactionHexes = Object.freeze([...fields.transactions]);
-    this.mutationReport = frozenReport(fields.mutations);
-    this.appCallInfoValue = fields.appCallInfo ? Object.freeze({ ...fields.appCallInfo }) : undefined;
-    this.ceiling = fields.ceiling;
+    this.#account = fields.account;
+    this.#originalHex = fields.originalHex;
+    this.#stage = fields.stage;
+    this.#target = fields.target;
+    this.#rekeyTo = fields.rekeyTo;
+    this.#transactions = Object.freeze([...fields.transactions]);
+    this.#mutations = frozenReport(fields.mutations);
+    this.#appCallInfo = fields.appCallInfo ? Object.freeze({ ...fields.appCallInfo }) : undefined;
+    this.#ceiling = fields.ceiling;
     Object.freeze(this);
+  }
+
+  /**
+   * Whether value is a PreparedRotating that prepareRotating made. An object
+   * built on the class's prototype is not one.
+   */
+  static isGenuine(value: unknown): value is PreparedRotating {
+    return typeof value === "object" && value !== null && #account in value;
+  }
+
+  /**
+   * Check a genuine prepared group's binding again, with the class's own
+   * check. The SDK runs it when the group is simulated or signed.
+   */
+  static verifyBinding(prepared: PreparedRotating): void {
+    if (!PreparedRotating.isGenuine(prepared)) {
+      throw new SignerError("not a PreparedRotating made by prepareRotating");
+    }
+    prepared.#verify();
   }
 
   /** The rotating account. */
   get account(): string {
-    return this.accountValue;
+    return this.#account;
   }
 
   /** The stage whose keys will sign. */
   get stage(): number {
-    return this.stageValue;
+    return this.#stage;
   }
 
   /** The stage the spend hands the account to: always stage + 1. */
   get target(): number {
-    return this.targetValue;
+    return this.#target;
   }
 
   /**
@@ -205,7 +225,7 @@ export class PreparedRotating {
    * and the signer derives it again from the seed before it signs.
    */
   get rekeyTo(): string {
-    return this.rekeyToValue;
+    return this.#rekeyTo;
   }
 
   /**
@@ -213,7 +233,7 @@ export class PreparedRotating {
    * then any resource dummies.
    */
   transactions(): string[] {
-    return [...this.transactionHexes];
+    return [...this.#transactions];
   }
 
   /**
@@ -221,12 +241,12 @@ export class PreparedRotating {
    * prepared bytes. Undefined when it added nothing but the rekey.
    */
   mutations(): MutationReport | undefined {
-    return copyReport(this.mutationReport);
+    return copyReport(this.#mutations);
   }
 
   /** The transaction the caller sent to be prepared. */
   original(): Transaction {
-    return decodeCanonicalTransaction(hexToBytes(this.originalHex));
+    return decodeCanonicalTransaction(hexToBytes(this.#originalHex));
   }
 
   /** The IDs of the prepared transactions. Signing does not change them. */
@@ -236,7 +256,7 @@ export class PreparedRotating {
 
   /** The prepared transactions, decoded strictly. */
   decoded(): Transaction[] {
-    return this.transactionHexes.map((txnHex, index) => {
+    return this.#transactions.map((txnHex, index) => {
       const raw = decodeHex(txnHex, `prepared transaction ${index + 1}`);
       try {
         return decodeCanonicalTransaction(raw);
@@ -250,11 +270,11 @@ export class PreparedRotating {
   signRequestBody(requestId: string): Record<string, unknown> {
     const body: Record<string, unknown> = {
       request_id: requestId,
-      account: this.accountValue,
+      account: this.#account,
       transactions: this.transactions(),
     };
-    if (this.appCallInfoValue) {
-      body.app_call_info = { ...this.appCallInfoValue };
+    if (this.#appCallInfo) {
+      body.app_call_info = { ...this.#appCallInfo };
     }
     return body;
   }
@@ -266,36 +286,36 @@ export class PreparedRotating {
    * canonical group ID and append canonical resource dummies, and nothing
    * else. It runs when the group is prepared, simulated and signed.
    */
-  verify(): void {
+  #verify(): void {
     let original: Transaction;
     try {
-      original = decodeCanonicalTransaction(hexToBytes(this.originalHex));
+      original = decodeCanonicalTransaction(hexToBytes(this.#originalHex));
     } catch (error) {
       throw new SignerError(`original transaction: ${errorText(error)}`);
     }
     const sender = original.sender.toString();
-    if (this.accountValue !== sender) {
-      throw new SignerError(`prepared account ${this.accountValue} is not the sender`);
+    if (this.#account !== sender) {
+      throw new SignerError(`prepared account ${this.#account} is not the sender`);
     }
     // A stage that is not a safe integer cannot be represented exactly, and
     // its successor neither.
-    const stage = wireStage(this.stageValue);
-    const target = wireStage(this.targetValue);
+    const stage = wireStage(this.#stage);
+    const target = wireStage(this.#target);
     if (stage === undefined || target === undefined || target !== stage + 1) {
       throw new SignerError(
-        `prepared target stage ${this.targetValue} is not the stage after ${this.stageValue}`,
+        `prepared target stage ${this.#target} is not the stage after ${this.#stage}`,
       );
     }
     let rekeyTo: algosdk.Address;
     try {
-      rekeyTo = algosdk.Address.fromString(this.rekeyToValue);
+      rekeyTo = algosdk.Address.fromString(this.#rekeyTo);
     } catch (error) {
       throw new SignerError(`invalid rekey_to: ${errorText(error)}`);
     }
     if (isZeroAddress(rekeyTo) || rekeyTo.toString() === sender) {
       throw new SignerError("rekey_to must be another, non-zero address");
     }
-    if (this.transactionHexes.length === 0) {
+    if (this.#transactions.length === 0) {
       throw new SignerError("prepared group is empty");
     }
     const txns = this.decoded();
@@ -304,8 +324,8 @@ export class PreparedRotating {
     // expectation, so the common check still refuses every unrequested rekey.
     const expected = cloneTransaction(original);
     (expected as unknown as { rekeyTo?: algosdk.Address }).rekeyTo = rekeyTo;
-    const slot = signSlot(expected, this.accountValue);
-    validateGroupMutations([slot], txns, this.mutationReport, this.ceiling);
+    const slot = signSlot(expected, this.#account);
+    validateGroupMutations([slot], txns, this.#mutations, this.#ceiling);
   }
 
   /**
@@ -325,9 +345,9 @@ export class PreparedRotating {
         `signed group has ${signed.length} transaction(s), prepared ${txns.length}`,
       );
     }
-    if (response.stage !== this.stageValue || response.target !== this.targetValue) {
+    if (response.stage !== this.#stage || response.target !== this.#target) {
       throw new SignerError(
-        `signer reports stage ${response.stage} to ${response.target}, prepared ${this.stageValue} to ${this.targetValue}`,
+        `signer reports stage ${response.stage} to ${response.target}, prepared ${this.#stage} to ${this.#target}`,
       );
     }
     const spend = txns[0];
@@ -363,9 +383,9 @@ export class PreparedRotating {
       } catch (error) {
         throw new SignerError(`spend ${errorText(error)}`);
       }
-      if ((stageAddress === spend.sender.toString()) !== (this.stageValue === 0)) {
+      if ((stageAddress === spend.sender.toString()) !== (this.#stage === 0)) {
         throw new SignerError(
-          `spend's stage program does not fit stage ${this.stageValue} of the account`,
+          `spend's stage program does not fit stage ${this.#stage} of the account`,
         );
       }
       if (spend.rekeyTo !== undefined && stageAddress === spend.rekeyTo.toString()) {
@@ -389,14 +409,19 @@ export class PreparedRotating {
     }
     return {
       signedGroup: [...signed],
-      stage: this.stageValue,
-      target: this.targetValue,
+      stage: this.#stage,
+      target: this.#target,
       txId,
       groupId,
       requestId: "",
     };
   }
 }
+
+// The class and its methods cannot be replaced, so the checks the SDK calls
+// on a genuine PreparedRotating are the class's own.
+Object.freeze(PreparedRotating.prototype);
+Object.freeze(PreparedRotating);
 
 /**
  * Bind a prepare response to the transaction that was sent and check it.
@@ -424,7 +449,7 @@ export function newPreparedRotating(
     appCallInfo,
     ceiling,
   });
-  prepared.verify();
+  PreparedRotating.verifyBinding(prepared);
   return prepared;
 }
 
