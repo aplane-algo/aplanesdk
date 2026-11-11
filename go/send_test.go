@@ -484,6 +484,23 @@ func TestSendPreparedSignFailures(t *testing.T) {
 		}
 	})
 
+	// Unlike a cosigner's /keys, which is unreachable then, a sign answer cut
+	// off inside its body may follow a released signature.
+	t.Run("a 200 cut off inside its body is an unknown outcome", func(t *testing.T) {
+		signer := &sendSigner{keys: []KeyInfo{ordinaryKey(txn)}, sign: func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Length", "1000")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"signed": [`))
+		}}
+		node := &sendAlgod{}
+		client, algodClient := newSendFixture(t, signer, node)
+		_, err := client.SendPrepared(context.Background(), algodClient, preparedFor(txn), nil)
+		var unknown *SignOutcomeUnknownError
+		if !errors.As(err, &unknown) || len(node.submissions()) != 0 {
+			t.Fatalf("error = %v, submissions %d; want *SignOutcomeUnknownError and none", err, len(node.submissions()))
+		}
+	})
+
 	t.Run("an unknown outcome carries the group's earliest last valid round", func(t *testing.T) {
 		other := verifyTestPayment(t, 43, 42, 2)
 		other.LastValid = 700

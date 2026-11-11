@@ -250,6 +250,36 @@ func TestEndpointCosignerResolverNamesEveryEndpointWhenNoneListsTheKey(t *testin
 	}
 }
 
+// A /keys body that is cut off, or stalls past the endpoint's time limit, is
+// a failed exchange: the endpoint is unreachable, not invalid. A body read in
+// full that does not decode is still invalid cosigner metadata.
+func TestEndpointCosignerResolverKeysBodyFailureIsUnreachable(t *testing.T) {
+	endpointTimeout := cosignerDiscoveryEndpointTimeout
+	cosignerDiscoveryEndpointTimeout = 200 * time.Millisecond
+	defer func() { cosignerDiscoveryEndpointTimeout = endpointTimeout }()
+
+	f := newFakeCosigners(t)
+	f.answer["a-cut-off"] = func(w http.ResponseWriter, _ *http.Request) {
+		// Fewer bytes than declared: the connection ends inside the body.
+		w.Header().Set("Content-Length", "1000")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"keys": [`))
+	}
+	f.answer["b-stalled"] = func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"keys": [`))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}
+	f.answer["c-unreadable"] = func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte(`{"keys": [`)) }
+	r := f.resolver("a-cut-off", "b-stalled", "c-unreadable")
+	defer r.Close()
+	_, _, err := r.ResolveCosigner(context.Background(), hex.EncodeToString(witnessOne), KeyTypeWitnessFalcon1024)
+	if !errors.Is(err, ErrCosignerDiscovery) || !strings.HasSuffix(err.Error(), `endpoints: "a-cut-off" unreachable, "b-stalled" unreachable, "c-unreadable" invalid cosigner metadata`) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestEndpointCosignerResolverNonCanonicalAddressIsInvalidMetadata(t *testing.T) {
 	f := newFakeCosigners(t)
 	account := fakeAccount(3)

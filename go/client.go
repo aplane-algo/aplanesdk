@@ -635,8 +635,14 @@ func (c *SignerClient) GetKeysResponseWithContext(ctx context.Context) (*KeysRes
 		return nil, signerHTTPError(resp)
 	}
 
+	// A body that stalls or is cut off is a failed exchange, as a request that
+	// never got an answer is; only a body read in full can be unreadable.
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read keys: %w", err)
+	}
 	var keysResp keysResponse
-	if err := readAnswer(resp.Body, &keysResp); err != nil {
+	if err := decodeAnswer(raw, &keysResp); err != nil {
 		return nil, &unreadableAnswer{err: fmt.Errorf("failed to decode response: %w", err)}
 	}
 	// An address is looked up by its exact text, so an Algorand address the
@@ -1240,13 +1246,21 @@ func (c *SignerClient) SignGroupWithContext(ctx context.Context, groupReq GroupS
 }
 
 // readAnswer reads a 200 body as exactly one JSON value of out's shape. A
-// null body, or anything after the value, is not an answer: json.Decoder
-// would read null as an empty answer and stop at the end of the first value.
+// failure to read the body and a body that does not decode are both errors;
+// decodeAnswer is the decoding alone, for a caller that tells them apart.
 func readAnswer(body io.Reader, out any) error {
 	raw, err := io.ReadAll(body)
 	if err != nil {
 		return err
 	}
+	return decodeAnswer(raw, out)
+}
+
+// decodeAnswer decodes a 200 body, read in full, as exactly one JSON value of
+// out's shape. A null body, or anything after the value, is not an answer:
+// json.Decoder would read null as an empty answer and stop at the end of the
+// first value.
+func decodeAnswer(raw []byte, out any) error {
 	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return errors.New("the answer is null")
 	}
