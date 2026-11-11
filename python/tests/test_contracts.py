@@ -428,7 +428,10 @@ def test_plan_group_returns_wire_mutation_report():
         plan = client.plan_group([signed_txn, foreign_txn], auth_addresses=[signed_txn.sender, None])
 
     assert len(plan["transactions"]) == 3
-    assert set(plan["mutations"]) <= set(wire)
+    # Every field the fixture names is reported under its wire name; the
+    # others, which the signer leaves out when zero, read as zero.
+    assert set(wire) <= set(plan["mutations"])
+    assert not any(plan["mutations"][name] for name in set(plan["mutations"]) - set(wire))
     assert plan["mutations"]["dummies_added"] == wire["dummies_added"] == 1
     assert plan["mutations"]["group_id_changed"] is wire["group_id_changed"] is True
     assert plan["mutations"]["fees_modified"] == [0]

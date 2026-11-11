@@ -18,8 +18,12 @@
  *
  * A number must be an integer a JavaScript number holds exactly (a safe
  * integer): JSON.parse rounds anything larger, so it cannot be read exactly
- * and is unreadable. And JSON.parse does not keep how a number was written,
- * so 3.0 is read as 3, where the Go SDK would refuse it.
+ * and is unreadable. The exception is a "roundedUint": a bound the SDK only
+ * reports, such as a key type's creation-parameter maximum, which a signer
+ * may legitimately send up to 2^64 - 1; it is read as the number JSON.parse
+ * gives, rounded above 2^53, so that it cannot make an inventory answer
+ * unreadable. And JSON.parse does not keep how a number was written, so 3.0
+ * is read as 3, where the Go SDK would refuse it.
  *
  * For an approval-bearing request an unreadable answer is a lost answer: the
  * signer may have acted on the request. An answer that is read and then
@@ -31,6 +35,11 @@ export type AnswerShape =
   | "bool"
   | "int"
   | "uint"
+  /**
+   * A Go uint64 the SDK only reports and never computes or compares on: read
+   * as the possibly rounded number JSON.parse gives.
+   */
+  | "roundedUint"
   | { list: AnswerShape }
   | { map: AnswerShape }
   | { fields: Record<string, AnswerShape> }
@@ -41,7 +50,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isScalar(shape: AnswerShape): shape is "string" | "bool" | "int" | "uint" {
+function isScalar(shape: AnswerShape): shape is "string" | "bool" | "int" | "uint" | "roundedUint" {
   return typeof shape === "string";
 }
 
@@ -49,7 +58,7 @@ function isScalar(shape: AnswerShape): shape is "string" | "bool" | "int" | "uin
 function zeroValue(shape: AnswerShape): unknown {
   if (shape === "string") return "";
   if (shape === "bool") return false;
-  if (shape === "int" || shape === "uint") return 0;
+  if (shape === "int" || shape === "uint" || shape === "roundedUint") return 0;
   if ("list" in shape) return [];
   if ("map" in shape) return {};
   if ("optional" in shape) return undefined;
@@ -75,6 +84,14 @@ function readValue(shape: AnswerShape, value: unknown, where: string): unknown {
   if (shape === "uint") {
     if (!Number.isSafeInteger(value) || (value as number) < 0) {
       throw new Unreadable(`${where} is not an unsigned integer the SDK can read exactly`);
+    }
+    return value;
+  }
+  if (shape === "roundedUint") {
+    // 2^64 - 1 itself parses as 2^64, so only a number that parses above
+    // 2^64 is known to be outside the range.
+    if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 2 ** 64) {
+      throw new Unreadable(`${where} is not an unsigned 64-bit integer`);
     }
     return value;
   }
@@ -383,8 +400,10 @@ const CREATION_PARAM: AnswerShape = {
     min_items: "int",
     max_items: "int",
     options: { list: "string" },
-    min: { optional: "uint" },
-    max: { optional: "uint" },
+    // Bounds the SDK only reports: a generic LogicSig template may declare
+    // any uint64, up to 2^64 - 1.
+    min: { optional: "roundedUint" },
+    max: { optional: "roundedUint" },
     example: "string",
     placeholder: "string",
     default: "string",

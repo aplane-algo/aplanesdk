@@ -4041,6 +4041,9 @@ describe("SignerClient", () => {
       ["/keytypes", () => client().listKeyTypes(), [
         "", "null", '{"key_types":"x"}', '{"key_types":[{"creation_params":[{"min":-1}]}]}',
         '{"key_types":[{"requires_logicsig":"yes"}]}',
+        '{"key_types":[{"creation_params":[{"max":-1}]}]}', '{"key_types":[{"creation_params":[{"max":1.5}]}]}',
+        '{"key_types":[{"creation_params":[{"min":0.5}]}]}', '{"key_types":[{"creation_params":[{"max":"5"}]}]}',
+        '{"key_types":[{"creation_params":[{"max":1e400}]}]}', '{"key_types":[{"creation_params":[{"max":1e30}]}]}',
       ]],
       ["/admin/generate", () => client().generateKey("ed25519"), [
         "", "null", '{"address":5}', '{"is_witness_key":"true"}', '{"error":7}',
@@ -4084,6 +4087,48 @@ describe("SignerClient", () => {
       assert.equal(status.rotating?.[0].stage, undefined, "a null stage is left out, not stage 0");
       assert.equal(status.rotating?.[0].cached_entries, 0);
       assert.equal(status.rotating?.[0].recovery?.active, false);
+    });
+
+    it("/keytypes reads a creation parameter's uint64 bounds above 2^53, rounded", async () => {
+      // A generic LogicSig template may declare any uint64 bound. The SDK only
+      // reports it, so a bound JSON.parse rounds does not make the list
+      // unreadable.
+      answerRaw('{"key_types":[{"key_type":"example.generic.v1","creation_params":['
+        + '{"name":"amount","type":"uint64","min":9007199254740993,"max":18446744073709551615}]}]}');
+      const types = await client().listKeyTypes();
+      assert.equal(types.length, 1, "the key type list is read");
+      assert.equal(types[0].creationParams?.[0].max, 2 ** 64, "max is 2^64 - 1 as JSON.parse rounds it");
+      assert.equal(types[0].creationParams?.[0].min, 2 ** 53, "min is 2^53 + 1 as JSON.parse rounds it");
+      // Every other uint64 is still read exactly.
+      answerRaw('{"keyset_revision":9007199254740993}');
+      await assert.rejects(client().getStatus(), plain);
+    });
+
+    it("a 200 from /admin/generate or DELETE /admin/keys drops the key cache, whatever its body", async () => {
+      // The signer may have created or deleted the key even when its answer
+      // cannot be read or is refused, so the next listKeys() asks it again.
+      const keysAnswer = (address: string) => JSON.stringify({ count: 1, keys: [{ address, key_type: "ed25519" }] });
+      const mutations: Array<[string, (signer: SignerClient) => Promise<unknown>, string]> = [
+        ["/admin/generate", (signer) => signer.generateKey("ed25519"), ""],
+        ["/admin/generate", (signer) => signer.generateKey("ed25519"), '{"address":5}'],
+        ["/admin/generate", (signer) => signer.generateKey("ed25519"), '{"error":"refused"}'],
+        ["DELETE /admin/keys", (signer) => signer.deleteKey(fakeAddress(9)), ""],
+        ["DELETE /admin/keys", (signer) => signer.deleteKey(fakeAddress(9)), '{"success":"yes"}'],
+        ["DELETE /admin/keys", (signer) => signer.deleteKey(fakeAddress(9)), '{"error":"refused"}'],
+      ];
+      for (const [path, mutate, body] of mutations) {
+        const signer = client();
+        answerRaw(keysAnswer(fakeAccount(6)));
+        await signer.listKeys(true);
+        answerRaw(body);
+        await assert.rejects(mutate(signer), SignerError, `${path} answering ${JSON.stringify(body)} is refused`);
+        answerRaw(keysAnswer(fakeAccount(7)));
+        assert.deepEqual(
+          (await signer.listKeys()).map((key) => key.address),
+          [fakeAccount(7)],
+          `after ${path} answering ${JSON.stringify(body)}, listKeys() asks the signer again`,
+        );
+      }
     });
 
     it("/admin/generate refuses an answer without an address", async () => {
@@ -4147,7 +4192,7 @@ describe("SignerClient", () => {
           assert.ok(error instanceof SignerError, String(error));
           assert.equal(
             (error as Error).message,
-            `Server returned a malformed response: key 2 address ${misspelled} is not the canonical spelling of ${real}`,
+            `Server returned a malformed response: key 1 address "${misspelled}" is a non-canonical spelling of address ${real}`,
           );
           return true;
         });
