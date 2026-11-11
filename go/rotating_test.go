@@ -1139,6 +1139,10 @@ func TestSendPreparedRotatingRetryBounds(t *testing.T) {
 		if apiErrorCode(err) != ErrCodeRotatingStageUnproven || signer.count("/sign/rotating/prepare") != 1 {
 			t.Fatalf("error = %v after %d prepares; want the refusal after one", err, signer.count("/sign/rotating/prepare"))
 		}
+		// Both are readable: the signer's refusal and the deadline.
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("error = %v, want it to match context.DeadlineExceeded too", err)
+		}
 	})
 }
 

@@ -611,7 +611,7 @@ func (c *SignerClient) sendRotating(ctx context.Context, algodClient *algod.Clie
 		if err != nil {
 			if apiErrorCode(err) == ErrCodeRotatingStageUnproven && !last {
 				if waitErr := sleepContext(ctx, time.Duration(attempt)*rotatingUnprovenBackoff); waitErr != nil {
-					return nil, fmt.Errorf("%w (and the wait to retry ended: %v)", err, waitErr)
+					return nil, fmt.Errorf("%w (and the wait to retry ended: %w)", err, waitErr)
 				}
 				continue
 			}
