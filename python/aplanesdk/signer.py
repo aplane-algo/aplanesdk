@@ -7514,10 +7514,11 @@ class SignerClient:
         never submits and never calls the signer.
 
         ``timeout`` is a limit in seconds on the whole call; None waits as
-        long as it takes. When it passes, SendTimeoutError is raised with the
-        last report made as its ``report`` (None when none was made yet). A
-        node failure is raised as a SignerError that carries the last report
-        the same way.
+        long as it takes. It is checked before each resolve: when it passes,
+        SendTimeoutError is raised with the last report made as its
+        ``report`` (None when none was made yet, and then the node was not
+        asked anything). A node failure is raised as a SignerError that
+        carries the last report the same way.
 
         Raises:
             SignerError: the refusals of resolve_outcome, which come before
@@ -10023,6 +10024,16 @@ def _wait_for_outcome(algod_client: Any, error: Any, timeout: Optional[float]) -
     with _time_limit(timeout):
         report: Optional[OutcomeReport] = None
         while True:
+            # Checked before each resolve: a limit that has passed asks the
+            # node nothing more, and before the first gives no report.
+            if _time_limit_passed():
+                ended = _time_limit_error(
+                    "waiting for the outcome"
+                    if report is None
+                    else f"waiting for the outcome, which is {report.state}"
+                )
+                ended.report = report
+                raise ended
             try:
                 report = _resolve_outcome(algod_client, error)
             except SignerError as e:

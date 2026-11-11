@@ -438,6 +438,48 @@ class TestWaitForOutcome:
                 client().wait_for_outcome(algod_client, error, timeout=bad)
         assert algod.calls == []
 
+    def test_a_limit_that_has_passed_gives_no_report_and_asks_nothing(self):
+        algod = CountingAlgod(900)
+        with signer_module._time_limit(0.01):
+            time.sleep(0.05)
+            with pytest.raises(SendTimeoutError) as excinfo:
+                client().wait_for_outcome(algod, sign_error(), timeout=10)
+        assert excinfo.value.report is None
+        assert algod.calls == []
+
+    def test_the_limit_is_checked_before_each_resolve(self):
+        # The wait for the next round returns after the limit has passed: no
+        # second check is made, and the error carries the first report.
+        algod = CountingAlgod(900, hold=0.3)
+        with pytest.raises(SendTimeoutError) as excinfo:
+            client().wait_for_outcome(algod, sign_error(), timeout=0.1)
+        assert excinfo.value.report.state == OUTCOME_SIGNABLE
+        assert excinfo.value.report.current_round == 900
+        assert algod.calls == ["status", "wait 900"]
+
+
+class CountingAlgod:
+    """A fake algod object (no HTTP, so no timeouts of its own) that records
+    every call. Its wait for the next block holds for ``hold`` seconds."""
+
+    def __init__(self, round, hold=0.0):
+        self.round = round
+        self.hold = hold
+        self.calls = []
+
+    def status(self, **kwargs):
+        self.calls.append("status")
+        return {"last-round": self.round}
+
+    def status_after_block(self, round, **kwargs):
+        self.calls.append(f"wait {round}")
+        time.sleep(self.hold)
+        self.round = round + 1
+        return {"last-round": self.round}
+
+    def pending_transaction_info(self, txid, **kwargs):
+        raise AssertionError("a sign outcome without IDs is not looked up")
+
 
 # -----------------------------------------------------------------------------
 # last_valid in every flow

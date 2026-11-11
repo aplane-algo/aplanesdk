@@ -505,8 +505,10 @@ round, waiting for each next round with the node's status-after-block call,
 until the state is `confirmed`, `expired` or `too_old`. `timeout` is in
 seconds, for the whole call: `None` (the default) sets no limit; 0, a
 negative or a non-finite number is refused with `ValueError`, but only after
-the refusals of the error above, which come first. When the limit passes,
-`SendTimeoutError` is raised with the last report as its `report`.
+the refusals of the error above, which come first. The limit is checked
+before each check of the node: when it passes, `SendTimeoutError` is raised
+with the last report as its `report`, or `None`, with nothing asked of the
+node, when it passed before the first.
 
 ```python
 try:
