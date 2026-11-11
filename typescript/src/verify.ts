@@ -73,12 +73,18 @@ export interface RequestSlot {
 }
 
 /**
- * The slot of a sign-mode position. The auth address must be a real address:
- * the returned authorization is checked against it.
+ * The slot of a sign-mode position. The auth address must be a real address,
+ * spelled canonically: the returned authorization is checked against it, as
+ * a string. algosdk also reads the spellings that differ only in the unused
+ * low bits of the last character, which the Go SDK's decoder refuses.
  */
 export function signSlot(txn: Transaction, authAddress: string | undefined): RequestSlot {
   if (typeof authAddress !== "string" || !algosdk.isValidAddress(authAddress)) {
     throw new SignerError(`auth_address ${JSON.stringify(authAddress)} is not a valid address`);
+  }
+  const canonical = algosdk.Address.fromString(authAddress).toString();
+  if (canonical !== authAddress) {
+    throw new SignerError(`auth_address ${authAddress} is not the canonical spelling of ${canonical}`);
   }
   return { mode: "sign", txn, auth: authAddress };
 }

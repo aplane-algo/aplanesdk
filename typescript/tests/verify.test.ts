@@ -38,6 +38,7 @@ import {
   signedHex,
   signerFetch,
 } from "./fakeSigner.js";
+import { alternateSpellings } from "./fakeNetwork.js";
 
 // The validators read the typed camelCase report the client hands them.
 function typedMutations(raw: any) {
@@ -934,6 +935,43 @@ describe("authorization of a signed position", () => {
     );
     const client = new SignerClient("http://localhost:11270");
     await assert.rejects(client.signTransaction(txn, "AUTH"), /is not a valid address/);
+  });
+
+  // algosdk reads an alternate spelling (the unused low bits of the last
+  // character set otherwise) as the address; the Go and Python SDKs refuse
+  // it, and so does the request, before anything is posted.
+  it("refuses an auth address that is not spelled canonically, before posting", async () => {
+    const txn = fakePayment();
+    const sender = txn.sender.toString();
+    const previous = globalThis.fetch;
+    const posted: string[] = [];
+    globalThis.fetch = (async (url: unknown) => {
+      posted.push(String(url));
+      throw new TypeError("fetch failed: nothing should be posted");
+    }) as typeof fetch;
+    try {
+      for (const spelling of alternateSpellings(sender)) {
+        assert.ok(algosdk.isValidAddress(spelling), `algosdk reads ${spelling} as an address`);
+        const want = `auth_address ${spelling} is not the canonical spelling of ${sender}`;
+        assert.throws(
+          () => decodeRequestSlots([{ auth_address: spelling, txn_bytes_hex: encodeTransaction(txn)[0] }]),
+          (error: unknown) => error instanceof SignerError && error.message === `transaction 1: ${want}`,
+        );
+        const client = new SignerClient("http://localhost:11270");
+        await assert.rejects(client.signTransaction(txn, spelling), (error: unknown) => {
+          assert.ok(error instanceof SignerError, String(error));
+          assert.ok((error as Error).message.includes(want), (error as Error).message);
+          return true;
+        });
+        await assert.rejects(
+          client.signRequests([{ auth_address: spelling, txn_bytes_hex: encodeTransaction(txn)[0] }]),
+          (error: unknown) => error instanceof SignerError && (error as Error).message.includes(want),
+        );
+      }
+    } finally {
+      globalThis.fetch = previous;
+    }
+    assert.deepEqual(posted, []);
   });
 });
 
