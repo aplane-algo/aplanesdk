@@ -378,111 +378,120 @@ func TestSendPreparedRotatingStageZeroWithoutDummies(t *testing.T) {
 // TestPrepareRotatingRefusesAlteredGroup covers the client's authority
 // boundary for a prepared group: each case is one thing the signer may not do.
 // None reaches simulation or signing.
-func TestPrepareRotatingRefusesAlteredGroup(t *testing.T) {
-	var elsewhere types.Address
-	elsewhere[0] = 0x55
-	respend := func(t *testing.T, response *RotatingPrepareResponse, txns []types.Transaction, change func(*types.Transaction)) {
-		change(&txns[0])
+// rotatingTestElsewhere is an address no fixture uses.
+var rotatingTestElsewhere = types.Address{0x55}
+
+// respendPrepared changes the prepared spend, regroups, and writes the group
+// back into the response, as a signer that altered the spend would have to.
+func respendPrepared(t *testing.T, response *RotatingPrepareResponse, txns []types.Transaction, change func(*types.Transaction)) {
+	change(&txns[0])
+	regroup(t, txns)
+	setPreparedTransactions(response, txns)
+}
+
+// rotatingPrepareTampers are the things a signer may not do to a prepared
+// group. Each alters a correct prepare response; text is what the Go check
+// says. They also generate the shared vectors every SDK must refuse.
+var rotatingPrepareTampers = []struct {
+	name  string
+	alter func(t *testing.T, response *RotatingPrepareResponse, txns []types.Transaction)
+	text  string
+}{
+	{"receiver changed", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
+		respendPrepared(t, r, txns, func(spend *types.Transaction) { spend.Receiver = rotatingTestElsewhere })
+	}, "changed unreported fields"},
+	{"amount changed", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
+		respendPrepared(t, r, txns, func(spend *types.Transaction) { spend.Amount++ })
+	}, "changed unreported fields"},
+	{"note added", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
+		respendPrepared(t, r, txns, func(spend *types.Transaction) { spend.Note = []byte("x") })
+	}, "changed unreported fields"},
+	{"close-out added", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
+		respendPrepared(t, r, txns, func(spend *types.Transaction) { spend.CloseRemainderTo = rotatingTestElsewhere })
+	}, "changed unreported fields"},
+	{"validity rounds changed", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
+		respendPrepared(t, r, txns, func(spend *types.Transaction) { spend.LastValid-- })
+	}, "changed unreported fields"},
+	{"network changed", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
+		respendPrepared(t, r, txns, func(spend *types.Transaction) { spend.GenesisHash[1] ^= 1 })
+	}, "changed unreported fields"},
+	{"rekey to an address other than the one reported", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
+		respendPrepared(t, r, txns, func(spend *types.Transaction) { spend.RekeyTo = rotatingTestElsewhere })
+	}, "changed unreported fields"},
+	{"rekey left out", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
+		respendPrepared(t, r, txns, func(spend *types.Transaction) { spend.RekeyTo = types.Address{} })
+	}, "changed unreported fields"},
+	{"reported rekey target is the zero address", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
+		r.RekeyTo = types.Address{}.String()
+	}, "rekey_to must be another, non-zero address"},
+	{"reported rekey target is the account", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
+		r.RekeyTo = r.Account
+	}, "rekey_to must be another, non-zero address"},
+	{"reported rekey target is not an address", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
+		r.RekeyTo = "nonsense"
+	}, "invalid rekey_to"},
+	{"fee raised more than reported", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
+		respendPrepared(t, r, txns, func(spend *types.Transaction) { spend.Fee += 500 })
+	}, "total_fees_delta"},
+	{"fee raised with no fee report", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
+		r.Mutations.FeesModified, r.Mutations.TotalFeesDelta = nil, 0
+	}, "changed unreported fields"},
+	{"fee lowered", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
+		respendPrepared(t, r, txns, func(spend *types.Transaction) { spend.Fee = 500 })
+	}, "did not increase the fee"},
+	{"group ID not the group's", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
+		for i := range txns {
+			txns[i].Group[0] ^= 1
+		}
+		setPreparedTransactions(r, txns)
+	}, "canonical group ID"},
+	{"dummy pays the account's money", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
+		txns[1].Amount = 1
 		regroup(t, txns)
-		setPreparedTransactions(response, txns)
-	}
-	tests := []struct {
-		name  string
-		alter func(t *testing.T, response *RotatingPrepareResponse, txns []types.Transaction)
-		text  string
-	}{
-		{"receiver changed", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
-			respend(t, r, txns, func(spend *types.Transaction) { spend.Receiver = elsewhere })
-		}, "changed unreported fields"},
-		{"amount changed", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
-			respend(t, r, txns, func(spend *types.Transaction) { spend.Amount++ })
-		}, "changed unreported fields"},
-		{"note added", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
-			respend(t, r, txns, func(spend *types.Transaction) { spend.Note = []byte("x") })
-		}, "changed unreported fields"},
-		{"close-out added", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
-			respend(t, r, txns, func(spend *types.Transaction) { spend.CloseRemainderTo = elsewhere })
-		}, "changed unreported fields"},
-		{"validity rounds changed", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
-			respend(t, r, txns, func(spend *types.Transaction) { spend.LastValid-- })
-		}, "changed unreported fields"},
-		{"network changed", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
-			respend(t, r, txns, func(spend *types.Transaction) { spend.GenesisHash[1] ^= 1 })
-		}, "changed unreported fields"},
-		{"rekey to an address other than the one reported", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
-			respend(t, r, txns, func(spend *types.Transaction) { spend.RekeyTo = elsewhere })
-		}, "changed unreported fields"},
-		{"rekey left out", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
-			respend(t, r, txns, func(spend *types.Transaction) { spend.RekeyTo = types.Address{} })
-		}, "changed unreported fields"},
-		{"reported rekey target is the zero address", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
-			r.RekeyTo = types.Address{}.String()
-		}, "rekey_to must be another, non-zero address"},
-		{"reported rekey target is the account", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
-			r.RekeyTo = r.Account
-		}, "rekey_to must be another, non-zero address"},
-		{"reported rekey target is not an address", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
-			r.RekeyTo = "nonsense"
-		}, "invalid rekey_to"},
-		{"fee raised more than reported", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
-			respend(t, r, txns, func(spend *types.Transaction) { spend.Fee += 500 })
-		}, "total_fees_delta"},
-		{"fee raised with no fee report", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
-			r.Mutations.FeesModified, r.Mutations.TotalFeesDelta = nil, 0
-		}, "changed unreported fields"},
-		{"fee lowered", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
-			respend(t, r, txns, func(spend *types.Transaction) { spend.Fee = 500 })
-		}, "did not increase the fee"},
-		{"group ID not the group's", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
-			for i := range txns {
-				txns[i].Group[0] ^= 1
-			}
-			setPreparedTransactions(r, txns)
-		}, "canonical group ID"},
-		{"dummy pays the account's money", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
-			txns[1].Amount = 1
-			regroup(t, txns)
-			setPreparedTransactions(r, txns)
-		}, "not the canonical resource dummy"},
-		{"dummy on other rounds", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
-			txns[1].LastValid++
-			regroup(t, txns)
-			setPreparedTransactions(r, txns)
-		}, "not the canonical resource dummy"},
-		{"extra transaction beyond the report", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
-			extra, _ := canonicalDummyTxn(txns[0], types.Digest{}, 1)
-			txns = append(txns, extra)
-			regroup(t, txns)
-			setPreparedTransactions(r, txns)
-		}, "final_count"},
-		{"dummies with no report", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
-			r.Mutations = nil
-		}, "without a mutation report"},
-		{"no transactions", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
-			r.Transactions = nil
-		}, "prepared group is empty"},
-		{"another account", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
-			r.Account = sdkTestAddress(9)
-		}, "is not the sender"},
-		{"target is not the next stage", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
-			r.Target = r.Stage + 2
-		}, "not the stage after"},
-		{"target equals the stage", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
-			r.Target = r.Stage
-		}, "not the stage after"},
-		{"stage number overflows", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
-			r.Stage, r.Target = ^uint64(0), 0
-		}, "not the stage after"},
-		{"trailing bytes after the spend", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
-			r.Transactions[0] += "00"
-		}, "not canonical"},
-		{"spend without the TX prefix", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
-			r.Transactions[0] = r.Transactions[0][4:]
-		}, "missing TX prefix"},
-		{"spend is not hex", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
-			r.Transactions[0] = "zz"
-		}, "invalid hex"},
-	}
+		setPreparedTransactions(r, txns)
+	}, "not the canonical resource dummy"},
+	{"dummy on other rounds", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
+		txns[1].LastValid++
+		regroup(t, txns)
+		setPreparedTransactions(r, txns)
+	}, "not the canonical resource dummy"},
+	{"extra transaction beyond the report", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
+		extra, _ := canonicalDummyTxn(txns[0], types.Digest{}, len(txns)-1)
+		txns = append(txns, extra)
+		regroup(t, txns)
+		setPreparedTransactions(r, txns)
+	}, "final_count"},
+	{"dummies with no report", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
+		r.Mutations = nil
+	}, "without a mutation report"},
+	{"no transactions", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
+		r.Transactions = nil
+	}, "prepared group is empty"},
+	{"another account", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
+		r.Account = sdkTestAddress(9)
+	}, "is not the sender"},
+	{"target is not the next stage", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
+		r.Target = r.Stage + 2
+	}, "not the stage after"},
+	{"target equals the stage", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
+		r.Target = r.Stage
+	}, "not the stage after"},
+	{"stage number overflows", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
+		r.Stage, r.Target = ^uint64(0), 0
+	}, "not the stage after"},
+	{"trailing bytes after the spend", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
+		r.Transactions[0] += "00"
+	}, "not canonical"},
+	{"spend without the TX prefix", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
+		r.Transactions[0] = r.Transactions[0][4:]
+	}, "missing TX prefix"},
+	{"spend is not hex", func(t *testing.T, r *RotatingPrepareResponse, txns []types.Transaction) {
+		r.Transactions[0] = "zz"
+	}, "invalid hex"},
+}
+
+func TestPrepareRotatingRefusesAlteredGroup(t *testing.T) {
+	tests := rotatingPrepareTampers
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			signer, node, client, algodClient, txn := newRotatingFixture(t)
@@ -523,76 +532,82 @@ func TestPrepareRotatingHoldsTheFeeCeiling(t *testing.T) {
 // TestSignPreparedRotatingRefusesAlteredResponse covers the signed response:
 // each case is a signed group that is not exactly the prepared one, properly
 // authorized. None is submitted.
+// rotatingNextProgram is a program other than the stage that signs.
+var rotatingNextProgram = []byte{0x0a, 0x81, 0x02}
+
+// rotatingSignTampers are signed responses that are not exactly the prepared
+// group, properly authorized. Each alters a correct sign response.
+var rotatingSignTampers = []struct {
+	name  string
+	alter func(t *testing.T, signer *rotatingSigner, response *RotatingSignResponse, signed []types.SignedTxn)
+	text  string
+}{
+	{"spend changed after preparation", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
+		signed[0].Txn.Amount++
+		setSignedTransactions(r, signed)
+	}, "differs from the prepared transaction"},
+	{"dummy changed after preparation", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
+		signed[1].Txn.Note = []byte{9}
+		setSignedTransactions(r, signed)
+	}, "differs from the prepared transaction"},
+	{"transactions reordered", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
+		r.Signed[0], r.Signed[1] = r.Signed[1], r.Signed[0]
+	}, "differs from the prepared transaction"},
+	{"transaction missing", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
+		r.Signed = r.Signed[:1]
+	}, "signed group has 1 transaction(s), prepared 2"},
+	{"extra transaction", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
+		r.Signed = append(r.Signed, r.Signed[1])
+	}, "signed group has 3 transaction(s), prepared 2"},
+	{"trailing bytes", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
+		r.Signed[0] += "00"
+	}, "not a canonical signed transaction"},
+	{"spend not signed", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
+		signed[0].Lsig = types.LogicSig{}
+		setSignedTransactions(r, signed)
+	}, "not authorized by a stage program"},
+	{"spend signed by a plain key instead", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
+		signed[0].Lsig = types.LogicSig{}
+		signed[0].Sig = types.Signature{1}
+		setSignedTransactions(r, signed)
+	}, "not authorized by a stage program"},
+	{"spend carries two authorizations", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
+		signed[0].Sig = types.Signature{1}
+		setSignedTransactions(r, signed)
+	}, "more than one authorization"},
+	{"stage program delegated by a signature", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
+		signed[0].Lsig.Sig = types.Signature{1}
+		setSignedTransactions(r, signed)
+	}, "delegated by a signature"},
+	{"signer of the spend not named", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
+		signed[0].AuthAddr = types.Address{}
+		setSignedTransactions(r, signed)
+	}, "does not name its signer"},
+	{"named signer is not the program's address", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
+		signed[0].AuthAddr = rotatingStageAddress(rotatingNextProgram)
+		setSignedTransactions(r, signed)
+	}, "not the requested auth address"},
+	{"dummy not signed", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
+		signed[1].Lsig = types.LogicSig{}
+		setSignedTransactions(r, signed)
+	}, "not the canonical signed resource dummy"},
+	{"dummy signed by another program", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
+		signed[1].Lsig = types.LogicSig{Logic: rotatingNextProgram}
+		setSignedTransactions(r, signed)
+	}, "not the canonical signed resource dummy"},
+	{"another stage reported", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
+		r.Stage, r.Target = r.Stage+1, r.Target+1
+	}, "signer reports stage 4 to 5, prepared 3 to 4"},
+	{"another transaction ID reported", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
+		r.TxID = crypto.GetTxID(signed[1].Txn)
+	}, "signer reports transaction ID"},
+	{"another group ID reported", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
+		r.GroupID = base64.StdEncoding.EncodeToString(make([]byte, 32))
+	}, "signer reports group ID"},
+}
+
 func TestSignPreparedRotatingRefusesAlteredResponse(t *testing.T) {
-	nextProgram := []byte{0x0a, 0x81, 0x02}
-	tests := []struct {
-		name  string
-		alter func(t *testing.T, signer *rotatingSigner, response *RotatingSignResponse, signed []types.SignedTxn)
-		text  string
-	}{
-		{"spend changed after preparation", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
-			signed[0].Txn.Amount++
-			setSignedTransactions(r, signed)
-		}, "differs from the prepared transaction"},
-		{"dummy changed after preparation", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
-			signed[1].Txn.Note = []byte{9}
-			setSignedTransactions(r, signed)
-		}, "differs from the prepared transaction"},
-		{"transactions reordered", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
-			r.Signed[0], r.Signed[1] = r.Signed[1], r.Signed[0]
-		}, "differs from the prepared transaction"},
-		{"transaction missing", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
-			r.Signed = r.Signed[:1]
-		}, "signed group has 1 transaction(s), prepared 2"},
-		{"extra transaction", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
-			r.Signed = append(r.Signed, r.Signed[1])
-		}, "signed group has 3 transaction(s), prepared 2"},
-		{"trailing bytes", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
-			r.Signed[0] += "00"
-		}, "not a canonical signed transaction"},
-		{"spend not signed", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
-			signed[0].Lsig = types.LogicSig{}
-			setSignedTransactions(r, signed)
-		}, "not authorized by a stage program"},
-		{"spend signed by a plain key instead", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
-			signed[0].Lsig = types.LogicSig{}
-			signed[0].Sig = types.Signature{1}
-			setSignedTransactions(r, signed)
-		}, "not authorized by a stage program"},
-		{"spend carries two authorizations", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
-			signed[0].Sig = types.Signature{1}
-			setSignedTransactions(r, signed)
-		}, "more than one authorization"},
-		{"stage program delegated by a signature", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
-			signed[0].Lsig.Sig = types.Signature{1}
-			setSignedTransactions(r, signed)
-		}, "delegated by a signature"},
-		{"signer of the spend not named", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
-			signed[0].AuthAddr = types.Address{}
-			setSignedTransactions(r, signed)
-		}, "does not name its signer"},
-		{"named signer is not the program's address", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
-			signed[0].AuthAddr = rotatingStageAddress(nextProgram)
-			setSignedTransactions(r, signed)
-		}, "not the requested auth address"},
-		{"dummy not signed", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
-			signed[1].Lsig = types.LogicSig{}
-			setSignedTransactions(r, signed)
-		}, "not the canonical signed resource dummy"},
-		{"dummy signed by another program", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
-			signed[1].Lsig = types.LogicSig{Logic: nextProgram}
-			setSignedTransactions(r, signed)
-		}, "not the canonical signed resource dummy"},
-		{"another stage reported", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
-			r.Stage, r.Target = r.Stage+1, r.Target+1
-		}, "signer reports stage 4 to 5, prepared 3 to 4"},
-		{"another transaction ID reported", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
-			r.TxID = crypto.GetTxID(signed[1].Txn)
-		}, "signer reports transaction ID"},
-		{"another group ID reported", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
-			r.GroupID = base64.StdEncoding.EncodeToString(make([]byte, 32))
-		}, "signer reports group ID"},
-	}
+	tests := rotatingSignTampers
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			signer, node, client, algodClient, txn := newRotatingFixture(t)

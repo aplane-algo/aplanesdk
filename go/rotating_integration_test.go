@@ -6,6 +6,8 @@ package aplane
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -180,6 +182,35 @@ func TestIntegrationRotatingSendOnLocalNet(t *testing.T) {
 		lastTarget, lastRekeyTo = details.Target, details.RekeyTo
 	}
 
+	// A third spend, one step at a time, as a caller managing submission
+	// itself would do it. When asked, this is also where real signer answers
+	// are captured for the shared rotating vectors.
+	steppedPrepared, steppedSigned := steppedRotatingSpend(t, ctx, client, algodClient, account)
+	if steppedSigned.Stage != lastTarget {
+		t.Fatalf("stepped spend signed with stage %d, want %d", steppedSigned.Stage, lastTarget)
+	}
+	lastTarget = steppedSigned.Target
+	captureRotatingVector(t, "wotsc_stage2", steppedPrepared, steppedSigned)
+	if os.Getenv("APLANE_SDK_CAPTURE_ROTATING") == "1" {
+		// A stage 0 answer differs: the account signs as itself, so the
+		// spend names no signer. Capture one from a fresh account.
+		beforeFresh, err := client.GetStatus()
+		if err != nil {
+			t.Fatalf("status before the capture account: %v", err)
+		}
+		fresh, err := client.GenerateKey(liveRotatingKeyType, map[string]string{
+			"network": base64.StdEncoding.EncodeToString(params.GenesisHash),
+		})
+		if err != nil {
+			t.Fatalf("generate the capture account: %v", err)
+		}
+		defer func() { _ = client.DeleteKey(fresh.Address) }()
+		waitForKeysetRevision(t, client, beforeFresh.KeysetRevision, "capture account generate")
+		fundFromLocalNetKMD(t, algodClient, fresh.Address, 2_000_000)
+		freshPrepared, freshSigned := steppedRotatingSpend(t, ctx, client, algodClient, fresh.Address)
+		captureRotatingVector(t, "wotsc_stage0", freshPrepared, freshSigned)
+	}
+
 	// The steps on their own: prepare and simulate use no key.
 	prepared, err := client.PreparePayment(ctx, algodClient, PaymentPrepParams{Sender: account, Receiver: receiver, Amount: 0})
 	if err != nil {
@@ -199,4 +230,70 @@ func TestIntegrationRotatingSendOnLocalNet(t *testing.T) {
 	if err != nil || simulation.Failed {
 		t.Fatalf("SimulatePreparedRotating() = %+v, %v", simulation, err)
 	}
+}
+
+// steppedRotatingSpend sends one self-payment from a rotating account with
+// the step calls: prepare, simulate unsigned, sign, submit.
+func steppedRotatingSpend(t *testing.T, ctx context.Context, client *SignerClient, algodClient *algod.Client, account string) (*PreparedRotating, *RotatingSignResult) {
+	t.Helper()
+	payment, err := client.PreparePayment(ctx, algodClient, PaymentPrepParams{Sender: account, Receiver: account, Amount: 0})
+	if err != nil {
+		t.Fatalf("PreparePayment() for the stepped spend error = %v", err)
+	}
+	prepared, err := client.PrepareRotating(ctx, *payment.Transaction, nil)
+	if err != nil {
+		t.Fatalf("stepped PrepareRotating() error = %v", err)
+	}
+	if simulation, err := client.SimulatePreparedRotating(ctx, algodClient, prepared); err != nil || simulation.Failed {
+		t.Fatalf("stepped SimulatePreparedRotating() = %+v, %v", simulation, err)
+	}
+	signed, err := client.SignPreparedRotating(ctx, prepared, nil)
+	if err != nil {
+		t.Fatalf("stepped SignPreparedRotating() error = %v", err)
+	}
+	result, err := client.SubmitSignedGroup(ctx, algodClient, signed.SignedGroup, nil)
+	if err != nil || result.Outcome != SendOutcomeConfirmed || result.TxIDs[0] != signed.TxID {
+		t.Fatalf("stepped SubmitSignedGroup() = %+v, %v", result, err)
+	}
+	return prepared, signed
+}
+
+// captureRotatingVector writes a real prepare and sign answer into the shared
+// rotating vectors when APLANE_SDK_CAPTURE_ROTATING=1. The keys are throwaway
+// LocalNet keys. After capturing, regenerate the altered answers with
+// APLANE_UPDATE_ROTATING_VECTORS=1 go test -run TestRotatingVectors.
+func captureRotatingVector(t *testing.T, name string, prepared *PreparedRotating, signed *RotatingSignResult) {
+	t.Helper()
+	if os.Getenv("APLANE_SDK_CAPTURE_ROTATING") != "1" {
+		return
+	}
+	var vectors rotatingVectors
+	if raw, err := os.ReadFile(rotatingVectorsPath()); err == nil {
+		if err := json.Unmarshal(raw, &vectors); err != nil {
+			t.Fatalf("parse rotating vectors: %v", err)
+		}
+	}
+	if vectors.Cases == nil {
+		vectors.Cases = map[string]rotatingVectorCase{}
+	}
+	vectors.Cases[name] = rotatingVectorCase{
+		KeyType:     liveRotatingKeyType,
+		OriginalTxn: hex.EncodeToString(prepared.original),
+		Prepare: RotatingPrepareResponse{
+			Account: prepared.Account(), Stage: prepared.Stage(), Target: prepared.Target(),
+			RekeyTo: prepared.RekeyTo(), Transactions: prepared.Transactions(), Mutations: prepared.Mutations(),
+		},
+		Sign: RotatingSignResponse{
+			Signed: signed.SignedGroup, Stage: signed.Stage, Target: signed.Target,
+			TxID: signed.TxID, GroupID: signed.GroupID,
+		},
+	}
+	raw, err := json.MarshalIndent(vectors, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rotatingVectorsPath(), append(raw, '\n'), 0o644); err != nil {
+		t.Fatalf("write rotating vectors: %v", err)
+	}
+	t.Logf("captured rotating vector %s", name)
 }

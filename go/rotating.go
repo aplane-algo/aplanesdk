@@ -234,22 +234,32 @@ func (c *SignerClient) PrepareRotating(ctx context.Context, txn types.Transactio
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
+	var appCallInfo *AppCallInfo
+	if opts != nil {
+		appCallInfo = opts.AppCallInfo
+	}
+	return newPreparedRotating(original, &response, c.feeCeiling(), appCallInfo)
+}
+
+// newPreparedRotating binds a prepare response to the transaction that was
+// sent and checks it. Everything it keeps is a copy.
+func newPreparedRotating(original []byte, response *RotatingPrepareResponse, ceiling feeCeiling, appCallInfo *AppCallInfo) (*PreparedRotating, error) {
 	prepared := &PreparedRotating{
 		account:      response.Account,
-		original:     original,
+		original:     append([]byte(nil), original...),
 		stage:        response.Stage,
 		target:       response.Target,
 		rekeyTo:      response.RekeyTo,
 		transactions: append([]string(nil), response.Transactions...),
-		ceiling:      c.feeCeiling(),
+		ceiling:      ceiling,
 	}
 	if response.Mutations != nil {
 		report := *response.Mutations
 		report.FeesModified = append([]int(nil), response.Mutations.FeesModified...)
 		prepared.mutations = &report
 	}
-	if opts != nil && opts.AppCallInfo != nil {
-		info := *opts.AppCallInfo
+	if appCallInfo != nil {
+		info := *appCallInfo
 		prepared.appCallInfo = &info
 	}
 	if err := prepared.verify(); err != nil {

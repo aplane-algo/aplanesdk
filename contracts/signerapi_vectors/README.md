@@ -21,3 +21,40 @@ The bytes were captured from a live signer on a local test network, through
 aplane's SDK integration harness. The keys were throwaway; nothing here is
 secret. Unlike `contracts/signerapi`, these are not wire-shape fixtures and
 are not mirrored from the aplane repository.
+
+## Rotating account answers
+
+`rotating_vectors.json` holds what a live apsigner returned for spends from a
+rotating account (`rotating1`), and copies of those answers altered in each
+way a signer may not alter them. Every SDK must accept each captured answer
+and refuse every altered one.
+
+- `cases`: keyed by name. Each has `key_type`, `original_txn_hex` (the
+  TX-prefixed transaction the client sent to `/sign/rotating/prepare`),
+  `prepare` (the prepare response) and `sign` (the sign response for that
+  prepared group).
+  - `wotsc_stage0`: a first spend. The account signs as itself, so the signed
+    spend names no signer.
+  - `wotsc_stage2`: a spend after two rotations. The signed spend names the
+    stage's address as its signer.
+- `prepare_tampered`: entries of `name`, `case` and an altered `prepare`.
+  Checked against the case's `original_txn_hex`, each must be refused.
+- `sign_tampered`: entries of `name`, `case` and an altered `sign`. Checked
+  against the case's own, unaltered `prepare`, each must be refused.
+
+The altered answers are generated, not written by hand: the Go SDK's tamper
+tables (`go/rotating_test.go`) are applied to each captured case, and
+`TestRotatingVectors` fails when the file and the tables disagree. To add a
+check to every SDK, add an entry to a table and regenerate:
+
+```bash
+cd go && APLANE_UPDATE_ROTATING_VECTORS=1 go test -run TestRotatingVectors .
+```
+
+To capture fresh answers, run aplane's SDK integration bridge on LocalNet with
+`APLANE_SDK_CAPTURE_ROTATING=1`, then regenerate as above.
+
+Two rules have no vector, because they depend on the client's own settings or
+on a pair of answers, and each SDK tests them directly: a fee raise above the
+client's max fee increase (use a case's `mutations.total_fees_delta`), and a
+spend signed by the program whose address is its own rekey target.
