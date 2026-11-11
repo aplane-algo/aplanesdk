@@ -107,6 +107,7 @@ import {
   DUMMY_OPCODE_COST,
   DUMMY_PROGRAM as COSIGNED_DUMMY_PROGRAM,
   MAX_GROUP_SIZE,
+  alternateAddressSpelling,
   checkMaxFeeIncrease,
   cloneTransaction,
   decodeCanonicalTransaction,
@@ -1575,16 +1576,28 @@ function requireCanonicalAddress(value: unknown, name: string): void {
   if (typeof value !== "string") {
     throw new SignerError(`${name} must be an address string, not ${nonStringKind(value)}`);
   }
-  if (!algosdk.isValidAddress(value)) return;
-  const canonical = algosdk.Address.fromString(value).toString();
-  if (canonical !== value) {
+  const canonical = alternateAddressSpelling(value);
+  if (canonical !== undefined) {
     throw new SignerError(`${name} ${value} is not the canonical spelling of ${canonical}`);
   }
 }
 
+/**
+ * The public key of an algosdk Address, told by its structure: an object
+ * whose publicKey is a 32-byte Uint8Array. An Address from another copy of
+ * algosdk (its ESM and CJS builds, or another installed version) is not an
+ * instance of this copy's class, but has the same structure. Anything else
+ * is undefined.
+ */
+function addressPublicKey(value: unknown): Uint8Array | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const publicKey = (value as { publicKey?: unknown }).publicKey;
+  return publicKey instanceof Uint8Array && publicKey.length === 32 ? publicKey : undefined;
+}
+
 /** What a value that is not a string is, for an error message. */
 function nonStringKind(value: unknown): string {
-  if (value instanceof algosdk.Address) return "an algosdk Address: pass its toString()";
+  if (addressPublicKey(value)) return "an algosdk Address: pass its toString()";
   if (value === null || value === undefined) return String(value);
   return typeof value === "object" ? "an object" : `a ${typeof value}`;
 }
@@ -1604,20 +1617,26 @@ function emptySendResult(flow: string, originalCount: number): SendResult {
 }
 
 /**
- * Read a 200 answer of the approval-bearing request requestId. A body that
- * does not parse, or parses to the wrong shape, is unreadable: the signer may
- * have acted, so it is marked as the request's lost answer.
+ * Read a 200 answer as shape. A body that does not parse, or parses to the
+ * wrong shape, is unreadable. Given requestId, the answer is that of an
+ * approval-bearing request: the signer may have acted, so the error is marked
+ * as the request's lost answer. Without one, the request releases no
+ * signature and the error is a plain one.
  */
-async function readApprovalAnswer<T>(response: Response, shape: AnswerShape, requestId: string): Promise<T> {
+async function readSignerAnswer<T>(response: Response, shape: AnswerShape, requestId?: string): Promise<T> {
+  const unreadable = (message: string): SignerError => {
+    const error = new SignerError(message);
+    return requestId === undefined ? error : markLostAnswer(error, requestId);
+  };
   let data: unknown;
   try {
     data = await response.json();
   } catch {
-    throw markLostAnswer(new SignerError("Server returned invalid JSON"), requestId);
+    throw unreadable("Server returned invalid JSON");
   }
   const read = readAnswer<T>(shape, data);
   if ("problem" in read) {
-    throw markLostAnswer(new SignerError(`Server returned a malformed response: ${read.problem}`), requestId);
+    throw unreadable(`Server returned a malformed response: ${read.problem}`);
   }
   return read.answer;
 }
@@ -1633,24 +1652,6 @@ function encodeRequestBody(body: unknown, what: string): string {
   } catch (error) {
     throw new SignerError(`failed to encode ${what} request: ${errorText(error)}`);
   }
-}
-
-/**
- * Read a 200 answer of a request that releases no signature. A body that
- * does not parse, or parses to the wrong shape, is a plain error.
- */
-async function readPlainAnswer<T>(response: Response, shape: AnswerShape): Promise<T> {
-  let data: unknown;
-  try {
-    data = await response.json();
-  } catch {
-    throw new SignerError("Server returned invalid JSON");
-  }
-  const read = readAnswer<T>(shape, data);
-  if ("problem" in read) {
-    throw new SignerError(`Server returned a malformed response: ${read.problem}`);
-  }
-  return read.answer;
 }
 
 /** The stable signer error code an error carries, or "". */
@@ -2369,21 +2370,24 @@ function resolveAbiReferenceArgs(
 /**
  * An ABI account argument as the address string it references: a canonical
  * address string, an algosdk Address, or a 32-byte public key, as the Go SDK
- * takes them. Anything else, such as another spelling of an address or an
+ * takes them. An Address is told by its structure, so one from another copy
+ * of algosdk is taken too, and is encoded from its public key, never from its
+ * toString. Anything else, such as another spelling of an address or an
  * object that merely has a toString, is refused.
  */
 function marshalAbiAddress(value: unknown, name: string): string {
   if (typeof value === "string") {
     return requireAccountReference(value, name);
   }
-  if (value instanceof algosdk.Address) {
-    return value.toString();
-  }
   if (value instanceof Uint8Array) {
     if (value.length !== 32) {
       throw new SignerError(`${name}: decoded value is not a 32-byte address`);
     }
     return algosdk.encodeAddress(value);
+  }
+  const publicKey = addressPublicKey(value);
+  if (publicKey) {
+    return algosdk.encodeAddress(publicKey);
   }
   throw new SignerError(`${name}: account reference arguments must be Algorand addresses`);
 }
@@ -2675,7 +2679,7 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Failed to get signer status: HTTP ${response.status}`);
     }
 
-    const data = await readPlainAnswer<Record<string, any>>(response, STATUS_ANSWER);
+    const data = await readSignerAnswer<Record<string, any>>(response, STATUS_ANSWER);
     const status: StatusResponse = {
       nodeRole: data.node_role || undefined,
       protocolVersion: data.protocol_version
@@ -2771,7 +2775,7 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Failed to list keys: HTTP ${response.status}`);
     }
 
-    const data = await readPlainAnswer<{ keys?: Record<string, any>[] }>(response, KEYS_ANSWER);
+    const data = await readSignerAnswer<{ keys?: Record<string, any>[] }>(response, KEYS_ANSWER);
     const records = data.keys ?? [];
     // An address that algosdk reads as an Algorand address but that is not
     // its canonical spelling would be compared and looked up as another
@@ -2781,11 +2785,10 @@ export class SignerClient {
     // matched by an exact lookup.
     records.forEach((record, index) => {
       const address = record.address as string;
-      if (!algosdk.isValidAddress(address)) return;
-      const canonical = algosdk.Address.fromString(address).toString();
-      if (canonical !== address) {
+      const canonical = alternateAddressSpelling(address);
+      if (canonical !== undefined) {
         throw new SignerError(
-          `Server returned a malformed response: key ${index + 1} address ${address} is not the canonical spelling of ${canonical}`,
+          `Server returned a malformed response: key ${index} address ${JSON.stringify(address)} is a non-canonical spelling of address ${canonical}`,
         );
       }
     });
@@ -3691,7 +3694,7 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Failed to list key types: HTTP ${response.status}`);
     }
 
-    const data = await readPlainAnswer<{ key_types?: Record<string, any>[] }>(response, KEYTYPES_ANSWER);
+    const data = await readSignerAnswer<{ key_types?: Record<string, any>[] }>(response, KEYTYPES_ANSWER);
     const result: KeyTypeInfo[] = [];
 
     for (const kt of data.key_types ?? []) {
@@ -3778,16 +3781,15 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Key generation failed: HTTP ${response.status}`);
     }
 
-    const data = await readPlainAnswer<Record<string, any>>(response, GENERATE_ANSWER);
-    if (data.error) {
-      throw new SignerError(data.error);
-    }
-
-    // Invalidate key cache: the signer may hold a new key even when its
-    // answer is refused below.
+    // Invalidate key cache: the signer answered, so it may hold a new key
+    // even when its answer is unreadable or refused below.
     this.keyCache.clear();
     this.keyCacheRevision = undefined;
 
+    const data = await readSignerAnswer<Record<string, any>>(response, GENERATE_ANSWER);
+    if (data.error) {
+      throw new SignerError(data.error);
+    }
     if (data.address === "") {
       throw new SignerError("Key generation response missing address");
     }
@@ -3831,7 +3833,7 @@ export class SignerClient {
 
     // The signer answers {"success": true}: an empty or unreadable answer is
     // not one.
-    const data = await readPlainAnswer<{ error: string }>(response, DELETE_KEY_ANSWER);
+    const data = await readSignerAnswer<{ error: string }>(response, DELETE_KEY_ANSWER);
     if (data.error) {
       throw new SignerError(data.error);
     }
@@ -3858,7 +3860,7 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Sign cancel failed: HTTP ${response.status}`);
     }
 
-    const data = await readPlainAnswer<CancelSignResponse>(response, CANCEL_ANSWER);
+    const data = await readSignerAnswer<CancelSignResponse>(response, CANCEL_ANSWER);
     if (data.error) {
       throw new SignerError(data.error);
     }
@@ -3914,7 +3916,7 @@ export class SignerClient {
     if (response.status === 503) throw new SignerUnavailableError(await this.errorMessage(response, "Signer unavailable"));
     if (response.status === 400) throw await this.badRequestError(response);
     if (response.status !== 200) throw await this.signerHTTPError(response, `Component signing failed: HTTP ${response.status}`);
-    const data = await readApprovalAnswer<ComponentResponse & { error?: string }>(
+    const data = await readSignerAnswer<ComponentResponse & { error?: string }>(
       response,
       COMPONENT_ANSWER,
       requestBody.request_id || "",
@@ -3995,7 +3997,7 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Assembly failed: HTTP ${response.status}`);
     }
 
-    const data = await readApprovalAnswer<AssemblyResponse & { error?: string }>(
+    const data = await readSignerAnswer<AssemblyResponse & { error?: string }>(
       response,
       ASSEMBLY_ANSWER,
       requestBody.request_id || "",
@@ -4103,7 +4105,7 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Plan failed: HTTP ${response.status}`);
     }
 
-    let data = await readPlainAnswer<PlanGroupResponse>(response, PLAN_ANSWER);
+    let data = await readSignerAnswer<PlanGroupResponse>(response, PLAN_ANSWER);
 
     if (data.error) {
       throw new SignerError(data.error);
@@ -4370,7 +4372,7 @@ export class SignerClient {
     if (response.status !== 200) {
       throw await refuse(response);
     }
-    return readApprovalAnswer<T>(response, shape, requestId);
+    return readSignerAnswer<T>(response, shape, requestId);
   }
 
   /**

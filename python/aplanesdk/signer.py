@@ -287,6 +287,20 @@ def _check_fault(prefix: str, error: Exception, request_id: str) -> SignerError:
     return _AnswerUnreadError(str(_verification_error(prefix, error)), request_id=request_id)
 
 
+def _fault_after_answer(prefix: str, error: Exception, request_id: str) -> Optional[SignerError]:
+    """The mark for a fault raised after the approval-bearing request
+    request_id answered 200, in a sequence of such requests: an exception that
+    is not the SDK's own error, raised while the answers were checked, used or
+    described, or the next request was built. It is not a refusal, because a
+    signature may be out, so it is that request's lost answer (_check_fault).
+    None when the error passes as it is: a refusal (a SignerError), an error
+    already marked, or any error before a request has answered (request_id
+    empty)."""
+    if not request_id or isinstance(error, SignerError) or _answer_lost(error):
+        return None
+    return _check_fault(prefix, error, request_id)
+
+
 class AuthenticationError(SignerError):
     """The signer refused the request as unauthenticated (HTTP 401): the
     connection did not arrive through an enrolled SSH key."""
@@ -387,7 +401,9 @@ class SignOutcomeUnknownError(SignerError):
         request_id: the sign request's ID, as the signer's audit log records
             it: the /sign request of the ordinary flow, the request whose
             answer was lost in the cosigned sequence (a /sign/component, the
-            /sign/assemble or the primary /sign), or the rotating sign request
+            /sign/assemble or the primary /sign; for a fault between its
+            requests, the last of them that answered), or the rotating sign
+            request
         requests: the /sign request entries that were sent, for the ordinary
             flow
         rotating: the PreparedRotating that was sent to be signed, for a
@@ -624,7 +640,8 @@ _INT64_MAX = (1 << 63) - 1
 def _check_wire_value(value: Any, kind: Any, label: str) -> Any:
     """Check one non-null JSON value against a wire type, as Go's typed
     decoding would, and return it as Go would hold it: a null element of a
-    list or map takes its zero value."""
+    list or map takes its zero value, an object entry an object of zero
+    values."""
     if isinstance(kind, dict):
         if not isinstance(value, dict):
             raise _WireShapeError(f"{label} is not an object")
@@ -636,7 +653,8 @@ def _check_wire_value(value: Any, kind: Any, label: str) -> Any:
         if not isinstance(value, list):
             raise _WireShapeError(f"{label} is not a list")
         return [
-            {} if item is None else _check_wire_value(item, kind[1], f"{label}[{index}]")
+            _zero_object(kind[1]) if item is None
+            else _check_wire_value(item, kind[1], f"{label}[{index}]")
             for index, item in enumerate(value)
         ]
     if kind in ("strs", "ints"):
@@ -684,19 +702,22 @@ _WIRE_TYPE_NAMES = {
 
 
 def _check_wire_shape(data: Dict[str, Any], shape: Dict[str, Any], label: str) -> None:
-    """Check an object's known fields; absent and null fields take their
-    zero values, and unknown fields are ignored, as in Go's decoding. A field
-    sent as null is replaced by its zero value, at every depth, so a null
-    inside a nested object or list entry reads as Go reads it; one left out
-    stays out."""
+    """Check an object's known fields, in place, as Go's decoding reads them:
+    a field left out or sent as null is set to its zero value (_wire_zero),
+    at every depth, so every declared field is present once read, in the
+    answer and in every object nested in it; unknown fields are ignored."""
     for name, kind in shape.items():
-        if name not in data:
-            continue
-        value = data[name]
+        value = data.get(name)
         if value is None:
             data[name] = _wire_zero(kind)
         else:
             data[name] = _check_wire_value(value, kind, f"{label} field {name}")
+
+
+def _zero_object(shape: Dict[str, Any]) -> Dict[str, Any]:
+    """An object of shape with every field at its zero value: what Go holds
+    for a null entry in a list of objects."""
+    return {name: _wire_zero(kind) for name, kind in shape.items()}
 
 
 # The wire types of the approval-bearing answers (pkg/signerapi in aplane).
@@ -984,8 +1005,8 @@ def _read_answer(resp: requests.Response, shape: Dict[str, Any], what: str) -> D
 
 
 def _wire_zero(kind: Any) -> Any:
-    """The zero value of a wire type: None for an object, which Go holds by
-    pointer, and for a value Go holds by pointer."""
+    """The zero value of a wire type: None for an object, which the SDK
+    reads as absent, and for a value Go holds by pointer."""
     if isinstance(kind, dict):
         return None
     if isinstance(kind, tuple) and kind[0] == "ptr":
@@ -998,12 +1019,10 @@ def _wire_zero(kind: Any) -> Any:
 def _typed_answer(data: Dict[str, Any], shape: Dict[str, Any]) -> Dict[str, Any]:
     """The fields of shape, as the Go SDK decodes them into a struct: each of
     its wire type (_WireShapeError otherwise), and one left out or sent as
-    null at its zero value."""
+    null at its zero value, at every depth."""
     answer = {name: data.get(name) for name in shape}
     _check_wire_shape(answer, shape, "answer")
-    return {
-        name: _wire_zero(shape[name]) if value is None else value for name, value in answer.items()
-    }
+    return answer
 
 
 def _rotating_sign_answer(data: Dict[str, Any], request_id: str = "") -> Dict[str, Any]:
@@ -3139,9 +3158,11 @@ def _prepared_sign_request(item: "PreparedTransaction", index: int) -> Dict[str,
 
 
 def _parse_runtime_arg(item: Dict[str, Any]) -> RuntimeArg:
+    # An answer read by its shape holds every field, so an argument whose
+    # type was left out reads it as "": that is bytes, the default.
     return RuntimeArg(
         name=item.get("name", ""),
-        arg_type=item.get("type", "bytes"),
+        arg_type=item.get("type") or "bytes",
         description=item.get("description", ""),
         label=item.get("label", ""),
         required=item.get("required", False),
@@ -4833,8 +4854,8 @@ class SignerClient:
             canonical = _canonical_address(address)
             if canonical is not None and canonical != address:
                 raise SignerError(
-                    f"signer key list refused: key {index} address {address} is not the "
-                    f"canonical spelling of {canonical}"
+                    f'signer key list refused: key {index} address "{address}" is a '
+                    f"non-canonical spelling of address {canonical}"
                 )
         records = [
             KeyInfo(
@@ -4850,7 +4871,8 @@ class SignerClient:
                 bounded_authorization=_parse_bounded_authorization(k.get("bounded_authorization")),
                 is_spending_account=k.get("is_spending_account"),
                 signing_args=_parse_runtime_args(k.get("signing_args")),
-                parameters=k.get("parameters"),
+                # Read by its shape, parameters left out is {}: none.
+                parameters=k.get("parameters") or None,
                 template_provenance_status=k.get("template_provenance_status", ""),
                 template_provenance_note=k.get("template_provenance_note", ""),
             )
@@ -5842,7 +5864,7 @@ class SignerClient:
                         or None,
                         min_items=p.get("min_items", 0),
                         max_items=p.get("max_items", 0),
-                        options=p.get("options"),
+                        options=p.get("options") or None,
                         min=p.get("min"),
                         max=p.get("max"),
                         example=p.get("example", ""),
@@ -5923,10 +5945,10 @@ class SignerClient:
         data = _read_answer(resp, _GENERATE_RESULT_SHAPE, "key generation")
         if data["error"]:
             raise SignerError(data["error"])
+        # Only the address is required: the signer leaves key_type out when
+        # it is empty (omitempty), and the other SDKs accept that.
         if not data["address"]:
             raise SignerError("Key generation response missing address")
-        if not data["key_type"]:
-            raise SignerError("Key generation response missing key_type")
 
         return GenerateResult(
             address=data["address"],
@@ -7764,8 +7786,12 @@ def _request_bounded_primary_passthrough(
     target_resources: Dict[int, Optional[LogicSigResourceUsage]],
     primary_targets: List[Dict[str, Any]],
 ) -> tuple:
+    """Sign the group's ordinary positions with the user signer (/sign) and
+    check each signed one against the frozen group. Returns the response, the
+    passthrough items, and the request's ID ("" when there is no ordinary
+    position, so no request)."""
     if not primary_targets:
-        return None, []
+        return None, [], ""
     primary_by_index = {target["target_index"]: target for target in primary_targets}
     requests_data = []
     for index, txn_hex in enumerate(group_bytes_hex):
@@ -7828,7 +7854,7 @@ def _request_bounded_primary_passthrough(
         # The primary /sign has released its signatures: a fault in checking
         # them leaves the outcome unknown.
         raise _check_fault("verify primary passthrough: ", e, request_id) from e
-    return response, passthrough
+    return response, passthrough, request_id
 
 
 def sign_prepared_cosigned_group(
@@ -7980,45 +8006,61 @@ def sign_prepared_cosigned_group(
             ] or None,
         )
     )
+    # The ID of the last approval-bearing request that answered 200. From the
+    # first answer on, a signature may be out, so a fault in the SDK is not a
+    # refusal: it is marked as that request's lost answer (_fault_after_answer).
+    answered = component_response.request_id
     target_by_index = {target["target_index"]: target for target in targets}
     components: Dict[int, Dict[str, Any]] = {}
-    for component in component_response.components:
-        target = target_by_index.get(component["target_index"])
-        if (target is None or component.get("kind") != COMPONENT_TARGET_KIND_BOUNDED_BASE
-                or component.get("auth_address") != target["cosigned_account"]):
-            raise SignerError(
-                f"signer returned unexpected bounded component target " f"{component['target_index']}"
+    try:
+        for component in component_response.components:
+            target = target_by_index.get(component["target_index"])
+            if (target is None or component.get("kind") != COMPONENT_TARGET_KIND_BOUNDED_BASE
+                    or component.get("auth_address") != target["cosigned_account"]):
+                raise SignerError(
+                    f"signer returned unexpected bounded component target "
+                    f"{component['target_index']}"
+                )
+            if component["target_index"] in components:
+                raise SignerError(
+                    f"signer returned duplicate bounded component target "
+                    f"{component['target_index']}"
+                )
+            components[component["target_index"]] = component
+        for target in targets:
+            if target["target_index"] not in components:
+                raise SignerError(
+                    f"signer returned no bounded component for target index "
+                    f"{target['target_index']}"
+                )
+            # Budget the position on the path the signer named, which only the
+            # signer can choose: whether a rekey target is listed is not public.
+            target_resources[target["target_index"]] = _component_path_resources(
+                target_keys[target["target_index"]],
+                components[target["target_index"]].get("path", ""),
+                f"prepared transaction {target['target_index']}",
             )
-        if component["target_index"] in components:
-            raise SignerError(
-                f"signer returned duplicate bounded component target " f"{component['target_index']}"
-            )
-        components[component["target_index"]] = component
-    for target in targets:
-        if target["target_index"] not in components:
-            raise SignerError(
-                f"signer returned no bounded component for target index "
-                f"{target['target_index']}"
-            )
-        # Budget the position on the path the signer named, which only the
-        # signer can choose: whether a rekey target is listed is not public.
-        target_resources[target["target_index"]] = _component_path_resources(
-            target_keys[target["target_index"]],
-            components[target["target_index"]].get("path", ""),
-            f"prepared transaction {target['target_index']}",
-        )
 
-    primary_response, passthrough = _request_bounded_primary_passthrough(
-        user_client,
-        frozen_group,
-        len(prepared),
-        set(target_by_index),
-        target_resources,
-        primary_targets,
-    )
+        primary_response, passthrough, primary_request_id = _request_bounded_primary_passthrough(
+            user_client,
+            frozen_group,
+            len(prepared),
+            set(target_by_index),
+            target_resources,
+            primary_targets,
+        )
+    except Exception as e:
+        fault = _fault_after_answer("cosigned signing: ", e, answered)
+        if fault is None:
+            raise
+        raise fault from e
+    if primary_request_id:
+        answered = primary_request_id
     # The user side is complete, including ordinary primary positions. Only
     # now may the SDK disclose the frozen group to the cosigner endpoint, and
     # only for the targets that need it: a listed rekey takes no cosigner.
+    # What the caller's resolver raises is its own error, not a fault of the
+    # SDK's, so it passes as it is.
     cosigner_groups: Dict[tuple, Dict[str, Any]] = {}
     for target in targets:
         if not component_needs_cosigner(components[target["target_index"]]):
@@ -8035,82 +8077,93 @@ def sign_prepared_cosigned_group(
                 "indices": [],
             },
         )["indices"].append(target["target_index"])
-    cosigner_component_responses = []
-    cosigner_signatures: Dict[int, Dict[str, str]] = {}
-    for group in cosigner_groups.values():
-        response = group["client"].request_components(
-            _component_request_for_indices(
-                frozen_group,
-                sorted(group["indices"]),
-                group["component_key"],
-                list(range(len(prepared), len(frozen_group))),
-                {
-                    index: request.get("app_call_info")
-                    for index, request in enumerate(requests_data)
-                },
-            )
-        )
-        cosigner_component_responses.append(response)
-        cosigner_signatures.update(_component_signatures_by_index(
-            response,
-            {target["target_index"]: target.get("cosigner_component_key_type") or "" for target in targets},
-        ))
-
-    passthrough.extend(
-        _sign_cosigned_dummies(
-            cast(transaction.Transaction, prepared[0].transaction),
-            _group_id_bytes(planned[0]),
-            planned[len(prepared) :],
-            len(prepared),
-        )
-    )
-    assembly_targets: List[AssemblyTarget] = []
-    for target in targets:
-        index = target["target_index"]
-        component = components[index]
-        cosigner = {"signature": "", "request_id": ""}
-        if component_needs_cosigner(component):
-            found = cosigner_signatures.get(index)
-            if found is None:
-                raise SignerError(f"missing cosigner component signature for target {index}")
-            cosigner = found
-        assembly_targets.append(
-            AssemblyTarget(
-                target_index=index,
-                kind=ASSEMBLY_TARGET_KIND_BOUNDED_COSIGNER,
-                auth_address=component["auth_address"],
-                base_signatures=list(component.get("base_signatures") or []),
-                bounded_runtime_args=dict(component.get("runtime_args") or {}) or None,
-                assembly_receipt=component["assembly_receipt"],
-                base_source_request_id=component_response.request_id,
-                cosigner_signature=cosigner["signature"],
-                cosigner_source_request_id=cosigner["request_id"],
-            )
-        )
-    assembly_response = user_client.request_assemble(
-        AssemblyRequest(
-            request_id=assembly_request_id,
-            group_bytes_hex=list(frozen_group),
-            targets=assembly_targets,
-            passthrough=passthrough,
-        )
-    )
     try:
-        _verify_bounded_assembled_group(frozen_group, assembly_response.signed_group)
-    except SignerError:
-        raise
+        cosigner_component_responses = []
+        cosigner_signatures: Dict[int, Dict[str, str]] = {}
+        for group in cosigner_groups.values():
+            response = group["client"].request_components(
+                _component_request_for_indices(
+                    frozen_group,
+                    sorted(group["indices"]),
+                    group["component_key"],
+                    list(range(len(prepared), len(frozen_group))),
+                    {
+                        index: request.get("app_call_info")
+                        for index, request in enumerate(requests_data)
+                    },
+                )
+            )
+            answered = response.request_id
+            cosigner_component_responses.append(response)
+            cosigner_signatures.update(_component_signatures_by_index(
+                response,
+                {
+                    target["target_index"]: target.get("cosigner_component_key_type") or ""
+                    for target in targets
+                },
+            ))
+
+        passthrough.extend(
+            _sign_cosigned_dummies(
+                cast(transaction.Transaction, prepared[0].transaction),
+                _group_id_bytes(planned[0]),
+                planned[len(prepared) :],
+                len(prepared),
+            )
+        )
+        assembly_targets: List[AssemblyTarget] = []
+        for target in targets:
+            index = target["target_index"]
+            component = components[index]
+            cosigner = {"signature": "", "request_id": ""}
+            if component_needs_cosigner(component):
+                found = cosigner_signatures.get(index)
+                if found is None:
+                    raise SignerError(f"missing cosigner component signature for target {index}")
+                cosigner = found
+            assembly_targets.append(
+                AssemblyTarget(
+                    target_index=index,
+                    kind=ASSEMBLY_TARGET_KIND_BOUNDED_COSIGNER,
+                    auth_address=component["auth_address"],
+                    base_signatures=list(component.get("base_signatures") or []),
+                    bounded_runtime_args=dict(component.get("runtime_args") or {}) or None,
+                    assembly_receipt=component["assembly_receipt"],
+                    base_source_request_id=component_response.request_id,
+                    cosigner_signature=cosigner["signature"],
+                    cosigner_source_request_id=cosigner["request_id"],
+                )
+            )
+        assembly_response = user_client.request_assemble(
+            AssemblyRequest(
+                request_id=assembly_request_id,
+                group_bytes_hex=list(frozen_group),
+                targets=assembly_targets,
+                passthrough=passthrough,
+            )
+        )
+        answered = assembly_response.request_id
+        try:
+            _verify_bounded_assembled_group(frozen_group, assembly_response.signed_group)
+        except SignerError:
+            raise
+        except Exception as e:
+            # The assembly has released the whole group: a fault in checking it
+            # leaves the outcome unknown.
+            raise _check_fault("verify assembled group: ", e, answered) from e
+        return CosignedSignResult(
+            signed_group=list(assembly_response.signed_group),
+            cosigner_component_responses=cosigner_component_responses,
+            primary_sign_response=primary_response,
+            bounded_component_response=component_response,
+            bounded_assembly_response=assembly_response,
+            plan_mutations=plan_response.get("mutations"),
+        )
     except Exception as e:
-        # The assembly has released the whole group: a fault in checking it
-        # leaves the outcome unknown.
-        raise _check_fault("verify assembled group: ", e, assembly_response.request_id) from e
-    return CosignedSignResult(
-        signed_group=list(assembly_response.signed_group),
-        cosigner_component_responses=cosigner_component_responses,
-        primary_sign_response=primary_response,
-        bounded_component_response=component_response,
-        bounded_assembly_response=assembly_response,
-        plan_mutations=plan_response.get("mutations"),
-    )
+        fault = _fault_after_answer("cosigned signing: ", e, answered)
+        if fault is None:
+            raise
+        raise fault from e
 
 
 def simulate_prepared_cosigned_group(

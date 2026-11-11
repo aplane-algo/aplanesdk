@@ -1654,6 +1654,46 @@ describe("alternate spellings of an address", () => {
       }
     });
 
+    it("take an Address of another copy of algosdk as an ABI account argument, by its public key", async () => {
+      const { client, node, paths } = setup();
+      const other = fakeAddress(42);
+      const publicKey = algosdk.decodeAddress(other).publicKey;
+      // Not an instance of this copy's Address class. Its toString names
+      // another account, and is never what the argument is read from.
+      class ForeignAddress {
+        readonly publicKey: Uint8Array;
+        constructor(key: Uint8Array) { this.publicKey = key; }
+        toString(): string { return fakeAddress(43); }
+      }
+      const call = (arg: unknown) => client.prepareAbiAppCall(node, {
+        sender: ordinary, appId: 7, methodSignature: "f(account)void", args: [arg],
+      });
+      for (const arg of [{ publicKey: publicKey.slice(1) }, { publicKey: other }, { publicKey: Array.from(publicKey) }]) {
+        await assert.rejects(call(arg), mentions("ABI account argument", "must be Algorand addresses"));
+      }
+      // Where only an address string is taken, a foreign Address is still
+      // refused, and named as an Address.
+      const foreign = new ForeignAddress(publicKey) as unknown as string;
+      await assert.rejects(
+        client.preparePayment(node, { sender: ordinary, receiver: foreign, amount: 1 }),
+        mentions("receiver must be an address string, not an algosdk Address"),
+      );
+      await assert.rejects(
+        client.prepareAppCall(node, { sender: ordinary, appId: 7, accounts: [foreign] }),
+        mentions("accounts[0] must be an address string, not an algosdk Address"),
+      );
+      assert.deepEqual(paths, [], "the signer was asked about a call with a bad address");
+      for (const arg of [new ForeignAddress(publicKey), { publicKey: Uint8Array.from(publicKey) }]) {
+        assert.ok(!(arg instanceof algosdk.Address), "the foreign address is not this algosdk's Address");
+        const prepared = await call(arg);
+        assert.deepEqual(
+          prepared.transaction.applicationCall?.accounts.map((account) => account.toString()),
+          [other],
+          "the foreign address is read from its public key",
+        );
+      }
+    });
+
     it("resolveAuthAddress never resolves a misspelled rotating account to an ordinary key", async () => {
       const { client } = setup();
       const stage = stageAddress(rotatingTestProgram).toString();

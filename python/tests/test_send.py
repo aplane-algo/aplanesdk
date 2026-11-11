@@ -949,6 +949,103 @@ class TestAFaultAfterTheSignerAnswered:
         assert excinfo.value.request_id == fixture.user.request_ids["/sign"][0]
         assert _caused_by(excinfo.value, self.BOOM) and fixture.cosigner_calls == 0
 
+    def _with_primary(self, fixture):
+        """The fixture's cosigned spend and an ordinary position the user
+        signer signs with /sign."""
+        holder = fake_signer.account(45)
+        fixture.keys.append(key(holder))
+        params = transaction.SuggestedParams(
+            1000, 1, 100, base64.b64encode(bytes(32)).decode(), "testnet-v1.0", flat_fee=True
+        )
+        other = transaction.PaymentTxn(holder, params, fake_signer.test_address(22), 1)
+        return PreparedGroup(
+            [
+                PreparedTransaction(transaction=fixture.txn, auth_address=fixture.bounded),
+                PreparedTransaction(transaction=other, auth_address=holder),
+            ]
+        )
+
+    @pytest.mark.parametrize(
+        "patched,boom,answered",
+        [
+            # Between the base components' answer and the cosigner's request.
+            ("_component_path_resources", TypeError("bad path table"), "user component"),
+            ("_component_request_for_indices", KeyError("targets"), "user component"),
+            # After the cosigner answered: the last answer is the cosigner's.
+            ("_component_signatures_by_index", KeyError("signature"), "cosigner component"),
+            ("_sign_cosigned_dummies", AttributeError("no fee"), "cosigner component"),
+            ("AssemblyTarget", TypeError("bad target"), "cosigner component"),
+        ],
+    )
+    def test_between_the_cosigned_requests(self, fakes, monkeypatch, patched, boom, answered):
+        # A fault between the sequence's requests, once one has answered 200,
+        # is the last answered request's lost answer.
+        fixture = CosignedFixture(fakes)
+        monkeypatch.setattr(f"aplanesdk.signer.{patched}", _raises(boom))
+        with pytest.raises(SignOutcomeUnknownError) as excinfo:
+            self._cosigned_send(fixture)
+        source = fixture.user if answered == "user component" else fixture.cosigner
+        assert excinfo.value.request_id == source.request_ids["/sign/component"][-1]
+        assert excinfo.value.request_id in str(excinfo.value)
+        assert f"the check itself failed with {type(boom).__name__}" in str(excinfo.value)
+        assert _caused_by(excinfo.value, boom)
+        assert "/sign/assemble" not in fixture.user.paths and fixture.node.submissions() == []
+
+    def test_between_the_cosigned_requests_after_the_primary_sign(self, fakes, monkeypatch):
+        # With an ordinary position, the primary /sign is the last answer
+        # before the cosigner is asked.
+        fixture = CosignedFixture(fakes)
+        group = self._with_primary(fixture)
+        monkeypatch.setattr(
+            "aplanesdk.signer._component_request_for_indices", _raises(self.BOOM)
+        )
+        with pytest.raises(SignOutcomeUnknownError) as excinfo:
+            fixture.user_client.send_prepared(
+                fixture.node.client,
+                group,
+                cosigner_client=fixture.cosigner_client,
+                cosigner_component_key="COSIGNER_COMPONENT",
+            )
+        assert excinfo.value.request_id == fixture.user.request_ids["/sign"][0]
+        assert _caused_by(excinfo.value, self.BOOM) and fixture.cosigner_calls == 0
+
+    def test_a_refusal_between_the_cosigned_requests_stays_a_refusal(self, fakes, monkeypatch):
+        fixture = CosignedFixture(fakes)
+        monkeypatch.setattr(
+            "aplanesdk.signer._component_path_resources",
+            _raises(SignerError("signer key publishes no LogicSig resources")),
+        )
+        with pytest.raises(SignerError, match="publishes no LogicSig resources") as excinfo:
+            self._cosigned_send(fixture)
+        assert not isinstance(excinfo.value, SignOutcomeUnknownError)
+        assert type(excinfo.value) is SignerError
+
+    def test_a_fault_before_any_cosigned_answer_is_raised_as_itself(self, fakes, monkeypatch):
+        # Nothing approval-bearing has answered: nothing can be out.
+        fixture = CosignedFixture(fakes)
+        monkeypatch.setattr(
+            "aplanesdk.signer._validate_bounded_target_fees", _raises(self.BOOM)
+        )
+        with pytest.raises(RuntimeError) as excinfo:
+            self._cosigned_send(fixture)
+        assert excinfo.value is self.BOOM
+        assert "/sign/component" not in fixture.user.paths
+
+    def test_a_cosigner_resolver_fault_is_raised_as_itself(self, fakes):
+        # The caller's resolver raised it, not the SDK, so it is no fault of
+        # the sequence's, even after the base components have answered.
+        fixture = CosignedFixture(fakes)
+        with pytest.raises(LookupError, match="no cosigner") as excinfo:
+            fixture.send(cosigner_resolver=_raises(LookupError("no cosigner for this account")))
+        assert not isinstance(excinfo.value, SignerError)
+        assert "/sign/component" in fixture.user.paths and fixture.cosigner_calls == 0
+
+    def test_an_interrupt_between_the_cosigned_requests_is_not_caught(self, fakes, monkeypatch):
+        fixture = CosignedFixture(fakes)
+        monkeypatch.setattr("aplanesdk.signer._sign_cosigned_dummies", _raises(KeyboardInterrupt()))
+        with pytest.raises(KeyboardInterrupt):
+            self._cosigned_send(fixture)
+
     def test_a_cosigned_refusal_stays_a_refusal(self, fakes, monkeypatch):
         fixture = CosignedFixture(fakes)
         monkeypatch.setattr(
@@ -1156,8 +1253,12 @@ class TestAddressSpellings:
         respelled = alternate_spelling(txn.sender)
         keys = [key(holder), key(respelled, SIGNING_FLOW_ROTATING1)]
         signer, node, client = make(fakes, SendSigner(keys))
-        with pytest.raises(SignerError, match=f"key 1 address {respelled} is not the canonical"):
+        with pytest.raises(SignerError) as refused:
             client.list_keys()
+        assert str(refused.value) == (
+            f'signer key list refused: key 1 address "{respelled}" is a non-canonical '
+            f"spelling of address {txn.sender}"
+        )
 
         group = PreparedGroup([PreparedTransaction(transaction=txn, auth_address=holder)])
         with pytest.raises(SignerError, match="signer key list refused") as excinfo:
