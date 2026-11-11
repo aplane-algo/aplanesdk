@@ -432,9 +432,14 @@ Known limits of the reader, beside the Go and Python SDKs:
 
 - Numbers. `JSON.parse` cannot hold a number above 2^53 exactly, so it is
   unreadable, where the Go SDK reads numbers up to 2^64 - 1 and then refuses
-  them; and a number written as `3.0` is read as `3`, because `JSON.parse`
-  does not keep how a number was written. The Python SDK cannot read an
-  integer of more than 4300 digits.
+  them. The exception is a bound the SDK only reports and never computes on:
+  a `/keytypes` creation parameter's `min` and `max`, which a generic LogicSig
+  template may declare up to 2^64 - 1, are read as the number `JSON.parse`
+  gives, rounded above 2^53, so that they cannot make the key type list
+  unreadable (a negative, fractional or non-number value still does). A
+  number written as `3.0` is read as `3`, because `JSON.parse` does not keep
+  how a number was written. The Python SDK cannot read an integer of more
+  than 4300 digits.
 - Duplicate keys. Of two copies of a key the later one wins. The Go SDK keeps
   the earlier value when the later one is null.
 - A UTF-8 byte order mark before the answer is read (fetch's `json()` strips

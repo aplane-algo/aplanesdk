@@ -354,9 +354,9 @@ export interface CreationParam {
   minItems?: number;
   /** Maximum number of items for list parameters */
   maxItems?: number;
-  /** Minimum numeric value */
+  /** Minimum numeric value, for display: above 2^53 it is rounded */
   min?: number;
-  /** Maximum numeric value */
+  /** Maximum numeric value, for display: above 2^53 it is rounded */
   max?: number;
   /** Example value */
   example?: string;
