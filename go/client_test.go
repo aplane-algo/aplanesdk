@@ -10,12 +10,16 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/algorand/go-algorand-sdk/v2/types"
@@ -602,6 +606,66 @@ func TestSignRequestsCancelsApprovalWhenContextCanceled(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("SignRequestsWithContext() did not return")
+	}
+}
+
+// roundTripFunc is an http.RoundTripper that never touches the network.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// recordingClient is a client whose transport records every request handed
+// to it, whatever the request's context, and answers each with body.
+func recordingClient(body string) (*SignerClient, func() []string) {
+	var mu sync.Mutex
+	var paths []string
+	client := &SignerClient{
+		baseURL: "http://signer.invalid",
+		client: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			mu.Lock()
+			paths = append(paths, r.URL.Path)
+			mu.Unlock()
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Request:    r,
+			}, nil
+		})},
+	}
+	return client, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), paths...)
+	}
+}
+
+// A context that has ended before the call hands the transport nothing: no
+// status discovery, no approval request, and no /sign/cancel for a request
+// that was never posted.
+func TestSignRequestsWithEndedContextSendsNothing(t *testing.T) {
+	for _, waitKnown := range []bool{true, false} {
+		t.Run(fmt.Sprintf("approval wait known %v", waitKnown), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				client, paths := recordingClient(`{"success":true,"state":"not_found"}`)
+				if waitKnown {
+					client.cacheApprovalWait(60)
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+
+				_, err := client.SignRequestsWithContext(ctx, signRequestsFor(verifyTestPayment(t, 41, 42, 1)))
+				var lost *lostAnswer
+				if !errors.Is(err, context.Canceled) || errors.As(err, &lost) {
+					t.Fatalf("SignRequestsWithContext() error = %v, want a plain context.Canceled", err)
+				}
+				// Every goroutine the call started has finished or blocked.
+				synctest.Wait()
+				if got := paths(); len(got) != 0 {
+					t.Fatalf("requests sent = %v, want none", got)
+				}
+			})
+		})
 	}
 }
 
