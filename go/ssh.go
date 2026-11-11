@@ -5,6 +5,7 @@ package aplane
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -33,6 +34,39 @@ const (
 	enrollmentSSHUsername = "enroll"
 )
 
+// sshSetupKind says why an SSH connection could not be set up, where a caller
+// must tell the reasons apart.
+type sshSetupKind int
+
+const (
+	// sshSetupConfig: the client's own configuration is unusable: the
+	// identity file cannot be read or parsed, the known hosts file cannot be
+	// loaded, or the host is unknown and trust on first use is off.
+	sshSetupConfig sshSetupKind = iota + 1
+	// sshSetupHostKeyMismatch: the host presented a key other than the one
+	// pinned for it.
+	sshSetupHostKeyMismatch
+)
+
+// sshSetupError marks an SSH setup failure with its kind. It reads as the
+// error it wraps.
+type sshSetupError struct {
+	kind sshSetupKind
+	err  error
+}
+
+func (e *sshSetupError) Error() string { return e.err.Error() }
+func (e *sshSetupError) Unwrap() error { return e.err }
+
+// sshSetupKindOf returns the kind err is marked with, or zero.
+func sshSetupKindOf(err error) sshSetupKind {
+	var setup *sshSetupError
+	if errors.As(err, &setup) {
+		return setup.kind
+	}
+	return 0
+}
+
 // sshTunnel manages an SSH tunnel to the signer.
 type sshTunnel struct {
 	client          *ssh.Client
@@ -41,6 +75,7 @@ type sshTunnel struct {
 	wg              sync.WaitGroup
 	knownHostsPath  string
 	trustOnFirstUse bool
+	closeOnce       sync.Once
 }
 
 // connect establishes an SSH tunnel to the signer. The client's enrolled
@@ -57,18 +92,18 @@ func (t *sshTunnel) connect(
 	// Load SSH private key
 	keyData, err := os.ReadFile(sshKeyPath)
 	if err != nil {
-		return 0, fmt.Errorf("failed to read SSH key: %w", err)
+		return 0, &sshSetupError{kind: sshSetupConfig, err: fmt.Errorf("failed to read SSH key: %w", err)}
 	}
 
 	signer, err := ssh.ParsePrivateKey(keyData)
 	if err != nil {
-		return 0, fmt.Errorf("failed to parse SSH key: %w", err)
+		return 0, &sshSetupError{kind: sshSetupConfig, err: fmt.Errorf("failed to parse SSH key: %w", err)}
 	}
 
 	// Build host key callback (TOFU)
 	hostKeyCallback, err := t.buildHostKeyCallback()
 	if err != nil {
-		return 0, fmt.Errorf("failed to set up host key verification: %w", err)
+		return 0, &sshSetupError{kind: sshSetupConfig, err: fmt.Errorf("failed to set up host key verification: %w", err)}
 	}
 
 	config := &ssh.ClientConfig{
@@ -181,18 +216,20 @@ func dialSSHHandshake(
 	return ssh.NewClient(sshConn, channels, requests), nil
 }
 
-// close closes the SSH tunnel.
+// close closes the SSH tunnel. Closing it again does nothing.
 func (t *sshTunnel) close() {
-	if t.done != nil {
-		close(t.done)
-	}
-	if t.listener != nil {
-		t.listener.Close()
-	}
-	if t.client != nil {
-		t.client.Close()
-	}
-	t.wg.Wait()
+	t.closeOnce.Do(func() {
+		if t.done != nil {
+			close(t.done)
+		}
+		if t.listener != nil {
+			t.listener.Close()
+		}
+		if t.client != nil {
+			t.client.Close()
+		}
+		t.wg.Wait()
+	})
 }
 
 // buildHostKeyCallback returns an ssh.HostKeyCallback implementing TOFU (Trust On First Use).
@@ -221,7 +258,7 @@ func (t *sshTunnel) buildHostKeyCallback() (ssh.HostKeyCallback, error) {
 			if keyErr, ok := err.(*knownhosts.KeyError); ok {
 				if len(keyErr.Want) > 0 {
 					// Key mismatch — possible MITM attack
-					return fmt.Errorf("SSH host key mismatch for %s (possible MITM attack); remove the old key from %s to connect", hostname, t.knownHostsPath)
+					return &sshSetupError{kind: sshSetupHostKeyMismatch, err: fmt.Errorf("SSH host key mismatch for %s (possible MITM attack); remove the old key from %s to connect", hostname, t.knownHostsPath)}
 				}
 				// Host not in known_hosts — fall through to TOFU
 			} else {
@@ -231,12 +268,12 @@ func (t *sshTunnel) buildHostKeyCallback() (ssh.HostKeyCallback, error) {
 
 		// Unknown host
 		if !t.trustOnFirstUse {
-			return fmt.Errorf("unknown SSH host key for %s; pass TrustOnFirstUse for explicit first-use trust, or connect via apshell first to save the host key to %s", hostname, t.knownHostsPath)
+			return &sshSetupError{kind: sshSetupConfig, err: fmt.Errorf("unknown SSH host key for %s; pass TrustOnFirstUse for explicit first-use trust, or connect via apshell first to save the host key to %s", hostname, t.knownHostsPath)}
 		}
 
 		// TOFU enabled — trust and save key
 		if err := t.saveHostKey(hostname, key); err != nil {
-			return fmt.Errorf("failed to save host key: %w", err)
+			return &sshSetupError{kind: sshSetupConfig, err: fmt.Errorf("failed to save host key: %w", err)}
 		}
 		return nil
 	}, nil

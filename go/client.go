@@ -44,6 +44,14 @@ type SignerClient struct {
 	approvalWaitKnown   bool
 
 	maxFeeIncrease atomic.Pointer[uint64]
+
+	// endpoints and endpointOptions are set when the client was created from
+	// a data directory: its endpoint registry, and the connection options it
+	// was created with, for its own cosigner resolver.
+	endpoints        *ClientEndpointRegistry
+	endpointOptions  EndpointCosignerResolverOptions
+	resolverMu       sync.Mutex
+	cosignerResolver *EndpointCosignerResolver
 }
 
 const (
@@ -326,7 +334,32 @@ func FromEnvWithContext(ctx context.Context, opts *FromEnvOptions) (*SignerClien
 		return nil, err
 	}
 	sshOpts := fromEnvSSHOptions(opts, sshPort, endpoint.KnownHostsPath)
-	return ConnectSSHWithContext(ctx, host, endpoint.IdentityFile, sshOpts)
+	client, err := ConnectSSHWithContext(ctx, host, endpoint.IdentityFile, sshOpts)
+	if err != nil {
+		return nil, err
+	}
+	client.endpoints = registry
+	client.endpointOptions = EndpointCosignerResolverOptions{
+		Timeout:         sshOpts.Timeout,
+		SSHSetupTimeout: sshOpts.SSHSetupTimeout,
+		TrustOnFirstUse: sshOpts.TrustOnFirstUse,
+	}
+	return client, nil
+}
+
+// defaultCosignerResolver is the client's own cosigner resolver, over the
+// endpoint registry it was created from, made on first use. It is nil for a
+// client not created from a data directory.
+func (c *SignerClient) defaultCosignerResolver() *EndpointCosignerResolver {
+	if c == nil || c.endpoints == nil {
+		return nil
+	}
+	c.resolverMu.Lock()
+	defer c.resolverMu.Unlock()
+	if c.cosignerResolver == nil {
+		c.cosignerResolver = NewEndpointCosignerResolverFromRegistry(c.endpoints, &c.endpointOptions)
+	}
+	return c.cosignerResolver
 }
 
 // fromEnvSSHOptions carries a FromEnv caller's options over to the SSH
@@ -345,8 +378,15 @@ func fromEnvSSHOptions(opts *FromEnvOptions, sshPort int, knownHostsPath string)
 	return sshOpts
 }
 
-// Close closes the client and any SSH tunnel.
+// Close closes the client and any SSH tunnel, and the connections its own
+// cosigner resolver opened.
 func (c *SignerClient) Close() {
+	c.resolverMu.Lock()
+	resolver := c.cosignerResolver
+	c.resolverMu.Unlock()
+	if resolver != nil {
+		resolver.Close()
+	}
 	if c.sshTunnel != nil {
 		c.sshTunnel.close()
 	}
@@ -581,14 +621,14 @@ func (c *SignerClient) GetKeysResponseWithContext(ctx context.Context) (*KeysRes
 
 	var keysResp keysResponse
 	if err := readAnswer(resp.Body, &keysResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
+		return nil, &unreadableAnswer{err: fmt.Errorf("failed to decode response: %w", err)}
 	}
 	// An address is looked up by its exact text, so an Algorand address the
 	// signer spelled another way would never match the key's account. Any
 	// other text, such as a witness key's ID, is kept as sent.
 	for i, key := range keysResp.Keys {
 		if canonical, ok := alternateAddressSpelling(key.Address); ok {
-			return nil, fmt.Errorf("failed to decode response: key %d address %q is a non-canonical spelling of address %s", i, key.Address, canonical)
+			return nil, &unreadableAnswer{err: fmt.Errorf("failed to decode response: key %d address %q is a non-canonical spelling of address %s", i, key.Address, canonical)}
 		}
 	}
 
@@ -1196,6 +1236,13 @@ func readAnswer(body io.Reader, out any) error {
 	}
 	return json.Unmarshal(raw, out)
 }
+
+// unreadableAnswer marks a 200 answer the SDK could not read, or refused as
+// malformed. It reads as the error it wraps.
+type unreadableAnswer struct{ err error }
+
+func (e *unreadableAnswer) Error() string { return e.err.Error() }
+func (e *unreadableAnswer) Unwrap() error { return e.err }
 
 // lostAnswer marks an approval-bearing request that ended with no usable
 // answer: the exchange failed, or a 200 arrived whose body could not be read.
