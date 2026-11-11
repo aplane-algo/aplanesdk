@@ -389,7 +389,9 @@ looks for the outcome; it is not a rejection. A committed transaction that
 carries a lease is the exception: the node refuses it for its lease, and the
 SDK reports a rejection.
 
-The existing `Sign*` and `Simulate*` calls are unchanged.
+The existing `Sign*` and `Simulate*` calls are unchanged. A `Simulate*`
+result is `Failed` unless the node returned exactly one group result and it
+reports no failure; `FailureMessage` says why.
 
 #### Rotating accounts
 
