@@ -1082,3 +1082,62 @@ def test_the_confirmation_wait_follows_a_node_that_jumps_ahead(fakes):
         client.send_prepared(node.client, prepared_for(txn), wait_rounds=3)
     assert excinfo.value.stage == SEND_STAGE_CONFIRM
     assert node.lookups == 2 and node.waits == ["10"]
+
+
+# -----------------------------------------------------------------------------
+# The prepare helpers' address parameters
+# -----------------------------------------------------------------------------
+
+
+class _NoAlgod:
+    def __getattr__(self, name):
+        raise AssertionError(f"the helper asked algod for {name} before refusing")
+
+
+_SENDER = fake_signer.account(41)
+_OTHER = fake_signer.account(43)
+
+
+@pytest.mark.parametrize(
+    "helper,kwargs,field",
+    [
+        ("prepare_payment", {"sender": _SENDER, "receiver": _OTHER, "amount": 1}, "sender"),
+        ("prepare_payment", {"sender": _SENDER, "receiver": _OTHER, "amount": 1}, "receiver"),
+        (
+            "prepare_asa_transfer",
+            {"sender": _SENDER, "receiver": _OTHER, "asset_id": 7, "amount": 1},
+            "receiver",
+        ),
+        ("prepare_asa_opt_in", {"sender": _SENDER, "asset_id": 7}, "sender"),
+        ("prepare_asa_opt_out", {"sender": _SENDER, "asset_id": 7, "close_to": _OTHER}, "close_to"),
+        ("prepare_account_close", {"sender": _SENDER, "close_to": _OTHER}, "close_to"),
+        ("prepare_rekey", {"sender": _SENDER, "rekey_to": _OTHER}, "rekey_to"),
+        ("prepare_keyreg", {"sender": _SENDER, "mode": "offline"}, "sender"),
+        ("prepare_app_call", {"sender": _SENDER, "app_id": 5}, "sender"),
+        (
+            "prepare_app_deploy",
+            {"sender": _SENDER, "approval_program": b"\x06", "clear_program": b"\x06"},
+            "sender",
+        ),
+    ],
+)
+def test_a_prepare_helper_refuses_an_address_spelled_otherwise(helper, kwargs, field):
+    # As the Go transaction builders do, before anything is asked of algod
+    # or the signer.
+    client = signer_client("http://127.0.0.1:9")
+    kwargs = dict(kwargs, **{field: alternate_spelling(kwargs[field])})
+    with pytest.raises(ValueError, match=f"{field} .* is not the canonical spelling"):
+        getattr(client, helper)(_NoAlgod(), **kwargs)
+
+
+def test_a_rekey_to_a_rotating_account_spelled_otherwise_is_refused(fakes):
+    # Spelled otherwise, the target would not be found by its record, and the
+    # check that refuses a rekey to a rotating account would be skipped.
+    rotating = fake_signer.account(45)
+    signer, node, client = make(
+        fakes, SendSigner([key(_SENDER), key(rotating, SIGNING_FLOW_ROTATING1)])
+    )
+    with pytest.raises(SignerError, match="rotating account"):
+        client.prepare_rekey(node.client, sender=_SENDER, rekey_to=rotating)
+    with pytest.raises(ValueError, match="not the canonical spelling"):
+        client.prepare_rekey(node.client, sender=_SENDER, rekey_to=alternate_spelling(rotating))

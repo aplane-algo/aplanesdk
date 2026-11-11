@@ -4686,6 +4686,8 @@ class SignerClient:
             raise ValueError("sender is required")
         if not receiver:
             raise ValueError("receiver is required")
+        _require_canonical_address(sender, "sender")
+        _require_canonical_address(receiver, "receiver")
         amount = _require_uint(amount, "amount")
 
         params = algod_client.suggested_params()
@@ -4746,6 +4748,8 @@ class SignerClient:
             raise ValueError("sender is required")
         if not receiver:
             raise ValueError("receiver is required")
+        _require_canonical_address(sender, "sender")
+        _require_canonical_address(receiver, "receiver")
         if asset_id is None:
             raise ValueError("asset_id is required")
         asset_id = _require_uint(asset_id, "asset_id", positive=True)
@@ -4818,6 +4822,7 @@ class SignerClient:
             raise ValueError("algod_client is required")
         if not sender:
             raise ValueError("sender is required")
+        _require_canonical_address(sender, "sender")
         if asset_id is None:
             raise ValueError("asset_id is required")
         asset_id = _require_uint(asset_id, "asset_id", positive=True)
@@ -4862,6 +4867,8 @@ class SignerClient:
             raise ValueError("sender is required")
         if not close_to:
             raise ValueError("close_to is required")
+        _require_canonical_address(sender, "sender")
+        _require_canonical_address(close_to, "close_to")
         if sender == close_to:
             raise ValueError("close_to must differ from sender")
         if asset_id is None:
@@ -4907,6 +4914,8 @@ class SignerClient:
             raise ValueError("sender is required")
         if not close_to:
             raise ValueError("close_to is required")
+        _require_canonical_address(sender, "sender")
+        _require_canonical_address(close_to, "close_to")
         if sender == close_to:
             raise ValueError("close_to must differ from sender")
 
@@ -4949,6 +4958,8 @@ class SignerClient:
             raise ValueError("sender is required")
         if not rekey_to:
             raise ValueError("rekey_to is required")
+        _require_canonical_address(sender, "sender")
+        _require_canonical_address(rekey_to, "rekey_to")
 
         params = algod_client.suggested_params()
         _apply_prep_fee(params, fee)
@@ -5013,6 +5024,7 @@ class SignerClient:
             raise ValueError("algod_client is required")
         if not sender:
             raise ValueError("sender is required")
+        _require_canonical_address(sender, "sender")
         votefst, votelst, votekd = (
             None if number is None else _require_uint(number, field_name)
             for field_name, number in (("votefst", votefst), ("votelst", votelst), ("votekd", votekd))
@@ -5210,6 +5222,7 @@ class SignerClient:
             raise ValueError("algod_client is required")
         if not sender:
             raise ValueError("sender is required")
+        _require_canonical_address(sender, "sender")
         if app_id is None:
             raise ValueError("app_id is required")
         app_id = _require_uint(app_id, "app_id", positive=True)
@@ -5283,6 +5296,7 @@ class SignerClient:
             raise ValueError("algod_client is required")
         if not sender:
             raise ValueError("sender is required")
+        _require_canonical_address(sender, "sender")
         if not approval_program:
             raise ValueError("approval_program is required")
         if not clear_program:
