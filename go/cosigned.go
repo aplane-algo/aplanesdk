@@ -272,7 +272,7 @@ func requestCosignerComponentSignatures(ctx context.Context, opts cosignerReques
 				return nil, err
 			}
 		}
-		key := cosignerSignGroupKey{client: cosigner.client, componentKey: cosigner.componentKey}
+		key := cosignerSignGroupKey(cosigner)
 		groups[key] = append(groups[key], target.TargetIndex)
 	}
 
