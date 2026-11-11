@@ -30,6 +30,20 @@ from .signer import (
     sign_prepared_cosigned_group,
     simulate_prepared_cosigned_group,
 
+    # Unified sending and rotating accounts
+    SendResult,
+    RotatingSendDetails,
+    PreparedRotating,
+    RotatingSignResult,
+    DEFAULT_SEND_WAIT_ROUNDS,
+    SEND_OUTCOME_SUBMITTED,
+    SEND_OUTCOME_CONFIRMED,
+    SEND_STAGE_SUBMIT,
+    SEND_STAGE_CONFIRM,
+    ROTATING_MAX_VALIDITY_WINDOW,
+    ROTATING_MAX_LEAD,
+    ROTATING_MIN_REMAINING,
+
     # Enrollment
     request_enrollment,
     request_enrollment_from_env,
@@ -55,6 +69,7 @@ from .signer import (
     ERR_CODE_ROTATING_SIGNING_REQUIRED,
     ERR_CODE_ROTATING_STAGE_UNPROVEN,
     ERR_CODE_ROTATING_STAGE_CHANGED,
+    ERR_CODE_ROTATING_WINDOW_NOT_CURRENT,
     SignerError,
     MaxFeeIncreaseError,
     AuthenticationError,
@@ -67,6 +82,12 @@ from .signer import (
     LogicSigRejectedError,
     InsufficientFundsError,
     InvalidTransactionError,
+    UnsupportedSigningFlowError,
+    UnsupportedGroupError,
+    SignOutcomeUnknownError,
+    SubmissionRejectedError,
+    SubmissionUncertainError,
+    RotatingPreflightError,
 
     # Types
     RuntimeArg,
@@ -141,6 +162,20 @@ __all__ = [
     "sign_prepared_cosigned_group",
     "simulate_prepared_cosigned_group",
 
+    # Unified sending and rotating accounts
+    "SendResult",
+    "RotatingSendDetails",
+    "PreparedRotating",
+    "RotatingSignResult",
+    "DEFAULT_SEND_WAIT_ROUNDS",
+    "SEND_OUTCOME_SUBMITTED",
+    "SEND_OUTCOME_CONFIRMED",
+    "SEND_STAGE_SUBMIT",
+    "SEND_STAGE_CONFIRM",
+    "ROTATING_MAX_VALIDITY_WINDOW",
+    "ROTATING_MAX_LEAD",
+    "ROTATING_MIN_REMAINING",
+
     # Enrollment
     "request_enrollment",
     "request_enrollment_from_env",
@@ -166,6 +201,7 @@ __all__ = [
     "ERR_CODE_ROTATING_SIGNING_REQUIRED",
     "ERR_CODE_ROTATING_STAGE_UNPROVEN",
     "ERR_CODE_ROTATING_STAGE_CHANGED",
+    "ERR_CODE_ROTATING_WINDOW_NOT_CURRENT",
     "SignerError",
     "MaxFeeIncreaseError",
     "AuthenticationError",
@@ -178,6 +214,12 @@ __all__ = [
     "LogicSigRejectedError",
     "InsufficientFundsError",
     "InvalidTransactionError",
+    "UnsupportedSigningFlowError",
+    "UnsupportedGroupError",
+    "SignOutcomeUnknownError",
+    "SubmissionRejectedError",
+    "SubmissionUncertainError",
+    "RotatingPreflightError",
 
     # Types
     "RuntimeArg",

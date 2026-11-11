@@ -135,9 +135,43 @@ BOUNDED_CONTRACT_BOUNDED2 = "bounded2"
 BOUNDED_CONTRACT_PLAIN1 = "plain1"
 # Rotating account choreography (/sign/rotating/prepare then
 # /sign/rotating/sign), in which the signer rekeys the account to a fresh
-# stage on every spend. This SDK does not implement it; keys labelled with
-# it must be signed through apshell.
+# stage on every spend. send_prepared runs it; prepare_rotating and
+# sign_prepared_rotating are its steps.
 SIGNING_FLOW_ROTATING1 = "rotating1"
+
+# The rotating1 timing contract (docs/ARCH_SIGNING.md in the aplane repo,
+# "Rotating accounts"). The signer enforces these; the SDK mirrors them to
+# build a suitable window and to refuse an unsuitable one early.
+#
+# The longest last_valid_round - first_valid_round span a rotating account's
+# transaction may have.
+ROTATING_MAX_VALIDITY_WINDOW = 100
+# How far first_valid_round may be ahead of the current round when the signer
+# signs.
+ROTATING_MAX_LEAD = 2
+# The fewest rounds that must remain before last_valid_round when the signer
+# signs.
+ROTATING_MIN_REMAINING = 10
+# How many times one send prepares a rotating spend.
+_ROTATING_SEND_ATTEMPTS = 3
+# Seconds to wait before preparing again after the signer reports it has not
+# found the account's live stage yet. It grows with each attempt.
+_ROTATING_UNPROVEN_BACKOFF = 2.0
+
+# How many rounds send_prepared waits for a submitted group to confirm when
+# wait_rounds is zero.
+DEFAULT_SEND_WAIT_ROUNDS = 10
+# How far a send got on the network. "submitted": the node accepted the
+# group, and this call did not see it in a block (no_wait only). "confirmed":
+# the group was seen in a block.
+SEND_OUTCOME_SUBMITTED = "submitted"
+SEND_OUTCOME_CONFIRMED = "confirmed"
+# Where a send's outcome became uncertain (SubmissionUncertainError.stage).
+# "submit": the submission's answer never arrived, so the node may or may not
+# have the group. "confirm": the node accepted the group, and it was not seen
+# in a block within the wait.
+SEND_STAGE_SUBMIT = "submit"
+SEND_STAGE_CONFIRM = "confirm"
 
 KEY_TYPE_WITNESS_FALCON1024 = "aplane.witness-falcon1024.v1"
 
@@ -173,12 +207,17 @@ ERR_CODE_BOUNDED_COSIGNER_REQUIRED = "bounded_cosigner_required"
 # The account refuses every rekey but one to an address on its rekey-to list,
 # and the target is not on it.
 ERR_CODE_BOUNDED_REKEY_TARGET_NOT_LISTED = "bounded_rekey_target_not_listed"
-# A rotating account (rotating1) was sent to an ordinary signing endpoint.
+# A rotating account (rotating1) was sent to an ordinary signing endpoint. Use
+# send_prepared, or prepare_rotating and sign_prepared_rotating.
 ERR_CODE_ROTATING_SIGNING_REQUIRED = "rotating_signing_required"
 # 409, temporary: the signer has not yet found the account's live stage.
 ERR_CODE_ROTATING_STAGE_UNPROVEN = "rotating_stage_unproven"
 # 409: the account's authorizer moved between prepare and sign; nothing was signed.
 ERR_CODE_ROTATING_STAGE_CHANGED = "rotating_stage_changed"
+# 409: the spend's validity window is not acceptable at the round the signer
+# read. This attempt released no signature; rebuild the validity rounds and
+# prepare again.
+ERR_CODE_ROTATING_WINDOW_NOT_CURRENT = "rotating_window_not_current"
 
 
 class SignerError(Exception):
@@ -303,6 +342,142 @@ class InvalidTransactionError(TransactionRejectedError):
     """Transaction is malformed or invalid."""
 
     pass
+
+
+class UnsupportedSigningFlowError(SignerError):
+    """A key in the group needs a signing flow this SDK version cannot run.
+    Raised by send_prepared before any signature is requested."""
+
+    pass
+
+
+class UnsupportedGroupError(SignerError):
+    """The group is one unified sending does not cover, such as a pre-signed
+    or foreign position, or a rotating account's transaction in a group.
+    Raised before any signature is requested; the lower-level signing calls
+    still handle such groups."""
+
+    pass
+
+
+class SignOutcomeUnknownError(SignerError):
+    """A signing exchange ended with no usable answer: a /sign request, or an
+    approval-bearing step of the cosigned or rotating sequence. The signer may
+    or may not have released a signature. Nothing was submitted by the call.
+
+    Do not build and sign a replacement transaction on the strength of this
+    error alone: check the request with the operator or the signer's audit log
+    first.
+
+    Attributes:
+        error: the failure that ended the exchange
+        request_id: the sign request's ID, as the signer's audit log records
+            it; set for the ordinary /sign flow and for a rotating account
+        requests: the /sign request entries that were sent, for the ordinary
+            flow
+        rotating: the PreparedRotating that was sent to be signed, for a
+            rotating account. Calling sign_prepared_rotating with it again asks
+            for the same transaction and is the safe recovery.
+    """
+
+    def __init__(
+        self,
+        error: BaseException,
+        request_id: str = "",
+        requests: Optional[List[Dict[str, Any]]] = None,
+        rotating: Optional["PreparedRotating"] = None,
+    ):
+        if request_id:
+            message = (
+                f"sign request {request_id}: no answer from the signer, so a signature "
+                f"may have been released: {error}"
+            )
+        else:
+            message = (
+                f"signing ended with no answer, so a signature may have been released: {error}"
+            )
+        super().__init__(message)
+        self.error = error
+        self.request_id = request_id
+        self.requests = requests
+        self.rotating = rotating
+
+    def __reduce__(self) -> tuple:
+        # Exceptions pickle and copy by calling the class with the message
+        # alone; this one is built from its fields.
+        return (self.__class__, (self.error, self.request_id, self.requests, self.rotating))
+
+
+def _first_or_empty(values: List[str]) -> str:
+    return values[0] if values else ""
+
+
+class SubmissionRejectedError(SignerError):
+    """The network refused the signed group: the node rejected it on
+    submission, or dropped it from its pool.
+
+    Attributes:
+        signed_group: the signed bytes, hex msgpack, in group order
+        tx_ids: their transaction IDs
+        error: the node's refusal
+    """
+
+    def __init__(self, signed_group: List[str], tx_ids: List[str], error: BaseException):
+        super().__init__(f"network rejected transaction {_first_or_empty(tx_ids)}: {error}")
+        self.signed_group = list(signed_group)
+        self.tx_ids = list(tx_ids)
+        self.error = error
+
+    def __reduce__(self) -> tuple:
+        return (self.__class__, (self.signed_group, self.tx_ids, self.error))
+
+
+class SubmissionUncertainError(SignerError):
+    """A signed group this call did not see confirmed or refused. It may
+    still confirm. Look its IDs up, or submit the same signed_group again
+    (submit_signed_group) while it is valid; never sign a replacement until
+    the outcome is known, because both could execute.
+
+    Attributes:
+        stage: SEND_STAGE_SUBMIT or SEND_STAGE_CONFIRM
+        signed_group: the signed bytes, hex msgpack, in group order
+        tx_ids: their transaction IDs
+        error: what ended the call
+    """
+
+    def __init__(
+        self, stage: str, signed_group: List[str], tx_ids: List[str], error: BaseException
+    ):
+        super().__init__(
+            f"outcome of transaction {_first_or_empty(tx_ids)} is unknown ({stage}): {error}"
+        )
+        self.stage = stage
+        self.signed_group = list(signed_group)
+        self.tx_ids = list(tx_ids)
+        self.error = error
+
+    def __reduce__(self) -> tuple:
+        return (self.__class__, (self.stage, self.signed_group, self.tx_ids, self.error))
+
+
+class RotatingPreflightError(SignerError):
+    """A prepared rotating group failed its unsigned simulation, or the node
+    returned no result for it. Nothing was signed.
+
+    Attributes:
+        prepared: the PreparedRotating that was simulated
+        message: the node's failure message
+    """
+
+    def __init__(self, prepared: "PreparedRotating", message: str):
+        super().__init__(
+            f"prepared rotating group failed simulation; nothing was signed: {message}"
+        )
+        self.prepared = prepared
+        self.message = message
+
+    def __reduce__(self) -> tuple:
+        return (self.__class__, (self.prepared, self.message))
 
 
 class _AnswerLostError(SignerUnavailableError):
@@ -818,8 +993,8 @@ class AssemblyResponse:
 @dataclass
 class RotatingPrepareRequest:
     """Request payload for /sign/rotating/prepare: one unsigned, ungrouped,
-    TX-prefixed transaction from a rotating account. The SDK carries the wire
-    shape only; it does not drive the rotating flow."""
+    TX-prefixed transaction from a rotating account. prepare_rotating sends
+    it."""
 
     account: str
     txn_bytes_hex: str
@@ -903,6 +1078,75 @@ class CosignedSimulationResult:
 
     signing: CosignedSignResult
     simulation: SimulationResult
+
+
+@dataclass
+class RotatingSendDetails:
+    """The rotation a rotating account's send performed."""
+
+    # stage signed the spend and target, stage + 1, now controls the account.
+    stage: int
+    target: int
+    # target's address, as the signer reported it.
+    rekey_to: str
+    # How many times the spend was prepared.
+    attempts: int
+    # The transaction that was prepared: the one supplied, with its validity
+    # rounds rebuilt if the send was allowed to.
+    transaction: transaction.Transaction
+    # The sign request that released the signature.
+    request_id: str
+
+
+@dataclass
+class SendResult:
+    """A group that was signed and submitted. Every value is computed from the
+    signed bytes, after they were checked against the request."""
+
+    # The signing flow the group took: "" for the ordinary /sign flow,
+    # SIGNING_FLOW_COSIGNED1 or SIGNING_FLOW_ROTATING1.
+    flow: str = ""
+    # The exact group submitted, hex msgpack, in order. The first
+    # original_count entries are the caller's transactions, in the order
+    # given; the rest are resource dummies the signer appended.
+    signed_group: List[str] = field(default_factory=list)
+    original_count: int = 0
+    # The IDs of the signed transactions, in signed_group order. A signer may
+    # raise a fee or assign a group, so these can differ from the IDs of the
+    # transactions the caller prepared.
+    tx_ids: List[str] = field(default_factory=list)
+    # The group's ID in base64, or "" for a lone transaction.
+    group_id: str = ""
+    # The fees the signed transactions pay, in microAlgos.
+    fees: List[int] = field(default_factory=list)
+    # The signer's report of what it changed (snake_case wire keys), checked
+    # against the signed bytes. None when it changed nothing.
+    mutations: Optional[Dict[str, Any]] = None
+    # How far the group got: SEND_OUTCOME_SUBMITTED or SEND_OUTCOME_CONFIRMED.
+    # confirmed_round is zero unless outcome is SEND_OUTCOME_CONFIRMED.
+    outcome: str = ""
+    confirmed_round: int = 0
+    # The component responses of a cosigned send.
+    cosigned: Optional[CosignedSignResult] = None
+    # The rotation a rotating account's send performed.
+    rotating: Optional[RotatingSendDetails] = None
+
+
+@dataclass
+class RotatingSignResult:
+    """A signed rotating group, checked against the prepared one. Submit it
+    promptly: the stage's one-time keys are revealed until this transaction
+    or a later rotation confirms."""
+
+    # The signed group, hex msgpack, in prepared order.
+    signed_group: List[str]
+    stage: int
+    target: int
+    # Computed from the prepared bytes; the signer's own report of them was
+    # checked against these.
+    txid: str
+    group_id: str
+    request_id: str = ""
 
 
 @dataclass
@@ -1001,12 +1245,21 @@ class PreparedGroup:
 
 @dataclass
 class ResolvedAuthAddress:
-    """Effective signer information for one account."""
+    """Effective signer information for one account.
+
+    ``auth_address`` is the account whose key signs: the address itself, the
+    address it is rekeyed to, or, for a rotating account, the account itself
+    at every stage. ``chain_auth_address`` is the auth address the chain
+    reports, empty when the account signs for itself. For a rotating account
+    that has rotated it is the current stage's address, which the signer does
+    not list as a key; ``auth_address`` stays the account.
+    """
 
     address: str
     auth_address: str
     is_rekeyed: bool
     key_info: KeyInfo
+    chain_auth_address: str = ""
 
 
 @dataclass
@@ -3585,6 +3838,21 @@ class _SSHTunnel:
             self._transport = None
 
 
+@dataclass
+class _SendOptions:
+    """The options of send_prepared and its conveniences."""
+
+    no_wait: bool = False
+    wait_rounds: int = 0
+    refresh_validity: bool = False
+    cosigner_client: Optional["SignerClient"] = None
+    cosigner_component_key: str = ""
+    cosigner_resolver: Optional[Any] = None
+
+    def __post_init__(self) -> None:
+        self.wait_rounds = _require_uint(self.wait_rounds, "wait_rounds")
+
+
 class SignerClient:
     """
     Client for apsigner signing service.
@@ -4078,10 +4346,27 @@ class SignerClient:
         if auth_addr and auth_addr != address:
             signing_addr = auth_addr
 
-        key_info = _find_spendable_key(
-            self.list_keys_if_keyset_changed(),
-            signing_addr,
+        keys = self.list_keys_if_keyset_changed()
+
+        # A rotating account is authorized by its current stage, which the
+        # signer derives from the account's key and never lists. The signer
+        # holds the account itself and signs for it at any stage. One
+        # exception: a rotating account rekeyed to an ordinary key the signer
+        # holds has left rotation, and that key signs for it like any rekey.
+        own = _find_spendable_key(keys, address)
+        left_rotation = (
+            signing_addr != address and _find_spendable_key(keys, signing_addr) is not None
         )
+        if own is not None and own.signing_flow == SIGNING_FLOW_ROTATING1 and not left_rotation:
+            return ResolvedAuthAddress(
+                address=address,
+                auth_address=address,
+                is_rekeyed=False,
+                key_info=own,
+                chain_auth_address=auth_addr if auth_addr != address else "",
+            )
+
+        key_info = _find_spendable_key(keys, signing_addr)
         if key_info is None:
             if signing_addr == address:
                 raise KeyNotFoundError(f"{address} is not available for signing")
@@ -4094,7 +4379,22 @@ class SignerClient:
             auth_address=signing_addr,
             is_rekeyed=signing_addr != address,
             key_info=key_info,
+            chain_auth_address=signing_addr if signing_addr != address else "",
         )
+
+    def _fit_rotating_window(self, txn: transaction.Transaction, sender: str) -> None:
+        """Shorten a rotating sender's validity window to what its stage
+        program accepts, so every prepare_* helper builds a transaction a
+        rotating account can send.
+
+        It is called after resolve_auth_address, whose inventory read it
+        reuses: it asks the signer nothing, so it reports no signer failure.
+        """
+        own = _find_spendable_key(list(self._key_cache.values()), sender)
+        if own is None or own.signing_flow != SIGNING_FLOW_ROTATING1:
+            return
+        if txn.last_valid_round - txn.first_valid_round > ROTATING_MAX_VALIDITY_WINDOW:
+            txn.last_valid_round = txn.first_valid_round + ROTATING_MAX_VALIDITY_WINDOW
 
     def prepare_payment(
         self,
@@ -4137,6 +4437,7 @@ class SignerClient:
             raise SignerError(f"insufficient funds: available {available}, required {required}")
 
         resolved = self.resolve_auth_address(sender, lambda _: sender_info)
+        self._fit_rotating_window(txn, sender)
         return PreparedTransaction(
             transaction=txn,
             auth_address=resolved.auth_address,
@@ -4215,6 +4516,7 @@ class SignerClient:
             )
 
         resolved = self.resolve_auth_address(sender, lambda _: sender_info)
+        self._fit_rotating_window(txn, sender)
         return PreparedTransaction(
             transaction=txn,
             auth_address=resolved.auth_address,
@@ -4267,6 +4569,7 @@ class SignerClient:
         # The suggested fee is per byte, usually zero, and would check nothing.
         checks = _asa_opt_in_checks(sender_info, asset_id, int(txn.fee))
         resolved = self.resolve_auth_address(sender, lambda _: sender_info)
+        self._fit_rotating_window(txn, sender)
         return PreparedTransaction(
             transaction=txn,
             auth_address=resolved.auth_address,
@@ -4312,6 +4615,7 @@ class SignerClient:
             note=note,
         )
         resolved = self.resolve_auth_address(sender, lambda _: sender_info)
+        self._fit_rotating_window(txn, sender)
         return PreparedTransaction(
             transaction=txn,
             auth_address=resolved.auth_address,
@@ -4353,6 +4657,7 @@ class SignerClient:
         # suggested per-byte fee.
         checks = _account_close_checks(sender_info, int(txn.fee))
         resolved = self.resolve_auth_address(sender, lambda _: sender_info)
+        self._fit_rotating_window(txn, sender)
         return PreparedTransaction(
             transaction=txn,
             auth_address=resolved.auth_address,
@@ -4393,6 +4698,7 @@ class SignerClient:
             rekey_to=rekey_to,
         )
         resolved = self.resolve_auth_address(sender, lambda _: sender_info)
+        self._fit_rotating_window(txn, sender)
         # Resolution just refreshed the inventory, so the cache answers for
         # the target without another round trip.
         target = None if rekey_to == sender else self._key_cache.get(rekey_to)
@@ -4505,6 +4811,7 @@ class SignerClient:
                 incentive_fee_charged=charge_incentive_fee,
             )
         resolved = self.resolve_auth_address(sender, lambda _: sender_info)
+        self._fit_rotating_window(txn, sender)
         return PreparedTransaction(
             transaction=txn,
             auth_address=resolved.auth_address,
@@ -4666,6 +4973,7 @@ class SignerClient:
         )
 
         resolved = self.resolve_auth_address(sender, lambda _: sender_info)
+        self._fit_rotating_window(txn, sender)
         return PreparedTransaction(
             transaction=txn,
             auth_address=resolved.auth_address,
@@ -4739,6 +5047,7 @@ class SignerClient:
             boxes=boxes,
         )
         resolved = self.resolve_auth_address(sender, lambda _: sender_info)
+        self._fit_rotating_window(txn, sender)
         return PreparedTransaction(
             transaction=txn,
             auth_address=resolved.auth_address,
@@ -5327,6 +5636,19 @@ class SignerClient:
             self._best_effort_cancel_sign_request(request_id)
             raise _AnswerLostError(f"Failed to connect: {e}") from e
 
+    def _signing_http_error(self, resp: requests.Response, operation: str) -> SignerError:
+        """Classify a non-200 answer of a signing endpoint, keeping its code."""
+        if resp.status_code == 401:
+            return AuthenticationError("Not authenticated: connect through an enrolled SSH key")
+        if resp.status_code == 400:
+            return self._bad_request_error(resp)
+        if resp.status_code == 403:
+            return self._forbidden_rejected_error(resp, f"{operation}: request rejected")
+        code, message = self._error_parts(resp, f"HTTP {resp.status_code}")
+        if resp.status_code == 503:
+            return SignerUnavailableError(message, code=code)
+        return SignerError(f"{operation}: {message}", code=code)
+
     def _build_sign_requests(
         self,
         txns: List[Optional[transaction.Transaction]],
@@ -5914,6 +6236,552 @@ class SignerClient:
             txns, auth_addresses, lsig_args_map, passthrough, lsig_resources, request_id=request_id
         )
 
+    # -------------------------------------------------------------------------
+    # Unified sending
+    # -------------------------------------------------------------------------
+
+    def send_prepared(
+        self,
+        algod_client: Any,
+        group: Any,
+        *,
+        no_wait: bool = False,
+        wait_rounds: int = 0,
+        refresh_validity: bool = False,
+        cosigner_client: Optional["SignerClient"] = None,
+        cosigner_component_key: str = "",
+        cosigner_resolver: Optional[Any] = None,
+    ) -> SendResult:
+        """Sign a prepared transaction or group, check it, submit it, track it.
+
+        The signing flow is chosen from the signer's own record of each key,
+        never from the caller. A group of ordinary and bounded accounts goes
+        through /sign; a group with a cosigned account goes through the
+        cosigned sequence, which needs ``cosigner_client`` (with
+        ``cosigner_component_key``) or ``cosigner_resolver`` when a position
+        requires the cosigner's signature. A rotating account's transaction,
+        which must be alone and ungrouped, goes through the rotating
+        sequence: prepare, check, simulate unsigned, then sign. A rotating
+        account is signed for by another key only when the chain says it is
+        rekeyed to that key. An unknown flow, or a pre-signed or foreign
+        position, is refused before anything is signed.
+
+        Every position must be one whose key this signer holds, and must name
+        it in ``auth_address``, as the prepare_* helpers do. The signed result
+        is checked against what was prepared, exactly those bytes are
+        submitted, and by default the call waits for confirmation.
+
+        Args:
+            algod_client: the algod client to submit through
+            group: a PreparedGroup, or one PreparedTransaction
+            no_wait: return as soon as the node accepts the group, with
+                outcome SEND_OUTCOME_SUBMITTED, instead of waiting for
+                confirmation
+            wait_rounds: how many further rounds to wait for confirmation;
+                zero means DEFAULT_SEND_WAIT_ROUNDS (10)
+            refresh_validity: let a rotating account's send rebuild the
+                transaction's validity rounds when they are stale or the
+                window is too long. That changes the transaction's ID, so it
+                is off by default; do not set it when something outside the
+                transaction, such as an app argument or a proof, binds its
+                rounds. Other accounts ignore it.
+            cosigner_client, cosigner_component_key, cosigner_resolver: a
+                cosigned account's cosigner, used only when a position needs
+                one. The caller owns these clients; a send never closes them.
+
+        Raises:
+            UnsupportedSigningFlowError, UnsupportedGroupError,
+            KeyNotFoundError: refused before any signature is requested.
+            SignOutcomeUnknownError: an approval-bearing request ended with
+                no answer; a signature may have been released.
+            SubmissionRejectedError, SubmissionUncertainError: the group was
+                signed; the error keeps the signed bytes and their IDs.
+            RotatingPreflightError: a rotating spend failed its unsigned
+                simulation; nothing was signed.
+            SignerError: the signer refused, or the SDK refused the signer's
+                answer (MaxFeeIncreaseError among them); nothing was
+                submitted.
+
+        A rotating send may prepare and seek approval again, a bounded number
+        of times, when the signer says an attempt released no signature. No
+        send ever builds a replacement for a transaction whose outcome is
+        unknown.
+        """
+        options = _SendOptions(
+            no_wait=no_wait,
+            wait_rounds=wait_rounds,
+            refresh_validity=refresh_validity,
+            cosigner_client=cosigner_client,
+            cosigner_component_key=cosigner_component_key,
+            cosigner_resolver=cosigner_resolver,
+        )
+        return self._send_prepared(algod_client, group, options, intent_built=False)
+
+    def send_payment(
+        self,
+        algod_client: Any,
+        *,
+        sender: str,
+        receiver: str,
+        amount: int,
+        note: Optional[bytes] = None,
+        fee: Optional[int] = None,
+        no_wait: bool = False,
+        wait_rounds: int = 0,
+        cosigner_client: Optional["SignerClient"] = None,
+        cosigner_component_key: str = "",
+        cosigner_resolver: Optional[Any] = None,
+    ) -> SendResult:
+        """Build an ALGO payment with prepare_payment, then sign, submit and
+        track it with send_prepared. It works the same way for every account
+        type send_prepared supports. ``amount`` and ``fee`` are in
+        microAlgos.
+
+        The SDK built the transaction, so a rotating account's send may
+        rebuild its validity rounds without refresh_validity being set.
+        """
+        options = _SendOptions(
+            no_wait=no_wait,
+            wait_rounds=wait_rounds,
+            cosigner_client=cosigner_client,
+            cosigner_component_key=cosigner_component_key,
+            cosigner_resolver=cosigner_resolver,
+        )
+        prepared = self.prepare_payment(
+            algod_client, sender=sender, receiver=receiver, amount=amount, note=note, fee=fee
+        )
+        return self._send_prepared(algod_client, PreparedGroup([prepared]), options, True)
+
+    def submit_signed_group(
+        self,
+        algod_client: Any,
+        signed_group: List[str],
+        *,
+        no_wait: bool = False,
+        wait_rounds: int = 0,
+    ) -> SendResult:
+        """Submit a signed group exactly as given and, unless told not to,
+        wait for confirmation. It signs nothing.
+
+        Use it to submit a group from sign_prepared_rotating, or to submit
+        again the signed_group a SubmissionUncertainError kept: the same bytes
+        can execute only once. Each entry must be one canonically encoded
+        signed transaction, hex msgpack, and a group of several must carry
+        the group ID computed over itself.
+        """
+        if algod_client is None:
+            raise ValueError("algod_client is required")
+        options = _SendOptions(no_wait=no_wait, wait_rounds=wait_rounds)
+        if isinstance(signed_group, (str, bytes)) or not isinstance(signed_group, (list, tuple)):
+            raise ValueError("signed_group must be a list of hex strings")
+        result = SendResult(signed_group=list(signed_group), original_count=len(signed_group))
+        raw = _describe_signed_group(result)
+        _submit_and_track(algod_client, raw, result, options)
+        return result
+
+    def _send_prepared(
+        self,
+        algod_client: Any,
+        group: Any,
+        options: "_SendOptions",
+        intent_built: bool,
+    ) -> SendResult:
+        """send_prepared. intent_built says the SDK built the group's
+        transactions itself, so it may rebuild their validity rounds."""
+        if algod_client is None:
+            raise ValueError("algod_client is required")
+        if isinstance(group, PreparedTransaction):
+            group = PreparedGroup([group])
+        if not isinstance(group, PreparedGroup):
+            raise ValueError("group must be a PreparedGroup or a PreparedTransaction")
+        flow, left_rotation = self._classify_send(group)
+        # A rotating account is signed for by another key only when the chain
+        # says it is rekeyed to that key. Without this a caller could have an
+        # ordinary key sign a rotating account's transaction, outside the
+        # rotating rules: refused by the network today, but signed.
+        for index in left_rotation:
+            item = group.transactions[index]
+            sender = cast(transaction.Transaction, item.transaction).sender
+            try:
+                info = algod_client.account_info(sender)
+            except Exception as e:
+                raise SignerError(
+                    f"prepared transaction {index}: read the authorizer of rotating account "
+                    f"{sender}: {e}"
+                ) from e
+            if _extract_auth_address(info) != item.auth_address:
+                raise UnsupportedGroupError(
+                    f"prepared transaction {index}: it names auth address {item.auth_address}, "
+                    f"but rotating account {sender} is not rekeyed to it"
+                )
+
+        if flow == SIGNING_FLOW_ROTATING1:
+            return self._send_rotating(
+                algod_client,
+                group.transactions[0],
+                options,
+                intent_built or options.refresh_validity,
+            )
+
+        result = SendResult(flow=flow, original_count=len(group.transactions))
+        if flow == SIGNING_FLOW_COSIGNED1:
+            try:
+                signed = sign_prepared_cosigned_group(
+                    user_client=self,
+                    prepared_group=group,
+                    cosigner_client=options.cosigner_client,
+                    cosigner_resolver=options.cosigner_resolver,
+                    cosigner_component_key=options.cosigner_component_key,
+                )
+            except Exception as e:
+                # The sequence makes several approval-bearing requests. One
+                # that ended with no answer may have released a signature, and
+                # the last of them releases the whole group.
+                if _answer_lost(e):
+                    raise SignOutcomeUnknownError(e) from e
+                raise
+            result.signed_group = list(signed.signed_group)
+            result.mutations = copy.deepcopy(signed.plan_mutations)
+            result.cosigned = signed
+        else:
+            response = self._sign_for_send(group)
+            result.signed_group = list(response.signed)
+            result.mutations = copy.deepcopy(response.mutations)
+
+        raw = _describe_signed_group(result)
+        _submit_and_track(algod_client, raw, result, options)
+        return result
+
+    def _classify_send(self, group: PreparedGroup) -> tuple[str, List[int]]:
+        """Pick the one signing flow for the whole group from the signer's
+        records, or refuse a group unified sending does not cover. Nothing has
+        been signed when it returns.
+
+        The second value lists the positions whose sender is a rotating
+        account and which name another held key: the caller must confirm on
+        the chain that the account is rekeyed to that key before anything is
+        signed.
+        """
+        if not group.transactions:
+            raise ValueError("prepared group is empty")
+        keys = self.list_keys_if_keyset_changed()
+        flow = ""
+        left_rotation: List[int] = []
+        for index, item in enumerate(group.transactions):
+            if item.signed_transaction_base64:
+                raise UnsupportedGroupError(
+                    f"prepared transaction {index}: it is already signed; use the lower-level "
+                    "signing calls for a pre-signed position"
+                )
+            if item.transaction is None:
+                raise ValueError(f"prepared transaction {index}: transaction is required")
+            if not item.auth_address:
+                raise UnsupportedGroupError(
+                    f"prepared transaction {index}: it names no auth address, so this signer "
+                    "does not sign it"
+                )
+            auth = item.auth_address
+            # A rotating account is recognised by its own record: once it has
+            # rotated, its on-chain authorizer is a stage address the signer
+            # does not list. It signs alone, and as itself.
+            sender = item.transaction.sender
+            # A position that names another key the signer holds says the
+            # account left rotation for that key. It is routed by that key
+            # once the chain confirms the rekey.
+            names_another_key = auth != sender and _find_spendable_key(keys, auth) is not None
+            own = _find_spendable_key(keys, sender)
+            own_rotating = own is not None and own.signing_flow == SIGNING_FLOW_ROTATING1
+            if own_rotating and names_another_key:
+                left_rotation.append(index)
+            elif own_rotating:
+                if len(group.transactions) != 1:
+                    raise UnsupportedGroupError(
+                        f"prepared transaction {index}: {sender} is a rotating account, which "
+                        "sends one transaction alone; the signer forms its group"
+                    )
+                if auth != sender:
+                    raise UnsupportedGroupError(
+                        f"prepared transaction {index}: it names auth address {auth}, but "
+                        f"{sender} is a rotating account and signs as itself"
+                    )
+                return SIGNING_FLOW_ROTATING1, []
+            key = _find_spendable_key(keys, auth)
+            if key is None:
+                raise KeyNotFoundError(
+                    f"prepared transaction {index}: {auth} is not available for signing"
+                )
+            if key.signing_flow in ("", SIGNING_FLOW_BOUNDED1):
+                continue
+            if key.signing_flow == SIGNING_FLOW_COSIGNED1:
+                flow = SIGNING_FLOW_COSIGNED1
+                continue
+            if key.signing_flow == SIGNING_FLOW_ROTATING1:
+                raise UnsupportedGroupError(
+                    f"prepared transaction {index}: it names rotating account {auth} as the "
+                    "auth address of another sender; a rotating account signs only its own "
+                    "transactions"
+                )
+            raise UnsupportedSigningFlowError(
+                f"prepared transaction {index}: key {auth} requires signing flow "
+                f"{key.signing_flow!r}; upgrade the SDK"
+            )
+        return flow, left_rotation
+
+    def _sign_for_send(self, group: PreparedGroup) -> GroupSignResponse:
+        """The ordinary /sign flow for a send: sign_requests, with an exchange
+        that ended with no usable answer told apart from a refusal."""
+        sign_entries = group.to_sign_requests()
+        request_id = _new_sign_request_id()
+        try:
+            return self.sign_requests(sign_entries, request_id=request_id)
+        except SignerError as e:
+            if _answer_lost(e):
+                raise SignOutcomeUnknownError(
+                    e, request_id=request_id, requests=sign_entries
+                ) from e
+            raise
+
+    # -------------------------------------------------------------------------
+    # Rotating accounts
+    # -------------------------------------------------------------------------
+
+    def prepare_rotating(
+        self,
+        txn: transaction.Transaction,
+        *,
+        app_call_info: Optional[Dict[str, str]] = None,
+    ) -> "PreparedRotating":
+        """Ask the signer to prepare one transaction from a rotating account,
+        and check the group it returns. Nothing is signed.
+
+        The transaction must be ungrouped, set no rekey_to, not close the
+        account, and have a validity window of at most
+        ROTATING_MAX_VALIDITY_WINDOW rounds. The signer may set rekey_to to
+        the next stage's address, raise the fee, assign a group ID and append
+        canonical resource dummies. Any other change, a report that disagrees
+        with the bytes, or a fee raise above the client's max fee increase is
+        an error.
+
+        ``app_call_info`` is optional app-call metadata shown to the operator
+        when the prepared spend is signed. The signer checks it against the
+        spend's bytes and does not sign it.
+        """
+        if not isinstance(txn, transaction.Transaction):
+            raise ValueError("transaction is required")
+        _check_rotating_shape(txn)
+        _check_rotating_window(txn)
+        original = bytes.fromhex(encode_transaction(txn)[0])
+        # The prepared group is held to the ceiling in force now.
+        max_fee_increase = self.max_fee_increase
+        body = {"account": txn.sender, "txn_bytes_hex": original.hex()}
+        try:
+            resp = self.session.post(
+                f"{self.base_url}/sign/rotating/prepare",
+                json=body,
+                timeout=self._timeout_for(GROUP_PLAN_TIMEOUT),
+            )
+        except requests.RequestException as e:
+            raise SignerUnavailableError(f"Failed to connect: {e}") from e
+        if resp.status_code != 200:
+            raise self._signing_http_error(resp, "Rotating prepare failed")
+        try:
+            data = resp.json()
+        except ValueError as e:
+            raise SignerError(f"Server returned invalid JSON: {resp.text[:200]}") from e
+        return _new_prepared_rotating(original, data, max_fee_increase, app_call_info)
+
+    def simulate_prepared_rotating(
+        self, algod_client: Any, prepared: "PreparedRotating"
+    ) -> SimulationResult:
+        """Simulate a prepared rotating group, unsigned, through the caller's
+        algod, with the node taking each signer from the chain. It never
+        signs. A failed simulation, and an answer without exactly one group
+        result, is reported in the result's ``failed`` field, not raised.
+
+        It checks the group's effects. It does not prove the stage's
+        signatures will pass: the node runs the stage program only on the
+        signed group.
+        """
+        if algod_client is None:
+            raise ValueError("algod_client is required")
+        if not isinstance(prepared, PreparedRotating):
+            raise ValueError("prepared rotating group is required")
+        try:
+            prepared._verify()
+        except Exception as e:
+            raise _verification_error("verify prepared rotating group: ", e) from e
+        txns = prepared._decoded()
+        unsigned = [transaction.SignedTransaction(txn, None) for txn in txns]
+        response = _run_simulation(algod_client, unsigned, allow_empty_signatures=True)
+        return SimulationResult(
+            tx_ids=[txn.get_txid() for txn in txns],
+            transactions=prepared.transactions,
+            signed_group=[],
+            response=response,
+            mutations=prepared.mutations,
+            failed=_simulation_failed(response),
+        )
+
+    def sign_prepared_rotating(
+        self,
+        prepared: "PreparedRotating",
+        *,
+        request_id: Optional[str] = None,
+    ) -> RotatingSignResult:
+        """Ask the signer to sign a prepared rotating group, wait for operator
+        approval, and check the signed group against the prepared one. It
+        does not submit: see submit_signed_group.
+
+        ``request_id`` is the sign request's ID, for cancel_sign_request and
+        the signer's audit log; by default the SDK creates one. It is not an
+        idempotency key.
+
+        If the answer never arrives it raises SignOutcomeUnknownError, whose
+        ``rotating`` holds the prepared group. Calling sign_prepared_rotating
+        again with that same prepared group is the safe recovery: it asks for
+        the same transaction, with the same IDs, and builds no second spend.
+        It needs approval again, and it succeeds only while the stage is still
+        live and the window still acceptable. If that retry is refused, do not
+        prepare a replacement until the first attempt's outcome is known;
+        rotating_stage_changed in particular means a transaction from that
+        stage has confirmed.
+        """
+        if not isinstance(prepared, PreparedRotating):
+            raise ValueError("prepared rotating group is required")
+        # The binding is checked again at the signing boundary.
+        try:
+            prepared._verify()
+        except Exception as e:
+            raise _verification_error("verify prepared rotating group: ", e) from e
+        if not request_id:
+            request_id = _new_sign_request_id()
+        _validate_sign_request_id(request_id, required=True)
+        body: Dict[str, Any] = {
+            "request_id": request_id,
+            "account": prepared.account,
+            "transactions": prepared.transactions,
+        }
+        if prepared._app_call_info:
+            body["app_call_info"] = copy.deepcopy(prepared._app_call_info)
+
+        try:
+            resp = self._post_approval("/sign/rotating/sign", request_id, body)
+            if resp.status_code != 200:
+                raise self._signing_http_error(resp, "Rotating sign failed")
+            data = _approval_answer(resp, "Server returned invalid JSON")
+        except (_AnswerLostError, _AnswerUnreadError) as e:
+            raise SignOutcomeUnknownError(e, request_id=request_id, rotating=prepared) from e
+        try:
+            result = prepared._verify_signed(data)
+        except Exception as e:
+            raise _verification_error("verify signer response: ", e) from e
+        result.request_id = request_id
+        return result
+
+    def _send_rotating(
+        self,
+        algod_client: Any,
+        item: PreparedTransaction,
+        options: "_SendOptions",
+        refresh: bool,
+    ) -> SendResult:
+        """The rotating1 flow for one transaction: prepare, check the prepared
+        group, simulate it unsigned, then sign and submit exactly those bytes.
+        A failed check or simulation happens before any key is used.
+
+        ``refresh`` says the validity rounds may be rebuilt: always for a
+        transaction the SDK built from an intent, and for a supplied one only
+        when the caller set refresh_validity. A supplied transaction is
+        otherwise sent as given.
+
+        An attempt is repeated, at most _ROTATING_SEND_ATTEMPTS times, only
+        when the signer said that attempt released no signature: it has not
+        found the live stage yet, the account's authorizer moved between
+        prepare and sign, or the window was not current at signing. Every
+        attempt needs approval again. A sign whose answer never arrived, and
+        any failure after submission, ends the send: it never builds a
+        replacement spend on its own.
+        """
+        if item.lsig_args:
+            raise UnsupportedGroupError(
+                "a rotating account takes no LogicSig arguments from the caller"
+            )
+        # prepare_rotating refuses a spend of the wrong shape, or with a
+        # window over the limit, before it asks the signer anything.
+        txn = copy.deepcopy(cast(transaction.Transaction, item.transaction))
+        attempt = 1
+        while True:
+            last_attempt = attempt == _ROTATING_SEND_ATTEMPTS
+            # The signer signs only while the window is current. Checking here
+            # saves the operator an approval that could not lead to a
+            # signature.
+            try:
+                current_round = _last_round(algod_client.status())
+            except Exception as e:
+                raise SignerError(f"read current round: {e}") from e
+            if not _rotating_window_current(txn, current_round):
+                if not refresh:
+                    _check_rotating_window(txn)
+                    first, last = _txn_rounds(txn)
+                    raise SignerError(
+                        f"validity rounds {first}-{last} are not current at round "
+                        f"{current_round}: a rotating account signs only while first valid is "
+                        f"at most {ROTATING_MAX_LEAD} rounds ahead and at least "
+                        f"{ROTATING_MIN_REMAINING} rounds remain (rebuild the transaction, or "
+                        "set refresh_validity)"
+                    )
+                txn = _refresh_rotating_validity(algod_client, txn, widen=False)
+
+            try:
+                prepared = self.prepare_rotating(txn, app_call_info=item.app_call_info)
+            except SignerError as e:
+                if e.code == ERR_CODE_ROTATING_STAGE_UNPROVEN and not last_attempt:
+                    time.sleep(attempt * _ROTATING_UNPROVEN_BACKOFF)
+                    attempt += 1
+                    continue
+                raise
+
+            try:
+                simulation = self.simulate_prepared_rotating(algod_client, prepared)
+            except Exception as e:
+                raise SignerError(
+                    f"simulate prepared rotating group; nothing was signed: {e}"
+                ) from e
+            if simulation.failed:
+                raise RotatingPreflightError(prepared, _simulation_failure(simulation.response))
+
+            try:
+                signed = self.sign_prepared_rotating(prepared)
+            except SignerError as e:
+                if e.code == ERR_CODE_ROTATING_STAGE_CHANGED and not last_attempt:
+                    attempt += 1
+                    continue
+                if e.code == ERR_CODE_ROTATING_WINDOW_NOT_CURRENT and refresh and not last_attempt:
+                    # The same window length would leave the operator no more
+                    # time, so the retry takes the longest.
+                    txn = _refresh_rotating_validity(algod_client, txn, widen=True)
+                    attempt += 1
+                    continue
+                raise
+
+            result = SendResult(
+                flow=SIGNING_FLOW_ROTATING1,
+                signed_group=list(signed.signed_group),
+                original_count=1,
+                mutations=prepared.mutations,
+                rotating=RotatingSendDetails(
+                    stage=signed.stage,
+                    target=signed.target,
+                    rekey_to=prepared.rekey_to,
+                    attempts=attempt,
+                    transaction=copy.deepcopy(txn),
+                    request_id=signed.request_id,
+                ),
+            )
+            raw = _describe_signed_group(result)
+            _submit_and_track(algod_client, raw, result, options)
+            return result
+
 
 def _component_signatures_by_index(
     response: ComponentResponse,
@@ -6485,6 +7353,518 @@ def simulate_prepared_cosigned_group(
         signing=signing,
         simulation=_simulate_signed_group(algod_client, signing.signed_group),
     )
+
+
+# -----------------------------------------------------------------------------
+# Unified sending: rotating accounts and the shared submission layer
+# -----------------------------------------------------------------------------
+
+
+class PreparedRotating:
+    """A rotating account's spend as the signer prepared it: the exact
+    unsigned group it will sign, checked against the transaction the caller
+    sent. Nothing has been signed and no one-time key has been used.
+
+    It cannot be changed after it is made: its fields are read-only and every
+    accessor returns a copy, and simulate_prepared_rotating and
+    sign_prepared_rotating check the binding again. prepare_rotating makes
+    it.
+    """
+
+    __slots__ = (
+        "_account",
+        "_original",
+        "_stage",
+        "_target",
+        "_rekey_to",
+        "_transactions",
+        "_mutations",
+        "_app_call_info",
+        "_max_fee_increase",
+    )
+
+    def __init__(
+        self,
+        *,
+        account: Any,
+        original: bytes,
+        stage: Any,
+        target: Any,
+        rekey_to: Any,
+        transactions: Any,
+        mutations: Any,
+        app_call_info: Optional[Dict[str, str]],
+        max_fee_increase: Optional[int],
+    ) -> None:
+        self._account = account
+        # The TX-prefixed bytes of the transaction the caller sent.
+        self._original = bytes(original)
+        self._stage = stage
+        self._target = target
+        self._rekey_to = rekey_to
+        # Hex, TX-prefixed, exactly as the signer returned them.
+        self._transactions = copy.deepcopy(transactions)
+        self._mutations = copy.deepcopy(mutations)
+        self._app_call_info = copy.deepcopy(app_call_info)
+        self._max_fee_increase = max_fee_increase
+
+    @property
+    def account(self) -> str:
+        """The rotating account."""
+        return cast(str, self._account)
+
+    @property
+    def stage(self) -> int:
+        """The stage whose keys will sign."""
+        return cast(int, self._stage)
+
+    @property
+    def target(self) -> int:
+        """The stage the spend hands the account to: always stage + 1."""
+        return cast(int, self._target)
+
+    @property
+    def rekey_to(self) -> str:
+        """The next stage's address, as the signer reported it. The SDK
+        cannot derive stage addresses; it binds this address to the prepared
+        spend, and the signer derives it again from the seed before it
+        signs."""
+        return cast(str, self._rekey_to)
+
+    @property
+    def transactions(self) -> List[str]:
+        """The prepared group, hex msgpack with the TX prefix: the spend
+        first, then any resource dummies."""
+        return list(self._transactions)
+
+    @property
+    def mutations(self) -> Optional[Dict[str, Any]]:
+        """The signer's report of what it added to the spend (snake_case wire
+        keys), checked against the prepared bytes. None when it added nothing
+        but the rekey."""
+        return cast(Optional[Dict[str, Any]], copy.deepcopy(self._mutations))
+
+    @property
+    def original(self) -> transaction.Transaction:
+        """The transaction the caller sent to be prepared."""
+        return _decode_canonical_txn(self._original)
+
+    @property
+    def tx_ids(self) -> List[str]:
+        """The IDs of the prepared transactions. Signing does not change
+        them."""
+        return [txn.get_txid() for txn in self._decoded()]
+
+    def __repr__(self) -> str:
+        return (
+            f"PreparedRotating(account={self._account!r}, stage={self._stage!r}, "
+            f"target={self._target!r}, rekey_to={self._rekey_to!r}, "
+            f"transactions={len(self._transactions or [])})"
+        )
+
+    def _decoded(self) -> List[transaction.Transaction]:
+        txns = []
+        for index, txn_hex in enumerate(self._transactions, start=1):
+            try:
+                raw = _strict_hex(txn_hex)
+            except ValueError as e:
+                raise SignerError(f"prepared transaction {index}: invalid hex: {e}") from e
+            try:
+                txns.append(_decode_canonical_txn(raw))
+            except SignerError as e:
+                raise SignerError(f"prepared transaction {index}: {e}") from e
+        return txns
+
+    def _verify(self) -> None:
+        """Check the prepared group against the transaction the caller sent.
+
+        It is the client's authority boundary for a rotating spend: the signer
+        may set rekey_to to the address it reports, raise the spend's fee,
+        assign the canonical group ID and append canonical resource dummies,
+        and nothing else.
+        """
+        try:
+            original = _decode_canonical_txn(self._original)
+        except SignerError as e:
+            raise SignerError(f"original transaction: {e}") from e
+        if self._account != original.sender:
+            raise SignerError(f"prepared account {self._account} is not the sender")
+        stage = _require_uint(self._stage, "prepared stage", error=SignerError)
+        target = _require_uint(self._target, "prepared target", error=SignerError)
+        # Integers do not wrap here: a target past the uint64 range is refused
+        # above, so the last stage has no stage after it.
+        if target != stage + 1:
+            raise SignerError(f"prepared target stage {target} is not the stage after {stage}")
+        rekey_to = self._rekey_to
+        if not isinstance(rekey_to, str) or not encoding.is_valid_address(rekey_to):
+            raise SignerError(f"invalid rekey_to: {rekey_to!r} is not an address")
+        rekey_bytes = encoding.decode_address(rekey_to)
+        if rekey_bytes == bytes(32) or rekey_bytes == encoding.decode_address(original.sender):
+            raise SignerError("rekey_to must be another, non-zero address")
+        if not self._transactions:
+            raise SignerError("prepared group is empty")
+        if not isinstance(self._transactions, list):
+            raise SignerError("prepared group is not a list")
+        txns = self._decoded()
+
+        # The one change no ordinary sign response may make is applied to the
+        # expectation, so the common check still refuses every unrequested
+        # rekey.
+        expected = copy.deepcopy(original)
+        expected.rekey_to = rekey_to
+        try:
+            slot = _sign_slot(expected, self._account)
+        except ValueError as e:
+            raise SignerError(str(e)) from e
+        returned: List[Optional[transaction.Transaction]] = list(txns)
+        _validate_group_mutations([slot], returned, self._mutations, self._max_fee_increase)
+
+    def _verify_signed(self, response: Any) -> RotatingSignResult:
+        """Check that the signer signed exactly the prepared bytes: one
+        canonically encoded signed transaction per prepared transaction, in
+        order, the spend authorized by a stage program consistent with the
+        reported stage, and every dummy by the dummy program."""
+        txns = self._decoded()
+        if not isinstance(response, dict):
+            raise SignerError("signer returned a malformed sign response")
+        signed = response.get("signed")
+        if not isinstance(signed, list) or any(not isinstance(item, str) for item in signed):
+            raise SignerError("signer returned a malformed signed list")
+        if len(signed) != len(txns):
+            raise SignerError(
+                f"signed group has {len(signed)} transaction(s), prepared {len(txns)}"
+            )
+        stage, target = response.get("stage"), response.get("target")
+        if not (_same_uint(stage, self._stage) and _same_uint(target, self._target)):
+            raise SignerError(
+                f"signer reports stage {stage} to {target}, prepared {self._stage} to "
+                f"{self._target}"
+            )
+        spend = txns[0]
+        for index, signed_hex in enumerate(signed):
+            position = index + 1
+            try:
+                raw = _strict_hex(signed_hex)
+            except ValueError as e:
+                raise SignerError(f"signed transaction {position}: invalid hex: {e}") from e
+            try:
+                stxn = _decode_canonical_signed_txn(raw)
+            except SignerError as e:
+                raise SignerError(f"signed transaction {position}: {e}") from e
+            if encode_transaction(stxn.transaction)[0] != encode_transaction(txns[index])[0]:
+                raise SignerError(
+                    f"signed transaction {position} differs from the prepared transaction"
+                )
+            if index > 0:
+                if raw != _sign_canonical_dummy(txns[index]):
+                    raise SignerError(
+                        f"signed transaction {position} is not the canonical signed "
+                        "resource dummy"
+                    )
+                continue
+            # The spend is signed by the current stage's program. Its address
+            # is the account itself at stage 0 and the account's authorizer
+            # after. It is never the next stage's address, which is the rekey
+            # target.
+            if not isinstance(stxn, transaction.LogicSigTransaction) or not stxn.lsig.logic:
+                raise SignerError("spend is not authorized by a stage program")
+            stage_address = stxn.lsig.address()
+            try:
+                _validate_authorization(stxn, stage_address)
+            except SignerError as e:
+                raise SignerError(f"spend {e}") from e
+            if (stage_address == spend.sender) != (self._stage == 0):
+                raise SignerError(
+                    f"spend's stage program does not fit stage {self._stage} of the account"
+                )
+            if stage_address == spend.rekey_to:
+                raise SignerError("spend is authorized by the next stage's program")
+
+        txid = spend.get_txid()
+        if response.get("txid") != txid:
+            raise SignerError(
+                f"signer reports transaction ID {response.get('txid')}, the spend's is {txid}"
+            )
+        group = _group_id_bytes(spend)
+        group_id = base64.b64encode(group).decode() if group else ""
+        reported = response.get("group_id")
+        # A lone spend may be reported with the zero group ID.
+        zero_group = base64.b64encode(bytes(32)).decode()
+        if reported != group_id and not (group_id == "" and reported == zero_group):
+            raise SignerError(f"signer reports group ID {reported!r}, the spend's is {group_id!r}")
+        return RotatingSignResult(
+            signed_group=list(signed),
+            stage=cast(int, self._stage),
+            target=cast(int, self._target),
+            txid=txid,
+            group_id=group_id,
+        )
+
+
+def _same_uint(value: Any, want: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value == want
+
+
+def _new_prepared_rotating(
+    original: bytes,
+    response: Any,
+    max_fee_increase: Optional[int],
+    app_call_info: Optional[Dict[str, str]],
+) -> PreparedRotating:
+    """Bind a prepare answer to the transaction that was sent, and check it.
+    Everything it keeps is a copy."""
+    if is_dataclass(response) and not isinstance(response, type):
+        response = asdict(response)
+    if not isinstance(response, dict):
+        raise SignerError("verify prepared rotating group: the prepare answer is not an object")
+    prepared = PreparedRotating(
+        account=response.get("account"),
+        original=original,
+        stage=response.get("stage"),
+        target=response.get("target"),
+        rekey_to=response.get("rekey_to"),
+        transactions=response.get("transactions"),
+        mutations=response.get("mutations"),
+        app_call_info=app_call_info,
+        max_fee_increase=max_fee_increase,
+    )
+    try:
+        prepared._verify()
+    except Exception as e:
+        raise _verification_error("verify prepared rotating group: ", e) from e
+    return prepared
+
+
+def _check_rotating_shape(txn: transaction.Transaction) -> None:
+    """Apply the rotating rules about a spend's shape that need neither the
+    signer nor the chain. The signer applies them too."""
+    if _group_id_bytes(txn) is not None:
+        raise UnsupportedGroupError(
+            "a rotating account's transaction must be ungrouped; the signer forms the group"
+        )
+    if txn.rekey_to:
+        raise UnsupportedGroupError(
+            "a rotating account's transaction must not set rekey_to; the signer rotates the "
+            "account itself"
+        )
+    if getattr(txn, "close_remainder_to", None):
+        raise UnsupportedGroupError("a rotating account cannot close out")
+
+
+def _txn_rounds(txn: transaction.Transaction) -> tuple[int, int]:
+    first = _require_uint(txn.first_valid_round, "first_valid_round")
+    last = _require_uint(txn.last_valid_round, "last_valid_round")
+    return first, last
+
+
+def _check_rotating_window(txn: transaction.Transaction) -> None:
+    """Refuse a validity window the stage program never accepts, whatever the
+    current round."""
+    first, last = _txn_rounds(txn)
+    if last < first:
+        raise SignerError(f"last valid round {last} is before first valid round {first}")
+    window = last - first
+    if window > ROTATING_MAX_VALIDITY_WINDOW:
+        raise SignerError(
+            f"validity window is {window} rounds; a rotating account accepts at most "
+            f"{ROTATING_MAX_VALIDITY_WINDOW} (build the transaction with a prepare_* helper, "
+            "or set refresh_validity)"
+        )
+
+
+def _rotating_window_current(txn: transaction.Transaction, current_round: int) -> bool:
+    """Whether txn's window meets the signer's timing rule at current_round."""
+    first, last = _txn_rounds(txn)
+    return (
+        last >= first
+        and last - first <= ROTATING_MAX_VALIDITY_WINDOW
+        and first <= current_round + ROTATING_MAX_LEAD
+        and last >= current_round + ROTATING_MIN_REMAINING
+    )
+
+
+def _refresh_rotating_validity(
+    algod_client: Any, txn: transaction.Transaction, *, widen: bool
+) -> transaction.Transaction:
+    """A copy of txn with its validity rounds rebuilt from current suggested
+    parameters, everything else kept.
+
+    The window keeps its length unless that is over the rotating limit or too
+    short to ever be signed. widen takes the longest window instead: after
+    the signer found the window not current, the same length would leave the
+    operator no more time.
+    """
+    try:
+        params = algod_client.suggested_params()
+    except Exception as e:
+        raise SignerError(f"failed to get suggested params: {e}") from e
+    # A window shorter than the rounds that must remain can never be signed,
+    # so it is not kept either.
+    window = ROTATING_MAX_VALIDITY_WINDOW
+    old_first, old_last = _txn_rounds(txn)
+    if not widen and old_last > old_first:
+        length = old_last - old_first
+        if ROTATING_MIN_REMAINING <= length < window:
+            window = length
+    first = _require_uint(params.first, "suggested first valid round", error=SignerError)
+    if first > _UINT64_MAX - window:
+        raise SignerError(f"first valid round {first} leaves no room for a validity window")
+    rebuilt = copy.deepcopy(txn)
+    rebuilt.first_valid_round = first
+    rebuilt.last_valid_round = first + window
+    return rebuilt
+
+
+def _simulation_groups(response: Any) -> Optional[List[Any]]:
+    if not isinstance(response, dict):
+        return None
+    groups = response.get("txn-groups") or response.get("txn_groups")
+    return groups if isinstance(groups, list) else None
+
+
+def _simulation_failed(response: Any) -> bool:
+    """Whether a simulation of one group did anything but pass. An answer
+    without exactly one group result checked nothing, and counts as failed."""
+    groups = _simulation_groups(response)
+    if groups is None or len(groups) != 1 or not isinstance(groups[0], dict):
+        return True
+    return bool(groups[0].get("failure-message") or groups[0].get("failure_message"))
+
+
+def _simulation_failure(response: Any) -> str:
+    if not _simulation_failed(response):
+        return ""
+    groups = _simulation_groups(response)
+    if groups is None or len(groups) != 1 or not isinstance(groups[0], dict):
+        return "the node returned no result for the group"
+    return str(groups[0].get("failure-message") or groups[0].get("failure_message"))
+
+
+def _last_round(status: Any) -> int:
+    """The last round a node status answer reports."""
+    value = status.get("last-round") if isinstance(status, dict) else None
+    return _require_uint(value, "node status last-round", error=SignerError)
+
+
+def _describe_signed_group(result: SendResult) -> List[bytes]:
+    """Fill the result's IDs, fees and group ID from its signed bytes, and
+    return those bytes decoded. Each entry must be one canonically encoded
+    signed transaction, and a group of several must carry the group ID
+    computed over itself."""
+    try:
+        decoded = _decode_executable_signed_group(result.signed_group)
+        if len(decoded) < result.original_count:
+            raise SignerError(
+                f"signed group has {len(decoded)} transaction(s), fewer than the "
+                f"{result.original_count} prepared"
+            )
+        txns = [signed.transaction for signed in decoded]
+        group_id = _validate_canonical_group_id(txns)
+        if len(txns) == 1:
+            group_id = _group_id_bytes(txns[0])
+    except Exception as e:
+        raise _verification_error("verify signed group: ", e) from e
+    result.fees = [int(txn.fee) for txn in txns]
+    result.group_id = base64.b64encode(group_id).decode() if group_id else ""
+    result.tx_ids = [signed.get_txid() for signed in decoded]
+    return [bytes.fromhex(entry) for entry in result.signed_group]
+
+
+def _is_bad_request(error: BaseException) -> bool:
+    return isinstance(error, algosdk_error.AlgodHTTPError) and error.code == 400
+
+
+def _already_known_to_node(error: BaseException) -> bool:
+    """Whether a submission was refused only because the node already has a
+    transaction with the same ID, in its pool or in a block.
+
+    algod answers that with a 400 like any refusal and no code, so the text is
+    all there is to go on. One case is not recognised: a committed
+    transaction that carries a lease is refused for its lease first, and that
+    answer is the same as a real lease conflict's.
+    """
+    return _is_bad_request(error) and "already in ledger" in str(error).lower()
+
+
+def _submit_and_track(
+    algod_client: Any, raw: List[bytes], result: SendResult, options: _SendOptions
+) -> None:
+    """The one submission path of every send. It submits the signed bytes
+    exactly as given and, unless told not to, waits for the first transaction
+    to confirm. It never signs or rebuilds anything."""
+    blob = b"".join(raw)
+    txid = result.tx_ids[0]
+
+    def uncertain(stage: str, error: BaseException) -> SubmissionUncertainError:
+        return SubmissionUncertainError(stage, result.signed_group, result.tx_ids, error)
+
+    try:
+        sent_id = algod_client.send_raw_transaction(base64.b64encode(blob).decode())
+    except Exception as e:
+        # A node that already has a transaction with this ID, pending or
+        # committed, was reached by an earlier submission of this group. That
+        # is not a refusal, and the lookup below finds the outcome.
+        if not _already_known_to_node(e):
+            if _is_bad_request(e):
+                raise SubmissionRejectedError(result.signed_group, result.tx_ids, e) from e
+            raise uncertain(SEND_STAGE_SUBMIT, e) from e
+    else:
+        if sent_id != txid:
+            raise uncertain(
+                SEND_STAGE_SUBMIT,
+                SignerError(
+                    f"node reported transaction ID {sent_id} for a group whose first "
+                    f"transaction is {txid}"
+                ),
+            )
+    result.outcome = SEND_OUTCOME_SUBMITTED
+    if options.no_wait:
+        return
+
+    wait_rounds = options.wait_rounds or DEFAULT_SEND_WAIT_ROUNDS
+    try:
+        last = _last_round(algod_client.status())
+    except Exception as e:
+        raise uncertain(SEND_STAGE_CONFIRM, SignerError(f"read current round: {e}")) from e
+    # The group is looked up now and after each of the next wait_rounds
+    # rounds.
+    deadline = min(last + wait_rounds, _UINT64_MAX)
+    while True:
+        # A lookup error is not an answer: behind a load balancer another node
+        # may not have the transaction yet.
+        try:
+            info = algod_client.pending_transaction_info(txid)
+        except Exception:
+            info = None
+        if isinstance(info, dict):
+            pool_error = info.get("pool-error")
+            if isinstance(pool_error, str) and pool_error:
+                raise SubmissionRejectedError(
+                    result.signed_group,
+                    result.tx_ids,
+                    SignerError(f"dropped from the transaction pool: {pool_error}"),
+                )
+            confirmed = info.get("confirmed-round")
+            if (
+                isinstance(confirmed, int)
+                and not isinstance(confirmed, bool)
+                and 0 < confirmed <= _UINT64_MAX
+            ):
+                result.outcome = SEND_OUTCOME_CONFIRMED
+                result.confirmed_round = confirmed
+                return
+        if last >= deadline:
+            raise uncertain(
+                SEND_STAGE_CONFIRM, SignerError(f"not confirmed after {wait_rounds} rounds")
+            )
+        try:
+            # status_after_block(n) returns once round n+1 exists.
+            next_round = _last_round(algod_client.status_after_block(last))
+        except Exception as e:
+            raise uncertain(
+                SEND_STAGE_CONFIRM, SignerError(f"wait for round {last + 1}: {e}")
+            ) from e
+        last = next_round if next_round > last else last + 1
 
 
 def send_raw_transaction(algod_client, signed_txn: str) -> str:
