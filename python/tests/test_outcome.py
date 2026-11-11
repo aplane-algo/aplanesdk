@@ -57,6 +57,10 @@ TOO_OLD_ADVICE = (
     "The group's validity ended more than 500 rounds ago and this node may no longer remember "
     "it. Look the transaction ID up on an indexer before sending again."
 )
+ROTATING_TOO_OLD_ADVICE = (
+    "The prepared group's validity ended more than 500 rounds ago and this node may no longer "
+    "remember it. Look the transaction ID up on an indexer before sending again."
+)
 ROTATING_SIGNABLE_ADVICE = (
     "A signature may have been released and can execute until round 1000. Sign the same "
     "prepared group again, or wait until round 1000 has passed."
@@ -216,7 +220,12 @@ class TestSignTable:
             (POOL_ERROR, 1000, OUTCOME_SIGNABLE, False, ROTATING_SIGNABLE_ADVICE),
             (NOT_FOUND, 1001, OUTCOME_EXPIRED, True, SIGN_EXPIRED_ADVICE),
             (POOL_ERROR, 1001, OUTCOME_EXPIRED, True, SIGN_EXPIRED_ADVICE),
-            (NOT_FOUND, 9999, OUTCOME_EXPIRED, True, SIGN_EXPIRED_ADVICE),
+            (NOT_FOUND, 1500, OUTCOME_EXPIRED, True, SIGN_EXPIRED_ADVICE),
+            (POOL_ERROR, 1500, OUTCOME_EXPIRED, True, SIGN_EXPIRED_ADVICE),
+            (NOT_FOUND, 1501, OUTCOME_TOO_OLD, False, ROTATING_TOO_OLD_ADVICE),
+            (POOL_ERROR, 1501, OUTCOME_TOO_OLD, False, ROTATING_TOO_OLD_ADVICE),
+            (NOT_FOUND, 9999, OUTCOME_TOO_OLD, False, ROTATING_TOO_OLD_ADVICE),
+            (CONFIRMED, 9999, OUTCOME_CONFIRMED, False, CONFIRMED_ADVICE.format(990)),
         ],
         ids=[
             "confirmed",
@@ -226,7 +235,12 @@ class TestSignTable:
             "pool error at the last valid round",
             "not found one round after",
             "pool error one round after",
-            "long after: never too old",
+            "not found 500 rounds after",
+            "pool error 500 rounds after",
+            "not found 501 rounds after",
+            "pool error 501 rounds after",
+            "not found long after",
+            "confirmed long after",
         ],
     )
     def test_rotating_rows(self, node, lookup, current, state, safe, advice):
@@ -245,12 +259,15 @@ class TestSignTable:
             (999, OUTCOME_SIGNABLE, False, SIGNABLE_ADVICE),
             (1000, OUTCOME_SIGNABLE, False, SIGNABLE_ADVICE),
             (1001, OUTCOME_EXPIRED, True, SIGN_EXPIRED_ADVICE),
+            (1500, OUTCOME_EXPIRED, True, SIGN_EXPIRED_ADVICE),
             (1501, OUTCOME_EXPIRED, True, SIGN_EXPIRED_ADVICE),
+            (9999, OUTCOME_EXPIRED, True, SIGN_EXPIRED_ADVICE),
         ],
     )
     def test_rows_without_ids(self, node, current, state, safe, advice):
         # The signer may have changed the transactions, so their IDs are not
-        # known and nothing is looked up.
+        # known and nothing is looked up. Their signed bytes never left the
+        # SDK, so expiry alone settles it: never too old.
         algod = node(current, CONFIRMED)
         report = client().resolve_outcome(algod.client, sign_error())
         assert (report.state, report.safe_to_replace, report.advice) == (state, safe, advice)
@@ -305,6 +322,27 @@ class TestRefusals:
         error.rotating = type("Prepared", (), {"tx_ids": ["", "DUMMY"]})()
         report = client().resolve_outcome(algod.client, error)
         assert report.state == OUTCOME_SIGNABLE and report.tx_ids == ["", "DUMMY"]
+        assert algod.lookups() == []
+
+    @pytest.mark.parametrize("tx_ids", [[], ["", "DUMMY"]], ids=["no IDs", "empty first ID"])
+    @pytest.mark.parametrize(
+        "current,state,safe,advice",
+        [
+            (1000, OUTCOME_SIGNABLE, False, ROTATING_SIGNABLE_ADVICE),
+            (1500, OUTCOME_EXPIRED, True, SIGN_EXPIRED_ADVICE),
+            (1501, OUTCOME_TOO_OLD, False, ROTATING_TOO_OLD_ADVICE),
+        ],
+    )
+    def test_a_rotating_group_with_no_id_to_look_up_follows_the_rotating_rows(
+        self, node, tx_ids, current, state, safe, advice
+    ):
+        # A hand-built group: nothing can be looked up, so the rounds decide,
+        # and past the node's memory the safer answer is too old.
+        algod = node(current, CONFIRMED)
+        error = sign_error(rotating=True)
+        error.rotating = type("Prepared", (), {"tx_ids": tx_ids})()
+        report = client().resolve_outcome(algod.client, error)
+        assert (report.state, report.safe_to_replace, report.advice) == (state, safe, advice)
         assert algod.lookups() == []
 
     @pytest.mark.parametrize(
@@ -401,9 +439,67 @@ class TestWaitForOutcome:
 
     def test_a_bad_time_limit_is_refused(self, node):
         algod = node(900)
-        for bad in (0, -1, float("nan"), "5", True):
-            with pytest.raises(ValueError):
+        for bad in (0, -1, float("nan"), float("inf"), "5", True):
+            with pytest.raises(ValueError, match="^timeout must be a positive number"):
                 client().wait_for_outcome(algod.client, sign_error(), timeout=bad)
+        assert algod.calls == []
+
+    @pytest.mark.parametrize("bad", [0, -1, float("nan")])
+    def test_the_refusals_come_before_the_time_limit_is_checked(self, node, bad):
+        algod = node(900)
+        refusals = [
+            (algod.client, None, SignerError, "^not an uncertain outcome$"),
+            (algod.client, ValueError("x"), SignerError, "^not an uncertain outcome$"),
+            (algod.client, sign_error(last_valid=0), SignerError, "no last valid round"),
+            (algod.client, submission_error(tx_ids=()), SignerError, "no transaction IDs"),
+            (None, sign_error(), ValueError, "^algod client is required$"),
+        ]
+        for algod_client, error, kind, message in refusals:
+            with pytest.raises(kind, match=message):
+                client().wait_for_outcome(algod_client, error, timeout=bad)
+        assert algod.calls == []
+
+    def test_a_limit_that_has_passed_gives_no_report_and_asks_nothing(self):
+        algod = CountingAlgod(900)
+        with signer_module._time_limit(0.01):
+            time.sleep(0.05)
+            with pytest.raises(SendTimeoutError) as excinfo:
+                client().wait_for_outcome(algod, sign_error(), timeout=10)
+        assert excinfo.value.report is None
+        assert algod.calls == []
+
+    def test_the_limit_is_checked_before_each_resolve(self):
+        # The wait for the next round returns after the limit has passed: no
+        # second check is made, and the error carries the first report.
+        algod = CountingAlgod(900, hold=0.3)
+        with pytest.raises(SendTimeoutError) as excinfo:
+            client().wait_for_outcome(algod, sign_error(), timeout=0.1)
+        assert excinfo.value.report.state == OUTCOME_SIGNABLE
+        assert excinfo.value.report.current_round == 900
+        assert algod.calls == ["status", "wait 900"]
+
+
+class CountingAlgod:
+    """A fake algod object (no HTTP, so no timeouts of its own) that records
+    every call. Its wait for the next block holds for ``hold`` seconds."""
+
+    def __init__(self, round, hold=0.0):
+        self.round = round
+        self.hold = hold
+        self.calls = []
+
+    def status(self, **kwargs):
+        self.calls.append("status")
+        return {"last-round": self.round}
+
+    def status_after_block(self, round, **kwargs):
+        self.calls.append(f"wait {round}")
+        time.sleep(self.hold)
+        self.round = round + 1
+        return {"last-round": self.round}
+
+    def pending_transaction_info(self, txid, **kwargs):
+        raise AssertionError("a sign outcome without IDs is not looked up")
 
 
 # -----------------------------------------------------------------------------

@@ -301,9 +301,14 @@ def _fault_after_answer(prefix: str, error: Exception, request_id: str) -> Optio
     described, or the next request was built. It is not a refusal, because a
     signature may be out, so it is that request's lost answer (_check_fault).
     None when the error passes as it is: a refusal (a SignerError), an error
-    already marked, or any error before a request has answered (request_id
-    empty)."""
-    if not request_id or isinstance(error, SignerError) or _answer_lost(error):
+    already marked, an error a cosigner resolver raised, or any error before
+    a request has answered (request_id empty)."""
+    if (
+        not request_id
+        or isinstance(error, SignerError)
+        or getattr(error, _RESOLVER_ERROR_MARK, False)
+        or _answer_lost(error)
+    ):
         return None
     return _check_fault(prefix, error, request_id)
 
@@ -611,11 +616,18 @@ class _AnswerUnreadError(SignerError):
         self.request_id = request_id
 
 
+# The attribute set on an error a cosigner resolver raised. Such an error is
+# the resolver's own, never an unknown outcome, whatever it was raised from.
+_RESOLVER_ERROR_MARK = "_aplane_cosigner_resolver_error"
+
+
 def _lost_answer(error: BaseException) -> Optional[SignerError]:
     """The mark of the approval-bearing request that ended with no usable
     answer, when error is it or was raised from it: a /sign, a component
     request, or an assembly. Planning and key listing release nothing and
-    never count."""
+    never count. An error a cosigner resolver raised never counts."""
+    if getattr(error, _RESOLVER_ERROR_MARK, False):
+        return None
     seen = set()
     current: Optional[BaseException] = error
     while current is not None and id(current) not in seen:
@@ -4495,8 +4507,8 @@ def _marshal_abi_address(value: Any) -> str:
 
 class _SSHConfigError(SignerError):
     """An SSH connection that cannot be made as configured: the client key
-    or the known_hosts file cannot be read, or the host key is unknown and
-    first-use trust is off."""
+    or the known_hosts file cannot be read, the host key is unknown and
+    first-use trust is off, or first-use trust cannot save it."""
 
 
 class _SSHHostKeyMismatchError(SignerError):
@@ -4700,12 +4712,19 @@ class _SSHTunnel:
                 f"{self._known_hosts_path}"
             )
 
-        known_hosts_dir = os.path.dirname(self._known_hosts_path)
-        if known_hosts_dir:
-            os.makedirs(known_hosts_dir, mode=0o700, exist_ok=True)
         host_keys.add(host_entry, server_key.get_name(), server_key)
-        host_keys.save(self._known_hosts_path)
-        os.chmod(self._known_hosts_path, 0o600)
+        # A key that cannot be saved is the configuration's fault (where the
+        # known_hosts file is, or who may write it), not the endpoint's.
+        try:
+            known_hosts_dir = os.path.dirname(self._known_hosts_path)
+            if known_hosts_dir:
+                os.makedirs(known_hosts_dir, mode=0o700, exist_ok=True)
+            host_keys.save(self._known_hosts_path)
+            os.chmod(self._known_hosts_path, 0o600)
+        except OSError as e:
+            raise _SSHConfigError(
+                f"cannot save the host key to {self._known_hosts_path}: {e}"
+            ) from e
 
     def _accept_loop(self):
         """Accept local connections and forward through SSH channel."""
@@ -4760,6 +4779,13 @@ class _SSHTunnel:
                 src.close()
             except Exception:
                 pass
+
+    @property
+    def active(self) -> bool:
+        """Whether the tunnel is up: started, not stopped, and its SSH
+        transport still active. A local check; nothing is sent."""
+        transport = self._transport
+        return self._running and transport is not None and transport.is_active()
 
     def stop(self):
         """Tear down the tunnel."""
@@ -4863,6 +4889,8 @@ class SignerClient:
         self.timeout = timeout if timeout and timeout > 0 else None
         self.session = requests.Session()
         self._tunnel = tunnel
+        # Set by close().
+        self._closed = False
         self._key_cache: Dict[str, KeyInfo] = {}  # Cache key info by address
         self._key_cache_revision: Optional[int] = None
         self._approval_wait_seconds: Optional[int] = None
@@ -5052,10 +5080,11 @@ class SignerClient:
         an EndpointCosignerResolver over the endpoint registry from_env read,
         with the connection options from_env was given. It is made on first
         use and closed with this client. None for a client not made from a
-        data directory."""
-        if self._endpoint_registry is None:
-            return None
+        data directory, and once this client is closed: none is made again,
+        so a closed client opens no cosigner connections."""
         with self._cosigner_resolver_lock:
+            if self._endpoint_registry is None or self._closed:
+                return None
             if self._cosigner_resolver is None:
                 self._cosigner_resolver = EndpointCosignerResolver(
                     registry=self._endpoint_registry, **self._cosigner_connection
@@ -5066,6 +5095,9 @@ class SignerClient:
         """Close the client and any SSH tunnel, and the connections to
         cosigners it found from its endpoint registry."""
         with self._cosigner_resolver_lock:
+            self._closed = True
+            # Without the registry no default resolver is made again.
+            self._endpoint_registry = None
             resolver, self._cosigner_resolver = self._cosigner_resolver, None
         if resolver is not None:
             resolver.close()
@@ -7492,7 +7524,10 @@ class SignerClient:
         SignOutcomeUnknownError, which submitted nothing: a rotating
         account's prepared group is looked up first ("confirmed" or
         "pending"); otherwise "signable" until its last valid round has
-        passed, then "expired" (safe_to_replace). ``advice`` says what to do.
+        passed, then "expired" (safe_to_replace). For a rotating account,
+        whose prepared group may have been signed again and submitted,
+        "expired" lasts OUTCOME_NODE_MEMORY_ROUNDS rounds and "too_old"
+        follows, as for a submission. ``advice`` says what to do.
 
         Raises:
             SignerError: the error is of another type ("not an uncertain
@@ -7511,10 +7546,17 @@ class SignerClient:
         never submits and never calls the signer.
 
         ``timeout`` is a limit in seconds on the whole call; None waits as
-        long as it takes. When it passes, SendTimeoutError is raised with the
-        last report made as its ``report`` (None when none was made yet). A
-        node failure is raised as a SignerError that carries the last report
-        the same way.
+        long as it takes. It is checked before each resolve: when it passes,
+        SendTimeoutError is raised with the last report made as its
+        ``report`` (None when none was made yet, and then the node was not
+        asked anything). A node failure is raised as a SignerError that
+        carries the last report the same way.
+
+        Raises:
+            SignerError: the refusals of resolve_outcome, which come before
+                the timeout is checked
+            ValueError: no algod client; or a timeout that is 0, negative or
+                not finite
         """
         return _wait_for_outcome(algod_client, error, timeout)
 
@@ -8123,6 +8165,53 @@ def witness_key_id(key_type: str, public_key: bytes) -> str:
     return base64.b32encode(encoding.checksum(bytes(encoded))).decode().rstrip("=")
 
 
+_GO_SHORT_ESCAPES = {
+    "\a": "\\a",
+    "\b": "\\b",
+    "\f": "\\f",
+    "\n": "\\n",
+    "\r": "\\r",
+    "\t": "\\t",
+    "\v": "\\v",
+}
+
+
+def _go_quote(value: str) -> str:
+    """value in double quotes, escaped as Go's %q (strconv.Quote) escapes it,
+    so a discovery message reads the same in every SDK: \\" and \\\\; the
+    short escapes \\a \\b \\f \\n \\r \\t \\v; \\xNN (lowercase hex) for every
+    other C0 control and DEL; \\uNNNN or \\UNNNNNNNN for every other character
+    that is not printable (C1 controls among them); every printable
+    character as it is. A lone surrogate, which Go would hold as invalid
+    UTF-8, is \\xNN per byte, as Go writes those."""
+    out = ['"']
+    for ch in value:
+        code = ord(ch)
+        if ch == '"' or ch == "\\":
+            out.append("\\" + ch)
+        elif 0xD800 <= code <= 0xDFFF:
+            raw = (
+                bytes([code - 0xDC00])
+                if 0xDC80 <= code <= 0xDCFF
+                else ch.encode("utf-8", "surrogatepass")
+            )
+            out.extend(f"\\x{byte:02x}" for byte in raw)
+        elif ch.isprintable():
+            # Python's printable set is Go's strconv.IsPrint: letters, marks,
+            # numbers, punctuation, symbols and the ASCII space.
+            out.append(ch)
+        elif ch in _GO_SHORT_ESCAPES:
+            out.append(_GO_SHORT_ESCAPES[ch])
+        elif code < 0x20 or code == 0x7F:
+            out.append(f"\\x{code:02x}")
+        elif code < 0x10000:
+            out.append(f"\\u{code:04x}")
+        else:
+            out.append(f"\\U{code:08x}")
+    out.append('"')
+    return "".join(out)
+
+
 def _witness_public_key_hex(value: Any) -> Optional[str]:
     """A witness public key's hex as it is held and compared: lowercase. None
     when it is not hex, or is empty."""
@@ -8168,6 +8257,16 @@ def _cosigner_resolution_order(targets: List[Dict[str, Any]]) -> List[Dict[str, 
     )
 
 
+def _client_connection_open(client: Any) -> bool:
+    """Whether a signer client can still be used: not closed, and its SSH
+    tunnel, when it has one, still up. A client with no tunnel is open until
+    it is closed. A local check; no request is made."""
+    if client is None or getattr(client, "_closed", False):
+        return False
+    tunnel = getattr(client, "_tunnel", None)
+    return tunnel is None or bool(getattr(tunnel, "active", True))
+
+
 class EndpointCosignerResolver:
     """Finds a cosigned account's cosigner in the client's endpoint registry
     (endpoints.yaml), and resolves each cosigned target to that endpoint's
@@ -8180,8 +8279,9 @@ class EndpointCosignerResolver:
     record counts when it is a witness key with a key type; its public key
     must be hex and its address the Witness Key ID derived from its key type
     and public key, or the endpoint's listing is invalid as a whole. The
-    sweep is kept; a required key it does not hold makes one fresh sweep per
-    resolve call.
+    sweep is kept; a required key it does not hold, or holds only through a
+    connection that has since closed or whose SSH link is down, makes one
+    fresh sweep per resolve call.
 
     A witness key must be listed by exactly one endpoint that answered. When
     none or more than one does, when no cosigner endpoint is configured, or
@@ -8255,7 +8355,7 @@ class EndpointCosignerResolver:
         if public_key is None:
             raise CosignerDiscoveryError(
                 f"cosigner discovery: the account's cosigner public key "
-                f'"{cosigner_public_key_hex}" is not valid hex'
+                f"{_go_quote(str(cosigner_public_key_hex))} is not valid hex"
             )
         if not component_key_type or not isinstance(component_key_type, str):
             raise CosignerDiscoveryError("cosigner discovery: the account names no cosigner key type")
@@ -8294,12 +8394,15 @@ class EndpointCosignerResolver:
 
     @staticmethod
     def _listing(probes: Dict[str, _CosignerProbe], key_type: str, public_key: str) -> List[str]:
-        """The aliases of the live endpoints that list the key, sorted. A key
-        an endpoint lists twice counts once."""
+        """The aliases of the live endpoints that list the key, sorted: those
+        that answered, and whose connection is still open. A key an endpoint
+        lists twice counts once. A kept connection that has since closed, or
+        whose SSH link is down, does not list it, so it counts as a miss."""
         return [
             alias
             for alias in sorted(probes)
             if probes[alias].state == _ENDPOINT_OK
+            and _client_connection_open(probes[alias].client)
             and any(key[0] == key_type and key[1] == public_key for key in probes[alias].keys)
         ]
 
@@ -8315,7 +8418,9 @@ class EndpointCosignerResolver:
                 f"endpoints {names}; each witness key needs exactly one endpoint"
             )
         if not listing:
-            states = ", ".join(f'"{alias}" {probes[alias].state}' for alias in sorted(probes))
+            states = ", ".join(
+                f"{_go_quote(alias)} {probes[alias].state}" for alias in sorted(probes)
+            )
             raise CosignerDiscoveryError(
                 f"cosigner discovery: no endpoint lists Witness Key ID {key_id} "
                 f"({key_type}); endpoints: {states}"
@@ -8371,11 +8476,16 @@ class EndpointCosignerResolver:
             if outer is not None and outer[0] < at:
                 deadline = outer
             earlier = previous.get(alias)
+            # A kept connection is read again only while it is open; one that
+            # is not is closed below, and the endpoint connected afresh.
+            reuse = (
+                earlier.client
+                if earlier is not None and _client_connection_open(earlier.client)
+                else None
+            )
             token = _CALL_DEADLINE.set(deadline)
             try:
-                result = self._probe(
-                    alias, endpoints[alias], earlier.client if earlier is not None else None
-                )
+                result = self._probe(alias, endpoints[alias], reuse)
             finally:
                 _CALL_DEADLINE.reset(token)
             if result.host_key_mismatch:
@@ -8399,7 +8509,7 @@ class EndpointCosignerResolver:
                     result.client.close()
             if mismatch is not None:
                 raise CosignerDiscoveryError(
-                    f'cosigner discovery: endpoint "{mismatch.alias}": '
+                    f"cosigner discovery: endpoint {_go_quote(mismatch.alias)}: "
                     f"{mismatch.host_key_mismatch}"
                 )
             raise _CosignerDiscoveryTimeoutError(
@@ -8446,7 +8556,8 @@ class EndpointCosignerResolver:
             raise _ProbeFailed(_ENDPOINT_CONFIGURATION_INVALID, f"invalid url: {e}") from e
         if parsed.scheme != "ssh" or not parsed.hostname:
             raise _ProbeFailed(
-                _ENDPOINT_CONFIGURATION_INVALID, f"url {endpoint.url!r} is not ssh://host[:port]"
+                _ENDPOINT_CONFIGURATION_INVALID,
+                f"url {_go_quote(str(endpoint.url))} is not ssh://host[:port]",
             )
         try:
             return SignerClient.connect_ssh(
@@ -8481,9 +8592,13 @@ def _read_witness_keys(client: "SignerClient") -> List[tuple]:
         raise _ProbeFailed(_ENDPOINT_UNREACHABLE, str(e)) from e
     if resp.status_code != 200:
         code, message = client._error_parts(resp, f"HTTP {resp.status_code}")
+        # A 401 is the connection's identity refused, whatever code it
+        # carries; only then may the locked code say the signer is locked.
+        if resp.status_code == 401:
+            raise _ProbeFailed(_ENDPOINT_AUTHENTICATION_FAILED, message)
         if code == ERR_CODE_LOCKED:
             raise _ProbeFailed(_ENDPOINT_LOCKED, message)
-        if resp.status_code in (401, 403):
+        if resp.status_code == 403:
             raise _ProbeFailed(_ENDPOINT_AUTHENTICATION_FAILED, message)
         if resp.status_code >= 500:
             raise _ProbeFailed(_ENDPOINT_UNREACHABLE, message)
@@ -8499,20 +8614,23 @@ def _read_witness_keys(client: "SignerClient") -> List[tuple]:
         if canonical is not None and canonical != address:
             raise _ProbeFailed(
                 _ENDPOINT_INVALID_METADATA,
-                f'key {index} address "{address}" is a non-canonical spelling of {canonical}',
+                f"key {index} address {_go_quote(address)} is a non-canonical spelling of "
+                f"{canonical}",
             )
         if not record["is_witness_key"] or not record["key_type"]:
             continue
         public_key = _witness_public_key_hex(record["public_key_hex"])
         if public_key is None:
             raise _ProbeFailed(
-                _ENDPOINT_INVALID_METADATA, f"witness key {address!r} has no hex public key"
+                _ENDPOINT_INVALID_METADATA,
+                f"witness key {_go_quote(address)} has no hex public key",
             )
         key_id = witness_key_id(record["key_type"], bytes.fromhex(public_key))
         if address != key_id:
             raise _ProbeFailed(
                 _ENDPOINT_INVALID_METADATA,
-                f"witness key {address!r} is not the Witness Key ID {key_id} of its key",
+                f"witness key {_go_quote(address)} is not the Witness Key ID {key_id} of its "
+                "key",
             )
         keys.append((record["key_type"], public_key, address))
     return keys
@@ -8616,7 +8734,14 @@ def _resolve_cosigner_for_target(
     ):
         cosigner_resolver = user_client._default_cosigner_resolver()
     if cosigner_resolver is not None:
-        resolved = cosigner_resolver(target)
+        try:
+            resolved = cosigner_resolver(target)
+        except Exception as e:
+            # The resolver's own error, which is never an unknown outcome,
+            # even when it was raised from one of the SDK's lost-answer
+            # marks: marked here, and otherwise passed on unchanged.
+            setattr(e, _RESOLVER_ERROR_MARK, True)
+            raise
         if isinstance(resolved, dict):
             client = resolved.get("client")
             component_key = resolved.get("component_key", "")
@@ -9832,6 +9957,12 @@ def _outcome_advice(state: str, confirmed_round: int, last_valid: int, rotating:
             f"{last_valid} has passed."
         )
     if state == OUTCOME_TOO_OLD:
+        if rotating:
+            return (
+                f"The prepared group's validity ended more than {OUTCOME_NODE_MEMORY_ROUNDS} "
+                "rounds ago and this node may no longer remember it. Look the transaction ID "
+                "up on an indexer before sending again."
+            )
         return (
             f"The group's validity ended more than {OUTCOME_NODE_MEMORY_ROUNDS} rounds ago and "
             "this node may no longer remember it. Look the transaction ID up on an indexer "
@@ -9900,11 +10031,10 @@ def _look_up_outcome(algod_client: Any, txid: str) -> tuple:
     return _LOOKUP_IN_POOL, 0
 
 
-def _resolve_outcome(algod_client: Any, error: Any) -> OutcomeReport:
-    """SignerClient.resolve_outcome. The node's round is read before the
-    lookup: a group the lookup does not find was then not in a block by a
-    round at least that late, so a round past the group's validity means it
-    can never execute."""
+def _outcome_inputs(algod_client: Any, error: Any) -> tuple[int, List[str]]:
+    """The refusals of resolve_outcome, in order: the error's type, its last
+    valid round, a submission's transaction IDs, the algod client. Returns
+    the last valid round and the IDs to report. Makes no node call."""
     if not isinstance(error, (SignOutcomeUnknownError, SubmissionUncertainError)):
         raise SignerError("not an uncertain outcome")
     last_valid = getattr(error, "last_valid", 0)
@@ -9931,6 +10061,17 @@ def _resolve_outcome(algod_client: Any, error: Any) -> OutcomeReport:
         tx_ids = []
     if algod_client is None:
         raise ValueError("algod client is required")
+    return last_valid, tx_ids
+
+
+def _resolve_outcome(algod_client: Any, error: Any) -> OutcomeReport:
+    """SignerClient.resolve_outcome. The node's round is read before the
+    lookup: a group the lookup does not find was then not in a block by a
+    round at least that late, so a round past the group's validity means it
+    can never execute."""
+    last_valid, tx_ids = _outcome_inputs(algod_client, error)
+    submission = isinstance(error, SubmissionUncertainError)
+    rotating = None if submission else cast(SignOutcomeUnknownError, error).rotating
 
     current = _node_round(algod_client)
     report = OutcomeReport(
@@ -9963,10 +10104,15 @@ def _resolve_outcome(algod_client: Any, error: Any) -> OutcomeReport:
         else:
             report.state = OUTCOME_TOO_OLD
     elif current <= last_valid:
-        # This call submitted nothing, so expiry alone settles a sign
-        # outcome: there is no too_old.
         report.state = OUTCOME_SIGNABLE
+    elif rotating is not None and current - last_valid > OUTCOME_NODE_MEMORY_ROUNDS:
+        # Signing the same prepared group again gives the same IDs, which the
+        # caller may then have submitted: the group can have confirmed, and
+        # past the node's memory not found does not say it did not.
+        report.state = OUTCOME_TOO_OLD
     else:
+        # This call submitted nothing, and the signed bytes of an account
+        # that is not rotating never leave the SDK, so expiry settles it.
         report.state = OUTCOME_EXPIRED
         report.safe_to_replace = True
     if report.state == OUTCOME_EXPIRED:
@@ -9987,9 +10133,22 @@ def _resolve_outcome(algod_client: Any, error: Any) -> OutcomeReport:
 def _wait_for_outcome(algod_client: Any, error: Any, timeout: Optional[float]) -> OutcomeReport:
     """SignerClient.wait_for_outcome. An error raised once a report has been
     made carries the last one as ``report``."""
+    # A refusal of the error comes before the time limit is read, so a bad
+    # error is never hidden behind a bad or passed limit.
+    _outcome_inputs(algod_client, error)
     with _time_limit(timeout):
         report: Optional[OutcomeReport] = None
         while True:
+            # Checked before each resolve: a limit that has passed asks the
+            # node nothing more, and before the first gives no report.
+            if _time_limit_passed():
+                ended = _time_limit_error(
+                    "waiting for the outcome"
+                    if report is None
+                    else f"waiting for the outcome, which is {report.state}"
+                )
+                ended.report = report
+                raise ended
             try:
                 report = _resolve_outcome(algod_client, error)
             except SignerError as e:

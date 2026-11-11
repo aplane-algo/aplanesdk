@@ -18,6 +18,7 @@ import {
   EndpointCosignerResolver,
   discoveryHooks,
   discoveryTiming,
+  quoteLikeGo,
   type EndpointCosignerResolverOptions,
 } from "../src/discovery.js";
 import { witnessKeyId } from "../src/witness.js";
@@ -28,6 +29,7 @@ import {
   SignerError,
   SignerUnavailableError,
   errorText,
+  markLostAnswer,
 } from "../src/errors.js";
 import { markSshSetupFailure, type SshSetupFailure } from "../src/ssh.js";
 import {
@@ -201,6 +203,62 @@ describe("Witness Key ID", () => {
   });
 });
 
+describe("quoting a value in a discovery message", () => {
+  it("quotes as Go's %q does", () => {
+    // Each expected text is what Go's fmt.Sprintf("%q", value) gives.
+    const cases: Array<[string, string]> = [
+      ["", '""'],
+      ["a1b", '"a1b"'],
+      ['a"b\\c', '"a\\"b\\\\c"'],
+      [
+        "a\"b\\c\x00\x07\x08\t\n\x0b\x0c\r\x1b\x1f\x7f \u00e9 \u0080\u0085\u009f z",
+        '"a\\"b\\\\c\\x00\\a\\b\\t\\n\\v\\f\\r\\x1b\\x1f\\x7f \u00e9 \\u0080\\u0085\\u009f z"',
+      ],
+    ];
+    for (const [value, want] of cases) {
+      assert.equal(quoteLikeGo(value), want, `quoting ${JSON.stringify(value)}`);
+    }
+  });
+
+  it("quotes a bad cosigner public key in the refusal", async () => {
+    const resolver = new EndpointCosignerResolver(registry("alpha"));
+    await assert.rejects(
+      resolver.resolve(target("a1\t\x7f\"")),
+      discoveryError('cosigner discovery: the account\'s cosigner public key "a1\\t\\x7f\\"" is not valid hex'),
+    );
+    await resolver.close();
+  });
+
+  it("quotes endpoint aliases in the messages that name them", async () => {
+    const net = new Network();
+    const odd = 'al"ph\\a\t1';
+    // The alias cannot be a host name: its endpoint has a plain URL, and its
+    // connection reaches a stand-in that lists the key.
+    net.add("odd-host", [witnessRecord(WITNESS_A)]);
+    net.behaviour.set(odd, async () => net.client("odd-host"));
+    net.add("beta", [witnessRecord(WITNESS_A)]);
+    net.install();
+    const reg = registry("beta");
+    reg.endpoints[odd] = endpointConfig(odd, "ssh://odd.example:1127");
+    const resolver = new EndpointCosignerResolver(reg);
+    await assert.rejects(
+      resolver.resolve(target(WITNESS_A)),
+      discoveryError(
+        `cosigner discovery: Witness Key ID ${id(WITNESS_A)} (${KEY_TYPE_WITNESS_FALCON1024}) is listed by endpoints ` +
+          '"al\\"ph\\\\a\\t1", "beta"; each witness key needs exactly one endpoint',
+      ),
+    );
+    await assert.rejects(
+      resolver.resolve(target(WITNESS_C)),
+      discoveryError(
+        `cosigner discovery: no endpoint lists Witness Key ID ${id(WITNESS_C)} (${KEY_TYPE_WITNESS_FALCON1024}); ` +
+          'endpoints: "al\\"ph\\\\a\\t1" ok, "beta" ok',
+      ),
+    );
+    await resolver.close();
+  });
+});
+
 describe("EndpointCosignerResolver", () => {
   it("routes a key to the one endpoint that lists it, under its Witness Key ID", async () => {
     const net = new Network();
@@ -357,6 +415,56 @@ describe("EndpointCosignerResolver", () => {
     await resolver.close();
   });
 
+  it("reads a refusal's status before its code: a 401 is never locked", async () => {
+    const net = new Network();
+    const failures: Array<[string, (endpoint: CosignerEndpoint) => void, string]> = [
+      ["a-401-locked", (endpoint) => {
+        endpoint.keysReply = () => ({ status: 401, body: { error: "signer is locked", code: "locked" } });
+      }, "authentication failed"],
+      ["b-403-locked", (endpoint) => {
+        endpoint.keysReply = () => ({ status: 403, body: { error: "signer is locked", code: "locked" } });
+      }, "locked"],
+      ["c-503-locked", (endpoint) => {
+        endpoint.keysReply = () => ({ status: 503, body: { error: "signer is locked", code: "locked" } });
+      }, "locked"],
+    ];
+    for (const [alias, set] of failures) set(net.add(alias, [witnessRecord(WITNESS_B)]));
+    net.install();
+    const resolver = new EndpointCosignerResolver(registry(...failures.map(([alias]) => alias)));
+    const states = failures.map(([alias, , state]) => `"${alias}" ${state}`).join(", ");
+    await assert.rejects(
+      resolver.resolve(target(WITNESS_A)),
+      discoveryError(
+        `cosigner discovery: no endpoint lists Witness Key ID ${id(WITNESS_A)} (${KEY_TYPE_WITNESS_FALCON1024}); endpoints: ${states}`,
+      ),
+    );
+    await resolver.close();
+  });
+
+  it("reads a /keys body that breaks as a transport failure, apart from one that does not decode", async () => {
+    const net = new Network();
+    const failures: Array<[string, (endpoint: CosignerEndpoint) => void, string]> = [
+      // A body that does not arrive whole is not an unreadable answer.
+      ["b-cut-off", (endpoint) => {
+        endpoint.keysReply = () => ({ brokenAfter: '{"count": 1, "keys": [' });
+      }, "unreachable"],
+      ["c-unreadable", (endpoint) => {
+        endpoint.keysReply = () => ({ raw: '{"count": 1, "keys": [' });
+      }, "invalid cosigner metadata"],
+    ];
+    for (const [alias, set] of failures) set(net.add(alias, [witnessRecord(WITNESS_B)]));
+    net.install();
+    const resolver = new EndpointCosignerResolver(registry(...failures.map(([alias]) => alias)));
+    const states = failures.map(([alias, , state]) => `"${alias}" ${state}`).join(", ");
+    await assert.rejects(
+      resolver.resolve(target(WITNESS_A)),
+      discoveryError(
+        `cosigner discovery: no endpoint lists Witness Key ID ${id(WITNESS_A)} (${KEY_TYPE_WITNESS_FALCON1024}); endpoints: ${states}`,
+      ),
+    );
+    await resolver.close();
+  });
+
   it("maps the other failures to the endpoint's state", async () => {
     discoveryTiming.endpointMs = 40;
     const net = new Network();
@@ -369,6 +477,9 @@ describe("EndpointCosignerResolver", () => {
         endpoint.keysReply = () => "drop";
       }, "unreachable"],
       ["c-hangs", () => net.behaviour.set("c-hangs", () => new Promise<SignerClient>(() => undefined)), "unreachable"],
+      ["c2-body-stalls", (endpoint) => {
+        endpoint.keysReply = () => ({ stallsAfter: '{"count": 1, "keys": [' });
+      }, "unreachable"],
       ["d-bad-hex", (endpoint) => {
         endpoint.keys.push({ ...witnessRecord(WITNESS_C), public_key_hex: "a1b" });
       }, "invalid cosigner metadata"],
@@ -834,6 +945,51 @@ describe("the cosigned sequence's cosigner resolution", () => {
     );
   });
 
+  // A resolver that throws what a lost answer elsewhere left it: an Error
+  // whose cause carries the mark, or the marked error itself.
+  const lostElsewhere = () => markLostAnswer(new SignerError("Server returned invalid JSON"), "sdk-elsewhere");
+  for (const [when, mayTakeListedPath] of [["up front", false], ["late", true]] as Array<[string, boolean]>) {
+    for (const [what, thrown] of [
+      ["an Error whose cause is a lost answer", () => new Error("cosigner lookup failed", { cause: lostElsewhere() })],
+      ["a lost answer itself", lostElsewhere],
+    ] as Array<[string, () => Error]>) {
+      it(`a resolver that throws ${what}, ${when}, is a plain error passed on as it is`, async () => {
+        const net = new Network();
+        const user = new CosignedUser([cosignedKey(account, WITNESS_A, mayTakeListedPath)]);
+        user.pathFor = () => "spending_rekey";
+        net.install(user.handle);
+        const own = thrown();
+        const keysBefore = Object.keys(own);
+        const { resolver, calls } = recordingResolver(user, async () => {
+          throw own;
+        });
+        const node = new FakeAlgod();
+        await assert.rejects(
+          new SignerClient(SIGNER).sendPrepared(
+            node as any,
+            group(cosignedPayment(account, mayTakeListedPath ? fakeAddress(23) : undefined)),
+            { cosignerResolver: resolver },
+          ),
+          (error: unknown) => {
+            assert.ok(!(error instanceof SignOutcomeUnknownError), `error is an unknown outcome: ${String(error)}`);
+            assert.equal(error, own, `error is not the resolver's own: ${String(error)}`);
+            assert.equal(errorText(error), errorText(own), "the resolver's error text changed");
+            assert.deepEqual(Object.keys(own), keysBefore, "the resolver's error gained an enumerable property");
+            return true;
+          },
+        );
+        assert.equal(calls.length, 1, `resolver calls ${calls.length}`);
+        assert.equal(
+          calls[0].before.includes("/sign/component"),
+          mayTakeListedPath,
+          `resolved ${mayTakeListedPath ? "before" : "after"} the base component: ${calls[0].before.join(", ")}`,
+        );
+        assert.ok(!user.paths.includes("/sign/assemble"), `the group was assembled: ${user.paths.join(", ")}`);
+        assert.equal(node.submitted.length, 0, "something was submitted");
+      });
+    }
+  }
+
   it("a listed rekey needs no cosigner, configured or not", async () => {
     const net = new Network();
     const user = new CosignedUser([cosignedKey(account, WITNESS_A, true)]);
@@ -934,6 +1090,74 @@ describe("the cosigned sequence's cosigner resolution", () => {
     );
   });
 
+  it("resolves late targets in the order of the witness keys they need too", async () => {
+    const net = new Network();
+    const first = fakeAddress(25);
+    const second = fakeAddress(26);
+    // Both may take the listed path, so both are resolved after the base
+    // component, which says each needs the cosigner.
+    const user = new CosignedUser([cosignedKey(first, WITNESS_C, true), cosignedKey(second, WITNESS_A, true)]);
+    user.pathFor = () => "spending_rekey";
+    net.add("alpha", []);
+    net.install(user.handle);
+    const rekeys = () => group(cosignedPayment(first, fakeAddress(23)), cosignedPayment(second, fakeAddress(23)));
+    const { resolver, calls } = recordingResolver(user, async () => {
+      throw new RangeError("stop");
+    });
+    await assert.rejects(new SignerClient(SIGNER).sendPrepared(new FakeAlgod() as any, rekeys(), { cosignerResolver: resolver }), RangeError);
+    assert.deepEqual(calls.map((call) => call.index), [1], "the first key in order was not resolved first");
+    assert.ok(calls[0].before.includes("/sign/component"), `resolved before the base component: ${calls[0].before.join(", ")}`);
+    // Discovery reports the first missing key in that order.
+    await assert.rejects(
+      new SignerClient(SIGNER).sendPrepared(new FakeAlgod() as any, rekeys(), {
+        cosignerResolver: new EndpointCosignerResolver(registry("alpha")),
+      }),
+      discoveryError(
+        `cosigner discovery: no endpoint lists Witness Key ID ${id(WITNESS_A)} (${KEY_TYPE_WITNESS_FALCON1024}); endpoints: "alpha" ok`,
+      ),
+    );
+  });
+
+  it("sends late cosigner requests in the order of their first target position", async () => {
+    const net = new Network();
+    const accounts = [fakeAddress(25), fakeAddress(26), fakeAddress(27)];
+    // Position 0 and 2 need beta's key, position 1 alpha's: alpha's key is
+    // resolved first, and beta is still asked first.
+    const alpha = net.add("alpha", [witnessRecord(WITNESS_A)]);
+    const beta = net.add("beta", [witnessRecord(WITNESS_B)]);
+    const user = new CosignedUser([
+      cosignedKey(accounts[0], WITNESS_B, true),
+      cosignedKey(accounts[1], WITNESS_A, true),
+      cosignedKey(accounts[2], WITNESS_B, true),
+    ]);
+    user.pathFor = () => "spending_rekey";
+    const asked: string[] = [];
+    for (const endpoint of [alpha, beta]) {
+      const handle = endpoint.handle;
+      endpoint.handle = (path, body) => {
+        if (path === "/sign/component") asked.push(endpoint.alias);
+        return handle(path, body);
+      };
+    }
+    net.install(user.handle);
+    const endpoints = new EndpointCosignerResolver(registry("alpha", "beta"));
+    const resolvedFor: number[] = [];
+    const resolver: CosignedCosignerResolver = async (item, options) => {
+      resolvedFor.push(item.targetIndex);
+      return endpoints.resolve(item, options);
+    };
+    const result = await new SignerClient(SIGNER).sendPrepared(
+      new FakeAlgod() as any,
+      group(...accounts.map((account) => cosignedPayment(account, fakeAddress(23)))),
+      { cosignerResolver: resolver },
+    );
+    assert.equal(result.outcome, "confirmed", "the group was not sent");
+    assert.deepEqual(resolvedFor, [1, 0, 2], `resolution order: ${resolvedFor.join(", ")}`);
+    assert.deepEqual(asked, ["beta", "alpha"], `cosigner request order: ${asked.join(", ")}`);
+    assert.deepEqual(beta.componentRequests[0].targets.map((item: any) => item.target_index), [0, 2], "beta's targets");
+    await endpoints.close();
+  });
+
   it("sends with an EndpointCosignerResolver, each target routed to its endpoint", async () => {
     const net = new Network();
     const first = fakeAddress(25);
@@ -994,6 +1218,29 @@ describe("the default cosigner resolver of a client created from a data director
     await client.close();
     assert.deepEqual(net.closed, ["alpha"], "the cosigner connection was not closed with the client");
   });
+
+  for (const usedFirst of [true, false]) {
+    it(`is not made again once the client is closed${usedFirst ? "" : ", even if it was never used"}`, async () => {
+      if (usedFirst) {
+        await client.sendPrepared(new FakeAlgod() as any, group(cosignedPayment(account)));
+      }
+      await client.close();
+      const connects = [...net.connects];
+      const keysReads = net.endpoints.get("alpha")?.count("/keys");
+      const approvals = user.approvalRequests().length;
+      const node = new FakeAlgod();
+      await assert.rejects(client.sendPrepared(node as any, group(cosignedPayment(account))), (error: unknown) => {
+        assert.ok(!(error instanceof SignOutcomeUnknownError), `error is an unknown outcome: ${String(error)}`);
+        assert.ok(!(error instanceof CosignerDiscoveryError), `discovery ran after close: ${String(error)}`);
+        return true;
+      });
+      assert.deepEqual(net.connects, connects, "a cosigner connection was opened after close");
+      assert.equal(net.endpoints.get("alpha")?.count("/keys"), keysReads, "a cosigner's keys were read after close");
+      assert.equal(net.endpoints.get("alpha")?.count("/sign/component"), usedFirst ? 1 : 0, "the cosigner was asked after close");
+      assert.equal(user.approvalRequests().length, approvals, "an approval-bearing request was made after close");
+      assert.equal(node.submitted.length, 0, "something was submitted after close");
+    });
+  }
 
   it("serves the lower-level cosigned call too", async () => {
     const { signPreparedCosignedGroup } = await import("../src/client.js");

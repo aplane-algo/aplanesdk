@@ -17,7 +17,8 @@ import { generateKeyPairSync } from "crypto";
 import ssh2 from "ssh2";
 import { SignerClient } from "../src/client.js";
 import { EndpointCosignerResolver } from "../src/discovery.js";
-import { CosignerDiscoveryError, errorText } from "../src/errors.js";
+import { CosignerDiscoveryError, SignerError, errorText } from "../src/errors.js";
+import { sshSetupFailure } from "../src/ssh.js";
 import { witnessKeyId } from "../src/witness.js";
 import { KEY_TYPE_WITNESS_FALCON1024 } from "../src/types.js";
 import { hexToBytes } from "../src/encoding.js";
@@ -25,7 +26,7 @@ import { fakeAddress } from "./fakeSigner.js";
 import { FakeAlgod, type FakeHandler } from "./fakeNetwork.js";
 import { CosignedUser, CosignerEndpoint, cosignedKey, cosignedPayment, group, witnessRecord } from "./fakeCosigned.js";
 
-const { Server, utils: sshUtils } = ssh2;
+const { Client, Server, utils: sshUtils } = ssh2;
 const WITNESS = "a1".repeat(32);
 
 function rsaPem(): string {
@@ -113,15 +114,21 @@ async function startNode(handler: FakeHandler): Promise<SshNode> {
 
 /** A data directory with endpoints.yaml, an identity and known_hosts pins. */
 function dataDir(
-  endpoints: Array<{ alias: string; role: string; node: SshNode; pin?: string | null }>,
+  endpoints: Array<{ alias: string; role: string; node: SshNode; pin?: string | null; identity?: string }>,
 ): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-discovery-"));
   fs.mkdirSync(path.join(dir, ".ssh"));
   fs.writeFileSync(path.join(dir, ".ssh", "id_rsa"), rsaPem(), { mode: 0o600 });
   const lines = ["schema_version: 2", "endpoints:"];
   const pins: string[] = [];
-  for (const { alias, role, node, pin } of endpoints) {
-    lines.push(`  ${alias}:`, `    role: ${role}`, `    url: ssh://127.0.0.1:${node.port}`, "    identity_file: .ssh/id_rsa");
+  for (const { alias, role, node, pin, identity } of endpoints) {
+    // identity, when given, is this endpoint's own identity file's contents.
+    let identityFile = ".ssh/id_rsa";
+    if (identity !== undefined) {
+      identityFile = `.ssh/id_${alias}`;
+      fs.writeFileSync(path.join(dir, identityFile), identity, { mode: 0o600 });
+    }
+    lines.push(`  ${alias}:`, `    role: ${role}`, `    url: ssh://127.0.0.1:${node.port}`, `    identity_file: ${identityFile}`);
     // null leaves the host unpinned; a string pins that key in its place.
     if (pin === null) continue;
     const blob = publicBlob(pin ?? node.hostKey);
@@ -136,6 +143,19 @@ const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => {
   while (cleanups.length > 0) await cleanups.pop()?.();
 });
+
+/** promise, or a failure naming what did not settle within ms. */
+async function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new assert.AssertionError({ message: `${what} did not settle within ${ms} ms` })), ms);
+  });
+  try {
+    return await Promise.race([promise, late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 async function waitFor(condition: () => boolean, what: string): Promise<void> {
   const deadline = Date.now() + 5_000;
@@ -246,6 +266,143 @@ describe("cosigner discovery over SSH", () => {
         );
         return true;
       },
+    );
+  });
+});
+
+/** Identity files ssh2 cannot use: it throws on them before any socket exists. */
+function unusableIdentities(): Array<[string, string]> {
+  const encrypted = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs1", format: "pem", cipher: "aes-256-cbc", passphrase: "secret" },
+    publicKeyEncoding: { type: "pkcs1", format: "pem" },
+  }).privateKey;
+  const publicOnly = `ssh-rsa ${publicBlob(rsaPem()).toString("base64")}\n`;
+  return [
+    ["garbage", "this is not an SSH key\n"],
+    ["empty", ""],
+    ["passphrase-protected", encrypted],
+    ["public key only", publicOnly],
+  ];
+}
+
+describe("an SSH identity file that cannot be used", () => {
+  const account = fakeAddress(21);
+
+  async function node(): Promise<SshNode> {
+    const started = await startNode(new CosignerEndpoint("alpha", [witnessRecord(WITNESS)]).handle);
+    cleanups.push(() => started.close());
+    return started;
+  }
+
+  function keyFile(contents: string): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-identity-"));
+    cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const file = path.join(dir, "id_bad");
+    fs.writeFileSync(file, contents, { mode: 0o600 });
+    fs.writeFileSync(path.join(dir, "known_hosts"), "", { mode: 0o600 });
+    return file;
+  }
+
+  for (const [name, contents] of unusableIdentities()) {
+    it(`connectSsh fails at once with a configuration error: ${name}`, async () => {
+      const server = await node();
+      const file = keyFile(contents);
+      await within(
+        assert.rejects(
+          SignerClient.connectSsh("127.0.0.1", file, {
+            sshPort: server.port,
+            knownHostsPath: path.join(path.dirname(file), "known_hosts"),
+            trustOnFirstUse: true,
+          }),
+          (error: unknown) => {
+            assert.ok(error instanceof SignerError, `error is ${String(error)}`);
+            assert.ok(errorText(error).startsWith(`cannot parse SSH key ${file}: `), `error text ${errorText(error)}`);
+            assert.equal(sshSetupFailure(error), "identity", "the failure is not marked as the identity file's");
+            return true;
+          },
+        ),
+        3_000,
+        "connectSsh",
+      );
+      assert.equal(server.sessions(), 0, "an SSH session was opened");
+    });
+  }
+
+  it("fromEnv fails at once with a configuration error", async () => {
+    const server = await node();
+    const dir = dataDir([{ alias: "primary", role: "signer", node: server, identity: "this is not an SSH key\n" }]);
+    cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    await within(
+      assert.rejects(SignerClient.fromEnv({ dataDir: dir }), (error: unknown) => {
+        assert.ok(error instanceof SignerError, `error is ${String(error)}`);
+        assert.match(errorText(error), /^cannot parse SSH key .*id_primary: /, "error text");
+        assert.equal(sshSetupFailure(error), "identity", "the failure is not marked as the identity file's");
+        return true;
+      }),
+      3_000,
+      "fromEnv",
+    );
+  });
+
+  it("a cosigner endpoint with such an identity is configuration invalid, at once", async () => {
+    const server = await node();
+    const dir = dataDir([{ alias: "alpha", role: "cosigner", node: server, identity: "this is not an SSH key\n" }]);
+    cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const resolver = EndpointCosignerResolver.fromDataDir(dir);
+    cleanups.push(() => resolver.close());
+    const id = witnessKeyId(KEY_TYPE_WITNESS_FALCON1024, hexToBytes(WITNESS));
+    await within(
+      assert.rejects(
+        resolver.resolve({
+          targetIndex: 0,
+          cosignedAccount: account,
+          cosignerPublicKeyHex: WITNESS,
+          cosignerComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
+          logicSigResources: { programBytes: 1, argumentBytes: 1, maxOpcodeCost: 1 },
+        }),
+        (error: unknown) => {
+          assert.ok(error instanceof CosignerDiscoveryError, `error is ${String(error)}`);
+          assert.equal(
+            errorText(error),
+            `cosigner discovery: no endpoint lists Witness Key ID ${id} (${KEY_TYPE_WITNESS_FALCON1024}); ` +
+              'endpoints: "alpha" configuration invalid',
+            "discovery text",
+          );
+          return true;
+        },
+      ),
+      3_000,
+      "discovery",
+    );
+  });
+
+  it("an option ssh2 refuses before any socket fails the setup at once, and close does not wait", async () => {
+    const server = await node();
+    const file = keyFile(rsaPem());
+    const connect = Client.prototype.connect;
+    Client.prototype.connect = function refuse(): never {
+      throw new Error("Invalid username");
+    };
+    cleanups.push(() => {
+      Client.prototype.connect = connect;
+    });
+    await within(
+      assert.rejects(
+        SignerClient.connectSsh("127.0.0.1", file, {
+          sshPort: server.port,
+          knownHostsPath: path.join(path.dirname(file), "known_hosts"),
+          trustOnFirstUse: true,
+        }),
+        (error: unknown) => {
+          assert.ok(error instanceof SignerError, `error is ${String(error)}`);
+          assert.equal(errorText(error), "cannot set up the SSH connection: Invalid username", "error text");
+          assert.equal(sshSetupFailure(error), "options", "the failure is not marked as a configuration error");
+          return true;
+        },
+      ),
+      3_000,
+      "connectSsh",
     );
   });
 });

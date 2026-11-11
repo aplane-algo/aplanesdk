@@ -270,7 +270,20 @@ export async function resolveOutcome(
       fields,
     );
   }
-  // This call never submitted, so expiry alone settles it.
+  // Signing the same prepared group again gives the same IDs, which the
+  // caller may then have submitted: a rotating group can have confirmed, and
+  // past the margin the node may no longer remember it. A prepared group with
+  // no IDs to look up (built by hand) gets the same, safer, answer.
+  if (rotating && current > lastValid + NODE_MEMORY_ROUNDS) {
+    return report(
+      OUTCOME_TOO_OLD,
+      "The prepared group's validity ended more than 500 rounds ago and this node may no longer remember it. " +
+        "Look the transaction ID up on an indexer before sending again.",
+      fields,
+    );
+  }
+  // Within the margin, or for a group whose signed bytes never left the SDK,
+  // expiry settles it.
   return report(
     OUTCOME_EXPIRED,
     "No signature released by that request can execute any more. It is safe to build a new one.",

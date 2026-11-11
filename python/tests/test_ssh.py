@@ -15,6 +15,7 @@ from aplanesdk.signer import (
     SSH_USERNAME,
     EnrollmentError,
     SignerError,
+    _SSHConfigError,
     _SSHTunnel,
     _ssh_fingerprint_sha256,
     request_enrollment,
@@ -61,6 +62,17 @@ def test_host_key_verification_persists_tofu_and_rejects_mismatch(tmp_path):
     _tunnel(known_hosts, False)._verify_host_key(key)
     with pytest.raises(SignerError, match="mismatch"):
         _tunnel(known_hosts, False)._verify_host_key(paramiko.RSAKey.generate(1024))
+
+
+def test_a_host_key_that_cannot_be_saved_is_a_configuration_error(tmp_path):
+    # The known_hosts directory cannot be made: a file stands where it goes.
+    blocker = tmp_path / "not_a_directory"
+    blocker.write_text("")
+    known_hosts = blocker / "known_hosts"
+    with pytest.raises(_SSHConfigError) as excinfo:
+        _tunnel(known_hosts, True)._verify_host_key(paramiko.RSAKey.generate(1024))
+    assert str(excinfo.value).startswith(f"cannot save the host key to {known_hosts}: ")
+    assert isinstance(excinfo.value.__cause__, OSError)
 
 
 def _start_stalled_peer():

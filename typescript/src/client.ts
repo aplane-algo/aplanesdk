@@ -6,7 +6,7 @@ import * as path from "path";
 import * as net from "net";
 import { randomBytes } from "crypto";
 import algosdk, { type Algodv2, type Transaction } from "algosdk";
-import type { Client as SSHClient, ClientChannel } from "ssh2";
+import type { Client as SSHClient, ClientChannel, ConnectConfig } from "ssh2";
 import type {
   KeyInfo,
   AccountInfoLookup,
@@ -91,8 +91,10 @@ import {
   UnsupportedSigningFlowError,
   callerAborted,
   isLostAnswer,
+  isResolverError,
   lostAnswerRequestId,
   markLostAnswer,
+  markResolverError,
 } from "./errors.js";
 import {
   encodeTransaction,
@@ -311,13 +313,20 @@ async function resolveCosignerForTarget(
     ?? (options.cosignerClient ? undefined : defaultCosignerResolver(options.userClient));
   if (resolver) {
     const resolveOptions: CosignedCosignerResolveOptions = { signal: options.signal };
-    let resolved: CosignedCosignerResolution;
+    let resolve: () => CosignedCosignerResolution | Promise<CosignedCosignerResolution>;
     if (typeof resolver === "function") {
-      resolved = await resolver(target, resolveOptions);
+      resolve = () => resolver(target, resolveOptions);
     } else if (resolver && typeof resolver.resolve === "function") {
-      resolved = await resolver.resolve(target, resolveOptions);
+      resolve = () => resolver.resolve(target, resolveOptions);
     } else {
       throw new SignerError("cosignerResolver must be a function or an object with a resolve method");
+    }
+    let resolved: CosignedCosignerResolution;
+    try {
+      resolved = await resolve();
+    } catch (error) {
+      // Never an unknown outcome, whatever it carries: see markResolverError.
+      throw markResolverError(error);
     }
     if (!resolved?.client) {
       throw new SignerError(`cosigner resolver returned no client for prepared transaction ${target.targetIndex}`);
@@ -521,11 +530,12 @@ async function requestBoundedPrimaryPassthrough(
  * an error that is not the SDK's own, thrown while the answer was checked,
  * decoded or described. It is not a refusal, because a signature may be out,
  * so it is marked as the request's lost answer, keeping its class and
- * message. The SDK's own error (a refusal), an error already marked, and any
- * error before a request has answered (requestId "") pass as they are.
+ * message. The SDK's own error (a refusal), an error already marked, a
+ * cosigner resolver's error, and any error before a request has answered
+ * (requestId "") pass as they are.
  */
 function faultAfterAnswer(error: unknown, requestId: string): unknown {
-  if (requestId === "" || error instanceof SignerError || isLostAnswer(error)) {
+  if (requestId === "" || error instanceof SignerError || isLostAnswer(error) || isResolverError(error)) {
     return error;
   }
   markLostAnswer(error, requestId);
@@ -744,11 +754,20 @@ export async function signPreparedCosignedGroup(
   // The user side is complete, including ordinary primary positions. Only
   // now may the SDK disclose the frozen group to the cosigner endpoint, and
   // only for the targets that need it: a listed rekey takes no cosigner.
-  const cosignerGroups: Array<{ client: SignerClient; componentKey: string; indices: number[] }> = [];
-  for (const target of targets) {
+  const needsCosigner = targets.filter((target) => {
     const component = components.get(target.targetIndex);
-    if (component && !componentNeedsCosigner(component)) continue;
-    const resolved = cosigners.get(target.targetIndex) ?? await resolveCosignerForTarget(target, options);
+    return !component || componentNeedsCosigner(component);
+  });
+  // The targets not resolved up front are resolved now, in the order of the
+  // witness key each needs, as the up-front ones were.
+  for (const target of [...needsCosigner].sort(byRequiredWitnessKey)) {
+    if (cosigners.has(target.targetIndex)) continue;
+    cosigners.set(target.targetIndex, await resolveCosignerForTarget(target, options));
+  }
+  // The requests go out in the order of their first target position.
+  const cosignerGroups: Array<{ client: SignerClient; componentKey: string; indices: number[] }> = [];
+  for (const target of needsCosigner) {
+    const resolved = cosigners.get(target.targetIndex) as CosignedCosignerResolution;
     let group = cosignerGroups.find(
       (candidate) => candidate.client === resolved.client &&
         candidate.componentKey === (resolved.componentKey || ""),
@@ -1387,8 +1406,12 @@ class SSHTunnel {
       ), "known-hosts");
     }
 
-    // Dynamically import ssh2
-    const { Client } = await import("ssh2");
+    // Dynamically import ssh2. It is CommonJS, and Node's ESM loader does not
+    // see every name it exports (utils among them): read those from its
+    // module object.
+    const ssh2 = await import("ssh2");
+    const { Client } = ssh2;
+    const { utils } = ssh2.default ?? ssh2;
 
     let privateKey: string;
     try {
@@ -1396,6 +1419,22 @@ class SSHTunnel {
     } catch (error) {
       throw markSshSetupFailure(
         new SignerError(`cannot read SSH key ${options.privateKeyPath}: ${errorText(error)}`),
+        "identity",
+      );
+    }
+    // A key that cannot be parsed, or that needs a passphrase, is the
+    // client's own configuration: it fails here, before any connection.
+    const parsedKey = utils.parseKey(privateKey);
+    if (parsedKey instanceof Error) {
+      throw markSshSetupFailure(
+        new SignerError(`cannot parse SSH key ${options.privateKeyPath}: ${parsedKey.message}`),
+        "identity",
+      );
+    }
+    const firstKey = Array.isArray(parsedKey) ? parsedKey[0] : parsedKey;
+    if (!firstKey || firstKey.getPrivatePEM() === null) {
+      throw markSshSetupFailure(
+        new SignerError(`cannot parse SSH key ${options.privateKeyPath}: it holds no private key`),
         "identity",
       );
     }
@@ -1411,7 +1450,9 @@ class SSHTunnel {
 
     const connection = new Promise<void>((resolve, reject) => {
       this.sshClient = new Client();
-      this.sshClosed = false;
+      // Closed until connect() has opened a socket: before that, ssh2 never
+      // emits close, so close() must not wait for it.
+      this.sshClosed = true;
       // ssh2 reports a peer that disconnects mid-handshake with close alone
       // and clears readyTimeout, so an unsettled setup must fail here.
       this.sshClient.once("close", () => {
@@ -1489,7 +1530,7 @@ class SSHTunnel {
 
       // The enrolled key is the only credential: public-key authentication
       // under the fixed client username, nothing else.
-      this.sshClient.connect({
+      const connectOptions: ConnectConfig = {
         host: options.host,
         port: options.sshPort,
         username: SSH_USERNAME,
@@ -1538,7 +1579,19 @@ class SSHTunnel {
           hostKeyFailure = "host-key-mismatch";
           return false;
         },
-      });
+      };
+      try {
+        this.sshClient.connect(connectOptions);
+      } catch (error) {
+        // ssh2 refuses options it cannot use by throwing, before a socket
+        // exists: no event follows, so the setup fails here.
+        failSetup(markSshSetupFailure(
+          new SignerError(`cannot set up the SSH connection: ${errorText(error)}`),
+          "options",
+        ));
+        return;
+      }
+      if (!settled) this.sshClosed = false;
     });
 
     await connection;
@@ -1813,28 +1866,39 @@ function emptySendResult(flow: string, originalCount: number): SendResult {
 }
 
 /**
- * Read a 200 answer as shape. A body that does not parse, or parses to the
- * wrong shape, is unreadable. Given requestId, the answer is that of an
- * approval-bearing request: the signer may have acted, so the error is marked
- * as the request's lost answer. Without one, the request releases no
- * signature and the error is a plain one.
+ * Read a 200 answer as shape. A body that does not arrive whole (the
+ * connection fails while it is read) is a failed exchange, a
+ * SignerUnavailableError; a body that arrives but does not parse, or parses to
+ * the wrong shape, is unreadable, a SignerError. Given requestId, the answer
+ * is that of an approval-bearing request: the signer may have acted, so
+ * either error is marked as the request's lost answer. Without one, the
+ * request releases no signature and the error is a plain one.
  */
 async function readSignerAnswer<T>(response: Response, shape: AnswerShape, requestId?: string): Promise<T> {
-  const unreadable = (message: string): SignerError => {
-    const error = new SignerError(message);
-    return requestId === undefined ? error : markLostAnswer(error, requestId);
-  };
+  const lost = <E extends SignerError>(error: E): E =>
+    requestId === undefined ? error : markLostAnswer(error, requestId);
   let data: unknown;
   try {
     data = await response.json();
-  } catch {
-    throw unreadable("Server returned invalid JSON");
+  } catch (error) {
+    // Decoding refuses a body that arrived with a SyntaxError, and only so;
+    // any other failure came while the body was read.
+    if (isSyntaxError(error)) {
+      throw lost(new SignerError("Server returned invalid JSON"));
+    }
+    throw lost(new SignerUnavailableError(`Failed to read the signer's answer: ${errorText(error)}`));
   }
   const read = readAnswer<T>(shape, data);
   if ("problem" in read) {
-    throw unreadable(`Server returned a malformed response: ${read.problem}`);
+    throw lost(new SignerError(`Server returned a malformed response: ${read.problem}`));
   }
   return read.answer;
+}
+
+/** Whether error is JSON decoding's refusal: a SyntaxError, from any realm. */
+function isSyntaxError(error: unknown): boolean {
+  return error instanceof SyntaxError ||
+    (typeof error === "object" && error !== null && (error as { name?: unknown }).name === "SyntaxError");
 }
 
 /**
@@ -4769,8 +4833,9 @@ export class SignerClient {
       } catch (error) {
         // The sequence makes several approval-bearing requests. One that
         // ended with no answer may have released a signature, and the last
-        // of them releases the whole group. The mark names the request.
-        if (isLostAnswer(error)) {
+        // of them releases the whole group. The mark names the request. A
+        // cosigner resolver's own error is passed on as it is.
+        if (isLostAnswer(error) && !isResolverError(error)) {
           throw new SignOutcomeUnknownError({ requestId: lostAnswerRequestId(error), lastValid, cause: error });
         }
         throw error;

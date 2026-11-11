@@ -57,10 +57,11 @@ export function validateEnrollmentLabel(label: string): void {
  * Why an SSH connection could not be set up, when the cause is the client's
  * own files or the host's key rather than the network: the host's key differs
  * from the pinned one, the host has no pinned key and trust-on-first-use is
- * off, the known_hosts file cannot be read or written, or the client's
- * identity file cannot be read.
+ * off, the known_hosts file cannot be read or written, the client's identity
+ * file cannot be read or parsed, or the SSH library refused the connection's
+ * options before any socket was opened.
  */
-export type SshSetupFailure = "host-key-mismatch" | "unknown-host-key" | "known-hosts" | "identity";
+export type SshSetupFailure = "host-key-mismatch" | "unknown-host-key" | "known-hosts" | "identity" | "options";
 
 // Under a registered symbol, so the mark is the same whichever build of the
 // package made the error.

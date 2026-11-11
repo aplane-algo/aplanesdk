@@ -52,8 +52,7 @@ def main():
             # A group that was signed keeps its bytes and IDs in the error.
             # Never send again until its outcome is known: both could execute.
             # The node says where it stands.
-            report = signer.resolve_outcome(algod_client, error)
-            print(f"Outcome of {error.tx_ids[0]} ({error.stage}): {report.state}. {report.advice}")
+            print_outcome(signer, algod_client, error)
             raise
         except SignOutcomeUnknownError as error:
             # The signer may have released a signature this call never saw.
@@ -61,10 +60,7 @@ def main():
             # (until error.last_valid): both could. A rotating account's
             # prepared group, in error.rotating, can be signed again with
             # signer.sign_prepared_rotating.
-            report = signer.resolve_outcome(algod_client, error)
-            print(
-                f"Sign request {error.request_id or 'unnamed'}: {report.state}. {report.advice}"
-            )
+            print_outcome(signer, algod_client, error)
             raise
 
         # The signer may raise the fee or add transactions, so the ID comes
@@ -75,6 +71,25 @@ def main():
         )
         if result.rotating is not None:
             print(f"Rotated from stage {result.rotating.stage} to stage {result.rotating.target}")
+
+
+def print_outcome(signer, algod_client, error):
+    """Print an uncertain outcome and where the node says it stands. It signs
+    and submits nothing. When the node cannot be asked, the error still
+    stands, and is raised next as it was."""
+    if isinstance(error, SubmissionUncertainError):
+        print(f"Outcome unknown for {', '.join(error.tx_ids)} ({error.stage}): {error}")
+    else:
+        print(f"Sign outcome unknown (request {error.request_id or 'unnamed'}): {error}")
+    try:
+        report = signer.resolve_outcome(algod_client, error)
+    except Exception as check_error:
+        print(
+            f"Could not check the outcome ({check_error}); look the transaction up "
+            "before sending again."
+        )
+        return
+    print(f"{report.state}: {report.advice}")
 
 
 if __name__ == "__main__":

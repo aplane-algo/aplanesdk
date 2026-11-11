@@ -277,6 +277,10 @@ class TestChoosing:
         net = network(
             {
                 "unauth": Endpoint(answer=reply(401, {"error": "no", "code": "unauthorized"})),
+                # A 401 is the identity refused, even with the locked code.
+                "unauthlocked": Endpoint(
+                    answer=reply(401, {"error": "signer is locked", "code": "locked"})
+                ),
                 "spelled": Endpoint(
                     [{"address": _respelled(fake_signer.test_address(7)), "key_type": "ed25519"}]
                 ),
@@ -295,7 +299,7 @@ class TestChoosing:
             f"cosigner discovery: no endpoint lists Witness Key ID {key_id} ({WITNESS}); "
             'endpoints: "badurl" configuration invalid, "lockedfive" locked, '
             '"spelled" invalid cosigner metadata, "teapot" configuration invalid, '
-            '"unauth" authentication failed'
+            '"unauth" authentication failed, "unauthlocked" authentication failed'
         )
 
     def test_one_bad_record_makes_the_whole_listing_invalid(self, network):
@@ -359,6 +363,40 @@ class TestChoosing:
         )
         assert net.connects == []
 
+    def test_a_bad_value_is_quoted_as_go_quotes_it(self, network):
+        net = network({"alpha": Endpoint([witness_record(PUBLIC_A)])})
+        with net.resolver() as resolver, pytest.raises(CosignerDiscoveryError) as excinfo:
+            resolver.resolve('ab"c\\d\x01\n\x7f', WITNESS)
+        assert str(excinfo.value) == (
+            "cosigner discovery: the account's cosigner public key "
+            '"ab\\"c\\\\d\\x01\\n\\x7f" is not valid hex'
+        )
+
+    def test_odd_aliases_are_quoted_as_go_quotes_them(self):
+        # A hand-built registry is not held to the alias rules endpoints.yaml
+        # is read with.
+        registry = ClientEndpointRegistry(
+            endpoints={
+                'odd"one\t': ClientEndpointConfig(role="cosigner", url="ssh://odd.example:1"),
+                "back\\slash": ClientEndpointConfig(role="cosigner", url="ssh://b.example:1"),
+            }
+        )
+        with EndpointCosignerResolver(registry=registry) as resolver:
+            resolver._connect = _raises_from_connect(
+                signer_module._ProbeFailed("configuration invalid", "no")
+            )
+            with pytest.raises(CosignerDiscoveryError) as excinfo:
+                resolver.resolve(PUBLIC_A.hex(), WITNESS)
+        assert str(excinfo.value).endswith(
+            'endpoints: "back\\\\slash" configuration invalid, '
+            '"odd\\"one\\t" configuration invalid'
+        )
+        with EndpointCosignerResolver(registry=registry) as resolver:
+            resolver._connect = _raises_from_connect(_SSHHostKeyMismatchError("key changed"))
+            with pytest.raises(CosignerDiscoveryError) as excinfo:
+                resolver.resolve(PUBLIC_A.hex(), WITNESS)
+        assert str(excinfo.value) == 'cosigner discovery: endpoint "back\\\\slash": key changed'
+
     def test_a_required_key_type_is_needed(self, network):
         net = network({"alpha": Endpoint([witness_record(PUBLIC_A)])})
         with net.resolver() as resolver, pytest.raises(CosignerDiscoveryError) as excinfo:
@@ -389,6 +427,85 @@ class TestChoosing:
 
     def test_the_errors_are_sdk_errors(self):
         assert issubclass(CosignerDiscoveryError, SignerError)
+
+
+def _raises_from_connect(error):
+    def connect(_endpoint):
+        raise error
+
+    return connect
+
+
+@pytest.mark.parametrize(
+    "value,quoted",
+    [
+        # Go: fmt.Sprintf("%q", "\x00\x07\x08\t\n\x0b\x0c\r\x1b\x7f")
+        ("\x00\x07\x08\t\n\x0b\x0c\r\x1b\x7f", '"\\x00\\a\\b\\t\\n\\v\\f\\r\\x1b\\x7f"'),
+        ('say "hi"', '"say \\"hi\\""'),
+        ("back\\slash", '"back\\\\slash"'),
+        ("plain alias-1.x_y", '"plain alias-1.x_y"'),
+        # C1 controls, a no-break space, a line separator: not printable.
+        ("\x80\x9f\xa0\u2028", '"\\u0080\\u009f\\u00a0\\u2028"'),
+        # Printable beyond ASCII stays as it is.
+        ("caf\u00e9 \u65e5\U0001f600", '"caf\u00e9 \u65e5\U0001f600"'),
+        # Not printable beyond the Basic Multilingual Plane.
+        ("\U000e0001", '"\\U000e0001"'),
+        # A byte that was not UTF-8, as Python holds it, is Go's \xNN.
+        (b"a\xffb".decode("utf-8", "surrogateescape"), '"a\\xffb"'),
+        ("", '""'),
+    ],
+)
+def test_go_quote(value, quoted):
+    assert signer_module._go_quote(value) == quoted
+
+
+class _Tunnel:
+    """Stands in for a client's SSH tunnel: up or not."""
+
+    def __init__(self, active):
+        self.is_up = active
+        self.stopped = False
+
+    @property
+    def active(self):
+        return self.is_up and not self.stopped
+
+    def stop(self):
+        self.stopped = True
+
+
+def test_a_tunnel_is_active_while_its_ssh_transport_is():
+    tunnel = signer_module._SSHTunnel("h", 22, "/k", "127.0.0.1", 1, 0)
+    assert tunnel.active is False
+
+    class Transport:
+        up = True
+
+        def is_active(self):
+            return self.up
+
+        def close(self):
+            self.up = False
+
+    tunnel._transport = Transport()
+    tunnel._running = True
+    assert tunnel.active is True
+    tunnel._transport.up = False
+    assert tunnel.active is False
+    tunnel._transport.up = True
+    tunnel.stop()
+    assert tunnel.active is False
+
+
+def test_a_client_is_open_until_closed():
+    client = SignerClient("http://127.0.0.1:9")
+    assert signer_module._client_connection_open(client)
+    client._tunnel = _Tunnel(active=False)
+    assert not signer_module._client_connection_open(client)
+    client._tunnel = _Tunnel(active=True)
+    assert signer_module._client_connection_open(client)
+    client.close()
+    assert not signer_module._client_connection_open(client)
 
 
 def _respelled(address):
@@ -515,6 +632,39 @@ class TestCache:
             assert net.closed == ["alpha", "alpha"]
         assert sorted(net.closed) == ["alpha", "alpha", "beta"]
 
+    def test_a_closed_kept_connection_is_a_miss(self, network):
+        alpha = Endpoint([witness_record(PUBLIC_A)])
+        net = network({"alpha": alpha})
+        with net.resolver() as resolver:
+            first, _ = resolver.resolve(PUBLIC_A.hex(), WITNESS)
+            first.close()
+            # One fresh sweep, which connects again rather than reading
+            # through the closed client.
+            second, _ = resolver.resolve(PUBLIC_A.hex(), WITNESS)
+            assert second is not first and not second._closed
+            assert resolver._sweeps == 2 and len(net.connects) == 2
+            assert alpha.key_reads == 2
+            # The new connection is kept.
+            assert resolver.resolve(PUBLIC_A.hex(), WITNESS)[0] is second
+            assert resolver._sweeps == 2
+
+    def test_a_kept_connection_whose_ssh_link_is_down_is_a_miss(self, network):
+        alpha = Endpoint([witness_record(PUBLIC_A)])
+        net = network({"alpha": alpha})
+        with net.resolver() as resolver:
+            first, _ = resolver.resolve(PUBLIC_A.hex(), WITNESS)
+            first._tunnel = _Tunnel(active=True)
+            assert resolver.resolve(PUBLIC_A.hex(), WITNESS)[0] is first
+            assert resolver._sweeps == 1 and alpha.key_reads == 1
+            # The link drops. Seeing so asks the endpoint nothing.
+            first._tunnel.is_up = False
+            second, _ = resolver.resolve(PUBLIC_A.hex(), WITNESS)
+            assert second is not first
+            assert resolver._sweeps == 2 and len(net.connects) == 2
+            # The dead connection was closed, and was not read again.
+            assert net.closed == ["alpha"] and first._closed
+            assert alpha.key_reads == 2
+
     def test_nothing_from_a_mismatched_sweep_is_kept(self, network):
         mismatch = _SSHHostKeyMismatchError("SSH host key mismatch for rogue.example:2222")
         net = network(
@@ -629,6 +779,27 @@ class TestCosignedFlow:
         fixture.user_client.close()
         assert sorted(net.closed) == ["cosign", "other"]
         assert fixture.user_client._cosigner_resolver is None
+
+    @pytest.mark.parametrize("used", [True, False], ids=["after a send", "before any"])
+    def test_a_closed_client_makes_no_resolver_again(self, fakes, network, used):
+        fixture = CosignedFixture(fakes)
+        net = network({"cosign": _fixture_cosigner()})
+        _from_data_directory(fixture.user_client, net.registry)
+        if used:
+            fixture.send()
+        connects = len(net.connects)
+        fixture.user_client.close()
+        # A later cosigned call fails as a client with no cosigner does,
+        # before anything is planned or asked to sign, and connects to
+        # nothing.
+        before = len(fixture.user.paths)
+        with pytest.raises(SignerError, match="cosigner_client or cosigner_resolver is required"):
+            fixture.send()
+        assert fixture.user_client._default_cosigner_resolver() is None
+        assert fixture.user_client._cosigner_resolver is None
+        assert len(net.connects) == connects
+        after = fixture.user.paths[before:]
+        assert not any(path in after for path in ("/plan",) + APPROVAL_PATHS)
 
     def test_a_discovery_failure_is_raised_before_any_approval(self, fakes, network):
         fixture = CosignedFixture(fakes)
@@ -897,3 +1068,58 @@ def test_an_endpoint_nobody_answers_at_is_unreachable(tmp_path):
         with pytest.raises(CosignerDiscoveryError) as excinfo:
             resolver.resolve(PUBLIC_A.hex(), WITNESS)
     assert str(excinfo.value).endswith('endpoints: "cosign" unreachable')
+
+
+def test_a_host_key_first_use_trust_cannot_save_is_a_configuration_error(tmp_path):
+    # Through the real connection code, against a real SSH server: the key
+    # exchange works, and saving the new host key fails.
+    import socket
+
+    import paramiko
+
+    host_key = paramiko.ECDSAKey.generate()
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    servers = []
+
+    def serve():
+        try:
+            conn, _ = listener.accept()
+        except OSError:
+            return
+        transport = paramiko.Transport(conn)
+        transport.add_server_key(host_key)
+        servers.append(transport)
+        try:
+            transport.start_server(server=paramiko.ServerInterface())
+        except Exception:
+            pass
+
+    threading.Thread(target=serve, daemon=True).start()
+    key_path = tmp_path / "id_ecdsa"
+    paramiko.ECDSAKey.generate().write_private_key_file(str(key_path))
+    blocker = tmp_path / "not_a_directory"
+    blocker.write_text("")
+    registry = ClientEndpointRegistry(
+        endpoints={
+            "cosign": ClientEndpointConfig(
+                role="cosigner",
+                url=f"ssh://127.0.0.1:{port}",
+                identity_file=str(key_path),
+                known_hosts_path=str(blocker / "known_hosts"),
+            )
+        }
+    )
+    try:
+        with EndpointCosignerResolver(
+            registry=registry, trust_on_first_use=True, ssh_setup_timeout=5
+        ) as resolver:
+            with pytest.raises(CosignerDiscoveryError) as excinfo:
+                resolver.resolve(PUBLIC_A.hex(), WITNESS)
+    finally:
+        listener.close()
+        for transport in servers:
+            transport.close()
+    assert str(excinfo.value).endswith('endpoints: "cosign" configuration invalid')

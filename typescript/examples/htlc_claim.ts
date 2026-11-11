@@ -46,7 +46,7 @@ async function main() {
   try {
     // Discover required arguments for this LogicSig
     const keyInfo = await signer.getKeyInfo(HASHLOCK_ADDRESS);
-    if (keyInfo?.signingArgs) {
+    if (keyInfo?.signingArgs && keyInfo.signingArgs.length > 0) {
       console.log("Required arguments for this LogicSig:");
       for (const arg of keyInfo.signingArgs) {
         console.log(`  - ${arg.name}: ${arg.type} (${arg.description})`);
@@ -72,15 +72,34 @@ async function main() {
     // Neither error means "claim again" with a new transaction: ask the node
     // where things stand.
     if (error instanceof SubmissionUncertainError) {
-      const report = await signer.resolveOutcome(algodClient, error);
-      console.error(`Outcome of ${error.txIds[0]} is ${report.state}: ${report.advice}`);
+      console.error(`Outcome unknown for ${error.txIds.join(", ")} (${error.stage}): ${error.message}`);
+      console.error(await advice(signer, algodClient, error));
     } else if (error instanceof SignOutcomeUnknownError) {
-      const report = await signer.resolveOutcome(algodClient, error);
-      console.error(`Sign request ${error.requestId || "(no ID)"} is ${report.state}: ${report.advice}`);
+      console.error(`Sign outcome unknown (request ${error.requestId || "(no ID)"}): ${error.message}`);
+      console.error(await advice(signer, algodClient, error));
     }
     throw error;
   } finally {
     await signer.close();
+  }
+}
+
+/**
+ * Where an uncertain outcome stands, asked of the node; it signs and submits
+ * nothing. A check that fails is said as such, and the error it was asked
+ * about is still the one that is thrown.
+ */
+async function advice(
+  signer: SignerClient,
+  algodClient: algosdk.Algodv2,
+  error: SubmissionUncertainError | SignOutcomeUnknownError,
+): Promise<string> {
+  try {
+    const report = await signer.resolveOutcome(algodClient, error);
+    return `${report.state}: ${report.advice}`;
+  } catch (checkError) {
+    const reason = checkError instanceof Error ? checkError.message : String(checkError);
+    return `Could not check the outcome (${reason}); look the transaction up before sending again.`;
   }
 }
 

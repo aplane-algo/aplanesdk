@@ -342,6 +342,18 @@ describe("sendPrepared", () => {
       assert.equal(node.submitted.length, 0);
     });
 
+    it("a 200 answer whose connection breaks while it is read is an unknown outcome", async () => {
+      const signer = new SendSigner([ordinaryKey(txn)], { sign: () => ({ brokenAfter: '{"signed": ["ab' }) });
+      const { client, algod, node } = fixture(signer);
+      await assert.rejects(client.sendPrepared(algod, preparedFor(txn)), (error: unknown) => {
+        assert.ok(error instanceof SignOutcomeUnknownError, String(error));
+        assert.equal(error.requests?.length, 1, "the error does not carry the request");
+        assert.match(errorText(error.cause), /Failed to read the signer's answer: terminated/, "the cause is the broken read");
+        return true;
+      });
+      assert.equal(node.submitted.length, 0, "something was submitted");
+    });
+
     it("a refusal is the signer's error", async () => {
       const signer = new SendSigner([ordinaryKey(txn)], {
         sign: () => ({ status: 403, body: { error: "rejected", code: "forbidden" } }),

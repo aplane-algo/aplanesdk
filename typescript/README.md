@@ -101,7 +101,9 @@ the same controls as `setupTimeout` and `signal`.
 
 **Note**: SSH uses the fixed non-secret username `aplane` and public-key
 authentication only; the enrolled key is the client's only credential. A key
-the signer has not enrolled fails the handshake. Remember to close when done:
+the signer has not enrolled fails the handshake. A key file that cannot be
+parsed, holds no private key, or needs a passphrase fails at once, before
+anything is connected, with a `SignerError`. Remember to close when done:
 
 ```typescript
 await client.close();
@@ -434,12 +436,21 @@ try {
   await client.sendPayment(algodClient, { sender, receiver, amount: 1_000_000 });
 } catch (error) {
   if (error instanceof SignOutcomeUnknownError || error instanceof SubmissionUncertainError) {
-    const report = await client.resolveOutcome(algodClient, error);
-    console.log(report.state, report.advice);
+    try {
+      const report = await client.resolveOutcome(algodClient, error);
+      console.log(report.state, report.advice);
+    } catch (checkError) {
+      // The check failed; the outcome is still unknown, and error still stands.
+      console.log("could not check the outcome:", checkError);
+    }
   }
   throw error;
 }
 ```
+
+The examples do the same: they print the uncertain error with its
+transaction IDs or request ID, then the report's advice or a line saying the
+outcome could not be checked, and throw the original error either way.
 
 After a `SubmissionUncertainError` the signed group and its IDs are known.
 The node's last round is read first, then the first transaction ID is looked
@@ -465,8 +476,14 @@ are no IDs and no lookup (`txIds` is empty):
 - the last round is at most `lastValid`: `signable`. A released signature can
   still execute: for a rotating account sign the same prepared group again,
   otherwise wait until `lastValid` has passed before building a replacement;
-- the last round is past `lastValid`: `expired`, and safe to replace. There is
-  no `too_old` here: expiry alone settles it.
+- a rotating account, not found or dropped (or a hand-built prepared group
+  with no IDs to look up), more than 500 rounds past `lastValid`: `too_old`. Signing the same prepared group again gives the
+  same transaction IDs, which may since have been submitted, and past that
+  margin the node may no longer remember them: look the ID up on an indexer;
+- the last round is past `lastValid` (for a rotating account, by at most 500
+  rounds): `expired`, and safe to replace. Any other account has no
+  `too_old`: its signed bytes never leave the SDK, so expiry alone settles
+  it.
 
 Any other node failure is thrown, never turned into a state. Before the node
 is asked anything, these are refused, in this order: any other error, `null`
@@ -480,7 +497,10 @@ status-after-block call) until the state is `confirmed`, `expired` or
 `too_old`. If the signal is aborted, `timeoutMs` passes or the node fails
 first, it throws a `WaitForOutcomeError` whose `report` is the last report
 (none if the wait ended before the first check) and whose `cause` says why.
-It never signs or submits anything.
+It never signs or submits anything. `timeoutMs` unset or 0 means no limit; a
+negative, non-finite or non-number value, or one above 2^31-1 ms, is
+refused. The error refusals above come first: an error `resolveOutcome`
+would refuse is refused for that reason, whatever `timeoutMs` is.
 
 A node that answers "already in ledger" has a transaction with the same ID
 from an earlier submission of the group. The SDK treats that as submitted and
@@ -499,7 +519,10 @@ list; an unknown field is ignored. A field of the wrong type, a number outside
 the field's range, a null or non-object body, an empty or cut-off body, or
 anything after the object makes the answer unreadable. At a request that
 releases no signature an unreadable answer is a plain `SignerError`, never a
-`TypeError` or `SyntaxError`, and no field is coerced. `generateKey` refuses
+`TypeError` or `SyntaxError`, and no field is coerced. A body that never
+arrives whole, because the connection fails while it is read, is a failed
+exchange instead, a `SignerUnavailableError`; at an approval-bearing request
+either one is an unknown outcome. `generateKey` refuses
 an answer without an address; `deleteKey` reads the signer's
 `{"success": true}` answer and refuses an empty one or one with an `error`.
 A `/keys` answer listing an address in an alternate spelling (an Algorand
@@ -716,10 +739,11 @@ invalid. A witness key listed by exactly one live endpoint is routed there,
 under its Witness Key ID; a key listed by more than one, or by none, is a
 `CosignerDiscoveryError`. The "none" message names every cosigner endpoint
 with its state: `ok`, `unreachable` (connection, transport or 5xx failure,
-or out of time), `locked`, `authentication failed` (401, a 403 that is not
-locked, or a key that is not enrolled), `invalid cosigner metadata` (an
+or out of time), `locked`, `authentication failed` (401 whatever its code, a
+403 that is not locked, or a key that is not enrolled), `invalid cosigner metadata` (an
 unreadable `/keys` answer or a bad record), or `configuration invalid` (a bad
-URL, an unreadable identity or known_hosts file, an unknown host key without
+URL, an identity file that cannot be read or parsed or that needs a
+passphrase, an unreadable known_hosts file, an unknown host key without
 trust-on-first-use, or any other 4xx). An SSH host key that differs from the
 pinned one at any cosigner endpoint aborts the whole discovery, needed or not.
 The sweep's result is kept; a witness key it does not route triggers one fresh
@@ -736,8 +760,11 @@ in the order of the witness key each needs (key type, then public key), and
 the cosigner component requests go out in the order of their first target
 position. A rekey that may take the listed path is resolved only
 once the base component says it needs the cosigner: a listed rekey needs
-none, and works with no cosigner configured or reachable. A resolver's own
-error is passed on as it is, never as an unknown outcome.
+none, and works with no cosigner configured or reachable. Such late targets
+are resolved in the same witness key order (key type, then public key, then
+position), so the first missing key reported is the same. A resolver's own
+error is passed on as it is, never as an unknown outcome, even when it wraps
+the lost answer of a request the resolver made itself.
 
 ### Bounded Cosigner Accounts
 

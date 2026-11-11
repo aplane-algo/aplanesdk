@@ -481,10 +481,17 @@ For a `SignOutcomeUnknownError`, where this call submitted nothing:
   been released and can still execute (for a rotating account, sign the same
   prepared group again; otherwise wait until `last_valid` has passed before
   building a replacement);
-- the current round is past `last_valid`: `expired`, `safe_to_replace`. There
-  is no `too_old` here: this call never submitted, so expiry alone settles it.
-  An account that is not rotating has no IDs to look up (the signer may have
-  changed its transactions), so `tx_ids` is empty.
+- for a rotating account, the current round is past `last_valid` by at most
+  500 rounds: `expired`, `safe_to_replace`; past it by more than 500 rounds:
+  `too_old`. Signing the same prepared group again gives the same IDs, which
+  may then have been submitted, so the group can have confirmed, and the node
+  may no longer remember it. Look the ID up on an indexer before sending
+  again;
+- for an account that is not rotating, the current round is past
+  `last_valid`: `expired`, `safe_to_replace`. There is no `too_old` here: this
+  call never submitted, and the signed bytes never left the SDK, so expiry
+  alone settles it. There are no IDs to look up (the signer may have changed
+  the transactions), so `tx_ids` is empty.
 
 The state names are the constants `OUTCOME_CONFIRMED`, `OUTCOME_PENDING`,
 `OUTCOME_NOT_SEEN`, `OUTCOME_SIGNABLE`, `OUTCOME_EXPIRED` and
@@ -496,8 +503,12 @@ lookup's "not found" is raised, never turned into a state.
 `client.wait_for_outcome(algod_client, error, timeout=None)` resolves once a
 round, waiting for each next round with the node's status-after-block call,
 until the state is `confirmed`, `expired` or `too_old`. `timeout` is in
-seconds; when it passes, `SendTimeoutError` is raised with the last report as
-its `report`.
+seconds, for the whole call: `None` (the default) sets no limit; 0, a
+negative or a non-finite number is refused with `ValueError`, but only after
+the refusals of the error above, which come first. The limit is checked
+before each check of the node: when it passes, `SendTimeoutError` is raised
+with the last report as its `report`, or `None`, with nothing asked of the
+node, when it passed before the first.
 
 ```python
 try:
@@ -710,8 +721,9 @@ given no `cosigner_client` and no `cosigner_resolver`, finds the cosigner
 with an `EndpointCosignerResolver` over the same registry, connecting with the
 same `timeout`, `trust_on_first_use` and `ssh_setup_timeout`. It makes the
 resolver on first use, keeps it, and closes it, with its connections, when
-the client is closed. A client not made from a data directory still needs a
-cosigner passed to it.
+the client is closed; a closed client makes none again, so a later cosigned
+call fails as with no cosigner and opens no connection. A client not made
+from a data directory still needs a cosigner passed to it.
 
 ```yaml
 schema_version: 2
@@ -731,9 +743,12 @@ names must be listed by exactly one endpoint; the resolver then uses that
 endpoint's client, with the listed Witness Key ID as the component key. The
 sweep is kept, and a key it does not hold makes one fresh sweep, which reads
 `/keys` again through the connections still live and reconnects the endpoints
-that had failed. `witness_key_id(key_type, public_key)` derives the ID: the
-unpadded base32 of SHA-512/256 over `APLANE_WITNESS_KEY_ID_V1`, the key type
-and the public key, each prefixed by its length as 4 bytes big-endian.
+that had failed. A kept connection that has been closed, or whose SSH link is
+down, counts as not holding its keys (a local check, with no request), so it
+too makes one fresh sweep, which connects that endpoint again.
+`witness_key_id(key_type, public_key)` derives the ID: the unpadded base32 of
+SHA-512/256 over `APLANE_WITNESS_KEY_ID_V1`, the key type and the public key,
+each prefixed by its length as 4 bytes big-endian.
 
 Otherwise it raises `CosignerDiscoveryError` (a `SignerError`):
 
@@ -755,6 +770,11 @@ Otherwise it raises `CosignerDiscoveryError` (a `SignerError`):
 - the call's `timeout` passed during discovery: an error that is both a
   `CosignerDiscoveryError` and a `SendTimeoutError`.
 
+The public key in the not-hex message, and the aliases in the list of
+endpoints and in the host key message, are quoted as Go's `%q` quotes them
+(`\"`, `\\`, `\n`, `\t`, `\xNN` for other control characters, and so on), so
+the three SDKs word the same failure alike.
+
 The cosigned sequence resolves the cosigner of every target that cannot take
 the listed path (a spend, or a rekey of an account without a rekey list)
 before anything is asked to sign, with any resolver, so a failure is a plain
@@ -763,7 +783,7 @@ the listed path, which needs no cosigner, so its cosigner is resolved only
 after the base component, and only when the signer's path needs one: the
 rekey-list escape hatch keeps working with the cosigner down or not
 configured. A resolver's own exception is passed on as it is, never as an
-unknown outcome.
+unknown outcome, even when it was raised from an SDK error that is one.
 
 To use the resolver yourself, build it from a data directory or a loaded
 registry and close it when done:
