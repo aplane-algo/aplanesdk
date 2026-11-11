@@ -1493,7 +1493,7 @@ class TestSignPreparedCosignedGroup:
         user.sign_requests = MagicMock(
             return_value=GroupSignResponse(signed=[signed_hex(txn)])
         )
-        _, passthrough = _request_bounded_primary_passthrough(
+        _, passthrough, _ = _request_bounded_primary_passthrough(
             user,
             [canonical],
             1,
