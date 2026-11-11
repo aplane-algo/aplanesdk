@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/algorand/go-algorand-sdk/v2/types"
@@ -39,6 +40,8 @@ type SignerClient struct {
 	approvalWaitSeconds int64
 	approvalWaitFetched time.Time
 	approvalWaitKnown   bool
+
+	maxFeeIncrease atomic.Pointer[uint64]
 }
 
 const (
@@ -74,6 +77,41 @@ func NewSignerClient(baseURL string) *SignerClient {
 		client:   &http.Client{},
 		keyCache: nil,
 	}
+}
+
+// SetMaxFeeIncrease sets a ceiling, in microAlgos, on the total fee the signer
+// may add to a request. Every sign, plan and simulate call through this client
+// fails and returns nothing when the signer's fee raises across the request's
+// positions add up to more than this. On a sign or simulate call the signer
+// has already answered by then; its signature is discarded. Each request is held to
+// the ceiling in force when it started. Zero means the signer may not
+// raise any fee. There is no default: until this is called, a reported raise
+// of any size is accepted.
+func (c *SignerClient) SetMaxFeeIncrease(microAlgos uint64) {
+	c.maxFeeIncrease.Store(&microAlgos)
+}
+
+// ClearMaxFeeIncrease removes the ceiling set by SetMaxFeeIncrease.
+func (c *SignerClient) ClearMaxFeeIncrease() {
+	c.maxFeeIncrease.Store(nil)
+}
+
+// MaxFeeIncrease returns the ceiling set by SetMaxFeeIncrease, and whether one
+// is set.
+func (c *SignerClient) MaxFeeIncrease() (uint64, bool) {
+	ceiling := c.feeCeiling()
+	return ceiling.limit, ceiling.set
+}
+
+// feeCeiling reads the ceiling once. A call takes it before sending its
+// request, so the ceiling it is held to is the one in force when it started,
+// whatever another goroutine sets while the signer waits for approval.
+func (c *SignerClient) feeCeiling() feeCeiling {
+	limit := c.maxFeeIncrease.Load()
+	if limit == nil {
+		return feeCeiling{}
+	}
+	return feeCeiling{limit: *limit, set: true}
 }
 
 // SetHTTPClient overrides the HTTP client used for requests.
@@ -223,13 +261,24 @@ func ConnectSSHWithContext(ctx context.Context, host, sshKeyPath string, opts *S
 		return nil, fmt.Errorf("failed to establish SSH tunnel: %w", err)
 	}
 
-	return &SignerClient{
-		baseURL:           fmt.Sprintf("http://localhost:%d", resolvedLocalPort),
+	return newTunnelClient(resolvedLocalPort, tunnel, timeout, opts), nil
+}
+
+// newTunnelClient builds the client for an established tunnel. Everything the
+// options set on a client is applied here, before the client is returned, so
+// it is never usable without them.
+func newTunnelClient(localPort int, tunnel *sshTunnel, timeout int, opts *SSHConnectOptions) *SignerClient {
+	client := &SignerClient{
+		baseURL:           fmt.Sprintf("http://localhost:%d", localPort),
 		client:            &http.Client{},
 		sshTunnel:         tunnel,
 		requestTimeout:    time.Duration(timeout) * time.Second,
 		requestTimeoutSet: opts != nil && opts.Timeout > 0,
-	}, nil
+	}
+	if opts != nil && opts.MaxFeeIncrease != nil {
+		client.SetMaxFeeIncrease(*opts.MaxFeeIncrease)
+	}
+	return client
 }
 
 // FromEnv creates a client from environment configuration. Routing and the
@@ -244,20 +293,10 @@ func FromEnv(opts *FromEnvOptions) (*SignerClient, error) {
 func FromEnvWithContext(ctx context.Context, opts *FromEnvOptions) (*SignerClient, error) {
 	dataDir := ""
 	endpointAlias := ""
-	timeout := 0
-	sshSetupTimeout := time.Duration(0)
-	trustOnFirstUse := false
 
 	if opts != nil {
-		if opts.DataDir != "" {
-			dataDir = opts.DataDir
-		}
+		dataDir = opts.DataDir
 		endpointAlias = opts.Endpoint
-		if opts.Timeout > 0 {
-			timeout = opts.Timeout
-		}
-		sshSetupTimeout = opts.SSHSetupTimeout
-		trustOnFirstUse = opts.TrustOnFirstUse
 	}
 
 	dataDir, err := ResolveDataDir(dataDir)
@@ -281,16 +320,24 @@ func FromEnvWithContext(ctx context.Context, opts *FromEnvOptions) (*SignerClien
 	if err != nil {
 		return nil, err
 	}
-	sshOpts := &SSHConnectOptions{
-		SSHPort:         sshPort,
-		KnownHostsPath:  endpoint.KnownHostsPath,
-		TrustOnFirstUse: trustOnFirstUse,
-		SSHSetupTimeout: sshSetupTimeout,
-	}
-	if timeout > 0 {
-		sshOpts.Timeout = timeout
-	}
+	sshOpts := fromEnvSSHOptions(opts, sshPort, endpoint.KnownHostsPath)
 	return ConnectSSHWithContext(ctx, host, endpoint.IdentityFile, sshOpts)
+}
+
+// fromEnvSSHOptions carries a FromEnv caller's options over to the SSH
+// connection that builds the client.
+func fromEnvSSHOptions(opts *FromEnvOptions, sshPort int, knownHostsPath string) *SSHConnectOptions {
+	sshOpts := &SSHConnectOptions{SSHPort: sshPort, KnownHostsPath: knownHostsPath}
+	if opts == nil {
+		return sshOpts
+	}
+	if opts.Timeout > 0 {
+		sshOpts.Timeout = opts.Timeout
+	}
+	sshOpts.SSHSetupTimeout = opts.SSHSetupTimeout
+	sshOpts.TrustOnFirstUse = opts.TrustOnFirstUse
+	sshOpts.MaxFeeIncrease = opts.MaxFeeIncrease
+	return sshOpts
 }
 
 // Close closes the client and any SSH tunnel.
@@ -751,6 +798,7 @@ func (c *SignerClient) PlanRequestsWithContext(ctx context.Context, requests []S
 	}
 	// The slots the plan is checked against are decoded here, from the very
 	// entries that are sent.
+	ceiling := c.feeCeiling()
 	groupReq := groupSignRequest{Requests: requests}
 
 	jsonBody, err := json.Marshal(groupReq)
@@ -789,7 +837,7 @@ func (c *SignerClient) PlanRequestsWithContext(ctx context.Context, requests []S
 		return nil, fmt.Errorf("plan failed: %s", planResp.Error)
 	}
 
-	if err := validatePlanResponse(slots, planResp.Transactions, planResp.Mutations); err != nil {
+	if err := validatePlanResponse(slots, planResp.Transactions, planResp.Mutations, ceiling); err != nil {
 		return nil, fmt.Errorf("verify signer plan: %w", err)
 	}
 
@@ -1078,6 +1126,7 @@ func (c *SignerClient) postSign(ctx context.Context, groupReq GroupSignRequest) 
 	if err != nil {
 		return nil, fmt.Errorf("invalid sign request: %w", err)
 	}
+	ceiling := c.feeCeiling()
 	jsonBody, err := json.Marshal(groupReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
@@ -1144,7 +1193,7 @@ func (c *SignerClient) postSign(ctx context.Context, groupReq GroupSignRequest) 
 		return nil, &signBodyError{message: groupResp.Error}
 	}
 
-	if err := validateSignResponse(slots, groupResp.Signed, groupResp.Mutations); err != nil {
+	if err := validateSignResponse(slots, groupResp.Signed, groupResp.Mutations, ceiling); err != nil {
 		return nil, fmt.Errorf("verify signer response: %w", err)
 	}
 

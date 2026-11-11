@@ -243,9 +243,25 @@ export interface ClientEndpointRegistry {
 }
 
 /**
+ * Options every SignerClient takes, however it is created.
+ */
+export interface SignerClientOptions {
+  /**
+   * Ceiling, in microAlgos, on the total fee the signer may add to a request.
+   * Every sign, plan and simulate call through the client fails and returns
+   * nothing when the signer's fee raises across the request's positions add
+   * up to more than this. On a sign or simulate call the signer has already
+   * answered by then; its signature is discarded. Each request is held to the
+   * ceiling in force when it started. Zero means the signer may not raise
+   * any fee. There is no default: unset accepts a reported raise of any size.
+   */
+  maxFeeIncrease?: number | bigint;
+}
+
+/**
  * Options for SignerClient.connectSsh()
  */
-export interface ConnectSshOptions {
+export interface ConnectSshOptions extends SignerClientOptions {
   /** SSH port on remote (default: 1127) */
   sshPort?: number;
   /**
@@ -269,7 +285,7 @@ export interface ConnectSshOptions {
 /**
  * Options for SignerClient.fromEnv()
  */
-export interface FromEnvOptions {
+export interface FromEnvOptions extends SignerClientOptions {
   /** Override default data directory */
   dataDir?: string;
   /** Endpoint alias (default: the registry's signer endpoint) */

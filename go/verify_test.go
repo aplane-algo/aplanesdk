@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -310,7 +311,7 @@ func TestValidateSignResponseAcceptsReportedMutations(t *testing.T) {
 			if len(resp.Signed) != tc.want {
 				t.Fatalf("fake signer returned %d slots, want %d", len(resp.Signed), tc.want)
 			}
-			if err := validateSignResponse(mustDecodeSlots(t, tc.requests), resp.Signed, resp.Mutations); err != nil {
+			if err := validateSignResponse(mustDecodeSlots(t, tc.requests), resp.Signed, resp.Mutations, feeCeiling{}); err != nil {
 				t.Fatalf("validateSignResponse() error = %v", err)
 			}
 		})
@@ -536,11 +537,11 @@ func TestValidateSignResponseRejectsTampering(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			resp := tc.signer.sign(t, tc.requests)
 			slots := mustDecodeSlots(t, tc.requests)
-			if err := validateSignResponse(slots, resp.Signed, resp.Mutations); err != nil {
+			if err := validateSignResponse(slots, resp.Signed, resp.Mutations, feeCeiling{}); err != nil {
 				t.Fatalf("untampered response rejected: %v", err)
 			}
 			tc.tamper(&resp)
-			err := validateSignResponse(slots, resp.Signed, resp.Mutations)
+			err := validateSignResponse(slots, resp.Signed, resp.Mutations, feeCeiling{})
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("validateSignResponse() error = %v, want %q", err, tc.want)
 			}
@@ -582,7 +583,7 @@ func TestValidatePlanResponse(t *testing.T) {
 	if len(resp.Transactions) != 3 {
 		t.Fatalf("fake plan returned %d transactions, want 3", len(resp.Transactions))
 	}
-	if err := validatePlanResponse(slots, resp.Transactions, resp.Mutations); err != nil {
+	if err := validatePlanResponse(slots, resp.Transactions, resp.Mutations, feeCeiling{}); err != nil {
 		t.Fatalf("valid plan: unexpected error %v", err)
 	}
 
@@ -662,7 +663,7 @@ func TestValidatePlanResponse(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			resp := signer.plan(t, requests)
 			tc.tamper(&resp)
-			err := validatePlanResponse(slots, resp.Transactions, resp.Mutations)
+			err := validatePlanResponse(slots, resp.Transactions, resp.Mutations, feeCeiling{})
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("validatePlanResponse() error = %v, want %q", err, tc.want)
 			}
@@ -922,6 +923,202 @@ func TestSignedTransactionIdentityChecksRejectTrailingBytes(t *testing.T) {
 	}
 }
 
+func TestMaxFeeIncrease(t *testing.T) {
+	first := verifyTestPayment(t, 41, 42, 1_000_000)
+	second := verifyTestPayment(t, 43, 44, 5)
+	u := func(v uint64) *uint64 { return &v }
+	cases := []struct {
+		name   string
+		limit  *uint64
+		signer fakeSigner
+		txns   []types.Transaction
+		want   string
+	}{
+		// Unset is unbounded: a reported raise of any size is accepted.
+		{name: "unset, large raise", signer: fakeSigner{feeRaise: map[int]uint64{0: 5_000_000}}, txns: []types.Transaction{first}},
+		{name: "above the raise", limit: u(200_000), signer: fakeSigner{feeRaise: map[int]uint64{0: 3000}}, txns: []types.Transaction{first}},
+		{name: "equal to the raise", limit: u(3000), signer: fakeSigner{feeRaise: map[int]uint64{0: 3000}}, txns: []types.Transaction{first}},
+		{
+			name: "one below the raise", limit: u(2999), signer: fakeSigner{feeRaise: map[int]uint64{0: 3000}}, txns: []types.Transaction{first},
+			want: "signer raised fees by 3000 microAlgos, more than the max fee increase 2999 set on this client",
+		},
+		{
+			name: "zero with a raise", limit: u(0), signer: fakeSigner{feeRaise: map[int]uint64{0: 1}}, txns: []types.Transaction{first},
+			want: "signer raised fees by 1 microAlgos, more than the max fee increase 0 set on this client",
+		},
+		{name: "zero with no raise", limit: u(0), txns: []types.Transaction{first, second}},
+		{
+			name: "raise spread over two positions is summed", limit: u(4999),
+			signer: fakeSigner{feeRaise: map[int]uint64{0: 2000, 1: 3000}}, txns: []types.Transaction{first, second},
+			want: "signer raised fees by 5000 microAlgos, more than the max fee increase 4999 set on this client",
+		},
+		{
+			name: "two positions at the sum", limit: u(5000),
+			signer: fakeSigner{feeRaise: map[int]uint64{0: 2000, 1: 3000}}, txns: []types.Transaction{first, second},
+		},
+		{
+			// Dummies pay no fee; only the raise counts.
+			name: "dummies add nothing", limit: u(2000),
+			signer: fakeSigner{feeRaise: map[int]uint64{0: 2000}, dummies: 2}, txns: []types.Transaction{first},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client, server := newTestClient(fakeSignHandler(t, tc.signer))
+			defer server.Close()
+			if tc.limit != nil {
+				client.SetMaxFeeIncrease(*tc.limit)
+			}
+			algodClient, closeAlgod := makeSimulationAlgodClient(t, func(w http.ResponseWriter, r *http.Request) {
+				if tc.want != "" {
+					t.Error("simulation reached algod with a fee raise over the ceiling")
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"last-round":1,"version":2,"txn-groups":[{}]}`))
+			})
+			defer closeAlgod()
+			auths := make([]string, len(tc.txns))
+			prepared := PreparedGroup{}
+			for i := range tc.txns {
+				auths[i] = tc.txns[i].Sender.String()
+				prepared.Transactions = append(prepared.Transactions, PreparedTransaction{Transaction: &tc.txns[i], AuthAddress: auths[i]})
+			}
+
+			check := func(call string, prefix string, err error) {
+				t.Helper()
+				if tc.want == "" {
+					if err != nil {
+						t.Fatalf("%s error = %v", call, err)
+					}
+					return
+				}
+				if err == nil || !strings.Contains(err.Error(), prefix+tc.want) {
+					t.Fatalf("%s error = %v, want %q", call, err, prefix+tc.want)
+				}
+			}
+			_, err := client.SignTransactions(tc.txns, nil, nil)
+			check("SignTransactions()", "verify signer response: ", err)
+			_, err = client.SignTransactionsList(tc.txns, nil, nil)
+			check("SignTransactionsList()", "verify signer response: ", err)
+			_, err = client.SignRequestsWithContext(context.Background(), signRequestsFor(tc.txns...))
+			check("SignRequestsWithContext()", "verify signer response: ", err)
+			_, err = client.PlanGroup(tc.txns, auths, nil, nil)
+			check("PlanGroup()", "verify signer plan: ", err)
+			_, err = client.SimulatePreparedGroup(context.Background(), algodClient, prepared)
+			check("SimulatePreparedGroup()", "verify signer response: ", err)
+		})
+	}
+}
+
+func TestMaxFeeIncreaseSetAndClear(t *testing.T) {
+	txn := verifyTestPayment(t, 41, 42, 1)
+	client, server := newTestClient(fakeSignHandler(t, fakeSigner{feeRaise: map[int]uint64{0: 3000}}))
+	defer server.Close()
+
+	if _, set := client.MaxFeeIncrease(); set {
+		t.Fatal("a new client has a max fee increase; there must be no default")
+	}
+	client.SetMaxFeeIncrease(1000)
+	if limit, set := client.MaxFeeIncrease(); !set || limit != 1000 {
+		t.Fatalf("MaxFeeIncrease() = %d, %v, want 1000, true", limit, set)
+	}
+	if _, err := client.SignTransaction(txn, "", nil); err == nil || !strings.Contains(err.Error(), "more than the max fee increase 1000") {
+		t.Fatalf("SignTransaction() error = %v, want the ceiling to refuse", err)
+	}
+	client.ClearMaxFeeIncrease()
+	if _, set := client.MaxFeeIncrease(); set {
+		t.Fatal("ClearMaxFeeIncrease() left a ceiling set")
+	}
+	if _, err := client.SignTransaction(txn, "", nil); err != nil {
+		t.Fatalf("SignTransaction() after clearing the ceiling: %v", err)
+	}
+}
+
+// A call is held to the ceiling in force when it started. Clearing it while
+// the signer is still waiting for approval must not let the response through.
+func TestMaxFeeIncreaseIsSnapshottedWhenTheCallStarts(t *testing.T) {
+	txn := verifyTestPayment(t, 41, 42, 1)
+	signer := fakeSigner{feeRaise: map[int]uint64{0: 3000}}
+	for _, path := range []string{"/sign", "/plan"} {
+		t.Run(path, func(t *testing.T) {
+			arrived := make(chan struct{})
+			release := make(chan struct{})
+			var held sync.Once
+			client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == path {
+					// Only the first call is held back.
+					held.Do(func() {
+						close(arrived)
+						<-release
+					})
+				}
+				fakeSignHandler(t, signer)(w, r)
+			})
+			defer server.Close()
+			client.cacheApprovalWait(60)
+			client.SetMaxFeeIncrease(1000)
+
+			result := make(chan error, 1)
+			go func() {
+				var err error
+				if path == "/sign" {
+					_, err = client.SignTransaction(txn, "", nil)
+				} else {
+					_, err = client.PlanGroup([]types.Transaction{txn}, []string{txn.Sender.String()}, nil, nil)
+				}
+				result <- err
+			}()
+			<-arrived
+			client.ClearMaxFeeIncrease()
+			close(release)
+
+			err := <-result
+			if err == nil || !strings.Contains(err.Error(), "more than the max fee increase 1000 set on this client") {
+				t.Fatalf("error = %v, want the ceiling set when the call started to refuse", err)
+			}
+			// The next call starts with no ceiling.
+			if _, err := client.SignTransaction(txn, "", nil); err != nil {
+				t.Fatalf("call started after clearing the ceiling: %v", err)
+			}
+		})
+	}
+}
+
+func TestConnectionOptionsSetMaxFeeIncrease(t *testing.T) {
+	limit := uint64(250_000)
+
+	client := newTunnelClient(1234, nil, DefaultTimeout, &SSHConnectOptions{MaxFeeIncrease: &limit})
+	if got, set := client.MaxFeeIncrease(); !set || got != limit {
+		t.Fatalf("client built from SSHConnectOptions: MaxFeeIncrease() = %d, %v, want %d, true", got, set, limit)
+	}
+	// The client keeps its own copy.
+	limit = 1
+	if got, _ := client.MaxFeeIncrease(); got != 250_000 {
+		t.Fatalf("MaxFeeIncrease() = %d after the caller changed its variable, want 250000", got)
+	}
+	for name, opts := range map[string]*SSHConnectOptions{"nil options": nil, "unset": {}} {
+		if _, set := newTunnelClient(1234, nil, DefaultTimeout, opts).MaxFeeIncrease(); set {
+			t.Fatalf("%s: client has a max fee increase; there must be no default", name)
+		}
+	}
+
+	limit = 250_000
+	sshOpts := fromEnvSSHOptions(&FromEnvOptions{MaxFeeIncrease: &limit, Timeout: 7, TrustOnFirstUse: true}, 2222, "/kh")
+	if sshOpts.MaxFeeIncrease == nil || *sshOpts.MaxFeeIncrease != limit {
+		t.Fatalf("FromEnvOptions.MaxFeeIncrease was not carried to the SSH options: %+v", sshOpts)
+	}
+	if sshOpts.SSHPort != 2222 || sshOpts.KnownHostsPath != "/kh" || sshOpts.Timeout != 7 || !sshOpts.TrustOnFirstUse {
+		t.Fatalf("fromEnvSSHOptions() = %+v", sshOpts)
+	}
+	if got := fromEnvSSHOptions(nil, 2222, "/kh"); got.MaxFeeIncrease != nil || got.SSHPort != 2222 {
+		t.Fatalf("fromEnvSSHOptions(nil) = %+v", got)
+	}
+	zero := uint64(0)
+	if got, set := newTunnelClient(1, nil, DefaultTimeout, fromEnvSSHOptions(&FromEnvOptions{MaxFeeIncrease: &zero}, 1, "")).MaxFeeIncrease(); !set || got != 0 {
+		t.Fatalf("a zero ceiling from FromEnvOptions: MaxFeeIncrease() = %d, %v, want 0, true", got, set)
+	}
+}
+
 // A signed position must carry exactly one authorization, and it must be the
 // requested auth address's. The Python and TypeScript suites run the same
 // list of cases.
@@ -948,7 +1145,7 @@ func TestValidateSignResponseChecksTheAuthorization(t *testing.T) {
 	}
 	check := func(txn types.Transaction, auth string, stxn types.SignedTxn) error {
 		request := SignRequest{AuthAddress: auth, TxnSender: txn.Sender.String(), TxnBytesHex: hex.EncodeToString(encodeTxn(txn))}
-		return validateSignResponse(mustDecodeSlots(t, []SignRequest{request}), []string{hex.EncodeToString(msgpack.Encode(stxn))}, nil)
+		return validateSignResponse(mustDecodeSlots(t, []SignRequest{request}), []string{hex.EncodeToString(msgpack.Encode(stxn))}, nil, feeCeiling{})
 	}
 
 	accepted := []struct{ name, sender, auth string }{
@@ -1025,6 +1222,46 @@ func TestValidateSignResponseChecksTheAuthorization(t *testing.T) {
 	})
 }
 
+func TestMaxFeeIncreaseRefusalIsTyped(t *testing.T) {
+	first := verifyTestPayment(t, 41, 42, 1_000_000)
+	second := verifyTestPayment(t, 43, 44, 5)
+	txns := []types.Transaction{first, second}
+	client, server := newTestClient(fakeSignHandler(t, fakeSigner{feeRaise: map[int]uint64{0: 2000, 1: 3000}}))
+	defer server.Close()
+	client.SetMaxFeeIncrease(4999)
+
+	_, signErr := client.SignTransactions(txns, nil, nil)
+	_, groupErr := client.SignRequestsWithContext(context.Background(), signRequestsFor(txns...))
+	_, planErr := client.PlanGroup(txns, []string{first.Sender.String(), second.Sender.String()}, nil, nil)
+	for call, err := range map[string]error{"SignTransactions": signErr, "SignRequestsWithContext": groupErr, "PlanGroup": planErr} {
+		if !errors.Is(err, ErrMaxFeeIncreaseExceeded) {
+			t.Fatalf("%s error = %v, want ErrMaxFeeIncreaseExceeded", call, err)
+		}
+		var refusal *MaxFeeIncreaseError
+		if !errors.As(err, &refusal) || refusal.Raised != 5000 || refusal.Limit != 4999 {
+			t.Fatalf("%s error = %v (%+v), want a *MaxFeeIncreaseError of 5000 over 4999", call, err, refusal)
+		}
+		const text = "signer raised fees by 5000 microAlgos, more than the max fee increase 4999 set on this client"
+		if !strings.HasSuffix(err.Error(), text) || !strings.HasPrefix(err.Error(), "verify signer ") {
+			t.Fatalf("%s error text = %q", call, err.Error())
+		}
+	}
+
+	// Any other verification failure is not a ceiling refusal.
+	client.ClearMaxFeeIncrease()
+	other, otherServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sign" {
+			json.NewEncoder(w).Encode(StatusResponse{State: "unlocked", ApprovalWaitSeconds: 60})
+			return
+		}
+		json.NewEncoder(w).Encode(GroupSignResponse{Signed: []string{"", ""}})
+	})
+	defer otherServer.Close()
+	if _, err := other.SignTransactions(txns, nil, nil); err == nil || errors.Is(err, ErrMaxFeeIncreaseExceeded) {
+		t.Fatalf("an unrelated verification failure = %v, want an error that is not a ceiling refusal", err)
+	}
+}
+
 // A request that already carries a group ID is immutable to the signer, so a
 // response that regroups it, raises a fee on it or appends to it is refused:
 // the positions the signer did not return stay bound to the original group.
@@ -1054,12 +1291,12 @@ func TestValidateSignResponseRefusesMutatingAGroupedRequest(t *testing.T) {
 	for _, tc := range refused {
 		t.Run("refuses "+tc.name, func(t *testing.T) {
 			resp := tc.signer.sign(t, tc.requests)
-			err := validateSignResponse(mustDecodeSlots(t, tc.requests), resp.Signed, resp.Mutations)
+			err := validateSignResponse(mustDecodeSlots(t, tc.requests), resp.Signed, resp.Mutations, feeCeiling{})
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("validateSignResponse() error = %v, want %q", err, tc.want)
 			}
 			plan := tc.signer.plan(t, tc.requests)
-			err = validatePlanResponse(mustDecodeSlots(t, tc.requests), plan.Transactions, plan.Mutations)
+			err = validatePlanResponse(mustDecodeSlots(t, tc.requests), plan.Transactions, plan.Mutations, feeCeiling{})
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("validatePlanResponse() error = %v, want %q", err, tc.want)
 			}
@@ -1083,7 +1320,7 @@ func TestValidateSignResponseRefusesMutatingAGroupedRequest(t *testing.T) {
 	for _, tc := range accepted {
 		t.Run("accepts "+tc.name, func(t *testing.T) {
 			resp := tc.signer.sign(t, tc.requests)
-			if err := validateSignResponse(mustDecodeSlots(t, tc.requests), resp.Signed, resp.Mutations); err != nil {
+			if err := validateSignResponse(mustDecodeSlots(t, tc.requests), resp.Signed, resp.Mutations, feeCeiling{}); err != nil {
 				t.Fatalf("validateSignResponse() error = %v", err)
 			}
 		})
@@ -1140,7 +1377,7 @@ func TestValidateSignResponseAcceptsCapturedSignerResponses(t *testing.T) {
 	for name, vector := range vectors {
 		t.Run(name, func(t *testing.T) {
 			slots := mustDecodeSlots(t, vector.Request.Requests)
-			if err := validateSignResponse(slots, vector.Response.Signed, vector.Response.Mutations); err != nil {
+			if err := validateSignResponse(slots, vector.Response.Signed, vector.Response.Mutations, feeCeiling{}); err != nil {
 				t.Fatalf("a real signer response was refused: %v", err)
 			}
 			slot, ok := tampers[name]
@@ -1149,7 +1386,7 @@ func TestValidateSignResponseAcceptsCapturedSignerResponses(t *testing.T) {
 			}
 			signed := append([]string(nil), vector.Response.Signed...)
 			signed[slot] = flipByte(signed[slot], 1)
-			if err := validateSignResponse(slots, signed, vector.Response.Mutations); err == nil {
+			if err := validateSignResponse(slots, signed, vector.Response.Mutations, feeCeiling{}); err == nil {
 				t.Fatalf("a real response with one byte of slot %d flipped was accepted", slot+1)
 			}
 		})
@@ -1161,7 +1398,7 @@ func TestValidateSignResponseAcceptsCapturedSignerResponses(t *testing.T) {
 	stxn.Sig[0] ^= 0x01
 	signed := append([]string(nil), ed.Response.Signed...)
 	signed[0] = hex.EncodeToString(msgpack.Encode(stxn))
-	err := validateSignResponse(mustDecodeSlots(t, ed.Request.Requests), signed, ed.Response.Mutations)
+	err := validateSignResponse(mustDecodeSlots(t, ed.Request.Requests), signed, ed.Response.Mutations, feeCeiling{})
 	if err == nil || !strings.Contains(err.Error(), "signature does not verify under the requested auth address") {
 		t.Fatalf("flipped Ed25519 signature byte: error = %v", err)
 	}
@@ -1171,7 +1408,7 @@ func TestValidateSignResponseAcceptsCapturedSignerResponses(t *testing.T) {
 	dummy.Lsig.Args = [][]byte{{0x01}}
 	signed = append([]string(nil), lsig.Response.Signed...)
 	signed[1] = hex.EncodeToString(msgpack.Encode(dummy))
-	err = validateSignResponse(mustDecodeSlots(t, lsig.Request.Requests), signed, lsig.Response.Mutations)
+	err = validateSignResponse(mustDecodeSlots(t, lsig.Request.Requests), signed, lsig.Response.Mutations, feeCeiling{})
 	if err == nil || !strings.Contains(err.Error(), "appended transaction 1 does not carry the canonical resource dummy authorization") {
 		t.Fatalf("dummy with a changed authorization: error = %v", err)
 	}

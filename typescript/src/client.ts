@@ -13,6 +13,7 @@ import type {
   AccountInfoResult,
   AuthAddressValue,
   ConnectSshOptions,
+  SignerClientOptions,
   FromEnvOptions,
   PaymentPrepParams,
   AsaTransferPrepParams,
@@ -79,6 +80,7 @@ import {
 import {
   SignerError,
   errorText,
+  verificationError,
   AuthenticationError,
   SigningRejectedError,
   SignerUnavailableError,
@@ -97,6 +99,7 @@ import { preparedGroupToSignRequests, preparedTransactionToSignRequest } from ".
 import {
   DUMMY_PROGRAM as COSIGNED_DUMMY_PROGRAM,
   MAX_GROUP_SIZE,
+  checkMaxFeeIncrease,
   decodeCanonicalSignedTransaction,
   decodeCanonicalTransaction,
   decodePassthroughSlot,
@@ -2058,6 +2061,7 @@ export class SignerClient {
   private approvalWaitSeconds?: number;
   private approvalWaitFetchedAt?: number;
   private approvalWaitKnown = false;
+  private feeCeiling?: number | bigint;
 
   /**
    * Create a SignerClient instance.
@@ -2071,11 +2075,43 @@ export class SignerClient {
   constructor(
     baseUrl: string,
     timeout?: number,
-    tunnel: SSHTunnel | null = null
+    tunnel: SSHTunnel | null = null,
+    options?: SignerClientOptions | null,
   ) {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
     this.explicitTimeout = timeout && timeout > 0 ? timeout : undefined;
     this.tunnel = tunnel;
+    // A bare number here would otherwise be read as an options object with no
+    // ceiling in it.
+    if (options !== undefined && options !== null && typeof options !== "object") {
+      throw new SignerError(
+        "SignerClient options must be an object, such as { maxFeeIncrease: 200_000 }",
+      );
+    }
+    this.feeCeiling = checkMaxFeeIncrease(options?.maxFeeIncrease);
+  }
+
+  /**
+   * The ceiling, in microAlgos, on the total fee the signer may add to a
+   * request, as it was set, or undefined when none is set. Assigning
+   * validates the value; undefined removes the ceiling and zero means the
+   * signer may not raise any fee. See SignerClientOptions.
+   */
+  get maxFeeIncrease(): number | bigint | undefined {
+    return this.feeCeiling;
+  }
+
+  set maxFeeIncrease(microAlgos: number | bigint | undefined) {
+    this.feeCeiling = checkMaxFeeIncrease(microAlgos);
+  }
+
+  /**
+   * The ceiling a call starting now is held to. A call reads it before
+   * sending its request, so a change made while the signer waits for approval
+   * does not apply to it.
+   */
+  private feeCeilingSnapshot(): bigint | undefined {
+    return this.feeCeiling === undefined ? undefined : BigInt(this.feeCeiling);
   }
 
   /**
@@ -2111,6 +2147,7 @@ export class SignerClient {
     sshKeyPath: string,
     options: ConnectSshOptions = {}
   ): Promise<SignerClient> {
+    const maxFeeIncrease = checkMaxFeeIncrease(options.maxFeeIncrease);
     const sshPort = options.sshPort ?? DEFAULT_SSH_PORT;
     const localPort = options.localPort ?? 0;
     const timeout = options.timeout;
@@ -2158,7 +2195,7 @@ export class SignerClient {
 
     // Connect through tunnel
     const baseUrl = `http://127.0.0.1:${tunnel.localPort}`;
-    const client = new SignerClient(baseUrl, timeout, tunnel);
+    const client = new SignerClient(baseUrl, timeout, tunnel, { maxFeeIncrease });
 
     // Verify connection
     const healthy = await client.health();
@@ -2215,6 +2252,7 @@ export class SignerClient {
       signal: options.signal,
       knownHostsPath: endpoint.knownHostsPath,
       trustOnFirstUse: options.trustOnFirstUse ?? false,
+      maxFeeIncrease: options.maxFeeIncrease,
     });
   }
 
@@ -3543,6 +3581,7 @@ export class SignerClient {
     // The slots the plan is checked against are decoded here, from the very
     // entries that are sent.
     const slots = decodeRequestSlots(requests);
+    const maxFeeIncrease = this.feeCeilingSnapshot();
 
     const response = await this.fetch("/plan", {
       method: "POST",
@@ -3582,11 +3621,9 @@ export class SignerClient {
     }
 
     try {
-      validatePlanResponse(slots, data.transactions, data.mutations);
+      validatePlanResponse(slots, data.transactions, data.mutations, maxFeeIncrease);
     } catch (error) {
-      throw new SignerError(
-        `verify signer plan: ${errorText(error)}`,
-      );
+      throw verificationError("verify signer plan: ", error);
     }
 
     return data;
@@ -3757,6 +3794,7 @@ export class SignerClient {
     // The slots the response is checked against are decoded here, from the
     // very entries that are sent.
     const slots = decodeRequestSlots(requests);
+    const maxFeeIncrease = this.feeCeilingSnapshot();
     const signBody: GroupSignRequest = { request_id: requestId, requests };
 
     await this.discoverApprovalWait();
@@ -3814,11 +3852,9 @@ export class SignerClient {
     // Every sign path goes through here, so a truncated, altered or padded
     // group can never be returned for submission or simulation.
     try {
-      validateSignResponse(slots, data.signed ?? [], data.mutations);
+      validateSignResponse(slots, data.signed ?? [], data.mutations, maxFeeIncrease);
     } catch (error) {
-      throw new SignerError(
-        `verify signer response: ${errorText(error)}`,
-      );
+      throw verificationError("verify signer response: ", error);
     }
 
     return data;

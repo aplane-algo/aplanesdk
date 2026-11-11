@@ -1166,17 +1166,17 @@ class TestSignPreparedCosignedGroup:
             transaction.assign_group_id(txns)
             return txns
 
-        _validate_group_mutations(slots, planned, mutations)
+        _validate_group_mutations(slots, planned, mutations, None)
 
         changed = copy.deepcopy(planned)
         changed[0].receiver = sdk_test_address(23)
         with pytest.raises(SignerError, match="unreported fields"):
-            _validate_group_mutations(slots, regroup(changed), mutations)
+            _validate_group_mutations(slots, regroup(changed), mutations, None)
 
         changed = copy.deepcopy(planned)
         changed[1].amt = 1
         with pytest.raises(SignerError, match="not the canonical resource dummy"):
-            _validate_group_mutations(slots, regroup(changed), mutations)
+            _validate_group_mutations(slots, regroup(changed), mutations, None)
         with pytest.raises(SignerError, match="not the canonical resource dummy"):
             _sign_cosigned_dummies(original, changed[1].group, changed[1:], 1)
 
@@ -1184,7 +1184,7 @@ class TestSignPreparedCosignedGroup:
         changed = copy.deepcopy(planned)
         changed[1].last_valid_round += 1
         with pytest.raises(SignerError, match="not the canonical resource dummy"):
-            _validate_group_mutations(slots, regroup(changed), mutations)
+            _validate_group_mutations(slots, regroup(changed), mutations, None)
 
         grouped = copy.deepcopy(original)
         grouped.group = bytes([0x31]) * 32
@@ -1198,8 +1198,7 @@ class TestSignPreparedCosignedGroup:
                     "group_id_changed": True,
                     "original_count": 1,
                     "final_count": 1,
-                },
-            )
+                }, None)
 
         with pytest.raises(SignerError, match="exceeds advertised max_fee"):
             _validate_bounded_target_fees(planned, {0: planned[0].fee - 1})

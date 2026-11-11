@@ -42,6 +42,7 @@ import copy
 import hashlib
 import json
 import math
+import operator
 import os
 import re
 import requests
@@ -194,14 +195,39 @@ class SignerError(Exception):
         self.code = code
 
 
+class MaxFeeIncreaseError(SignerError):
+    """The signer raised fees by more than the client's max fee increase.
+
+    Attributes:
+        raised: total the signer added across the request's positions, in microAlgos
+        limit: the ceiling the call was held to, in microAlgos
+    """
+
+    def __init__(self, raised: int, limit: int, prefix: str = ""):
+        super().__init__(
+            f"{prefix}signer raised fees by {raised} microAlgos, more than the "
+            f"max fee increase {limit} set on this client"
+        )
+        self.raised = raised
+        self.limit = limit
+        self.prefix = prefix
+
+    def __reduce__(self) -> tuple:
+        # Exceptions pickle and copy by calling the class with the message
+        # alone; this one is built from its amounts.
+        return (self.__class__, (self.raised, self.limit, self.prefix))
+
+
 def _verification_error(prefix: str, error: Exception) -> SignerError:
     """Word a failed check of a signer result.
 
     A refusal by one of the checks is a SignerError and is passed on as it
-    reads. Anything else is a fault in the checking itself, and says so by
-    naming the exception, so an SDK defect is not reported as the signer
-    having sent something wrong.
+    reads, a ceiling refusal keeping its type. Anything else is a fault in the
+    checking itself, and says so by naming the exception, so an SDK defect is
+    not reported as the signer having sent something wrong.
     """
+    if isinstance(error, MaxFeeIncreaseError):
+        return MaxFeeIncreaseError(error.raised, error.limit, prefix)
     if isinstance(error, SignerError):
         return SignerError(f"{prefix}{error}")
     return SignerError(
@@ -254,6 +280,11 @@ class TransactionRejectedError(SignerError):
         self.txid = txid
         self.reason = reason
         super().__init__(f"Transaction {txid} rejected: {reason}")
+
+    def __reduce__(self) -> tuple:
+        # Exceptions pickle and copy by calling the class with the message
+        # alone; this one is built from its transaction ID and reason.
+        return (self.__class__, (self.txid, self.reason))
 
 
 class LogicSigRejectedError(TransactionRejectedError):
@@ -1575,10 +1606,31 @@ def _sign_canonical_dummy(txn: transaction.Transaction) -> bytes:
     return base64.b64decode(encoding.msgpack_encode(signed))
 
 
+def _check_max_fee_increase(value: Any) -> Optional[int]:
+    """Validate a max fee increase setting: None, or a non-negative integer.
+
+    Any integral type is accepted (anything with ``__index__``, such as a
+    numpy integer). A bool or a float is not.
+    """
+    if value is None:
+        return None
+    error = SignerError("max_fee_increase must be a non-negative integer of microAlgos, or None")
+    if isinstance(value, bool):
+        raise error
+    try:
+        limit = operator.index(value)
+    except TypeError:
+        raise error from None
+    if limit < 0:
+        raise error
+    return limit
+
+
 def _validate_group_mutations(
     slots: List[_RequestSlot],
     returned: List[Optional[transaction.Transaction]],
     mutations: Optional[Dict[str, Any]],
+    max_fee_increase: Optional[int],
 ) -> None:
     """Check a /sign or /plan result against the request.
 
@@ -1589,6 +1641,14 @@ def _validate_group_mutations(
     ``returned`` holds the transaction observed at each final position. None is
     a foreign position /sign returned empty: nothing was observed, and the
     position is taken as the request's transaction in the final group.
+
+    ``max_fee_increase`` is the caller's ceiling on the total fee the signer may
+    add across the request's positions, or None for no ceiling; it has no
+    default, so a caller cannot leave the check out by omission. The report's
+    own total cannot serve: it is written by the party being checked. An
+    appended dummy carries a zero fee of its own, and the signer charges its
+    base fee to an original position, so the total over original positions is
+    the whole increase, dummies included.
     """
     if len(returned) < len(slots):
         raise SignerError(
@@ -1730,6 +1790,8 @@ def _validate_group_mutations(
             f"mutation total_fees_delta {reported_delta} does not match "
             f"observed delta {total_fee_delta}"
         )
+    if max_fee_increase is not None and total_fee_delta > max_fee_increase:
+        raise MaxFeeIncreaseError(total_fee_delta, max_fee_increase)
     for index in range(len(slots), len(returned)):
         extra = returned[index]
         if extra is None:
@@ -1745,6 +1807,7 @@ def _validate_sign_response(
     slots: List[_RequestSlot],
     signed: Any,
     mutations: Optional[Dict[str, Any]],
+    max_fee_increase: Optional[int],
 ) -> None:
     """Check a /sign response against the request before anyone can submit it.
 
@@ -1797,7 +1860,7 @@ def _validate_sign_response(
             except SignerError as e:
                 raise SignerError(f"signed transaction {index + 1} {e}") from e
         returned.append(decoded.transaction)
-    _validate_group_mutations(slots, returned, mutations)
+    _validate_group_mutations(slots, returned, mutations, max_fee_increase)
     for index in range(len(slots), len(signed)):
         dummy = cast(transaction.Transaction, returned[index])
         if _sign_canonical_dummy(dummy) != signed_bytes[index]:
@@ -1811,6 +1874,7 @@ def _validate_plan_response(
     slots: List[_RequestSlot],
     transactions: Any,
     mutations: Optional[Dict[str, Any]],
+    max_fee_increase: Optional[int],
 ) -> None:
     """Check a /plan response against the request.
 
@@ -1838,7 +1902,7 @@ def _validate_plan_response(
             returned.append(_decode_canonical_txn(raw))
         except SignerError as e:
             raise SignerError(f"planned transaction {index}: {e}") from e
-    _validate_group_mutations(slots, returned, mutations)
+    _validate_group_mutations(slots, returned, mutations, max_fee_increase)
 
 
 def _new_sign_request_id() -> str:
@@ -3209,7 +3273,11 @@ class SignerClient:
     """
 
     def __init__(
-        self, base_url: str, timeout: Optional[int] = None, tunnel: Optional[Any] = None
+        self,
+        base_url: str,
+        timeout: Optional[int] = None,
+        tunnel: Optional[Any] = None,
+        max_fee_increase: Optional[int] = None,
     ):
         """
         Initialize signer client (use class methods instead).
@@ -3223,9 +3291,20 @@ class SignerClient:
             timeout: Optional explicit request timeout in seconds. If omitted,
                 endpoint-specific defaults are used.
             tunnel: SSH tunnel instance (managed internally)
+            max_fee_increase: Optional ceiling, in microAlgos, on the total fee
+                the signer may add to a request. Every sign, plan and simulate
+                call through this client fails and returns nothing when the
+                signer's fee raises across the request's positions add up to
+                more than this. On a sign or simulate call the signer has
+                already answered by then; its signature is discarded. Each request is
+                held to the ceiling in force when it started. Any integral
+                value is accepted. Zero means the signer may not raise
+                any fee. There is no default: None accepts a reported raise of
+                any size. Also settable as the ``max_fee_increase`` attribute.
         """
         if not base_url:
             raise SignerError("base_url is required")
+        self.max_fee_increase = max_fee_increase
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout if timeout and timeout > 0 else None
         self.session = requests.Session()
@@ -3235,6 +3314,15 @@ class SignerClient:
         self._approval_wait_seconds: Optional[int] = None
         self._approval_wait_fetched_at: Optional[float] = None
         self._approval_wait_known = False
+
+    @property
+    def max_fee_increase(self) -> Optional[int]:
+        """Ceiling, in microAlgos, on the signer's total fee increase; None is unbounded."""
+        return self._max_fee_increase
+
+    @max_fee_increase.setter
+    def max_fee_increase(self, value: Optional[int]) -> None:
+        self._max_fee_increase = _check_max_fee_increase(value)
 
     @classmethod
     def connect_ssh(
@@ -3247,6 +3335,7 @@ class SignerClient:
         trust_on_first_use: bool = False,
         local_port: int = 0,
         ssh_setup_timeout: float = DEFAULT_SSH_SETUP_TIMEOUT,
+        max_fee_increase: Optional[int] = None,
     ) -> "SignerClient":
         """
         Connect to remote apsigner via SSH tunnel.
@@ -3267,6 +3356,8 @@ class SignerClient:
                 remote REST port argument: the signer's SSH server forwards every
                 channel to its own REST listener.
             ssh_setup_timeout: Maximum seconds for TCP connection and SSH authentication
+            max_fee_increase: Optional ceiling, in microAlgos, on the total fee
+                the signer may add to a request (see SignerClient). No default.
 
         Returns:
             SignerClient instance with active SSH tunnel
@@ -3277,6 +3368,9 @@ class SignerClient:
         """
         import os
 
+        # Checked here so a bad value is refused before any connection is
+        # attempted; the constructor is the one place that sets it.
+        fee_ceiling = _check_max_fee_increase(max_fee_increase)
         ssh_key_path = os.path.expanduser(ssh_key_path)
         known_hosts_path = os.path.expanduser(known_hosts_path)
 
@@ -3305,7 +3399,7 @@ class SignerClient:
 
         # Connect through tunnel
         base_url = f"http://127.0.0.1:{tunnel.local_bind_port}"
-        client = cls(base_url, timeout, tunnel=tunnel)
+        client = cls(base_url, timeout, tunnel=tunnel, max_fee_increase=fee_ceiling)
 
         # Verify connection
         if not client.health():
@@ -3324,6 +3418,7 @@ class SignerClient:
         endpoint: Optional[str] = None,
         trust_on_first_use: bool = False,
         ssh_setup_timeout: float = DEFAULT_SSH_SETUP_TIMEOUT,
+        max_fee_increase: Optional[int] = None,
     ) -> "SignerClient":
         """
         Connect using the endpoint registry from a data directory.
@@ -3339,6 +3434,8 @@ class SignerClient:
             endpoint: Optional signer or cosigner endpoint alias
             trust_on_first_use: Explicitly trust an unknown SSH host key
             ssh_setup_timeout: Maximum seconds for TCP connection and SSH authentication
+            max_fee_increase: Optional ceiling, in microAlgos, on the total fee
+                the signer may add to a request (see SignerClient). No default.
 
         Returns:
             SignerClient instance
@@ -3370,6 +3467,7 @@ class SignerClient:
             known_hosts_path=selected.known_hosts_path,
             trust_on_first_use=trust_on_first_use,
             ssh_setup_timeout=ssh_setup_timeout,
+            max_fee_increase=max_fee_increase,
         )
 
     def close(self):
@@ -5067,6 +5165,9 @@ class SignerClient:
             slots = _decode_request_slots(sign_entries)
         except SignerError as e:
             raise SignerError(f"invalid sign request: {e}") from e
+        # The request is held to the ceiling in force now, whatever is set on
+        # the client while the signer waits for approval.
+        max_fee_increase = self.max_fee_increase
         request_body = {
             "request_id": request_id,
             "requests": sign_entries,
@@ -5114,7 +5215,7 @@ class SignerClient:
         # Every sign path goes through here, so a truncated, altered or padded
         # group can never be returned for submission or simulation.
         try:
-            _validate_sign_response(slots, signed, mutations)
+            _validate_sign_response(slots, signed, mutations, max_fee_increase)
         except Exception as e:
             raise _verification_error("verify signer response: ", e) from e
 
@@ -5188,6 +5289,7 @@ class SignerClient:
             slots = _decode_request_slots(sign_entries)
         except SignerError as e:
             raise SignerError(f"invalid plan request: {e}") from e
+        max_fee_increase = self.max_fee_increase
         request_body = {"requests": sign_entries}
 
         try:
@@ -5220,7 +5322,9 @@ class SignerClient:
             raise SignerError(data["error"])
 
         try:
-            _validate_plan_response(slots, data.get("transactions"), data.get("mutations"))
+            _validate_plan_response(
+                slots, data.get("transactions"), data.get("mutations"), max_fee_increase
+            )
         except Exception as e:
             raise _verification_error("verify signer plan: ", e) from e
 

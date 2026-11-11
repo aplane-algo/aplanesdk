@@ -8,6 +8,7 @@ import copy
 import inspect
 import json
 import pathlib
+import pickle
 import re
 from unittest.mock import MagicMock, patch
 
@@ -15,7 +16,14 @@ import msgpack
 import pytest
 from algosdk import encoding, transaction
 
-from aplanesdk import PreparedGroup, PreparedTransaction, SignerClient, SignerError
+from aplanesdk import (
+    InsufficientFundsError,
+    MaxFeeIncreaseError,
+    PreparedGroup,
+    PreparedTransaction,
+    SignerClient,
+    SignerError,
+)
 from aplanesdk.signer import (
     _decode_request_slots,
     _simulate_signed_group,
@@ -114,7 +122,9 @@ def test_sign_response_accepts_reported_mutations(entries, signer, want):
     requests = entries()
     body = fake_signer.sign_response(requests, **signer)
     assert len(body["signed"]) == want
-    _validate_sign_response(_decode_request_slots(requests), body["signed"], body.get("mutations"))
+    _validate_sign_response(
+        _decode_request_slots(requests), body["signed"], body.get("mutations"), None
+    )
 
 
 def replace_dummy_with_payment(body):
@@ -360,10 +370,10 @@ def test_sign_response_rejects_tampering(entries, signer, tamper, error):
     requests = entries()
     slots = _decode_request_slots(requests)
     body = fake_signer.sign_response(requests, **signer)
-    _validate_sign_response(slots, body["signed"], body.get("mutations"))
+    _validate_sign_response(slots, body["signed"], body.get("mutations"), None)
     tamper(body)
     with pytest.raises(SignerError, match=error):
-        _validate_sign_response(slots, body["signed"], body.get("mutations"))
+        _validate_sign_response(slots, body["signed"], body.get("mutations"), None)
 
 
 def test_plan_response_checks_foreign_positions_and_dummies():
@@ -385,7 +395,7 @@ def test_plan_response_checks_foreign_positions_and_dummies():
 
     body = fake_signer.plan_response(requests, **signer)
     assert len(body["transactions"]) == 3
-    _validate_plan_response(slots, body["transactions"], body["mutations"])
+    _validate_plan_response(slots, body["transactions"], body["mutations"], None)
 
     cases = [
         (lambda txns: setattr(txns[0], "amt", 999_999), "unreported fields at original position 1"),
@@ -400,12 +410,12 @@ def test_plan_response_checks_foreign_positions_and_dummies():
         body = fake_signer.plan_response(requests, **signer)
         replan(body, edit)
         with pytest.raises(SignerError, match=error):
-            _validate_plan_response(slots, body["transactions"], body["mutations"])
+            _validate_plan_response(slots, body["transactions"], body["mutations"], None)
 
     body = fake_signer.plan_response(requests, **signer)
     body["mutations"]["fees_modified"] = [0, 1]
     with pytest.raises(SignerError, match="fee index 1 is a foreign position"):
-        _validate_plan_response(slots, body["transactions"], body["mutations"])
+        _validate_plan_response(slots, body["transactions"], body["mutations"], None)
 
 
 def test_public_calls_reject_a_substituted_transaction():
@@ -548,6 +558,176 @@ def test_any_failure_while_verifying_is_a_signer_error():
             client.sign_transaction(txn)
 
 
+FIVE_ALGO = 5_000_000
+
+
+def _fee_ceiling_txns(count):
+    return [fake_signer.payment(41, 42, 1_000_000), fake_signer.payment(43, 44, 5)][:count]
+
+
+@pytest.mark.parametrize(
+    ("limit", "fee_raise", "count", "refused"),
+    [
+        # Unset is unbounded: a reported raise of any size is accepted.
+        (None, {0: FIVE_ALGO}, 1, None),
+        (200_000, {0: 3000}, 1, None),
+        (3000, {0: 3000}, 1, None),
+        (2999, {0: 3000}, 1, (3000, 2999)),
+        (0, {0: 1}, 1, (1, 0)),
+        (0, {}, 2, None),
+        (4999, {0: 2000, 1: 3000}, 2, (5000, 4999)),
+        (5000, {0: 2000, 1: 3000}, 2, None),
+    ],
+    ids=[
+        "unset-large-raise",
+        "above-the-raise",
+        "equal-to-the-raise",
+        "one-below-the-raise",
+        "zero-with-a-raise",
+        "zero-with-no-raise",
+        "two-positions-summed",
+        "two-positions-at-the-sum",
+    ],
+)
+def test_max_fee_increase(limit, fee_raise, count, refused):
+    client = SignerClient("http://localhost:11270", timeout=10, max_fee_increase=limit)
+    txns = _fee_ceiling_txns(count)
+    prepared = PreparedGroup(
+        [PreparedTransaction(transaction=txn, auth_address=txn.sender) for txn in txns]
+    )
+    algod_client = MagicMock()
+    algod_client.simulate_transactions.return_value = {"txn-groups": [{}]}
+    calls = [
+        ("response", lambda: client.sign_transactions(txns)),
+        ("response", lambda: client.sign_transactions_list(txns)),
+        ("response", lambda: client.sign_requests(fake_signer.sign_entries(*txns))),
+        ("plan", lambda: client.plan_group(txns)),
+        ("response", lambda: client.simulate_prepared_group(algod_client, prepared)),
+    ]
+    with (
+        patch.object(client, "_discover_approval_wait"),
+        patch.object(
+            client.session, "post", side_effect=fake_signer.signer_post(fee_raise=fee_raise)
+        ),
+    ):
+        for kind, call in calls:
+            if refused is None:
+                call()
+                continue
+            raised, ceiling = refused
+            error = (
+                f"verify signer {kind}: signer raised fees by {raised} microAlgos, "
+                f"more than the max fee increase {ceiling} set on this client"
+            )
+            with pytest.raises(SignerError, match=error):
+                call()
+    if refused is None:
+        assert algod_client.simulate_transactions.call_count == 1
+    else:
+        algod_client.simulate_transactions.assert_not_called()
+
+
+def test_max_fee_increase_ignores_zero_fee_dummies():
+    client = SignerClient("http://localhost:11270", max_fee_increase=2000)
+    post = fake_signer.signer_post(fee_raise={0: 2000}, dummies=2)
+    with (
+        patch.object(client, "_discover_approval_wait"),
+        patch.object(client.session, "post", side_effect=post),
+    ):
+        assert len(client.sign_transactions_list([fake_signer.payment()])) == 3
+
+
+class _Integral:
+    """An integer that is not an int, as numpy.int64 is."""
+
+    def __init__(self, value):
+        self._value = value
+
+    def __index__(self):
+        return self._value
+
+
+def test_max_fee_increase_setting():
+    client = make_client()
+    assert client.max_fee_increase is None, "there must be no default"
+    client.max_fee_increase = 0
+    assert client.max_fee_increase == 0
+    client.max_fee_increase = None
+    assert client.max_fee_increase is None
+
+    # Any integral type is accepted and stored as a plain int.
+    client.max_fee_increase = _Integral(250_000)
+    assert client.max_fee_increase == 250_000
+    assert type(client.max_fee_increase) is int
+    assert (
+        SignerClient("http://localhost:11270", max_fee_increase=_Integral(0)).max_fee_increase == 0
+    )
+
+    # The same error type as the constructor's other argument errors.
+    error = "max_fee_increase must be a non-negative integer"
+    for bad in (-1, _Integral(-1), 1.5, 1000.0, "1000", True, False):
+        with pytest.raises(SignerError, match=error):
+            client.max_fee_increase = bad
+        with pytest.raises(SignerError, match=error):
+            SignerClient("http://localhost:11270", max_fee_increase=bad)
+        # Refused before any connection is attempted.
+        with pytest.raises(SignerError, match=error):
+            SignerClient.connect_ssh("signer.invalid", "/nonexistent/key", max_fee_increase=bad)
+    assert client.max_fee_increase == 250_000, "a refused value must not replace the setting"
+
+
+def test_max_fee_increase_is_snapshotted_when_the_call_starts():
+    """Clearing the ceiling while the signer waits for approval lets nothing through."""
+    txn = fake_signer.payment(41, 42, 1)
+    client = SignerClient("http://localhost:11270", max_fee_increase=1000)
+    answer = fake_signer.signer_post(fee_raise={0: 3000})
+
+    def delayed_post(url, json=None, **kwargs):
+        # The response arrives after the ceiling has been removed.
+        client.max_fee_increase = None
+        return answer(url, json=json, **kwargs)
+
+    error = "more than the max fee increase 1000 set on this client"
+    with patch.object(client, "_discover_approval_wait"):
+        with patch.object(client.session, "post", side_effect=delayed_post):
+            with pytest.raises(SignerError, match="verify signer response: .*" + error):
+                client.sign_transaction(txn)
+        assert client.max_fee_increase is None
+
+        client.max_fee_increase = 1000
+        with patch.object(client.session, "post", side_effect=delayed_post):
+            with pytest.raises(SignerError, match="verify signer plan: .*" + error):
+                client.plan_group([txn])
+
+        # A call started with no ceiling is not held to one.
+        with patch.object(client.session, "post", side_effect=answer):
+            client.sign_transaction(txn)
+
+
+def test_connection_helpers_forward_max_fee_increase(tmp_path):
+    (tmp_path / "endpoints.yaml").write_text(
+        "schema_version: 2\nendpoints:\n  primary:\n    role: signer\n"
+        "    url: ssh://signer.example.com\n"
+    )
+    ssh_dir = tmp_path / ".ssh"
+    ssh_dir.mkdir()
+    (ssh_dir / "id_ed25519").write_text("dummy-private-key")
+    with patch.object(SignerClient, "connect_ssh", return_value="client") as connect:
+        SignerClient.from_env(data_dir=str(tmp_path), max_fee_increase=250_000)
+    assert connect.call_args.kwargs["max_fee_increase"] == 250_000
+
+    tunnel = MagicMock()
+    tunnel.local_bind_port = 12345
+    with (
+        patch("aplanesdk.signer._SSHTunnel", return_value=tunnel),
+        patch.object(SignerClient, "health", return_value=True),
+    ):
+        client = SignerClient.connect_ssh(
+            "signer.example.com", "/key", known_hosts_path="/kh", max_fee_increase=250_000
+        )
+    assert client.max_fee_increase == 250_000
+
+
 # A signed position must carry exactly one authorization, and it must be the
 # requested auth address's. The Go and TypeScript suites run the same list.
 
@@ -566,7 +746,7 @@ def _check_authorization(txn, auth, signed_hex):
         "txn_sender": txn.sender,
         "txn_bytes_hex": encode_transaction(txn)[0],
     }
-    _validate_sign_response(_decode_request_slots([entry]), [signed_hex], None)
+    _validate_sign_response(_decode_request_slots([entry]), [signed_hex], None, None)
 
 
 @pytest.mark.parametrize(
@@ -766,6 +946,107 @@ def test_request_auth_address_must_be_an_address():
     post.assert_not_called()
 
 
+def test_max_fee_increase_refusal_is_typed():
+    client = SignerClient("http://localhost:11270", max_fee_increase=4999)
+    txns = _fee_ceiling_txns(2)
+    text = "signer raised fees by 5000 microAlgos, more than the max fee increase 4999 set on this client"
+    with (
+        patch.object(client, "_discover_approval_wait"),
+        patch.object(
+            client.session,
+            "post",
+            side_effect=fake_signer.signer_post(fee_raise={0: 2000, 1: 3000}),
+        ),
+    ):
+        for prefix, call in (
+            ("verify signer response: ", lambda: client.sign_transactions(txns)),
+            ("verify signer plan: ", lambda: client.plan_group(txns)),
+        ):
+            with pytest.raises(MaxFeeIncreaseError) as refused:
+                call()
+            assert isinstance(refused.value, SignerError)
+            assert (refused.value.raised, refused.value.limit) == (5000, 4999)
+            assert str(refused.value) == prefix + text
+            assert isinstance(refused.value.__cause__, MaxFeeIncreaseError)
+
+    # Any other verification failure is a plain SignerError.
+    def blank(body):
+        body["signed"][0] = ""
+
+    with (
+        patch.object(client, "_discover_approval_wait"),
+        patch.object(client.session, "post", side_effect=fake_signer.signer_post(tamper=blank)),
+    ):
+        with pytest.raises(SignerError) as other:
+            client.sign_transactions(txns)
+    assert type(other.value) is SignerError
+
+
+def test_connect_ssh_refuses_a_bad_ceiling_before_connecting_and_applies_a_good_one():
+    tunnel = MagicMock()
+    tunnel.local_bind_port = 12345
+    with (
+        patch("aplanesdk.signer._SSHTunnel", return_value=tunnel) as open_tunnel,
+        patch.object(SignerClient, "health", return_value=True),
+    ):
+        for bad in (-1, 1.5, True, "1000"):
+            with pytest.raises(SignerError, match="max_fee_increase must be a non-negative"):
+                SignerClient.connect_ssh(
+                    "signer.example.com", "/key", known_hosts_path="/kh", max_fee_increase=bad
+                )
+        open_tunnel.assert_not_called()
+
+        client = SignerClient.connect_ssh(
+            "signer.example.com",
+            "/key",
+            known_hosts_path="/kh",
+            max_fee_increase=_Integral(1000),
+        )
+    open_tunnel.assert_called_once()
+    assert client.max_fee_increase == 1000
+    assert type(client.max_fee_increase) is int
+
+    # The ceiling is in force on the returned client.
+    with (
+        patch.object(client, "_discover_approval_wait"),
+        patch.object(
+            client.session, "post", side_effect=fake_signer.signer_post(fee_raise={0: 3000})
+        ),
+    ):
+        with pytest.raises(MaxFeeIncreaseError):
+            client.sign_transaction(fake_signer.payment())
+
+
+def test_max_fee_increase_error_pickles_and_copies():
+    error = MaxFeeIncreaseError(5000, 4999, "verify signer response: ")
+    for clone in (pickle.loads(pickle.dumps(error)), copy.copy(error), copy.deepcopy(error)):
+        assert type(clone) is MaxFeeIncreaseError
+        assert (clone.raised, clone.limit) == (5000, 4999)
+        assert str(clone) == str(error)
+        assert str(clone).startswith("verify signer response: signer raised fees by 5000")
+
+    # The same flaw, fixed the same way: an error built from more than its message.
+    rejected = InsufficientFundsError("TXID", "overspend")
+    for clone in (pickle.loads(pickle.dumps(rejected)), copy.copy(rejected)):
+        assert type(clone) is InsufficientFundsError
+        assert (clone.txid, clone.reason) == ("TXID", "overspend")
+        assert str(clone) == str(rejected)
+
+
+def test_validators_require_the_ceiling_argument():
+    """Leaving the ceiling out is an error, not a silent "no ceiling"."""
+    entries = fake_signer.sign_entries(fake_signer.payment())
+    slots = _decode_request_slots(entries)
+    body = fake_signer.sign_response(entries)
+    plan = fake_signer.plan_response(entries)
+    with pytest.raises(TypeError):
+        _validate_sign_response(slots, body["signed"], None)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        _validate_plan_response(slots, plan["transactions"], None)  # type: ignore[call-arg]
+    _validate_sign_response(slots, body["signed"], None, None)
+    _validate_plan_response(slots, plan["transactions"], None, None)
+
+
 # A request that already carries a group ID is immutable to the signer, so a
 # response that regroups it, raises a fee on it or appends to it is refused:
 # the positions the signer did not return stay bound to the original group.
@@ -816,10 +1097,10 @@ def test_mutating_a_grouped_request_is_refused(entries, signer, error):
     slots = _decode_request_slots(requests)
     body = fake_signer.sign_response(requests, **signer)
     with pytest.raises(SignerError, match=error):
-        _validate_sign_response(slots, body["signed"], body.get("mutations"))
+        _validate_sign_response(slots, body["signed"], body.get("mutations"), None)
     plan = fake_signer.plan_response(requests, **signer)
     with pytest.raises(SignerError, match=error):
-        _validate_plan_response(slots, plan["transactions"], plan.get("mutations"))
+        _validate_plan_response(slots, plan["transactions"], plan.get("mutations"), None)
 
 
 @pytest.mark.parametrize(
@@ -842,7 +1123,9 @@ def test_mutating_a_grouped_request_is_refused(entries, signer, error):
 def test_unmutated_grouped_and_mutated_ungrouped_requests_are_accepted(entries, signer):
     requests = entries()
     body = fake_signer.sign_response(requests, **signer)
-    _validate_sign_response(_decode_request_slots(requests), body["signed"], body.get("mutations"))
+    _validate_sign_response(
+        _decode_request_slots(requests), body["signed"], body.get("mutations"), None
+    )
 
 
 # Requests and the responses a live signer returned for them. The fake signer
@@ -877,14 +1160,14 @@ def test_captured_signer_responses_are_accepted(name):
     slots = _decode_request_slots(vector["request"]["requests"])
     signed = vector["response"]["signed"]
     mutations = vector["response"].get("mutations")
-    _validate_sign_response(slots, signed, mutations)
+    _validate_sign_response(slots, signed, mutations, None)
 
     tampered = list(signed)
     raw = bytearray(bytes.fromhex(tampered[_VECTOR_TAMPER_SLOT[name]]))
     raw[-1] ^= 0x01
     tampered[_VECTOR_TAMPER_SLOT[name]] = raw.hex()
     with pytest.raises(SignerError):
-        _validate_sign_response(slots, tampered, mutations)
+        _validate_sign_response(slots, tampered, mutations, None)
 
 
 def _rewrite(signed_hex, edit):
@@ -905,7 +1188,10 @@ def test_captured_responses_refuse_a_changed_signature_or_dummy_authorization():
         SignerError, match="signature does not verify under the requested auth address"
     ):
         _validate_sign_response(
-            _decode_request_slots(ed["request"]["requests"]), signed, ed["response"]["mutations"]
+            _decode_request_slots(ed["request"]["requests"]),
+            signed,
+            ed["response"]["mutations"],
+            None,
         )
 
     lsig = _VECTORS["logicsig_falcon_single"]
@@ -923,6 +1209,7 @@ def test_captured_responses_refuse_a_changed_signature_or_dummy_authorization():
             _decode_request_slots(lsig["request"]["requests"]),
             signed,
             lsig["response"]["mutations"],
+            None,
         )
 
 
@@ -935,14 +1222,14 @@ def test_hex_with_whitespace_is_refused():
     plan = fake_signer.plan_response(entries)
     for spaced in (lambda h: h[:10] + " " + h[10:], lambda h: h + "\n", lambda h: " " + h):
         with pytest.raises(SignerError, match="signed transaction 1 is invalid hex"):
-            _validate_sign_response(slots, [spaced(body["signed"][0])], None)
+            _validate_sign_response(slots, [spaced(body["signed"][0])], None, None)
         with pytest.raises(SignerError, match="planned transaction 1 is invalid hex"):
-            _validate_plan_response(slots, [spaced(plan["transactions"][0])], None)
+            _validate_plan_response(slots, [spaced(plan["transactions"][0])], None, None)
         with pytest.raises(SignerError, match="txn_bytes_hex is invalid hex"):
             _decode_request_slots(
                 [{**entries[0], "txn_bytes_hex": spaced(entries[0]["txn_bytes_hex"])}]
             )
-    _validate_sign_response(slots, body["signed"], None)
+    _validate_sign_response(slots, body["signed"], None, None)
 
 
 def test_sign_and_plan_requests_keep_their_public_signatures():

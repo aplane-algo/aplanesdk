@@ -78,6 +78,7 @@ export {
 // Errors
 export {
   SignerError,
+  MaxFeeIncreaseError,
   AuthenticationError,
   SigningRejectedError,
   SignerUnavailableError,
@@ -116,6 +117,7 @@ export type {
   ClientEndpointRegistry,
   FromEnvOptions,
   ConnectSshOptions,
+  SignerClientOptions,
   LsigArgs,
   LsigArgsMap,
   SignOptions,

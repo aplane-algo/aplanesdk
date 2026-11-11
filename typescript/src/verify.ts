@@ -14,7 +14,7 @@ import { createPublicKey, verify as verifySignature } from "crypto";
 import algosdk, { type Transaction } from "algosdk";
 import type { MutationReport, SignRequest } from "./types.js";
 import { signRequestMode, type SignRequestMode } from "./types.js";
-import { SignerError, errorText } from "./errors.js";
+import { MaxFeeIncreaseError, SignerError, errorText } from "./errors.js";
 import { encodeTransaction, hexToBytes } from "./encoding.js";
 
 /** Algorand's maximum transaction group size. */
@@ -22,6 +22,25 @@ export const MAX_GROUP_SIZE = 16;
 export const DUMMY_PROGRAM = new Uint8Array([0x03, 0x31, 0x20, 0x32, 0x03, 0x12]);
 
 const UINT64_MAX = (1n << 64n) - 1n;
+
+/**
+ * Validate a max fee increase setting: unset, or a non-negative whole number
+ * of microAlgos. The value is returned as given, so a caller reads back what
+ * it set; null is treated as unset.
+ */
+export function checkMaxFeeIncrease(
+  value: number | bigint | undefined | null,
+): number | bigint | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value === "bigint" ? value >= 0n : Number.isSafeInteger(value) && value >= 0) {
+    return value;
+  }
+  throw new SignerError(
+    "maxFeeIncrease must be a non-negative whole number of microAlgos, or undefined",
+  );
+}
 
 /** One decoded /sign or /plan request entry. */
 export interface RequestSlot {
@@ -378,11 +397,20 @@ export function signCanonicalDummy(txn: Transaction): Uint8Array {
  * undefined entry is a foreign position /sign returned empty: nothing was
  * observed, and the position is taken as the request's transaction in the
  * final group.
+ *
+ * `maxFeeIncrease` is the caller's ceiling on the total fee the signer may
+ * add across the request's positions, or undefined for no ceiling; it is not
+ * optional, so a caller cannot leave the check out by omission. The report's
+ * own total cannot serve: it is written by the party being checked. An
+ * appended dummy carries a zero fee of its own, and the signer charges its
+ * base fee to an original position, so the total over original positions is
+ * the whole increase, dummies included.
  */
 export function validateGroupMutations(
   slots: RequestSlot[],
   returned: (Transaction | undefined)[],
-  mutations?: MutationReport,
+  mutations: MutationReport | undefined,
+  maxFeeIncrease: bigint | undefined,
 ): void {
   if (returned.length < slots.length) {
     throw new SignerError(
@@ -546,6 +574,9 @@ export function validateGroupMutations(
       `mutation total_fees_delta ${reportedDelta} does not match observed delta ${totalFeeDelta}`,
     );
   }
+  if (maxFeeIncrease !== undefined && totalFeeDelta > maxFeeIncrease) {
+    throw new MaxFeeIncreaseError(totalFeeDelta, maxFeeIncrease);
+  }
   for (let index = slots.length; index < returned.length; index++) {
     const extra = returned[index];
     if (extra === undefined) {
@@ -571,7 +602,8 @@ export function validateGroupMutations(
 export function validateSignResponse(
   slots: RequestSlot[],
   signed: unknown,
-  mutations?: MutationReport,
+  mutations: MutationReport | undefined,
+  maxFeeIncrease: bigint | undefined,
 ): void {
   if (!Array.isArray(signed) || signed.some((item) => typeof item !== "string")) {
     throw new SignerError("signer returned a malformed signed list");
@@ -624,7 +656,7 @@ export function validateSignResponse(
     }
     return decoded.txn;
   });
-  validateGroupMutations(slots, returned, mutations);
+  validateGroupMutations(slots, returned, mutations, maxFeeIncrease);
   for (let index = slots.length; index < signedHexes.length; index++) {
     const want = signCanonicalDummy(returned[index] as Transaction);
     if (!byteArraysEqual(want, signedBytes[index])) {
@@ -643,7 +675,8 @@ export function validateSignResponse(
 export function validatePlanResponse(
   slots: RequestSlot[],
   transactions: unknown,
-  mutations?: MutationReport,
+  mutations: MutationReport | undefined,
+  maxFeeIncrease: bigint | undefined,
 ): void {
   const planned = transactions ?? [];
   if (!Array.isArray(planned) || planned.some((item) => typeof item !== "string")) {
@@ -662,7 +695,7 @@ export function validatePlanResponse(
       throw new SignerError(`planned transaction ${index + 1}: ${errorText(error)}`);
     }
   });
-  validateGroupMutations(slots, returned, mutations);
+  validateGroupMutations(slots, returned, mutations, maxFeeIncrease);
 }
 
 /**

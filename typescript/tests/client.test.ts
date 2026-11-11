@@ -4588,6 +4588,30 @@ describe("fromEnv", () => {
     }
   });
 
+  it("forwards maxFeeIncrease to the connection", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-ts-fee-"));
+    const original = SignerClient.connectSsh;
+    let forwarded: any;
+    (SignerClient as any).connectSsh = async (_host: string, _key: string, options: any) => {
+      forwarded = options;
+      return new SignerClient("http://localhost:11270", undefined, null, options);
+    };
+    try {
+      fs.writeFileSync(
+        path.join(tmpDir, "endpoints.yaml"),
+        "schema_version: 2\nendpoints:\n" +
+        "  primary:\n    role: signer\n    url: ssh://signer.example.com/\n    identity_file: key\n",
+      );
+      fs.writeFileSync(path.join(tmpDir, "key"), "dummy-private-key");
+      const client = await SignerClient.fromEnv({ dataDir: tmpDir, maxFeeIncrease: 250_000 });
+      assert.equal(forwarded.maxFeeIncrease, 250_000);
+      assert.strictEqual(client.maxFeeIncrease, 250_000);
+    } finally {
+      (SignerClient as any).connectSsh = original;
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
   for (const [fixture, message] of [
     ["invalid_self_signer.yaml", 'endpoint "primary": url "self" is not supported'],
     ["invalid_self_cosigner.yaml", 'endpoint "cosigner": url "self" is not supported'],

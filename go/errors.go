@@ -40,6 +40,12 @@ var (
 
 	// ErrKeyDeletion indicates a key deletion failed (e.g., key not found).
 	ErrKeyDeletion = errors.New("key deletion failed")
+
+	// ErrMaxFeeIncreaseExceeded matches, with errors.Is, a sign, plan or
+	// simulate call refused because the signer raised fees by more than the
+	// client's max fee increase. errors.As with *MaxFeeIncreaseError gives the
+	// amounts.
+	ErrMaxFeeIncreaseExceeded = errors.New("signer raised fees by more than the max fee increase")
 )
 
 // Transaction submission errors
@@ -143,4 +149,24 @@ func (e *TransactionError) Error() string {
 
 func (e *TransactionError) Unwrap() error {
 	return e.Err
+}
+
+// MaxFeeIncreaseError reports a call refused because the signer raised fees
+// by more than the ceiling set with SetMaxFeeIncrease. It matches
+// ErrMaxFeeIncreaseExceeded.
+type MaxFeeIncreaseError struct {
+	// Raised is the total the signer added across the request's positions,
+	// in microAlgos.
+	Raised uint64
+	// Limit is the ceiling the call was held to, in microAlgos.
+	Limit uint64
+}
+
+func (e *MaxFeeIncreaseError) Error() string {
+	return fmt.Sprintf("signer raised fees by %d microAlgos, more than the max fee increase %d set on this client", e.Raised, e.Limit)
+}
+
+// Is reports that the error is a max fee increase refusal.
+func (e *MaxFeeIncreaseError) Is(target error) bool {
+	return target == ErrMaxFeeIncreaseExceeded
 }

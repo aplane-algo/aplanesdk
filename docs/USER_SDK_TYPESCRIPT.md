@@ -668,6 +668,81 @@ Anything else fails with `SignerError` whose message starts with
 - signed transaction bytes that are not canonical msgpack, including bytes
   after the signed transaction
 
+#### Limiting The Fee Increase
+
+The checks above confirm that a fee raise is reported, not that it is
+reasonable: the signer writes the report, so by default a reported raise of
+any size is accepted. Set `maxFeeIncrease` on the client to put your own ceiling on it.
+The value is in microAlgos and bounds the total the signer adds across all
+positions of one request. Zero means the signer may not raise any fee. When
+the raises add up to more than the ceiling, every sign, plan and simulate call
+through that client fails with `SignerError` and returns nothing, so nothing can be
+submitted or simulated.
+The per-account `max_fee` check in the cosigned flow still applies as well.
+The refusal is a `MaxFeeIncreaseError`, a `SignerError` subclass carrying
+`raised` and `limit` as bigints.
+
+```ts
+// microAlgos, summed over the request
+const client = await SignerClient.fromEnv({ maxFeeIncrease: 200_000 });
+try {
+  const signed = await client.signTransaction(txn);
+} catch (err) {
+  if (err instanceof MaxFeeIncreaseError) {
+    // verify signer response: signer raised fees by 5000000 microAlgos,
+    // more than the max fee increase 200000 set on this client
+    console.error(`signer asked for ${err.raised}, ceiling is ${err.limit}`);
+  }
+}
+```
+
+`connectSsh()` and the constructor's options take the same field as a `number`
+or `bigint`. Assigning `client.maxFeeIncrease` changes it, and assigning `undefined`
+removes it.
+Reading `client.maxFeeIncrease` returns the value as it was set.
+
+What counts toward the ceiling is everything the signer adds to the fees of
+your transactions. A resource dummy carries a zero fee of its own, but the
+signer charges each dummy's base fee to one of your transactions, and that
+raise counts. So for a LogicSig account the raise includes the dummies' base
+fees and the charge for the program's size; for a native Falcon account it is
+the post-quantum signature charge. Measured against a live signer on a local
+test network:
+
+| Request | Dummies appended | Fee raise (microAlgos) |
+|---|---|---|
+| two payments, Ed25519 account | 0 | 0 |
+| one payment, LogicSig Falcon account | 1 | 1000 |
+| two payments, LogicSig Falcon account | 1 | 1074 |
+| one payment, native Falcon account | 0 | 2000 |
+
+These figures depend on the account type, the group's size and the network's
+fee rules, which is why there is no default: any built-in number would be a
+guess. Choose a ceiling that fits the accounts you sign for. To see the
+charge, call `planGroup()` with your transactions and read
+`mutations.totalFeesDelta` in the result.
+
+Two limits to know:
+
+- The ceiling is checked on each request by itself. If you plan and then send
+  the planned transactions to sign, the sign request is measured from the
+  already-raised fees, so the signer could raise them by up to the ceiling a
+  second time. Send your original transactions to sign, not the planned ones.
+  A plan is for looking at what the signer will do. The multi-party flow is
+  not affected: a group sent with passthrough positions is already grouped,
+  and the signer cannot change the fees of a group that is.
+- Each request is held to the ceiling in force when that request starts. A
+  single sign or plan call is one request. The cosigned helpers make several
+  (a plan, then one or more sign requests), and each of those reads the
+  ceiling when it starts, so a change made part-way applies to the requests
+  that follow. On a plan call a refusal
+  comes before the signer asks anyone for approval. On a sign or simulate
+  call the check runs after the signer has answered: by then the signer has
+  already asked for approval and produced a signature. The SDK discards that
+  signature and returns nothing, but the approval was spent. To refuse before
+  any approval is asked for, plan the same transactions first on a client
+  with the same ceiling, then sign the originals.
+
 The SDK decodes request entries before sending them. Unsigned transaction
 bytes must be `TX`-prefixed canonical msgpack and passthrough entries must be
 canonical signed transactions, and the auth address of a position to sign
@@ -695,6 +770,9 @@ Main SDK error classes:
 - `KeyNotFoundError`
 - `KeyDeletionError`
 - `EnrollmentError`
+- `MaxFeeIncreaseError`: the signer raised fees by more than the client's
+  `maxFeeIncrease`; carries `raised` and `limit` as bigints, and serializes
+  them to JSON as decimal strings
 
 Network submission helper errors:
 
