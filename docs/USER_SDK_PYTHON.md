@@ -199,7 +199,7 @@ This path:
   when that list is set, and one whose `networks_allowed` is not a list of
   network IDs written as text (a malformed list is an error, never an empty
   one; a bare number, `true`/`false` or an empty entry is refused, so quote a
-  name such as `"1"`)
+  name such as `"1"`). Quote a network name that YAML could read as a boolean, such as `"on"`, `"yes"` or `"no"`.
 - validates `config.yaml` contains no obsolete routing,
 - loads and selects an endpoint from `endpoints.yaml`,
 - resolves SSH paths relative to the client data dir,
@@ -509,14 +509,24 @@ Important behavior:
   against the request
 - amounts and fees given to the `prepare_*` helpers are in microAlgos; an
   asset amount is in the asset's base units, not adjusted for its decimals.
-  IDs, amounts and fees must be plain integers: a float, a numeric string or a
-  bool raises `ValueError`. That holds for every ID, count and index a prepare
-  helper takes: app and asset IDs, foreign references, ABI `application` and
-  `asset` arguments, box app indexes, extra pages, and the key-registration
-  rounds and dilution
+  IDs, amounts and fees must be integers: a float, a numeric string or a
+  bool raises `ValueError`. Any integral type is accepted (one that defines
+  `__index__`, such as a NumPy integer) and is converted to a plain `int`.
+  That holds for every ID, count and index a prepare helper takes: app and
+  asset IDs, foreign references, ABI `application` and `asset` arguments, box
+  app indexes, extra pages, the counts of a `StateSchema`, `on_complete`, and
+  the key-registration rounds and dilution. A bool is also refused where an
+  ABI method takes an integer. `None` still means "not set" for an optional
+  parameter, `extra_pages` and the schemas included
 - Group helpers check every sender against everything it pays across the
   group: the ALGO it sends plus the fee of every position it sends, asset
-  transfers included. The check is named `group_algo_balance`
+  transfers included. The check is named `group_algo_balance`. It reads each
+  sender's spendable ALGO from the `spendable_algo` check that the payment and
+  asset-transfer helpers record on every position, and refuses a position
+  that lacks that check or whose `available` value is not a non-negative integer
+- `prepare_asa_transfer()` checks the transfer's fee against the sender's spendable ALGO
+  itself, so one transfer is refused alone exactly as it is in a group. Its
+  `asa_transfer` check records the fee
 - `sign_requests()` accepts one or more raw `/sign` request entries and returns the raw
   `/sign` response
 - for large LogicSigs, the signer may add dummy transactions for fee pooling
@@ -674,7 +684,11 @@ metadata.
 ### Passthrough And Multi-Party Assembly
 
 `passthrough` lets you include base64-encoded signed transaction msgpack slots
-in a final signing request.
+in a final signing request. Passthrough values are standard base64 with
+padding. A string that is not (a line break or other whitespace, URL-safe
+characters, missing padding, data after the padding) raises `ValueError`, as
+the Go and TypeScript SDKs refuse it. `send_raw_transaction()` makes the same
+check before it submits anything.
 When passthrough entries are present:
 
 - the caller must pre-assign group IDs on all transactions
@@ -719,9 +733,13 @@ See the [compatibility note](COMPATIBILITY.md) for policy format and provisionin
 
 The helper reads each position's key (its signing flow, LogicSig resources
 and fee ceiling) from the user signer's `/keys` record, by the position's
-auth address. A prepared transaction carries no key of its own. The record is
-cached on the client, so a key already seen costs no request and a new one
-costs one `/keys` request.
+auth address. A prepared transaction carries no key of its own. It is the
+lookup the prepare helpers make: the spendable key for the address (a witness
+key is never chosen), from a key list the client caches. Each call checks the
+signer's keyset revision with one `/status` request and fetches `/keys` again
+only when the revision has changed, so a key added or replaced on the signer
+is picked up by the next call. An address with no spendable key is
+refused with `KeyNotFoundError`.
 
 For manual orchestration, use `request_components()` on the user client with a
 bounded-base target and on the cosigner client, then `request_assemble()` on the

@@ -483,7 +483,11 @@ plan, err := client.PlanGroup(txns, authAddresses, lsigArgsMap, opts)
 
 `SignOptions.Passthrough` values are base64-encoded signed transaction msgpack
 from another signer and must already carry the intended group ID. The SDK
-decodes them and sends them as passthrough slots. `SignOptions.LsigResources`
+decodes them and sends them as passthrough slots. They must be standard base64
+with padding: a string that is not (a line break or other whitespace, URL-safe
+characters, missing padding, data after the padding) is refused, as the Python
+and TypeScript SDKs refuse it. `Base64ToBytes(...)` is that decoder and
+refuses the same strings. `SignOptions.LsigResources`
 describes unsigned foreign slots for `/plan` and must also accompany a final
 passthrough LogicSig slot on `/sign`. Reuse the same selected
 authorization-path values; the signer verifies the declared program and
@@ -566,9 +570,13 @@ error. Apply the key's document before retrying. See the
 
 The helper reads each position's key (its signing flow, LogicSig resources
 and fee ceiling) from the user signer's `/keys` record, by the position's
-auth address. A prepared transaction carries no key of its own. The record is
-cached on the client, so a key already seen costs no request and a new one
-costs one `/keys` request.
+auth address. A prepared transaction carries no key of its own. It is the
+lookup the prepare helpers make: the spendable key for the address (a witness
+key is never chosen), from a key list the client caches. Each call checks the
+signer's keyset revision with one `/status` request and fetches `/keys` again
+only when the revision has changed, so a key added or replaced on the signer
+is picked up by the next call. An address with no spendable key is
+refused with `ErrKeyNotFound`.
 
 For manual orchestration, use `RequestComponents` on the user client with a
 bounded-base target and on the cosigner client, then `RequestAssemble` on the
@@ -662,7 +670,13 @@ error and never trigger another signing request automatically.
   argument, must not be zero. A box's app index may be zero (the called app).
 - Group helpers check every sender against everything it pays across the
   group: the ALGO it sends plus the fee of every position it sends, asset
-  transfers included. The check is named `group_algo_balance`.
+  transfers included. The check is named `group_algo_balance`. It reads each
+  sender's spendable ALGO from the `spendable_algo` check that the payment and
+  asset-transfer helpers record on every position, and refuses a position
+  that lacks that check or whose `available` value is not a `uint64`
+- `PrepareAsaTransfer(...)` checks the transfer's fee against the sender's spendable ALGO
+  itself, so one transfer is refused alone exactly as it is in a group. Its
+  `asa_transfer` check records the fee.
 - `PlanGroup(...)` returns unsigned `TX`-prefixed hex transactions plus a
   mutation report.
 - `SimulateGroup(...)` and `SimulatePreparedGroup(...)` perform ordinary
@@ -846,7 +860,7 @@ if err != nil {
   that is not on it, and loading the config refuses a default network that is
   not on it. The list must hold network IDs written as text: a bare
   number, `true`/`false` or an empty entry is refused, so quote a name such as
-  `"1"`.
+  `"1"`. Quote a network name that YAML could read as a boolean, such as `"on"`, `"yes"` or `"no"`.
 - `ResolveDataDir(...)`,
   `ResolvePath(...)`, `Base64ToBytes(...)`, `BytesToBase64(...)`,
   `HexToBytes(...)`, and `BytesToHex(...)` are exported for integration code.
