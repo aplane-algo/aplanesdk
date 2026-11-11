@@ -222,3 +222,37 @@ func TestNotFoundMessageWithoutCodeIsNotKeyNotFound(t *testing.T) {
 	_, err := client.PlanGroup([]types.Transaction{{Type: types.PaymentTx}}, []string{sdkTestAddress(0xA0)}, nil, nil)
 	requireUncodedAPIError(t, err, http.StatusNotFound)
 }
+
+// A code is kept only beside a message that is not blank: a locked code with
+// a whitespace message is not a locked signer. A JSON error body that is not
+// an object has no code either.
+func TestErrorCodeNeedsAMessage(t *testing.T) {
+	for name, body := range map[string]string{
+		"blank message":   `{"error":"   ","code":"locked"}`,
+		"newline message": `{"error":"\n","code":"locked"}`,
+		"empty message":   `{"error":"","code":"locked"}`,
+		"array body":      `["locked"]`,
+		"string body":     `"locked"`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusForbidden)
+				w.Write([]byte(body))
+			})
+			defer server.Close()
+			result, err := client.GetKeysResponseWithContext(context.Background())
+			if result != nil {
+				t.Fatalf("result = %+v, want nil", result)
+			}
+			requireUncodedAPIError(t, err, http.StatusForbidden)
+		})
+	}
+	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`{"error":" signer is locked ","code":"locked"}`))
+	})
+	defer server.Close()
+	if result, err := client.GetKeysResponseWithContext(context.Background()); err != nil || !result.Locked {
+		t.Fatalf("GetKeysResponseWithContext() = %+v, %v; want the locked code kept beside a padded message", result, err)
+	}
+}

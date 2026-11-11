@@ -139,8 +139,11 @@ func readErrorParts(resp *http.Response) (code, message string) {
 		return "", http.StatusText(resp.StatusCode)
 	}
 
+	// A code is kept only beside a message: an envelope whose message is
+	// empty or only whitespace is not one, and neither is a JSON value that
+	// is not an object. The body text stands for the message then.
 	var errorResp ErrorResponse
-	if err := json.Unmarshal(bodyBytes, &errorResp); err == nil && errorResp.Error != "" {
+	if err := json.Unmarshal(bodyBytes, &errorResp); err == nil && strings.TrimSpace(errorResp.Error) != "" {
 		return errorResp.Code, errorResp.Error
 	}
 	return "", body
