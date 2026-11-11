@@ -342,9 +342,9 @@ export class SubmissionUncertainError extends SignerError {
 
 /**
  * waitForOutcome ended before the outcome settled: the caller's signal was
- * aborted or its time limit passed. `report` is the last report it made, if
- * it made one; `cause` says why the wait ended. Nothing was signed or
- * submitted by the wait.
+ * aborted, its time limit passed, or the node failed. `report` is the last
+ * report it made, if it made one; `cause` says why the wait ended. Nothing
+ * was signed or submitted by the wait.
  */
 export class WaitForOutcomeError extends SignerError {
   readonly report?: OutcomeReport;

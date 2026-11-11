@@ -928,7 +928,7 @@ describe("sendPrepared with a cosigned account", () => {
     assert.equal(result.fees[0], 1000n);
   });
 
-  it("refuses without a cosigner, before the base component request", async () => {
+  it("refuses without a cosigner, before the group is planned", async () => {
     const { userClient, algod, node, txn, userPaths } = cosignedFixture("");
     await assert.rejects(userClient.sendPrepared(algod, preparedFor(txn)), (error: unknown) => {
       assert.match(errorText(error), /cosignerClient or cosignerResolver is required/);
@@ -936,6 +936,7 @@ describe("sendPrepared with a cosigned account", () => {
       return true;
     });
     assert.ok(!userPaths.includes("/sign/component"), `a plain spend asked for its base component: ${userPaths.join(", ")}`);
+    assert.ok(!userPaths.includes("/plan"), `a plain spend was planned: ${userPaths.join(", ")}`);
     assert.equal(node.submitted.length, 0);
   });
 

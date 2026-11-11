@@ -120,17 +120,17 @@ interface RequiredWitnessKey {
   id: string;
 }
 
+/** The witness key a target needs, checked before anything is connected. */
 function requiredWitnessKey(target: CosignedSignTarget): RequiredWitnessKey {
-  const account = target?.cosignedAccount ?? "";
   const keyType = target?.cosignerComponentKeyType ?? "";
   const publicKeyHex = target?.cosignerPublicKeyHex ?? "";
-  if (keyType === "") {
-    throw new CosignerDiscoveryError(`cosigner discovery: cosigned account ${account} names no cosigner key type`);
-  }
-  if (publicKeyHex === "" || !HEX.test(publicKeyHex)) {
+  if (typeof publicKeyHex !== "string" || publicKeyHex === "" || !HEX.test(publicKeyHex)) {
     throw new CosignerDiscoveryError(
-      `cosigner discovery: cosigned account ${account} names no valid cosigner public key`,
+      `cosigner discovery: the account's cosigner public key ${JSON.stringify(String(publicKeyHex))} is not valid hex`,
     );
+  }
+  if (typeof keyType !== "string" || keyType === "") {
+    throw new CosignerDiscoveryError("cosigner discovery: the account names no cosigner key type");
   }
   const lower = publicKeyHex.toLowerCase();
   return { keyType, publicKeyHex: lower, id: witnessKeyId(keyType, hexToBytes(lower)) };
@@ -138,16 +138,16 @@ function requiredWitnessKey(target: CosignedSignTarget): RequiredWitnessKey {
 
 /**
  * The witness keys a /keys answer lists, or undefined when any witness
- * record is invalid: a record whose public key is not hex, or whose address
- * is not the Witness Key ID of its key type and public key, makes the whole
- * listing invalid.
+ * record is invalid: a record whose public key is empty or not hex, or whose
+ * address is not the Witness Key ID of its key type and public key, makes the
+ * whole listing invalid.
  */
 function witnessKeys(records: Record<string, any>[]): ListedWitnessKey[] | undefined {
   const keys: ListedWitnessKey[] = [];
   for (const record of records) {
     if (record.is_witness_key !== true || typeof record.key_type !== "string" || record.key_type === "") continue;
     const hex = record.public_key_hex;
-    if (typeof hex !== "string" || !HEX.test(hex)) return undefined;
+    if (typeof hex !== "string" || hex === "" || !HEX.test(hex)) return undefined;
     const publicKeyHex = hex.toLowerCase();
     if (record.address !== witnessKeyId(record.key_type, hexToBytes(publicKeyHex))) return undefined;
     keys.push({ keyType: record.key_type, publicKeyHex, address: record.address });
@@ -271,12 +271,6 @@ export class EndpointCosignerResolver implements CosignedCosignerResolverObject 
     const endpoints = Object.entries(registry.endpoints)
       .filter(([, endpoint]) => endpoint?.role === "cosigner")
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-    if (endpoints.length > MAX_CLIENT_COSIGNER_ENDPOINTS) {
-      throw new CosignerDiscoveryError(
-        `cosigner discovery: ${CLIENT_ENDPOINTS_FILE} configures ${endpoints.length} cosigner endpoints; ` +
-          `maximum is ${MAX_CLIENT_COSIGNER_ENDPOINTS}`,
-      );
-    }
     try {
       normalizeSSHSetupTimeout(options.sshSetupTimeout);
     } catch (error) {
@@ -305,17 +299,12 @@ export class EndpointCosignerResolver implements CosignedCosignerResolverObject 
     target: CosignedSignTarget,
     options?: CosignedCosignerResolveOptions,
   ): Promise<CosignedCosignerResolution> {
-    if (this.#closed) throw closedError();
     const required = requiredWitnessKey(target);
-    if (this.#endpoints.length === 0) {
-      throw new CosignerDiscoveryError(`cosigner discovery: ${CLIENT_ENDPOINTS_FILE} lists no cosigner endpoint`);
-    }
-    const signal = options?.signal;
     // One resolve at a time, so a sweep's result serves the calls queued
     // behind it.
-    const run = this.#queue.then(() => this.#resolve(required, signal));
+    const run = this.#queue.then(() => this.#resolve(required, options?.signal));
     this.#queue = run.catch(() => undefined);
-    return signal ? untilAborted(run, signal) : run;
+    return run;
   }
 
   /** Close every connection the resolver opened. It cannot resolve after. */
@@ -329,7 +318,6 @@ export class EndpointCosignerResolver implements CosignedCosignerResolverObject 
 
   async #resolve(required: RequiredWitnessKey, signal: AbortSignal | undefined): Promise<CosignedCosignerResolution> {
     if (this.#closed) throw closedError();
-    if (signal?.aborted) throw callerAborted();
     let swept = false;
     if (!this.#listings) {
       await this.#sweep(signal);
@@ -373,15 +361,28 @@ export class EndpointCosignerResolver implements CosignedCosignerResolverObject 
     return matches;
   }
 
-  /** Probe every cosigner endpoint and keep what was found. */
+  /**
+   * Probe every cosigner endpoint and keep what was found. An endpoint whose
+   * connection was kept is read again, and connected afresh if that read
+   * fails. A host key mismatch at any endpoint, or the caller's signal
+   * ending, keeps nothing and closes every connection.
+   */
   async #sweep(signal: AbortSignal | undefined): Promise<void> {
-    if (signal?.aborted) throw callerAborted();
+    if (this.#endpoints.length === 0) {
+      throw new CosignerDiscoveryError(`cosigner discovery: ${CLIENT_ENDPOINTS_FILE} lists no cosigner endpoint`);
+    }
+    if (this.#endpoints.length > MAX_CLIENT_COSIGNER_ENDPOINTS) {
+      throw new CosignerDiscoveryError(
+        `cosigner discovery: ${CLIENT_ENDPOINTS_FILE} lists ${this.#endpoints.length} cosigner endpoints; ` +
+          `the limit is ${MAX_CLIENT_COSIGNER_ENDPOINTS}`,
+      );
+    }
+    if (signal?.aborted) throw signalEnded();
     const sweep = new AbortController();
     const onAbort = () => sweep.abort();
     signal?.addEventListener("abort", onAbort, { once: true });
     const timer = setTimeout(() => sweep.abort(), discoveryTiming.sweepMs);
     const results = new Map<string, ProbeResult>();
-    let mismatch: { alias: string; error: unknown } | undefined;
     let next = 0;
     const worker = async () => {
       while (next < this.#endpoints.length) {
@@ -393,10 +394,8 @@ export class EndpointCosignerResolver implements CosignedCosignerResolverObject 
         }
         const result = await this.#probe(alias, endpoint, sweep.signal);
         results.set(alias, result);
-        if (result.mismatch !== undefined && mismatch === undefined) {
-          mismatch = { alias, error: result.mismatch };
-          sweep.abort();
-        }
+        // A host key mismatch: nothing else matters.
+        if (result.mismatch !== undefined) sweep.abort();
       }
     };
     try {
@@ -408,33 +407,32 @@ export class EndpointCosignerResolver implements CosignedCosignerResolverObject 
       signal?.removeEventListener("abort", onAbort);
     }
 
-    const abandon = async (keepExisting: boolean) => {
-      const stale: SignerClient[] = [];
-      for (const [alias, result] of results) {
-        if (result.client && result.client !== this.#connections.get(alias)) stale.push(result.client);
+    // Every connection goes, and nothing found is kept.
+    const abandon = async () => {
+      const stale = new Set<SignerClient>(this.#connections.values());
+      for (const result of results.values()) {
+        if (result.client) stale.add(result.client);
       }
-      if (!keepExisting) {
-        stale.push(...this.#connections.values());
-        this.#connections.clear();
-        this.#listings = undefined;
-      }
-      await Promise.all(stale.map(closeQuietly));
+      this.#connections.clear();
+      this.#listings = undefined;
+      await Promise.all([...stale].map(closeQuietly));
     };
     if (this.#closed) {
-      await abandon(false);
+      await abandon();
       throw closedError();
     }
-    if (mismatch !== undefined) {
-      // Every connection goes, and nothing found is kept.
-      await abandon(false);
-      throw new CosignerDiscoveryError(
-        `cosigner discovery: endpoint "${mismatch.alias}": ${errorText(mismatch.error)}`,
-        mismatch.error,
-      );
+    // The first mismatch in alias order is the one reported.
+    const mismatched = this.#endpoints.find(([alias]) => results.get(alias)?.mismatch !== undefined);
+    if (mismatched !== undefined) {
+      const [alias] = mismatched;
+      const error = results.get(alias)?.mismatch;
+      await abandon();
+      throw new CosignerDiscoveryError(`cosigner discovery: endpoint "${alias}": ${errorText(error)}`, error);
     }
+    // The caller's own end is not a finding about the endpoints.
     if (signal?.aborted) {
-      await abandon(true);
-      throw callerAborted();
+      await abandon();
+      throw signalEnded();
     }
 
     const listings = new Map<string, EndpointListing>();
@@ -485,14 +483,15 @@ export class EndpointCosignerResolver implements CosignedCosignerResolverObject 
     } catch {
       return { state: "configuration invalid", keys: [] };
     }
-    // A connection kept from the last sweep is read again; one that no
-    // longer answers is replaced.
+    // A connection kept from the last sweep is read again; one whose read
+    // fails is closed and replaced.
     const existing = this.#connections.get(alias);
     if (existing && clientConnectionOpen(existing)) {
       const listing = await readListing(existing, signal);
-      if (listing.state !== "unreachable" || signal.aborted) {
-        return listing.state === "ok" ? { ...listing, client: existing } : listing;
-      }
+      if (listing.state === "ok") return { ...listing, client: existing };
+      this.#connections.delete(alias);
+      await closeQuietly(existing);
+      if (signal.aborted) return listing;
     }
     let client: SignerClient;
     try {
@@ -512,4 +511,10 @@ export class EndpointCosignerResolver implements CosignedCosignerResolverObject 
 
 function closedError(): CosignerDiscoveryError {
   return new CosignerDiscoveryError("cosigner discovery: the resolver is closed");
+}
+
+/** The caller's signal ended the discovery. */
+function signalEnded(): CosignerDiscoveryError {
+  const cause = callerAborted();
+  return new CosignerDiscoveryError(`cosigner discovery: ${errorText(cause)}`, cause);
 }

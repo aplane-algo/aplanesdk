@@ -39,6 +39,7 @@ export {
 export { ErrorCodes } from "./types.js";
 export type { ErrorCode } from "./types.js";
 export { EndpointCosignerResolver } from "./discovery.js";
+export { witnessKeyId } from "./witness.js";
 export type { EndpointCosignerResolverOptions } from "./discovery.js";
 export type {
   CosignedSignTarget,

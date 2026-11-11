@@ -298,15 +298,37 @@ describe("resolveOutcome refusals", () => {
     assert.deepEqual(node.calls, [], "the node was asked something");
   });
 
-  it("refuses a SubmissionUncertainError with no transaction IDs", async () => {
+  it("refuses a SubmissionUncertainError with no transaction IDs, or an empty first one", async () => {
     const { client } = quietClient();
     const node = new OutcomeNode(150n);
-    await assert.rejects(client.resolveOutcome(node as any, submissionError(LAST_VALID, [])), (refusal: unknown) => {
-      assert.ok(refusal instanceof SignerError, `refusal is ${String(refusal)}`);
-      assert.equal(errorText(refusal), "the error carries no transaction IDs", "refusal text");
-      return true;
-    });
+    for (const txIds of [[], ["", "TXIDTWO"]]) {
+      await assert.rejects(client.resolveOutcome(node as any, submissionError(LAST_VALID, txIds)), (refusal: unknown) => {
+        assert.ok(refusal instanceof SignerError, `refusal is ${String(refusal)}`);
+        assert.equal(errorText(refusal), "the error carries no transaction IDs", `refusal text for ${JSON.stringify(txIds)}`);
+        return true;
+      });
+    }
     assert.deepEqual(node.calls, [], "the node was asked something");
+  });
+
+  it("checks the error's type, last valid round and IDs before the algod client", async () => {
+    const { client } = quietClient();
+    const cases: Array<[unknown, string]> = [
+      [new Error("boom"), "not an uncertain outcome"],
+      [submissionError(0n, []), "the error carries no last valid round"],
+      [submissionError(LAST_VALID, []), "the error carries no transaction IDs"],
+      [submissionError(), "algod client is required"],
+      [signError(), "algod client is required"],
+    ];
+    for (const [error, text] of cases) {
+      for (const call of [() => client.resolveOutcome(undefined as any, error), () => client.waitForOutcome(undefined as any, error)]) {
+        await assert.rejects(call(), (refusal: unknown) => {
+          assert.ok(refusal instanceof SignerError && !(refusal instanceof WaitForOutcomeError), `refusal is ${String(refusal)}`);
+          assert.equal(errorText(refusal), text, "refusal text");
+          return true;
+        });
+      }
+    }
   });
 
   const failures: Array<[string, (node: OutcomeNode) => void, () => unknown]> = [
@@ -440,15 +462,43 @@ describe("waitForOutcome", () => {
     assert.deepEqual(node.calls, [], "the node was asked something");
   });
 
-  it("a node failure while waiting is an error, not the end of the wait", async () => {
+  it("a node failure while waiting ends the wait with the last report", async () => {
     const { client } = quietClient();
     const node = new OutcomeNode(150n, "pool");
     node.onWait = () => {
       throw algodHttpError(500, "internal");
     };
     await assert.rejects(client.waitForOutcome(node as any, submissionError()), (error: unknown) => {
-      assert.ok(error instanceof SignerError && !(error instanceof WaitForOutcomeError), `error is ${String(error)}`);
-      assert.match(errorText(error), /wait for round 151/, "the failure names the wait");
+      assert.ok(error instanceof WaitForOutcomeError, `error is ${String(error)}`);
+      assert.equal(error.report?.state, "pending", `last report ${error.report?.state}`);
+      assert.match(errorText(error.cause), /^wait for round 151: /, "the cause names the wait");
+      return true;
+    });
+  });
+
+  it("a node failure on a later check ends the wait with the last report", async () => {
+    const { client } = quietClient();
+    const node = new OutcomeNode(150n, "pool");
+    node.onWait = () => {
+      node.round++;
+      node.lookupFailure = algodHttpError(500, "internal");
+    };
+    await assert.rejects(client.waitForOutcome(node as any, submissionError()), (error: unknown) => {
+      assert.ok(error instanceof WaitForOutcomeError, `error is ${String(error)}`);
+      assert.equal(error.report?.currentRound, 150n, `last report round ${error.report?.currentRound}`);
+      assert.match(errorText(error.cause), /^look up transaction TXIDONE: /, "the cause is the lookup's failure");
+      return true;
+    });
+  });
+
+  it("a node failure on the first check ends the wait with no report", async () => {
+    const { client } = quietClient();
+    const node = new OutcomeNode(150n);
+    node.statusFailure = algodHttpError(500, "internal");
+    await assert.rejects(client.waitForOutcome(node as any, signError()), (error: unknown) => {
+      assert.ok(error instanceof WaitForOutcomeError, `error is ${String(error)}`);
+      assert.equal(error.report, undefined, "a report was made");
+      assert.match(errorText(error.cause), /^read the node's current round: /, "the cause is the status failure");
       return true;
     });
   });

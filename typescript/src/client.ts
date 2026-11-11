@@ -320,7 +320,7 @@ async function resolveCosignerForTarget(
       throw new SignerError("cosignerResolver must be a function or an object with a resolve method");
     }
     if (!resolved?.client) {
-      throw new SignerError("cosigner resolver returned no client");
+      throw new SignerError(`cosigner resolver returned no client for prepared transaction ${target.targetIndex}`);
     }
     return resolved;
   }
@@ -644,6 +644,20 @@ export async function signPreparedCosignedGroup(
     throw new SignerError("prepared group has no bounded-cosigner targets");
   }
 
+  // A target that cannot take the listed-rekey path needs the cosigner
+  // whatever the signer answers, so its cosigner is found now, before the
+  // group is planned and before any approval-bearing request: a resolver
+  // that fails leaves nothing signed. They are resolved in the order of the
+  // witness key each needs. A target that may take the listed path is
+  // resolved only once its base component says it needs the cosigner: a
+  // listed rekey needs none, and must work with no cosigner configured or
+  // reachable.
+  const cosigners = new Map<number, CosignedCosignerResolution>();
+  for (const target of [...targets].sort(byRequiredWitnessKey)) {
+    if (mayTakeListedPath(targetKeys.get(target.targetIndex), prepared[target.targetIndex].transaction)) continue;
+    cosigners.set(target.targetIndex, await resolveCosignerForTarget(target, options));
+  }
+
   const planResponse = await options.userClient.planRequests(requests, { signal: options.signal });
   const frozenGroup = [...(planResponse.transactions || [])];
   if (frozenGroup.length < prepared.length) {
@@ -656,20 +670,6 @@ export async function signPreparedCosignedGroup(
   // reported fee raises and group assignment on original positions, and
   // canonical resource dummies after them.
   validateBoundedTargetFees(planned, targetMaxFees);
-
-  // A target that cannot take the listed-rekey path needs the cosigner
-  // whatever the signer answers, so its cosigner is found now, before the
-  // first approval-bearing request (the base component request): a resolver
-  // that fails leaves nothing signed. They are resolved in the order of the
-  // witness key each needs. A target that may take the listed path is
-  // resolved only once its base component says it needs the cosigner: a
-  // listed rekey needs none, and must work with no cosigner configured or
-  // reachable.
-  const cosigners = new Map<number, CosignedCosignerResolution>();
-  for (const target of [...targets].sort(byRequiredWitnessKey)) {
-    if (mayTakeListedPath(targetKeys.get(target.targetIndex), prepared[target.targetIndex].transaction)) continue;
-    cosigners.set(target.targetIndex, await resolveCosignerForTarget(target, options));
-  }
 
   const targetIndices = new Set(targets.map((target) => target.targetIndex));
   // The ID of the last approval-bearing request that answered. A fault in
@@ -4963,9 +4963,10 @@ export class SignerClient {
 
   /**
    * resolveOutcome once per round, until the state is "confirmed",
-   * "expired" or "too_old". If options.signal is aborted or
-   * options.timeoutMs passes first, it throws a WaitForOutcomeError whose
-   * `report` is the last report. It never signs or submits anything.
+   * "expired" or "too_old". If options.signal is aborted, options.timeoutMs
+   * passes or the node fails first, it throws a WaitForOutcomeError whose
+   * `report` is the last report (none if the wait ended before the first
+   * check) and whose `cause` says why. It never signs or submits anything.
    */
   async waitForOutcome(
     algodClient: Algodv2,

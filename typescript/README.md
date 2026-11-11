@@ -468,17 +468,19 @@ are no IDs and no lookup (`txIds` is empty):
 - the last round is past `lastValid`: `expired`, and safe to replace. There is
   no `too_old` here: expiry alone settles it.
 
-Any other node failure is thrown, never turned into a state. Any other error,
-`null` included, is refused with "not an uncertain outcome", as is an error
-with no last valid round or a `SubmissionUncertainError` with no transaction
-IDs, before the node is asked anything.
+Any other node failure is thrown, never turned into a state. Before the node
+is asked anything, these are refused, in this order: any other error, `null`
+included ("not an uncertain outcome"); an error with no last valid round; a
+`SubmissionUncertainError` with no transaction IDs (or an empty first one);
+a missing algod client.
 
 `waitForOutcome(algodClient, error, { signal?, timeoutMs? })` calls
 `resolveOutcome` once per round (it waits for each next round with the node's
 status-after-block call) until the state is `confirmed`, `expired` or
-`too_old`. If the signal is aborted or `timeoutMs` passes first, it throws a
-`WaitForOutcomeError` whose `report` is the last report. It never signs or
-submits anything.
+`too_old`. If the signal is aborted, `timeoutMs` passes or the node fails
+first, it throws a `WaitForOutcomeError` whose `report` is the last report
+(none if the wait ended before the first check) and whose `cause` says why.
+It never signs or submits anything.
 
 A node that answers "already in ledger" has a transaction with the same ID
 from an earlier submission of the group. The SDK treats that as submitted and
@@ -705,9 +707,9 @@ On first use it connects to every `role: cosigner` endpoint (at most 12),
 each with its own identity file and known_hosts path exactly as a signer
 endpoint is connected, and reads its `/keys`: 10 seconds per endpoint, 30
 seconds for the whole sweep, at most 4 endpoints at once. A record counts when
-it is a witness key with a key type; its `public_key_hex` must be hex (compared
-without regard to case) and its `address` must be the Witness Key ID derived
-from its key type and public key (base32 of SHA-512/256 over the
+it is a witness key with a key type; its `public_key_hex` must be non-empty hex
+(compared without regard to case) and its `address` must be the Witness Key ID
+derived from its key type and public key (base32 of SHA-512/256 over the
 length-prefixed domain `APLANE_WITNESS_KEY_ID_V1`, key type and public key).
 One record that fails either check makes that endpoint's whole listing
 invalid. A witness key listed by exactly one live endpoint is routed there,
@@ -721,12 +723,18 @@ URL, an unreadable identity or known_hosts file, an unknown host key without
 trust-on-first-use, or any other 4xx). An SSH host key that differs from the
 pinned one at any cosigner endpoint aborts the whole discovery, needed or not.
 The sweep's result is kept; a witness key it does not route triggers one fresh
-sweep per resolve.
+sweep per resolve, which reads `/keys` again on the connections it kept and
+connects afresh to the endpoints that had failed. Nothing is kept from a sweep
+that a host key mismatch or your signal ended. `witnessKeyId(keyType,
+publicKey)` derives a Witness Key ID.
 
 The cosigned sequence asks the resolver, whichever it is, for every target
 that cannot take the listed-rekey path (no rekey, or no rekey list on the
-account) before the first approval-bearing request, so a resolver that fails
-leaves nothing signed. A rekey that may take the listed path is resolved only
+account) before it plans the group and before any approval-bearing request,
+so a resolver that fails leaves nothing signed. Several targets are resolved
+in the order of the witness key each needs (key type, then public key), and
+the cosigner component requests go out in the order of their first target
+position. A rekey that may take the listed path is resolved only
 once the base component says it needs the cosigner: a listed rekey needs
 none, and works with no cosigner configured or reachable. A resolver's own
 error is passed on as it is, never as an unknown outcome.

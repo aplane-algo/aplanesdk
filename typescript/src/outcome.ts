@@ -99,10 +99,12 @@ type Lookup =
 type UncertainError = SubmissionUncertainError | SignOutcomeUnknownError;
 
 /**
- * The error, if it is one resolveOutcome reads, with the values it needs.
- * Anything else is refused before the node is asked anything.
+ * The error, if it is one resolveOutcome reads and the node can be asked
+ * about it. Anything else is refused before the node is asked anything, in
+ * this order: the error's type, its last valid round, its transaction IDs
+ * (a submission's only), the algod client.
  */
-function checkUncertain(error: unknown): UncertainError {
+function checkUncertain(algodClient: unknown, error: unknown): UncertainError {
   if (!(error instanceof SubmissionUncertainError) && !(error instanceof SignOutcomeUnknownError)) {
     throw new SignerError("not an uncertain outcome");
   }
@@ -110,8 +112,14 @@ function checkUncertain(error: unknown): UncertainError {
   if (typeof error.lastValid !== "bigint" || error.lastValid <= 0n) {
     throw new SignerError("the error carries no last valid round");
   }
-  if (error instanceof SubmissionUncertainError && (!Array.isArray(error.txIds) || error.txIds.length === 0)) {
+  if (
+    error instanceof SubmissionUncertainError &&
+    (!Array.isArray(error.txIds) || error.txIds.length === 0 || error.txIds[0] === "")
+  ) {
     throw new SignerError("the error carries no transaction IDs");
+  }
+  if (!algodClient) {
+    throw new SignerError("algod client is required");
   }
   return error;
 }
@@ -123,7 +131,7 @@ async function nodeRound(algodClient: any, signal?: AbortSignal): Promise<bigint
     status = await algodClient.status().do(undefined, algodOptions(signal));
   } catch (error) {
     if (signal?.aborted) throw callerAborted();
-    throw new SignerError(`read the node's last round: ${errorText(error)}`);
+    throw new SignerError(`read the node's current round: ${errorText(error)}`);
   }
   return algodRound(status?.lastRound, "last round");
 }
@@ -175,10 +183,7 @@ export async function resolveOutcome(
   error: unknown,
   options?: ResolveOutcomeOptions,
 ): Promise<OutcomeReport> {
-  const uncertain = checkUncertain(error);
-  if (!algodClient) {
-    throw new SignerError("algodClient is required");
-  }
+  const uncertain = checkUncertain(algodClient, error);
   const signal = options?.signal;
   if (signal?.aborted) {
     throw callerAborted();
@@ -243,6 +248,8 @@ export async function resolveOutcome(
   let txIds: string[] = [];
   if (rotating) {
     txIds = rotating.txIds();
+  }
+  if (rotating && txIds.length > 0 && txIds[0] !== "") {
     const found = await lookUp(algodClient, txIds[0], signal);
     if (found.found === "confirmed") {
       return report(OUTCOME_CONFIRMED, confirmedAdvice(found.round), { txIds, rotating, confirmedRound: found.round });
@@ -306,16 +313,17 @@ function settled(state: OutcomeState): boolean {
 
 /**
  * Call resolveOutcome once per round until the outcome is confirmed, expired
- * or too old. When the caller's signal is aborted or the time limit passes
- * first, it throws a WaitForOutcomeError that carries the last report. It
- * never signs or submits anything.
+ * or too old. When the caller's signal is aborted, the time limit passes or
+ * the node fails first, it throws a WaitForOutcomeError that carries the last
+ * report (none when the wait ended before the first check) and, as its
+ * cause, why it ended. It never signs or submits anything.
  */
 export async function waitForOutcome(
   algodClient: any,
   error: unknown,
   options?: WaitForOutcomeOptions,
 ): Promise<OutcomeReport> {
-  checkUncertain(error);
+  checkUncertain(algodClient, error);
   const timeoutMs = options?.timeoutMs;
   if (
     timeoutMs !== undefined &&
@@ -355,8 +363,7 @@ export async function waitForOutcome(
       try {
         last = await untilAborted(resolveOutcome(algodClient, error, { signal }), signal);
       } catch (failure) {
-        if (signal.aborted) throw new WaitForOutcomeError(last, ending);
-        throw failure;
+        throw new WaitForOutcomeError(last, signal.aborted ? ending : failure);
       }
       if (settled(last.state)) return last;
       if (signal.aborted) throw new WaitForOutcomeError(last, ending);
@@ -367,8 +374,10 @@ export async function waitForOutcome(
           signal,
         );
       } catch (failure) {
-        if (signal.aborted) throw new WaitForOutcomeError(last, ending);
-        throw new SignerError(`wait for round ${last.currentRound + 1n}: ${errorText(failure)}`);
+        throw new WaitForOutcomeError(
+          last,
+          signal.aborted ? ending : new SignerError(`wait for round ${last.currentRound + 1n}: ${errorText(failure)}`),
+        );
       }
     }
   } finally {

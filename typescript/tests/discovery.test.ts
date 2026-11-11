@@ -384,6 +384,11 @@ describe("EndpointCosignerResolver", () => {
       ["h-teapot", (endpoint) => {
         endpoint.keysReply = () => ({ status: 418, body: { error: "teapot" } });
       }, "configuration invalid"],
+      ["h-unkeyed", (endpoint) => {
+        // Its address is the Witness Key ID of an empty key, so only the
+        // empty public key is wrong.
+        endpoint.keys.push(witnessRecord(""));
+      }, "invalid cosigner metadata"],
     ];
     for (const [alias, set] of failures) set(net.add(alias, [witnessRecord(WITNESS_B)]));
     net.install();
@@ -492,20 +497,81 @@ describe("EndpointCosignerResolver", () => {
     await resolver.close();
   });
 
-  it("refuses a target that names no cosigner key", async () => {
+  it("refuses a target that names no valid cosigner key, before connecting", async () => {
     const net = new Network();
     net.add("alpha", [witnessRecord(WITNESS_A)]);
     net.install();
     const resolver = new EndpointCosignerResolver(registry("alpha"));
-    await assert.rejects(resolver.resolve(target("")), CosignerDiscoveryError);
-    await assert.rejects(resolver.resolve(target("xyz")), CosignerDiscoveryError);
-    await assert.rejects(resolver.resolve(target(WITNESS_A, "")), CosignerDiscoveryError);
+    await assert.rejects(
+      resolver.resolve(target("")),
+      discoveryError('cosigner discovery: the account\'s cosigner public key "" is not valid hex'),
+    );
+    await assert.rejects(
+      resolver.resolve(target("xyz")),
+      discoveryError('cosigner discovery: the account\'s cosigner public key "xyz" is not valid hex'),
+    );
+    // The public key is checked first.
+    await assert.rejects(
+      resolver.resolve(target("a1b", "")),
+      discoveryError('cosigner discovery: the account\'s cosigner public key "a1b" is not valid hex'),
+    );
+    await assert.rejects(
+      resolver.resolve(target(WITNESS_A, "")),
+      discoveryError("cosigner discovery: the account names no cosigner key type"),
+    );
     assert.deepEqual(net.connects, [], "an endpoint was connected for an invalid target");
+    // A closed resolver still checks the key first.
+    await resolver.close();
+    await assert.rejects(resolver.resolve(target("")), discoveryError('cosigner discovery: the account\'s cosigner public key "" is not valid hex'));
+    await assert.rejects(resolver.resolve(target(WITNESS_A)), discoveryError("cosigner discovery: the resolver is closed"));
   });
 
-  it("refuses more cosigner endpoints than the registry allows", () => {
+  it("refuses a registry with more cosigner endpoints than the limit when it resolves", async () => {
+    const net = new Network();
+    net.install();
     const aliases = Array.from({ length: 13 }, (_, index) => `c${index}`);
-    assert.throws(() => new EndpointCosignerResolver(registry(...aliases)), CosignerDiscoveryError);
+    const resolver = new EndpointCosignerResolver(registry(...aliases));
+    await assert.rejects(
+      resolver.resolve(target(WITNESS_A)),
+      discoveryError("cosigner discovery: endpoints.yaml lists 13 cosigner endpoints; the limit is 12"),
+    );
+    assert.deepEqual(net.connects, [], "an endpoint was connected");
+  });
+
+  it("counts a key one endpoint lists twice as one listing", async () => {
+    const net = new Network();
+    net.add("alpha", [witnessRecord(WITNESS_A), witnessRecord(WITNESS_A.toUpperCase())]);
+    net.install();
+    const resolver = new EndpointCosignerResolver(registry("alpha"));
+    const resolved = await resolver.resolve(target(WITNESS_A));
+    assert.equal(resolved.componentKey, id(WITNESS_A), "a key listed twice by one endpoint was refused");
+    await resolver.close();
+  });
+
+  it("reports the first host key mismatch in alias order, and keeps nothing from that sweep", async () => {
+    const net = new Network();
+    net.add("alpha", [witnessRecord(WITNESS_A)]);
+    net.add("mike", []);
+    net.add("zulu", []);
+    const mike = hostKeyMismatch("mike");
+    const zulu = hostKeyMismatch("zulu");
+    // Both mismatches show at once; mike's is reported, being first by alias.
+    net.behaviour.set("zulu", async () => {
+      throw zulu;
+    });
+    net.behaviour.set("mike", async () => {
+      throw mike;
+    });
+    net.install();
+    const resolver = new EndpointCosignerResolver(registry("zulu", "mike", "alpha"));
+    await assert.rejects(resolver.resolve(target(WITNESS_A)), discoveryError(`cosigner discovery: endpoint "mike": ${mike.message}`));
+    // Nothing was kept: the next call sweeps again.
+    net.behaviour.delete("mike");
+    net.behaviour.delete("zulu");
+    const resolved = await resolver.resolve(target(WITNESS_A));
+    assert.equal(resolved.componentKey, id(WITNESS_A), "the sweep after a mismatch did not route the key");
+    assert.equal(net.connects.filter((alias) => alias === "alpha").length, 2, `alpha connects: ${net.connects.join(", ")}`);
+    await resolver.close();
   });
 
   it("connects with the options it was given", async () => {
@@ -556,6 +622,54 @@ describe("EndpointCosignerResolver's cache", () => {
     await resolver.close();
   });
 
+  it("reads kept connections again on a fresh sweep, reconnects failed endpoints, and closes what it drops", async () => {
+    const net = new Network();
+    const alpha = net.add("alpha", [witnessRecord(WITNESS_A)]);
+    const beta = net.add("beta", [witnessRecord(WITNESS_B)]);
+    beta.keysReply = () => ({ status: 403, body: { error: "signer is locked", code: "locked" } });
+    net.install();
+    const resolver = new EndpointCosignerResolver(registry("alpha", "beta"));
+    await resolver.resolve(target(WITNESS_A));
+    assert.deepEqual(net.closed, ["beta"], "a locked endpoint's connection was kept");
+
+    // beta unlocks; alpha's kept connection now fails its read.
+    beta.keysReply = undefined;
+    let alphaReads = 0;
+    alpha.keysReply = () => (++alphaReads === 1
+      ? { status: 403, body: { error: "signer is locked", code: "locked" } }
+      : { body: { count: 1, keys: alpha.keys } });
+    const resolved = await resolver.resolve(target(WITNESS_B));
+    assert.equal(resolved.client, net.clients.get("beta")?.[1], "beta was not connected afresh");
+    assert.deepEqual([...net.connects].sort(), ["alpha", "alpha", "beta", "beta"], `connects: ${net.connects.join(", ")}`);
+    assert.equal(net.closed.filter((alias) => alias === "alpha").length, 1, `alpha's failed connection was not closed: ${net.closed.join(", ")}`);
+    const again = await resolver.resolve(target(WITNESS_A));
+    assert.equal(again.client, net.clients.get("alpha")?.[1], "alpha's new connection was not kept");
+    await resolver.close();
+  });
+
+  it("keeps nothing from a fresh sweep the caller's signal ended, and closes the kept connections", async () => {
+    const net = new Network();
+    net.add("alpha", [witnessRecord(WITNESS_A)]);
+    const beta = net.add("beta", []);
+    net.install();
+    const resolver = new EndpointCosignerResolver(registry("alpha", "beta"));
+    await resolver.resolve(target(WITNESS_A));
+    const controller = new AbortController();
+    beta.keysReply = () => {
+      controller.abort();
+      return { body: { count: 0, keys: [] } };
+    };
+    await assert.rejects(
+      resolver.resolve(target(WITNESS_C), { signal: controller.signal }),
+      discoveryError("cosigner discovery: Request aborted by caller"),
+    );
+    assert.ok(net.closed.includes("alpha"), `alpha's kept connection was left open: closed ${net.closed.join(", ")}`);
+    beta.keysReply = undefined;
+    const resolved = await resolver.resolve(target(WITNESS_A));
+    assert.equal(resolved.client, net.clients.get("alpha")?.[1], "the next resolve answered from the ended sweep");
+    await resolver.close();
+  });
+
   it("replaces a connection that went down", async () => {
     const net = new Network();
     net.add("alpha", [witnessRecord(WITNESS_A)]);
@@ -595,11 +709,10 @@ describe("EndpointCosignerResolver's cache", () => {
     });
     net.install();
     const resolver = new EndpointCosignerResolver(registry("alpha"));
-    await assert.rejects(resolver.resolve(target(WITNESS_A), { signal: controller.signal }), (error: unknown) => {
-      assert.ok(error instanceof SignerUnavailableError, `error is ${String(error)}`);
-      assert.match(errorText(error), /aborted by caller/, "error text");
-      return true;
-    });
+    await assert.rejects(
+      resolver.resolve(target(WITNESS_A), { signal: controller.signal }),
+      discoveryError("cosigner discovery: Request aborted by caller"),
+    );
     hang = false;
     const resolved = await resolver.resolve(target(WITNESS_A));
     assert.equal(resolved.componentKey, id(WITNESS_A), "the next resolve did not sweep again");
@@ -644,12 +757,64 @@ describe("the cosigned sequence's cosigner resolution", () => {
         return true;
       });
       assert.deepEqual(user.approvalRequests(), [], `approval-bearing requests were made: ${user.paths.join(", ")}`);
+      assert.ok(!user.paths.includes("/plan"), `the group was planned: ${user.paths.join(", ")}`);
       for (const endpoint of net.endpoints.values()) {
         assert.equal(endpoint.count("/sign/component"), 0, "the cosigner was asked to sign");
       }
       assert.equal(node.submitted.length, 0, "something was submitted");
     });
   }
+
+  it("refuses a resolver that returns no client, naming the position", async () => {
+    const net = new Network();
+    const first = fakeAddress(25);
+    const second = fakeAddress(26);
+    const user = new CosignedUser([cosignedKey(first, WITNESS_A), cosignedKey(second, WITNESS_B)]);
+    net.install(user.handle);
+    const cosignerClient = new SignerClient("http://alpha.test");
+    await assert.rejects(
+      new SignerClient(SIGNER).sendPrepared(new FakeAlgod() as any, group(cosignedPayment(first), cosignedPayment(second)), {
+        cosignerResolver: async (item) => (item.targetIndex === 1 ? ({} as any) : { client: cosignerClient }),
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof SignerError && !(error instanceof SignOutcomeUnknownError), `error is ${String(error)}`);
+        assert.equal(errorText(error), "cosigner resolver returned no client for prepared transaction 1", "error text");
+        return true;
+      },
+    );
+    assert.deepEqual(user.approvalRequests(), [], `approval-bearing requests were made: ${user.paths.join(", ")}`);
+  });
+
+  it("sends the cosigner requests in the order of their first target position", async () => {
+    const net = new Network();
+    const accounts = [fakeAddress(25), fakeAddress(26), fakeAddress(27)];
+    // Position 0 and 2 need beta's key, position 1 alpha's: beta is asked first.
+    const alpha = net.add("alpha", [witnessRecord(WITNESS_A)]);
+    const beta = net.add("beta", [witnessRecord(WITNESS_B)]);
+    const user = new CosignedUser([
+      cosignedKey(accounts[0], WITNESS_B),
+      cosignedKey(accounts[1], WITNESS_A),
+      cosignedKey(accounts[2], WITNESS_B),
+    ]);
+    const asked: string[] = [];
+    const record = (endpoint: CosignerEndpoint) => {
+      const handle = endpoint.handle;
+      endpoint.handle = (path, body) => {
+        if (path === "/sign/component") asked.push(endpoint.alias);
+        return handle(path, body);
+      };
+    };
+    record(alpha);
+    record(beta);
+    net.install(user.handle);
+    const resolver = new EndpointCosignerResolver(registry("alpha", "beta"));
+    await new SignerClient(SIGNER).sendPrepared(new FakeAlgod() as any, group(...accounts.map((account) => cosignedPayment(account))), {
+      cosignerResolver: resolver,
+    });
+    assert.deepEqual(asked, ["beta", "alpha"], `cosigner request order: ${asked.join(", ")}`);
+    assert.deepEqual(beta.componentRequests[0].targets.map((item: any) => item.target_index), [0, 2], "beta's targets");
+    await resolver.close();
+  });
 
   it("passes a resolver's own error on as it is", async () => {
     const net = new Network();
