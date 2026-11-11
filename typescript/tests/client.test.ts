@@ -4064,6 +4064,16 @@ describe("SignerClient", () => {
       }
     }
 
+    it("an unreadable /status does not stop an approval request", async () => {
+      // The approval-wait discovery is best-effort: the request falls back to
+      // its default timeout and is posted.
+      answerRaw('{"key_count":"x"}');
+      mockFetch.mockImplementationOnce(signerFetch());
+      const result = await client().signRequests(signEntries(txn));
+      assert.equal(result.signed?.length, 1);
+      assert.equal(mockFetch.mock.calls.at(-1)?.[0], "http://localhost:11270/sign");
+    });
+
     it("/status reads null and missing fields as their zero values", async () => {
       answerRaw('{"state":null,"key_count":null,"signer_locked":null,"rotating":[{"account":"A","stage":null,"recovery":{"active":null}}]}');
       const status = await client().getStatus();
