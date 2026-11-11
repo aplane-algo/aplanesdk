@@ -5,6 +5,9 @@
 
 import base64
 import copy
+import inspect
+import json
+import pathlib
 import re
 from unittest.mock import MagicMock, patch
 
@@ -757,3 +760,215 @@ def test_request_auth_address_must_be_an_address():
         with pytest.raises(ValueError, match="is not a valid address"):
             client.sign_transaction(txn, auth_address="AUTH")
     post.assert_not_called()
+
+
+# A request that already carries a group ID is immutable to the signer, so a
+# response that regroups it, raises a fee on it or appends to it is refused:
+# the positions the signer did not return stay bound to the original group.
+
+
+def _grouped_with_foreign():
+    return foreign_entries()
+
+
+def _grouped_all_signed():
+    return fake_signer.sign_entries(*pregrouped_pair())
+
+
+def _grouped_single():
+    return fake_signer.sign_entries(pregrouped_pair()[0])
+
+
+def _ungrouped_with_foreign():
+    entries = pair_entries()
+    entries[1] = {"txn_bytes_hex": entries[1]["txn_bytes_hex"]}
+    return entries
+
+
+_REGROUPED = "group ID change for a request that was already grouped"
+
+
+@pytest.mark.parametrize(
+    ("entries", "signer", "error"),
+    [
+        (_grouped_with_foreign, {"fee_raise": {0: 2000}}, _REGROUPED),
+        (_grouped_with_foreign, {"dummies": 1}, _REGROUPED),
+        (_grouped_all_signed, {"fee_raise": {0: 2000}}, _REGROUPED),
+        (
+            _grouped_single,
+            {"fee_raise": {0: 2000}},
+            "fee change for a request that was already grouped",
+        ),
+    ],
+    ids=[
+        "fee raised and regrouped, with a foreign position",
+        "a dummy appended, with a foreign position",
+        "fee raised and regrouped, every position signed",
+        "fee raised on a single grouped transaction",
+    ],
+)
+def test_mutating_a_grouped_request_is_refused(entries, signer, error):
+    requests = entries()
+    slots = _decode_request_slots(requests)
+    body = fake_signer.sign_response(requests, **signer)
+    with pytest.raises(SignerError, match=error):
+        _validate_sign_response(slots, body["signed"], body.get("mutations"))
+    plan = fake_signer.plan_response(requests, **signer)
+    with pytest.raises(SignerError, match=error):
+        _validate_plan_response(slots, plan["transactions"], plan.get("mutations"))
+
+
+@pytest.mark.parametrize(
+    ("entries", "signer"),
+    [
+        (_grouped_with_foreign, {}),
+        (_grouped_all_signed, {}),
+        # The signer does group an ungrouped request that has a foreign
+        # position, and may raise the fee of a position it signs in it.
+        (_ungrouped_with_foreign, {}),
+        (_ungrouped_with_foreign, {"fee_raise": {0: 2000}, "dummies": 1}),
+    ],
+    ids=[
+        "a grouped request returned as sent, with a foreign position",
+        "a grouped request returned as sent, every position signed",
+        "an ungrouped request with a foreign position, grouped",
+        "an ungrouped request with a foreign position, fee raised and a dummy",
+    ],
+)
+def test_unmutated_grouped_and_mutated_ungrouped_requests_are_accepted(entries, signer):
+    requests = entries()
+    body = fake_signer.sign_response(requests, **signer)
+    _validate_sign_response(_decode_request_slots(requests), body["signed"], body.get("mutations"))
+
+
+# Requests and the responses a live signer returned for them. The fake signer
+# builds its dummies with the helpers under test, so these are what show the
+# SDK's idea of a canonical dummy is the signer's.
+
+_VECTORS = json.loads(
+    (
+        pathlib.Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "signerapi_vectors"
+        / "real_sign_responses.json"
+    ).read_text()
+)
+# The slot whose last byte is flipped: the appended dummy where there is one,
+# otherwise the first signed transaction.
+_VECTOR_TAMPER_SLOT = {
+    "logicsig_falcon_single": 1,
+    "logicsig_falcon_pair": 2,
+    "native_falcon_single": 0,
+    "ed25519_pair": 0,
+}
+
+
+def test_the_captured_vectors_are_the_expected_cases():
+    assert set(_VECTORS) == set(_VECTOR_TAMPER_SLOT)
+
+
+@pytest.mark.parametrize("name", sorted(_VECTOR_TAMPER_SLOT))
+def test_captured_signer_responses_are_accepted(name):
+    vector = _VECTORS[name]
+    slots = _decode_request_slots(vector["request"]["requests"])
+    signed = vector["response"]["signed"]
+    mutations = vector["response"].get("mutations")
+    _validate_sign_response(slots, signed, mutations)
+
+    tampered = list(signed)
+    raw = bytearray(bytes.fromhex(tampered[_VECTOR_TAMPER_SLOT[name]]))
+    raw[-1] ^= 0x01
+    tampered[_VECTOR_TAMPER_SLOT[name]] = raw.hex()
+    with pytest.raises(SignerError):
+        _validate_sign_response(slots, tampered, mutations)
+
+
+def _rewrite(signed_hex, edit):
+    fields = msgpack.unpackb(bytes.fromhex(signed_hex), raw=False)
+    edit(fields)
+    return _pack(fields)
+
+
+def test_captured_responses_refuse_a_changed_signature_or_dummy_authorization():
+    ed = _VECTORS["ed25519_pair"]
+    signed = list(ed["response"]["signed"])
+
+    def flip_signature(fields):
+        fields["sig"] = bytes([fields["sig"][0] ^ 0x01]) + fields["sig"][1:]
+
+    signed[0] = _rewrite(signed[0], flip_signature)
+    with pytest.raises(
+        SignerError, match="signature does not verify under the requested auth address"
+    ):
+        _validate_sign_response(
+            _decode_request_slots(ed["request"]["requests"]), signed, ed["response"]["mutations"]
+        )
+
+    lsig = _VECTORS["logicsig_falcon_single"]
+    signed = list(lsig["response"]["signed"])
+
+    def add_argument(fields):
+        fields["lsig"]["arg"] = [b"\x01"]
+
+    signed[1] = _rewrite(signed[1], add_argument)
+    with pytest.raises(
+        SignerError,
+        match="appended transaction 1 does not carry the canonical resource dummy authorization",
+    ):
+        _validate_sign_response(
+            _decode_request_slots(lsig["request"]["requests"]),
+            signed,
+            lsig["response"]["mutations"],
+        )
+
+
+def test_hex_with_whitespace_is_refused():
+    """bytes.fromhex skips whitespace; the Go and TypeScript SDKs do not."""
+    txn = fake_signer.payment()
+    entries = fake_signer.sign_entries(txn)
+    slots = _decode_request_slots(entries)
+    body = fake_signer.sign_response(entries)
+    plan = fake_signer.plan_response(entries)
+    for spaced in (lambda h: h[:10] + " " + h[10:], lambda h: h + "\n", lambda h: " " + h):
+        with pytest.raises(SignerError, match="signed transaction 1 is invalid hex"):
+            _validate_sign_response(slots, [spaced(body["signed"][0])], None)
+        with pytest.raises(SignerError, match="planned transaction 1 is invalid hex"):
+            _validate_plan_response(slots, [spaced(plan["transactions"][0])], None)
+        with pytest.raises(ValueError, match="txn_bytes_hex is invalid hex"):
+            _decode_request_slots(
+                [{**entries[0], "txn_bytes_hex": spaced(entries[0]["txn_bytes_hex"])}]
+            )
+    _validate_sign_response(slots, body["signed"], None)
+
+
+def test_sign_and_plan_requests_keep_their_public_signatures():
+    """A subclass overriding the documented signatures still works with the helpers."""
+    seen = []
+
+    class Recording(SignerClient):
+        def sign_requests(self, sign_entries, *, request_id=None):
+            seen.append("sign")
+            return super().sign_requests(sign_entries, request_id=request_id)
+
+        def plan_requests(self, sign_entries):
+            seen.append("plan")
+            return super().plan_requests(sign_entries)
+
+    client = Recording("http://localhost:11270")
+    txn = fake_signer.payment()
+    with (
+        patch.object(client, "_discover_approval_wait"),
+        patch.object(client.session, "post", side_effect=fake_signer.signer_post()),
+    ):
+        client.sign_transaction(txn)
+        client.plan_group([txn])
+    assert seen == ["sign", "plan"]
+    assert list(inspect.signature(SignerClient.sign_requests).parameters) == [
+        "self",
+        "sign_entries",
+        "request_id",
+    ]
+    assert list(inspect.signature(SignerClient.plan_requests).parameters) == [
+        "self",
+        "sign_entries",
+    ]

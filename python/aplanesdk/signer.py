@@ -1209,7 +1209,7 @@ def _simulate_signed_group(
         if not signed_hex:
             raise SignerError(f"signed group position {index} is empty")
         try:
-            signed_bytes = bytes.fromhex(signed_hex)
+            signed_bytes = _strict_hex(signed_hex)
         except ValueError as e:
             raise SignerError(f"signed group position {index} is invalid hex: {e}") from e
         # The raw hex is what gets submitted and the decoded value is what gets
@@ -1375,6 +1375,20 @@ def _validate_authorization(signed: Any, auth: str) -> None:
         raise SignerError("carries no authorization")
 
 
+_HEX = re.compile(r"(?:[0-9a-fA-F]{2})*")
+
+
+def _strict_hex(value: Any) -> bytes:
+    """Decode a hex string that holds hex digits and nothing else.
+
+    bytes.fromhex skips ASCII whitespace, so it would accept strings the Go
+    and TypeScript SDKs refuse.
+    """
+    if not isinstance(value, str) or _HEX.fullmatch(value) is None:
+        raise ValueError("not a hex string")
+    return bytes.fromhex(value)
+
+
 def _decode_canonical_txn(raw: bytes) -> transaction.Transaction:
     """Decode TX-prefixed unsigned transaction bytes, requiring the canonical encoding."""
     if len(raw) < 3 or raw[:2] != b"TX":
@@ -1431,7 +1445,7 @@ def _decode_request_slots(sign_entries: List[Dict[str, Any]]) -> List[_RequestSl
         mode = _sign_request_mode(entry)
         if mode == "passthrough":
             try:
-                raw = bytes.fromhex(entry["signed_txn_hex"])
+                raw = _strict_hex(entry["signed_txn_hex"])
             except (TypeError, ValueError) as e:
                 raise ValueError(f"transaction {index}: signed_txn_hex is invalid hex: {e}") from e
             try:
@@ -1440,7 +1454,7 @@ def _decode_request_slots(sign_entries: List[Dict[str, Any]]) -> List[_RequestSl
                 raise ValueError(f"transaction {index}: passthrough transaction: {e}") from e
             continue
         try:
-            raw = bytes.fromhex(entry["txn_bytes_hex"])
+            raw = _strict_hex(entry["txn_bytes_hex"])
         except (TypeError, ValueError) as e:
             raise ValueError(f"transaction {index}: txn_bytes_hex is invalid hex: {e}") from e
         try:
@@ -1628,6 +1642,25 @@ def _validate_group_mutations(
             )
         fee_modified.add(index)
 
+    # A request that already carries a group ID is immutable to the signer:
+    # its planner raises no fee on it, appends no dummy to it and never
+    # regroups it, whatever the modes of its positions. A response that reports
+    # any of these could not be submitted, because positions the signer did
+    # not return stay bound to the original group.
+    if any(_group_id_bytes(slot.txn) is not None for slot in slots):
+        if group_id_changed:
+            raise SignerError(
+                "signer reported a group ID change for a request that was already grouped"
+            )
+        if fee_modified:
+            raise SignerError(
+                "signer reported a fee change for a request that was already grouped"
+            )
+        if appended:
+            raise SignerError(
+                f"signer appended {appended} transaction(s) to a request that was already grouped"
+            )
+
     assigned: Optional[bytes] = None
     if group_id_changed:
         observed = next((txn for txn in returned if txn is not None), None)
@@ -1714,7 +1747,7 @@ def _validate_sign_response(
                 )
             raise SignerError(f"signer returned no signature for position {index + 1}")
         try:
-            raw = bytes.fromhex(signed_hex)
+            raw = _strict_hex(signed_hex)
         except ValueError as e:
             raise SignerError(f"signed transaction {index + 1} is invalid hex: {e}") from e
         signed_bytes.append(raw)
@@ -1767,7 +1800,7 @@ def _validate_plan_response(
     returned: List[Optional[transaction.Transaction]] = []
     for index, txn_hex in enumerate(transactions, start=1):
         try:
-            raw = bytes.fromhex(txn_hex)
+            raw = _strict_hex(txn_hex)
         except ValueError as e:
             raise SignerError(f"planned transaction {index} is invalid hex: {e}") from e
         try:
@@ -4755,10 +4788,6 @@ class SignerClient:
         except Exception:
             pass
 
-    def _build_sign_request_body(self, *args: Any, **kwargs: Any) -> dict:
-        """The JSON request body for /sign and /plan. See _build_sign_requests."""
-        return {"requests": self._build_sign_requests(*args, **kwargs)[0]}
-
     def _build_sign_requests(
         self,
         txns: List[Optional[transaction.Transaction]],
@@ -4767,13 +4796,15 @@ class SignerClient:
         passthrough: Optional[Dict[int, str]] = None,
         lsig_resources: Optional[Dict[int, LogicSigResourceUsage]] = None,
         allow_foreign: bool = True,
-    ) -> tuple:
+    ) -> List[Dict[str, Any]]:
         """
-        Build the request entries for /sign and /plan, with their decoded slots.
+        Build the request entries for /sign and /plan.
 
-        Nothing built here is decoded again before it is sent: a passthrough
-        entry is decoded once, strictly, and both its request and its part in
-        matching the LogicSig args come from that.
+        It refuses early what the signer could not use (an auth address that
+        is not an address, a passthrough that is not a canonical signed
+        transaction) and matches the LogicSig args against the positions. What
+        it decodes to do that goes no further: the slots a response is checked
+        against are decoded from the entries actually sent.
 
         Args:
             txns: List of transactions
@@ -4786,7 +4817,7 @@ class SignerClient:
                 for foreign or passthrough transactions.
 
         Returns:
-            (entries, slots): the request entries, and one decoded slot each
+            The request entries, ready to send
 
         Raises:
             ValueError: If a passthrough index is out of range or a
@@ -4817,8 +4848,7 @@ class SignerClient:
                     )
 
         # Build request array
-        sign_requests = []
-        slots: List[_RequestSlot] = []
+        sign_requests: List[Dict[str, Any]] = []
         matched_lsig_args: set = set()
         for i, (txn, auth_addr) in enumerate(zip(txns, auth_addresses)):
             # Passthrough: include pre-signed transaction as-is
@@ -4842,7 +4872,6 @@ class SignerClient:
                         lsig_resources[i]
                     )
                 sign_requests.append(request)
-                slots.append(slot)
                 continue
 
             # A sign or foreign position matches its auth address, or its
@@ -4871,13 +4900,12 @@ class SignerClient:
                 if lsig_resources and i in lsig_resources:
                     req["lsig_resources"] = _wire_lsig_resources(lsig_resources[i])
                 sign_requests.append(req)
-                slots.append(_RequestSlot("foreign", copy.deepcopy(txn)))
                 continue
 
             if txn is None:
                 raise ValueError(f"transaction is required for sign-mode entry at index {i}")
             try:
-                slots.append(_sign_slot(copy.deepcopy(txn), auth_addr))
+                _sign_slot(txn, auth_addr)
             except ValueError as e:
                 raise ValueError(f"transaction {i + 1}: {e}") from e
 
@@ -4913,7 +4941,7 @@ class SignerClient:
                 f"request has auth address {', '.join(unmatched)}"
             )
 
-        return sign_requests, slots
+        return sign_requests
 
     def _sign_request(
         self,
@@ -4961,10 +4989,10 @@ class SignerClient:
             ValueError: If a passthrough index is out of range or a
                 non-passthrough, non-foreign entry has a missing auth_address.
         """
-        entries, slots = self._build_sign_requests(
+        entries = self._build_sign_requests(
             txns, auth_addresses, lsig_args_map, passthrough, lsig_resources, False
         )
-        data = self.sign_requests(entries, request_id=request_id, _slots=slots)
+        data = self.sign_requests(entries, request_id=request_id)
 
         # Parse signed transactions (convert hex to base64 for algosdk compatibility)
         signed_hexes = data.signed
@@ -4986,7 +5014,6 @@ class SignerClient:
         sign_entries: List[Dict[str, Any]],
         *,
         request_id: Optional[str] = None,
-        _slots: Optional[List[_RequestSlot]] = None,
     ) -> GroupSignResponse:
         """
         Send raw signing request entries to /sign.
@@ -4999,8 +5026,9 @@ class SignerClient:
             request_id = _new_sign_request_id()
         _validate_sign_request_id(request_id, required=True)
         _validate_sign_entries(sign_entries)
-        # Entries the SDK built arrive with their slots already decoded.
-        slots = _slots if _slots is not None else _decode_request_slots(sign_entries)
+        # The slots the response is checked against are decoded here, from the
+        # very entries that are sent.
+        slots = _decode_request_slots(sign_entries)
         request_body = {
             "request_id": request_id,
             "requests": sign_entries,
@@ -5109,21 +5137,16 @@ class SignerClient:
         if len(auth_addresses) != len(txns):
             raise ValueError("auth_addresses length must match txns length")
 
-        entries, slots = self._build_sign_requests(
+        entries = self._build_sign_requests(
             txns, auth_addresses, lsig_args_map, passthrough, lsig_resources
         )
 
-        return self.plan_requests(entries, _slots=slots)
+        return self.plan_requests(entries)
 
-    def plan_requests(
-        self,
-        sign_entries: List[Dict[str, Any]],
-        *,
-        _slots: Optional[List[_RequestSlot]] = None,
-    ) -> dict:
+    def plan_requests(self, sign_entries: List[Dict[str, Any]]) -> dict:
         """Preview raw per-slot signer requests without address-keyed rebuilding."""
         _validate_sign_entries(sign_entries)
-        slots = _slots if _slots is not None else _decode_request_slots(sign_entries)
+        slots = _decode_request_slots(sign_entries)
         request_body = {"requests": sign_entries}
 
         try:
@@ -5465,7 +5488,7 @@ def _decode_canonical_group(group_bytes_hex: List[str]) -> List[transaction.Tran
     result = []
     for index, encoded in enumerate(group_bytes_hex):
         try:
-            raw = bytes.fromhex(encoded)
+            raw = _strict_hex(encoded)
         except ValueError as e:
             raise SignerError(f"transaction {index} is invalid hex: {e}") from e
         try:
@@ -5477,26 +5500,7 @@ def _decode_canonical_group(group_bytes_hex: List[str]) -> List[transaction.Tran
         if _group_id_bytes(result[0]) is not None:
             raise SignerError("singleton transaction must not have a group ID")
         return result
-
-    group_id = _group_id_bytes(result[0])
-    if group_id is None:
-        raise SignerError("group transaction 0 has empty group ID")
-    for index, txn in enumerate(result[1:], start=1):
-        current = _group_id_bytes(txn)
-        if current is None:
-            raise SignerError(f"group transaction {index} has empty group ID")
-        if current != group_id:
-            raise SignerError(f"group transaction {index} has divergent group ID")
-
-    cleared = copy.deepcopy(result)
-    for txn in cleared:
-        txn.group = None
-    try:
-        computed = transaction.calculate_group_id(cleared)
-    except Exception as e:
-        raise SignerError(f"compute group ID: {e}") from e
-    if computed != group_id:
-        raise SignerError("group ID does not match decoded transactions")
+    _validate_canonical_group_id(result)
     return result
 
 
@@ -5561,7 +5565,7 @@ def _verify_signed_transaction_matches_canonical(
     signed transaction.
     """
     try:
-        signed_bytes = bytes.fromhex(signed_hex)
+        signed_bytes = _strict_hex(signed_hex)
     except ValueError as e:
         raise SignerError(f"{label} {index}: invalid hex: {e}") from e
     try:

@@ -1234,7 +1234,7 @@ class TestSignPreparedCosignedGroup:
         fabricated = [copy.deepcopy(first), copy.deepcopy(second)]
         for txn in fabricated:
             txn.group = bytes([0x44]) * 32
-        with pytest.raises(SignerError, match="does not match decoded transactions"):
+        with pytest.raises(SignerError, match="does not carry the canonical group ID"):
             _decode_canonical_group([encode(txn) for txn in fabricated])
 
         singleton = copy.deepcopy(first)
@@ -2507,8 +2507,8 @@ class TestBuildSignRequests:
         client = make_client()
         txn = self._make_mock_txn()
         empty = {sdk_test_address(79): None, sdk_test_address(80): {}, txn.sender: {}}
-        body = client._build_sign_request_body([txn], [txn.sender], empty)
-        assert "lsig_args" not in body["requests"][0]
+        body = client._build_sign_requests([txn], [txn.sender], empty)
+        assert "lsig_args" not in body[0]
 
     def test_accepts_a_reused_lsig_args_map(self):
         # One args map serves every call over a group: the plan with a foreign
@@ -2519,9 +2519,9 @@ class TestBuildSignRequests:
         first, second = grouped[0].sender, grouped[1].sender
         args = {first: {"preimage": b"one"}, second: {"preimage": b"two"}}
 
-        body = client._build_sign_request_body(grouped, [first, None], args)
-        assert body["requests"][0]["lsig_args"] == {"preimage": b"one".hex()}
-        assert "lsig_args" not in body["requests"][1]
+        body = client._build_sign_requests(grouped, [first, None], args)
+        assert body[0]["lsig_args"] == {"preimage": b"one".hex()}
+        assert "lsig_args" not in body[1]
 
         signed_second = base64.b64encode(
             bytes.fromhex(fake_signer.signed_hex(grouped[1]))
@@ -2532,11 +2532,11 @@ class TestBuildSignRequests:
             "only the signed bytes": ([grouped[0], None], [first, None]),
         }
         for name, (txns, auths) in cases.items():
-            body = client._build_sign_request_body(
+            body = client._build_sign_requests(
                 txns, auths, args, passthrough={1: signed_second}, allow_foreign=False
             )
-            assert body["requests"][0]["lsig_args"] == {"preimage": b"one".hex()}, name
-            assert set(body["requests"][1]) == {"signed_txn_hex"}, name
+            assert body[0]["lsig_args"] == {"preimage": b"one".hex()}, name
+            assert set(body[1]) == {"signed_txn_hex"}, name
 
         with patch.object(client, "_discover_approval_wait"), \
              patch.object(client.session, "post", side_effect=fake_signer.signer_post()):
@@ -2548,7 +2548,7 @@ class TestBuildSignRequests:
     def test_carries_lsig_resources_on_passthrough(self):
         client = make_client()
         presigned = fake_signer.signed_hex(fake_signer.payment())
-        body = client._build_sign_request_body(
+        body = client._build_sign_requests(
             [None],
             [None],
             passthrough={0: base64.b64encode(bytes.fromhex(presigned)).decode()},
@@ -2557,7 +2557,7 @@ class TestBuildSignRequests:
             },
             allow_foreign=False,
         )
-        assert body["requests"] == [{
+        assert body == [{
             "signed_txn_hex": presigned,
             "lsig_resources": {
                 "program_bytes": 1612,
@@ -2570,7 +2570,7 @@ class TestBuildSignRequests:
         client = make_client()
         with patch("aplanesdk.signer.encode_transaction", return_value=("deadbeef", "SENDER")):
             with pytest.raises(ValueError, match="allowed only for foreign or passthrough"):
-                client._build_sign_request_body(
+                client._build_sign_requests(
                     [self._make_mock_txn()],
                     ["AUTH"],
                     lsig_resources={

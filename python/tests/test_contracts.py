@@ -173,7 +173,7 @@ def test_encodes_mixed_group_sign_request_wire_fields():
     presigned = fake_signer.signed_hex(fake_signer.payment(45, 46))
     lsig_args = {"preimage": b"secret", "recipient": bytes.fromhex("aabbccdd")}
 
-    body = client._build_sign_request_body(
+    body = client._build_sign_requests(
         [sign_txn, None, foreign_txn],
         [sign_txn.sender, None, None],
         {sign_txn.sender: lsig_args},
@@ -183,11 +183,11 @@ def test_encodes_mixed_group_sign_request_wire_fields():
 
     expected = fixture("group_sign_request_mixed.json")
     del expected["requests"][0]["app_call_info"]
-    assert set(body) == set(expected)
-    assert [set(request) for request in body["requests"]] == [
+    assert set(expected) == {"requests"}
+    assert [set(request) for request in body] == [
         set(request) for request in expected["requests"]
     ]
-    sign, passthrough, foreign = body["requests"]
+    sign, passthrough, foreign = body
     assert sign["auth_address"] == sign["txn_sender"] == sign_txn.sender
     assert sign["txn_bytes_hex"].startswith("5458")
     assert sign["lsig_args"] == expected["requests"][0]["lsig_args"]
