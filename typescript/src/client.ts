@@ -2801,7 +2801,7 @@ export class SignerClient {
       const canonical = algosdk.Address.fromString(address).toString();
       if (canonical !== address) {
         throw new SignerError(
-          `Server returned a malformed response: key ${index + 1} address ${address} is not the canonical spelling of ${canonical}`,
+          `Server returned a malformed response: key ${index} address ${JSON.stringify(address)} is a non-canonical spelling of address ${canonical}`,
         );
       }
     });

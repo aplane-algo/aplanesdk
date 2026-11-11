@@ -4192,7 +4192,7 @@ describe("SignerClient", () => {
           assert.ok(error instanceof SignerError, String(error));
           assert.equal(
             (error as Error).message,
-            `Server returned a malformed response: key 2 address ${misspelled} is not the canonical spelling of ${real}`,
+            `Server returned a malformed response: key 1 address "${misspelled}" is a non-canonical spelling of address ${real}`,
           );
           return true;
         });
