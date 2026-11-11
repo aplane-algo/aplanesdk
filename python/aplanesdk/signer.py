@@ -208,6 +208,12 @@ class MaxFeeIncreaseError(SignerError):
         )
         self.raised = raised
         self.limit = limit
+        self.prefix = prefix
+
+    def __reduce__(self) -> tuple:
+        # Exceptions pickle and copy by calling the class with the message
+        # alone; this one is built from its amounts.
+        return (self.__class__, (self.raised, self.limit, self.prefix))
 
 
 def _verification_error(prefix: str, error: Exception) -> SignerError:
@@ -262,6 +268,11 @@ class TransactionRejectedError(SignerError):
         self.txid = txid
         self.reason = reason
         super().__init__(f"Transaction {txid} rejected: {reason}")
+
+    def __reduce__(self) -> tuple:
+        # Exceptions pickle and copy by calling the class with the message
+        # alone; this one is built from its transaction ID and reason.
+        return (self.__class__, (self.txid, self.reason))
 
 
 class LogicSigRejectedError(TransactionRejectedError):
@@ -1593,7 +1604,7 @@ def _validate_group_mutations(
     slots: List[_RequestSlot],
     returned: List[Optional[transaction.Transaction]],
     mutations: Optional[Dict[str, Any]],
-    max_fee_increase: Optional[int] = None,
+    max_fee_increase: Optional[int],
 ) -> None:
     """Check a /sign or /plan result against the request.
 
@@ -1605,10 +1616,13 @@ def _validate_group_mutations(
     a foreign position /sign returned empty: nothing was observed, and the
     position is taken as the request's transaction in the final group.
 
-    ``max_fee_increase``, when set, is the caller's ceiling on the total fee the
-    signer may add across the request's positions. The report's own total
-    cannot serve: it is written by the party being checked. Appended dummies
-    pay no fee, so the total over original positions is the whole increase.
+    ``max_fee_increase`` is the caller's ceiling on the total fee the signer may
+    add across the request's positions, or None for no ceiling; it has no
+    default, so a caller cannot leave the check out by omission. The report's
+    own total cannot serve: it is written by the party being checked. An
+    appended dummy carries a zero fee of its own, and the signer charges its
+    base fee to an original position, so the total over original positions is
+    the whole increase, dummies included.
     """
     if len(returned) < len(slots):
         raise SignerError(
@@ -1767,7 +1781,7 @@ def _validate_sign_response(
     slots: List[_RequestSlot],
     signed: Any,
     mutations: Optional[Dict[str, Any]],
-    max_fee_increase: Optional[int] = None,
+    max_fee_increase: Optional[int],
 ) -> None:
     """Check a /sign response against the request before anyone can submit it.
 
@@ -1834,7 +1848,7 @@ def _validate_plan_response(
     slots: List[_RequestSlot],
     transactions: Any,
     mutations: Optional[Dict[str, Any]],
-    max_fee_increase: Optional[int] = None,
+    max_fee_increase: Optional[int],
 ) -> None:
     """Check a /plan response against the request.
 
@@ -3256,7 +3270,7 @@ class SignerClient:
                 call through this client fails and returns nothing when the
                 signer's fee raises across the request's positions add up to
                 more than this. On a sign or simulate call the signer has
-                already answered by then; its signature is discarded. A call is
+                already answered by then; its signature is discarded. Each request is
                 held to the ceiling in force when it started. Any integral
                 value is accepted. Zero means the signer may not raise
                 any fee. There is no default: None accepts a reported raise of
@@ -3328,7 +3342,8 @@ class SignerClient:
         """
         import os
 
-        # Checked once, here, before any connection is attempted.
+        # Checked here so a bad value is refused before any connection is
+        # attempted; the constructor is the one place that sets it.
         fee_ceiling = _check_max_fee_increase(max_fee_increase)
         ssh_key_path = os.path.expanduser(ssh_key_path)
         known_hosts_path = os.path.expanduser(known_hosts_path)
@@ -3358,8 +3373,7 @@ class SignerClient:
 
         # Connect through tunnel
         base_url = f"http://127.0.0.1:{tunnel.local_bind_port}"
-        client = cls(base_url, timeout, tunnel=tunnel)
-        client._max_fee_increase = fee_ceiling
+        client = cls(base_url, timeout, tunnel=tunnel, max_fee_increase=fee_ceiling)
 
         # Verify connection
         if not client.health():

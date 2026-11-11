@@ -36,6 +36,19 @@ export class MaxFeeIncreaseError extends SignerError {
     this.raised = raised;
     this.limit = limit;
   }
+
+  /**
+   * JSON.stringify cannot write a bigint, so the amounts are written as
+   * decimal strings.
+   */
+  toJSON(): { name: string; message: string; raised: string; limit: string } {
+    return {
+      name: this.name,
+      message: this.message,
+      raised: this.raised.toString(),
+      limit: this.limit.toString(),
+    };
+  }
 }
 
 /** Word a failed check of a signer result, keeping a ceiling refusal's type. */

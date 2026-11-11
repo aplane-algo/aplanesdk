@@ -553,25 +553,42 @@ The value is in microAlgos and bounds the total the signer adds across all
 positions of one request. Zero means the signer may not raise any fee. When
 the raises add up to more than the ceiling, every sign, plan and simulate call
 through that client fails with `SignerError` and returns nothing, so nothing can be
-submitted or simulated. Resource dummies pay no fee and do not count.
+submitted or simulated.
 The per-account `max_fee` check in the cosigned flow still applies as well.
 The refusal is a `MaxFeeIncreaseError`, a `SignerError` subclass carrying
 `raised` and `limit`.
 
 ```python
 client = SignerClient.from_env(max_fee_increase=200_000)  # microAlgos, summed over the request
-signed = client.sign_transaction(txn)
-# SignerError: verify signer response: signer raised fees by 5000000 microAlgos,
-# more than the max fee increase 200000 set on this client
+try:
+    signed = client.sign_transaction(txn)
+except MaxFeeIncreaseError as refused:
+    # verify signer response: signer raised fees by 5000000 microAlgos,
+    # more than the max fee increase 200000 set on this client
+    print(f"signer asked for {refused.raised}, ceiling is {refused.limit}")
 ```
 
 `connect_ssh()` and the constructor take the same argument, and
 `client.max_fee_increase` can be set or returned to `None` at any time. A value
 that is not a non-negative integer raises `SignerError`.
 
-There is no default. What the signer legitimately adds depends on the account
-type: an Ed25519 account adds nothing, while a LogicSig Falcon account's
-charge can be well over 100,000 microAlgos, so any built-in number would be a
+What counts toward the ceiling is everything the signer adds to the fees of
+your transactions. A resource dummy carries a zero fee of its own, but the
+signer charges each dummy's base fee to one of your transactions, and that
+raise counts. So for a LogicSig account the raise includes the dummies' base
+fees and the charge for the program's size; for a native Falcon account it is
+the post-quantum signature charge. Measured against a live signer on a local
+test network:
+
+| Request | Dummies appended | Fee raise (microAlgos) |
+|---|---|---|
+| two payments, Ed25519 account | 0 | 0 |
+| one payment, LogicSig Falcon account | 1 | 1000 |
+| two payments, LogicSig Falcon account | 1 | 1074 |
+| one payment, native Falcon account | 0 | 2000 |
+
+These figures depend on the account type, the group's size and the network's
+fee rules, which is why there is no default: any built-in number would be a
 guess. Choose a ceiling that fits the accounts you sign for. To see the
 charge, call `plan_group()` with your transactions and read
 `mutations["total_fees_delta"]` in the result.
@@ -585,7 +602,11 @@ Two limits to know:
   A plan is for looking at what the signer will do. The multi-party flow is
   not affected: a group sent with passthrough positions is already grouped,
   and the signer cannot change the fees of a group that is.
-- A call is held to the ceiling set when it started. On a plan call a refusal
+- Each request is held to the ceiling in force when that request starts. A
+  single sign or plan call is one request. The cosigned helpers make several
+  (a plan, then one or more sign requests), and each of those reads the
+  ceiling when it starts, so a change made part-way applies to the requests
+  that follow. On a plan call a refusal
   comes before the signer asks anyone for approval. On a sign or simulate
   call the check runs after the signer has answered: by then the signer has
   already asked for approval and produced a signature. The SDK discards that
@@ -766,6 +787,8 @@ The SDK raises typed exceptions for the common signer-side failure cases:
 - `KeyNotFoundError`
 - `KeyDeletionError`
 - `EnrollmentError`
+- `MaxFeeIncreaseError`: the signer raised fees by more than the client's
+  `max_fee_increase`; carries `raised` and `limit`
 - `TransactionRejectedError`
 - `LogicSigRejectedError`
 - `InsufficientFundsError`

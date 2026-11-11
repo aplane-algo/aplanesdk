@@ -251,7 +251,7 @@ export interface SignerClientOptions {
    * Every sign, plan and simulate call through the client fails and returns
    * nothing when the signer's fee raises across the request's positions add
    * up to more than this. On a sign or simulate call the signer has already
-   * answered by then; its signature is discarded. A call is held to the
+   * answered by then; its signature is discarded. Each request is held to the
    * ceiling in force when it started. Zero means the signer may not raise
    * any fee. There is no default: unset accepts a reported raise of any size.
    */

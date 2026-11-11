@@ -221,8 +221,9 @@ func validateAuthorization(stxn types.SignedTxn, auth types.Address) error {
 //
 // ceiling, when set, is the caller's ceiling on the total fee the signer
 // may add across the request's positions. The report's own total cannot serve:
-// it is written by the party being checked. Appended dummies pay no fee, so
-// the total over original positions is the whole increase.
+// it is written by the party being checked. An appended dummy carries a zero
+// fee of its own, and the signer charges its base fee to an original position,
+// so the total over original positions is the whole increase, dummies included.
 func validateGroupMutations(slots []requestSlot, returned []*types.Transaction, mutations *MutationReport, ceiling feeCeiling) error {
 	if len(returned) < len(slots) {
 		return fmt.Errorf("signer returned %d transaction(s), want at least %d", len(returned), len(slots))

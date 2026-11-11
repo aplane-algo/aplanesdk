@@ -55,7 +55,12 @@ function typedMutations(raw: any) {
 }
 
 function checkSign(requests: SignRequest[], body: any): void {
-  validateSignResponse(decodeRequestSlots(requests), body.signed, typedMutations(body.mutations));
+  validateSignResponse(
+    decodeRequestSlots(requests),
+    body.signed,
+    typedMutations(body.mutations),
+    undefined,
+  );
 }
 
 function checkPlan(requests: SignRequest[], body: any): void {
@@ -63,6 +68,7 @@ function checkPlan(requests: SignRequest[], body: any): void {
     decodeRequestSlots(requests),
     body.transactions,
     typedMutations(body.mutations),
+    undefined,
   );
 }
 
@@ -676,6 +682,54 @@ describe("maxFeeIncrease", () => {
     });
   });
 
+  it("serializes its refusal to JSON with the amounts as decimal strings", () => {
+    const error = new MaxFeeIncreaseError(5000n, 4999n, "verify signer response: ");
+    assert.equal(typeof error.raised, "bigint");
+    assert.deepEqual(JSON.parse(JSON.stringify(error)), {
+      name: "MaxFeeIncreaseError",
+      message:
+        "verify signer response: signer raised fees by 5000 microAlgos, more than the max fee increase 4999 set on this client",
+      raised: "5000",
+      limit: "4999",
+    });
+    assert.equal(JSON.parse(JSON.stringify({ error })).error.limit, "4999");
+  });
+
+  it("refuses options that are not an object", () => {
+    const invalid = /SignerClient options must be an object/;
+    for (const bad of [200_000, 200_000n, "200000", true] as any[]) {
+      assert.throws(() => new SignerClient("http://localhost:11270", undefined, null, bad), invalid);
+    }
+    for (const fine of [undefined, null, {}] as any[]) {
+      const client = new SignerClient("http://localhost:11270", undefined, null, fine);
+      assert.equal(client.maxFeeIncrease, undefined);
+    }
+  });
+
+  it("requires the validators to be told the ceiling", () => {
+    // Not optional parameters: leaving the ceiling out does not type-check,
+    // so a new caller cannot skip the check by omission.
+    assert.equal(validateSignResponse.length, 4);
+    assert.equal(validatePlanResponse.length, 4);
+  });
+
+  it("gets a valid ceiling past validation and on to the connection", async () => {
+    // A valid value is not what stops this call: with nothing listening, it
+    // fails at the SSH connection, not at the ceiling check.
+    await assert.rejects(
+      SignerClient.connectSsh("127.0.0.1", "/nonexistent/key", {
+        maxFeeIncrease: 250_000,
+        sshPort: 1,
+        knownHostsPath: "/nonexistent/known_hosts",
+        sshSetupTimeout: 2000,
+      }),
+      (error: Error) => {
+        assert.doesNotMatch(error.message, /maxFeeIncrease/);
+        return true;
+      },
+    );
+  });
+
   it("is no longer settable through a method", () => {
     const client = new SignerClient("http://localhost:11270");
     assert.equal((client as any).setMaxFeeIncrease, undefined);
@@ -748,7 +802,7 @@ describe("authorization of a signed position", () => {
   function check(txn: Transaction, auth: string, signedHexValue: string): void {
     const sender = txn.sender.toString();
     const request = { auth_address: auth, txn_sender: sender, txn_bytes_hex: encodeTransaction(txn)[0] };
-    validateSignResponse(decodeRequestSlots([request]), [signedHexValue], undefined);
+    validateSignResponse(decodeRequestSlots([request]), [signedHexValue], undefined, undefined);
   }
 
   const accepted: Array<[string, string, string]> = [

@@ -2072,6 +2072,13 @@ export class SignerClient {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
     this.explicitTimeout = timeout && timeout > 0 ? timeout : undefined;
     this.tunnel = tunnel;
+    // A bare number here would otherwise be read as an options object with no
+    // ceiling in it.
+    if (options !== undefined && options !== null && typeof options !== "object") {
+      throw new SignerError(
+        "SignerClient options must be an object, such as { maxFeeIncrease: 200_000 }",
+      );
+    }
     this.feeCeiling = checkMaxFeeIncrease(options?.maxFeeIncrease);
   }
 
@@ -2179,9 +2186,7 @@ export class SignerClient {
 
     // Connect through tunnel
     const baseUrl = `http://127.0.0.1:${tunnel.localPort}`;
-    const client = new SignerClient(baseUrl, timeout, tunnel);
-    // Already checked above, before any connection was attempted.
-    client.feeCeiling = maxFeeIncrease;
+    const client = new SignerClient(baseUrl, timeout, tunnel, { maxFeeIncrease });
 
     // Verify connection
     const healthy = await client.health();

@@ -398,16 +398,19 @@ export function signCanonicalDummy(txn: Transaction): Uint8Array {
  * observed, and the position is taken as the request's transaction in the
  * final group.
  *
- * `maxFeeIncrease`, when set, is the caller's ceiling on the total fee the
- * signer may add across the request's positions. The report's own total
- * cannot serve: it is written by the party being checked. Appended dummies
- * pay no fee, so the total over original positions is the whole increase.
+ * `maxFeeIncrease` is the caller's ceiling on the total fee the signer may
+ * add across the request's positions, or undefined for no ceiling; it is not
+ * optional, so a caller cannot leave the check out by omission. The report's
+ * own total cannot serve: it is written by the party being checked. An
+ * appended dummy carries a zero fee of its own, and the signer charges its
+ * base fee to an original position, so the total over original positions is
+ * the whole increase, dummies included.
  */
 export function validateGroupMutations(
   slots: RequestSlot[],
   returned: (Transaction | undefined)[],
-  mutations?: MutationReport,
-  maxFeeIncrease?: bigint,
+  mutations: MutationReport | undefined,
+  maxFeeIncrease: bigint | undefined,
 ): void {
   if (returned.length < slots.length) {
     throw new SignerError(
@@ -599,8 +602,8 @@ export function validateGroupMutations(
 export function validateSignResponse(
   slots: RequestSlot[],
   signed: unknown,
-  mutations?: MutationReport,
-  maxFeeIncrease?: bigint,
+  mutations: MutationReport | undefined,
+  maxFeeIncrease: bigint | undefined,
 ): void {
   if (!Array.isArray(signed) || signed.some((item) => typeof item !== "string")) {
     throw new SignerError("signer returned a malformed signed list");
@@ -672,8 +675,8 @@ export function validateSignResponse(
 export function validatePlanResponse(
   slots: RequestSlot[],
   transactions: unknown,
-  mutations?: MutationReport,
-  maxFeeIncrease?: bigint,
+  mutations: MutationReport | undefined,
+  maxFeeIncrease: bigint | undefined,
 ): void {
   const planned = transactions ?? [];
   if (!Array.isArray(planned) || planned.some((item) => typeof item !== "string")) {
