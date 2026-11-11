@@ -3686,7 +3686,8 @@ describe("SignerClient", () => {
       const client = new SignerClient("http://localhost:11270");
       const result = await client.signRequests([{ ...entry }], { requestId: "raw-requests-id" });
 
-      assert.deepEqual(result, { signed: [signedHex(txn)] });
+      // A field left out reads as its zero value, as the Go SDK reads it.
+      assert.deepEqual(result, { signed: [signedHex(txn)], error: "" });
       assert.equal(mockFetch.mock.calls[1][0], "http://localhost:11270/sign");
       assert.deepEqual(JSON.parse(mockFetch.mock.calls[1][1].body), {
         request_id: "raw-requests-id",

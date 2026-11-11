@@ -3,11 +3,18 @@
 
 /**
  * How the SDK reads a signer's 200 answer: as the Go SDK decodes it into its
- * typed struct. The body is exactly one JSON object; a field left out or null
- * takes its zero value; a null entry in a list takes its element's zero
- * value; an unknown field is ignored; a field of the wrong type, a number
- * outside the field's range, a null or non-object body, an empty or cut-off
- * body, and anything after the object make the answer unreadable.
+ * typed struct. The body is exactly one JSON object; an unknown field is
+ * ignored; a field of the wrong type, a number outside the field's range, a
+ * null or non-object body, an empty or cut-off body, and anything after the
+ * object make the answer unreadable.
+ *
+ * Null means zero at every depth, as in Go. A string, boolean or number
+ * field left out or null reads as "", false or 0, in the answer and in every
+ * object nested in it, unless it is declared optional (a Go pointer), when it
+ * is left out. A list, map or object field left out or null is left out, and
+ * its reader takes it as empty, as Go reads a nil one. A null entry in a list
+ * or map reads as its element's zero value: an object entry as an object of
+ * zero values.
  *
  * A number must be an integer a JavaScript number holds exactly (a safe
  * integer): JSON.parse rounds anything larger, so it cannot be read exactly
@@ -26,25 +33,32 @@ export type AnswerShape =
   | "uint"
   | { list: AnswerShape }
   | { map: AnswerShape }
-  | { fields: Record<string, AnswerShape> };
+  | { fields: Record<string, AnswerShape> }
+  /** A field Go declares as a pointer: left out or null, it is left out. */
+  | { optional: AnswerShape };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** The value a missing entry of shape takes. */
+function isScalar(shape: AnswerShape): shape is "string" | "bool" | "int" | "uint" {
+  return typeof shape === "string";
+}
+
+/** The value a null entry of shape in a list or map takes. */
 function zeroValue(shape: AnswerShape): unknown {
   if (shape === "string") return "";
   if (shape === "bool") return false;
   if (shape === "int" || shape === "uint") return 0;
   if ("list" in shape) return [];
   if ("map" in shape) return {};
-  return {};
+  if ("optional" in shape) return undefined;
+  return readValue(shape, {}, "");
 }
 
 class Unreadable extends Error {}
 
-/** value read as shape: a copy, with null entries given their zero values. */
+/** value read as shape: a copy, with null and missing values read as zero. */
 function readValue(shape: AnswerShape, value: unknown, where: string): unknown {
   if (shape === "string") {
     if (typeof value !== "string") throw new Unreadable(`${where} is not a string`);
@@ -63,6 +77,9 @@ function readValue(shape: AnswerShape, value: unknown, where: string): unknown {
       throw new Unreadable(`${where} is not an unsigned integer the SDK can read exactly`);
     }
     return value;
+  }
+  if ("optional" in shape) {
+    return readValue(shape.optional, value, where);
   }
   if ("list" in shape) {
     if (!Array.isArray(value)) throw new Unreadable(`${where} is not a list`);
@@ -83,7 +100,11 @@ function readValue(shape: AnswerShape, value: unknown, where: string): unknown {
   for (const [name, field] of Object.entries(shape.fields)) {
     const item = value[name];
     if (item === undefined || item === null) {
-      delete read[name];
+      if (isScalar(field)) {
+        read[name] = zeroValue(field);
+      } else {
+        delete read[name];
+      }
       continue;
     }
     read[name] = readValue(field, item, where ? `${where}.${name}` : name);
@@ -92,9 +113,9 @@ function readValue(shape: AnswerShape, value: unknown, where: string): unknown {
 }
 
 /**
- * Read a parsed 200 body as shape. Returns the answer, a copy in which a null
- * field is left out and a null list entry has its zero value, or the reason
- * it cannot be read. The body itself must be an object.
+ * Read a parsed 200 body as shape. Returns the answer, a copy in which null
+ * and missing values are read as the comment above says, or the reason it
+ * cannot be read. The body itself must be an object.
  */
 export function readAnswer<T>(shape: AnswerShape, body: unknown): { answer: T } | { problem: string } {
   try {

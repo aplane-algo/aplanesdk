@@ -29,6 +29,7 @@ import {
 import { describeSignedGroup, submitAndTrack, type SendResult } from "../src/send.js";
 import { SignerError, isLostAnswer, markLostAnswer } from "../src/errors.js";
 import { bytesToBase64, hexToBytes } from "../src/encoding.js";
+import { readAnswer, type AnswerShape } from "../src/answers.js";
 import { fakeAccount, fakeAddress, fakePayment, signedHex } from "./fakeSigner.js";
 import {
   FakeAlgod,
@@ -704,7 +705,11 @@ describe("sendPrepared", () => {
  * connection with no answer, "<path> truncate" answers 200 with a body cut
  * short.
  */
-function cosignedFixture(fault: string, cosignerFault = "") {
+function cosignedFixture(
+  fault: string,
+  cosignerFault = "",
+  edit: { user?: (path: string, body: any) => void; cosigner?: (body: any) => void } = {},
+) {
   const bounded = fakeAddress(21);
   const key: WireKey = {
     address: bounded,
@@ -722,6 +727,11 @@ function cosignedFixture(fault: string, cosignerFault = "") {
   };
   const userPaths: string[] = [];
   const user = (path: string, body: any): FakeReply => {
+    const reply = answerUser(path, body);
+    if (edit.user && typeof reply === "object" && "body" in reply) edit.user(path, reply.body);
+    return reply;
+  };
+  const answerUser = (path: string, body: any): FakeReply => {
     userPaths.push(path);
     if (fault === `${path} drop`) return "drop";
     if (fault === `${path} truncate`) return { raw: '{"request_id": "x", "signed_gr' };
@@ -773,17 +783,17 @@ function cosignedFixture(fault: string, cosignerFault = "") {
     if (cosignerFault.startsWith("body ")) return { raw: cosignerFault.slice("body ".length) };
     assert.equal(path, "/sign/component");
     assert.equal(body.targets[0].component_key, "COSIGNER_COMPONENT");
-    return {
-      body: {
-        request_id: body.request_id,
-        components: [{
-          kind: "cosigner",
-          target_index: 0,
-          signature: "cosigner-sig",
-          signature_scheme: KEY_TYPE_WITNESS_FALCON1024,
-        }],
-      },
+    const answer = {
+      request_id: body.request_id,
+      components: [{
+        kind: "cosigner",
+        target_index: 0,
+        signature: "cosigner-sig",
+        signature_scheme: KEY_TYPE_WITNESS_FALCON1024,
+      }],
     };
+    edit.cosigner?.(answer);
+    return { body: answer };
   };
   restore = installSigners({ [SIGNER]: user, [COSIGNER]: cosigner });
   const node = new FakeAlgod();
@@ -916,6 +926,25 @@ describe("sendPrepared with a cosigned account", () => {
     }
   });
 
+  // Null means zero at every depth, as the Go SDK reads it: a null target
+  // index in a component is target 0.
+  for (const side of ["user", "cosigner"] as const) {
+    it(`reads a null target index from the ${side} signer's component as 0`, async () => {
+      const nullIndex = (body: any) => {
+        body.components[0].target_index = null;
+      };
+      const { userClient, cosignerClient, algod, node, txn } = cosignedFixture("", "", side === "user"
+        ? { user: (path, body) => path === "/sign/component" && nullIndex(body) }
+        : { cosigner: nullIndex });
+      const result = await userClient.sendPrepared(algod, preparedFor(txn), {
+        cosignerClient,
+        cosignerComponentKey: "COSIGNER_COMPONENT",
+      });
+      assert.equal(result.outcome, "confirmed");
+      assert.equal(node.submitted.length, 1);
+    });
+  }
+
   it("an aborted signal asks the signer nothing", async () => {
     const { userClient, cosignerClient, algod, node, txn, cosignerCalls, userPaths } = cosignedFixture("");
     const controller = new AbortController();
@@ -1036,6 +1065,60 @@ describe("an account that left rotation", () => {
         assert.equal(node.submitted.length, 0);
       });
     }
+  });
+});
+
+describe("reading an answer", () => {
+  const component: AnswerShape = {
+    fields: { target_index: "int", kind: "string", path: "string", runtime_args: { map: "string" } },
+  };
+  const shape: AnswerShape = {
+    fields: {
+      request_id: "string",
+      count: "uint",
+      done: "bool",
+      stage: { optional: "uint" },
+      components: { list: component },
+      report: { fields: { count: "int", reason: "string", stage: { optional: "uint" } } },
+    },
+  };
+
+  it("reads a null or missing scalar as its zero value at every depth", () => {
+    const read = readAnswer<any>(shape, {
+      request_id: null,
+      components: [{ target_index: null, kind: "cosigner" }, null],
+      report: { count: null },
+    });
+    assert.ok("answer" in read, JSON.stringify(read));
+    assert.deepEqual(read.answer, {
+      request_id: "",
+      count: 0,
+      done: false,
+      components: [
+        { target_index: 0, kind: "cosigner", path: "" },
+        { target_index: 0, kind: "", path: "" },
+      ],
+      report: { count: 0, reason: "" },
+    });
+  });
+
+  it("leaves out an optional field, a list, a map and an object that are null or missing", () => {
+    const read = readAnswer<any>(shape, { stage: null, components: null, report: { stage: null } });
+    assert.ok("answer" in read, JSON.stringify(read));
+    assert.equal("stage" in read.answer, false);
+    assert.equal("components" in read.answer, false);
+    assert.equal("stage" in read.answer.report, false);
+    const empty = readAnswer<any>(shape, {});
+    assert.ok("answer" in empty, JSON.stringify(empty));
+    assert.equal("report" in empty.answer, false);
+  });
+
+  it("keeps an optional field's zero when it is sent", () => {
+    const read = readAnswer<any>(shape, { stage: 0, report: { stage: 0 } });
+    assert.ok("answer" in read, JSON.stringify(read));
+    assert.equal(read.answer.stage, 0);
+    assert.equal(read.answer.report.stage, 0);
+    assert.deepEqual(readAnswer(shape, { stage: "0" }), { problem: "stage is not an unsigned integer the SDK can read exactly" });
   });
 });
 
