@@ -127,7 +127,7 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 	// it does, and the listed rekey must work with no cosigner at all, so its
 	// cosigner is found only once its base component says it needs one.
 	resolved := make(map[int]resolvedCosigner, len(targets))
-	for _, target := range targets {
+	for _, target := range inResolveOrder(targets) {
 		if target.MayTakeListedPath {
 			continue
 		}

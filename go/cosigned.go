@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/algorand/go-algorand-sdk/v2/types"
 )
@@ -262,7 +263,7 @@ func signCosignedDummies(firstOriginal types.Transaction, groupID types.Digest, 
 func requestCosignerComponentSignatures(ctx context.Context, opts cosignerRequestOptions, targets []cosignedSignTarget, result *CosignedSignResult) (map[int]cosignedComponentSignature, error) {
 	groups := make(map[cosignerSignGroupKey][]int)
 	schemes := make(map[int]string, len(targets))
-	for _, target := range targets {
+	for _, target := range inResolveOrder(targets) {
 		schemes[target.TargetIndex] = target.CosignerComponentKeyType
 		cosigner, ok := opts.Resolved[target.TargetIndex]
 		if !ok {
@@ -378,6 +379,25 @@ type cosignerResolveError struct{ err error }
 
 func (e *cosignerResolveError) Error() string { return e.err.Error() }
 func (e *cosignerResolveError) Unwrap() error { return e.err }
+
+// inResolveOrder returns targets in the order their cosigners are resolved:
+// by component key type, then public key in lowercase hex, then position, so
+// the first cosigner found missing is the same in every SDK. The cosigners
+// are still asked to sign in the order of their first position.
+func inResolveOrder(targets []cosignedSignTarget) []cosignedSignTarget {
+	ordered := append([]cosignedSignTarget(nil), targets...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		a, b := ordered[i], ordered[j]
+		if a.CosignerComponentKeyType != b.CosignerComponentKeyType {
+			return a.CosignerComponentKeyType < b.CosignerComponentKeyType
+		}
+		if aKey, bKey := strings.ToLower(a.CosignerPublicKeyHex), strings.ToLower(b.CosignerPublicKeyHex); aKey != bKey {
+			return aKey < bKey
+		}
+		return a.TargetIndex < b.TargetIndex
+	})
+	return ordered
+}
 
 // resolveCosigner asks the resolver for a target's cosigner.
 func resolveCosigner(ctx context.Context, resolver CosignedCosignerResolver, target cosignedSignTarget) (resolvedCosigner, error) {

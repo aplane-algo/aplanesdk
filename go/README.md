@@ -709,7 +709,10 @@ and a resolver's failure is never an unknown outcome. A rekey of an account
 with a rekey-to list may take the listed path, which needs no cosigner: its
 cosigner is resolved only if the signer's base component names a path that
 needs one, so a listed rekey works with no cosigner configured and with the
-cosigner down.
+cosigner down. Both at the start and after the base component, cosigners are
+resolved in order of key type, then public key in lowercase hex, then
+position, so of several missing the first in that order is the one reported;
+they are asked to sign in the order of their first position.
 
 ## Error Handling
 
