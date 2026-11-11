@@ -291,6 +291,32 @@ class TestSendPreparedSignFailures:
         assert [entry["auth_address"] for entry in unknown.requests] == [txn.sender]
         assert signer.count("/sign") == 1 and node.submissions() == []
 
+    @pytest.mark.parametrize(
+        "cancel_answer",
+        [truncated(b"not json"), truncated(b"null"), reply(200, {"success": "yes"}), DROP],
+    )
+    def test_a_failed_cancel_neither_fails_nor_masks_the_send(self, fakes, cancel_answer):
+        # The cancel a lost answer sends is best effort: however it fails, the
+        # send reports the lost answer.
+        txn = fake_signer.payment(41, 42)
+
+        class CancelFails(SendSigner):
+            def app(self, method, path, body):
+                if path == "/sign/cancel":
+                    with self.lock:
+                        self.paths.append(path)
+                    return cancel_answer
+                return super().app(method, path, body)
+
+        signer, node, client = make(
+            fakes, CancelFails([ordinary_key(txn)], sign=lambda _: DROP)
+        )
+        with pytest.raises(SignOutcomeUnknownError) as excinfo:
+            client.send_prepared(node.client, prepared_for(txn))
+
+        assert "Failed to connect" in str(excinfo.value)
+        assert signer.count("/sign/cancel") == 1 and node.submissions() == []
+
     def test_an_unreadable_answer_is_an_unknown_outcome(self, fakes):
         txn = fake_signer.payment(41, 42)
         signer, node, client = make(

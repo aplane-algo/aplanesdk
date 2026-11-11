@@ -363,7 +363,7 @@ def test_lsig_resource_numbers_are_not_coerced():
         ],
     }
     with patch.object(client.session, "get", return_value=mock_response(200, keys)):
-        with pytest.raises(SignerError, match="program_bytes must be an integer"):
+        with pytest.raises(SignerError, match="program_bytes is not an unsigned 64-bit integer"):
             client.list_keys(refresh=True)
 
 

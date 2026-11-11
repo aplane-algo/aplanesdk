@@ -465,8 +465,8 @@ def test_a_prepare_answer_field_left_out_takes_its_zero_value(fakes):
     "field,value", [("group_id_changed", 0), ("fees_modified", 0), ("reason", 5)]
 )
 def test_a_plan_report_is_typed_as_go_decodes_it(field, value):
-    # The /plan check shares the mutation report check, so it reads the same
-    # fields the same way.
+    # The /plan answer is read by its declared shape, the mutation report's
+    # fields typed as Go decodes them.
     from unittest.mock import patch
 
     client = signer_client("http://127.0.0.1:9")
@@ -476,7 +476,9 @@ def test_a_plan_report_is_typed_as_go_decodes_it(field, value):
         body.setdefault("mutations", {"original_count": 1, "final_count": 1})[field] = value
 
     with patch.object(client.session, "post", side_effect=fake_signer.signer_post(tamper=tamper)):
-        with pytest.raises(SignerError, match="verify signer plan"):
+        with pytest.raises(
+            SignerError, match=f"failed to decode plan response: answer field mutations field {field}"
+        ):
             client.plan_group([txn])
 
 

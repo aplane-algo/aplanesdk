@@ -314,7 +314,7 @@ class TestGetStatus:
             "key_count": 37,
             "keyset_revision": 4,
             "approval_wait_seconds": 60,
-            "warnings": ["authenticated prune is required", 7],
+            "warnings": ["authenticated prune is required"],
         })
 
         with patch.object(client.session, "get", return_value=resp) as mock_get:
@@ -763,6 +763,127 @@ class TestDeleteKey:
         with patch.object(client.session, "delete", return_value=mock_response(200, {})) as mock_delete:
             client.delete_key("ADDR")
         assert mock_delete.call_args.kwargs["timeout"] == 10
+
+    def test_reads_the_answer_the_signer_sends(self):
+        # The signer answers {"success": true}; an error in it is a refusal.
+        client = make_client()
+        with patch.object(client.session, "delete", return_value=raw_response(200, b'{"success":true}\n')):
+            client.delete_key("ADDR")
+        refused = raw_response(200, b'{"success":false,"error":"key is in use"}')
+        with patch.object(client.session, "delete", return_value=refused):
+            with pytest.raises(SignerError, match="key is in use"):
+                client.delete_key("ADDR")
+
+    def test_an_empty_answer_is_unreadable(self):
+        # The signer never answers with an empty body.
+        client = make_client()
+        with patch.object(client.session, "delete", return_value=raw_response(200, b"")):
+            with pytest.raises(SignerError, match="failed to decode key deletion response"):
+                client.delete_key("ADDR")
+
+
+def raw_response(status_code, body: bytes):
+    """A real requests.Response carrying exactly these body bytes."""
+    import requests
+
+    resp = requests.Response()
+    resp.status_code = status_code
+    resp._content = body
+    resp.encoding = "utf-8"
+    return resp
+
+
+# Each answer that releases no signature, and the call that reads it.
+_UNSIGNED_ANSWER_CALLS = {
+    "status": ("get", lambda client: client.get_status()),
+    "keys": ("get", lambda client: client.list_keys(refresh=True)),
+    "key types": ("get", lambda client: client.list_key_types()),
+    "plan": ("post", lambda client: client.plan_group([fake_signer.payment()])),
+    "key generation": ("post", lambda client: client.generate_key("ed25519")),
+    "sign cancel": ("post", lambda client: client.cancel_sign_request("sdk-test")),
+    "key deletion": ("delete", lambda client: client.delete_key("ADDR")),
+}
+
+# For each, an answer with one field of the wrong type.
+_WRONG_TYPED_ANSWERS = {
+    "status": b'{"state":"unlocked","keyset_revision":"4"}',
+    "keys": b'{"count":1,"keys":[{"address":"ADDR1","key_type":"ed25519","is_spending_account":"no"}]}',
+    "key types": b'{"key_types":[{"key_type":"ed25519","creation_params":[{"name":"n","min":-1}]}]}',
+    "plan": b'{"transactions":"5458aa"}',
+    "key generation": b'{"address":"NEWADDR","key_type":"ed25519","parameters":{"a":1}}',
+    "sign cancel": b'{"success":"true","state":"canceled"}',
+    "key deletion": b'{"success":true,"error":1}',
+}
+
+
+class TestAnswersReadByShape:
+    """Every 200 answer is read whole against the shape the Go SDK declares
+    for it. An answer that cannot be read, at a request that releases no
+    signature, is a plain SignerError, never a raw Python exception."""
+
+    @pytest.mark.parametrize("what", list(_UNSIGNED_ANSWER_CALLS))
+    @pytest.mark.parametrize(
+        "body",
+        [b"", b"null", b"[]", b"7", b'"text"', b"{", b'{"a":1} {}', b'{"a":NaN}', b"not json"],
+    )
+    def test_an_answer_that_is_not_one_object_is_a_plain_error(self, what, body):
+        method, call = _UNSIGNED_ANSWER_CALLS[what]
+        client = make_client()
+        with patch.object(client.session, method, return_value=raw_response(200, body)):
+            with pytest.raises(SignerError) as excinfo:
+                call(client)
+        assert type(excinfo.value) is SignerError
+        assert str(excinfo.value).startswith(f"failed to decode {what} response")
+
+    @pytest.mark.parametrize("what", list(_UNSIGNED_ANSWER_CALLS))
+    def test_a_field_of_the_wrong_type_is_a_plain_error(self, what):
+        method, call = _UNSIGNED_ANSWER_CALLS[what]
+        client = make_client()
+        answer = raw_response(200, _WRONG_TYPED_ANSWERS[what])
+        with patch.object(client.session, method, return_value=answer):
+            with pytest.raises(SignerError) as excinfo:
+                call(client)
+        assert type(excinfo.value) is SignerError
+        assert str(excinfo.value).startswith(f"failed to decode {what} response: answer field")
+
+    def test_a_failed_key_list_read_keeps_the_cache(self):
+        client = make_client()
+        good = mock_response(200, {"count": 1, "keys": [{"address": "ADDR1", "key_type": "ed25519"}]})
+        with patch.object(client.session, "get", side_effect=[good, raw_response(200, b"[]")]):
+            client.list_keys()
+            with pytest.raises(SignerError):
+                client.list_keys(refresh=True)
+        assert list(client._key_cache) == ["ADDR1"]
+
+    def test_null_fields_and_entries_read_as_zero(self):
+        client = make_client()
+        status = raw_response(200, json.dumps({
+            "state": "unlocked",
+            "key_count": None,
+            "warnings": [None, "w"],
+            "rotating": [None, {"account": "ACCT", "stage": None, "round": None}],
+        }).encode())
+        with patch.object(client.session, "get", return_value=status):
+            result = client.get_status()
+        assert result.key_count == 0 and result.warnings == ["", "w"]
+        assert result.rotating[0].account == "" and result.rotating[1].account == "ACCT"
+        assert result.rotating[1].stage is None and result.rotating[1].round == 0
+
+    @pytest.mark.parametrize(
+        "body",
+        [b"[]", b"null", b"{", b'{"keyset_revision":"x"}', b'{"warnings":7}', b'{"rotating":[7]}'],
+    )
+    def test_a_malformed_status_never_stops_an_approval_request(self, body):
+        # /status is read to learn the approval wait. Whatever it answers, the
+        # sign request is still posted, with the default wait.
+        client = make_client()
+        txn = fake_signer.payment()
+        with patch.object(client.session, "get", return_value=raw_response(200, body)), \
+             patch.object(client.session, "post", side_effect=fake_signer.signer_post()) as mock_post:
+            signed = client.sign_transaction(txn)
+
+        assert base64.b64decode(signed) == bytes.fromhex(fake_signer.signed_hex(txn))
+        assert mock_post.call_args.args[0] == "http://localhost:11270/sign"
 
 
 # ---------------------------------------------------------------------------

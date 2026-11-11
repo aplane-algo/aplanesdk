@@ -726,6 +726,218 @@ _ASSEMBLY_RESPONSE_SHAPE: Dict[str, Any] = {
     "error": "str",
 }
 
+# The wire types of the answers that release no signature, as the Go SDK's
+# structs declare them (go/types.go). Each answer is read whole against its
+# shape: a field of another type makes it unreadable, a plain SignerError.
+_PROTOCOL_VERSION_SHAPE: Dict[str, Any] = {"major": "int", "minor": "int"}
+_ROTATING_RECOVERY_STATUS_SHAPE: Dict[str, Any] = {
+    "active": "bool",
+    "kind": "str",
+    "grant_id": "uint64",
+    "stages_charged": "uint64",
+    "max_stages": "uint64",
+    "active_seconds": "int",
+    "hint": ("ptr", "uint64"),
+    "found_stage": ("ptr", "uint64"),
+    "stopped": "str",
+    "stopped_kind": "str",
+    "stopped_grant_id": "uint64",
+    "stopped_stage": ("ptr", "uint64"),
+    "allowance_spent": "uint64",
+    "allowance_max": "uint64",
+    "suppressed_authorizer": "str",
+}
+_ROTATING_ACCOUNT_STATUS_SHAPE: Dict[str, Any] = {
+    "account": "str",
+    "authorizer": "str",
+    "round": "uint64",
+    "classification": "str",
+    "stage": ("ptr", "uint64"),
+    "preparation": "str",
+    "cached_entries": "uint64",
+    "recovery": _ROTATING_RECOVERY_STATUS_SHAPE,
+}
+_STATUS_RESPONSE_SHAPE: Dict[str, Any] = {
+    "node_role": "str",
+    "protocol_version": _PROTOCOL_VERSION_SHAPE,
+    "build_version": "str",
+    "state": "str",
+    "signer_locked": "bool",
+    "ready_for_signing": "bool",
+    "key_count": "int",
+    "keyset_revision": "uint64",
+    "approval_wait_seconds": "int",
+    "warnings": "strs",
+    "notes": "strs",
+    "rotating": ("list", _ROTATING_ACCOUNT_STATUS_SHAPE),
+}
+_RUNTIME_ARG_SHAPE: Dict[str, Any] = {
+    "name": "str",
+    "type": "str",
+    "label": "str",
+    "description": "str",
+    "required": "bool",
+    "byte_length": "int",
+    "max_size": "int",
+}
+_LSIG_RESOURCE_USAGE_SHAPE: Dict[str, Any] = {
+    "program_bytes": "uint64",
+    "argument_bytes": "uint64",
+    "max_opcode_cost": "uint64",
+}
+_LSIG_RESOURCE_PROFILE_SHAPE: Dict[str, Any] = {
+    "default": _LSIG_RESOURCE_USAGE_SHAPE,
+    "spend": _LSIG_RESOURCE_USAGE_SHAPE,
+    "spending_rekey": _LSIG_RESOURCE_USAGE_SHAPE,
+    "listed_rekey": _LSIG_RESOURCE_USAGE_SHAPE,
+}
+_BOUNDED_AUTHORIZATION_SHAPE: Dict[str, Any] = {
+    "contract": "str",
+    "base_signature_arg_layout": {"count": "int", "max_sizes": "ints"},
+    "spend_effects": "strs",
+    "max_fee": ("ptr", "uint64"),
+    "rekey": "str",
+    "rekey_list": {"contract": "str", "depth": "int", "root": "str"},
+    "cosigner": {
+        "contract": "str",
+        "component_key_type": "str",
+        "public_key_hex": "str",
+        "component_key_id": "str",
+        "signature_max_size": "int",
+        "required_on": "strs",
+    },
+    "runtime_args": ("list", _RUNTIME_ARG_SHAPE),
+    "derived_args": (
+        "list",
+        {"name": "str", "kind": "str", "parameter": "str", "max_size": "int"},
+    ),
+    "argument_layout": (
+        "list",
+        {
+            "index": "int",
+            "name": "str",
+            "source": "str",
+            "max_size": "int",
+            "paths": {"spend": "str", "spending_rekey": "str", "listed_rekey": "str"},
+        },
+    ),
+    "layer3_policy": "str",
+}
+_KEY_INFO_SHAPE: Dict[str, Any] = {
+    "address": "str",
+    "public_key_hex": "str",
+    "key_type": "str",
+    "authorization_kind": "str",
+    "signing_flow": "str",
+    "cosigner_component_key_type": "str",
+    "logic_sig_resources": _LSIG_RESOURCE_PROFILE_SHAPE,
+    "is_generic_lsig": "bool",
+    "is_witness_key": "bool",
+    "bounded_authorization": _BOUNDED_AUTHORIZATION_SHAPE,
+    "is_spending_account": ("ptr", "bool"),
+    "signing_args": ("list", _RUNTIME_ARG_SHAPE),
+    "parameters": "str_map",
+    "template_provenance_status": "str",
+    "template_provenance_note": "str",
+}
+_KEYS_RESPONSE_SHAPE: Dict[str, Any] = {
+    "count": "int",
+    "keys": ("list", _KEY_INFO_SHAPE),
+}
+_CREATION_PARAM_SHAPE: Dict[str, Any] = {
+    "name": "str",
+    "label": "str",
+    "description": "str",
+    "type": "str",
+    "required": "bool",
+    "max_length": "int",
+    "input_modes": (
+        "list",
+        {
+            "name": "str",
+            "label": "str",
+            "transform": "str",
+            "byte_length": "int",
+            "input_type": "str",
+        },
+    ),
+    "min_items": "int",
+    "max_items": "int",
+    "options": "strs",
+    "min": ("ptr", "uint64"),
+    "max": ("ptr", "uint64"),
+    "example": "str",
+    "placeholder": "str",
+    "default": "str",
+}
+_KEY_TYPES_RESPONSE_SHAPE: Dict[str, Any] = {
+    "key_types": (
+        "list",
+        {
+            "key_type": "str",
+            "family": "str",
+            "display_name": "str",
+            "description": "str",
+            "authorization_kind": "str",
+            "requires_logicsig": "bool",
+            "mnemonic_word_count": "int",
+            "mnemonic_import": "bool",
+            "mnemonic_scheme": "str",
+            "signing_flow": "str",
+            "cosigner_component_key_type": "str",
+            "per_key_contract": "bool",
+            "boundary_schema": "str",
+            "bounded_authorization": _BOUNDED_AUTHORIZATION_SHAPE,
+            "creation_params": ("list", _CREATION_PARAM_SHAPE),
+            "runtime_args": ("list", _RUNTIME_ARG_SHAPE),
+        },
+    ),
+}
+_PLAN_RESPONSE_SHAPE: Dict[str, Any] = {
+    "transactions": "strs",
+    "mutations": _MUTATION_REPORT_SHAPE,
+    "error": "str",
+}
+_GENERATE_RESULT_SHAPE: Dict[str, Any] = {
+    "address": "str",
+    "public_key_hex": "str",
+    "key_type": "str",
+    "is_witness_key": "bool",
+    "is_spending_account": ("ptr", "bool"),
+    "parameters": "str_map",
+    "error": "str",
+}
+_CANCEL_SIGN_RESPONSE_SHAPE: Dict[str, Any] = {
+    "success": "bool",
+    "state": "str",
+    "error": "str",
+}
+# What DELETE /admin/keys answers with (AdminDeleteResponse in aplane's
+# pkg/signerapi); the signer always sends the object, never an empty body.
+_DELETE_KEY_RESPONSE_SHAPE: Dict[str, Any] = {
+    "success": "bool",
+    "error": "str",
+}
+
+
+def _read_answer(resp: requests.Response, shape: Dict[str, Any], what: str) -> Dict[str, Any]:
+    """Read the 200 answer of a request that releases no signature, by the
+    rule every answer is read by (see _approval_answer), as its shape's
+    fields at their zero values when left out. An answer that cannot be read
+    is a plain SignerError: nothing was released, so nothing is unknown."""
+    prefix = f"failed to decode {what} response"
+    try:
+        data = _read_json(resp)
+    except (ValueError, RecursionError) as e:
+        raise SignerError(f"{prefix}: {(resp.text or '')[:200]}") from e
+    if not isinstance(data, dict):
+        what_it_is = "null" if data is None else "not a JSON object"
+        raise SignerError(f"{prefix}: the answer is {what_it_is}")
+    try:
+        return _typed_answer(data, shape)
+    except _WireShapeError as e:
+        raise SignerError(f"{prefix}: {e}") from e
+
 
 def _wire_zero(kind: Any) -> Any:
     """The zero value of a wire type: None for an object, which Go holds by
@@ -2880,6 +3092,26 @@ def _prepared_sign_request(item: "PreparedTransaction", index: int) -> Dict[str,
         raise ValueError(f"prepared transaction {index}: {e}") from e
 
 
+def _parse_runtime_arg(item: Dict[str, Any]) -> RuntimeArg:
+    return RuntimeArg(
+        name=item.get("name", ""),
+        arg_type=item.get("type", "bytes"),
+        description=item.get("description", ""),
+        label=item.get("label", ""),
+        required=item.get("required", False),
+        byte_length=item.get("byte_length", 0),
+        max_size=item.get("max_size", 0),
+    )
+
+
+def _parse_runtime_args(items: Any) -> Optional[List[RuntimeArg]]:
+    """Runtime or signing arguments as an answer read by its shape lists
+    them; None when it lists none."""
+    if not items:
+        return None
+    return [_parse_runtime_arg(item) for item in items]
+
+
 def _parse_bounded_authorization(data: Any) -> Optional[BoundedAuthorizationInfo]:
     if not isinstance(data, dict):
         return None
@@ -2904,18 +3136,7 @@ def _parse_bounded_authorization(data: Any) -> Optional[BoundedAuthorizationInfo
         spend_effects=list(data.get("spend_effects") or []),
         max_fee=max_fee,
         rekey=data.get("rekey", ""),
-        runtime_args=[
-            RuntimeArg(
-                name=item.get("name", ""),
-                arg_type=item.get("type", "bytes"),
-                description=item.get("description", ""),
-                label=item.get("label", ""),
-                required=item.get("required", False),
-                byte_length=item.get("byte_length", 0),
-                max_size=item.get("max_size", 0),
-            )
-            for item in runtime_args
-        ],
+        runtime_args=[_parse_runtime_arg(item) for item in runtime_args],
         derived_args=[
             BoundedDerivedArgInfo(
                 name=item.get("name", ""),
@@ -4419,39 +4640,25 @@ class SignerClient:
                 f"Failed to get signer status: HTTP {resp.status_code}",
             )
 
-        data = resp.json()
-        raw_warnings = data.get("warnings")
-        raw_notes = data.get("notes")
-        raw_rotating = data.get("rotating")
+        data = _read_answer(resp, _STATUS_RESPONSE_SHAPE, "status")
         status = StatusResponse(
-            node_role=data.get("node_role", ""),
-            state=data.get("state", ""),
-            signer_locked=data.get("signer_locked", False),
-            ready_for_signing=data.get("ready_for_signing", False),
-            key_count=data.get("key_count", 0),
-            keyset_revision=data.get("keyset_revision", 0),
-            protocol_version=data.get("protocol_version"),
-            build_version=data.get("build_version", ""),
-            approval_wait_seconds=data.get("approval_wait_seconds") or 0,
-            warnings=(
-                [warning for warning in raw_warnings if isinstance(warning, str)]
-                if isinstance(raw_warnings, list)
-                else []
-            ),
-            notes=(
-                [note for note in raw_notes if isinstance(note, str)]
-                if isinstance(raw_notes, list)
-                else []
-            ),
-            rotating=(
-                [
-                    entry
-                    for entry in raw_rotating
-                    if isinstance(entry, dict) and isinstance(entry.get("account"), str)
-                ]
-                if isinstance(raw_rotating, list)
-                else []
-            ),
+            node_role=data["node_role"],
+            state=data["state"],
+            signer_locked=data["signer_locked"],
+            ready_for_signing=data["ready_for_signing"],
+            key_count=data["key_count"],
+            keyset_revision=data["keyset_revision"],
+            protocol_version=data["protocol_version"],
+            build_version=data["build_version"],
+            approval_wait_seconds=data["approval_wait_seconds"],
+            warnings=list(data["warnings"]),
+            notes=list(data["notes"]),
+            rotating=[
+                RotatingAccountStatus(
+                    **dict({"account": ""}, **_declared_fields(RotatingAccountStatus, entry))
+                )
+                for entry in data["rotating"]
+            ],
         )
         self._cache_approval_wait(status.approval_wait_seconds)
         return status
@@ -4519,32 +4726,13 @@ class SignerClient:
         if resp.status_code != 200:
             raise self._signer_http_error(resp, f"Failed to list keys: HTTP {resp.status_code}")
 
-        data = resp.json()
-        self._key_cache.clear()
-        self._key_cache_revision = None
-        keys = []
-        for k in data.get("keys", []):
-            # Parse signing_args if present
-            signing_args = None
-            if k.get("signing_args"):
-                signing_args = [
-                    RuntimeArg(
-                        name=arg["name"],
-                        arg_type=arg.get("type", "bytes"),
-                        description=arg.get("description", ""),
-                        label=arg.get("label", ""),
-                        required=arg.get("required", False),
-                        byte_length=arg.get("byte_length", 0),
-                        max_size=arg.get("max_size", 0),
-                    )
-                    for arg in k["signing_args"]
-                ]
-
-            key_info = KeyInfo(
+        data = _read_answer(resp, _KEYS_RESPONSE_SHAPE, "keys")
+        records = [
+            KeyInfo(
                 # Held in canonical form, once, so every lookup compares
                 # canonical spellings whatever spelling the signer used.
-                address=_address_key(k["address"]),
-                key_type=k["key_type"],
+                address=_address_key(k.get("address", "")),
+                key_type=k.get("key_type", ""),
                 public_key_hex=k.get("public_key_hex", ""),
                 authorization_kind=k.get("authorization_kind", ""),
                 signing_flow=k.get("signing_flow", ""),
@@ -4554,12 +4742,17 @@ class SignerClient:
                 is_witness_key=k.get("is_witness_key", False),
                 bounded_authorization=_parse_bounded_authorization(k.get("bounded_authorization")),
                 is_spending_account=k.get("is_spending_account"),
-                signing_args=signing_args,
+                signing_args=_parse_runtime_args(k.get("signing_args")),
                 parameters=k.get("parameters"),
                 template_provenance_status=k.get("template_provenance_status", ""),
                 template_provenance_note=k.get("template_provenance_note", ""),
             )
-            keys.append(key_info)
+            for k in data["keys"]
+        ]
+
+        self._key_cache.clear()
+        self._key_cache_revision = None
+        for key_info in records:
             # One record per address. Should the signer list an address
             # twice, the first spendable row is the one kept, the row
             # _find_spendable_key picks from the list itself, so a lookup
@@ -4571,7 +4764,7 @@ class SignerClient:
                 continue
             self._key_cache[key_info.address] = key_info
 
-        return keys
+        return records
 
     def list_keys_if_keyset_changed(self) -> List[KeyInfo]:
         """
@@ -5509,14 +5702,14 @@ class SignerClient:
                 f"Failed to list key types: HTTP {resp.status_code}",
             )
 
-        data = resp.json()
+        data = _read_answer(resp, _KEY_TYPES_RESPONSE_SHAPE, "key types")
         result = []
-        for kt in data.get("key_types", []):
+        for kt in data["key_types"]:
             creation_params = None
             if kt.get("creation_params"):
                 creation_params = [
                     CreationParam(
-                        name=p["name"],
+                        name=p.get("name", ""),
                         label=p.get("label", ""),
                         description=p.get("description", ""),
                         param_type=p.get("type", ""),
@@ -5524,13 +5717,13 @@ class SignerClient:
                         max_length=p.get("max_length", 0),
                         input_modes=[
                             InputModeInfo(
-                                name=mode["name"],
+                                name=mode.get("name", ""),
                                 label=mode.get("label", ""),
                                 transform=mode.get("transform", ""),
                                 byte_length=mode.get("byte_length", 0),
                                 input_type=mode.get("input_type", ""),
                             )
-                            for mode in p.get("input_modes", [])
+                            for mode in p.get("input_modes") or []
                         ]
                         or None,
                         min_items=p.get("min_items", 0),
@@ -5545,24 +5738,9 @@ class SignerClient:
                     for p in kt["creation_params"]
                 ]
 
-            runtime_args = None
-            if kt.get("runtime_args"):
-                runtime_args = [
-                    RuntimeArg(
-                        name=arg["name"],
-                        arg_type=arg.get("type", "bytes"),
-                        description=arg.get("description", ""),
-                        label=arg.get("label", ""),
-                        required=arg.get("required", False),
-                        byte_length=arg.get("byte_length", 0),
-                        max_size=arg.get("max_size", 0),
-                    )
-                    for arg in kt["runtime_args"]
-                ]
-
             result.append(
                 KeyTypeInfo(
-                    key_type=kt["key_type"],
+                    key_type=kt.get("key_type", ""),
                     family=kt.get("family", ""),
                     display_name=kt.get("display_name", ""),
                     description=kt.get("description", ""),
@@ -5579,7 +5757,7 @@ class SignerClient:
                         kt.get("bounded_authorization")
                     ),
                     creation_params=creation_params,
-                    runtime_args=runtime_args,
+                    runtime_args=_parse_runtime_args(kt.get("runtime_args")),
                 )
             )
 
@@ -5623,26 +5801,26 @@ class SignerClient:
         if resp.status_code != 200:
             raise self._signer_http_error(resp, f"Key generation failed: HTTP {resp.status_code}")
 
-        data = resp.json()
-        if data.get("error"):
-            raise SignerError(data["error"])
-
-        # Invalidate key cache so next list_keys fetches fresh
+        # A 200 may have changed the keyset, whatever its body says: the next
+        # list_keys fetches fresh.
         self._key_cache.clear()
         self._key_cache_revision = None
 
-        if not data.get("address"):
+        data = _read_answer(resp, _GENERATE_RESULT_SHAPE, "key generation")
+        if data["error"]:
+            raise SignerError(data["error"])
+        if not data["address"]:
             raise SignerError("Key generation response missing address")
-        if not data.get("key_type"):
+        if not data["key_type"]:
             raise SignerError("Key generation response missing key_type")
 
         return GenerateResult(
             address=data["address"],
             key_type=data["key_type"],
-            public_key_hex=data.get("public_key_hex", ""),
-            is_witness_key=data.get("is_witness_key", False),
-            is_spending_account=data.get("is_spending_account"),
-            parameters=data.get("parameters"),
+            public_key_hex=data["public_key_hex"],
+            is_witness_key=data["is_witness_key"],
+            is_spending_account=data["is_spending_account"],
+            parameters=data["parameters"] or None,
         )
 
     def delete_key(self, address: str) -> None:
@@ -5673,13 +5851,15 @@ class SignerClient:
         if resp.status_code != 200:
             raise self._signer_http_error(resp, f"Key deletion failed: HTTP {resp.status_code}")
 
-        data = self._safe_json(resp)
-        if data.get("error"):
-            raise SignerError(data["error"])
-
-        # Invalidate key cache
+        # A 200 may have changed the keyset, whatever its body says.
         self._key_cache.clear()
         self._key_cache_revision = None
+
+        # The signer answers {"success": true}; an empty or unreadable body
+        # is not an answer it sends.
+        data = _read_answer(resp, _DELETE_KEY_RESPONSE_SHAPE, "key deletion")
+        if data["error"]:
+            raise SignerError(data["error"])
 
     def _safe_json(self, resp: requests.Response) -> dict:
         """
@@ -5784,11 +5964,9 @@ class SignerClient:
         if resp.status_code != 200:
             raise self._signer_http_error(resp, f"Sign cancel failed: HTTP {resp.status_code}")
 
-        data = self._safe_json(resp)
+        data = _read_answer(resp, _CANCEL_SIGN_RESPONSE_SHAPE, "sign cancel")
         result = CancelSignResponse(
-            success=data.get("success", False),
-            state=data.get("state", ""),
-            error=data.get("error", ""),
+            success=data["success"], state=data["state"], error=data["error"]
         )
         if result.error:
             raise SignerError(result.error)
@@ -6378,22 +6556,16 @@ class SignerClient:
         if resp.status_code != 200:
             raise self._signer_http_error(resp, f"Plan failed: HTTP {resp.status_code}")
 
-        try:
-            data = resp.json()
-        except json.JSONDecodeError:
-            raise SignerError(f"Server returned invalid JSON: {resp.text[:200]}")
-
-        if data.get("error"):
+        data = _read_answer(resp, _PLAN_RESPONSE_SHAPE, "plan")
+        if data["error"]:
             raise SignerError(data["error"])
 
         try:
-            _validate_plan_response(
-                slots, data.get("transactions"), data.get("mutations"), max_fee_increase
-            )
+            _validate_plan_response(slots, data["transactions"], data["mutations"], max_fee_increase)
         except Exception as e:
             raise _verification_error("verify signer plan: ", e) from e
 
-        return data
+        return {"transactions": data["transactions"], "mutations": data["mutations"]}
 
     def simulate_prepared_group(
         self,
