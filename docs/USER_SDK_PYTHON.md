@@ -445,11 +445,14 @@ signed = client.sign_transaction(
 ```
 
 Without `auth_address` the sender signs for itself, and the args apply to the
-sender. `lsig_args_map` is keyed by auth address. A key that matches no
-position's auth address raises `ValueError`. A key whose only positions in the
-request are passthrough or foreign is accepted, and its args are not sent,
-because the request does not sign for that address; this lets one map serve
-the plan and the final signing of the same group. An entry with no args is
+sender. `lsig_args_map` is keyed by auth address. A key that is no position's
+authorizer raises `ValueError`. A position's authorizer is its auth address, not its
+sender when the account is rekeyed: for a passthrough position it is the
+signer its signed bytes name, and for a foreign position, where nothing names
+one, the sender. A key whose only positions in the request are passthrough or
+foreign is accepted, and its args are not sent, because the request does not
+sign for that address; this lets one map serve the plan and the final signing
+of the same group. An entry with no args is
 ignored.
 
 ### Sign A Group
@@ -617,7 +620,10 @@ Two limits to know:
 The SDK decodes request entries before sending them. Unsigned transaction
 bytes must be `TX`-prefixed canonical msgpack and passthrough entries must be
 canonical signed transactions, and the auth address of a position to sign
-must be a valid Algorand address, or the call raises `ValueError` before any request is made.
+must be a valid Algorand address, or the call fails before any request is made:
+`sign_requests()` and `plan_requests()` raise `SignerError` for malformed
+request entries, and the helpers that build entries from transactions raise
+`ValueError` for a bad argument.
 A passthrough transaction must round-trip through the SDK's Algorand
 library (`py-algorand-sdk`), so one that uses a field newer than that library is refused
 locally.

@@ -428,11 +428,14 @@ const signed = await client.signTransaction(txn, hashlockAddress, {
 ```
 
 Without `authAddress` the sender signs for itself, and the args apply to the
-sender. `lsigArgsMap` is keyed by auth address. A key that matches no
-position's auth address throws `SignerError`. A key whose only positions in the
-request are passthrough or foreign is accepted, and its args are not sent,
-because the request does not sign for that address; this lets one map serve
-the plan and the final signing of the same group. An entry with no args is
+sender. `lsigArgsMap` is keyed by auth address. A key that is no position's
+authorizer throws `SignerError`. A position's authorizer is its auth address, not its
+sender when the account is rekeyed: for a passthrough position it is the
+signer its signed bytes name, and for a foreign position, where nothing names
+one, the sender. A key whose only positions in the request are passthrough or
+foreign is accepted, and its args are not sent, because the request does not
+sign for that address; this lets one map serve the plan and the final signing
+of the same group. An entry with no args is
 ignored.
 
 ### Sign A Transaction Group
