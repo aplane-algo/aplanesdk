@@ -61,20 +61,20 @@
     "ssh2": "^1.15.0"
   },
   "peerDependencies": {
-    "algosdk": "^3.7.0"
+    "algosdk": "^3.9.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
-    "@types/node": "^20.0.0",
+    "@types/node": "^22.0.0",
     "@types/ssh2": "^1.15.0",
-    "algosdk": "^3.7.0",
+    "algosdk": "^3.9.0",
     "eslint": "^9.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.4.0",
     "typescript-eslint": "^8.65.0"
   },
   "engines": {
-    "node": ">=18.0.0",
+    "node": ">=22.0.0",
     "npm": ">=9.0.0"
   },
   "overrides": {
