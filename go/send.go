@@ -9,7 +9,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/algorand/go-algorand-sdk/v2/client/v2/algod"
 	"github.com/algorand/go-algorand-sdk/v2/client/v2/common"
@@ -89,9 +92,10 @@ var (
 	ErrUnsupportedGroup = errors.New("group not supported by unified sending")
 )
 
-// SignOutcomeUnknownError reports a sign request whose answer never arrived.
-// The signer may or may not have released a signature. Nothing was submitted
-// by this call. Do not build and sign a replacement transaction on the
+// SignOutcomeUnknownError reports a signing exchange that ended with no
+// usable answer: a /sign request, or a step of the cosigned sequence. The
+// signer may or may not have released a signature. Nothing was submitted by
+// this call. RequestID and Requests are set for the ordinary /sign flow. Do not build and sign a replacement transaction on the
 // strength of this error alone: check the request with the operator or the
 // signer's audit log first.
 type SignOutcomeUnknownError struct {
@@ -103,6 +107,9 @@ type SignOutcomeUnknownError struct {
 }
 
 func (e *SignOutcomeUnknownError) Error() string {
+	if e.RequestID == "" {
+		return fmt.Sprintf("signing ended with no answer, so a signature may have been released: %v", e.Err)
+	}
 	return fmt.Sprintf("sign request %s: no answer from the signer, so a signature may have been released: %v", e.RequestID, e.Err)
 }
 
@@ -131,12 +138,17 @@ const (
 	// SendStageConfirm: the node accepted the group, and it was not seen in a
 	// block within the wait.
 	SendStageConfirm = "confirm"
+	// SendStageUnsent: the group was signed and the call ended before it was
+	// sent to the node, because the caller's context had ended. The node does
+	// not have it. Submit SignedGroup to send it.
+	SendStageUnsent = "unsent"
 )
 
-// SubmissionUncertainError reports a signed group whose fate on the network
-// is not known. The group may still confirm. Look its IDs up, or submit the
-// same SignedGroup again while it is valid; never sign a replacement until
-// the outcome is known, because both could execute.
+// SubmissionUncertainError reports a signed group that this call did not see
+// confirmed or refused. Unless Stage is SendStageUnsent the group may still
+// confirm. Look its IDs up, or submit the same SignedGroup again while it is
+// valid; never sign a replacement until the outcome is known, because both
+// could execute.
 type SubmissionUncertainError struct {
 	Stage       string
 	SignedGroup []string
@@ -197,6 +209,11 @@ func (c *SignerClient) SendPrepared(ctx context.Context, algodClient *algod.Clie
 	if err != nil {
 		return nil, err
 	}
+	// Nothing has been asked of the signer yet, so an ended context is a
+	// plain stop, not an unknown outcome.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	result := &SendResult{Flow: flow, OriginalCount: len(group.Transactions)}
 	switch flow {
@@ -209,6 +226,12 @@ func (c *SignerClient) SendPrepared(ctx context.Context, algodClient *algod.Clie
 			PreparedGroup:        group,
 		})
 		if err != nil {
+			// The sequence makes several approval-bearing requests. One that
+			// ended with no answer may have released a signature, and the
+			// last of them releases the whole group.
+			if exchangeFailed(err) {
+				return nil, &SignOutcomeUnknownError{Err: err}
+			}
 			return nil, err
 		}
 		result.SignedGroup = signed.SignedGroup
@@ -231,6 +254,14 @@ func (c *SignerClient) SendPrepared(ctx context.Context, algodClient *algod.Clie
 		return nil, err
 	}
 	return result, nil
+}
+
+// exchangeFailed reports whether err is a request that ended without an
+// answer: a transport failure, or the caller's context ending. An answer the
+// signer gave, whatever its status, is not one.
+func exchangeFailed(err error) bool {
+	var transport *url.Error
+	return errors.As(err, &transport) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // classifySend picks the one signing flow for the whole group from the
@@ -371,19 +402,28 @@ func submitAndTrack(ctx context.Context, algodClient *algod.Client, raw [][]byte
 		blob = append(blob, entry...)
 	}
 	txID := result.TxIDs[0]
+	uncertain := func(stage string, err error) error {
+		return &SubmissionUncertainError{Stage: stage, SignedGroup: result.SignedGroup, TxIDs: result.TxIDs, Err: err}
+	}
+	if err := ctx.Err(); err != nil {
+		return uncertain(SendStageUnsent, err)
+	}
 	sentID, err := algodClient.SendRawTransaction(blob).Do(ctx)
-	if err != nil {
+	switch {
+	case err == nil:
+		if sentID != txID {
+			return uncertain(SendStageSubmit, fmt.Errorf("node reported transaction ID %s for a group whose first transaction is %s", sentID, txID))
+		}
+	case alreadyKnownToNode(err):
+		// The node has these exact bytes already, pending or committed: an
+		// earlier submission of the same group reached it. That is not a
+		// refusal, and the lookup below finds the outcome.
+	default:
 		var bad common.BadRequest
 		if errors.As(err, &bad) {
 			return &SubmissionRejectedError{SignedGroup: result.SignedGroup, TxIDs: result.TxIDs, Err: err}
 		}
-		return &SubmissionUncertainError{Stage: SendStageSubmit, SignedGroup: result.SignedGroup, TxIDs: result.TxIDs, Err: err}
-	}
-	if sentID != txID {
-		return &SubmissionUncertainError{
-			Stage: SendStageSubmit, SignedGroup: result.SignedGroup, TxIDs: result.TxIDs,
-			Err: fmt.Errorf("node reported transaction ID %s for a group whose first transaction is %s", sentID, txID),
-		}
+		return uncertain(SendStageSubmit, err)
 	}
 	result.Outcome = SendOutcomeSubmitted
 	if opts.NoWait {
@@ -394,15 +434,17 @@ func submitAndTrack(ctx context.Context, algodClient *algod.Client, raw [][]byte
 	if waitRounds == 0 {
 		waitRounds = defaultSendWaitRounds
 	}
-	uncertain := func(err error) error {
-		return &SubmissionUncertainError{Stage: SendStageConfirm, SignedGroup: result.SignedGroup, TxIDs: result.TxIDs, Err: err}
-	}
 	status, err := algodClient.Status().Do(ctx)
 	if err != nil {
-		return uncertain(fmt.Errorf("read current round: %w", err))
+		return uncertain(SendStageConfirm, fmt.Errorf("read current round: %w", err))
 	}
-	start := status.LastRound
-	for round := start + 1; ; round++ {
+	// The group is looked up now and after each of the next waitRounds rounds.
+	last := status.LastRound
+	deadline := uint64(math.MaxUint64)
+	if waitRounds < math.MaxUint64-last {
+		deadline = last + waitRounds
+	}
+	for {
 		// A lookup error is not an answer: behind a load balancer another
 		// node may not have the transaction yet.
 		info, _, err := algodClient.PendingTransactionInformation(txID).Do(ctx)
@@ -419,11 +461,30 @@ func submitAndTrack(ctx context.Context, algodClient *algod.Client, raw [][]byte
 				return nil
 			}
 		}
-		if round > start+waitRounds {
-			return uncertain(fmt.Errorf("not confirmed after %d rounds", waitRounds))
+		if last >= deadline {
+			return uncertain(SendStageConfirm, fmt.Errorf("not confirmed after %d rounds", waitRounds))
 		}
-		if _, err := algodClient.StatusAfterBlock(round).Do(ctx); err != nil {
-			return uncertain(fmt.Errorf("wait for round %d: %w", round, err))
+		// StatusAfterBlock(n) returns once round n+1 exists.
+		next, err := algodClient.StatusAfterBlock(last).Do(ctx)
+		if err != nil {
+			return uncertain(SendStageConfirm, fmt.Errorf("wait for round %d: %w", last+1, err))
+		}
+		if next.LastRound > last {
+			last = next.LastRound
+		} else {
+			last++
 		}
 	}
+}
+
+// alreadyKnownToNode reports whether a submission was refused only because
+// the node already has the transaction, in its pool or in a block. algod
+// answers that with a 400 like any refusal and no code, so the text is all
+// there is to go on.
+func alreadyKnownToNode(err error) bool {
+	var bad common.BadRequest
+	if !errors.As(err, &bad) {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "already in ledger")
 }

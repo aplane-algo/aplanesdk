@@ -14,21 +14,26 @@ import (
 	"sync"
 	"testing"
 
+	"math"
+
 	"github.com/algorand/go-algorand-sdk/v2/client/v2/algod"
 	"github.com/algorand/go-algorand-sdk/v2/client/v2/common/models"
 	"github.com/algorand/go-algorand-sdk/v2/crypto"
 	"github.com/algorand/go-algorand-sdk/v2/encoding/msgpack"
+	"github.com/algorand/go-algorand-sdk/v2/transaction"
 	"github.com/algorand/go-algorand-sdk/v2/types"
 )
 
 // sendSigner is a fake signer for send tests. sign answers /sign; nil signs
 // every position as its auth address.
 type sendSigner struct {
-	t     *testing.T
-	keys  []KeyInfo
-	sign  http.HandlerFunc
-	mu    sync.Mutex
-	paths []string
+	t    *testing.T
+	keys []KeyInfo
+	sign http.HandlerFunc
+	// behaviour is what the default /sign answer does to the group.
+	behaviour fakeSigner
+	mu        sync.Mutex
+	paths     []string
 }
 
 func (s *sendSigner) count(path string) int {
@@ -62,7 +67,7 @@ func (s *sendSigner) handle(w http.ResponseWriter, r *http.Request) {
 			s.t.Errorf("decode sign request: %v", err)
 			return
 		}
-		json.NewEncoder(w).Encode(fakeSigner{}.sign(s.t, request.Requests))
+		json.NewEncoder(w).Encode(s.behaviour.sign(s.t, request.Requests))
 	default:
 		s.t.Errorf("unexpected signer path %s", r.URL.Path)
 	}
@@ -591,5 +596,272 @@ func TestSendPaymentPreparesThenSends(t *testing.T) {
 	}
 	if sent.Txn.Sender.String() != sender || sent.Txn.Receiver.String() != receiver || sent.Txn.Amount != 1_000_000 {
 		t.Fatalf("submitted transaction = %+v", sent.Txn)
+	}
+}
+
+func TestSendPreparedReportsWhatTheSignerAdded(t *testing.T) {
+	txn := verifyTestPayment(t, 41, 42, 1)
+	signer := &sendSigner{keys: []KeyInfo{ordinaryKey(txn)}, behaviour: fakeSigner{feeRaise: map[int]uint64{0: 500}, dummies: 1}}
+	node := &sendAlgod{}
+	client, algodClient := newSendFixture(t, signer, node)
+
+	result, err := client.SendPrepared(context.Background(), algodClient, preparedFor(txn), nil)
+	if err != nil {
+		t.Fatalf("SendPrepared() error = %v", err)
+	}
+	if result.OriginalCount != 1 || len(result.SignedGroup) != 2 || len(result.TxIDs) != 2 || result.GroupID == "" {
+		t.Fatalf("result = %+v", result)
+	}
+	if len(result.Fees) != 2 || result.Fees[0] != 1500 || result.Fees[1] != 0 {
+		t.Fatalf("fees = %v, want the signed fees 1500 and 0", result.Fees)
+	}
+	if result.Mutations == nil || result.Mutations.DummiesAdded != 1 || result.Mutations.TotalFeesDelta != 500 {
+		t.Fatalf("mutations = %+v", result.Mutations)
+	}
+	if result.TxIDs[0] == crypto.GetTxID(txn) {
+		t.Fatalf("txid is the draft's, not the signed transaction's")
+	}
+	submitted := node.submissions()
+	if len(submitted) != 1 || hex.EncodeToString(submitted[0]) != strings.Join(result.SignedGroup, "") {
+		t.Fatalf("submission is not the signed group with its dummy, once")
+	}
+}
+
+func TestSendPreparedConfirmationWait(t *testing.T) {
+	txn := verifyTestPayment(t, 41, 42, 1)
+	unconfirmed := func() models.PendingTransactionInfoResponse { return models.PendingTransactionInfoResponse{} }
+
+	t.Run("looks once now and once after each round of the wait", func(t *testing.T) {
+		for _, rounds := range []uint64{1, 3} {
+			signer := &sendSigner{keys: []KeyInfo{ordinaryKey(txn)}}
+			node := &sendAlgod{pending: unconfirmed}
+			client, algodClient := newSendFixture(t, signer, node)
+			_, err := client.SendPrepared(context.Background(), algodClient, preparedFor(txn), &SendOptions{WaitRounds: rounds})
+			var uncertain *SubmissionUncertainError
+			if !errors.As(err, &uncertain) || uncertain.Stage != SendStageConfirm {
+				t.Fatalf("error = %v", err)
+			}
+			if uint64(node.lookups) != rounds+1 {
+				t.Fatalf("WaitRounds %d made %d lookups, want %d", rounds, node.lookups, rounds+1)
+			}
+		}
+	})
+
+	t.Run("the largest wait does not wrap around", func(t *testing.T) {
+		signer := &sendSigner{keys: []KeyInfo{ordinaryKey(txn)}}
+		node := &sendAlgod{}
+		lookups := 0
+		node.pending = func() models.PendingTransactionInfoResponse {
+			lookups++
+			if lookups < 4 {
+				return models.PendingTransactionInfoResponse{}
+			}
+			return models.PendingTransactionInfoResponse{ConfirmedRound: 13}
+		}
+		client, algodClient := newSendFixture(t, signer, node)
+		result, err := client.SendPrepared(context.Background(), algodClient, preparedFor(txn), &SendOptions{WaitRounds: math.MaxUint64})
+		if err != nil || result.ConfirmedRound != 13 {
+			t.Fatalf("SendPrepared() = %+v, %v", result, err)
+		}
+	})
+}
+
+func TestSubmitTreatsAnAlreadyKnownGroupAsSubmitted(t *testing.T) {
+	txn := verifyTestPayment(t, 41, 42, 1)
+	signer := &sendSigner{keys: []KeyInfo{ordinaryKey(txn)}}
+	node := &sendAlgod{submit: func(w http.ResponseWriter, _ []byte) {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"message": "TransactionPool.Remember: transaction already in ledger: " + crypto.GetTxID(txn)})
+	}}
+	client, algodClient := newSendFixture(t, signer, node)
+
+	// The node has these bytes from an earlier submission. That is not a
+	// refusal: a caller told "rejected" might sign a replacement.
+	result, err := client.SendPrepared(context.Background(), algodClient, preparedFor(txn), nil)
+	if err != nil || result.Outcome != SendOutcomeConfirmed {
+		t.Fatalf("SendPrepared() = %+v, %v; want the confirmed outcome", result, err)
+	}
+}
+
+func TestSubmitFailuresThatAreNotAnswers(t *testing.T) {
+	txn := verifyTestPayment(t, 41, 42, 1)
+
+	t.Run("connection dropped on submission", func(t *testing.T) {
+		signer := &sendSigner{keys: []KeyInfo{ordinaryKey(txn)}}
+		node := &sendAlgod{submit: func(w http.ResponseWriter, _ []byte) {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Errorf("hijack: %v", err)
+				return
+			}
+			conn.Close()
+		}}
+		client, algodClient := newSendFixture(t, signer, node)
+		_, err := client.SendPrepared(context.Background(), algodClient, preparedFor(txn), nil)
+		var uncertain *SubmissionUncertainError
+		if !errors.As(err, &uncertain) || uncertain.Stage != SendStageSubmit || len(uncertain.SignedGroup) != 1 {
+			t.Fatalf("error = %v, want an uncertain submission", err)
+		}
+	})
+
+	t.Run("context ended before submission", func(t *testing.T) {
+		node := &sendAlgod{t: t}
+		algodClient, closeAlgod := makeSimulationAlgodClient(t, node.handle)
+		defer closeAlgod()
+		result := &SendResult{SignedGroup: []string{fakeSignedTxnHex(txn)}, OriginalCount: 1}
+		raw, err := describeSignedGroup(result)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		err = submitAndTrack(ctx, algodClient, raw, result, &SendOptions{})
+		var uncertain *SubmissionUncertainError
+		if !errors.As(err, &uncertain) || uncertain.Stage != SendStageUnsent || !errors.Is(err, context.Canceled) {
+			t.Fatalf("error = %v, want the unsent stage", err)
+		}
+		if len(node.submissions()) != 0 {
+			t.Fatalf("an ended context still submitted")
+		}
+	})
+}
+
+// cosignedSendFixture is a signer holding one cosigned account, its cosigner,
+// and a node. dropAssembly makes the last signing step end with no answer.
+func cosignedSendFixture(t *testing.T, dropAssembly bool) (*SignerClient, *SignerClient, *algod.Client, *sendAlgod, types.Transaction, *int) {
+	t.Helper()
+	bounded := sdkTestAddress(21)
+	key := KeyInfo{
+		Address: bounded, KeyType: "aplane.falcon1024.v1", SigningFlow: SigningFlowCosigned1,
+		LogicSigResources: &LogicSigResourceProfile{
+			Spend: &LogicSigResourceUsage{ProgramBytes: 5308, ArgumentBytes: 3358, MaxOpcodeCost: 20000},
+		},
+		CosignerComponentKeyType: KeyTypeWitnessFalcon1024,
+		BoundedAuthorization: &BoundedAuthorizationInfo{
+			Contract: BoundedContractBounded2, MaxFee: new(uint64(1000)),
+			Cosigner: &BoundedCosignerAuthorizationInfo{ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: "aabb"},
+		},
+	}
+	userClient, userServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/status":
+			json.NewEncoder(w).Encode(StatusResponse{State: "unlocked", ApprovalWaitSeconds: 60})
+		case "/keys":
+			json.NewEncoder(w).Encode(KeysResponse{Count: 1, Keys: []KeyInfo{key}})
+		case "/plan":
+			var req GroupSignRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Errorf("decode plan request: %v", err)
+				return
+			}
+			json.NewEncoder(w).Encode(PlanGroupResponse{Transactions: []string{req.Requests[0].TxnBytesHex}})
+		case "/sign/component":
+			var req ComponentRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Errorf("decode component request: %v", err)
+				return
+			}
+			json.NewEncoder(w).Encode(ComponentResponse{RequestID: req.RequestID, Components: []Component{{
+				TargetIndex: 0, Kind: ComponentTargetKindBoundedBase, AuthAddress: bounded,
+				BaseSignatures: []string{"base-sig"}, RuntimeArgs: map[string]string{"proof": "aabb"},
+				AssemblyReceipt: "receipt", SignatureScheme: "aplane.falcon1024.v1", Path: ComponentPathSpend,
+			}}})
+		case "/sign/assemble":
+			if dropAssembly {
+				conn, _, err := w.(http.Hijacker).Hijack()
+				if err != nil {
+					t.Errorf("hijack: %v", err)
+					return
+				}
+				conn.Close()
+				return
+			}
+			var req AssemblyRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Errorf("decode assembly request: %v", err)
+				return
+			}
+			json.NewEncoder(w).Encode(AssemblyResponse{RequestID: req.RequestID, SignedGroup: signedGroupFor(t, req.GroupBytesHex)})
+		default:
+			t.Errorf("unexpected user path %s", r.URL.Path)
+		}
+	})
+	t.Cleanup(userServer.Close)
+	cosignerCalls := 0
+	cosignerClient, cosignerServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		cosignerCalls++
+		var req capturedComponentRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode cosigner request: %v", err)
+			return
+		}
+		if req.ComponentKey != "COSIGNER_COMPONENT" {
+			t.Errorf("cosigner component key = %q", req.ComponentKey)
+		}
+		json.NewEncoder(w).Encode(ComponentResponse{RequestID: req.RequestID, Components: []Component{{
+			Kind: ComponentTargetKindCosigner, TargetIndex: 0, Signature: "cosigner-sig", SignatureScheme: KeyTypeWitnessFalcon1024,
+		}}})
+	})
+	t.Cleanup(cosignerServer.Close)
+	node := &sendAlgod{t: t}
+	algodClient, closeAlgod := makeSimulationAlgodClient(t, node.handle)
+	t.Cleanup(closeAlgod)
+
+	var genesisHash types.Digest
+	sp := types.SuggestedParams{
+		Fee: types.MicroAlgos(1000), FirstRoundValid: 1, LastRoundValid: 100,
+		GenesisID: "testnet-v1.0", GenesisHash: genesisHash[:], FlatFee: true,
+	}
+	txn, err := transaction.MakePaymentTxn(bounded, sdkTestAddress(22), 1000, nil, "", sp)
+	if err != nil {
+		t.Fatalf("MakePaymentTxn() error = %v", err)
+	}
+	return userClient, cosignerClient, algodClient, node, txn, &cosignerCalls
+}
+
+func TestSendPreparedCosignedGroup(t *testing.T) {
+	userClient, cosignerClient, algodClient, node, txn, cosignerCalls := cosignedSendFixture(t, false)
+
+	result, err := userClient.SendPrepared(context.Background(), algodClient, preparedFor(txn), &SendOptions{
+		CosignerClient: cosignerClient, CosignerComponentKey: "COSIGNER_COMPONENT",
+	})
+	if err != nil {
+		t.Fatalf("SendPrepared() error = %v", err)
+	}
+	if result.Flow != SigningFlowCosigned1 || result.Cosigned == nil || result.Cosigned.BoundedAssemblyResponse == nil || *cosignerCalls != 1 {
+		t.Fatalf("result = %+v, cosigner calls = %d", result, *cosignerCalls)
+	}
+	submitted := node.submissions()
+	if len(submitted) != 1 || hex.EncodeToString(submitted[0]) != strings.Join(result.SignedGroup, "") || result.Outcome != SendOutcomeConfirmed {
+		t.Fatalf("the assembled group was not submitted once and confirmed")
+	}
+	if result.TxIDs[0] != crypto.GetTxID(txn) || result.Fees[0] != 1000 {
+		t.Fatalf("txids %v fees %v", result.TxIDs, result.Fees)
+	}
+}
+
+func TestSendPreparedCosignedWithoutACosignerIsRefused(t *testing.T) {
+	userClient, _, algodClient, node, txn, _ := cosignedSendFixture(t, false)
+	_, err := userClient.SendPrepared(context.Background(), algodClient, preparedFor(txn), nil)
+	var unknown *SignOutcomeUnknownError
+	if err == nil || !strings.Contains(err.Error(), "cosigner client or resolver is required") || errors.As(err, &unknown) {
+		t.Fatalf("error = %v, want a plain refusal naming the missing cosigner", err)
+	}
+	if len(node.submissions()) != 0 {
+		t.Fatalf("submitted without a cosigner")
+	}
+}
+
+func TestSendPreparedCosignedLostAssemblyIsAnUnknownOutcome(t *testing.T) {
+	userClient, cosignerClient, algodClient, node, txn, _ := cosignedSendFixture(t, true)
+	_, err := userClient.SendPrepared(context.Background(), algodClient, preparedFor(txn), &SendOptions{
+		CosignerClient: cosignerClient, CosignerComponentKey: "COSIGNER_COMPONENT",
+	})
+	var unknown *SignOutcomeUnknownError
+	if !errors.As(err, &unknown) {
+		t.Fatalf("error = %v, want *SignOutcomeUnknownError", err)
+	}
+	if len(node.submissions()) != 0 {
+		t.Fatalf("submitted after a lost assembly answer")
 	}
 }

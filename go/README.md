@@ -364,24 +364,30 @@ payment.
   bytes. A signer may raise a fee or assign a group, so `TxIDs` can differ from
   the IDs of the transactions you prepared.
 - **Options.** `NoWait` returns once the node accepts the group, with outcome
-  `submitted`. `WaitRounds` sets the confirmation wait (default 10). A cosigned
+  `submitted`. `WaitRounds` is how many further rounds to wait for
+  confirmation (default 10). A cosigned
   account needs `CosignerClient` with `CosignerComponentKey`, or a
   `CosignerResolver`; the SDK does not close a cosigner client you pass.
 - **Refused before signing:** a rotating account or an unknown signing flow
   (`ErrUnsupportedSigningFlow`), and a pre-signed or foreign position
   (`ErrUnsupportedGroup`). Use the lower-level signing calls for those groups.
-  Rotating accounts are not supported by this SDK version.
-- **It never signs twice.** After a sign request is sent, a failure is one of
-  three types. Use `errors.As`:
+  Rotating accounts are not supported by this SDK version; one that has
+  already rotated is refused earlier, by the `Prepare*` helper, with
+  `ErrKeyNotFound`.
+- **It never signs twice,** and never builds a replacement transaction.
+
+Failures:
 
 | Error | Meaning | What to do |
 |---|---|---|
-| `*SignOutcomeUnknownError` | The signer's answer never arrived. A signature may have been released; nothing was submitted. | Check the request ID with the operator or the audit log before signing again. |
+| The signing call's own error | The signer refused (policy, operator, locked), or the SDK refused the signer's answer (`verify signer response: ...`, `ErrMaxFeeIncreaseExceeded`). Nothing was submitted. | Read the reason. A refused answer means the signer did sign; the SDK discarded it. |
+| `*SignOutcomeUnknownError` | A signing exchange ended with no answer. A signature may have been released; nothing was submitted. | Check with the operator or the audit log before signing again. For the ordinary flow the error carries the request ID. |
 | `*SubmissionRejectedError` | The node refused the group or dropped it from its pool. | Read the reason. The signed bytes and IDs are in the error. |
-| `*SubmissionUncertainError` | The submission's answer never arrived (`Stage` `submit`), or the group did not confirm within the wait (`confirm`). It may still confirm. | Look up `TxIDs`, or submit the same `SignedGroup` again. Do not sign a replacement until the outcome is known: both could execute. |
+| `*SubmissionUncertainError` | `Stage` says where it stopped: `unsent` (signed, never sent: your context ended), `submit` (the submission's answer never arrived), or `confirm` (not confirmed within the wait). Except for `unsent`, it may still confirm. | Look up `TxIDs`, or submit the same `SignedGroup` again. Do not sign a replacement until the outcome is known: both could execute. |
 
-A refusal by the signer (policy, operator, locked) comes back as the signing
-call's own error, as it does from `SignTransaction`.
+A node that answers "already in ledger" has the group from an earlier
+submission of the same bytes. The SDK treats that as submitted and looks for
+the outcome; it is not a rejection.
 
 The existing `Sign*` and `Simulate*` calls are unchanged.
 
