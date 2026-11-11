@@ -1552,6 +1552,53 @@ describe("alternate spellings of an address", () => {
       );
     });
 
+    // App-call account references are compared as strings, with the sender
+    // and with each other: another spelling of an address, or anything but
+    // an address string, is refused before anything is asked.
+    it("refuse an app-call account reference that is not a canonical address string", async () => {
+      const { client, node, paths } = setup();
+      const other = fakeAddress(42);
+      const bad: Array<[unknown, string]> = [
+        ...alternateSpellings(other).map((spelling): [unknown, string] => [spelling, "not the canonical spelling"]),
+        [asObject(other), "must be an address string, not an algosdk Address"],
+        [42, "must be an address string, not a number"],
+        ["NOTANADDRESS", "is not a valid address"],
+      ];
+      for (const [account, text] of bad) {
+        await assert.rejects(
+          client.prepareAppCall(node, { sender: ordinary, appId: 7, accounts: [other, account as string] }),
+          mentions("accounts[1]", text),
+        );
+        await assert.rejects(
+          client.prepareAbiAppCall(node, {
+            sender: ordinary, appId: 7, methodSignature: "f(account)void", args: [other], accounts: [account as string],
+          }),
+          mentions("accounts[0]", text),
+        );
+      }
+      assert.deepEqual(paths, [], "the signer was asked about a call with a bad account reference");
+    });
+
+    it("refuse an ABI account argument spelled otherwise, or of another kind", async () => {
+      const { client, node, paths } = setup();
+      const other = fakeAddress(42);
+      const call = (arg: unknown) => client.prepareAbiAppCall(node, {
+        sender: ordinary, appId: 7, methodSignature: "f(account)void", args: [arg],
+      });
+      for (const spelling of [...alternateSpellings(other), ...alternateSpellings(ordinary)]) {
+        await assert.rejects(call(spelling), mentions("ABI account argument", "not the canonical spelling"));
+      }
+      await assert.rejects(call("NOTANADDRESS"), mentions("ABI account argument", "is not a valid address"));
+      await assert.rejects(call({ toString: () => other }), mentions("ABI account argument", "must be Algorand addresses"));
+      await assert.rejects(call(42), mentions("ABI account argument", "must be Algorand addresses"));
+      assert.deepEqual(paths, []);
+      // The typed forms of an address are taken, as the Go SDK takes them.
+      for (const arg of [other, asObject(other), algosdk.decodeAddress(other).publicKey]) {
+        const prepared = await call(arg);
+        assert.deepEqual(prepared.transaction.applicationCall?.accounts.map((account) => account.toString()), [other]);
+      }
+    });
+
     it("resolveAuthAddress never resolves a misspelled rotating account to an ordinary key", async () => {
       const { client } = setup();
       const stage = stageAddress(rotatingTestProgram).toString();

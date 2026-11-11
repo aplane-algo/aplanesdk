@@ -1808,12 +1808,34 @@ function requireBoxReferences(boxes: unknown): void {
   });
 }
 
-/** Require every app, asset and box reference of an app call to be a whole number. */
+/**
+ * Require a referenced account to be an address string, spelled canonically.
+ * Account references are compared as strings, with the sender and with each
+ * other, so another spelling of an address would be a different reference.
+ */
+function requireAccountReference(value: unknown, name: string): string {
+  if (typeof value !== "string") {
+    throw new SignerError(`${name} must be an address string, not ${nonStringKind(value)}`);
+  }
+  if (!algosdk.isValidAddress(value)) {
+    throw new SignerError(`${name} ${JSON.stringify(value)} is not a valid address`);
+  }
+  requireCanonicalAddress(value, name);
+  return value;
+}
+
+/**
+ * Require every account reference of an app call to be a canonical address
+ * string, and every app, asset and box reference a whole number.
+ */
 function requireAppReferences(params: {
+  accounts?: unknown[];
   foreignApps?: unknown[];
   foreignAssets?: unknown[];
   boxes?: unknown;
 }): void {
+  (params.accounts ?? []).forEach((reference, position) =>
+    requireAccountReference(reference, `accounts[${position}]`));
   (params.foreignApps ?? []).forEach((reference, position) =>
     requireUint(reference, `foreignApps[${position}]`, true));
   (params.foreignAssets ?? []).forEach((reference, position) =>
@@ -2231,7 +2253,7 @@ function resolveAbiReferenceArgs(
   for (let index = 0; index < argTypes.length; index++) {
     switch (argTypes[index]) {
       case "account": {
-        const address = marshalAbiAddress(values[index]);
+        const address = marshalAbiAddress(values[index], "ABI account argument");
         if (address === sender) {
           resolved.push(0);
         } else {
@@ -2278,23 +2300,26 @@ function resolveAbiReferenceArgs(
   return resolved;
 }
 
-function marshalAbiAddress(value: unknown): string {
+/**
+ * An ABI account argument as the address string it references: a canonical
+ * address string, an algosdk Address, or a 32-byte public key, as the Go SDK
+ * takes them. Anything else, such as another spelling of an address or an
+ * object that merely has a toString, is refused.
+ */
+function marshalAbiAddress(value: unknown, name: string): string {
   if (typeof value === "string") {
-    algosdk.decodeAddress(value);
-    return value;
+    return requireAccountReference(value, name);
+  }
+  if (value instanceof algosdk.Address) {
+    return value.toString();
   }
   if (value instanceof Uint8Array) {
     if (value.length !== 32) {
-      throw new SignerError("decoded value is not a 32-byte address");
+      throw new SignerError(`${name}: decoded value is not a 32-byte address`);
     }
     return algosdk.encodeAddress(value);
   }
-  if (value && typeof (value as { toString?: unknown }).toString === "function") {
-    const address = (value as { toString: () => string }).toString();
-    algosdk.decodeAddress(address);
-    return address;
-  }
-  throw new SignerError("account reference arguments must be Algorand addresses");
+  throw new SignerError(`${name}: account reference arguments must be Algorand addresses`);
 }
 
 function indexOfUint64(values: Array<number | bigint>, target: bigint): number {
