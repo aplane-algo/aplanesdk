@@ -68,6 +68,9 @@ export interface SendOptions {
    * A cosigned account's cosigner, used only when the group has a position
    * that needs one. Give a client, with the Witness Key ID it signs under,
    * or a resolver. The caller owns these clients; a send never closes them.
+   * With neither, a client made with SignerClient.fromEnv finds the cosigner
+   * in its endpoints.yaml (see EndpointCosignerResolver) and closes the
+   * connections it opens for that when it is closed.
    */
   cosignerClient?: SignerClient;
   cosignerComponentKey?: string;
@@ -311,8 +314,20 @@ export function describeSignedGroup(result: SendResult): Uint8Array[] {
   return raw;
 }
 
+/**
+ * The earliest last valid round among txns, or 0n for none. A group cannot
+ * execute after it: one of its transactions no longer can.
+ */
+export function earliestLastValid(txns: Transaction[]): bigint {
+  let earliest: bigint | undefined;
+  for (const txn of txns) {
+    if (earliest === undefined || txn.lastValid < earliest) earliest = txn.lastValid;
+  }
+  return earliest ?? 0n;
+}
+
 /** The HTTP status of an algod error, when the node answered. */
-function algodStatus(error: unknown): number | undefined {
+export function algodStatus(error: unknown): number | undefined {
   const status = (error as { response?: { status?: unknown } } | null)?.response?.status;
   return typeof status === "number" ? status : undefined;
 }
@@ -363,8 +378,11 @@ export async function submitAndTrack(
   }
   const txId = result.txIds[0];
   const signal = options.signal;
+  // The bytes were checked when the result was described; their rounds say
+  // until when the group can execute.
+  const lastValid = earliestLastValid(raw.map((entry) => algosdk.decodeSignedTransaction(entry).txn));
   const uncertain = (stage: SendStage, cause: unknown) =>
-    new SubmissionUncertainError(stage, result.signedGroup, result.txIds, cause);
+    new SubmissionUncertainError(stage, result.signedGroup, result.txIds, cause, lastValid);
 
   if (signal?.aborted) {
     throw uncertain(SEND_STAGE_UNSENT, callerAborted());
