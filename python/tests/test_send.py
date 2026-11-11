@@ -974,10 +974,13 @@ def test_an_interrupt_while_a_sign_is_pending_cancels_it_and_propagates(fakes):
     cancels = []
     client.session.post = _interrupting_post(client, "/sign", cancels)
 
-    with pytest.raises(KeyboardInterrupt):
+    with pytest.raises(KeyboardInterrupt) as excinfo:
         client.send_prepared(node.client, prepared_for(txn))
 
     assert len(cancels) == 1 and cancels[0].startswith("sdk-")
+    assert excinfo.value.aplane_request_id == cancels[0]
+    if hasattr(excinfo.value, "add_note"):
+        assert any("aplane_request_id" in note for note in excinfo.value.__notes__)
     assert node.submissions() == []
 
 
@@ -987,11 +990,36 @@ def test_an_interrupt_while_a_component_is_pending_cancels_it_and_propagates(fak
     fixture.user_client.session.post = _interrupting_post(
         fixture.user_client, "/sign/component", cancels
     )
-    with pytest.raises(KeyboardInterrupt):
+    with pytest.raises(KeyboardInterrupt) as excinfo:
         fixture.send(
             cosigner_client=fixture.cosigner_client, cosigner_component_key="COSIGNER_COMPONENT"
         )
     assert len(cancels) == 1
+    assert excinfo.value.aplane_request_id == cancels[0]
+
+
+def test_an_interrupt_while_an_assembly_is_pending_names_it(fakes):
+    # Assembly releases the whole group. It opens no approval, so nothing is
+    # canceled, but the exception names the request.
+    fixture = CosignedFixture(fakes)
+    cancels = []
+    real_post = fixture.user_client.session.post
+    assembled = []
+
+    def post(url, **kwargs):
+        if url.endswith("/sign/assemble"):
+            assembled.append(kwargs["json"]["request_id"])
+            raise KeyboardInterrupt
+        if url.endswith("/sign/cancel"):
+            cancels.append(kwargs["json"]["request_id"])
+        return real_post(url, **kwargs)
+
+    fixture.user_client.session.post = post
+    with pytest.raises(KeyboardInterrupt) as excinfo:
+        fixture.send(
+            cosigner_client=fixture.cosigner_client, cosigner_component_key="COSIGNER_COMPONENT"
+        )
+    assert excinfo.value.aplane_request_id == assembled[0] and cancels == []
 
 
 class _Interrupting:

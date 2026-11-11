@@ -546,6 +546,31 @@ def _approval_answer(
     return data
 
 
+def _mark_interrupt(error: BaseException, note: str, **fields: Any) -> None:
+    """Attach what a caller needs to recover to a KeyboardInterrupt or other
+    BaseException that is not an Exception, which the SDK never turns into
+    one of its own errors. A field already attached is kept; the note is
+    added where the exception takes notes (Python 3.11 and later)."""
+    if isinstance(error, Exception):
+        return
+    attached = False
+    for name, value in fields.items():
+        if not hasattr(error, name):
+            setattr(error, name, value)
+            attached = True
+    add_note = getattr(error, "add_note", None)
+    if attached and add_note is not None:
+        add_note(note)
+
+
+_ROTATING_INTERRUPT_NOTE = (
+    "aplanesdk: a prepared rotating group was being simulated, signed or submitted "
+    "(aplane_rotating). A signature may have been released: recover by signing that "
+    "same group again with sign_prepared_rotating, not by sending anew, until the "
+    "first attempt's outcome is known"
+)
+
+
 def _refuse_json_constant(name: str) -> Any:
     raise ValueError(f"{name} is not a JSON number")
 
@@ -5760,11 +5785,17 @@ class SignerClient:
             # The request may have reached the signer, which may have released
             # its component.
             raise _AnswerLostError(f"Failed to connect: {e}") from e
-        except BaseException:
+        except BaseException as e:
             # A KeyboardInterrupt or the like ends the call as it is, after
-            # canceling the approval it left pending.
+            # canceling the approval it left pending, and names the request.
             if kind != COMPONENT_TARGET_KIND_COSIGNER:
                 self._best_effort_cancel_sign_request(request_body["request_id"])
+            _mark_interrupt(
+                e,
+                f"aplanesdk: component request {request_body['request_id']} was pending; "
+                "a signature may have been released (aplane_request_id)",
+                aplane_request_id=request_body["request_id"],
+            )
             raise
         if resp.status_code == 401:
             raise AuthenticationError("Not authenticated: connect through an enrolled SSH key")
@@ -5834,6 +5865,14 @@ class SignerClient:
             # Assembly releases the whole group, so a request that may have
             # reached the signer has an unknown outcome.
             raise _AnswerLostError(f"Failed to connect: {e}") from e
+        except BaseException as e:
+            _mark_interrupt(
+                e,
+                f"aplanesdk: assembly request {request_body['request_id']} was pending; "
+                "the signed group may have been released (aplane_request_id)",
+                aplane_request_id=request_body["request_id"],
+            )
+            raise
 
         if resp.status_code == 401:
             raise AuthenticationError("Not authenticated: connect through an enrolled SSH key")
@@ -5889,11 +5928,18 @@ class SignerClient:
         except requests.RequestException as e:
             self._best_effort_cancel_sign_request(request_id)
             raise _AnswerLostError(f"Failed to connect: {e}") from e
-        except BaseException:
+        except BaseException as e:
             # Anything else, a KeyboardInterrupt among them, ends the call as
             # it is: it is not turned into an SDK error. The approval it left
-            # pending is canceled first, as on a timeout.
+            # pending is canceled first, as on a timeout, and the exception
+            # names the request.
             self._best_effort_cancel_sign_request(request_id)
+            _mark_interrupt(
+                e,
+                f"aplanesdk: sign request {request_id} was pending; a signature may have "
+                "been released (aplane_request_id)",
+                aplane_request_id=request_id,
+            )
             raise
 
     def _signing_http_error(self, resp: requests.Response, operation: str) -> SignerError:
@@ -6952,6 +6998,11 @@ class SignerClient:
             answer = _rotating_sign_answer(_approval_answer(resp, "Server returned invalid JSON"))
         except (_AnswerLostError, _AnswerUnreadError) as e:
             raise SignOutcomeUnknownError(e, request_id=request_id, rotating=prepared) from e
+        except BaseException as e:
+            # An interrupt while approval was pending leaves the same unknown
+            # as a lost answer, and the same recovery: sign this group again.
+            _mark_interrupt(e, _ROTATING_INTERRUPT_NOTE, aplane_rotating=prepared)
+            raise
         try:
             result = prepared._verify_signed(answer)
         except SignerError as e:
@@ -7023,16 +7074,7 @@ class SignerClient:
                 raise
 
             try:
-                simulation = self.simulate_prepared_rotating(algod_client, prepared)
-            except SignerError as e:
-                raise SignerError(
-                    f"simulate prepared rotating group; nothing was signed: {e}"
-                ) from e
-            if simulation.failed:
-                raise RotatingPreflightError(prepared, _simulation_failure(simulation.response))
-
-            try:
-                signed = self.sign_prepared_rotating(prepared)
+                signed = self._simulate_and_sign_rotating(algod_client, prepared)
             except SignerError as e:
                 if e.code == ERR_CODE_ROTATING_STAGE_CHANGED and not last_attempt:
                     attempt += 1
@@ -7045,23 +7087,58 @@ class SignerClient:
                     continue
                 raise
 
-            result = SendResult(
-                flow=SIGNING_FLOW_ROTATING1,
-                signed_group=list(signed.signed_group),
-                original_count=1,
-                mutations=prepared.mutations,
-                rotating=RotatingSendDetails(
-                    stage=signed.stage,
-                    target=signed.target,
-                    rekey_to=prepared.rekey_to,
-                    attempts=attempt,
-                    transaction=copy.deepcopy(txn),
-                    request_id=signed.request_id,
-                ),
-            )
-            raw = _describe_signed_group(result)
-            _submit_and_track(algod_client, raw, result, options)
-            return result
+            try:
+                return self._submit_rotating(algod_client, prepared, signed, txn, attempt, options)
+            except BaseException as e:
+                _mark_interrupt(e, _ROTATING_INTERRUPT_NOTE, aplane_rotating=prepared)
+                raise
+
+    def _simulate_and_sign_rotating(
+        self, algod_client: Any, prepared: "PreparedRotating"
+    ) -> RotatingSignResult:
+        """Simulate a prepared rotating group unsigned, then sign it. An
+        interrupt carries the prepared group."""
+        try:
+            try:
+                simulation = self.simulate_prepared_rotating(algod_client, prepared)
+            except SignerError as e:
+                raise SignerError(
+                    f"simulate prepared rotating group; nothing was signed: {e}"
+                ) from e
+            if simulation.failed:
+                raise RotatingPreflightError(prepared, _simulation_failure(simulation.response))
+            return self.sign_prepared_rotating(prepared)
+        except BaseException as e:
+            _mark_interrupt(e, _ROTATING_INTERRUPT_NOTE, aplane_rotating=prepared)
+            raise
+
+    def _submit_rotating(
+        self,
+        algod_client: Any,
+        prepared: "PreparedRotating",
+        signed: RotatingSignResult,
+        txn: transaction.Transaction,
+        attempt: int,
+        options: "_SendOptions",
+    ) -> SendResult:
+        """Submit a signed rotating group exactly as signed, and track it."""
+        result = SendResult(
+            flow=SIGNING_FLOW_ROTATING1,
+            signed_group=list(signed.signed_group),
+            original_count=1,
+            mutations=prepared.mutations,
+            rotating=RotatingSendDetails(
+                stage=signed.stage,
+                target=signed.target,
+                rekey_to=prepared.rekey_to,
+                attempts=attempt,
+                transaction=copy.deepcopy(txn),
+                request_id=signed.request_id,
+            ),
+        )
+        raw = _describe_signed_group(result)
+        _submit_and_track(algod_client, raw, result, options)
+        return result
 
 
 def _component_signatures_by_index(
@@ -8091,14 +8168,13 @@ def _submit_and_track(
     except Exception:
         raise
     except BaseException as e:
-        e.aplane_signed_group = list(result.signed_group)  # type: ignore[attr-defined]
-        e.aplane_tx_ids = list(result.tx_ids)  # type: ignore[attr-defined]
-        add_note = getattr(e, "add_note", None)  # Python 3.11 and later
-        if add_note is not None:
-            add_note(
-                f"aplanesdk: signed group with first transaction {_first_or_empty(result.tx_ids)} "
-                "was being submitted or tracked; see aplane_signed_group and aplane_tx_ids"
-            )
+        _mark_interrupt(
+            e,
+            f"aplanesdk: signed group with first transaction {_first_or_empty(result.tx_ids)} "
+            "was being submitted or tracked; see aplane_signed_group and aplane_tx_ids",
+            aplane_signed_group=list(result.signed_group),
+            aplane_tx_ids=list(result.tx_ids),
+        )
         raise
 
 

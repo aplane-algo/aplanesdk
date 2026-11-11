@@ -366,13 +366,23 @@ pending is canceled with a best-effort `/sign/cancel`, as for the other
 signing calls; such an ending is a `SignOutcomeUnknownError`.
 
 A `KeyboardInterrupt`, or any other exception that is not an `Exception`, is
-not turned into an SDK error: it still stops the program. If it arrives
-while an approval is pending, the SDK first sends the best-effort
-`/sign/cancel` for that request. If it arrives while the signed group is
-being submitted or its confirmation awaited, the group may have reached the
-node: the exception carries the signed bytes as `aplane_signed_group` and
-their IDs as `aplane_tx_ids` (on Python 3.11 and later it also gets a note
-saying so). Treat it like a `SubmissionUncertainError`:
+not turned into an SDK error: it still stops the program. What it carries
+says what was in flight (on Python 3.11 and later it also gets a note):
+
+- **While a sign, component or assembly request was pending**, the
+  exception carries the request's ID as `aplane_request_id`; for a request
+  awaiting approval the SDK first sends the best-effort `/sign/cancel`. A
+  signature may have been released: treat it like a
+  `SignOutcomeUnknownError`. For a rotating account it also carries the
+  prepared group as `aplane_rotating`, whenever the interrupt came after the
+  group was prepared, and the same recovery applies: sign that same prepared
+  group again (below); do not call `send_payment` or `send_prepared` again
+  until the first attempt's outcome is known, because that prepares a new
+  spend from the same stage.
+- **While the signed group was submitted or its confirmation awaited**, the
+  group may have reached the node: the exception carries the signed bytes as
+  `aplane_signed_group` and their IDs as `aplane_tx_ids`. Treat it like a
+  `SubmissionUncertainError`.
 
 ```python
 try:
@@ -380,6 +390,8 @@ try:
 except KeyboardInterrupt as e:
     if hasattr(e, "aplane_tx_ids"):
         print("signed group may be on the network:", e.aplane_tx_ids)
+    elif hasattr(e, "aplane_request_id"):
+        print("a signature may have been released:", e.aplane_request_id)
     raise
 ```
 
@@ -456,8 +468,11 @@ Submit a signed rotating group promptly: the stage's one-time keys are
 revealed until that transaction or a later rotation confirms.
 
 **If a sign answer is lost** (`SignOutcomeUnknownError`, whose `rotating`
-attribute holds the prepared group), call `sign_prepared_rotating` again with
-that same prepared group. It asks for the same transaction with the same IDs
+attribute holds the prepared group, or an interrupt while approval was
+pending, whose `aplane_rotating` attribute holds it), call
+`sign_prepared_rotating` again with that same prepared group. Do not call
+`send_payment` or `send_prepared` again until the first attempt's outcome is
+known. It asks for the same transaction with the same IDs
 and builds no second spend. It needs approval again and succeeds only while
 the stage is still live and the window still acceptable. If the retry is
 refused, do not prepare a replacement until the first attempt's outcome is
@@ -474,6 +489,8 @@ except SignOutcomeUnknownError as e:
         raise
     signed = client.sign_prepared_rotating(e.rotating)  # the same transaction again
     result = client.submit_signed_group(algod_client, signed.signed_group)
+# After a KeyboardInterrupt with e.aplane_rotating set, the same recovery:
+# client.sign_prepared_rotating(e.aplane_rotating)
 ```
 
 `submit_signed_group` also submits again the `signed_group` kept by a

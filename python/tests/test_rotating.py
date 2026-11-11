@@ -1198,9 +1198,62 @@ def test_an_interrupt_while_approval_is_pending_cancels_it_and_propagates(fakes)
         return real_post(url, **kwargs)
 
     f.client.session.post = post
-    with pytest.raises(KeyboardInterrupt):
+    with pytest.raises(KeyboardInterrupt) as excinfo:
         f.client.sign_prepared_rotating(prepared, request_id="app-id-2")
     assert cancels == ["app-id-2"]
+    # It carries what a lost answer carries: the request and the prepared
+    # group, whose identical re-sign is the recovery.
+    assert excinfo.value.aplane_request_id == "app-id-2"
+    assert excinfo.value.aplane_rotating is prepared
+    if hasattr(excinfo.value, "add_note"):
+        assert any("aplane_rotating" in note for note in excinfo.value.__notes__)
+
+
+def test_an_interrupt_during_a_rotating_send_carries_the_prepared_group(fakes):
+    f = Fixture(fakes)
+    real_post = f.client.session.post
+    interrupted = []
+
+    def post(url, **kwargs):
+        if url.endswith("/sign/rotating/sign") and not interrupted:
+            interrupted.append(kwargs["json"]["request_id"])
+            raise KeyboardInterrupt
+        return real_post(url, **kwargs)
+
+    f.client.session.post = post
+    with pytest.raises(KeyboardInterrupt) as excinfo:
+        f.send()
+    prepared = excinfo.value.aplane_rotating
+    assert isinstance(prepared, PreparedRotating)
+    assert excinfo.value.aplane_request_id == interrupted[0]
+    assert f.signer.count("/sign/rotating/prepare") == 1 and f.node.submissions() == []
+
+    # The recovery: the same prepared group signed again, never a new spend.
+    signed = f.client.sign_prepared_rotating(prepared)
+    f.client.submit_signed_group(f.node.client, signed.signed_group)
+    assert f.signer.count("/sign/rotating/prepare") == 1
+    assert signed.txid == prepared.tx_ids[0]
+
+
+@pytest.mark.parametrize("method", ["simulate_transactions", "send_raw_transaction"])
+def test_an_interrupt_around_the_rotating_sign_carries_the_prepared_group(fakes, method):
+    f = Fixture(fakes)
+
+    class Interrupting:
+        def __getattr__(self, name):
+            if name == method:
+
+                def interrupt(*args, **kwargs):
+                    raise KeyboardInterrupt
+
+                return interrupt
+            return getattr(f.node.client, name)
+
+    with pytest.raises(KeyboardInterrupt) as excinfo:
+        f.client.send_prepared(Interrupting(), rotating_group(f.txn))
+    assert isinstance(excinfo.value.aplane_rotating, PreparedRotating)
+    if method == "send_raw_transaction":
+        assert excinfo.value.aplane_tx_ids == excinfo.value.aplane_rotating.tx_ids
 
 
 def test_a_fault_in_the_checks_is_not_reported_as_a_refusal(fakes, monkeypatch):
