@@ -36,7 +36,7 @@ export {
   signPreparedCosignedGroup,
   simulatePreparedCosignedGroup,
 } from "./client.js";
-export { ErrorCodes } from "./types.js";
+export { ErrorCodes, ERROR_CODE_ROTATING_WINDOW_NOT_CURRENT } from "./types.js";
 export type { ErrorCode } from "./types.js";
 export type {
   CosignedSignTarget,
@@ -46,6 +46,30 @@ export type {
   CosignedSimulationResult,
   PreparedCosignedGroupOptions,
 } from "./client.js";
+
+// Unified sending and rotating accounts
+export {
+  SEND_OUTCOME_SUBMITTED,
+  SEND_OUTCOME_CONFIRMED,
+  DEFAULT_SEND_WAIT_ROUNDS,
+} from "./send.js";
+export type {
+  SendOptions,
+  SendResult,
+  SendOutcome,
+  RotatingSendDetails,
+} from "./send.js";
+export {
+  PreparedRotating,
+  ROTATING_MAX_VALIDITY_WINDOW,
+  ROTATING_MAX_LEAD,
+  ROTATING_MIN_REMAINING,
+} from "./rotating.js";
+export type {
+  RotatingPrepareOptions,
+  RotatingSignOptions,
+  RotatingSignResult,
+} from "./rotating.js";
 
 // Utilities
 export {
@@ -89,7 +113,17 @@ export {
   LogicSigRejectedError,
   InsufficientFundsError,
   InvalidTransactionError,
+  UnsupportedSigningFlowError,
+  UnsupportedGroupError,
+  SignOutcomeUnknownError,
+  SubmissionRejectedError,
+  SubmissionUncertainError,
+  RotatingPreflightError,
+  SEND_STAGE_SUBMIT,
+  SEND_STAGE_CONFIRM,
+  SEND_STAGE_UNSENT,
 } from "./errors.js";
+export type { SendStage } from "./errors.js";
 
 // Types
 export type {

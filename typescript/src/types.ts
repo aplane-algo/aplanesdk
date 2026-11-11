@@ -27,8 +27,8 @@ export const BOUNDED_CONTRACT_PLAIN1 = "plain1";
 /**
  * Rotating account choreography (/sign/rotating/prepare then
  * /sign/rotating/sign), in which the signer rekeys the account to a fresh
- * stage on every spend. This SDK does not implement it; keys labelled with
- * it must be signed through apshell.
+ * stage on every spend. sendPrepared runs it; prepareRotating and
+ * signPreparedRotating are its steps.
  */
 export const SIGNING_FLOW_ROTATING1 = "rotating1";
 
@@ -513,8 +513,7 @@ export interface RotatingRecoverResponse {
 
 /**
  * Request payload for /sign/rotating/prepare: one unsigned, ungrouped,
- * TX-prefixed transaction from a rotating account. The SDK carries the wire
- * shape only; it does not drive the flow.
+ * TX-prefixed transaction from a rotating account. prepareRotating sends it.
  */
 export interface RotatingPrepareRequest {
   request_id?: string;
@@ -524,8 +523,8 @@ export interface RotatingPrepareRequest {
 
 /**
  * Mutation report as it appears on the wire (snake_case). The rotating
- * payloads are raw wire shapes with no normalization step, unlike the
- * camelCase MutationReport the client produces for ordinary signing.
+ * payloads are raw wire shapes; prepareRotating normalizes the report to the
+ * camelCase MutationReport, as ordinary signing does.
  */
 export interface WireMutationReport {
   dummies_added?: number;
@@ -1128,8 +1127,20 @@ export type AccountInfoLookup = (
  */
 export interface ResolvedAuthAddress {
   address: string;
+  /**
+   * The account whose key signs: the address itself, the address it is
+   * rekeyed to, or, for a rotating account, the account itself at every
+   * stage.
+   */
   authAddress: string;
   isRekeyed: boolean;
+  /**
+   * The auth address the chain reports, empty when the account signs for
+   * itself. For a rotating account that has rotated it is the current
+   * stage's address, which the signer does not list as a key; authAddress
+   * stays the account.
+   */
+  chainAuthAddress: string;
   keyInfo: KeyInfo;
 }
 
@@ -1216,7 +1227,20 @@ export const ErrorCodes = {
   Internal: "internal",
 } as const;
 
-export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];
+/**
+ * 409 at /sign/rotating/sign: the spend's validity window is not acceptable
+ * at the round the signer read. This attempt released no signature; rebuild
+ * the validity rounds and prepare again.
+ *
+ * It stands apart from ErrorCodes only because the mirrored contract fixture
+ * (contracts/signerapi/error_codes.json), which ErrorCodes must match, does
+ * not list it yet; it moves into ErrorCodes when the fixture does.
+ */
+export const ERROR_CODE_ROTATING_WINDOW_NOT_CURRENT = "rotating_window_not_current";
+
+export type ErrorCode =
+  | (typeof ErrorCodes)[keyof typeof ErrorCodes]
+  | typeof ERROR_CODE_ROTATING_WINDOW_NOT_CURRENT;
 
 /**
  * Response from the /keys endpoint.

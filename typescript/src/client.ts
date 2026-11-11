@@ -60,6 +60,9 @@ import type {
   LogicSigResourceUsage,
   LogicSigResourceProfile,
   AppCallInfo,
+  RotatingPrepareRequest,
+  RotatingPrepareResponse,
+  RotatingSignResponse,
 } from "./types.js";
 import {
   ErrorCodes,
@@ -76,6 +79,7 @@ import {
   validateLogicSigResources,
   validateSignRequests,
   wireLogicSigResources,
+  ERROR_CODE_ROTATING_WINDOW_NOT_CURRENT,
 } from "./types.js";
 import {
   SignerError,
@@ -86,6 +90,13 @@ import {
   SignerUnavailableError,
   KeyNotFoundError,
   KeyDeletionError,
+  RotatingPreflightError,
+  SignOutcomeUnknownError,
+  UnsupportedGroupError,
+  UnsupportedSigningFlowError,
+  callerAborted,
+  isLostAnswer,
+  markLostAnswer,
 } from "./errors.js";
 import {
   encodeTransaction,
@@ -101,7 +112,7 @@ import {
   DUMMY_PROGRAM as COSIGNED_DUMMY_PROGRAM,
   MAX_GROUP_SIZE,
   checkMaxFeeIncrease,
-  decodeCanonicalSignedTransaction,
+  cloneTransaction,
   decodeCanonicalTransaction,
   decodePassthroughSlot,
   decodeRequestSlots,
@@ -115,7 +126,40 @@ import {
   validatePlanResponse,
   validateSignResponse,
   wholeNumber,
+  normalizeMutationReport,
 } from "./verify.js";
+import {
+  SEND_OUTCOME_SUBMITTED,
+  algodOptions,
+  algodRound,
+  checkSendOptions,
+  decodeExecutableSignedGroup,
+  describeSignedGroup,
+  runSimulation,
+  signedGroupTransactions,
+  submitAndTrack,
+  type CheckedSendOptions,
+  type SendOptions,
+  type SendResult,
+} from "./send.js";
+import {
+  PreparedRotating,
+  ROTATING_MAX_LEAD,
+  ROTATING_MAX_VALIDITY_WINDOW,
+  ROTATING_MIN_REMAINING,
+  ROTATING_SEND_ATTEMPTS,
+  checkRotatingShape,
+  checkRotatingWindow,
+  newPreparedRotating,
+  refreshRotatingValidity,
+  rotatingTiming,
+  rotatingWindowCurrent,
+  simulationFailed,
+  simulationFailure,
+  type RotatingPrepareOptions,
+  type RotatingSignOptions,
+  type RotatingSignResult,
+} from "./rotating.js";
 import {
   SSH_USERNAME,
   normalizeSSHSetupTimeout,
@@ -694,53 +738,12 @@ async function simulateSignedGroup(
   if (!algodClient) {
     throw new SignerError("algodClient is required");
   }
-  if (signedGroup.length === 0) {
-    throw new SignerError("signed group is empty");
-  }
-
-  const signedTransactions = signedGroup.map((signedHex, index) => {
-    if (!signedHex) {
-      throw new SignerError(`signed group position ${index + 1} is empty`);
-    }
-    // The raw hex is what gets submitted and the decoded value is what gets
-    // simulated, so the two must be the same transaction exactly.
-    try {
-      return decodeCanonicalSignedTransaction(hexToBytes(signedHex));
-    } catch (error) {
-      throw new SignerError(
-        `signed group position ${index + 1}: ${errorText(error)}`
-      );
-    }
-  });
-
-  const makeRequest = (trace: boolean) => new algosdk.modelsv2.SimulateRequest({
-    txnGroups: [new algosdk.modelsv2.SimulateRequestTransactionGroup({
-      txns: signedTransactions,
-    })],
-    allowEmptySignatures: false,
-    fixSigners: false,
-    allowMoreLogging: trace,
-    execTraceConfig: trace
-      ? new algosdk.modelsv2.SimulateTraceConfig({ enable: true, stateChange: true })
-      : undefined,
-  });
-
-  let response: algosdk.modelsv2.SimulateResponse;
-  try {
-    response = await algodClient.simulateTransactions(makeRequest(true)).do();
-  } catch {
-    try {
-      response = await algodClient.simulateTransactions(makeRequest(false)).do();
-    } catch (error) {
-      throw new SignerError(
-        `simulation API call failed: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-  }
+  const { decoded: signedTransactions } = decodeExecutableSignedGroup(signedGroup);
+  const response = await runSimulation(algodClient, signedTransactions, false);
 
   return {
     txIds: signedTransactions.map((signed) => signed.txn.txID()),
-    transactions: signedTransactions.map((signed) => encodeTransaction(signed.txn)[0]),
+    transactions: signedGroupTransactions(signedTransactions),
     signedGroup: [...signedGroup],
     mutations,
     response,
@@ -1481,6 +1484,51 @@ function findSpendableKey(keys: KeyInfo[], address: string): KeyInfo | undefined
   return keys.find((key) => (
     key.address === address && key.isSpendingAccount !== false
   ));
+}
+
+/** What a prepare helper reads before it builds: suggested parameters and the signer's keys. */
+interface PrepParams {
+  suggestedParams: any;
+  /** Resolve the auth address from the keys read with the parameters. */
+  resolve: (address: string, accountInfo: AccountInfoResult) => ResolvedAuthAddress;
+}
+
+/** A send's result before signing fills it and submission settles its outcome. */
+function emptySendResult(flow: string, originalCount: number): SendResult {
+  return {
+    flow,
+    signedGroup: [],
+    originalCount,
+    txIds: [],
+    groupId: "",
+    fees: [],
+    outcome: SEND_OUTCOME_SUBMITTED,
+    confirmedRound: 0n,
+  };
+}
+
+/** The stable signer error code an error carries, or "". */
+function signerErrorCode(error: unknown): string {
+  return error instanceof SignerError ? error.code : "";
+}
+
+/** Wait ms milliseconds, or until signal aborts. */
+function sleepWithSignal(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(callerAborted());
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(callerAborted());
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 /**
@@ -2654,6 +2702,13 @@ export class SignerClient {
 
   /**
    * Resolve sender -> effective signer and verify signer key ownership.
+   *
+   * A rotating account is authorized by its current stage, which the signer
+   * derives from the account's key and never lists; the signer holds the
+   * account itself and signs for it at any stage, so its authAddress is the
+   * account and chainAuthAddress the stage's address. A rotating account
+   * rekeyed to an ordinary key the signer holds has left rotation, and that
+   * key signs for it like any rekey.
    */
   async resolveAuthAddress(
     address: string,
@@ -2670,14 +2725,32 @@ export class SignerClient {
       const message = error instanceof Error ? error.message : String(error);
       throw new SignerError(`failed to query account info: ${message}`);
     }
+    return this.resolveFromAccountInfo(address, accountInfo, await this.listKeysIfKeysetChanged());
+  }
 
+  /** resolveAuthAddress, from account information and a key listing already read. */
+  private resolveFromAccountInfo(
+    address: string,
+    accountInfo: AccountInfoResult,
+    keys: KeyInfo[],
+  ): ResolvedAuthAddress {
     const authAddress = extractAuthAddress(accountInfo);
     const signingAddress =
       authAddress && authAddress !== address ? authAddress : address;
-    const keyInfo = findSpendableKey(
-      await this.listKeysIfKeysetChanged(),
-      signingAddress,
-    );
+
+    const own = findSpendableKey(keys, address);
+    const leftRotation = signingAddress !== address && findSpendableKey(keys, signingAddress) !== undefined;
+    if (own?.signingFlow === SIGNING_FLOW_ROTATING1 && !leftRotation) {
+      return {
+        address,
+        authAddress: address,
+        isRekeyed: false,
+        chainAuthAddress: authAddress && authAddress !== address ? authAddress : "",
+        keyInfo: own,
+      };
+    }
+
+    const keyInfo = findSpendableKey(keys, signingAddress);
     if (!keyInfo) {
       if (signingAddress === address) {
         throw new KeyNotFoundError(`${address} is not available for signing`);
@@ -2691,7 +2764,45 @@ export class SignerClient {
       address,
       authAddress: signingAddress,
       isRekeyed: signingAddress !== address,
+      chainAuthAddress: signingAddress !== address ? signingAddress : "",
       keyInfo,
+    };
+  }
+
+  /**
+   * Fetch suggested parameters for a transaction sender is about to send.
+   * For a rotating account it shortens the validity window to what the
+   * account's stage program accepts, so every prepare helper builds a
+   * transaction a rotating account can send.
+   *
+   * It reads the signer's keys once for the helper: the same listing
+   * resolves the sender's auth address afterwards. A signer that cannot be
+   * asked is not reported here; resolution reports that failure in its
+   * usual form, where it always has.
+   */
+  private async prepSuggestedParams(algodClient: any, sender: string): Promise<PrepParams> {
+    const suggestedParams = await algodClient.getTransactionParams().do();
+    let keys: KeyInfo[] | undefined;
+    let keysError: unknown;
+    try {
+      keys = await this.listKeysIfKeysetChanged();
+    } catch (error) {
+      keysError = error;
+    }
+    const own = keys && sender ? findSpendableKey(keys, sender) : undefined;
+    if (own?.signingFlow === SIGNING_FLOW_ROTATING1) {
+      const first = wholeNumber(suggestedParams.firstValid);
+      const last = wholeNumber(suggestedParams.lastValid);
+      if (first !== undefined && last !== undefined && last - first > BigInt(ROTATING_MAX_VALIDITY_WINDOW)) {
+        suggestedParams.lastValid = first + BigInt(ROTATING_MAX_VALIDITY_WINDOW);
+      }
+    }
+    return {
+      suggestedParams,
+      resolve: (address: string, accountInfo: AccountInfoResult) => {
+        if (!keys) throw keysError;
+        return this.resolveFromAccountInfo(address, accountInfo, keys);
+      },
     };
   }
 
@@ -2713,7 +2824,7 @@ export class SignerClient {
     }
     requireUint(params.amount, "amount");
 
-    const suggestedParams = await algodClient.getTransactionParams().do();
+    const { suggestedParams, resolve } = await this.prepSuggestedParams(algodClient, params.sender);
     applyPrepFee(suggestedParams, params.fee);
 
     const senderInfo = await algodClient.accountInformation(params.sender).do();
@@ -2732,7 +2843,7 @@ export class SignerClient {
       throw new SignerError(`insufficient funds: available ${available}, required ${required}`);
     }
 
-    const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
+    const resolved = resolve(params.sender, senderInfo);
     return {
       transaction: txn,
       authAddress: resolved.authAddress,
@@ -2770,7 +2881,7 @@ export class SignerClient {
     requireUint(params.assetId, "assetId", true);
     requireUint(params.amount, "amount");
 
-    const suggestedParams = await algodClient.getTransactionParams().do();
+    const { suggestedParams, resolve } = await this.prepSuggestedParams(algodClient, params.sender);
     applyPrepFee(suggestedParams, params.fee);
 
     const senderInfo = await algodClient.accountInformation(params.sender).do();
@@ -2807,7 +2918,7 @@ export class SignerClient {
       );
     }
 
-    const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
+    const resolved = resolve(params.sender, senderInfo);
     return {
       transaction: txn,
       authAddress: resolved.authAddress,
@@ -2842,7 +2953,7 @@ export class SignerClient {
     }
     requireUint(params.assetId, "assetId", true);
 
-    const suggestedParams = await algodClient.getTransactionParams().do();
+    const { suggestedParams, resolve } = await this.prepSuggestedParams(algodClient, params.sender);
     applyPrepFee(suggestedParams, params.fee);
 
     const senderInfo = await algodClient.accountInformation(params.sender).do();
@@ -2858,7 +2969,7 @@ export class SignerClient {
     // suggested fee is per byte, usually zero, and would check nothing.
     const checks = asaOptInChecks(senderInfo, params.assetId, Number(txn.fee));
 
-    const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
+    const resolved = resolve(params.sender, senderInfo);
     return {
       transaction: txn,
       authAddress: resolved.authAddress,
@@ -2890,7 +3001,7 @@ export class SignerClient {
     }
     requireUint(params.assetId, "assetId", true);
 
-    const suggestedParams = await algodClient.getTransactionParams().do();
+    const { suggestedParams, resolve } = await this.prepSuggestedParams(algodClient, params.sender);
     applyPrepFee(suggestedParams, params.fee);
 
     const senderInfo = await algodClient.accountInformation(params.sender).do();
@@ -2906,7 +3017,7 @@ export class SignerClient {
       suggestedParams,
     });
 
-    const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
+    const resolved = resolve(params.sender, senderInfo);
     return {
       transaction: txn,
       authAddress: resolved.authAddress,
@@ -2934,7 +3045,7 @@ export class SignerClient {
       throw new SignerError("closeTo must differ from sender");
     }
 
-    const suggestedParams = await algodClient.getTransactionParams().do();
+    const { suggestedParams, resolve } = await this.prepSuggestedParams(algodClient, params.sender);
     applyPrepFee(suggestedParams, params.fee);
 
     const senderInfo = await algodClient.accountInformation(params.sender).do();
@@ -2950,7 +3061,7 @@ export class SignerClient {
     // per-byte fee.
     const checks = accountCloseChecks(senderInfo, Number(txn.fee));
 
-    const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
+    const resolved = resolve(params.sender, senderInfo);
     return {
       transaction: txn,
       authAddress: resolved.authAddress,
@@ -2975,7 +3086,7 @@ export class SignerClient {
       throw new SignerError("rekeyTo is required");
     }
 
-    const suggestedParams = await algodClient.getTransactionParams().do();
+    const { suggestedParams, resolve } = await this.prepSuggestedParams(algodClient, params.sender);
     applyPrepFee(suggestedParams, params.fee);
 
     const senderInfo = await algodClient.accountInformation(params.sender).do();
@@ -2992,7 +3103,7 @@ export class SignerClient {
       suggestedParams,
     });
 
-    const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
+    const resolved = resolve(params.sender, senderInfo);
     // Resolution just refreshed the inventory, so the cache answers for the
     // target without another round trip.
     const target = params.rekeyTo === params.sender ? undefined : this.keyCache.get(params.rekeyTo);
@@ -3021,7 +3132,7 @@ export class SignerClient {
     }
     validateKeyregParams(params);
 
-    const suggestedParams = await algodClient.getTransactionParams().do();
+    const { suggestedParams, resolve } = await this.prepSuggestedParams(algodClient, params.sender);
     applyPrepFee(suggestedParams, params.fee);
 
     const senderInfo = await algodClient.accountInformation(params.sender).do();
@@ -3057,7 +3168,7 @@ export class SignerClient {
       throw new SignerError(`insufficient funds for keyreg fee: available ${available}, fee ${txn.fee}`);
     }
 
-    const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
+    const resolved = resolve(params.sender, senderInfo);
     let message: string | undefined;
     if (chargeIncentiveFee) {
       message = "the 2 ALGO incentive eligibility fee is included";
@@ -3157,7 +3268,7 @@ export class SignerClient {
       throw new SignerError(`invalid onComplete: ${onComplete}`);
     }
 
-    const suggestedParams = await algodClient.getTransactionParams().do();
+    const { suggestedParams, resolve } = await this.prepSuggestedParams(algodClient, params.sender);
     applyPrepFee(suggestedParams, params.fee);
 
     const senderInfo = await algodClient.accountInformation(params.sender).do();
@@ -3181,7 +3292,7 @@ export class SignerClient {
       suggestedParams,
     });
 
-    const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
+    const resolved = resolve(params.sender, senderInfo);
     return {
       transaction: txn,
       authAddress: resolved.authAddress,
@@ -3212,7 +3323,7 @@ export class SignerClient {
     requireAppCreateCounts(params);
     requireAppReferences(params);
 
-    const suggestedParams = await algodClient.getTransactionParams().do();
+    const { suggestedParams, resolve } = await this.prepSuggestedParams(algodClient, params.sender);
     applyPrepFee(suggestedParams, params.fee);
 
     const senderInfo = await algodClient.accountInformation(params.sender).do();
@@ -3235,7 +3346,7 @@ export class SignerClient {
       suggestedParams,
     });
 
-    const resolved = await this.resolveAuthAddress(params.sender, () => senderInfo);
+    const resolved = resolve(params.sender, senderInfo);
     return {
       transaction: txn,
       authAddress: resolved.authAddress,
@@ -3612,7 +3723,9 @@ export class SignerClient {
       });
     } catch (error) {
       if (approvalBearing) await this.bestEffortCancelSignRequest(requestBody.request_id || "");
-      throw error;
+      // A component request releases a signature: one whose answer never
+      // arrived may have released it.
+      throw markLostAnswer(error);
     }
     if (response.status === 401) throw new AuthenticationError();
     if (response.status === 403) throw await this.forbiddenRejectedError(response, "Component signing request rejected");
@@ -3623,7 +3736,7 @@ export class SignerClient {
     try {
       data = (await response.json()) as ComponentResponse & { error?: string };
     } catch {
-      throw new SignerError("Server returned invalid JSON");
+      throw markLostAnswer(new SignerError("Server returned invalid JSON"));
     }
     if (data.error) throw new SignerError(data.error);
     try {
@@ -3662,12 +3775,19 @@ export class SignerClient {
       );
     }
 
-    const response = await this.fetch("/sign/assemble", {
-      method: "POST",
-      body: JSON.stringify(requestBody),
-      timeout: this.timeoutFor(COSIGNED_ASSEMBLY_TIMEOUT),
-      signal: options?.signal,
-    });
+    let response: Response;
+    try {
+      response = await this.fetch("/sign/assemble", {
+        method: "POST",
+        body: JSON.stringify(requestBody),
+        timeout: this.timeoutFor(COSIGNED_ASSEMBLY_TIMEOUT),
+        signal: options?.signal,
+      });
+    } catch (error) {
+      // Assembly releases the whole group: an answer that never arrived may
+      // have released it.
+      throw markLostAnswer(error);
+    }
 
     if (response.status === 401) {
       throw new AuthenticationError();
@@ -3689,7 +3809,7 @@ export class SignerClient {
     try {
       data = (await response.json()) as AssemblyResponse & { error?: string };
     } catch {
-      throw new SignerError("Server returned invalid JSON");
+      throw markLostAnswer(new SignerError("Server returned invalid JSON"));
     }
 
     if (data.error) {
@@ -3800,7 +3920,7 @@ export class SignerClient {
     if (data.mutations) {
       data = {
         ...data,
-        mutations: this.normalizeMutationReport(data.mutations),
+        mutations: normalizeMutationReport(data.mutations),
       };
     }
 
@@ -3811,20 +3931,6 @@ export class SignerClient {
     }
 
     return data;
-  }
-
-  private normalizeMutationReport(raw: any): MutationReport {
-    return {
-      dummiesAdded: raw.dummies_added ?? raw.dummiesAdded,
-      groupIdChanged: raw.group_id_changed ?? raw.groupIdChanged,
-      feesModified: raw.fees_modified ?? raw.feesModified,
-      totalFeesDelta: raw.total_fees_delta ?? raw.totalFeesDelta,
-      originalCount: raw.original_count ?? raw.originalCount,
-      finalCount: raw.final_count ?? raw.finalCount,
-      passthroughCount: raw.passthrough_count ?? raw.passthroughCount,
-      foreignCount: raw.foreign_count ?? raw.foreignCount,
-      reason: raw.reason,
-    };
   }
 
   /**
@@ -3982,66 +4088,96 @@ export class SignerClient {
     const maxFeeIncrease = this.feeCeilingSnapshot();
     const signBody: GroupSignRequest = { request_id: requestId, requests };
 
-    await this.discoverApprovalWait();
-
-    let response: Response;
-    try {
-      response = await this.fetch("/sign", {
-        method: "POST",
-        body: JSON.stringify(signBody),
-        timeout: this.signRequestTimeout(),
-        signal: options?.signal,
-      });
-    } catch (error) {
-      await this.bestEffortCancelSignRequest(requestId);
-      throw error;
-    }
-
-    if (response.status === 401) {
-      throw new AuthenticationError();
-    }
-
-    if (response.status === 400) {
-      throw await this.badRequestError(response);
-    }
-
-    if (response.status === 403) {
-      throw await this.forbiddenRejectedError(response, "Signing request rejected by operator");
-    }
-
-    if (response.status === 503) {
-      const error = await this.errorMessage(response, "Signer unavailable");
-      throw new SignerUnavailableError(error);
-    }
-
-    if (response.status !== 200) {
-      throw await this.signerHTTPError(response, `Signing failed: HTTP ${response.status}`);
-    }
-
-    let data: GroupSignResponse;
-    try {
-      data = (await response.json()) as GroupSignResponse;
-    } catch {
-      throw new SignerError("Server returned invalid JSON");
-    }
+    const data = await this.postApproval<GroupSignResponse>(
+      "/sign",
+      requestId,
+      JSON.stringify(signBody),
+      options?.signal,
+      async (response) => {
+        if (response.status === 401) {
+          return new AuthenticationError();
+        }
+        if (response.status === 400) {
+          return this.badRequestError(response);
+        }
+        if (response.status === 403) {
+          return this.forbiddenRejectedError(response, "Signing request rejected by operator");
+        }
+        if (response.status === 503) {
+          return new SignerUnavailableError(await this.errorMessage(response, "Signer unavailable"));
+        }
+        return this.signerHTTPError(response, `Signing failed: HTTP ${response.status}`);
+      },
+    );
 
     if (data.error) {
       throw new SignerError(data.error);
     }
 
     // The wire report is snake_case; callers read the typed camelCase fields.
-    if (data.mutations) {
-      data = { ...data, mutations: this.normalizeMutationReport(data.mutations) };
-    }
+    const result: GroupSignResponse = data.mutations
+      ? { ...data, mutations: normalizeMutationReport(data.mutations) }
+      : data;
 
     // Every sign path goes through here, so a truncated, altered or padded
     // group can never be returned for submission or simulation.
     try {
-      validateSignResponse(slots, data.signed ?? [], data.mutations, maxFeeIncrease);
+      validateSignResponse(slots, result.signed ?? [], result.mutations, maxFeeIncrease);
     } catch (error) {
       throw verificationError("verify signer response: ", error);
     }
 
+    return result;
+  }
+
+  /**
+   * Post an approval-bearing request and return its 200 answer, parsed. It
+   * waits as long as the signer's approval wait allows, and cancels the
+   * pending approval when the timeout or the caller's signal ends it first.
+   * A signal already aborted sends nothing and is a plain stop. A non-200
+   * answer is the error `refuse` makes of it. An exchange that failed, and a
+   * 200 whose body could not be read, are marked as lost answers: the signer
+   * may have acted on the request.
+   */
+  private async postApproval<T>(
+    path: string,
+    requestId: string,
+    body: string,
+    signal: AbortSignal | undefined,
+    refuse: (response: Response) => Promise<SignerError>,
+  ): Promise<T> {
+    await this.discoverApprovalWait();
+    if (signal?.aborted) {
+      throw callerAborted();
+    }
+
+    let response: Response;
+    try {
+      response = await this.fetch(path, {
+        method: "POST",
+        body,
+        timeout: this.signRequestTimeout(),
+        signal,
+      });
+    } catch (error) {
+      await this.bestEffortCancelSignRequest(requestId);
+      throw markLostAnswer(error);
+    }
+
+    if (response.status !== 200) {
+      throw await refuse(response);
+    }
+    let data: T;
+    try {
+      data = (await response.json()) as T;
+    } catch {
+      throw markLostAnswer(new SignerError("Server returned invalid JSON"));
+    }
+    // A body that parses but is not an object is an answer, and a malformed
+    // one: the caller's check of it refuses it.
+    if (data === null || typeof data !== "object") {
+      throw new SignerError("signer returned a malformed response");
+    }
     return data;
   }
 
@@ -4076,6 +4212,579 @@ export class SignerClient {
     options?: SignOptions,
   ): Promise<SimulationResult> {
     return this.simulatePreparedGroup(algodClient, { transactions: [prepared] }, options);
+  }
+
+  /**
+   * Build an ALGO payment, then sign, submit and track it with sendPrepared.
+   * It works the same way for every account type sendPrepared supports.
+   */
+  async sendPayment(
+    algodClient: Algodv2,
+    params: PaymentPrepParams,
+    options?: SendOptions,
+  ): Promise<SendResult> {
+    checkSendOptions(options);
+    const prepared = await this.preparePayment(algodClient, params);
+    return this.sendPreparedGroup(algodClient, { transactions: [prepared] }, options, true);
+  }
+
+  /**
+   * Sign a prepared transaction or group with the signing flow each account
+   * needs, check the signed result against what was prepared, submit exactly
+   * those bytes, and by default wait for confirmation.
+   *
+   * The flow is chosen from the signer's own record of each key, never from
+   * the caller. A rotating account is signed for by another key only when
+   * the chain says it is rekeyed to that key. A group of ordinary and bounded
+   * accounts goes through /sign; a group with a cosigned account goes through
+   * the cosigned sequence, which needs the cosigner named in options when a
+   * position requires its signature. A rotating account's transaction, which
+   * must be alone and ungrouped, goes through the rotating sequence: prepare,
+   * check, simulate unsigned, then sign. An unknown flow, or a pre-signed or
+   * foreign position, is refused before anything is signed.
+   *
+   * Every position must be one whose key this signer holds, and must name it
+   * in authAddress, as the prepare helpers do.
+   *
+   * A refusal by the signer, and an answer of the signer's that the SDK
+   * refuses, come back as the signing call's own error; nothing was
+   * submitted. The other failures are typed: SignOutcomeUnknownError (an
+   * approval-bearing request ended with no answer), SubmissionRejectedError
+   * and SubmissionUncertainError (the group was signed, and the error keeps
+   * the signed bytes and their IDs), RotatingPreflightError,
+   * UnsupportedSigningFlowError and UnsupportedGroupError. A rotating send
+   * may prepare and seek approval again, a bounded number of times, when the
+   * signer says an attempt released no signature. No send ever builds a
+   * replacement for a transaction whose outcome is unknown.
+   */
+  async sendPrepared(
+    algodClient: Algodv2,
+    group: PreparedGroup,
+    options?: SendOptions,
+  ): Promise<SendResult> {
+    return this.sendPreparedGroup(algodClient, group, options, false);
+  }
+
+  /**
+   * sendPrepared. intentBuilt says the SDK built the group's transactions
+   * itself, so it may rebuild their validity rounds.
+   */
+  private async sendPreparedGroup(
+    algodClient: Algodv2,
+    group: PreparedGroup,
+    options: SendOptions | undefined,
+    intentBuilt: boolean,
+  ): Promise<SendResult> {
+    if (!algodClient) {
+      throw new SignerError("algodClient is required");
+    }
+    const checked = checkSendOptions(options);
+    const opts = options ?? {};
+    const signal = opts.signal;
+    const { flow, leftRotation } = await this.classifySend(group);
+    // A rotating account is signed for by another key only when the chain
+    // says it is rekeyed to that key. Without this a caller could have an
+    // ordinary key sign a rotating account's transaction, outside the
+    // rotating rules: refused by the network today, but signed.
+    for (const index of leftRotation) {
+      const item = group.transactions[index];
+      const sender = (item.transaction as Transaction).sender.toString();
+      let info: AccountInfoResult;
+      try {
+        info = await (algodClient as any).accountInformation(sender).do(undefined, algodOptions(signal));
+      } catch (error) {
+        throw new SignerError(
+          `prepared transaction ${index}: read the authorizer of rotating account ${sender}: ${errorText(error)}`,
+        );
+      }
+      if (extractAuthAddress(info) !== item.authAddress) {
+        throw new UnsupportedGroupError(
+          `prepared transaction ${index}: group not supported by unified sending: it names auth address ` +
+            `${item.authAddress}, but rotating account ${sender} is not rekeyed to it`,
+        );
+      }
+    }
+    // Nothing has been asked of the signer yet, so an aborted signal is a
+    // plain stop, not an unknown outcome.
+    if (signal?.aborted) {
+      throw callerAborted();
+    }
+
+    if (flow === SIGNING_FLOW_ROTATING1) {
+      return this.sendRotating(
+        algodClient,
+        group.transactions[0],
+        checked,
+        intentBuilt || Boolean(opts.refreshValidity),
+      );
+    }
+
+    const result = emptySendResult(flow, group.transactions.length);
+    if (flow === SIGNING_FLOW_COSIGNED1) {
+      let signed: CosignedSignResult;
+      try {
+        signed = await signPreparedCosignedGroup({
+          userClient: this,
+          cosignerClient: opts.cosignerClient,
+          cosignerResolver: opts.cosignerResolver,
+          cosignerComponentKey: opts.cosignerComponentKey,
+          preparedGroup: group,
+          signal,
+        });
+      } catch (error) {
+        // The sequence makes several approval-bearing requests. One that
+        // ended with no answer may have released a signature, and the last
+        // of them releases the whole group.
+        if (isLostAnswer(error)) {
+          throw new SignOutcomeUnknownError({ cause: error });
+        }
+        throw error;
+      }
+      result.signedGroup = [...signed.signedGroup];
+      result.mutations = signed.planMutations;
+      result.cosigned = signed;
+    } else {
+      const response = await this.signForSend(group, signal);
+      result.signedGroup = [...(response.signed ?? [])];
+      result.mutations = response.mutations;
+    }
+
+    let raw: Uint8Array[];
+    try {
+      raw = describeSignedGroup(result);
+    } catch (error) {
+      throw new SignerError(`verify signed group: ${errorText(error)}`);
+    }
+    await submitAndTrack(algodClient, raw, result, checked);
+    return result;
+  }
+
+  /**
+   * Pick the one signing flow for the whole group from the signer's records,
+   * or refuse a group unified sending does not cover. Nothing has been signed
+   * when it returns.
+   *
+   * leftRotation lists the positions whose sender is a rotating account and
+   * which name another held key: the caller must confirm on the chain that
+   * the account is rekeyed to that key before anything is signed.
+   */
+  private async classifySend(group: PreparedGroup): Promise<{ flow: string; leftRotation: number[] }> {
+    const items = group?.transactions ?? [];
+    if (!Array.isArray(items) || items.length === 0) {
+      throw new SignerError("prepared group is empty");
+    }
+    const keys = await this.listKeysIfKeysetChanged();
+    let flow = "";
+    const leftRotation: number[] = [];
+    for (let index = 0; index < items.length; index++) {
+      const item = items[index];
+      if (item.signedTransactionBase64) {
+        throw new UnsupportedGroupError(
+          `prepared transaction ${index}: group not supported by unified sending: it is already signed; ` +
+            "use the lower-level signing calls for a pre-signed position",
+        );
+      }
+      if (!item.transaction) {
+        throw new SignerError(`prepared transaction ${index}: transaction is required`);
+      }
+      const authAddress = item.authAddress;
+      if (!authAddress) {
+        throw new UnsupportedGroupError(
+          `prepared transaction ${index}: group not supported by unified sending: it names no auth address, ` +
+            "so this signer does not sign it",
+        );
+      }
+      // A rotating account is recognised by its own record: once it has
+      // rotated, its on-chain authorizer is a stage address the signer does
+      // not list. It signs alone, and as itself.
+      const sender = item.transaction.sender.toString();
+      // A position that names another key the signer holds says the account
+      // left rotation for that key. It is routed by that key once the chain
+      // confirms the rekey.
+      const namesAnotherKey = authAddress !== sender && findSpendableKey(keys, authAddress) !== undefined;
+      const own = findSpendableKey(keys, sender);
+      const rotatingSender = own?.signingFlow === SIGNING_FLOW_ROTATING1;
+      if (rotatingSender && namesAnotherKey) {
+        leftRotation.push(index);
+      }
+      if (rotatingSender && !namesAnotherKey) {
+        if (items.length !== 1) {
+          throw new UnsupportedGroupError(
+            `prepared transaction ${index}: group not supported by unified sending: ${sender} is a rotating ` +
+              "account, which sends one transaction alone; the signer forms its group",
+          );
+        }
+        if (authAddress !== sender) {
+          throw new UnsupportedGroupError(
+            `prepared transaction ${index}: group not supported by unified sending: it names auth address ` +
+              `${authAddress}, but ${sender} is a rotating account and signs as itself`,
+          );
+        }
+        return { flow: SIGNING_FLOW_ROTATING1, leftRotation: [] };
+      }
+      const key = findSpendableKey(keys, authAddress);
+      if (!key) {
+        throw new KeyNotFoundError(`prepared transaction ${index}: ${authAddress} is not available for signing`);
+      }
+      switch (key.signingFlow ?? "") {
+        case "":
+        case SIGNING_FLOW_BOUNDED1:
+          break;
+        case SIGNING_FLOW_COSIGNED1:
+          flow = SIGNING_FLOW_COSIGNED1;
+          break;
+        case SIGNING_FLOW_ROTATING1:
+          throw new UnsupportedGroupError(
+            `prepared transaction ${index}: group not supported by unified sending: it names rotating account ` +
+              `${authAddress} as the auth address of another sender; a rotating account signs only its own transactions`,
+          );
+        default:
+          throw new UnsupportedSigningFlowError(
+            `prepared transaction ${index}: unsupported signing flow: key ${authAddress} requires signing flow ` +
+              `${JSON.stringify(key.signingFlow)}; upgrade the SDK`,
+          );
+      }
+    }
+    return { flow, leftRotation };
+  }
+
+  /**
+   * The ordinary /sign flow for a send: signRequests, with an exchange that
+   * ended with no usable answer told apart from a refusal.
+   */
+  private async signForSend(group: PreparedGroup, signal?: AbortSignal): Promise<GroupSignResponse> {
+    const requests = preparedGroupToSignRequests(group);
+    const requestId = newSignRequestId();
+    try {
+      return await this.signRequests(requests, { requestId, signal });
+    } catch (error) {
+      if (isLostAnswer(error)) {
+        throw new SignOutcomeUnknownError({ requestId, requests, cause: error });
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Submit a signed group exactly as given and, unless told not to, wait for
+   * confirmation. It signs nothing. Use it to submit a group from
+   * signPreparedRotating, or to submit again the signedGroup a
+   * SubmissionUncertainError kept: the same bytes can execute only once.
+   *
+   * Each entry must be one canonically encoded signed transaction, hex
+   * msgpack, and a group of several must carry the group ID computed over
+   * itself.
+   */
+  async submitSignedGroup(
+    algodClient: Algodv2,
+    signedGroup: string[],
+    options?: SendOptions,
+  ): Promise<SendResult> {
+    if (!algodClient) {
+      throw new SignerError("algodClient is required");
+    }
+    const checked = checkSendOptions(options);
+    if (!Array.isArray(signedGroup)) {
+      throw new SignerError("verify signed group: signed group is empty");
+    }
+    const result = emptySendResult("", signedGroup.length);
+    result.signedGroup = [...signedGroup];
+    let raw: Uint8Array[];
+    try {
+      raw = describeSignedGroup(result);
+    } catch (error) {
+      throw new SignerError(`verify signed group: ${errorText(error)}`);
+    }
+    await submitAndTrack(algodClient, raw, result, checked);
+    return result;
+  }
+
+  /**
+   * Ask the signer to prepare one transaction from a rotating account and
+   * check the group it returns. The transaction must be ungrouped, set no
+   * rekeyTo, not close the account, and have a validity window of at most
+   * ROTATING_MAX_VALIDITY_WINDOW rounds. Nothing is signed.
+   *
+   * The signer may set rekeyTo to the next stage's address, raise the fee,
+   * assign a group ID and append canonical resource dummies. Any other
+   * change, a report that disagrees with the bytes, or a fee raise above the
+   * client's max fee increase is an error.
+   */
+  async prepareRotating(
+    txn: Transaction,
+    options?: RotatingPrepareOptions,
+  ): Promise<PreparedRotating> {
+    if (!txn) {
+      throw new SignerError("transaction is required");
+    }
+    checkRotatingShape(txn);
+    checkRotatingWindow(txn);
+    const [originalHex] = encodeTransaction(txn);
+    const request: RotatingPrepareRequest = {
+      account: txn.sender.toString(),
+      txn_bytes_hex: originalHex,
+    };
+    const maxFeeIncrease = this.feeCeilingSnapshot();
+
+    const response = await this.fetch("/sign/rotating/prepare", {
+      method: "POST",
+      body: JSON.stringify(request),
+      timeout: this.timeoutFor(GROUP_PLAN_TIMEOUT),
+      signal: options?.signal,
+    });
+    if (response.status !== 200) {
+      throw await this.rotatingAPIError(response, "rotating prepare failed");
+    }
+    let data: RotatingPrepareResponse;
+    try {
+      data = (await response.json()) as RotatingPrepareResponse;
+    } catch {
+      throw new SignerError("Server returned invalid JSON");
+    }
+    try {
+      return newPreparedRotating(originalHex, data, maxFeeIncrease, options?.appCallInfo);
+    } catch (error) {
+      throw verificationError("verify prepared rotating group: ", error);
+    }
+  }
+
+  /**
+   * Simulate the prepared group, unsigned, through the caller's algod. It
+   * never signs. A failed simulation, or an answer without exactly one group
+   * result, is reported in the result's `failed` field, not as an error.
+   *
+   * It checks the group's effects. It does not prove the stage's signatures
+   * will pass: the node runs the stage program only on the signed group.
+   */
+  async simulatePreparedRotating(
+    algodClient: Algodv2,
+    prepared: PreparedRotating,
+    options?: { signal?: AbortSignal },
+  ): Promise<SimulationResult> {
+    if (!algodClient) {
+      throw new SignerError("algodClient is required");
+    }
+    if (!(prepared instanceof PreparedRotating)) {
+      throw new SignerError("prepared rotating group is required");
+    }
+    try {
+      prepared.verify();
+    } catch (error) {
+      throw verificationError("verify prepared rotating group: ", error);
+    }
+    const unsigned = prepared.decoded().map((txn) => new algosdk.SignedTransaction({ txn }));
+    const response = await runSimulation(algodClient, unsigned, true, options?.signal);
+    return {
+      txIds: prepared.txIds(),
+      transactions: prepared.transactions(),
+      signedGroup: [],
+      mutations: prepared.mutations(),
+      response,
+      failed: simulationFailed(response),
+    };
+  }
+
+  /**
+   * Ask the signer to sign a prepared rotating group, wait for operator
+   * approval, and check the signed group against the prepared one. It does
+   * not submit.
+   *
+   * If the answer never arrives it throws a SignOutcomeUnknownError that
+   * carries the prepared group. Calling signPreparedRotating again with that
+   * same prepared group is the safe recovery: it asks for the same
+   * transaction, with the same IDs, and builds no second spend. It needs
+   * approval again, and it succeeds only while the stage is still live and
+   * the window still acceptable. If that retry is refused, do not prepare a
+   * replacement until the first attempt's outcome is known;
+   * rotating_stage_changed in particular means a transaction from that stage
+   * has confirmed.
+   */
+  async signPreparedRotating(
+    prepared: PreparedRotating,
+    options?: RotatingSignOptions,
+  ): Promise<RotatingSignResult> {
+    if (!(prepared instanceof PreparedRotating)) {
+      throw new SignerError("prepared rotating group is required");
+    }
+    // The binding is checked again at the signing boundary.
+    try {
+      prepared.verify();
+    } catch (error) {
+      throw verificationError("verify prepared rotating group: ", error);
+    }
+    const requestId = options?.requestId || newSignRequestId();
+    validateSignRequestId(requestId, true);
+
+    let data: RotatingSignResponse;
+    try {
+      data = await this.postApproval<RotatingSignResponse>(
+        "/sign/rotating/sign",
+        requestId,
+        JSON.stringify(prepared.signRequestBody(requestId)),
+        options?.signal,
+        (response) => this.rotatingAPIError(response, "rotating sign failed"),
+      );
+    } catch (error) {
+      if (isLostAnswer(error)) {
+        throw new SignOutcomeUnknownError({ requestId, rotating: prepared, cause: error });
+      }
+      throw error;
+    }
+    let result: RotatingSignResult;
+    try {
+      result = prepared.verifySigned(data);
+    } catch (error) {
+      throw verificationError("verify signer response: ", error);
+    }
+    result.requestId = requestId;
+    return result;
+  }
+
+  /**
+   * Run the rotating1 flow for one transaction: prepare, check the prepared
+   * group, simulate it unsigned, then sign and submit exactly those bytes. A
+   * failed check or simulation happens before any key is used.
+   *
+   * refresh says the validity rounds may be rebuilt: always for a
+   * transaction the SDK built from an intent, and for a supplied one only
+   * when the caller set refreshValidity. A supplied transaction is otherwise
+   * sent as given.
+   *
+   * An attempt is repeated, at most ROTATING_SEND_ATTEMPTS times, only when
+   * the signer said that attempt released no signature: it has not found the
+   * live stage yet, the account's authorizer moved between prepare and sign,
+   * or the window was not current at signing. Every attempt needs approval
+   * again. A sign whose answer never arrived, and any failure after
+   * submission, ends the send: it never builds a replacement spend on its
+   * own.
+   */
+  private async sendRotating(
+    algodClient: Algodv2,
+    item: PreparedTransaction,
+    checked: CheckedSendOptions,
+    refresh: boolean,
+  ): Promise<SendResult> {
+    if (item.lsigArgs && Object.keys(item.lsigArgs).length > 0) {
+      throw new UnsupportedGroupError(
+        "group not supported by unified sending: a rotating account takes no LogicSig arguments from the caller",
+      );
+    }
+    const algod = algodClient as any;
+    const signal = checked.signal;
+    let txn = item.transaction as Transaction;
+    // prepareRotating refuses a spend of the wrong shape, or with a window
+    // over the limit, before it asks the signer anything.
+    const prepareOptions: RotatingPrepareOptions = { appCallInfo: item.appCallInfo, signal };
+
+    for (let attempt = 1; ; attempt++) {
+      const last = attempt === ROTATING_SEND_ATTEMPTS;
+      // The signer signs only while the window is current. Checking here
+      // saves the operator an approval that could not lead to a signature.
+      let round: bigint;
+      try {
+        const status = await algod.status().do(undefined, algodOptions(signal));
+        round = algodRound(status?.lastRound, "last round");
+      } catch (error) {
+        throw new SignerError(`read current round: ${errorText(error)}`);
+      }
+      if (!rotatingWindowCurrent(txn, round)) {
+        if (!refresh) {
+          checkRotatingWindow(txn);
+          throw new SignerError(
+            `validity rounds ${txn.firstValid}-${txn.lastValid} are not current at round ${round}: ` +
+              `a rotating account signs only while first valid is at most ${ROTATING_MAX_LEAD} rounds ahead ` +
+              `and at least ${ROTATING_MIN_REMAINING} rounds remain (rebuild the transaction, or set refreshValidity)`,
+          );
+        }
+        txn = await refreshRotatingValidity(algod, txn, false, algodOptions(signal));
+      }
+
+      let prepared: PreparedRotating;
+      try {
+        prepared = await this.prepareRotating(txn, prepareOptions);
+      } catch (error) {
+        if (signerErrorCode(error) === ErrorCodes.RotatingStageUnproven && !last) {
+          try {
+            await sleepWithSignal(attempt * rotatingTiming.unprovenBackoffMs, signal);
+          } catch (waitError) {
+            throw new SignerError(
+              `${errorText(error)} (and the wait to retry ended: ${errorText(waitError)})`,
+              signerErrorCode(error),
+            );
+          }
+          continue;
+        }
+        throw error;
+      }
+
+      let simulation: SimulationResult;
+      try {
+        simulation = await this.simulatePreparedRotating(algodClient, prepared, { signal });
+      } catch (error) {
+        throw new SignerError(`simulate prepared rotating group; nothing was signed: ${errorText(error)}`);
+      }
+      if (simulation.failed) {
+        throw new RotatingPreflightError(prepared, simulationFailure(simulation.response));
+      }
+      // Nothing has been asked to sign yet, so an aborted signal is a plain
+      // stop, not an unknown outcome.
+      if (signal?.aborted) {
+        throw callerAborted();
+      }
+
+      let signed: RotatingSignResult;
+      try {
+        signed = await this.signPreparedRotating(prepared, { signal });
+      } catch (error) {
+        const code = signerErrorCode(error);
+        if (code === ErrorCodes.RotatingStageChanged && !last) {
+          continue;
+        }
+        if (code === ERROR_CODE_ROTATING_WINDOW_NOT_CURRENT && refresh && !last) {
+          txn = await refreshRotatingValidity(algod, txn, true, algodOptions(signal));
+          continue;
+        }
+        throw error;
+      }
+
+      const result = emptySendResult(SIGNING_FLOW_ROTATING1, 1);
+      result.signedGroup = [...signed.signedGroup];
+      result.mutations = prepared.mutations();
+      result.rotating = {
+        stage: signed.stage,
+        target: signed.target,
+        rekeyTo: prepared.rekeyTo,
+        attempts: attempt,
+        transaction: cloneTransaction(txn),
+        requestId: signed.requestId,
+      };
+      let raw: Uint8Array[];
+      try {
+        raw = describeSignedGroup(result);
+      } catch (error) {
+        throw new SignerError(`verify signed group: ${errorText(error)}`);
+      }
+      await submitAndTrack(algodClient, raw, result, checked);
+      return result;
+    }
+  }
+
+  /**
+   * The error for a refused rotating request: the statuses every signing
+   * call maps, and otherwise a SignerError that keeps the stable code.
+   */
+  private async rotatingAPIError(response: Response, fallback: string): Promise<SignerError> {
+    if (response.status === 401) {
+      return new AuthenticationError();
+    }
+    if (response.status === 403) {
+      return this.forbiddenRejectedError(response, fallback);
+    }
+    if (response.status === 503) {
+      const { code, message } = await this.errorParts(response, "Signer unavailable");
+      return new SignerUnavailableError(message, code);
+    }
+    return this.signerHTTPError(response, `${fallback}: HTTP ${response.status}`);
   }
 
   /**
