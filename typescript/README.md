@@ -497,7 +497,7 @@ What to know:
   only when the rounds may be rebuilt, and the retry uses the longest window
   to give the operator time. The codes are `ErrorCodes.RotatingStageUnproven`,
   `ErrorCodes.RotatingStageChanged` and
-  `ERROR_CODE_ROTATING_WINDOW_NOT_CURRENT`, read from `SignerError.code`.
+  `ErrorCodes.RotatingWindowNotCurrent`, read from `SignerError.code`.
 - **The SDK cannot derive stage addresses.** It binds the next stage's
   address the signer reports to the prepared transaction; the signer derives
   it again from the seed before it signs.

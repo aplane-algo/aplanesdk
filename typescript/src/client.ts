@@ -74,7 +74,6 @@ import {
   validateLogicSigResources,
   validateSignRequests,
   wireLogicSigResources,
-  ERROR_CODE_ROTATING_WINDOW_NOT_CURRENT,
 } from "./types.js";
 import {
   SignerError,
@@ -4966,7 +4965,7 @@ export class SignerClient {
         if (code === ErrorCodes.RotatingStageChanged && !last) {
           continue;
         }
-        if (code === ERROR_CODE_ROTATING_WINDOW_NOT_CURRENT && refresh && !last) {
+        if (code === ErrorCodes.RotatingWindowNotCurrent && refresh && !last) {
           txn = await refreshRotatingValidity(algod, txn, true, algodOptions(signal));
           continue;
         }

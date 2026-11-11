@@ -1245,20 +1245,7 @@ export const ErrorCodes = {
   Internal: "internal",
 } as const;
 
-/**
- * 409 at /sign/rotating/sign: the spend's validity window is not acceptable
- * at the round the signer read. This attempt released no signature; rebuild
- * the validity rounds and prepare again.
- *
- * It stands apart from ErrorCodes only because the mirrored contract fixture
- * (contracts/signerapi/error_codes.json), which ErrorCodes must match, does
- * not list it yet; it moves into ErrorCodes when the fixture does.
- */
-export const ERROR_CODE_ROTATING_WINDOW_NOT_CURRENT = "rotating_window_not_current";
-
-export type ErrorCode =
-  | (typeof ErrorCodes)[keyof typeof ErrorCodes]
-  | typeof ERROR_CODE_ROTATING_WINDOW_NOT_CURRENT;
+export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];
 
 /**
  * Response from the /keys endpoint.

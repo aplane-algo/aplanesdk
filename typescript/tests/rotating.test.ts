@@ -23,7 +23,6 @@ import {
   errorText,
 } from "../src/errors.js";
 import {
-  ERROR_CODE_ROTATING_WINDOW_NOT_CURRENT,
   ErrorCodes,
   SIGNING_FLOW_ROTATING1,
   type PreparedGroup,
@@ -667,7 +666,7 @@ describe("a failed preflight signs nothing", () => {
 
 describe("rotating retries", () => {
   const stageChanged = refusal(ErrorCodes.RotatingStageChanged, "the account's authorizer changed");
-  const notCurrent = refusal(ERROR_CODE_ROTATING_WINDOW_NOT_CURRENT, "fewer than 10 rounds remain before last valid round");
+  const notCurrent = refusal(ErrorCodes.RotatingWindowNotCurrent, "fewer than 10 rounds remain before last valid round");
   const unproven = refusal(ErrorCodes.RotatingStageUnproven, "the account's live stage has not been found yet");
 
   it("stage not found yet, then found", async () => {
@@ -709,7 +708,7 @@ describe("rotating retries", () => {
     const { signer, node, algod, client, txn } = rotatingFixture();
     signer.signErrors = [notCurrent];
     await assert.rejects(client.sendPrepared(algod, rotatingGroup(txn)), (error: unknown) => {
-      assert.equal(codeOf(error), ERROR_CODE_ROTATING_WINDOW_NOT_CURRENT, String(error));
+      assert.equal(codeOf(error), ErrorCodes.RotatingWindowNotCurrent, String(error));
       return true;
     });
     assert.equal(signer.count("/sign/rotating/prepare"), 1);
@@ -1174,7 +1173,7 @@ describe("rotating timing", () => {
 
   it("widens the window after a timing refusal", async () => {
     const { signer, node, algod, client } = rotatingFixture();
-    signer.signErrors = [refusal(ERROR_CODE_ROTATING_WINDOW_NOT_CURRENT, "too few rounds remain")];
+    signer.signErrors = [refusal(ErrorCodes.RotatingWindowNotCurrent, "too few rounds remain")];
     node.round = 40n;
     // A 12-round window is current, and leaves the operator two rounds.
     const result = await client.sendPrepared(algod, rotatingGroup(rotatingPayment(signer.account, 40, 52)), { refreshValidity: true });
@@ -1201,9 +1200,9 @@ describe("rotating retry bounds", () => {
 
   it("a window that is never current ends after three signs", async () => {
     const { signer, node, algod, client, txn } = rotatingFixture();
-    signer.signErrors = repeat(refusal(ERROR_CODE_ROTATING_WINDOW_NOT_CURRENT, "too few rounds remain"));
+    signer.signErrors = repeat(refusal(ErrorCodes.RotatingWindowNotCurrent, "too few rounds remain"));
     await assert.rejects(client.sendPrepared(algod, rotatingGroup(txn), { refreshValidity: true }), (error: unknown) => {
-      assert.equal(codeOf(error), ERROR_CODE_ROTATING_WINDOW_NOT_CURRENT, String(error));
+      assert.equal(codeOf(error), ErrorCodes.RotatingWindowNotCurrent, String(error));
       return true;
     });
     assert.equal(signer.count("/sign/rotating/sign"), 3);
@@ -1228,7 +1227,7 @@ describe("rotating retry bounds", () => {
 describe("sendPayment and a rotating account", () => {
   it("may rebuild the window of the transaction it built", async () => {
     const { signer, node, algod, client } = rotatingFixture();
-    signer.signErrors = [refusal(ERROR_CODE_ROTATING_WINDOW_NOT_CURRENT, "too few rounds remain")];
+    signer.signErrors = [refusal(ErrorCodes.RotatingWindowNotCurrent, "too few rounds remain")];
     node.authAddrs[signer.account] = stageAddress(rotatingTestProgram).toString();
     // sendPayment built the transaction, so it may rebuild its rounds with no
     // option set; and the helper gave a rotated account a window it can use.

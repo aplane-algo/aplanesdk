@@ -36,7 +36,7 @@ export {
   signPreparedCosignedGroup,
   simulatePreparedCosignedGroup,
 } from "./client.js";
-export { ErrorCodes, ERROR_CODE_ROTATING_WINDOW_NOT_CURRENT } from "./types.js";
+export { ErrorCodes } from "./types.js";
 export type { ErrorCode } from "./types.js";
 export type {
   CosignedSignTarget,
