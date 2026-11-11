@@ -434,12 +434,21 @@ try {
   await client.sendPayment(algodClient, { sender, receiver, amount: 1_000_000 });
 } catch (error) {
   if (error instanceof SignOutcomeUnknownError || error instanceof SubmissionUncertainError) {
-    const report = await client.resolveOutcome(algodClient, error);
-    console.log(report.state, report.advice);
+    try {
+      const report = await client.resolveOutcome(algodClient, error);
+      console.log(report.state, report.advice);
+    } catch (checkError) {
+      // The check failed; the outcome is still unknown, and error still stands.
+      console.log("could not check the outcome:", checkError);
+    }
   }
   throw error;
 }
 ```
+
+The examples do the same: they print the uncertain error with its
+transaction IDs or request ID, then the report's advice or a line saying the
+outcome could not be checked, and throw the original error either way.
 
 After a `SubmissionUncertainError` the signed group and its IDs are known.
 The node's last round is read first, then the first transaction ID is looked

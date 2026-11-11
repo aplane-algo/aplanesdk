@@ -56,16 +56,35 @@ async function main() {
     // first could both execute. Ask the node where things stand instead.
     if (error instanceof SubmissionUncertainError) {
       // The group was signed; its bytes and IDs are in the error.
-      const report = await signer.resolveOutcome(algodClient, error);
-      console.error(`Outcome of ${error.txIds[0]} is ${report.state}: ${report.advice}`);
+      console.error(`Outcome unknown for ${error.txIds.join(", ")} (${error.stage}): ${error.message}`);
+      console.error(await advice(signer, algodClient, error));
     } else if (error instanceof SignOutcomeUnknownError) {
       // The signer may have released a signature that was never submitted.
-      const report = await signer.resolveOutcome(algodClient, error);
-      console.error(`Sign request ${error.requestId || "(no ID)"} is ${report.state}: ${report.advice}`);
+      console.error(`Sign outcome unknown (request ${error.requestId || "(no ID)"}): ${error.message}`);
+      console.error(await advice(signer, algodClient, error));
     }
     throw error;
   } finally {
     await signer.close();
+  }
+}
+
+/**
+ * Where an uncertain outcome stands, asked of the node; it signs and submits
+ * nothing. A check that fails is said as such, and the error it was asked
+ * about is still the one that is thrown.
+ */
+async function advice(
+  signer: SignerClient,
+  algodClient: algosdk.Algodv2,
+  error: SubmissionUncertainError | SignOutcomeUnknownError,
+): Promise<string> {
+  try {
+    const report = await signer.resolveOutcome(algodClient, error);
+    return `${report.state}: ${report.advice}`;
+  } catch (checkError) {
+    const reason = checkError instanceof Error ? checkError.message : String(checkError);
+    return `Could not check the outcome (${reason}); look the transaction up before sending again.`;
   }
 }
 
