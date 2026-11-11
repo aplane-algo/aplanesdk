@@ -94,11 +94,12 @@ const (
 	// found the rotating account's live stage; a retry usually succeeds.
 	ErrCodeRotatingStageUnproven = "rotating_stage_unproven"
 	// ErrCodeRotatingStageChanged (409): the account's authorizer moved
-	// between prepare and sign; nothing was signed.
+	// between prepare and sign; no signature was released.
 	ErrCodeRotatingStageChanged = "rotating_stage_changed"
-	// ErrCodeRotatingWindowNotCurrent (409): the spend's validity window is
-	// not acceptable at the round the signer read. This attempt released no
-	// signature; rebuild the validity rounds and prepare again.
+	// ErrCodeRotatingWindowNotCurrent (409): the rotating spend's validity
+	// window is not acceptable at the round the signer read: its first valid
+	// round is too far ahead, or too few rounds remain. This attempt released
+	// no signature; rebuild the validity rounds and prepare again.
 	ErrCodeRotatingWindowNotCurrent = "rotating_window_not_current"
 )
 

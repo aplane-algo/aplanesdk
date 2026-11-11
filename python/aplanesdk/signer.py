@@ -216,11 +216,11 @@ ERR_CODE_BOUNDED_REKEY_TARGET_NOT_LISTED = "bounded_rekey_target_not_listed"
 ERR_CODE_ROTATING_SIGNING_REQUIRED = "rotating_signing_required"
 # 409, temporary: the signer has not yet found the account's live stage.
 ERR_CODE_ROTATING_STAGE_UNPROVEN = "rotating_stage_unproven"
-# 409: the account's authorizer moved between prepare and sign; nothing was signed.
+# 409: the account's authorizer moved between prepare and sign; no signature was released.
 ERR_CODE_ROTATING_STAGE_CHANGED = "rotating_stage_changed"
-# 409: the spend's validity window is not acceptable at the round the signer
-# read. This attempt released no signature; rebuild the validity rounds and
-# prepare again.
+# 409: the rotating spend's validity window is not acceptable at the round the
+# signer read. This attempt released no signature; rebuild the validity rounds
+# and prepare again.
 ERR_CODE_ROTATING_WINDOW_NOT_CURRENT = "rotating_window_not_current"
 
 
