@@ -202,6 +202,7 @@ func TestResolveOutcomeOfAnUnknownSignOutcome(t *testing.T) {
 		signableRotated = "A signature may have been released and can execute until round 1000. Sign the same prepared group again, or wait until round 1000 has passed."
 		signablePlain   = "A signature may have been released and can execute until round 1000. Wait until round 1000 has passed before building a replacement."
 		expired         = "No signature released by that request can execute any more. It is safe to build a new one."
+		tooOld          = "The prepared group's validity ended more than 500 rounds ago and this node may no longer remember it. Look the transaction ID up on an indexer before sending again."
 	)
 	tests := []struct {
 		name     string
@@ -219,9 +220,16 @@ func TestResolveOutcomeOfAnUnknownSignOutcome(t *testing.T) {
 		{"rotating, a pool error while valid", true, 1000, poolError, OutcomeSignable, false, signableRotated},
 		{"rotating, not found after", true, 1001, nil, OutcomeExpired, true, expired},
 		{"rotating, a pool error after", true, 1001, poolError, OutcomeExpired, true, expired},
-		{"rotating, long after: no too_old for a sign outcome", true, 9000, nil, OutcomeExpired, true, expired},
+		{"rotating, not found 500 rounds after", true, 1500, nil, OutcomeExpired, true, expired},
+		{"rotating, a pool error 500 rounds after", true, 1500, poolError, OutcomeExpired, true, expired},
+		// Signed again, the same prepared group has the same IDs, and the node
+		// may have forgotten it.
+		{"rotating, not found 501 rounds after", true, 1501, nil, OutcomeTooOld, false, tooOld},
+		{"rotating, a pool error 501 rounds after", true, 1501, poolError, OutcomeTooOld, false, tooOld},
+		{"rotating, not found long after", true, 9000, nil, OutcomeTooOld, false, tooOld},
 		{"ordinary, valid", false, 1000, nil, OutcomeSignable, false, signablePlain},
 		{"ordinary, after", false, 1001, nil, OutcomeExpired, true, expired},
+		{"ordinary, 501 rounds after: no too_old", false, 1501, nil, OutcomeExpired, true, expired},
 		{"ordinary, long after", false, 9000, nil, OutcomeExpired, true, expired},
 	}
 	for _, tt := range tests {

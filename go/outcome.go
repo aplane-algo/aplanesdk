@@ -94,7 +94,8 @@ type WaitOutcomeOptions struct {
 // the node may no longer remember it. For a signing exchange
 // (*SignOutcomeUnknownError), which submitted nothing: a rotating group is
 // looked up first; otherwise it is signable until its last valid round and
-// expired after.
+// expired after, except that a rotating group, which the caller may have
+// signed again and submitted, is too old more than 500 rounds after it.
 func (c *SignerClient) ResolveOutcome(ctx context.Context, algodClient *algod.Client, err error) (*OutcomeReport, error) {
 	var submission *SubmissionUncertainError
 	var sign *SignOutcomeUnknownError
@@ -280,6 +281,12 @@ func resolveSign(ctx context.Context, algodClient *algod.Client, e *SignOutcomeU
 	}
 	lastValid := e.LastValid
 	switch {
+	// Signing the same prepared group again gives the same IDs, so a rotating
+	// group may have been submitted and confirmed, and a node only remembers
+	// recent rounds.
+	case e.Rotating != nil && current > lastValid && current-lastValid > outcomeRememberedRounds:
+		report.State = OutcomeTooOld
+		report.Advice = "The prepared group's validity ended more than 500 rounds ago and this node may no longer remember it. Look the transaction ID up on an indexer before sending again."
 	case current > lastValid:
 		report.State, report.SafeToReplace = OutcomeExpired, true
 		report.Advice = "No signature released by that request can execute any more. It is safe to build a new one."

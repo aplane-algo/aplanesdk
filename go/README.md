@@ -470,9 +470,14 @@ call): a rotating group's IDs are known, so it is looked up first and is
 round is at most `LastValid`, it is `signable`: a signature may have been
 released (for a rotating account, sign the same prepared group again or wait;
 for any other, wait until `LastValid` has passed before building a
-replacement). After `LastValid` it is `expired`, and `SafeToReplace`. An
+replacement). After `LastValid` it is `expired`, and `SafeToReplace`, with one
+exception: a rotating group not found, or dropped, more than 500 rounds after
+`LastValid` is `too_old`. Signing the same prepared group again gives the same
+transaction IDs, which may have been submitted, and a node only answers for
+recent rounds, so look the ID up on an indexer before sending again. An
 ordinary or cosigned group is not looked up and its `TxIDs` are empty: the
-signer may have changed its transactions.
+signer may have changed its transactions, and its signed bytes never left the
+SDK, so it is `expired` as soon as `LastValid` has passed.
 
 #### Rotating accounts
 
