@@ -66,6 +66,11 @@ from aplanesdk.signer import (
     _validate_bounded_target_fees,
     _decode_canonical_group,
     _selected_prepared_resources,
+    _approval_answer,
+    _read_answer,
+    _GROUP_SIGN_RESPONSE_SHAPE,
+    _KEYS_RESPONSE_SHAPE,
+    _STATUS_RESPONSE_SHAPE,
 )
 
 TEST_COMPONENT_KIND_COSIGNER = "cosigner"
@@ -868,6 +873,133 @@ class TestAnswersReadByShape:
                 client.list_keys(refresh=True)
         assert list(client._key_cache) == ["ADDR1"]
 
+    _ZERO_MUTATIONS = {
+        "dummies_added": 0,
+        "group_id_changed": False,
+        "fees_modified": [],
+        "total_fees_delta": 0,
+        "original_count": 0,
+        "final_count": 0,
+        "passthrough_count": 0,
+        "foreign_count": 0,
+        "reason": "",
+    }
+    _ZERO_RUNTIME_ARG = {
+        "name": "",
+        "type": "",
+        "label": "",
+        "description": "",
+        "required": False,
+        "byte_length": 0,
+        "max_size": 0,
+    }
+
+    def test_a_field_left_out_reads_as_zero_at_every_depth(self):
+        # Go reads a field left out as its zero value, in the answer and in
+        # every object nested in it, so every declared field is there once
+        # read; one Go holds by pointer, and an object, read as None.
+        answer = raw_response(200, json.dumps({
+            "signed": ["aa"],
+            "mutations": {"original_count": 1, "final_count": 1},
+        }).encode())
+        data = _approval_answer(answer, "x", _GROUP_SIGN_RESPONSE_SHAPE)
+        assert data == {
+            "signed": ["aa"],
+            "error": "",
+            "mutations": dict(self._ZERO_MUTATIONS, original_count=1, final_count=1),
+        }
+
+        status = raw_response(200, json.dumps({
+            "rotating": [{"account": "ACCT", "recovery": {"active": True}}],
+        }).encode())
+        data = _read_answer(status, _STATUS_RESPONSE_SHAPE, "status")
+        entry = data["rotating"][0]
+        assert entry == {
+            "account": "ACCT",
+            "authorizer": "",
+            "round": 0,
+            "classification": "",
+            "stage": None,
+            "preparation": "",
+            "cached_entries": 0,
+            "recovery": entry["recovery"],
+        }
+        assert entry["recovery"]["active"] is True
+        assert entry["recovery"]["kind"] == "" and entry["recovery"]["grant_id"] == 0
+        assert entry["recovery"]["hint"] is None and entry["recovery"]["stopped_stage"] is None
+
+    def test_a_null_object_entry_reads_as_an_object_of_zero_values(self):
+        # A null entry in a list of objects is the entry with every field at
+        # its zero value, in a list the answer holds and in one nested deeper.
+        status = raw_response(200, b'{"rotating": [null]}')
+        data = _read_answer(status, _STATUS_RESPONSE_SHAPE, "status")
+        assert data["rotating"] == [{
+            "account": "",
+            "authorizer": "",
+            "round": 0,
+            "classification": "",
+            "stage": None,
+            "preparation": "",
+            "cached_entries": 0,
+            "recovery": None,
+        }]
+
+        keys = raw_response(200, json.dumps({
+            "keys": [{
+                "address": "ADDR1",
+                "signing_args": [None],
+                "bounded_authorization": {
+                    "contract": "bounded2",
+                    "runtime_args": [None],
+                    "argument_layout": [None, {"index": 1, "paths": {"spend": "x"}}],
+                },
+            }],
+        }).encode())
+        record = _read_answer(keys, _KEYS_RESPONSE_SHAPE, "keys")["keys"][0]
+        assert record["signing_args"] == [self._ZERO_RUNTIME_ARG]
+        bounded = record["bounded_authorization"]
+        assert bounded["runtime_args"] == [self._ZERO_RUNTIME_ARG]
+        assert bounded["argument_layout"] == [
+            {"index": 0, "name": "", "source": "", "max_size": 0, "paths": None},
+            {
+                "index": 1,
+                "name": "",
+                "source": "",
+                "max_size": 0,
+                "paths": {"spend": "x", "spending_rekey": "", "listed_rekey": ""},
+            },
+        ]
+        assert bounded["max_fee"] is None and bounded["spend_effects"] == []
+        assert record["is_spending_account"] is None and record["parameters"] == {}
+
+    def test_parsed_records_keep_their_defaults_for_fields_left_out(self):
+        # Fields left out now read as zero values; the records built from them
+        # keep the defaults they had: a runtime argument's type is bytes, and
+        # no parameters or options are None.
+        keys = mock_response(200, {
+            "count": 1,
+            "keys": [{"address": "ADDR1", "signing_args": [{"name": "proof"}, None]}],
+        })
+        client = make_client()
+        with patch.object(client.session, "get", return_value=keys):
+            record = client.list_keys()[0]
+        assert [arg.arg_type for arg in record.signing_args] == ["bytes", "bytes"]
+        assert record.parameters is None
+
+        key_types = mock_response(200, {
+            "key_types": [{
+                "key_type": "example.v1",
+                "creation_params": [{"name": "n"}],
+                "runtime_args": [{"name": "r"}],
+            }],
+        })
+        client = make_client()
+        with patch.object(client.session, "get", return_value=key_types):
+            info = client.list_key_types()[0]
+        assert info.creation_params[0].options is None
+        assert info.creation_params[0].input_modes is None
+        assert info.runtime_args[0].arg_type == "bytes"
+
     def test_null_fields_and_entries_read_as_zero(self):
         client = make_client()
         status = raw_response(200, json.dumps({
@@ -1036,6 +1168,87 @@ class TestSpecializedLowLevelEndpoints:
 
         assert result.components[0]["target_index"] == 0
         assert result.components[0]["path"] == ""
+
+    def test_request_components_reads_a_field_left_out_of_a_component_as_zero(self):
+        # Left out means zero at every depth too: a component with no
+        # target_index is position 0, judged on its other fields, as Go and
+        # TypeScript judge it. Every field the component declares is there.
+        client = make_client()
+        resp = mock_response(200, {
+            "request_id": "sdk-component",
+            "components": [{
+                "kind": "cosigner",
+                "signature": "aabb",
+                "signature_scheme": KEY_TYPE_WITNESS_FALCON1024,
+            }],
+        })
+
+        with patch.object(client.session, "post", return_value=resp):
+            result = client.request_components(component_request(
+                request_id="sdk-component",
+                role=TEST_COMPONENT_KIND_COSIGNER,
+                group_bytes_hex=["5458aa"],
+                target_indices=[0],
+            ))
+
+        assert result.components[0] == {
+            "target_index": 0,
+            "kind": "cosigner",
+            "signature": "aabb",
+            "signature_scheme": KEY_TYPE_WITNESS_FALCON1024,
+            "auth_address": "",
+            "base_signatures": [],
+            "runtime_args": {},
+            "assembly_receipt": "",
+            "path": "",
+        }
+
+    def test_request_components_judges_a_left_out_target_index_as_position_0(self):
+        # A request for position 1 answered by a component with no
+        # target_index is answered for position 0: refused as Go and
+        # TypeScript refuse it, a plain refusal, not a lost answer.
+        client = make_client()
+        resp = mock_response(200, {
+            "request_id": "sdk-component",
+            "components": [{
+                "kind": "cosigner",
+                "signature": "aabb",
+                "signature_scheme": KEY_TYPE_WITNESS_FALCON1024,
+            }],
+        })
+
+        with patch.object(client.session, "post", return_value=resp):
+            with pytest.raises(SignerError) as excinfo:
+                client.request_components(component_request(
+                    request_id="sdk-component",
+                    role=TEST_COMPONENT_KIND_COSIGNER,
+                    group_bytes_hex=["5458aa", "5458bb"],
+                    target_indices=[1],
+                ))
+
+        assert str(excinfo.value) == (
+            "component response target indices or kinds do not match request"
+        )
+        assert type(excinfo.value) is SignerError
+
+    def test_request_components_reads_a_null_component_as_one_of_zero_values(self):
+        # A null entry in components is a component of zero values: position
+        # 0 with no kind, which Go and TypeScript refuse as an unsupported
+        # kind, a plain refusal.
+        client = make_client()
+        resp = mock_response(200, {"request_id": "sdk-component", "components": [None]})
+
+        with patch.object(client.session, "post", return_value=resp):
+            with pytest.raises(SignerError) as excinfo:
+                client.request_components(component_request(
+                    request_id="sdk-component",
+                    role=TEST_COMPONENT_KIND_COSIGNER,
+                    group_bytes_hex=["5458aa"],
+                    target_indices=[0],
+                ))
+
+        assert str(excinfo.value) == "invalid component response: component 1 has unsupported kind"
+        assert type(excinfo.value) is SignerError
 
     def test_request_assemble_posts_to_assemble_endpoint(self):
         client = make_client()
@@ -2261,7 +2474,19 @@ class TestClientSideSignedSimulation:
         ) == signed_b64
         assert result.signed_group == [signed_hex]
         assert result.tx_ids == [txn.get_txid()]
-        assert result.mutations == {"original_count": 1, "final_count": 1}
+        # The report as read: every field it declares, the ones the signer
+        # left out at their zero values.
+        assert result.mutations == {
+            "dummies_added": 0,
+            "group_id_changed": False,
+            "fees_modified": [],
+            "total_fees_delta": 0,
+            "original_count": 1,
+            "final_count": 1,
+            "passthrough_count": 0,
+            "foreign_count": 0,
+            "reason": "",
+        }
         assert result.failed is True
 
     def test_native_post_quantum_signature_survives_simulation_and_the_canonical_check(self):

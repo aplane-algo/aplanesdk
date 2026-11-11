@@ -640,7 +640,8 @@ _INT64_MAX = (1 << 63) - 1
 def _check_wire_value(value: Any, kind: Any, label: str) -> Any:
     """Check one non-null JSON value against a wire type, as Go's typed
     decoding would, and return it as Go would hold it: a null element of a
-    list or map takes its zero value."""
+    list or map takes its zero value, an object entry an object of zero
+    values."""
     if isinstance(kind, dict):
         if not isinstance(value, dict):
             raise _WireShapeError(f"{label} is not an object")
@@ -652,7 +653,8 @@ def _check_wire_value(value: Any, kind: Any, label: str) -> Any:
         if not isinstance(value, list):
             raise _WireShapeError(f"{label} is not a list")
         return [
-            {} if item is None else _check_wire_value(item, kind[1], f"{label}[{index}]")
+            _zero_object(kind[1]) if item is None
+            else _check_wire_value(item, kind[1], f"{label}[{index}]")
             for index, item in enumerate(value)
         ]
     if kind in ("strs", "ints"):
@@ -700,19 +702,22 @@ _WIRE_TYPE_NAMES = {
 
 
 def _check_wire_shape(data: Dict[str, Any], shape: Dict[str, Any], label: str) -> None:
-    """Check an object's known fields; absent and null fields take their
-    zero values, and unknown fields are ignored, as in Go's decoding. A field
-    sent as null is replaced by its zero value, at every depth, so a null
-    inside a nested object or list entry reads as Go reads it; one left out
-    stays out."""
+    """Check an object's known fields, in place, as Go's decoding reads them:
+    a field left out or sent as null is set to its zero value (_wire_zero),
+    at every depth, so every declared field is present once read, in the
+    answer and in every object nested in it; unknown fields are ignored."""
     for name, kind in shape.items():
-        if name not in data:
-            continue
-        value = data[name]
+        value = data.get(name)
         if value is None:
             data[name] = _wire_zero(kind)
         else:
             data[name] = _check_wire_value(value, kind, f"{label} field {name}")
+
+
+def _zero_object(shape: Dict[str, Any]) -> Dict[str, Any]:
+    """An object of shape with every field at its zero value: what Go holds
+    for a null entry in a list of objects."""
+    return {name: _wire_zero(kind) for name, kind in shape.items()}
 
 
 # The wire types of the approval-bearing answers (pkg/signerapi in aplane).
@@ -1000,8 +1005,8 @@ def _read_answer(resp: requests.Response, shape: Dict[str, Any], what: str) -> D
 
 
 def _wire_zero(kind: Any) -> Any:
-    """The zero value of a wire type: None for an object, which Go holds by
-    pointer, and for a value Go holds by pointer."""
+    """The zero value of a wire type: None for an object, which the SDK
+    reads as absent, and for a value Go holds by pointer."""
     if isinstance(kind, dict):
         return None
     if isinstance(kind, tuple) and kind[0] == "ptr":
@@ -1014,12 +1019,10 @@ def _wire_zero(kind: Any) -> Any:
 def _typed_answer(data: Dict[str, Any], shape: Dict[str, Any]) -> Dict[str, Any]:
     """The fields of shape, as the Go SDK decodes them into a struct: each of
     its wire type (_WireShapeError otherwise), and one left out or sent as
-    null at its zero value."""
+    null at its zero value, at every depth."""
     answer = {name: data.get(name) for name in shape}
     _check_wire_shape(answer, shape, "answer")
-    return {
-        name: _wire_zero(shape[name]) if value is None else value for name, value in answer.items()
-    }
+    return answer
 
 
 def _rotating_sign_answer(data: Dict[str, Any], request_id: str = "") -> Dict[str, Any]:
@@ -3155,9 +3158,11 @@ def _prepared_sign_request(item: "PreparedTransaction", index: int) -> Dict[str,
 
 
 def _parse_runtime_arg(item: Dict[str, Any]) -> RuntimeArg:
+    # An answer read by its shape holds every field, so an argument whose
+    # type was left out reads it as "": that is bytes, the default.
     return RuntimeArg(
         name=item.get("name", ""),
-        arg_type=item.get("type", "bytes"),
+        arg_type=item.get("type") or "bytes",
         description=item.get("description", ""),
         label=item.get("label", ""),
         required=item.get("required", False),
@@ -4866,7 +4871,8 @@ class SignerClient:
                 bounded_authorization=_parse_bounded_authorization(k.get("bounded_authorization")),
                 is_spending_account=k.get("is_spending_account"),
                 signing_args=_parse_runtime_args(k.get("signing_args")),
-                parameters=k.get("parameters"),
+                # Read by its shape, parameters left out is {}: none.
+                parameters=k.get("parameters") or None,
                 template_provenance_status=k.get("template_provenance_status", ""),
                 template_provenance_note=k.get("template_provenance_note", ""),
             )
@@ -5858,7 +5864,7 @@ class SignerClient:
                         or None,
                         min_items=p.get("min_items", 0),
                         max_items=p.get("max_items", 0),
-                        options=p.get("options"),
+                        options=p.get("options") or None,
                         min=p.get("min"),
                         max=p.get("max"),
                         example=p.get("example", ""),
