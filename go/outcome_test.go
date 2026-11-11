@@ -310,6 +310,11 @@ func TestResolveOutcomeRefusesOtherErrors(t *testing.T) {
 		"plain":    errors.New("signing failed"),
 		"rejected": &SubmissionRejectedError{TxIDs: []string{"TX"}, Err: errors.New("overspend")},
 		"locked":   ErrSignerLocked,
+		// A nil pointer of either type is no outcome at all, wrapped or not.
+		"nil submission":         (*SubmissionUncertainError)(nil),
+		"nil sign outcome":       (*SignOutcomeUnknownError)(nil),
+		"wrapped nil submission": fmt.Errorf("pay: %w", (*SubmissionUncertainError)(nil)),
+		"wrapped nil sign":       fmt.Errorf("pay: %w", (*SignOutcomeUnknownError)(nil)),
 	} {
 		t.Run(name, func(t *testing.T) {
 			report, got := client.ResolveOutcome(context.Background(), algodClient, err)

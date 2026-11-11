@@ -157,7 +157,14 @@ func (e *SignOutcomeUnknownError) Error() string {
 	return fmt.Sprintf("sign request %s: no answer from the signer, so a signature may have been released: %v", e.RequestID, e.Err)
 }
 
-func (e *SignOutcomeUnknownError) Unwrap() error { return e.Err }
+// Unwrap returns the cause. A nil error has none, so errors.As can look past
+// one in a chain.
+func (e *SignOutcomeUnknownError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
 
 // SubmissionRejectedError reports that the network refused the signed group:
 // the node rejected it on submission, or dropped it from its pool. The signed
@@ -207,7 +214,14 @@ func (e *SubmissionUncertainError) Error() string {
 	return fmt.Sprintf("outcome of transaction %s is unknown (%s): %v", firstOrEmpty(e.TxIDs), e.Stage, e.Err)
 }
 
-func (e *SubmissionUncertainError) Unwrap() error { return e.Err }
+// Unwrap returns the cause. A nil error has none, so errors.As can look past
+// one in a chain.
+func (e *SubmissionUncertainError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
 
 func firstOrEmpty(values []string) string {
 	if len(values) == 0 {

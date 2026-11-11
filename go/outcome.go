@@ -97,32 +97,60 @@ type WaitOutcomeOptions struct {
 // expired after, except that a rotating group, which the caller may have
 // signed again and submitted, is too old more than 500 rounds after it.
 func (c *SignerClient) ResolveOutcome(ctx context.Context, algodClient *algod.Client, err error) (*OutcomeReport, error) {
-	var submission *SubmissionUncertainError
-	var sign *SignOutcomeUnknownError
+	outcome, refusal := checkUncertainOutcome(algodClient, err)
+	if refusal != nil {
+		return nil, refusal
+	}
+	return outcome.resolve(ctx, algodClient)
+}
+
+// uncertainOutcome is the uncertain outcome an error carries. Exactly one of
+// its fields is set.
+type uncertainOutcome struct {
+	submission *SubmissionUncertainError
+	sign       *SignOutcomeUnknownError
+}
+
+// checkUncertainOutcome finds the uncertain outcome err carries and refuses
+// one the helpers cannot resolve, in this order: an error of another type (a
+// nil one included), no last valid round, no transaction IDs (a submission
+// only), no algod client. It asks the node nothing.
+func checkUncertainOutcome(algodClient *algod.Client, err error) (uncertainOutcome, error) {
+	var outcome uncertainOutcome
+	var lastValid uint64
 	switch {
 	case err == nil:
-		return nil, ErrNotUncertainOutcome
-	case errors.As(err, &submission):
-		if submission.LastValid == 0 {
-			return nil, errors.New("the error carries no last valid round")
+		return outcome, ErrNotUncertainOutcome
+	case errors.As(err, &outcome.submission):
+		if outcome.submission == nil {
+			return outcome, ErrNotUncertainOutcome
 		}
-		if len(submission.TxIDs) == 0 || submission.TxIDs[0] == "" {
-			return nil, errors.New("the error carries no transaction IDs")
+		lastValid = outcome.submission.LastValid
+	case errors.As(err, &outcome.sign):
+		if outcome.sign == nil {
+			return outcome, ErrNotUncertainOutcome
 		}
-		if algodClient == nil {
-			return nil, fmt.Errorf("algod client is required")
-		}
-		return resolveSubmission(ctx, algodClient, submission)
-	case errors.As(err, &sign):
-		if sign.LastValid == 0 {
-			return nil, errors.New("the error carries no last valid round")
-		}
-		if algodClient == nil {
-			return nil, fmt.Errorf("algod client is required")
-		}
-		return resolveSign(ctx, algodClient, sign)
+		lastValid = outcome.sign.LastValid
+	default:
+		return outcome, ErrNotUncertainOutcome
 	}
-	return nil, ErrNotUncertainOutcome
+	if lastValid == 0 {
+		return outcome, errors.New("the error carries no last valid round")
+	}
+	if outcome.submission != nil && (len(outcome.submission.TxIDs) == 0 || outcome.submission.TxIDs[0] == "") {
+		return outcome, errors.New("the error carries no transaction IDs")
+	}
+	if algodClient == nil {
+		return outcome, errors.New("algod client is required")
+	}
+	return outcome, nil
+}
+
+func (o uncertainOutcome) resolve(ctx context.Context, algodClient *algod.Client) (*OutcomeReport, error) {
+	if o.submission != nil {
+		return resolveSubmission(ctx, algodClient, o.submission)
+	}
+	return resolveSign(ctx, algodClient, o.sign)
 }
 
 // WaitForOutcome resolves err once per round, waiting for each next round
