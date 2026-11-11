@@ -16,13 +16,14 @@ import type {
 } from "./types.js";
 import { SignerError, UnsupportedGroupError, errorText } from "./errors.js";
 import { bytesToBase64, hexToBytes } from "./encoding.js";
+import { ROTATING_PREPARE_ANSWER, readAnswer } from "./answers.js";
 import {
   byteArraysEqual,
   cloneTransaction,
   decodeCanonicalSignedTransaction,
   decodeCanonicalTransaction,
   groupIDBytes,
-  normalizeMutationReport,
+  mutationReportFromWire,
   signCanonicalDummy,
   signSlot,
   validateAuthorization,
@@ -344,18 +345,26 @@ export class PreparedRotating {
    */
   verifySigned(response: RotatingSignResponse): RotatingSignResult {
     const txns = this.decoded();
-    const signed = (response as Partial<RotatingSignResponse> | null | undefined)?.signed;
-    if (!Array.isArray(signed) || signed.some((item) => typeof item !== "string")) {
+    // A field left out or null, and a null entry in signed, take their zero
+    // values, as the Go SDK reads the answer.
+    const answer = (response ?? {}) as Partial<Record<keyof RotatingSignResponse, unknown>>;
+    const listed = answer.signed ?? [];
+    if (!Array.isArray(listed) || listed.some((item) => item !== null && typeof item !== "string")) {
       throw new SignerError("signer returned a malformed signed list");
     }
+    const signed = listed.map((item) => (item === null ? "" : item)) as string[];
+    const reportedStage = answer.stage ?? 0;
+    const reportedTarget = answer.target ?? 0;
+    const reportedTxId = answer.txid ?? "";
+    const reportedGroupId = answer.group_id ?? "";
     if (signed.length !== txns.length) {
       throw new SignerError(
         `signed group has ${signed.length} transaction(s), prepared ${txns.length}`,
       );
     }
-    if (response.stage !== this.#stage || response.target !== this.#target) {
+    if (reportedStage !== this.#stage || reportedTarget !== this.#target) {
       throw new SignerError(
-        `signer reports stage ${response.stage} to ${response.target}, prepared ${this.#stage} to ${this.#target}`,
+        `signer reports stage ${String(reportedStage)} to ${String(reportedTarget)}, prepared ${this.#stage} to ${this.#target}`,
       );
     }
     const spend = txns[0];
@@ -402,17 +411,17 @@ export class PreparedRotating {
     });
 
     const txId = spend.txID();
-    if (response.txid !== txId) {
-      throw new SignerError(`signer reports transaction ID ${response.txid}, the spend's is ${txId}`);
+    if (reportedTxId !== txId) {
+      throw new SignerError(`signer reports transaction ID ${String(reportedTxId)}, the spend's is ${txId}`);
     }
     const group = groupIDBytes(spend);
     const groupId = group === undefined ? "" : bytesToBase64(group);
     // A lone spend's group is the zero digest, which a signer may report
     // encoded rather than empty.
     const zeroGroup = bytesToBase64(new Uint8Array(32));
-    if (response.group_id !== groupId && !(groupId === "" && response.group_id === zeroGroup)) {
+    if (reportedGroupId !== groupId && !(groupId === "" && reportedGroupId === zeroGroup)) {
       throw new SignerError(
-        `signer reports group ID ${JSON.stringify(response.group_id)}, the spend's is ${JSON.stringify(groupId)}`,
+        `signer reports group ID ${JSON.stringify(reportedGroupId)}, the spend's is ${JSON.stringify(groupId)}`,
       );
     }
     return {
@@ -437,23 +446,25 @@ Object.freeze(PreparedRotating);
  */
 export function newPreparedRotating(
   originalHex: string,
-  response: RotatingPrepareResponse,
+  response: unknown,
   ceiling: bigint | undefined,
   appCallInfo: AppCallInfo | undefined,
 ): PreparedRotating {
-  const body = (response && typeof response === "object" ? response : {}) as Partial<RotatingPrepareResponse>;
-  const transactions = body.transactions ?? [];
-  if (!Array.isArray(transactions) || transactions.some((item) => typeof item !== "string")) {
-    throw new SignerError("signer returned a malformed prepared transaction list");
+  // Read as the Go SDK decodes it: typed fields, the snake_case report keys
+  // only, and a field left out or null at its zero value.
+  const read = readAnswer<Partial<RotatingPrepareResponse>>(ROTATING_PREPARE_ANSWER, response);
+  if ("problem" in read) {
+    throw new SignerError(`failed to decode response: ${read.problem}`);
   }
+  const body = read.answer;
   const prepared = new PreparedRotating(constructToken, {
-    account: String(body.account ?? ""),
+    account: body.account ?? "",
     originalHex,
-    stage: body.stage as number,
-    target: body.target as number,
-    rekeyTo: String(body.rekey_to ?? ""),
-    transactions,
-    mutations: body.mutations ? normalizeMutationReport(body.mutations) : undefined,
+    stage: body.stage ?? 0,
+    target: body.target ?? 0,
+    rekeyTo: body.rekey_to ?? "",
+    transactions: body.transactions ?? [],
+    mutations: body.mutations ? mutationReportFromWire(body.mutations) : undefined,
     appCallInfo,
     ceiling,
   });

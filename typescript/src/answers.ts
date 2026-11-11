@@ -2,85 +2,110 @@
 // Copyright (C) 2026 APlane Project LLC
 
 /**
- * The shapes of the 200 answers to approval-bearing requests. A 200 answer is
- * read as the Go SDK decodes it: a field that is absent or null takes its zero
- * value, an unknown field is ignored, and a field of the wrong type makes the
- * whole answer unreadable. An unreadable answer is a lost answer: the signer
- * may have acted on the request. An answer of the right shape that then fails
- * a check is a plain refusal.
+ * How the SDK reads a signer's 200 answer: as the Go SDK decodes it into its
+ * typed struct. The body is exactly one JSON object; a field left out or null
+ * takes its zero value; a null entry in a list takes its element's zero
+ * value; an unknown field is ignored; a field of the wrong type, a number
+ * outside the field's range, a null or non-object body, an empty or cut-off
+ * body, and anything after the object make the answer unreadable.
+ *
+ * A number must be an integer a JavaScript number holds exactly (a safe
+ * integer): JSON.parse rounds anything larger, so it cannot be read exactly
+ * and is unreadable. And JSON.parse does not keep how a number was written,
+ * so 3.0 is read as 3, where the Go SDK would refuse it.
+ *
+ * For an approval-bearing request an unreadable answer is a lost answer: the
+ * signer may have acted on the request. An answer that is read and then
+ * fails a check is a plain refusal.
  */
 
-type Shape =
+export type AnswerShape =
   | "string"
   | "bool"
   | "int"
   | "uint"
-  | { list: Shape }
-  | { map: Shape }
-  | { fields: Record<string, Shape> };
-
-const INT_LIMIT = 2 ** 63;
-// 2**64 itself, because a uint64 near the top arrives rounded up to it.
-const UINT_LIMIT = 2 ** 64;
+  | { list: AnswerShape }
+  | { map: AnswerShape }
+  | { fields: Record<string, AnswerShape> };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** What about value does not fit shape, or undefined when it fits. */
-function shapeProblem(shape: Shape, value: unknown, where: string): string | undefined {
+/** The value a missing entry of shape takes. */
+function zeroValue(shape: AnswerShape): unknown {
+  if (shape === "string") return "";
+  if (shape === "bool") return false;
+  if (shape === "int" || shape === "uint") return 0;
+  if ("list" in shape) return [];
+  if ("map" in shape) return {};
+  return {};
+}
+
+class Unreadable extends Error {}
+
+/** value read as shape: a copy, with null entries given their zero values. */
+function readValue(shape: AnswerShape, value: unknown, where: string): unknown {
   if (shape === "string") {
-    return typeof value === "string" ? undefined : `${where} is not a string`;
+    if (typeof value !== "string") throw new Unreadable(`${where} is not a string`);
+    return value;
   }
   if (shape === "bool") {
-    return typeof value === "boolean" ? undefined : `${where} is not a boolean`;
+    if (typeof value !== "boolean") throw new Unreadable(`${where} is not a boolean`);
+    return value;
   }
   if (shape === "int") {
-    return typeof value === "number" && Number.isInteger(value) && Math.abs(value) <= INT_LIMIT
-      ? undefined
-      : `${where} is not an integer`;
+    if (!Number.isSafeInteger(value)) throw new Unreadable(`${where} is not an integer the SDK can read exactly`);
+    return value;
   }
   if (shape === "uint") {
-    return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= UINT_LIMIT
-      ? undefined
-      : `${where} is not an unsigned integer`;
+    if (!Number.isSafeInteger(value) || (value as number) < 0) {
+      throw new Unreadable(`${where} is not an unsigned integer the SDK can read exactly`);
+    }
+    return value;
   }
   if ("list" in shape) {
-    if (!Array.isArray(value)) return `${where} is not a list`;
-    for (let index = 0; index < value.length; index++) {
-      const problem = shapeProblem(shape.list, value[index], `${where}[${index}]`);
-      if (problem) return problem;
-    }
-    return undefined;
+    if (!Array.isArray(value)) throw new Unreadable(`${where} is not a list`);
+    return value.map((item, index) =>
+      item === null ? zeroValue(shape.list) : readValue(shape.list, item, `${where}[${index}]`));
   }
   if ("map" in shape) {
-    if (!isPlainObject(value)) return `${where} is not an object`;
+    if (!isPlainObject(value)) throw new Unreadable(`${where} is not an object`);
+    const read: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value)) {
-      const problem = shapeProblem(shape.map, item, `${where}.${key}`);
-      if (problem) return problem;
+      read[key] = item === null ? zeroValue(shape.map) : readValue(shape.map, item, `${where}.${key}`);
     }
-    return undefined;
+    return read;
   }
-  if (!isPlainObject(value)) return `${where} is not an object`;
+  if (!isPlainObject(value)) throw new Unreadable(`${where || "the answer"} is not an object`);
+  // Unknown fields are kept as they are and read by nothing.
+  const read: Record<string, unknown> = { ...value };
   for (const [name, field] of Object.entries(shape.fields)) {
     const item = value[name];
-    if (item === undefined || item === null) continue;
-    const problem = shapeProblem(field, item, where ? `${where}.${name}` : name);
-    if (problem) return problem;
+    if (item === undefined || item === null) {
+      delete read[name];
+      continue;
+    }
+    read[name] = readValue(field, item, where ? `${where}.${name}` : name);
   }
-  return undefined;
+  return read;
 }
 
 /**
- * What makes a parsed 200 body unreadable as the answer shape describes, or
- * undefined when it can be read. The body itself must be an object.
+ * Read a parsed 200 body as shape. Returns the answer, a copy in which a null
+ * field is left out and a null list entry has its zero value, or the reason
+ * it cannot be read. The body itself must be an object.
  */
-export function answerProblem(shape: Shape, body: unknown): string | undefined {
-  if (!isPlainObject(body)) return "the answer is not an object";
-  return shapeProblem(shape, body, "");
+export function readAnswer<T>(shape: AnswerShape, body: unknown): { answer: T } | { problem: string } {
+  try {
+    return { answer: readValue(shape, body, "") as T };
+  } catch (error) {
+    if (error instanceof Unreadable) return { problem: error.message };
+    throw error;
+  }
 }
 
-const MUTATION_REPORT: Shape = {
+const MUTATION_REPORT: AnswerShape = {
   fields: {
     dummies_added: "int",
     group_id_changed: "bool",
@@ -95,12 +120,24 @@ const MUTATION_REPORT: Shape = {
 };
 
 /** /sign */
-export const GROUP_SIGN_ANSWER: Shape = {
+export const GROUP_SIGN_ANSWER: AnswerShape = {
   fields: { signed: { list: "string" }, mutations: MUTATION_REPORT, error: "string" },
 };
 
+/** /sign/rotating/prepare */
+export const ROTATING_PREPARE_ANSWER: AnswerShape = {
+  fields: {
+    account: "string",
+    stage: "uint",
+    target: "uint",
+    rekey_to: "string",
+    transactions: { list: "string" },
+    mutations: MUTATION_REPORT,
+  },
+};
+
 /** /sign/rotating/sign */
-export const ROTATING_SIGN_ANSWER: Shape = {
+export const ROTATING_SIGN_ANSWER: AnswerShape = {
   fields: {
     signed: { list: "string" },
     stage: "uint",
@@ -110,7 +147,7 @@ export const ROTATING_SIGN_ANSWER: Shape = {
   },
 };
 
-const COMPONENT: Shape = {
+const COMPONENT: AnswerShape = {
   fields: {
     target_index: "int",
     kind: "string",
@@ -125,13 +162,11 @@ const COMPONENT: Shape = {
 };
 
 /** /sign/component */
-export const COMPONENT_ANSWER: Shape = {
+export const COMPONENT_ANSWER: AnswerShape = {
   fields: { request_id: "string", components: { list: COMPONENT }, error: "string" },
 };
 
 /** /sign/assemble */
-export const ASSEMBLY_ANSWER: Shape = {
+export const ASSEMBLY_ANSWER: AnswerShape = {
   fields: { request_id: "string", signed_group: { list: "string" }, error: "string" },
 };
-
-export type AnswerShape = Shape;

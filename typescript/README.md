@@ -390,7 +390,7 @@ Failures:
 | Error | Meaning | What to do |
 |---|---|---|
 | The signing call's own error | The signer refused (policy, operator, locked), or the SDK refused the signer's answer (`verify signer response: ...`, `MaxFeeIncreaseError`). Nothing was submitted. | Read the reason. If the SDK refused a sign answer, the signer did sign and the SDK discarded the result. |
-| `SignOutcomeUnknownError` | A signing exchange ended with no answer. A signature may have been released; nothing was submitted. | Check with the operator or the audit log before signing again. For the ordinary flow the error carries `requestId` and `requests`; for a rotating account it carries the prepared group in `rotating` (see below). |
+| `SignOutcomeUnknownError` | A signing exchange ended with no answer, or with a 200 answer that could not be read (not one JSON object of the expected shape). A signature may have been released; nothing was submitted. | Check with the operator or the audit log before signing again. For the ordinary flow the error carries `requestId` and `requests`; for a rotating account it carries the prepared group in `rotating` (see below). |
 | `SubmissionRejectedError` | The node refused the group or dropped it from its pool. | Read the reason. The signed bytes and IDs are in `signedGroup` and `txIds`. |
 | `SubmissionUncertainError` | `stage` says where it stopped: `"unsent"` (signed, never sent: your signal was aborted), `"submit"` (the submission's answer never arrived), or `"confirm"` (not confirmed within the wait). Except for `"unsent"`, it may still confirm. | Look up `txIds`, or submit the same `signedGroup` again. Do not sign a replacement until the outcome is known: both could execute. |
 
@@ -399,6 +399,16 @@ from an earlier submission of the group. The SDK treats that as submitted and
 looks for the outcome; it is not a rejection. A committed transaction that
 carries a lease is the exception: the node refuses it for its lease, and the
 SDK reports a rejection.
+
+A 200 answer is read as the Go SDK reads it: exactly one JSON object; a field
+left out or null takes its zero value, as does a null entry in a list; an
+unknown field is ignored. A field of the wrong type, a number outside the
+field's range, a null or non-object body, an empty or cut-off body, or anything
+after the object makes the answer unreadable. Two limits come from
+`JSON.parse`: a number a JavaScript number cannot hold exactly (above 2^53) is
+unreadable, where the Go SDK reads numbers up to 2^64 - 1 and then refuses
+them; and a number written as `3.0` is read as `3`, because `JSON.parse` does
+not keep how a number was written.
 
 The existing `sign*` and `simulate*` calls are unchanged.
 
@@ -433,10 +443,12 @@ What to know:
   `firstValid` is at most 2 rounds ahead (`ROTATING_MAX_LEAD`) and at least 10
   rounds remain (`ROTATING_MIN_REMAINING`). Every `prepare*` helper builds such
   a window when the sender is a rotating account. A transaction whose rounds
-  are not current is refused before the operator is asked. For a transaction
-  you built yourself, set `refreshValidity: true` to let the SDK rebuild the
-  rounds; that changes the transaction ID, so leave it off if anything outside
-  the transaction binds its rounds.
+  are not current is refused before the operator is asked, and that includes
+  one a helper built that has since gone stale: only `sendPayment` rebuilds
+  rounds without the option. For any other transaction, set
+  `refreshValidity: true` to let the SDK rebuild the rounds; that changes the
+  transaction ID, so leave it off if anything outside the transaction binds
+  its rounds.
 - **App calls carry the rekey.** A contract that requires a zero `rekeyTo`
   fails the simulation in step 3.
 - **Bounded retries.** When the signer says an attempt released no signature
@@ -455,8 +467,9 @@ What to know:
 - **Two sends in a row** work once the first has confirmed, which the default
   wait ensures. Two spends prepared from the same stage cannot both land; the
   SDK does not serialize other clients or processes.
-- **Stage numbers** are safe integers; a signer answer with a stage beyond
-  `Number.MAX_SAFE_INTEGER` is refused, never rounded.
+- **Stage numbers** are safe integers, never rounded. A sign answer with a
+  stage beyond `Number.MAX_SAFE_INTEGER` cannot be read, so it is a
+  `SignOutcomeUnknownError`; a prepare answer with one is a plain error.
 
 The steps are also available one at a time. None of them submits:
 

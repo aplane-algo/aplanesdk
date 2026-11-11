@@ -318,8 +318,26 @@ export function decodeRequestSlots(requests: SignRequest[]): RequestSlot[] {
 }
 
 /**
- * The typed camelCase form of a wire (snake_case) mutation report. Every
- * signer report is read through this before it is checked.
+ * The typed camelCase form of a wire mutation report that was read with its
+ * answer's shape: only the snake_case keys, as the Go SDK reads them.
+ */
+export function mutationReportFromWire(raw: Record<string, any>): MutationReport {
+  return {
+    dummiesAdded: raw.dummies_added,
+    groupIdChanged: raw.group_id_changed,
+    feesModified: raw.fees_modified,
+    totalFeesDelta: raw.total_fees_delta,
+    originalCount: raw.original_count,
+    finalCount: raw.final_count,
+    passthroughCount: raw.passthrough_count,
+    foreignCount: raw.foreign_count,
+    reason: raw.reason,
+  };
+}
+
+/**
+ * The typed camelCase form of a /plan mutation report, which also takes the
+ * camelCase keys.
  */
 export function normalizeMutationReport(raw: any): MutationReport {
   return {

@@ -13,9 +13,10 @@ import * as path from "path";
 import { fileURLToPath } from "url";
 import type { RotatingPrepareResponse, RotatingSignResponse } from "../src/types.js";
 import { newPreparedRotating } from "../src/rotating.js";
-import { SignerError, errorText } from "../src/errors.js";
+import { SignOutcomeUnknownError, SignerError, errorText } from "../src/errors.js";
+import { SignerClient } from "../src/client.js";
 import algosdk from "algosdk";
-import { alternateSpellings } from "./fakeNetwork.js";
+import { alternateSpellings, installSigners, statusBody } from "./fakeNetwork.js";
 
 interface RotatingVectorCase {
   key_type: string;
@@ -28,6 +29,7 @@ interface RotatingVectors {
   cases: Record<string, RotatingVectorCase>;
   prepare_tampered: Array<{ name: string; case: string; prepare: RotatingPrepareResponse }>;
   sign_tampered: Array<{ name: string; case: string; sign: RotatingSignResponse }>;
+  sign_answer_bodies: Array<{ name: string; case: string; body: string; expect: "accepted" | "refused" | "unknown" }>;
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -146,6 +148,54 @@ describe("rotating vectors", () => {
         assert.throws(() => preparedFrom(c, { ...c.prepare, account: spelling }), /is not the sender/, name);
       }
     }
+  });
+
+  it("reads every raw sign answer body as the shared rule says, through the real transport", async (t) => {
+    // Each body answers a sign request for its case's own prepared group. The
+    // class is the client's: the signed group back (accepted), a plain error
+    // (refused), or a sign outcome unknown error carrying the prepared group.
+    const bodies = vectors.sign_answer_bodies;
+    assert.ok(bodies.length > 0, "no raw sign answer bodies");
+    const counts: Record<string, number> = { accepted: 0, refused: 0, unknown: 0 };
+    const mismatches: string[] = [];
+    for (const entry of bodies) {
+      const c = vectors.cases[entry.case];
+      assert.ok(c, `raw body names unknown case ${entry.case}`);
+      const prepared = preparedFrom(c, c.prepare);
+      const restore = installSigners({
+        "http://signer.test": (path) => {
+          if (path === "/status") return { body: statusBody() };
+          if (path === "/sign/rotating/sign") return { raw: entry.body };
+          if (path === "/sign/cancel") return { body: { state: "canceled" } };
+          throw new Error(`unexpected signer path ${path}`);
+        },
+      });
+      let got: string;
+      try {
+        const signed = await new SignerClient("http://signer.test").signPreparedRotating(prepared);
+        got = "accepted";
+        assert.deepEqual(signed.signedGroup, c.sign.signed, `${entry.case}: ${entry.name}: accepted another group`);
+      } catch (error) {
+        if (error instanceof SignOutcomeUnknownError) {
+          got = error.rotating === prepared ? "unknown" : "unknown without the prepared group";
+        } else if (error instanceof SignerError) {
+          got = "refused";
+        } else {
+          got = `${error instanceof Error ? error.name : typeof error}: ${errorText(error)}`;
+        }
+      } finally {
+        restore();
+      }
+      if (got !== entry.expect) {
+        mismatches.push(`${entry.case}: ${entry.name}: got ${got}, want ${entry.expect}`);
+      } else {
+        counts[got]++;
+      }
+    }
+    t.diagnostic(
+      `raw sign answers: ${bodies.length} bodies; accepted ${counts.accepted}, refused ${counts.refused}, unknown ${counts.unknown}`,
+    );
+    assert.deepEqual(mismatches, []);
   });
 
   it("covers every captured case with alterations", () => {

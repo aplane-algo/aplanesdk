@@ -327,6 +327,48 @@ describe("sendPrepared", () => {
       });
     }
 
+    // A null entry in a list takes its zero value, as the Go SDK reads it.
+    it("a null entry in signed is read as an empty entry and refused plainly", async () => {
+      const signer = new SendSigner([ordinaryKey(txn)], { sign: () => ({ raw: '{"signed":[null]}' }) });
+      const { client, algod, node } = fixture(signer);
+      await assert.rejects(client.sendPrepared(algod, preparedFor(txn)), (error: unknown) => {
+        assert.ok(!(error instanceof SignOutcomeUnknownError), String(error));
+        assert.match(errorText(error), /verify signer response: signer returned no signature for position 1/);
+        return true;
+      });
+      assert.equal(node.submitted.length, 0);
+    });
+
+    it("a null fee index is read as index 0", async () => {
+      const signer = new SendSigner([ordinaryKey(txn)], {
+        behaviour: {
+          feeRaise: { 0: 500 },
+          tamper: (body) => {
+            body.mutations.fees_modified = [null];
+          },
+        },
+      });
+      const { client, algod } = fixture(signer);
+      const result = await client.sendPrepared(algod, preparedFor(txn));
+      assert.deepEqual(result.mutations?.feesModified, [0]);
+      assert.deepEqual(result.fees, [1500n]);
+    });
+
+    it("reads only the snake_case keys of the report", async () => {
+      // A report with camelCase keys alone reports nothing the Go SDK reads,
+      // so the raised fee is an unreported change.
+      const signer = new SendSigner([ordinaryKey(txn)], {
+        behaviour: {
+          feeRaise: { 0: 500 },
+          tamper: (body) => {
+            body.mutations = { feesModified: [0], totalFeesDelta: 500, originalCount: 1, finalCount: 1 };
+          },
+        },
+      });
+      const { client, algod } = fixture(signer);
+      await assert.rejects(client.sendPrepared(algod, preparedFor(txn)), /verify signer response/);
+    });
+
     it("the same unreadable body keeps its class and message below the send", async () => {
       const signer = new SendSigner([ordinaryKey(txn)], { sign: () => ({ raw: '{"signed":[1]}' }) });
       const { client } = fixture(signer);
@@ -840,6 +882,9 @@ describe("sendPrepared with a cosigned account", () => {
       // ignored), and refused by the check.
       ["/sign/component", '{"signed":"x"}', false],
       ["/sign/assemble", '{"signed":[1]}', false],
+      // A null entry in a list takes its zero value, which the check refuses.
+      ["/sign/component", '{"components":[null]}', false],
+      ["/sign/assemble", '{"signed_group":[null]}', false],
     ];
     for (const [path, body, unknown] of cases) {
       it(`${path} answering ${body}`, async () => {

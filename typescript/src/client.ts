@@ -127,6 +127,7 @@ import {
   validatePlanResponse,
   validateSignResponse,
   wholeNumber,
+  mutationReportFromWire,
   normalizeMutationReport,
 } from "./verify.js";
 import {
@@ -165,8 +166,9 @@ import {
   ASSEMBLY_ANSWER,
   COMPONENT_ANSWER,
   GROUP_SIGN_ANSWER,
+  ROTATING_PREPARE_ANSWER,
   ROTATING_SIGN_ANSWER,
-  answerProblem,
+  readAnswer,
   type AnswerShape,
 } from "./answers.js";
 import {
@@ -1544,11 +1546,11 @@ async function readApprovalAnswer<T>(response: Response, shape: AnswerShape): Pr
   } catch {
     throw markLostAnswer(new SignerError("Server returned invalid JSON"));
   }
-  const problem = answerProblem(shape, data);
-  if (problem) {
-    throw markLostAnswer(new SignerError(`Server returned a malformed response: ${problem}`));
+  const read = readAnswer<T>(shape, data);
+  if ("problem" in read) {
+    throw markLostAnswer(new SignerError(`Server returned a malformed response: ${read.problem}`));
   }
-  return data as T;
+  return read.answer;
 }
 
 /** The stable signer error code an error carries, or "". */
@@ -4166,7 +4168,7 @@ export class SignerClient {
 
     // The wire report is snake_case; callers read the typed camelCase fields.
     const result: GroupSignResponse = data.mutations
-      ? { ...data, mutations: normalizeMutationReport(data.mutations) }
+      ? { ...data, mutations: mutationReportFromWire(data.mutations) }
       : data;
 
     // Every sign path goes through here, so a truncated, altered or padded
@@ -4579,14 +4581,20 @@ export class SignerClient {
     if (response.status !== 200) {
       throw await this.rotatingAPIError(response, "rotating prepare failed");
     }
-    let data: RotatingPrepareResponse;
+    let body: unknown;
     try {
-      data = (await response.json()) as RotatingPrepareResponse;
+      body = await response.json();
     } catch {
       throw new SignerError("Server returned invalid JSON");
     }
+    // Prepare releases nothing, so an answer that cannot be read is a plain
+    // error, as in the Go SDK.
+    const read = readAnswer<RotatingPrepareResponse>(ROTATING_PREPARE_ANSWER, body);
+    if ("problem" in read) {
+      throw new SignerError(`failed to decode response: ${read.problem}`);
+    }
     try {
-      return newPreparedRotating(originalHex, data, maxFeeIncrease, options?.appCallInfo);
+      return newPreparedRotating(originalHex, read.answer, maxFeeIncrease, options?.appCallInfo);
     } catch (error) {
       throw verificationError("verify prepared rotating group: ", error);
     }

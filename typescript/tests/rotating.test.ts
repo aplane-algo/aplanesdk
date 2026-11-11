@@ -377,7 +377,13 @@ function respend(response: any, txns: Transaction[], change: (spend: Mutable<Tra
 
 // The things a signer may not do to a prepared group. Each alters a correct
 // prepare response; text is what the check says.
-const prepareTampers: Array<{ name: string; alter: (response: any, txns: Transaction[]) => void; text: string | RegExp }> = [
+const prepareTampers: Array<{
+  name: string;
+  alter: (response: any, txns: Transaction[]) => void;
+  text: string | RegExp;
+  /** Where the refusal comes from, when not the prepared-group check. */
+  prefix?: string;
+}> = [
   { name: "receiver changed", alter: (r, t) => respend(r, t, (s) => { writable(s as Transaction).payment!.receiver = elsewhere; }), text: "changed unreported fields" },
   { name: "amount changed", alter: (r, t) => respend(r, t, (s) => { writable(s as Transaction).payment!.amount += 1n; }), text: "changed unreported fields" },
   { name: "note added", alter: (r, t) => respend(r, t, (s) => { s.note = new Uint8Array([0x78]); }), text: "changed unreported fields" },
@@ -420,10 +426,21 @@ const prepareTampers: Array<{ name: string; alter: (response: any, txns: Transac
   { name: "another account", alter: (r) => { r.account = fakeAddress(9); }, text: "is not the sender" },
   { name: "target is not the next stage", alter: (r) => { r.target = r.stage + 2; }, text: "not the stage after" },
   { name: "target equals the stage", alter: (r) => { r.target = r.stage; }, text: "not the stage after" },
-  // The largest stage a uint64 holds, as JSON carries it: it cannot be
-  // represented exactly, so it is refused rather than rounded.
-  { name: "stage number overflows", alter: (r) => { r.stage = 18446744073709551615; r.target = 0; }, text: "not the stage after" },
-  { name: "stage number beyond the safe integers", alter: (r) => { r.stage = 2 ** 53; r.target = 2 ** 53 + 1; }, text: "not the stage after" },
+  // The largest stage a uint64 holds, as JSON carries it: JSON.parse cannot
+  // read it exactly, so the answer is refused as unreadable rather than
+  // rounded. Prepare releases nothing, so that is a plain error.
+  {
+    name: "stage number overflows",
+    alter: (r) => { r.stage = 18446744073709551615; r.target = 0; },
+    prefix: "failed to decode response",
+    text: "stage is not an unsigned integer the SDK can read exactly",
+  },
+  {
+    name: "stage number beyond the safe integers",
+    alter: (r) => { r.stage = 2 ** 53; r.target = 2 ** 53 + 1; },
+    prefix: "failed to decode response",
+    text: "stage is not an unsigned integer the SDK can read exactly",
+  },
   // algosdk's decoder refuses the extra byte before the canonical check does.
   { name: "trailing bytes after the spend", alter: (r) => { r.transactions[0] += "00"; }, text: /not canonical|invalid msgpack/ },
   { name: "spend without the TX prefix", alter: (r) => { r.transactions[0] = r.transactions[0].slice(4); }, text: "missing TX prefix" },
@@ -437,7 +454,10 @@ describe("prepareRotating refuses an altered group", () => {
     it(tamper.name, async () => {
       const { signer, node, algod, client, txn } = rotatingFixture();
       signer.alterPrepare = tamper.alter;
-      await assert.rejects(client.sendPrepared(algod, rotatingGroup(txn)), mentions("verify prepared rotating group", tamper.text));
+      await assert.rejects(
+        client.sendPrepared(algod, rotatingGroup(txn)),
+        mentions(tamper.prefix ?? "verify prepared rotating group", tamper.text),
+      );
       assert.equal(node.simulated.length, 0);
       assert.equal(signer.count("/sign/rotating/sign"), 0);
       assert.equal(node.submitted.length, 0);
@@ -558,7 +578,6 @@ const signTampers: Array<{ name: string; alter: (response: any, signed: algosdk.
   { name: "another stage reported", alter: (r) => { r.stage += 1; r.target += 1; }, text: "signer reports stage 4 to 5, prepared 3 to 4" },
   { name: "another transaction ID reported", alter: (r, s) => { r.txid = s[1].txn.txID(); }, text: "signer reports transaction ID" },
   { name: "another group ID reported", alter: (r) => { r.group_id = bytesToBase64(new Uint8Array(32)); }, text: "signer reports group ID" },
-  { name: "a stage beyond the safe integers reported", alter: (r) => { r.stage = 2 ** 53; r.target = 2 ** 53 + 1; }, text: "signer reports stage" },
 ];
 
 describe("signPreparedRotating refuses an altered response", () => {
@@ -930,6 +949,55 @@ describe("a prepared rotating group", () => {
   });
 });
 
+describe("the prepare answer is read with its types", () => {
+  // Prepare releases nothing, so an answer that cannot be read is a plain
+  // error, as in the Go SDK.
+  const cases: Array<{ name: string; alter: (response: any) => void; text: RegExp }> = [
+    { name: "an account that is a list", alter: (r) => { r.account = [r.account]; }, text: /failed to decode response: account is not a string/ },
+    { name: "a rekey_to that is a list", alter: (r) => { r.rekey_to = [r.rekey_to]; }, text: /failed to decode response: rekey_to is not a string/ },
+    { name: "a stage that is a string", alter: (r) => { r.stage = String(r.stage); }, text: /failed to decode response: stage is not an unsigned integer/ },
+    { name: "mutations that are false", alter: (r) => { r.mutations = false; }, text: /failed to decode response: mutations is not an object/ },
+    { name: "a transaction that is a number", alter: (r) => { r.transactions[0] = 5; }, text: /failed to decode response: transactions\[0\] is not a string/ },
+    {
+      name: "a report with camelCase keys only",
+      alter: (r) => {
+        r.mutations = { dummiesAdded: 1, groupIdChanged: true, feesModified: [0], totalFeesDelta: 1000, originalCount: 1, finalCount: 2 };
+      },
+      text: /verify prepared rotating group: mutation original_count 0/,
+    },
+  ];
+  for (const test of cases) {
+    it(`refuses ${test.name}`, async () => {
+      const { signer, client, txn } = rotatingFixture();
+      signer.alterPrepare = test.alter;
+      await assert.rejects(client.prepareRotating(txn), (error: unknown) => {
+        assert.ok(error instanceof SignerError && !(error instanceof SignOutcomeUnknownError), String(error));
+        assert.match(errorText(error), test.text);
+        return true;
+      });
+    });
+  }
+
+  it("reads null mutations as none", async () => {
+    const account = stageAddress(rotatingTestProgram).toString();
+    const { signer, client } = rotatingFixture({ account, stage: 0, dummies: 0, charge: 0n });
+    signer.alterPrepare = (response) => {
+      response.mutations = null;
+    };
+    const prepared = await client.prepareRotating(rotatingPayment(account, 10, 110));
+    assert.equal(prepared.mutations(), undefined);
+  });
+
+  it("refuses a body that is null", async () => {
+    const { signer, client, txn } = rotatingFixture();
+    restore?.();
+    restore = installSigners({
+      [SIGNER]: (path, body) => (path === "/sign/rotating/prepare" ? { raw: "null" } : signer.handle(path, body)),
+    });
+    await assert.rejects(client.prepareRotating(txn), /failed to decode response: the answer is not an object/);
+  });
+});
+
 describe("prepared group checks the vectors cannot reach", () => {
   it("refuses a last valid round before the first", async () => {
     const { signer, algod, client } = rotatingFixture();
@@ -1234,7 +1302,10 @@ describe("signPreparedRotating answer classification", () => {
 
   // A 200 body that cannot be read as a sign answer may stand for a
   // released signature, as an unparseable one does.
-  for (const body of ["123", '"ok"', "[]", "null", '{"signed":"x"}', '{"signed":[1]}', '{"stage":"3"}', '{"stage":-1}', '{"txid":7}']) {
+  for (const body of [
+    "123", '"ok"', "[]", "null", "", '{"signed":"x"}', '{"signed":[1]}', '{"stage":"3"}', '{"stage":-1}',
+    '{"stage":1.5}', '{"stage":9007199254740992}', '{"stage":18446744073709551616}', '{"txid":7}', '{"group_id":false}',
+  ]) {
     it(`a 200 body ${body} is an unknown outcome`, async () => {
       const { signer, client, txn } = rotatingFixture();
       const prepared = await client.prepareRotating(txn);
@@ -1271,6 +1342,26 @@ describe("signPreparedRotating answer classification", () => {
     });
     await assert.rejects(client.sendPrepared(algod, rotatingGroup(txn)), SignOutcomeUnknownError);
     assert.equal(node.submitted.length, 0);
+  });
+
+  it("a lone spend's answer may leave out group_id, and a stage 0 answer its stage", async () => {
+    // Left out, each takes its zero value, as the Go SDK reads the answer.
+    const account = stageAddress(rotatingTestProgram).toString();
+    const { signer, node, algod, client } = rotatingFixture({ account, stage: 0, dummies: 0, charge: 0n });
+    signer.alterSign = (response) => {
+      delete response.group_id;
+      delete response.stage;
+    };
+    const result = await client.sendPrepared(algod, rotatingGroup(rotatingPayment(account, 10, 110)));
+    assert.equal(result.rotating?.stage, 0);
+    assert.equal(result.groupId, "");
+    assert.equal(node.submitted.length, 1);
+
+    signer.alterSign = (response) => {
+      response.group_id = null;
+      response.stage = null;
+    };
+    await client.sendPrepared(algod, rotatingGroup(rotatingPayment(account, 10, 110)));
   });
 
   it("an unauthenticated connection is an AuthenticationError", async () => {
