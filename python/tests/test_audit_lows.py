@@ -14,6 +14,7 @@ from aplanesdk import PreparedGroup, PreparedTransaction, SignerClient, SignerEr
 from aplanesdk.signer import (
     KeyInfo,
     _parse_lsig_resource_usage,
+    _require_uint,
     load_config,
     sign_prepared_cosigned_group,
 )
@@ -66,9 +67,9 @@ BAD_INTEGERS = [123.9, 123.0, "123", True, -1, 2**64]
 def test_app_id_must_be_a_positive_integer(bad):
     client = make_client()
     algod = MagicMock()
-    with pytest.raises(ValueError, match="app_id must be"):
+    with pytest.raises(ValueError, match="app_id must"):
         client.prepare_app_call(algod, sender=SENDER, app_id=bad)
-    with pytest.raises(ValueError, match="app_id must be"):
+    with pytest.raises(ValueError, match="app_id must"):
         client.prepare_abi_app_call(algod, sender=SENDER, app_id=bad, method_signature="do()void")
     algod.suggested_params.assert_not_called()
 
@@ -76,9 +77,9 @@ def test_app_id_must_be_a_positive_integer(bad):
 @pytest.mark.parametrize("bad", BAD_INTEGERS)
 def test_foreign_references_must_be_integers(bad):
     client = make_client()
-    with pytest.raises(ValueError, match=r"foreign_apps\[0\] must be"):
+    with pytest.raises(ValueError, match=r"foreign_apps\[0\] must"):
         client.prepare_app_call(MagicMock(), sender=SENDER, app_id=7, foreign_apps=[bad])
-    with pytest.raises(ValueError, match=r"foreign_assets\[1\] must be"):
+    with pytest.raises(ValueError, match=r"foreign_assets\[1\] must"):
         client.prepare_app_call(MagicMock(), sender=SENDER, app_id=7, foreign_assets=[5, bad])
 
 
@@ -86,11 +87,11 @@ def test_foreign_references_must_be_integers(bad):
 def test_asset_id_must_be_a_positive_integer(bad):
     client = make_client()
     algod = MagicMock()
-    with pytest.raises(ValueError, match="asset_id must be"):
+    with pytest.raises(ValueError, match="asset_id must"):
         client.prepare_asa_transfer(algod, sender=SENDER, receiver=RECEIVER, asset_id=bad, amount=1)
-    with pytest.raises(ValueError, match="asset_id must be"):
+    with pytest.raises(ValueError, match="asset_id must"):
         client.prepare_asa_opt_in(algod, sender=SENDER, asset_id=bad)
-    with pytest.raises(ValueError, match="asset_id must be"):
+    with pytest.raises(ValueError, match="asset_id must"):
         client.prepare_asa_opt_out(algod, sender=SENDER, asset_id=bad, close_to=RECEIVER)
     algod.suggested_params.assert_not_called()
 
@@ -99,11 +100,11 @@ def test_asset_id_must_be_a_positive_integer(bad):
 def test_amounts_and_fees_must_be_integers(bad):
     client = make_client()
     algod = Algod({SENDER: {"amount": 2_000_000, "min-balance": 100_000}})
-    with pytest.raises(ValueError, match="amount must be"):
+    with pytest.raises(ValueError, match="amount must"):
         client.prepare_payment(algod, sender=SENDER, receiver=RECEIVER, amount=bad)
-    with pytest.raises(ValueError, match="amount must be"):
+    with pytest.raises(ValueError, match="amount must"):
         client.prepare_asa_transfer(algod, sender=SENDER, receiver=RECEIVER, asset_id=5, amount=bad)
-    with pytest.raises(ValueError, match="fee must be"):
+    with pytest.raises(ValueError, match="fee must"):
         client.prepare_payment(algod, sender=SENDER, receiver=RECEIVER, amount=1, fee=bad)
 
 
@@ -177,37 +178,77 @@ def test_account_close_preflight_uses_the_transaction_fee():
         )
 
 
-def test_sweep_counts_asa_transfer_fees_against_the_paying_sender():
-    def accounts(balance):
-        return {
-            SENDER: {
-                "amount": balance,
-                "min-balance": 100_000,
-                "assets": [{"asset-id": 1001, "amount": 25}],
-            },
-            RECEIVER: {
-                "amount": 2_000_000,
-                "min-balance": 100_000,
-                "assets": [{"asset-id": 1001, "amount": 0}],
-            },
-        }
+def _sweep_accounts(balance, other_balance=2_000_000):
+    return {
+        SENDER: {
+            "amount": balance,
+            "min-balance": 100_000,
+            "assets": [{"asset-id": 1001, "amount": 25}],
+        },
+        RECEIVER: {
+            "amount": other_balance,
+            "min-balance": 100_000,
+            "assets": [{"asset-id": 1001, "amount": 25}],
+        },
+    }
 
-    def sweep(balance):
+
+def _keys_for(*addresses):
+    return mock_response(
+        200,
+        {
+            "count": len(addresses),
+            "keys": [{"address": address, "key_type": "ed25519"} for address in addresses],
+        },
+    )
+
+
+def _signer_for_both(client):
+    return patch.object(
+        client.session,
+        "get",
+        side_effect=lambda url, **_: (
+            _status() if url.endswith("/status") else _keys_for(SENDER, RECEIVER)
+        ),
+    )
+
+
+def test_group_checks_every_sender_against_everything_it_pays():
+    transfer = {"sender": SENDER, "receiver": RECEIVER, "asset_id": 1001, "amount": 5}
+    payment = {"sender": SENDER, "receiver": RECEIVER, "amount": 10_000}
+
+    def sweep(balance, *, asa_transfers, payments, other_balance=2_000_000):
         client = make_client()
-        with _signer(client, SENDER):
+        with _signer_for_both(client):
             return client.prepare_sweep_group(
-                Algod(accounts(balance)),
-                asa_transfers=[
-                    {"sender": SENDER, "receiver": RECEIVER, "asset_id": 1001, "amount": 5}
-                ],
-                payments=[{"sender": SENDER, "receiver": RECEIVER, "amount": 10_000}],
+                Algod(_sweep_accounts(balance, other_balance)),
+                asa_transfers=asa_transfers,
+                payments=payments,
             )
 
     # Available is the balance less the 100,000 minimum. The sender pays
     # 10,000 plus two 1000 fees: its own and the ASA transfer's.
-    assert len(sweep(112_000).transactions) == 2
+    group = sweep(112_000, asa_transfers=[transfer], payments=[payment])
+    assert group.checks[-1].name == "group_algo_balance"
     with pytest.raises(SignerError, match="available 11999, required 12000"):
-        sweep(111_999)
+        sweep(111_999, asa_transfers=[transfer], payments=[payment])
+
+    # A sweep with no payments still checks the fees its sender pays.
+    sweep(102_000, asa_transfers=[transfer, transfer], payments=[])
+    with pytest.raises(SignerError, match="available 1999, required 2000"):
+        sweep(101_999, asa_transfers=[transfer, transfer], payments=[])
+
+    # A sender with only an asset transfer is checked beside one that pays.
+    other_transfer = {"sender": RECEIVER, "receiver": SENDER, "asset_id": 1001, "amount": 1}
+    sweep(2_000_000, asa_transfers=[other_transfer], payments=[payment], other_balance=101_000)
+    with pytest.raises(SignerError, match=f"group insufficient funds for {RECEIVER}"):
+        sweep(2_000_000, asa_transfers=[other_transfer], payments=[payment], other_balance=100_999)
+
+    # The ASA transfer group helper makes the same check.
+    client = make_client()
+    with _signer_for_both(client):
+        with pytest.raises(SignerError, match="available 1999, required 2000"):
+            client.prepare_asa_transfer_group(Algod(_sweep_accounts(101_999)), [transfer, transfer])
 
 
 def test_lsig_resource_numbers_are_not_coerced():
@@ -218,9 +259,13 @@ def test_lsig_resource_numbers_are_not_coerced():
     # A missing field keeps its default, and a key with no resources has none.
     assert _parse_lsig_resource_usage({"program_bytes": 512}).argument_bytes == 0
     assert _parse_lsig_resource_usage(None) is None
-    for bad in (512.9, 512.0, "512", True, -1, None):
-        with pytest.raises(SignerError, match="non-integer program_bytes"):
+    name = "signer-reported LogicSig resources program_bytes"
+    for bad in (512.9, 512.0, "512", True, None):
+        with pytest.raises(SignerError, match=f"{name} must be an integer, not "):
             _parse_lsig_resource_usage({"program_bytes": bad})
+    # A negative number is an integer, and is refused as what it is.
+    with pytest.raises(SignerError, match=f"{name} must not be negative"):
+        _parse_lsig_resource_usage({"program_bytes": -1})
 
     client = make_client()
     keys = {
@@ -234,8 +279,113 @@ def test_lsig_resource_numbers_are_not_coerced():
         ],
     }
     with patch.object(client.session, "get", return_value=mock_response(200, keys)):
-        with pytest.raises(SignerError, match="non-integer program_bytes"):
+        with pytest.raises(SignerError, match="program_bytes must be an integer"):
             client.list_keys(refresh=True)
+
+
+def test_one_integer_check_words_each_refusal():
+    assert _require_uint(5, "x") == 5
+    for bad, message in (
+        (1.5, "x must be an integer, not float"),
+        ("1", "x must be an integer, not str"),
+        (True, "x must be an integer, not bool"),
+        (-1, "x must not be negative"),
+        (2**64, "x must be below 2\\*\\*64"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            _require_uint(bad, "x")
+        with pytest.raises(SignerError, match=message):
+            _require_uint(bad, "x", error=SignerError)
+    with pytest.raises(ValueError, match="x must be greater than zero"):
+        _require_uint(0, "x", positive=True)
+
+
+# ABI reference arguments (application, asset) are IDs too, and go through
+# the same check before anything is encoded.
+
+
+@pytest.mark.parametrize("bad", [123.9, 123.0, "123", True, -1, 0, 2**64])
+def test_abi_reference_arguments_must_be_integers(bad):
+    client = make_client()
+    algod = MagicMock()
+    with pytest.raises(ValueError, match="asset argument must"):
+        client.prepare_abi_app_call(
+            algod, sender=SENDER, app_id=7, method_signature="f(asset)void", args=[bad]
+        )
+    with pytest.raises(ValueError, match="application argument must"):
+        client.prepare_abi_app_call(
+            algod, sender=SENDER, app_id=7, method_signature="f(application)void", args=[bad]
+        )
+    algod.suggested_params.assert_not_called()
+
+
+def test_abi_reference_arguments_accept_integers_and_addresses():
+    client = make_client()
+    algod = Algod({SENDER: {"amount": 2_000_000, "min-balance": 100_000}})
+    with _signer(client, SENDER):
+        prepared = client.prepare_abi_app_call(
+            algod,
+            sender=SENDER,
+            app_id=7,
+            method_signature="f(asset,application,account)void",
+            args=[1001, 9, RECEIVER],
+        )
+    assert prepared.transaction.foreign_assets == [1001]
+    assert prepared.transaction.foreign_apps == [9]
+    assert prepared.transaction.accounts == [RECEIVER]
+    with pytest.raises(Exception):
+        client.prepare_abi_app_call(
+            MagicMock(), sender=SENDER, app_id=7, method_signature="f(account)void", args=[123]
+        )
+
+
+@pytest.mark.parametrize("bad", [123.9, "123", True, -1, 2**64])
+def test_every_prepare_helper_checks_its_ids_counts_and_indexes(bad):
+    client = make_client()
+    algod = MagicMock()
+    deploy = dict(sender=SENDER, approval_program=b"\x06\x81\x01", clear_program=b"\x06\x81\x01")
+    with pytest.raises(ValueError, match="extra_pages must"):
+        client.prepare_app_deploy(algod, extra_pages=bad, **deploy)
+    with pytest.raises(ValueError, match=r"foreign_apps\[0\] must"):
+        client.prepare_app_deploy(algod, foreign_apps=[bad], **deploy)
+    with pytest.raises(ValueError, match=r"foreign_assets\[0\] must"):
+        client.prepare_app_deploy(algod, foreign_assets=[bad], **deploy)
+    for prepare, extra in (
+        (client.prepare_app_deploy, deploy),
+        (client.prepare_app_call, dict(sender=SENDER, app_id=7)),
+        (
+            client.prepare_abi_app_call,
+            dict(sender=SENDER, app_id=7, method_signature="f()void"),
+        ),
+    ):
+        with pytest.raises(ValueError, match=r"boxes\[0\] app index must"):
+            prepare(algod, boxes=[(bad, b"name")], **extra)
+    with pytest.raises(ValueError, match=r"boxes\[0\] must be an \(app index, name\) pair"):
+        client.prepare_app_call(algod, sender=SENDER, app_id=7, boxes=[7])
+    online = dict(
+        sender=SENDER,
+        mode="online",
+        votekey="k",
+        selkey="k",
+        sprfkey="k",
+        votefst=1,
+        votelst=10,
+        votekd=3,
+    )
+    for field in ("votefst", "votelst", "votekd"):
+        with pytest.raises(ValueError, match=f"{field} must"):
+            client.prepare_keyreg(algod, **{**online, field: bad})
+    algod.suggested_params.assert_not_called()
+
+
+def test_box_references_with_integer_indexes_are_accepted():
+    client = make_client()
+    algod = Algod({SENDER: {"amount": 2_000_000, "min-balance": 100_000}})
+    with _signer(client, SENDER):
+        prepared = client.prepare_app_call(
+            algod, sender=SENDER, app_id=7, foreign_apps=[9], boxes=[(0, b"a"), (9, b"b")]
+        )
+    assert len(prepared.transaction.boxes) == 2
 
 
 def test_cosigned_group_refuses_a_signer_key_for_another_address():
@@ -256,6 +406,33 @@ def test_cosigned_group_refuses_a_signer_key_for_another_address():
     user.plan_requests.assert_not_called()
 
 
+def test_cosigned_group_takes_the_key_from_the_signer_not_the_caller():
+    """A supplied key's flow, resources and ceiling are not what the flow uses."""
+    txn = fake_signer.payment()
+    # The caller's copy claims an ordinary key; the signer's record says the
+    # key needs a flow this SDK does not have.
+    supplied = KeyInfo(address=txn.sender, key_type="ed25519", signing_flow="")
+    held = KeyInfo(address=txn.sender, key_type="ed25519", signing_flow="cosigner9")
+    user = make_client()
+    user.get_key_info = MagicMock(return_value=held)
+    user.plan_requests = MagicMock()
+    group = PreparedGroup(
+        [PreparedTransaction(transaction=txn, auth_address=txn.sender, signer_key=supplied)]
+    )
+    with pytest.raises(ValueError, match="signing flow 'cosigner9'"):
+        sign_prepared_cosigned_group(user_client=user, prepared_group=group)
+    user.get_key_info.assert_called_once_with(txn.sender)
+    user.plan_requests.assert_not_called()
+
+    # The same path when no key is supplied, and a key the signer does not hold.
+    group.transactions[0].signer_key = None
+    with pytest.raises(ValueError, match="signing flow 'cosigner9'"):
+        sign_prepared_cosigned_group(user_client=user, prepared_group=group)
+    user.get_key_info = MagicMock(return_value=None)
+    with pytest.raises(ValueError, match="the signer holds no key for auth address"):
+        sign_prepared_cosigned_group(user_client=user, prepared_group=group)
+
+
 def test_config_enforces_networks_allowed(tmp_path):
     (tmp_path / "config.yaml").write_text("network: mainnet\nnetworks_allowed: [testnet]\n")
     with pytest.raises(SignerError, match="network 'mainnet' is not in networks_allowed"):
@@ -266,6 +443,43 @@ def test_config_enforces_networks_allowed(tmp_path):
     assert not config.is_network_allowed("mainnet")
     (tmp_path / "config.yaml").write_text("network: testnet\n")
     assert load_config(str(tmp_path)).is_network_allowed("mainnet")
+
+
+# A networks_allowed that cannot be read must not become an empty list, which
+# permits every network. These are the Go loader's verdicts on the same files.
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "mainnet",
+        "{a: b}",
+        "[testnet, [a]]",
+        "[testnet, Mainnet]",
+        "[testnet, 1.5]",
+        "[testnet, -x]",
+    ],
+)
+def test_config_refuses_a_malformed_networks_allowed(tmp_path, value):
+    (tmp_path / "config.yaml").write_text(f"network: testnet\nnetworks_allowed: {value}\n")
+    with pytest.raises(SignerError, match="networks_allowed"):
+        load_config(str(tmp_path))
+
+
+@pytest.mark.parametrize(
+    ("value", "allowed"),
+    [
+        ("[]", []),
+        ("", []),
+        ("[testnet, 1]", ["testnet", "1"]),
+        ("[testnet, true]", ["testnet", "true"]),
+        ("[testnet, null]", ["testnet"]),
+        ("[testnet, my_net-2]", ["testnet", "my_net-2"]),
+    ],
+)
+def test_config_reads_networks_allowed_as_go_does(tmp_path, value, allowed):
+    (tmp_path / "config.yaml").write_text(f"network: testnet\nnetworks_allowed: {value}\n")
+    assert load_config(str(tmp_path)).networks_allowed == allowed
 
 
 def test_assemble_group_is_gone():

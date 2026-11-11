@@ -1059,6 +1059,33 @@ def record_call_order(events, **mocks):
 
 
 class TestSignPreparedCosignedGroup:
+    @pytest.fixture(autouse=True)
+    def _signer_holds_the_groups_keys(self, monkeypatch):
+        """The cosigned flow reads each key from the signer, not from the group.
+
+        These tests describe the signer's keys on the prepared transactions, so
+        the user client here answers key lookups with exactly those.
+        """
+        real = sign_prepared_cosigned_group
+
+        def sign(*args, **kwargs):
+            user = kwargs.get("user_client")
+            group = kwargs.get("prepared_group")
+            # A test that sets its own key lookup on a real client keeps it.
+            own_lookup = not isinstance(user, MagicMock) and isinstance(
+                getattr(user, "__dict__", {}).get("get_key_info"), MagicMock
+            )
+            if user is not None and group is not None and not own_lookup:
+                held = {
+                    item.signer_key.address: item.signer_key
+                    for item in group.transactions
+                    if item.signer_key is not None
+                }
+                user.get_key_info = held.get
+            return real(*args, **kwargs)
+
+        monkeypatch.setitem(globals(), "sign_prepared_cosigned_group", sign)
+
     def test_prepared_plan_preserves_per_slot_args_for_repeated_auth_address(self):
         cosigned = sdk_test_address(31)
         receiver = sdk_test_address(32)
@@ -3315,7 +3342,7 @@ class TestPrepHelpers:
         assert group.transactions[0].transaction.receiver == receiver1
         assert group.transactions[1].transaction.receiver == receiver2
         assert group.checks[0].name == "payment_group"
-        assert group.checks[1].name == "payment_group_balance"
+        assert group.checks[1].name == "group_algo_balance"
 
     def test_prepare_payment_group_rejects_aggregate_insufficient_funds(self):
         sender = sdk_test_address(1)
@@ -3330,7 +3357,7 @@ class TestPrepHelpers:
             self._keys(sender),
             self._status(),
         ]):
-            with pytest.raises(SignerError, match="payment group insufficient funds"):
+            with pytest.raises(SignerError, match="group insufficient funds"):
                 client.prepare_payment_group(algod, [
                     {
                         "sender": sender,

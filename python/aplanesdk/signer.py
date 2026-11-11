@@ -994,6 +994,41 @@ class GenerateResult:
     parameters: Optional[Dict[str, str]] = None
 
 
+_NETWORK_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
+
+
+def _parse_networks_allowed(value: Any) -> List[str]:
+    """Read networks_allowed, refusing a malformed one.
+
+    A value that cannot be read must not become an empty list, which permits
+    every network. This accepts what the Go SDK's loader accepts: no value, or
+    a list of network IDs, where a bare number or true/false is read as its
+    text and an empty entry is skipped.
+    """
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise SignerError(
+            f"networks_allowed in config.yaml must be a list of network IDs, "
+            f"not {type(value).__name__}"
+        )
+    allowed = []
+    for item in value:
+        if item is None:
+            continue
+        if isinstance(item, bool):
+            item = "true" if item else "false"
+        elif isinstance(item, int):
+            item = str(item)
+        if not isinstance(item, str) or _NETWORK_ID.fullmatch(item) is None:
+            raise SignerError(
+                f"invalid network in networks_allowed: {item!r} (use lowercase letters, "
+                "digits, '_' or '-', starting with a letter or digit)"
+            )
+        allowed.append(item)
+    return allowed
+
+
 def load_config(data_dir: str) -> ClientConfig:
     """
     Load client configuration from data_dir/config.yaml.
@@ -1028,10 +1063,7 @@ def load_config(data_dir: str) -> ClientConfig:
             )
     if isinstance(data.get("network"), str):
         config.network = data["network"]
-    if isinstance(data.get("networks_allowed"), list) and all(
-        isinstance(item, str) for item in data["networks_allowed"]
-    ):
-        config.networks_allowed = data["networks_allowed"]
+    config.networks_allowed = _parse_networks_allowed(data.get("networks_allowed"))
     if isinstance(data.get("theme"), str) and data["theme"]:
         config.theme = data["theme"]
     if config.networks_allowed and config.network not in config.networks_allowed:
@@ -1550,7 +1582,9 @@ def _mutation_int(mutations: Dict[str, Any], name: str) -> int:
     if value is None:
         return 0
     if isinstance(value, bool) or not isinstance(value, int):
-        raise SignerError(f"mutation {name} must be an integer")
+        raise SignerError(
+            f"mutation {name} must be an integer, not {type(value).__name__}"
+        )
     return cast(int, value)
 
 
@@ -2124,14 +2158,13 @@ def _parse_lsig_resource_usage(data: Any) -> Optional[LogicSigResourceUsage]:
         return None
 
     def number(name: str) -> int:
-        # A missing field keeps its default. A value that is not an integer
-        # is a malformed payload, not a number to be converted.
-        value = data.get(name, 0)
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise SignerError(
-                f"signer reported LogicSig resources with a non-integer {name}: {value!r}"
-            )
-        return cast(int, value)
+        # A missing field keeps its default. Anything that is not a
+        # non-negative integer is a malformed payload, not a number to convert.
+        return _require_uint(
+            data.get(name, 0),
+            f"signer-reported LogicSig resources {name}",
+            error=SignerError,
+        )
 
     return LogicSigResourceUsage(
         program_bytes=number("program_bytes"),
@@ -2501,19 +2534,52 @@ def _find_spendable_key(keys: List[KeyInfo], address: str) -> Optional[KeyInfo]:
 _UINT64_LIMIT = 1 << 64
 
 
-def _require_uint(value: Any, name: str, *, positive: bool = False) -> int:
-    """Require a plain integer for an ID, an amount or a fee.
+def _require_uint(
+    value: Any,
+    name: str,
+    *,
+    positive: bool = False,
+    error: type = ValueError,
+) -> int:
+    """Require a plain integer for an ID, a count, an amount or a fee.
 
-    py-algorand-sdk converts what it is given with int(), so 123.9 would
-    become 123 and "123" would be accepted. A float, a string or a bool is a
-    mistake in the caller, not a number to be rounded.
+    The one check for "a whole number, not something that converts to one".
+    py-algorand-sdk and int() would turn 123.9 into 123 and accept "123"; a
+    float, a string or a bool is a mistake, not a number to be rounded.
+    ``error`` is ValueError for a value the caller passed and SignerError for
+    one the signer sent.
     """
     if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"{name} must be an integer, not {type(value).__name__}")
-    if value < 0 or value >= _UINT64_LIMIT or (positive and value == 0):
-        bound = "a positive integer" if positive else "a non-negative integer"
-        raise ValueError(f"{name} must be {bound} below 2**64")
+        raise error(f"{name} must be an integer, not {type(value).__name__}")
+    if value < 0:
+        raise error(f"{name} must not be negative")
+    if positive and value == 0:
+        raise error(f"{name} must be greater than zero")
+    if value >= _UINT64_LIMIT:
+        raise error(f"{name} must be below 2**64")
     return cast(int, value)
+
+
+def _require_box_references(boxes: Optional[List[Any]]) -> None:
+    """Require each box reference's app index to be a plain integer."""
+    for position, box in enumerate(boxes or []):
+        if not isinstance(box, (tuple, list)) or len(box) != 2:
+            raise ValueError(f"boxes[{position}] must be an (app index, name) pair")
+        _require_uint(box[0], f"boxes[{position}] app index")
+        if not isinstance(box[1], (bytes, bytearray, str)):
+            raise ValueError(f"boxes[{position}] name must be bytes or a string")
+
+
+def _require_app_references(
+    foreign_apps: Optional[List[Any]],
+    foreign_assets: Optional[List[Any]],
+    boxes: Optional[List[Any]],
+) -> None:
+    """Require every app, asset and box reference of an app call to be a plain integer."""
+    for name, references in (("foreign_apps", foreign_apps), ("foreign_assets", foreign_assets)):
+        for position, reference in enumerate(references or []):
+            _require_uint(reference, f"{name}[{position}]", positive=True)
+    _require_box_references(boxes)
 
 
 def _apply_prep_fee(params: Any, fee: Optional[int]) -> None:
@@ -2759,6 +2825,9 @@ def _validate_keyreg_params(
 ) -> None:
     if not mode:
         raise ValueError('mode is required: "online" or "offline"')
+    for name, value in (("votefst", votefst), ("votelst", votelst), ("votekd", votekd)):
+        if value is not None:
+            _require_uint(value, name)
     if mode == "offline":
         if incentive_eligible:
             raise ValueError("incentive eligibility needs an online keyreg")
@@ -2807,42 +2876,39 @@ def _account_incentive_eligible(account_info: Any) -> bool:
     )
 
 
-def _validate_payment_group(
-    transactions: List[PreparedTransaction],
-    other_positions: Optional[List[PreparedTransaction]] = None,
-) -> PreparedCheck:
-    """Check each paying sender can cover its payments and every fee it pays.
+def _validate_group_algo_balance(transactions: List[PreparedTransaction]) -> PreparedCheck:
+    """Check each sender can cover everything it pays across the group.
 
-    ``other_positions`` are the group's non-payment positions. They move no
-    ALGO, but a sender that also pays from this group pays their fees too.
+    A sender's total is the ALGO it sends plus the fee of every position it
+    sends, whatever the position's kind: an asset transfer moves no ALGO but
+    still pays a fee. The total is checked against the sender's spendable
+    ALGO, which each position's own check records.
     """
-    totals: Dict[str, Dict[str, int]] = {}
+    totals: Dict[str, Dict[str, Optional[int]]] = {}
     for item in transactions:
         if item.transaction is None:
-            raise ValueError("payment group transaction is required")
-        sender = item.transaction.sender
-        total = totals.setdefault(sender, {"available": 0, "required": 0})
-        amount = int(getattr(item.transaction, "amt", getattr(item.transaction, "amount", 0)))
-        fee = int(getattr(item.transaction, "fee", 0))
-        total["required"] += amount + fee
-        for check in item.checks or []:
-            if check.name == "payment_balance" and check.data:
-                total["available"] = int(check.data.get("available", 0))
-    for item in other_positions or []:
-        if item.transaction is None:
             raise ValueError("group transaction is required")
-        if item.transaction.sender in totals:
-            totals[item.transaction.sender]["required"] += int(
-                getattr(item.transaction, "fee", 0)
-            )
+        sender = item.transaction.sender
+        total = totals.setdefault(sender, {"available": None, "required": 0})
+        amount = 0
+        if isinstance(item.transaction, transaction.PaymentTxn):
+            amount = int(item.transaction.amt)
+        total["required"] = (
+            cast(int, total["required"]) + amount + int(getattr(item.transaction, "fee", 0))
+        )
+        for check in item.checks or []:
+            if check.data and check.data.get("available") is not None:
+                total["available"] = int(check.data["available"])
     for sender, total in totals.items():
-        if total["available"] < total["required"]:
+        if total["available"] is None:
+            raise SignerError(f"group has no ALGO balance on record for sender {sender}")
+        if total["available"] < cast(int, total["required"]):
             raise SignerError(
-                f"payment group insufficient funds for {sender}: "
+                f"group insufficient funds for {sender}: "
                 f"available {total['available']}, required {total['required']}"
             )
     return PreparedCheck(
-        name="payment_group_balance",
+        name="group_algo_balance",
         status="ok",
         data={"sender_count": len(totals)},
     )
@@ -2996,7 +3062,7 @@ def _resolve_abi_reference_args(
                 accounts.append(address)
                 resolved.append(len(accounts))
         elif arg_type == "application":
-            ref_app_id = int(value)
+            ref_app_id = _require_uint(value, "application argument", positive=True)
             if ref_app_id == app_id:
                 resolved.append(0)
             elif ref_app_id in apps:
@@ -3005,7 +3071,7 @@ def _resolve_abi_reference_args(
                 apps.append(ref_app_id)
                 resolved.append(len(apps))
         elif arg_type == "asset":
-            asset_id = int(value)
+            asset_id = _require_uint(value, "asset argument", positive=True)
             if asset_id in assets:
                 resolved.append(assets.index(asset_id))
             else:
@@ -3928,6 +3994,10 @@ class SignerClient:
                         "asset_id": asset_id,
                         "amount": amount,
                         "balance": sender_amount,
+                        # What the sender can spend in ALGO, for the fee.
+                        "available": _account_amount(sender_info)
+                        - _account_min_balance(sender_info),
+                        "fee": int(txn.fee),
                     },
                 )
             ],
@@ -4274,6 +4344,12 @@ class SignerClient:
         """Build a prepared ABI method-call transaction."""
         if not method_signature:
             raise ValueError("method_signature is required")
+        # Checked before the arguments are encoded, so a bad ID is reported
+        # as one and never reaches the encoder.
+        if app_id is None:
+            raise ValueError("app_id is required")
+        _require_uint(app_id, "app_id", positive=True)
+        _require_app_references(foreign_apps, foreign_assets, boxes)
         method = abi.Method.from_signature(method_signature)
         app_args, resolved_accounts, resolved_apps, resolved_assets = _encode_abi_method_args(
             method,
@@ -4330,9 +4406,7 @@ class SignerClient:
         if app_id is None:
             raise ValueError("app_id is required")
         _require_uint(app_id, "app_id", positive=True)
-        for name, references in (("foreign_apps", foreign_apps), ("foreign_assets", foreign_assets)):
-            for position, reference in enumerate(references or []):
-                _require_uint(reference, f"{name}[{position}]", positive=True)
+        _require_app_references(foreign_apps, foreign_assets, boxes)
         if int(on_complete) < 0 or int(on_complete) > int(
             transaction.OnComplete.DeleteApplicationOC
         ):
@@ -4405,6 +4479,8 @@ class SignerClient:
             raise ValueError("approval_program is required")
         if not clear_program:
             raise ValueError("clear_program is required")
+        _require_uint(extra_pages, "extra_pages")
+        _require_app_references(foreign_apps, foreign_assets, boxes)
 
         params = algod_client.suggested_params()
         _apply_prep_fee(params, fee)
@@ -4482,12 +4558,7 @@ class SignerClient:
         ]
         if asa_transfers:
             checks.append(_validate_asa_transfer_group(prepared[: len(asa_transfers)]))
-        if payments:
-            checks.append(
-                _validate_payment_group(
-                    prepared[len(asa_transfers) :], prepared[: len(asa_transfers)]
-                )
-            )
+        checks.append(_validate_group_algo_balance(prepared))
         return PreparedGroup(prepared, checks=checks)
 
     def prepare_payment_group(
@@ -4510,7 +4581,7 @@ class SignerClient:
                 status="ok",
                 data={"count": len(payments)},
             ),
-            _validate_payment_group(prepared),
+            _validate_group_algo_balance(prepared),
         ]
         return PreparedGroup(
             prepared,
@@ -4538,6 +4609,7 @@ class SignerClient:
                 data={"count": len(transfers)},
             ),
             _validate_asa_transfer_group(prepared),
+            _validate_group_algo_balance(prepared),
         ]
         return PreparedGroup(
             prepared,
@@ -5922,18 +5994,21 @@ def sign_prepared_cosigned_group(
             )
         if item.transaction is None:
             raise ValueError(f"prepared transaction {index}: transaction is required")
-        key = item.signer_key
-        if key is not None and key.address != item.auth_address:
-            # The key's flow, resources and fee ceiling decide how the
-            # position is signed, so it must be the key that signs it.
+        if item.signer_key is not None and item.signer_key.address != item.auth_address:
             raise ValueError(
-                f"prepared transaction {index}: signer key is for {key.address}, "
+                f"prepared transaction {index}: signer key is for {item.signer_key.address}, "
                 f"not the position's auth address {item.auth_address}"
             )
-        if key is None and item.auth_address:
-            key = user_client.get_key_info(item.auth_address)
+        # The key's flow, resources and fee ceiling decide how the position
+        # is signed, so they come from the signer's own record of the key,
+        # never from the caller. A key supplied on the prepared transaction is
+        # only checked for the right address.
+        key = user_client.get_key_info(item.auth_address) if item.auth_address else None
         if key is None:
-            raise ValueError(f"prepared transaction {index}: signer key metadata is required")
+            raise ValueError(
+                f"prepared transaction {index}: the signer holds no key for "
+                f"auth address {item.auth_address!r}"
+            )
         if key.signing_flow == SIGNING_FLOW_COSIGNED1:
             if not item.auth_address:
                 raise ValueError(f"prepared transaction {index}: bounded auth address is required")
