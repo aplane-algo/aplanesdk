@@ -339,6 +339,60 @@ pass a cancelable `context.Context` to `SignRequestsWithContext` or
 the SDK sends best-effort `/sign/cancel` for the generated or supplied
 `request_id`.
 
+#### `SendPrepared(ctx, algodClient, group, opts) (*SendResult, error)`
+
+Sign a prepared transaction or group, check the signed result against what was
+prepared, submit exactly those bytes, and wait for confirmation. The SDK picks
+the signing flow from the signer's record of each key, so the same call works
+for Ed25519, native Falcon, LogicSig, bounded and cosigned accounts, and for a
+rekeyed sender.
+
+```go
+prepared, err := client.PreparePayment(ctx, algodClient, aplane.PaymentPrepParams{
+	Sender: sender, Receiver: receiver, Amount: 1_000_000, // microAlgos
+})
+result, err := client.SendPrepared(ctx, algodClient, aplane.NewPreparedGroup(*prepared), nil)
+fmt.Println(result.TxIDs[0], result.Outcome, result.ConfirmedRound)
+```
+
+`SendPayment(ctx, algodClient, params, opts)` does both steps for an ALGO
+payment.
+
+- **Result.** `SignedGroup` is the group as submitted; the first
+  `OriginalCount` entries are yours and the rest are resource dummies the
+  signer appended. `TxIDs`, `Fees` and `GroupID` are computed from the signed
+  bytes. A signer may raise a fee or assign a group, so `TxIDs` can differ from
+  the IDs of the transactions you prepared.
+- **Options.** `NoWait` returns once the node accepts the group, with outcome
+  `submitted`. `WaitRounds` is how many further rounds to wait for
+  confirmation (default 10). A cosigned
+  account needs `CosignerClient` with `CosignerComponentKey`, or a
+  `CosignerResolver`; the SDK does not close a cosigner client you pass.
+- **Refused before signing:** a rotating account or an unknown signing flow
+  (`ErrUnsupportedSigningFlow`), and a pre-signed or foreign position
+  (`ErrUnsupportedGroup`). Use the lower-level signing calls for those groups.
+  Rotating accounts are not supported by this SDK version; one that has
+  already rotated is refused earlier, by the `Prepare*` helper, with
+  `ErrKeyNotFound`.
+- **It never signs twice,** and never builds a replacement transaction.
+
+Failures:
+
+| Error | Meaning | What to do |
+|---|---|---|
+| The signing call's own error | The signer refused (policy, operator, locked), or the SDK refused the signer's answer (`verify signer response: ...`, `ErrMaxFeeIncreaseExceeded`). Nothing was submitted. | Read the reason. If the SDK refused a sign answer, the signer did sign and the SDK discarded the result. |
+| `*SignOutcomeUnknownError` | A signing exchange ended with no answer. A signature may have been released; nothing was submitted. | Check with the operator or the audit log before signing again. For the ordinary flow the error carries the request ID. |
+| `*SubmissionRejectedError` | The node refused the group or dropped it from its pool. | Read the reason. The signed bytes and IDs are in the error. |
+| `*SubmissionUncertainError` | `Stage` says where it stopped: `unsent` (signed, never sent: your context ended), `submit` (the submission's answer never arrived), or `confirm` (not confirmed within the wait). Except for `unsent`, it may still confirm. | Look up `TxIDs`, or submit the same `SignedGroup` again. Do not sign a replacement until the outcome is known: both could execute. |
+
+A node that answers "already in ledger" has a transaction with the same ID
+from an earlier submission of the group. The SDK treats that as submitted and
+looks for the outcome; it is not a rejection. A committed transaction that
+carries a lease is the exception: the node refuses it for its lease, and the
+SDK reports a rejection.
+
+The existing `Sign*` and `Simulate*` calls are unchanged.
+
 ### Config Helpers
 
 #### `LoadConfig(dataDir) (*Config, error)`

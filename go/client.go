@@ -759,7 +759,7 @@ func (c *SignerClient) RequestAssembleWithContext(ctx context.Context, reqBody A
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to make request to Signer: %w", err)
+		return nil, fmt.Errorf("failed to make request to Signer: %w", &lostAnswer{err: err})
 	}
 	defer resp.Body.Close()
 
@@ -778,7 +778,7 @@ func (c *SignerClient) RequestAssembleWithContext(ctx context.Context, reqBody A
 
 	var assemblyResp AssemblyResponse
 	if err := json.NewDecoder(resp.Body).Decode(&assemblyResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
+		return nil, fmt.Errorf("failed to decode response: %w", &lostAnswer{err: err})
 	}
 	if err := assemblyResp.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid assembly response: %w", err)
@@ -1105,12 +1105,20 @@ func (c *SignerClient) SignGroupWithContext(ctx context.Context, groupReq GroupS
 	var body *signBodyError
 	switch {
 	case errors.As(err, &transport):
-		return nil, fmt.Errorf("failed to make request to Signer: %w", transport.err)
+		return nil, fmt.Errorf("failed to make request to Signer: %w", &lostAnswer{err: transport.err})
 	case errors.As(err, &body):
 		return nil, fmt.Errorf("group signing failed: %s", body.message)
 	}
 	return resp, err
 }
+
+// lostAnswer marks an approval-bearing request that ended with no usable
+// answer: the exchange failed, or a 200 arrived whose body could not be read.
+// The signer may have acted on the request. It reads as the error it wraps.
+type lostAnswer struct{ err error }
+
+func (e *lostAnswer) Error() string { return e.err.Error() }
+func (e *lostAnswer) Unwrap() error { return e.err }
 
 // signTransportError is postSign's report that the HTTP exchange itself
 // failed. Each caller words it its own way.
@@ -1118,6 +1126,13 @@ type signTransportError struct{ err error }
 
 func (e *signTransportError) Error() string { return e.err.Error() }
 func (e *signTransportError) Unwrap() error { return e.err }
+
+// signUnreadError is postSign's report that the signer answered 200 and the
+// body could not be read. The signer may have released a signature.
+type signUnreadError struct{ err error }
+
+func (e *signUnreadError) Error() string { return "failed to decode response: " + e.err.Error() }
+func (e *signUnreadError) Unwrap() error { return e.err }
 
 // signBodyError is postSign's report of an error carried in a 200 body, a
 // legacy field the current server never sets.
@@ -1198,7 +1213,7 @@ func (c *SignerClient) postSign(ctx context.Context, groupReq GroupSignRequest) 
 
 	var groupResp GroupSignResponse
 	if err := json.NewDecoder(resp.Body).Decode(&groupResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
+		return nil, &signUnreadError{err: err}
 	}
 
 	if groupResp.Error != "" {
