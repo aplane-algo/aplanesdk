@@ -196,7 +196,8 @@ This path:
 
 - resolves the client data dir,
 - refuses a `config.yaml` whose `network` is not in its `networks_allowed`,
-  when that list is set
+  when that list is set, and one whose `networks_allowed` is not a list of
+  network IDs (a malformed list is an error, never an empty one)
 - validates `config.yaml` contains no obsolete routing,
 - loads and selects an endpoint from `endpoints.yaml`,
 - resolves SSH paths relative to the client data dir,
@@ -507,7 +508,13 @@ Important behavior:
 - amounts and fees given to the `prepare_*` helpers are in microAlgos; an
   asset amount is in the asset's base units, not adjusted for its decimals.
   IDs, amounts and fees must be plain integers: a float, a numeric string or a
-  bool raises `ValueError`
+  bool raises `ValueError`. That holds for every ID, count and index a prepare
+  helper takes: app and asset IDs, foreign references, ABI `application` and
+  `asset` arguments, box app indexes, extra pages, and the key-registration
+  rounds and dilution
+- Group helpers check every sender against everything it pays across the
+  group: the ALGO it sends plus the fee of every position it sends, asset
+  transfers included. The check is named `group_algo_balance`
 - `sign_requests()` accepts one or more raw `/sign` request entries and returns the raw
   `/sign` response
 - for large LogicSigs, the signer may add dummy transactions for fee pooling
@@ -707,6 +714,12 @@ If the cosigner holds the key but it is still on the deny-all default,
 raises `SigningRejectedError`, preserving the code and message, and the cosigned
 signing helper propagates that error. Apply the key's document before retrying.
 See the [compatibility note](COMPATIBILITY.md) for policy format and provisioning details.
+
+The helper reads each position's key (its signing flow, LogicSig resources
+and fee ceiling) from the user signer's `/keys` record, by the position's
+auth address. A `signer_key` set on a prepared transaction is only checked to
+be for that address. The record is cached on the client, so this costs one
+`/keys` request at most.
 
 For manual orchestration, use `request_components()` on the user client with a
 bounded-base target and on the cosigner client, then `request_assemble()` on the

@@ -176,34 +176,174 @@ describe("opt-in and close preflights", () => {
   });
 });
 
-describe("sweep group", () => {
+// Every sender is checked against everything it pays across a group: the
+// ALGO it sends and the fee of every position, payments or not.
+describe("group ALGO balance", () => {
+  const accounts = (balance: number, otherBalance = 2_000_000) => ({
+    [sender]: { amount: balance, minBalance: 100_000, assets: [{ assetId: 1001, amount: 25 }] },
+    [receiver]: { amount: otherBalance, minBalance: 100_000, assets: [{ assetId: 1001, amount: 25 }] },
+  });
+  const holdingBoth = () => {
+    globalThis.fetch = (async (url: string) => {
+      const body = String(url).endsWith("/status")
+        ? { state: "unlocked", ready_for_signing: true, key_count: 2, keyset_revision: 1 }
+        : { count: 2, keys: [{ address: sender, key_type: "ed25519" }, { address: receiver, key_type: "ed25519" }] };
+      return { status: 200, ok: true, json: async () => body };
+    }) as any;
+  };
+  const transfer = { sender, receiver, assetId: 1001, amount: 5 };
+  const payment = { sender, receiver, amount: 10_000 };
+  const sweep = (balance: number, params: any, otherBalance?: number) =>
+    new SignerClient("http://localhost:11270").prepareSweepGroup(
+      algodWith(accounts(balance, otherBalance)), params,
+    );
+
   it("counts ASA transfer fees against the paying sender", async () => {
-    signerHolding(sender);
-    const sweep = (balance: number) => {
-      const client = new SignerClient("http://localhost:11270");
-      return client.prepareSweepGroup(
-        algodWith({
-          [sender]: {
-            amount: balance,
-            minBalance: 100_000,
-            assets: [{ assetId: 1001, amount: 25 }],
-          },
-          [receiver]: {
-            amount: 2_000_000,
-            minBalance: 100_000,
-            assets: [{ assetId: 1001, amount: 0 }],
-          },
-        }),
-        {
-          asaTransfers: [{ sender, receiver, assetId: 1001, amount: 5 }],
-          payments: [{ sender, receiver, amount: 10_000 }],
-        },
-      );
-    };
+    holdingBoth();
     // Available is the balance less the 100,000 minimum. The sender pays
     // 10,000 plus two 1000 fees: its own and the ASA transfer's.
-    assert.equal((await sweep(112_000)).transactions.length, 2);
-    await assert.rejects(sweep(111_999), /available 11999, required 12000/);
+    const group = await sweep(112_000, { asaTransfers: [transfer], payments: [payment] });
+    assert.equal(group.checks?.at(-1)?.name, "group_algo_balance");
+    await assert.rejects(
+      sweep(111_999, { asaTransfers: [transfer], payments: [payment] }),
+      /available 11999, required 12000/,
+    );
+  });
+
+  it("checks the fees of a sweep with no payments", async () => {
+    holdingBoth();
+    await sweep(102_000, { asaTransfers: [transfer, transfer] });
+    await assert.rejects(
+      sweep(101_999, { asaTransfers: [transfer, transfer] }),
+      /available 1999, required 2000/,
+    );
+  });
+
+  it("checks a sender that has only an asset transfer", async () => {
+    holdingBoth();
+    const otherTransfer = { sender: receiver, receiver: sender, assetId: 1001, amount: 1 };
+    await sweep(2_000_000, { asaTransfers: [otherTransfer], payments: [payment] }, 101_000);
+    await assert.rejects(
+      sweep(2_000_000, { asaTransfers: [otherTransfer], payments: [payment] }, 100_999),
+      new RegExp(`group insufficient funds for ${receiver}`),
+    );
+  });
+
+  it("makes the same check in the ASA transfer group helper", async () => {
+    holdingBoth();
+    await assert.rejects(
+      new SignerClient("http://localhost:11270").prepareAsaTransferGroup(
+        algodWith(accounts(101_999)), [transfer, transfer],
+      ),
+      /available 1999, required 2000/,
+    );
+  });
+});
+
+// ABI reference arguments (application, asset) are IDs too, and every ID is
+// checked before anything is encoded, so the caller gets a SignerError and
+// never BigInt()'s RangeError.
+describe("IDs, counts and indexes everywhere", () => {
+  const client = new SignerClient("http://localhost:11270");
+  const noAlgod = {
+    getTransactionParams: () => {
+      throw new Error("algod was reached with an invalid argument");
+    },
+  } as any;
+  const isSignerError = (pattern: RegExp) => (error: unknown) => {
+    assert.ok(error instanceof sdk.SignerError, `expected SignerError, got ${String(error)}`);
+    assert.match((error as Error).message, pattern);
+    return true;
+  };
+  const program = new Uint8Array([0x06, 0x81, 0x01]);
+  const deploy = { sender, approvalProgram: program, clearProgram: program };
+
+  for (const bad of [123.9, "123", true, -1, 0, 2n ** 64n] as any[]) {
+    it(`refuses ABI reference argument ${String(bad)}`, async () => {
+      await assert.rejects(
+        client.prepareAbiAppCall(noAlgod, {
+          sender, appId: 7, methodSignature: "f(asset)void", args: [bad],
+        }),
+        isSignerError(/asset argument must/),
+      );
+      await assert.rejects(
+        client.prepareAbiAppCall(noAlgod, {
+          sender, appId: 7, methodSignature: "f(application)void", args: [bad],
+        }),
+        isSignerError(/application argument must/),
+      );
+    });
+  }
+
+  for (const bad of [123.9, "123", true, -1, 2n ** 64n] as any[]) {
+    it(`refuses ${String(bad)} on the ABI path before encoding`, async () => {
+      await assert.rejects(
+        client.prepareAbiAppCall(noAlgod, { sender, appId: bad, methodSignature: "f()void" }),
+        isSignerError(/appId must/),
+      );
+      await assert.rejects(
+        client.prepareAbiAppCall(noAlgod, {
+          sender, appId: 7, methodSignature: "f(application)void", args: [9], foreignApps: [bad],
+        }),
+        isSignerError(/foreignApps\[0\] must/),
+      );
+    });
+
+    it(`refuses ${String(bad)} in deploy, box and key-registration fields`, async () => {
+      await assert.rejects(
+        client.prepareAppDeploy(noAlgod, { ...deploy, extraPages: bad }),
+        isSignerError(/extraPages must/),
+      );
+      await assert.rejects(
+        client.prepareAppDeploy(noAlgod, { ...deploy, foreignApps: [bad] }),
+        isSignerError(/foreignApps\[0\] must/),
+      );
+      await assert.rejects(
+        client.prepareAppDeploy(noAlgod, { ...deploy, foreignAssets: [bad] }),
+        isSignerError(/foreignAssets\[0\] must/),
+      );
+      const boxes = [{ appIndex: bad, name: new Uint8Array([1]) }];
+      await assert.rejects(
+        client.prepareAppDeploy(noAlgod, { ...deploy, boxes }),
+        isSignerError(/boxes\[0\]\.appIndex must/),
+      );
+      await assert.rejects(
+        client.prepareAppCall(noAlgod, { sender, appId: 7, boxes }),
+        isSignerError(/boxes\[0\]\.appIndex must/),
+      );
+      await assert.rejects(
+        client.prepareAbiAppCall(noAlgod, { sender, appId: 7, methodSignature: "f()void", boxes }),
+        isSignerError(/boxes\[0\]\.appIndex must/),
+      );
+      const online = {
+        sender, mode: "online" as const, voteKey: "k", selectionKey: "k", stateProofKey: "k",
+        voteFirst: 1, voteLast: 10, voteKeyDilution: 3,
+      };
+      for (const field of ["voteFirst", "voteLast", "voteKeyDilution"]) {
+        await assert.rejects(
+          client.prepareKeyreg(noAlgod, { ...online, [field]: bad } as any),
+          isSignerError(new RegExp(`${field} must`)),
+        );
+      }
+    });
+  }
+
+  it("accepts whole-number references, box indexes and reference arguments", async () => {
+    signerHolding(sender);
+    const algod = algodWith({ [sender]: { amount: 2_000_000, minBalance: 100_000 } });
+    const fresh = new SignerClient("http://localhost:11270");
+    const prepared = await fresh.prepareAbiAppCall(algod, {
+      sender,
+      appId: 7,
+      methodSignature: "f(asset,application,account)void",
+      args: [1001, 9n, receiver],
+      boxes: [{ appIndex: 0, name: new Uint8Array([1]) }, { appIndex: 9, name: new Uint8Array([2]) }],
+    });
+    const call = (prepared.transaction as any).applicationCall;
+    assert.deepEqual(call.foreignAssets, [1001n]);
+    assert.deepEqual(call.foreignApps, [9n]);
+    assert.equal(call.accounts[0].toString(), receiver);
+    assert.equal(call.boxes.length, 2);
   });
 });
 
@@ -226,6 +366,52 @@ describe("cosigned group", () => {
         },
       }),
       /signer key is for .*, not the position's auth address/,
+    );
+  });
+});
+
+describe("cosigned group key record", () => {
+  // The flow takes each key's flow, resources and fee ceiling from the
+  // signer's own record. A key supplied on the prepared transaction is
+  // checked for the right address and nothing more.
+  it("comes from the signer, not the caller", async () => {
+    const txn = fakePayment();
+    const auth = txn.sender.toString();
+    const userClient = new SignerClient("http://localhost:11270");
+    let lookups = 0;
+    globalThis.fetch = (async (url: string) => {
+      assert.ok(String(url).endsWith("/keys"), `unexpected request ${url}`);
+      lookups++;
+      // The signer's record: this key needs a flow this SDK does not have.
+      return {
+        status: 200,
+        ok: true,
+        json: async () => ({ count: 1, keys: [{ address: auth, key_type: "ed25519", signing_flow: "cosigner9" }] }),
+      };
+    }) as any;
+    // The caller's copy claims an ordinary key.
+    const supplied = { address: auth, keyType: "ed25519" } as any;
+    for (const signerKey of [supplied, undefined]) {
+      await assert.rejects(
+        signPreparedCosignedGroup({
+          userClient,
+          preparedGroup: { transactions: [{ transaction: txn, authAddress: auth, signerKey }] },
+        }),
+        /signing flow "cosigner9"/,
+      );
+    }
+    // The record is cached: two groups, one lookup.
+    assert.equal(lookups, 1);
+
+    const other = fakePayment(43, 44);
+    await assert.rejects(
+      signPreparedCosignedGroup({
+        userClient,
+        preparedGroup: {
+          transactions: [{ transaction: other, authAddress: other.sender.toString() }],
+        },
+      }),
+      /the signer holds no key for auth address/,
     );
   });
 });
@@ -259,8 +445,15 @@ describe("strict base64", () => {
         () => (client as any).buildSignRequestBody([null], [null], undefined, { 0: value }),
         /passthrough\[0\] is not valid base64/,
       );
+      // Never submitted, so a SignerError and not an algod rejection.
       const algod = { sendRawTransaction: () => { throw new Error("submitted"); } } as any;
-      await assert.rejects(sendRawTransaction(algod, value), /not valid base64/);
+      await assert.rejects(sendRawTransaction(algod, value), (error: unknown) => {
+        assert.ok(error instanceof sdk.SignerError);
+        assert.ok(!(error instanceof sdk.TransactionRejectedError));
+        assert.equal((error as Error).name, "SignerError");
+        assert.match((error as Error).message, /signed transaction is not valid base64/);
+        return true;
+      });
     });
   }
 });
@@ -280,6 +473,38 @@ describe("networks_allowed", () => {
       fs.rmSync(dir, { recursive: true });
     }
   });
+
+  // A networks_allowed that cannot be read must not become an empty list,
+  // which permits every network. These are the Go loader's verdicts.
+  for (const value of ["mainnet", "{a: b}", "[testnet, [a]]", "[testnet, Mainnet]", "[testnet, 1.5]", "[testnet, -x]"]) {
+    it(`refuses networks_allowed: ${value}`, () => {
+      const dir = write(`network: testnet\nnetworks_allowed: ${value}\n`);
+      try {
+        assert.throws(() => loadConfig(dir), /networks_allowed/);
+      } finally {
+        fs.rmSync(dir, { recursive: true });
+      }
+    });
+  }
+
+  const readable: Array<[string, string[]]> = [
+    ["[]", []],
+    ["", []],
+    ["[testnet, 1]", ["testnet", "1"]],
+    ["[testnet, true]", ["testnet", "true"]],
+    ["[testnet, null]", ["testnet"]],
+    ["[testnet, my_net-2]", ["testnet", "my_net-2"]],
+  ];
+  for (const [value, allowed] of readable) {
+    it(`reads networks_allowed: ${value || "(empty)"} as Go does`, () => {
+      const dir = write(`network: testnet\nnetworks_allowed: ${value}\n`);
+      try {
+        assert.deepEqual(loadConfig(dir).networksAllowed, allowed);
+      } finally {
+        fs.rmSync(dir, { recursive: true });
+      }
+    });
+  }
 
   it("answers whether a network is allowed", () => {
     const dir = write("network: testnet\nnetworks_allowed: [testnet]\n");

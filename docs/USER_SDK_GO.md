@@ -564,6 +564,12 @@ returns `ErrSigningRejected`, and the cosigned signing helper propagates that
 error. Apply the key's document before retrying. See the
 [compatibility note](COMPATIBILITY.md) for policy format and provisioning details.
 
+The helper reads each position's key (its signing flow, LogicSig resources
+and fee ceiling) from the user signer's `/keys` record, by the position's
+auth address. A `SignerKey` set on a prepared transaction is only checked to be
+for that address. The record is cached on the client, so this costs one
+`/keys` request at most.
+
 For manual orchestration, use `RequestComponents` on the user client with a
 bounded-base target and on the cosigner client, then `RequestAssemble` on the
 user client. Finish the user side (the base components and any ordinary-position
@@ -652,6 +658,9 @@ error and never trigger another signing request automatically.
   mutation report, already checked against the request.
 - Amounts and fees in the `*PrepParams` types are in microAlgos; an asset
   amount is in the asset's base units, not adjusted for its decimals.
+- Group helpers check every sender against everything it pays across the
+  group: the ALGO it sends plus the fee of every position it sends, asset
+  transfers included. The check is named `group_algo_balance`.
 - `PlanGroup(...)` returns unsigned `TX`-prefixed hex transactions plus a
   mutation report.
 - `SimulateGroup(...)` and `SimulatePreparedGroup(...)` perform ordinary

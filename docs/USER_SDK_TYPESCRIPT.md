@@ -203,7 +203,8 @@ This path:
 
 - resolves the client data dir
 - refuses a `config.yaml` whose `network` is not in its `networks_allowed`,
-  when that list is set
+  when that list is set, and one whose `networks_allowed` is not a list of
+  network IDs (a malformed list is an error, never an empty one)
 - validates `config.yaml` contains no obsolete routing
 - loads and selects an endpoint from `endpoints.yaml`
 - resolves SSH paths relative to the client data dir
@@ -543,6 +544,12 @@ throws `SigningRejectedError`, preserving the code and message, and the cosigned
 signing helper propagates that error. Apply the key's document before retrying.
 See the [compatibility note](COMPATIBILITY.md) for policy format and provisioning details.
 
+The helper reads each position's key (its signing flow, LogicSig resources
+and fee ceiling) from the user signer's `/keys` record, by the position's
+auth address. A `signerKey` set on a prepared transaction is only checked to be
+for that address. The record is cached on the client, so this costs one
+`/keys` request at most.
+
 For manual orchestration, use `requestComponents()` on the user client with a
 bounded-base target and on the cosigner client, then `requestAssemble()` on the
 user client. Finish the user side (the base components and any ordinary-position
@@ -629,7 +636,13 @@ never trigger another signing request automatically.
 - Amounts and fees in the `*PrepParams` types are in microAlgos; an asset
   amount is in the asset's base units, not adjusted for its decimals. IDs,
   amounts and fees must be whole numbers (a safe integer or a bigint): a
-  fraction, a numeric string or a boolean is refused.
+  fraction, a numeric string or a boolean is refused. That holds for every
+  ID, count and index a prepare helper takes: app and asset IDs, foreign
+  references, ABI `application` and `asset` arguments, box app indexes, extra
+  pages, and the key-registration rounds and dilution.
+- Group helpers check every sender against everything it pays across the
+  group: the ALGO it sends plus the fee of every position it sends, asset
+  transfers included. The check is named `group_algo_balance`.
 - `signRequests()` accepts one or more raw `/sign` request entries and returns the
   `/sign` response, with its mutation report in the typed camelCase
   `MutationReport` form.

@@ -38,6 +38,41 @@ export function expandPath(filePath: string): string {
   return filePath;
 }
 
+const NETWORK_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
+/**
+ * Read networks_allowed, refusing a malformed one. A value that cannot be
+ * read must not become an empty list, which permits every network. This
+ * accepts what the Go SDK's loader accepts: no value, or a list of network
+ * IDs, where a bare number or true/false is read as its text and an empty
+ * entry is skipped.
+ */
+function parseNetworksAllowed(value: unknown): string[] {
+  if (value === undefined || value === null) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new SignerError(
+      `networks_allowed in config.yaml must be a list of network IDs, not ${typeof value}`,
+    );
+  }
+  const allowed: string[] = [];
+  for (const item of value) {
+    if (item === null || item === undefined) continue;
+    const text =
+      typeof item === "boolean" || (typeof item === "number" && Number.isInteger(item))
+        ? String(item)
+        : item;
+    if (typeof text !== "string" || !NETWORK_ID.test(text)) {
+      throw new SignerError(
+        `invalid network in networks_allowed: ${JSON.stringify(item)} (use lowercase letters, digits, '_' or '-', starting with a letter or digit)`,
+      );
+    }
+    allowed.push(text);
+  }
+  return allowed;
+}
+
 /**
  * Whether config permits the network. An empty allowlist permits all.
  */
@@ -76,12 +111,7 @@ export function loadConfig(dataDir: string): ClientConfig {
       }
     }
     if (typeof data.network === "string") config.network = data.network;
-    if (
-      Array.isArray(data.networks_allowed) &&
-      data.networks_allowed.every((item) => typeof item === "string")
-    ) {
-      config.networksAllowed = data.networks_allowed;
-    }
+    config.networksAllowed = parseNetworksAllowed(data.networks_allowed);
     if (typeof data.theme === "string" && data.theme) config.theme = data.theme;
     if (!isNetworkAllowed(config, config.network)) {
       throw new SignerError(

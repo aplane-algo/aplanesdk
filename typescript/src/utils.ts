@@ -108,8 +108,10 @@ export async function sendRawTransaction(
   algodClient: Algodv2,
   signedTxn: string
 ): Promise<string> {
+  // Checked before the call: a string that is not base64 was never submitted,
+  // so it is not an algod rejection.
+  const txnBytes = base64ToBytes(signedTxn, "signed transaction");
   try {
-    const txnBytes = base64ToBytes(signedTxn, "signed transaction");
     const response = await algodClient.sendRawTransaction(txnBytes).do();
     return response.txid;
   } catch (error) {

@@ -201,6 +201,25 @@ function mockAlgod(accounts: Record<string, any>): any {
   };
 }
 
+// signPreparedCosignedGroup against a signer that holds the keys the group
+// names. The flow reads each key from the signer, not from the group, so these
+// tests, which describe the signer's keys on the prepared transactions, have
+// the user client answer key lookups with exactly those. A test that sets its
+// own lookup keeps it.
+function signCosignedWithHeldKeys(
+  options: Parameters<typeof signPreparedCosignedGroup>[0],
+): ReturnType<typeof signPreparedCosignedGroup> {
+  const user = options.userClient as any;
+  if (user && !Object.prototype.hasOwnProperty.call(user, "getKeyInfo")) {
+    const held = new Map<string, unknown>();
+    for (const item of options.preparedGroup?.transactions ?? []) {
+      if (item.signerKey) held.set(item.signerKey.address, item.signerKey);
+    }
+    user.getKeyInfo = async (address: string) => held.get(address);
+  }
+  return signPreparedCosignedGroup(options);
+}
+
 // Restore on process exit
 process.on("exit", () => {
   globalThis.fetch = originalFetch;
@@ -1255,7 +1274,7 @@ describe("SignerClient", () => {
       assert.equal((group.transactions[0].transaction as any).payment.receiver.toString(), receiver1);
       assert.equal((group.transactions[1].transaction as any).payment.receiver.toString(), receiver2);
       assert.equal(group.checks?.[0].name, "payment_group");
-      assert.equal(group.checks?.[1].name, "payment_group_balance");
+      assert.equal(group.checks?.[1].name, "group_algo_balance");
     });
 
     it("rejects payment groups with aggregate insufficient funds", async () => {
@@ -1275,7 +1294,7 @@ describe("SignerClient", () => {
           { sender, receiver: receiver1, amount: 10_000, fee: 1000 },
           { sender, receiver: receiver2, amount: 10_000, fee: 1000 },
         ]),
-        /payment group insufficient funds/,
+        /group insufficient funds/,
       );
     });
 
@@ -2001,7 +2020,7 @@ describe("SignerClient", () => {
       };
 
       await assert.rejects(
-        signPreparedCosignedGroup({
+        signCosignedWithHeldKeys({
           userClient: user,
           preparedGroup: {
             transactions: [
@@ -2071,7 +2090,7 @@ describe("SignerClient", () => {
           signed_group: [bytesToHex(algosdk.encodeMsgpack(new algosdk.SignedTransaction({ txn, sig: signature })))],
         };
       };
-      const result = await signPreparedCosignedGroup({
+      const result = await signCosignedWithHeldKeys({
         userClient: user,
         cosignerClient: cosigner,
         cosignerComponentKey: "COSIGNER_COMPONENT",
@@ -2222,7 +2241,7 @@ describe("SignerClient", () => {
             })),
           };
         };
-        const sign = () => signPreparedCosignedGroup({
+        const sign = () => signCosignedWithHeldKeys({
           userClient: user,
           cosignerClient: cosigner,
           cosignerComponentKey: "COSIGNER_COMPONENT",
@@ -2443,7 +2462,7 @@ describe("SignerClient", () => {
         finalCount: 2,
       };
       await assert.rejects(
-        signPreparedCosignedGroup(options),
+        signCosignedWithHeldKeys(options),
         /verify signer plan: returned transaction 1 does not carry the canonical group ID/,
       );
 
@@ -2464,7 +2483,7 @@ describe("SignerClient", () => {
       plannedTransactions = [encodeTransaction(changedPlanTxn)[0]];
       plannedMutations = undefined;
       await assert.rejects(
-        signPreparedCosignedGroup(options),
+        signCosignedWithHeldKeys(options),
         /changed unreported fields/,
       );
 
@@ -2493,7 +2512,7 @@ describe("SignerClient", () => {
       };
       const callsBeforeInflatedFee = baseComponentCalls;
       await assert.rejects(
-        signPreparedCosignedGroup(options),
+        signCosignedWithHeldKeys(options),
         /exceeds advertised max_fee/,
       );
       assert.equal(baseComponentCalls, callsBeforeInflatedFee);
@@ -2528,7 +2547,7 @@ describe("SignerClient", () => {
         finalCount: 2,
       };
       await assert.rejects(
-        signPreparedCosignedGroup(options),
+        signCosignedWithHeldKeys(options),
         /appended transaction 1 is not the canonical resource dummy/,
       );
       plannedTransactions = undefined;
@@ -2549,12 +2568,12 @@ describe("SignerClient", () => {
         },
       });
       await assert.rejects(
-        signPreparedCosignedGroup(options),
+        signCosignedWithHeldKeys(options),
         /does not match the submitted canonical bytes/,
       );
 
       assembledTxn = txn;
-      const result = await signPreparedCosignedGroup(options);
+      const result = await signCosignedWithHeldKeys(options);
 
       assert.deepEqual(result.signedGroup, [signedTxnHex(txn)]);
       assert.ok(result.boundedComponentResponse);
@@ -2628,7 +2647,7 @@ describe("SignerClient", () => {
         });
 
         await assert.rejects(
-          signPreparedCosignedGroup({
+          signCosignedWithHeldKeys({
             userClient: user,
             cosignerResolver: async (target) => {
               assert.deepEqual(target.logicSigResources, item.expected);
@@ -2677,7 +2696,7 @@ describe("SignerClient", () => {
     it("names the position of a held primary that carries a size hint", async () => {
       const account = testAddress(41);
       await assert.rejects(
-        signPreparedCosignedGroup({
+        signCosignedWithHeldKeys({
           userClient: new SignerClient("http://localhost:11270"),
           preparedGroup: {
             transactions: [
@@ -2725,7 +2744,7 @@ describe("SignerClient", () => {
         flatFee: true,
       };
       await assert.rejects(
-        signPreparedCosignedGroup({
+        signCosignedWithHeldKeys({
           userClient: user,
           preparedGroup: {
             transactions: [
@@ -2900,11 +2919,11 @@ describe("SignerClient", () => {
         },
       };
       await assert.rejects(
-        signPreparedCosignedGroup(options),
+        signCosignedWithHeldKeys(options),
         /primary passthrough 1 does not match/,
       );
       useWrongPrimary = false;
-      const result = await signPreparedCosignedGroup(options);
+      const result = await signCosignedWithHeldKeys(options);
       assert.equal(result.signedGroup.length, 2);
     });
 
@@ -3019,7 +3038,7 @@ describe("SignerClient", () => {
         };
       };
 
-      const run = () => signPreparedCosignedGroup({
+      const run = () => signCosignedWithHeldKeys({
         userClient: user,
         cosignerClient: cosigner,
         cosignerComponentKey: "COSIGNER_COMPONENT",
@@ -3111,7 +3130,7 @@ describe("SignerClient", () => {
       });
 
       await assert.rejects(
-        signPreparedCosignedGroup({
+        signCosignedWithHeldKeys({
           userClient: user,
           preparedGroup: {
             transactions: [
