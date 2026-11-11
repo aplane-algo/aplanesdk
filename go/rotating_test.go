@@ -595,6 +595,12 @@ var rotatingSignTampers = []struct {
 		signed[1].Lsig = types.LogicSig{Logic: rotatingNextProgram}
 		setSignedTransactions(r, signed)
 	}, "not the canonical signed resource dummy"},
+	{"another stage reported, target unchanged", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
+		r.Stage++
+	}, "signer reports stage"},
+	{"another target reported, stage unchanged", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
+		r.Target++
+	}, "signer reports stage"},
 	{"another stage reported", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
 		r.Stage, r.Target = r.Stage+1, r.Target+1
 	}, "signer reports stage 4 to 5, prepared 3 to 4"},
