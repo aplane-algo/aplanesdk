@@ -739,8 +739,8 @@ invalid. A witness key listed by exactly one live endpoint is routed there,
 under its Witness Key ID; a key listed by more than one, or by none, is a
 `CosignerDiscoveryError`. The "none" message names every cosigner endpoint
 with its state: `ok`, `unreachable` (connection, transport or 5xx failure,
-or out of time), `locked`, `authentication failed` (401, a 403 that is not
-locked, or a key that is not enrolled), `invalid cosigner metadata` (an
+or out of time), `locked`, `authentication failed` (401 whatever its code, a
+403 that is not locked, or a key that is not enrolled), `invalid cosigner metadata` (an
 unreadable `/keys` answer or a bad record), or `configuration invalid` (a bad
 URL, an identity file that cannot be read or parsed or that needs a
 passphrase, an unreadable known_hosts file, an unknown host key without

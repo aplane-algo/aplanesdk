@@ -155,10 +155,15 @@ function witnessKeys(records: Record<string, any>[]): ListedWitnessKey[] | undef
   return keys;
 }
 
-/** The state of an endpoint that refused /keys with this status and code. */
+/**
+ * The state of an endpoint that refused /keys with this status and code. The
+ * status is read first: a 401 is an authentication failure whatever code it
+ * carries.
+ */
 function refusalState(status: number, code: string): CosignerEndpointState {
+  if (status === 401) return "authentication failed";
   if (code === ErrorCodes.Locked) return "locked";
-  if (status === 401 || status === 403) return "authentication failed";
+  if (status === 403) return "authentication failed";
   if (status >= 500) return "unreachable";
   return "configuration invalid";
 }

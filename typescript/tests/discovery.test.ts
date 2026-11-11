@@ -358,6 +358,32 @@ describe("EndpointCosignerResolver", () => {
     await resolver.close();
   });
 
+  it("reads a refusal's status before its code: a 401 is never locked", async () => {
+    const net = new Network();
+    const failures: Array<[string, (endpoint: CosignerEndpoint) => void, string]> = [
+      ["a-401-locked", (endpoint) => {
+        endpoint.keysReply = () => ({ status: 401, body: { error: "signer is locked", code: "locked" } });
+      }, "authentication failed"],
+      ["b-403-locked", (endpoint) => {
+        endpoint.keysReply = () => ({ status: 403, body: { error: "signer is locked", code: "locked" } });
+      }, "locked"],
+      ["c-503-locked", (endpoint) => {
+        endpoint.keysReply = () => ({ status: 503, body: { error: "signer is locked", code: "locked" } });
+      }, "locked"],
+    ];
+    for (const [alias, set] of failures) set(net.add(alias, [witnessRecord(WITNESS_B)]));
+    net.install();
+    const resolver = new EndpointCosignerResolver(registry(...failures.map(([alias]) => alias)));
+    const states = failures.map(([alias, , state]) => `"${alias}" ${state}`).join(", ");
+    await assert.rejects(
+      resolver.resolve(target(WITNESS_A)),
+      discoveryError(
+        `cosigner discovery: no endpoint lists Witness Key ID ${id(WITNESS_A)} (${KEY_TYPE_WITNESS_FALCON1024}); endpoints: ${states}`,
+      ),
+    );
+    await resolver.close();
+  });
+
   it("reads a /keys body that breaks as a transport failure, apart from one that does not decode", async () => {
     const net = new Network();
     const failures: Array<[string, (endpoint: CosignerEndpoint) => void, string]> = [
