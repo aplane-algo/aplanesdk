@@ -277,6 +277,10 @@ class TestChoosing:
         net = network(
             {
                 "unauth": Endpoint(answer=reply(401, {"error": "no", "code": "unauthorized"})),
+                # A 401 is the identity refused, even with the locked code.
+                "unauthlocked": Endpoint(
+                    answer=reply(401, {"error": "signer is locked", "code": "locked"})
+                ),
                 "spelled": Endpoint(
                     [{"address": _respelled(fake_signer.test_address(7)), "key_type": "ed25519"}]
                 ),
@@ -295,7 +299,7 @@ class TestChoosing:
             f"cosigner discovery: no endpoint lists Witness Key ID {key_id} ({WITNESS}); "
             'endpoints: "badurl" configuration invalid, "lockedfive" locked, '
             '"spelled" invalid cosigner metadata, "teapot" configuration invalid, '
-            '"unauth" authentication failed'
+            '"unauth" authentication failed, "unauthlocked" authentication failed'
         )
 
     def test_one_bad_record_makes_the_whole_listing_invalid(self, network):

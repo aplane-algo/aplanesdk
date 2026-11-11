@@ -8532,9 +8532,13 @@ def _read_witness_keys(client: "SignerClient") -> List[tuple]:
         raise _ProbeFailed(_ENDPOINT_UNREACHABLE, str(e)) from e
     if resp.status_code != 200:
         code, message = client._error_parts(resp, f"HTTP {resp.status_code}")
+        # A 401 is the connection's identity refused, whatever code it
+        # carries; only then may the locked code say the signer is locked.
+        if resp.status_code == 401:
+            raise _ProbeFailed(_ENDPOINT_AUTHENTICATION_FAILED, message)
         if code == ERR_CODE_LOCKED:
             raise _ProbeFailed(_ENDPOINT_LOCKED, message)
-        if resp.status_code in (401, 403):
+        if resp.status_code == 403:
             raise _ProbeFailed(_ENDPOINT_AUTHENTICATION_FAILED, message)
         if resp.status_code >= 500:
             raise _ProbeFailed(_ENDPOINT_UNREACHABLE, message)
