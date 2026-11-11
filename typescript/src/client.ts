@@ -1505,19 +1505,33 @@ interface PrepParams {
 }
 
 /**
- * Refuse an address spelled other than canonically. algosdk reads the
- * spellings that differ only in the unused low bits of the last character as
- * the same address, and the Go SDK's decoder refuses them; the SDK compares
- * and looks addresses up as strings, so such a spelling could pass a check
- * the canonical one fails. A string that is not an address at all is left to
- * the check that already reports it.
+ * Require an address argument to be a string, spelled canonically. The SDK
+ * compares addresses and looks them up among the signer's keys as strings.
+ * Anything else, such as an algosdk Address, equals none of them and would
+ * skip the checks those comparisons drive, so it is refused, as the Python
+ * SDK refuses it. algosdk reads the spellings that differ only in the unused
+ * low bits of the last character as the same address, and the Go SDK's
+ * decoder refuses them; such a spelling could pass a check the canonical one
+ * fails, so it is refused too. A string that is not an address at all is left
+ * to the check that already reports it. An optional argument that was not
+ * given is the caller's to skip.
  */
 function requireCanonicalAddress(value: unknown, name: string): void {
-  if (typeof value !== "string" || !algosdk.isValidAddress(value)) return;
+  if (typeof value !== "string") {
+    throw new SignerError(`${name} must be an address string, not ${nonStringKind(value)}`);
+  }
+  if (!algosdk.isValidAddress(value)) return;
   const canonical = algosdk.Address.fromString(value).toString();
   if (canonical !== value) {
     throw new SignerError(`${name} ${value} is not the canonical spelling of ${canonical}`);
   }
+}
+
+/** What a value that is not a string is, for an error message. */
+function nonStringKind(value: unknown): string {
+  if (value instanceof algosdk.Address) return "an algosdk Address: pass its toString()";
+  if (value === null || value === undefined) return String(value);
+  return typeof value === "object" ? "an object" : `a ${typeof value}`;
 }
 
 /** A send's result before signing fills it and submission settles its outcome. */
@@ -2828,7 +2842,7 @@ export class SignerClient {
    */
   private async prepSuggestedParams(algodClient: any, sender: string): Promise<PrepParams> {
     // The sender is looked up as a string, for the rotating check and for
-    // resolution: it must be the spelling the signer lists.
+    // resolution: it must be a string, in the spelling the signer lists.
     requireCanonicalAddress(sender, "sender");
     const suggestedParams = await algodClient.getTransactionParams().do();
     let keys: KeyInfo[] | undefined;
@@ -3044,7 +3058,8 @@ export class SignerClient {
     if (!params.closeTo) {
       throw new SignerError("closeTo is required");
     }
-    // Compared as a string: an alternate spelling of the sender would pass.
+    // Compared as a string: an Address object, or an alternate spelling of
+    // the sender, would pass.
     requireCanonicalAddress(params.closeTo, "closeTo");
     requireCanonicalAddress(params.sender, "sender");
     if (params.closeTo === params.sender) {
@@ -3095,7 +3110,8 @@ export class SignerClient {
     if (!params.closeTo) {
       throw new SignerError("closeTo is required");
     }
-    // Compared as a string: an alternate spelling of the sender would pass.
+    // Compared as a string: an Address object, or an alternate spelling of
+    // the sender, would pass.
     requireCanonicalAddress(params.closeTo, "closeTo");
     requireCanonicalAddress(params.sender, "sender");
     if (params.closeTo === params.sender) {
@@ -3143,8 +3159,8 @@ export class SignerClient {
       throw new SignerError("rekeyTo is required");
     }
     // Compared with the sender and looked up among the signer's keys as a
-    // string: an alternate spelling of a rotating account would skip the
-    // check that refuses a rekey to one.
+    // string: an Address object, or an alternate spelling of a rotating
+    // account, would skip the check that refuses a rekey to one.
     requireCanonicalAddress(params.rekeyTo, "rekeyTo");
 
     const { suggestedParams, resolve } = await this.prepSuggestedParams(algodClient, params.sender);
@@ -3277,6 +3293,11 @@ export class SignerClient {
     if (!params.methodSignature) {
       throw new SignerError("methodSignature is required");
     }
+    if (!params.sender) {
+      throw new SignerError("sender is required");
+    }
+    // Encoding compares account arguments with the sender as strings.
+    requireCanonicalAddress(params.sender, "sender");
     // Checked before the arguments are encoded, so a bad ID is reported as
     // one and never reaches BigInt() or the encoder.
     if (params.appId === undefined || params.appId === null) {

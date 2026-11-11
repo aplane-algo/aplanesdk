@@ -1464,6 +1464,63 @@ describe("alternate spellings of an address", () => {
       }
     });
 
+    // An algosdk Address, passed from untyped code, equals no address string:
+    // every comparison and key lookup that follows would miss.
+    const asObject = (address: string) => algosdk.Address.fromString(address) as unknown as string;
+    const notAString = (name: string) => mentions(`${name} must be an address string, not an algosdk Address`);
+
+    it("refuse an algosdk Address as sender, receiver, rekeyTo or closeTo", async () => {
+      const { client, node, paths } = setup();
+      const receiver = fakeAddress(42);
+      await assert.rejects(
+        client.preparePayment(node, { sender: asObject(ordinary), receiver, amount: 1 }),
+        notAString("sender"),
+      );
+      await assert.rejects(
+        client.prepareAbiAppCall(node, { sender: asObject(ordinary), appId: 7, methodSignature: "f(account)void", args: [ordinary] }),
+        notAString("sender"),
+      );
+      await assert.rejects(
+        client.prepareRekey(node, { sender: asObject(ordinary), rekeyTo: receiver }),
+        notAString("sender"),
+      );
+      assert.deepEqual(paths, [], "the signer was asked about a sender that is not a string");
+      await assert.rejects(
+        client.preparePayment(node, { sender: ordinary, receiver: asObject(receiver), amount: 1 }),
+        notAString("receiver"),
+      );
+      await assert.rejects(
+        client.prepareAsaTransfer(node, { sender: ordinary, receiver: asObject(receiver), assetId: 5, amount: 1 }),
+        notAString("receiver"),
+      );
+      await assert.rejects(
+        client.prepareRekey(node, { sender: ordinary, rekeyTo: asObject(receiver) }),
+        notAString("rekeyTo"),
+      );
+      // Closing to the sender itself is refused by a comparison an object misses.
+      await assert.rejects(
+        client.prepareAccountClose(node, { sender: ordinary, closeTo: asObject(ordinary) }),
+        notAString("closeTo"),
+      );
+      await assert.rejects(
+        client.prepareAsaOptOut(node, { sender: ordinary, closeTo: asObject(ordinary), assetId: 5 }),
+        notAString("closeTo"),
+      );
+      await assert.rejects(
+        client.prepareAccountClose(node, { sender: asObject(ordinary), closeTo: receiver }),
+        notAString("sender"),
+      );
+    });
+
+    it("refuse a rekey to a rotating account named by an algosdk Address", async () => {
+      const { client, node } = setup();
+      // The key lookup that finds the rotating account would miss an object.
+      await assert.rejects(
+        client.prepareRekey(node, { sender: ordinary, rekeyTo: asObject(rotating) }),
+        notAString("rekeyTo"),
+      );
+    });
+
     it("resolveAuthAddress never resolves a misspelled rotating account to an ordinary key", async () => {
       const { client } = setup();
       const stage = stageAddress(rotatingTestProgram).toString();
