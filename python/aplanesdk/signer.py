@@ -513,20 +513,172 @@ def _answer_lost(error: BaseException) -> bool:
     return False
 
 
-def _approval_answer(resp: requests.Response, what: str) -> Dict[str, Any]:
+def _approval_answer(
+    resp: requests.Response,
+    what: str,
+    shape: Optional[Dict[str, Any]] = None,
+    shape_what: str = "",
+) -> Dict[str, Any]:
     """Read the JSON object an approval-bearing request was answered with.
 
-    A 200 whose body is not a JSON object is an answer that could not be read,
-    not a refusal: the signer may have released a signature. ``what`` begins
-    the error's message, which goes on with the start of the body.
+    A 200 whose body is not a JSON object, or whose fields do not have the
+    wire types in ``shape``, is an answer that could not be read, not a
+    refusal: the signer may have released a signature. The Go SDK decodes
+    the same answer into typed structs and treats it the same way. ``what``
+    begins the error's message, and ``shape_what``, when given, that of a
+    field of the wrong type. A well-typed answer is checked by the caller.
     """
     try:
         data = resp.json()
     except ValueError as e:
         raise _AnswerUnreadError(f"{what}: {resp.text[:200]}") from e
+    # JSON null decodes into a typed struct as nothing at all.
+    if data is None:
+        data = {}
     if not isinstance(data, dict):
-        raise _AnswerUnreadError(f"{what}: {resp.text[:200]}")
+        raise _AnswerUnreadError(f"{what}: the answer is not a JSON object")
+    if shape is not None:
+        try:
+            _check_wire_shape(data, shape, "answer")
+        except _WireShapeError as e:
+            raise _AnswerUnreadError(f"{shape_what or what}: {e}") from e
     return data
+
+
+class _WireShapeError(Exception):
+    pass
+
+
+_INT64_MIN = -(1 << 63)
+_INT64_MAX = (1 << 63) - 1
+
+
+def _check_wire_value(value: Any, kind: Any, label: str) -> Any:
+    """Check one non-null JSON value against a wire type, as Go's typed
+    decoding would, and return it as Go would hold it: a null element of a
+    list or map takes its zero value."""
+    if isinstance(kind, dict):
+        if not isinstance(value, dict):
+            raise _WireShapeError(f"{label} is not an object")
+        _check_wire_shape(value, kind, label)
+        return value
+    if isinstance(kind, tuple):  # ("list", element object shape)
+        if not isinstance(value, list):
+            raise _WireShapeError(f"{label} is not a list")
+        return [
+            {} if item is None else _check_wire_value(item, kind[1], f"{label}[{index}]")
+            for index, item in enumerate(value)
+        ]
+    if kind in ("strs", "ints"):
+        if not isinstance(value, list):
+            raise _WireShapeError(f"{label} is not {_WIRE_TYPE_NAMES[kind]}")
+        element = "str" if kind == "strs" else "int"
+        zero = "" if kind == "strs" else 0
+        try:
+            return [
+                zero if item is None else _check_wire_value(item, element, label) for item in value
+            ]
+        except _WireShapeError:
+            raise _WireShapeError(f"{label} is not {_WIRE_TYPE_NAMES[kind]}") from None
+    if kind == "str_map":
+        if not isinstance(value, dict) or any(
+            item is not None and not isinstance(item, str) for item in value.values()
+        ):
+            raise _WireShapeError(f"{label} is not {_WIRE_TYPE_NAMES[kind]}")
+        return {name: "" if item is None else item for name, item in value.items()}
+    integer = isinstance(value, int) and not isinstance(value, bool)
+    if kind == "str":
+        ok = isinstance(value, str)
+    elif kind == "bool":
+        ok = isinstance(value, bool)
+    elif kind == "int":
+        ok = integer and _INT64_MIN <= value <= _INT64_MAX
+    elif kind == "uint64":
+        ok = integer and 0 <= value <= _UINT64_MAX
+    else:  # pragma: no cover - a shape this module defines
+        raise AssertionError(f"unknown wire type {kind!r}")
+    if not ok:
+        raise _WireShapeError(f"{label} is not {_WIRE_TYPE_NAMES[kind]}")
+    return value
+
+
+_WIRE_TYPE_NAMES = {
+    "str": "a string",
+    "bool": "a boolean",
+    "int": "an integer",
+    "uint64": "an unsigned 64-bit integer",
+    "strs": "a list of strings",
+    "ints": "a list of integers",
+    "str_map": "an object of strings",
+}
+
+
+def _check_wire_shape(data: Dict[str, Any], shape: Dict[str, Any], label: str) -> None:
+    """Check an object's known fields; absent and null fields take their
+    zero values, and unknown fields are ignored, as in Go's decoding."""
+    for name, kind in shape.items():
+        value = data.get(name)
+        if value is not None:
+            data[name] = _check_wire_value(value, kind, f"{label} field {name}")
+
+
+# The wire types of the approval-bearing answers (pkg/signerapi in aplane).
+_MUTATION_REPORT_SHAPE: Dict[str, Any] = {
+    "dummies_added": "int",
+    "group_id_changed": "bool",
+    "fees_modified": "ints",
+    "total_fees_delta": "int",
+    "original_count": "int",
+    "final_count": "int",
+    "passthrough_count": "int",
+    "foreign_count": "int",
+    "reason": "str",
+}
+_GROUP_SIGN_RESPONSE_SHAPE: Dict[str, Any] = {
+    "signed": "strs",
+    "mutations": _MUTATION_REPORT_SHAPE,
+    "error": "str",
+}
+_ROTATING_SIGN_RESPONSE_SHAPE: Dict[str, Any] = {
+    "signed": "strs",
+    "stage": "uint64",
+    "target": "uint64",
+    "txid": "str",
+    "group_id": "str",
+}
+_COMPONENT_RESPONSE_SHAPE: Dict[str, Any] = {
+    "request_id": "str",
+    "components": (
+        "list",
+        {
+            "target_index": "int",
+            "kind": "str",
+            "signature": "str",
+            "signature_scheme": "str",
+            "auth_address": "str",
+            "base_signatures": "strs",
+            "runtime_args": "str_map",
+            "assembly_receipt": "str",
+            "path": "str",
+        },
+    ),
+}
+_ASSEMBLY_RESPONSE_SHAPE: Dict[str, Any] = {"request_id": "str", "signed_group": "strs"}
+
+
+def _rotating_sign_answer(data: Dict[str, Any]) -> Dict[str, Any]:
+    """A /sign/rotating/sign answer as the Go SDK decodes it: each field of
+    its wire type, and one left out or sent as null at its zero value. A
+    field of another type makes the answer unreadable (_AnswerUnreadError)."""
+    answer = {name: data.get(name) for name in _ROTATING_SIGN_RESPONSE_SHAPE}
+    try:
+        _check_wire_shape(answer, _ROTATING_SIGN_RESPONSE_SHAPE, "answer")
+    except _WireShapeError as e:
+        raise _AnswerUnreadError(
+            f"verify signer response: the answer could not be read: {e}"
+        ) from e
+    zeros: Dict[str, Any] = {"signed": [], "stage": 0, "target": 0, "txid": "", "group_id": ""}
+    return {name: zeros[name] if value is None else value for name, value in answer.items()}
 
 
 # -----------------------------------------------------------------------------
@@ -5562,6 +5714,12 @@ class SignerClient:
             # The request may have reached the signer, which may have released
             # its component.
             raise _AnswerLostError(f"Failed to connect: {e}") from e
+        except BaseException:
+            # A KeyboardInterrupt or the like ends the call as it is, after
+            # canceling the approval it left pending.
+            if kind != COMPONENT_TARGET_KIND_COSIGNER:
+                self._best_effort_cancel_sign_request(request_body["request_id"])
+            raise
         if resp.status_code == 401:
             raise AuthenticationError("Not authenticated: connect through an enrolled SSH key")
         if resp.status_code == 403:
@@ -5572,7 +5730,9 @@ class SignerClient:
             raise self._bad_request_error(resp)
         if resp.status_code != 200:
             raise self._signer_http_error(resp, f"Component signing failed: HTTP {resp.status_code}")
-        data = _approval_answer(resp, "failed to decode component response")
+        data = _approval_answer(
+            resp, "failed to decode component response", _COMPONENT_RESPONSE_SHAPE
+        )
         if data.get("error"):
             raise SignerError(data["error"])
         try:
@@ -5644,7 +5804,9 @@ class SignerClient:
                 f"Assembly failed: HTTP {resp.status_code}",
             )
 
-        data = _approval_answer(resp, "failed to decode assembly response")
+        data = _approval_answer(
+            resp, "failed to decode assembly response", _ASSEMBLY_RESPONSE_SHAPE
+        )
         if data.get("error"):
             raise SignerError(data["error"])
         try:
@@ -5681,6 +5843,12 @@ class SignerClient:
         except requests.RequestException as e:
             self._best_effort_cancel_sign_request(request_id)
             raise _AnswerLostError(f"Failed to connect: {e}") from e
+        except BaseException:
+            # Anything else, a KeyboardInterrupt among them, ends the call as
+            # it is: it is not turned into an SDK error. The approval it left
+            # pending is canceled first, as on a timeout.
+            self._best_effort_cancel_sign_request(request_id)
+            raise
 
     def _signing_http_error(self, resp: requests.Response, operation: str) -> SignerError:
         """Classify a non-200 answer of a signing endpoint, keeping its code."""
@@ -5969,7 +6137,12 @@ class SignerClient:
             raise self._signer_http_error(resp, f"Signing failed: HTTP {resp.status_code}")
 
         # Parse successful response
-        data = _approval_answer(resp, "Server returned invalid JSON")
+        data = _approval_answer(
+            resp,
+            "Server returned invalid JSON",
+            _GROUP_SIGN_RESPONSE_SHAPE,
+            "verify signer response: the answer could not be read",
+        )
 
         if data.get("error"):
             raise SignerError(data["error"])
@@ -6722,12 +6895,12 @@ class SignerClient:
             resp = self._post_approval("/sign/rotating/sign", request_id, body)
             if resp.status_code != 200:
                 raise self._signing_http_error(resp, "Rotating sign failed")
-            data = _approval_answer(resp, "Server returned invalid JSON")
+            answer = _rotating_sign_answer(_approval_answer(resp, "Server returned invalid JSON"))
         except (_AnswerLostError, _AnswerUnreadError) as e:
             raise SignOutcomeUnknownError(e, request_id=request_id, rotating=prepared) from e
         try:
-            result = prepared._verify_signed(data)
-        except Exception as e:
+            result = prepared._verify_signed(answer)
+        except SignerError as e:
             raise _verification_error("verify signer response: ", e) from e
         result.request_id = request_id
         return result
@@ -7850,7 +8023,32 @@ def _submit_and_track(
 ) -> None:
     """The one submission path of every send. It submits the signed bytes
     exactly as given and, unless told not to, waits for the first transaction
-    to confirm. It never signs or rebuilds anything."""
+    to confirm. It never signs or rebuilds anything.
+
+    A KeyboardInterrupt or other BaseException that is not an Exception ends
+    the call as it is, with the signed group attached, since it may have
+    reached the node: as ``aplane_signed_group`` and ``aplane_tx_ids``, and a
+    note where the exception takes notes.
+    """
+    try:
+        _submit_and_wait(algod_client, raw, result, options)
+    except Exception:
+        raise
+    except BaseException as e:
+        e.aplane_signed_group = list(result.signed_group)  # type: ignore[attr-defined]
+        e.aplane_tx_ids = list(result.tx_ids)  # type: ignore[attr-defined]
+        add_note = getattr(e, "add_note", None)  # Python 3.11 and later
+        if add_note is not None:
+            add_note(
+                f"aplanesdk: signed group with first transaction {_first_or_empty(result.tx_ids)} "
+                "was being submitted or tracked; see aplane_signed_group and aplane_tx_ids"
+            )
+        raise
+
+
+def _submit_and_wait(
+    algod_client: Any, raw: List[bytes], result: SendResult, options: _SendOptions
+) -> None:
     blob = b"".join(raw)
     txid = result.tx_ids[0]
 

@@ -877,3 +877,152 @@ class TestAddressSpellings:
         with pytest.raises(ValueError, match="not the canonical spelling"):
             client.sign_transaction(txn, auth_address=alternate_spelling(txn.sender))
         assert signer.count("/sign") == 0
+
+
+# -----------------------------------------------------------------------------
+# A 200 answer of the wrong shape is an answer that could not be read
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"123",
+        b'"ok"',
+        b"[]",
+        b'{"signed":"x"}',
+        b'{"signed":[1]}',
+        b'{"signed":[], "mutations":"x"}',
+        b'{"signed":[], "mutations":{"dummies_added":"1"}}',
+        b'{"signed":[], "mutations":{"fees_modified":[0.5]}}',
+        b'{"signed":[], "error":5}',
+    ],
+)
+def test_a_sign_answer_of_the_wrong_shape_is_an_unknown_outcome(fakes, body):
+    # The Go SDK decodes the answer into typed structs, and this one does not
+    # decode: it could not be read, and a signature may have been released.
+    txn = fake_signer.payment(41, 42)
+    signer, node, client = make(
+        fakes, SendSigner([ordinary_key(txn)], sign=lambda _: (200, body, "application/json"))
+    )
+    with pytest.raises(SignOutcomeUnknownError) as excinfo:
+        client.send_prepared(node.client, prepared_for(txn))
+    assert excinfo.value.request_id and excinfo.value.requests
+    assert node.submissions() == []
+
+
+def test_a_well_typed_answer_that_fails_its_checks_is_a_refusal(fakes):
+    txn = fake_signer.payment(41, 42)
+    signer, node, client = make(
+        fakes, SendSigner([ordinary_key(txn)], sign=lambda _: reply(200, {"signed": ["00"]}))
+    )
+    with pytest.raises(SignerError, match="verify signer response") as excinfo:
+        client.send_prepared(node.client, prepared_for(txn))
+    assert not isinstance(excinfo.value, SignOutcomeUnknownError)
+
+
+@pytest.mark.parametrize(
+    "path,body,unknown",
+    [
+        ("/sign/component", {"request_id": "x", "components": "none"}, True),
+        ("/sign/component", {"request_id": "x", "components": [{"target_index": "0"}]}, True),
+        ("/sign/assemble", {"request_id": 5, "signed_group": []}, True),
+        ("/sign/assemble", {"request_id": "x", "signed_group": [7]}, True),
+        # Planning releases nothing: a malformed plan is a plain failure.
+        ("/plan", {"transactions": "none"}, False),
+    ],
+)
+def test_a_cosigned_step_answered_in_the_wrong_shape(fakes, path, body, unknown):
+    fixture = CosignedFixture(fakes)
+    app = fixture.user_app
+
+    def user_app(method, request_path, request_body):
+        if request_path == path:
+            return reply(200, body)
+        return app(method, request_path, request_body)
+
+    fixture.user.http.server.app = user_app
+    with pytest.raises(SignerError) as excinfo:
+        fixture.send(
+            cosigner_client=fixture.cosigner_client, cosigner_component_key="COSIGNER_COMPONENT"
+        )
+    assert isinstance(excinfo.value, SignOutcomeUnknownError) is unknown
+    assert fixture.node.submissions() == []
+
+
+# -----------------------------------------------------------------------------
+# KeyboardInterrupt and other exceptions that are not Exceptions
+# -----------------------------------------------------------------------------
+
+
+def _interrupting_post(client, path, cancels):
+    real_post = client.session.post
+
+    def post(url, **kwargs):
+        if url.endswith(path):
+            raise KeyboardInterrupt
+        if url.endswith("/sign/cancel"):
+            cancels.append(kwargs["json"]["request_id"])
+        return real_post(url, **kwargs)
+
+    return post
+
+
+def test_an_interrupt_while_a_sign_is_pending_cancels_it_and_propagates(fakes):
+    txn = fake_signer.payment(41, 42)
+    signer, node, client = make(fakes, SendSigner([ordinary_key(txn)]))
+    cancels = []
+    client.session.post = _interrupting_post(client, "/sign", cancels)
+
+    with pytest.raises(KeyboardInterrupt):
+        client.send_prepared(node.client, prepared_for(txn))
+
+    assert len(cancels) == 1 and cancels[0].startswith("sdk-")
+    assert node.submissions() == []
+
+
+def test_an_interrupt_while_a_component_is_pending_cancels_it_and_propagates(fakes):
+    fixture = CosignedFixture(fakes)
+    cancels = []
+    fixture.user_client.session.post = _interrupting_post(
+        fixture.user_client, "/sign/component", cancels
+    )
+    with pytest.raises(KeyboardInterrupt):
+        fixture.send(
+            cosigner_client=fixture.cosigner_client, cosigner_component_key="COSIGNER_COMPONENT"
+        )
+    assert len(cancels) == 1
+
+
+class _Interrupting:
+    """An algod client that raises KeyboardInterrupt from one method."""
+
+    def __init__(self, client, method):
+        self._client = client
+        self._method = method
+
+    def __getattr__(self, name):
+        if name == self._method:
+
+            def interrupt(*args, **kwargs):
+                raise KeyboardInterrupt
+
+            return interrupt
+        return getattr(self._client, name)
+
+
+@pytest.mark.parametrize("method", ["send_raw_transaction", "status", "pending_transaction_info"])
+def test_an_interrupt_during_submission_carries_the_signed_group(fakes, method):
+    # It still stops the program, but the group may be on the network, so the
+    # exception keeps its bytes and IDs.
+    txn = fake_signer.payment(41, 42)
+    signer, node, client = make(fakes, SendSigner([ordinary_key(txn)]))
+
+    with pytest.raises(KeyboardInterrupt) as excinfo:
+        client.send_prepared(_Interrupting(node.client, method), prepared_for(txn))
+
+    interrupt = excinfo.value
+    assert interrupt.aplane_signed_group == [signed_hex(txn)]
+    assert interrupt.aplane_tx_ids == [txn.get_txid()]
+    if hasattr(interrupt, "add_note"):
+        assert any("aplane_signed_group" in note for note in interrupt.__notes__)

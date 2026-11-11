@@ -350,7 +350,7 @@ Failures:
 | Exception | Meaning | What to do |
 |---|---|---|
 | The signing call's own `SignerError` | The signer refused (policy, operator, locked), or the SDK refused the signer's answer (`verify signer response: ...`, `MaxFeeIncreaseError`). Nothing was submitted. | Read the reason. If the SDK refused a sign answer, the signer did sign and the SDK discarded the result. |
-| `SignOutcomeUnknownError` | A signing exchange ended with no answer. A signature may have been released; nothing was submitted. | Check with the operator or the audit log before signing again. For the ordinary flow the error carries `request_id` and `requests`; for a rotating account it carries the prepared group in `rotating` (see below). |
+| `SignOutcomeUnknownError` | A signing exchange ended with no usable answer: none arrived, or the signer's 200 answer could not be read (not JSON, or a field of the wrong type). A signature may have been released; nothing was submitted. | Check with the operator or the audit log before signing again. For the ordinary flow the error carries `request_id` and `requests`; for a rotating account it carries the prepared group in `rotating` (see below). |
 | `SubmissionRejectedError` | The node refused the group or dropped it from its pool. | Read the reason. The signed bytes and IDs are in `signed_group` and `tx_ids`. |
 | `SubmissionUncertainError` | `stage` says where it stopped: `"submit"` (the submission's answer never arrived) or `"confirm"` (not confirmed within the wait). It may still confirm. | Look up `tx_ids`, or submit the same `signed_group` again with `submit_signed_group`. Do not sign a replacement until the outcome is known: both could execute. |
 
@@ -364,6 +364,24 @@ The call has no deadline of its own. Each signer request keeps its usual
 timeout, and a request that times out or disconnects while approval is
 pending is canceled with a best-effort `/sign/cancel`, as for the other
 signing calls; such an ending is a `SignOutcomeUnknownError`.
+
+A `KeyboardInterrupt`, or any other exception that is not an `Exception`, is
+not turned into an SDK error: it still stops the program. If it arrives
+while an approval is pending, the SDK first sends the best-effort
+`/sign/cancel` for that request. If it arrives while the signed group is
+being submitted or its confirmation awaited, the group may have reached the
+node: the exception carries the signed bytes as `aplane_signed_group` and
+their IDs as `aplane_tx_ids` (on Python 3.11 and later it also gets a note
+saying so). Treat it like a `SubmissionUncertainError`:
+
+```python
+try:
+    result = client.send_prepared(algod_client, prepared)
+except KeyboardInterrupt as e:
+    if hasattr(e, "aplane_tx_ids"):
+        print("signed group may be on the network:", e.aplane_tx_ids)
+    raise
+```
 
 The existing `sign_*` and `simulate_*` calls are unchanged.
 

@@ -566,30 +566,80 @@ def test_sign_prepared_rotating_refuses_altered_response(fakes, alter, text):
     with pytest.raises(SignerError, match="verify signer response") as excinfo:
         f.send()
 
+    # A well-typed answer that fails a check is a refusal, not a lost answer.
+    assert not isinstance(excinfo.value, SignOutcomeUnknownError)
     assert text in str(excinfo.value)
     assert f.node.submissions() == []
     assert f.signer.count("/sign/rotating/sign") == 1
 
 
 @pytest.mark.parametrize(
-    "stage,target",
-    [(3, 5), (3, 4.0), (3.0, 4), (3, "4"), (3, None)],
-    ids=["another target", "float target", "float stage", "text target", "no target"],
+    "stage,target", [(3, 5), (3, None), (None, 4)], ids=["another target", "no target", "no stage"]
 )
 def test_sign_prepared_rotating_refuses_a_reported_stage_that_is_not_the_prepared_one(
     fakes, stage, target
 ):
-    # Not only another stage: the reported stage and target must each be the
-    # prepared integer.
+    # A field left out, or null, decodes at its zero value, as in Go: it is
+    # well typed, and refused as another stage.
     f = Fixture(fakes)
 
     def alter(response, signed):
         response["stage"], response["target"] = stage, target
 
     f.signer.alter_sign = alter
-    with pytest.raises(SignerError, match="signer reports stage"):
+    with pytest.raises(SignerError, match="signer reports stage") as excinfo:
         f.send()
+    assert not isinstance(excinfo.value, SignOutcomeUnknownError)
     assert f.node.submissions() == []
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("stage", "3"),
+        ("stage", 3.0),
+        ("stage", True),
+        ("stage", -1),
+        ("stage", 1 << 64),
+        ("target", 4.0),
+        ("target", "4"),
+        ("signed", "ab"),
+        ("signed", [1]),
+        ("txid", 5),
+        ("group_id", ["x"]),
+    ],
+)
+def test_a_sign_answer_with_a_field_of_the_wrong_type_is_an_unknown_outcome(fakes, field, value):
+    # Go decodes the answer into a typed struct, which fails for these: the
+    # answer could not be read, and a signature may have been released.
+    f = Fixture(fakes)
+
+    def alter(response, signed):
+        response[field] = value
+
+    f.signer.alter_sign = alter
+    with pytest.raises(SignOutcomeUnknownError) as excinfo:
+        f.send()
+    assert isinstance(excinfo.value.rotating, PreparedRotating)
+    assert excinfo.value.request_id
+    assert f.node.submissions() == []
+    assert f.signer.count("/sign/rotating/sign") == 1
+
+
+@pytest.mark.parametrize("body", [b"123", b'"ok"', b"[]", b"[1, 2]"])
+def test_a_sign_answer_that_is_not_an_object_is_an_unknown_outcome(fakes, body):
+    f = Fixture(fakes)
+    prepared = f.client.prepare_rotating(f.txn)
+
+    def app(method, path, request):
+        if path == "/sign/rotating/sign":
+            return (200, body, "application/json")
+        return f.signer.app(method, path, request)
+
+    other = fakes(_Fake(app))
+    with pytest.raises(SignOutcomeUnknownError) as excinfo:
+        signer_client(other.http.url).sign_prepared_rotating(prepared)
+    assert excinfo.value.rotating is prepared
 
 
 class TestStageProgramMustFitTheStage:
@@ -1034,6 +1084,27 @@ class TestAnswerClassification:
         assert not isinstance(excinfo.value, SignOutcomeUnknownError)
         assert f.signer.count("/sign/rotating/prepare") == 2
         assert f.signer.count("/sign/rotating/sign") == 0
+
+
+def test_an_interrupt_while_approval_is_pending_cancels_it_and_propagates(fakes):
+    # A Ctrl-C still stops the program; the pending approval is canceled
+    # first, as on a timeout.
+    f = Fixture(fakes)
+    prepared = f.client.prepare_rotating(f.txn)
+    real_post = f.client.session.post
+    cancels = []
+
+    def post(url, **kwargs):
+        if url.endswith("/sign/rotating/sign"):
+            raise KeyboardInterrupt
+        if url.endswith("/sign/cancel"):
+            cancels.append(kwargs["json"]["request_id"])
+        return real_post(url, **kwargs)
+
+    f.client.session.post = post
+    with pytest.raises(KeyboardInterrupt):
+        f.client.sign_prepared_rotating(prepared, request_id="app-id-2")
+    assert cancels == ["app-id-2"]
 
 
 class _Fake:
