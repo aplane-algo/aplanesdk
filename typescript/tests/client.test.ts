@@ -32,6 +32,17 @@ import {
   resolveClientEndpoint,
 } from "../src/config.js";
 import { preparedGroupToSignRequests } from "../src/prepared.js";
+import {
+  authorize,
+  fakeAccount,
+  fakeAddress,
+  fakeLogicSigAccount,
+  fakePQAccount,
+  fakePayment,
+  signEntries,
+  signedHex,
+  signerFetch,
+} from "./fakeSigner.js";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -45,18 +56,27 @@ interface MockFetch {
   mock: { calls: any[][] };
   mockResolvedValueOnce(val: any): MockFetch;
   mockRejectedValueOnce(err: any): MockFetch;
+  /** Queue a response computed from the call's arguments. */
+  mockImplementationOnce(fn: (...args: any[]) => any): MockFetch;
   mockReset(): void;
 }
 
 function createMockFetch(): MockFetch {
   const calls: any[][] = [];
-  const queue: Array<{ type: "resolve" | "reject"; value: any }> = [];
+  const queue: Array<{ type: "resolve" | "reject" | "compute"; value: any }> = [];
 
   const fn = ((...args: any[]) => {
     calls.push(args);
     const entry = queue.shift();
     if (!entry) return Promise.reject(new Error("mock: no queued response"));
     if (entry.type === "reject") return Promise.reject(entry.value);
+    if (entry.type === "compute") {
+      try {
+        return Promise.resolve(entry.value(...args));
+      } catch (error) {
+        return Promise.reject(error);
+      }
+    }
     return Promise.resolve(entry.value);
   }) as MockFetch;
 
@@ -67,6 +87,10 @@ function createMockFetch(): MockFetch {
   };
   fn.mockRejectedValueOnce = (err) => {
     queue.push({ type: "reject", value: err });
+    return fn;
+  };
+  fn.mockImplementationOnce = (impl) => {
+    queue.push({ type: "compute", value: impl });
     return fn;
   };
   fn.mockReset = () => {
@@ -443,6 +467,88 @@ describe("SignerClient", () => {
       assert.equal(resolved.keyInfo.address, "AUTH");
     });
 
+    // Audit finding 25: algosdk v3 account models carry the auth address as
+    // an Address object, which never compares equal to an address string.
+    it("resolves rekeyed accounts from an algosdk account model", async () => {
+      const sender = testAddress(1);
+      const auth = testAddress(2);
+      const account = new algosdk.modelsv2.Account({
+        address: sender,
+        amount: 2_000_000,
+        amountWithoutPendingRewards: 2_000_000,
+        minBalance: 100_000,
+        pendingRewards: 0,
+        rewards: 0,
+        round: 1,
+        status: "Offline",
+        totalAppsOptedIn: 0,
+        totalAssetsOptedIn: 0,
+        totalCreatedApps: 0,
+        totalCreatedAssets: 0,
+        authAddr: auth,
+      });
+      assert.ok(account.authAddr instanceof algosdk.Address);
+      queueStatusResponse(60, 1);
+      mockFetch.mockResolvedValueOnce(keysResponse(auth));
+
+      const client = new SignerClient("http://localhost:11270");
+      const resolved = await client.resolveAuthAddress(sender, () => account as any);
+
+      assert.equal(resolved.authAddress, auth);
+      assert.equal(typeof resolved.authAddress, "string");
+      assert.equal(resolved.isRekeyed, true);
+      assert.equal(resolved.keyInfo.address, auth);
+    });
+
+    it("treats an account model whose auth address is its own address as not rekeyed", async () => {
+      const sender = testAddress(1);
+      queueStatusResponse(60, 1);
+      mockFetch.mockResolvedValueOnce(keysResponse(sender));
+
+      const client = new SignerClient("http://localhost:11270");
+      const resolved = await client.resolveAuthAddress(
+        sender,
+        () => ({ authAddr: algosdk.Address.fromString(sender) }),
+      );
+
+      assert.equal(resolved.authAddress, sender);
+      assert.equal(resolved.isRekeyed, false);
+    });
+
+    // A lookup may return the auth address itself, and from algosdk that is
+    // an Address object: `async (a) => (await algod.accountInformation(a).do()).authAddr`.
+    it("resolves a rekeyed account from a lookup that returns an Address", async () => {
+      const sender = testAddress(1);
+      const auth = testAddress(2);
+      queueStatusResponse(60, 1);
+      mockFetch.mockResolvedValueOnce(keysResponse(auth));
+
+      const client = new SignerClient("http://localhost:11270");
+      const resolved = await client.resolveAuthAddress(
+        sender,
+        async () => algosdk.Address.fromString(auth),
+      );
+
+      assert.equal(resolved.authAddress, auth);
+      assert.equal(typeof resolved.authAddress, "string");
+      assert.equal(resolved.isRekeyed, true);
+      assert.equal(resolved.keyInfo.address, auth);
+    });
+
+    it("reads a lookup that returns the account's own Address as not rekeyed", async () => {
+      const sender = testAddress(1);
+      queueStatusResponse(60, 1);
+      mockFetch.mockResolvedValueOnce(keysResponse(sender));
+
+      const client = new SignerClient("http://localhost:11270");
+      const resolved = await client.resolveAuthAddress(
+        sender,
+        () => algosdk.Address.fromString(sender),
+      );
+      assert.equal(resolved.isRekeyed, false);
+      assert.equal(resolved.authAddress, sender);
+    });
+
     it("rejects rekeyed accounts whose auth address is not signable", async () => {
       queueStatusResponse(60, 1);
       mockFetch.mockResolvedValueOnce(keysResponse("SENDER"));
@@ -487,6 +593,33 @@ describe("SignerClient", () => {
       assert.equal((prepared.transaction as any).payment.receiver.toString(), receiver);
       assert.equal(String((prepared.transaction as any).fee), "1000");
       assert.equal(prepared.checks?.[0].name, "payment_balance");
+    });
+
+    it("prepares a payment for a rekeyed sender whose auth address is an Address object", async () => {
+      const sender = testAddress(1);
+      const auth = testAddress(3);
+      const receiver = testAddress(2);
+      const algod = mockAlgod({
+        [sender]: {
+          amount: 2_000_000,
+          minBalance: 100_000,
+          authAddr: algosdk.Address.fromString(auth),
+        },
+      });
+      queueStatusResponse(60, 1);
+      mockFetch.mockResolvedValueOnce(keysResponse(auth));
+
+      const client = new SignerClient("http://localhost:11270");
+      const prepared = await client.preparePayment(algod, {
+        sender,
+        receiver,
+        amount: 10_000,
+        fee: 1000,
+      });
+
+      assert.equal(prepared.authAddress, auth);
+      assert.equal(prepared.signerKey?.address, auth);
+      assert.equal((prepared.transaction as any).sender.toString(), sender);
     });
 
     it("treats a set fee as flat microAlgos", async () => {
@@ -755,6 +888,23 @@ describe("SignerClient", () => {
         await assert.rejects(client.prepareRekey(algod, { sender, rekeyTo }), want);
       });
     }
+
+    it("rejects a rekey chain when the target's lookup returns an Address", async () => {
+      const sender = testAddress(1);
+      const rekeyTo = testAddress(2);
+      const other = testAddress(3);
+      const algod = mockAlgod({
+        [sender]: { amount: 2_000_000, minBalance: 100_000 },
+        // The auth address itself, as algosdk carries it.
+        [rekeyTo]: algosdk.Address.fromString(other),
+      });
+
+      const client = new SignerClient("http://localhost:11270");
+      await assert.rejects(
+        client.prepareRekey(algod, { sender, rekeyTo }),
+        new RegExp(`rekey target is itself rekeyed to ${other}`),
+      );
+    });
 
     it("rejects rekey chains", async () => {
       const sender = testAddress(1);
@@ -2131,10 +2281,20 @@ describe("SignerClient", () => {
       let plannedMutations: any;
       let baseComponentCalls = 0;
 
-      (user as any).planRequests = async (requests: any[]) => ({
-        transactions: plannedTransactions ?? [requests[0].txn_bytes_hex],
-        mutations: plannedMutations,
-      });
+      // The real planRequests runs, so the plan is checked against the
+      // requests where every caller's plan is checked.
+      (user as any).fetch = async (path: string, init: any) => {
+        assert.equal(path, "/plan");
+        const requests = JSON.parse(init.body).requests;
+        return {
+          status: 200,
+          ok: true,
+          json: async () => ({
+            transactions: plannedTransactions ?? [requests[0].txn_bytes_hex],
+            mutations: plannedMutations,
+          }),
+        };
+      };
       (user as any).requestComponents = async (request: any) => {
         baseComponentCalls += 1;
         assert.equal(request.targets[0].auth_address, bounded);
@@ -2272,7 +2432,7 @@ describe("SignerClient", () => {
       };
       await assert.rejects(
         signPreparedCosignedGroup(options),
-        /group ID does not match decoded transactions/,
+        /verify signer plan: returned transaction 1 does not carry the canonical group ID/,
       );
 
       const changedPlanTxn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
@@ -2357,7 +2517,7 @@ describe("SignerClient", () => {
       };
       await assert.rejects(
         signPreparedCosignedGroup(options),
-        /canonical cosigned budget dummy/,
+        /appended transaction 1 is not the canonical resource dummy/,
       );
       plannedTransactions = undefined;
       plannedMutations = undefined;
@@ -2962,32 +3122,50 @@ describe("SignerClient", () => {
   });
 
   describe("planGroup", () => {
-    const createMockTxn = () => ({
-      sender: { toString: () => "SENDER_ADDRESS" },
-      toByte: () => new Uint8Array([1, 2, 3, 4]),
-    });
+    const createMockTxn = () => fakePayment();
 
     it("returns plan with transactions and mutations", async () => {
-      mockFetch.mockResolvedValueOnce({
-        status: 200,
-        ok: true,
-        json: async () => ({
-          transactions: ["5458deadbeef", "5458cafebabe"],
-          mutations: {
-            dummies_added: 1,
-            group_id_changed: true,
-            original_count: 1,
-            final_count: 2,
-          },
-        }),
-      });
+      mockFetch.mockImplementationOnce(signerFetch({ feeRaise: { 0: 2000 }, dummies: 1 }));
 
       const client = new SignerClient("http://localhost:11270");
       const mockTxn = createMockTxn() as Parameters<typeof client.planGroup>[0][0];
       const result = await client.planGroup([mockTxn]);
 
       assert.equal(result.transactions.length, 2);
-      assert.notEqual(result.mutations, undefined);
+      assert.equal(result.mutations?.dummiesAdded, 1);
+      assert.equal(result.mutations?.totalFeesDelta, 2000);
+    });
+
+    it("rejects a plan that changes the transaction", async () => {
+      const other = fakePayment(41, 45, 100_000_000);
+      mockFetch.mockImplementationOnce(signerFetch({
+        tamper: (body) => {
+          body.transactions = [encodeTransaction(other)[0]];
+        },
+      }));
+
+      const client = new SignerClient("http://localhost:11270");
+      await assert.rejects(
+        client.planGroup([createMockTxn()]),
+        /verify signer plan: signer changed unreported fields at original position 1/,
+      );
+    });
+
+    it("rejects a plan that disagrees with its mutation report", async () => {
+      const cases: Array<[(body: any) => void, RegExp]> = [
+        [(body) => { body.mutations.dummies_added = 0; }, /dummies_added 0 does not match appended count 1/],
+        [(body) => { body.mutations.total_fees_delta = 1; }, /total_fees_delta 1 does not match observed delta 2000/],
+        [(body) => { body.mutations.fees_modified = []; }, /unreported fields at original position 1/],
+        [(body) => { body.transactions[0] = body.transactions[0].slice(4); }, /planned transaction 1: missing TX prefix/],
+        [(body) => { body.transactions[0] += "00"; }, /planned transaction 1: /],
+        [(body) => { body.transactions = []; }, /want at least 1/],
+        [(body) => { delete body.mutations; }, /appended 1 transaction\(s\) without a mutation report/],
+      ];
+      const client = new SignerClient("http://localhost:11270");
+      for (const [tamper, error] of cases) {
+        mockFetch.mockImplementationOnce(signerFetch({ feeRaise: { 0: 2000 }, dummies: 1, tamper }));
+        await assert.rejects(client.planGroup([createMockTxn()]), error);
+      }
     });
 
     it("throws AuthenticationError on 401", async () => {
@@ -3045,15 +3223,11 @@ describe("SignerClient", () => {
     });
 
     it("applies a canonical index key to the matching slot", async () => {
-      mockFetch.mockResolvedValueOnce({
-        status: 200,
-        ok: true,
-        json: async () => ({ transactions: ["5458deadbeef", "5458cafebabe"] }),
-      });
+      mockFetch.mockImplementationOnce(signerFetch());
       const client = new SignerClient("http://localhost:11270");
       const mockTxn = createMockTxn() as Parameters<typeof client.planGroup>[0][0];
 
-      await client.planGroup([mockTxn, mockTxn], ["AUTH_ADDR", null], undefined, undefined, {
+      await client.planGroup([mockTxn, fakePayment(43, 44)], [fakeAddress(50), null], undefined, undefined, {
         1: { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 },
       });
 
@@ -3064,23 +3238,21 @@ describe("SignerClient", () => {
   });
 
   describe("signTransactions with passthrough", () => {
-    const createMockTxn = () => ({
-      sender: { toString: () => "SENDER_ADDRESS" },
-      toByte: () => new Uint8Array([1, 2, 3, 4]),
-    });
+    const createMockTxn = () => fakePayment();
 
     it("carries LogicSig resources on passthrough entries", () => {
       const client = new SignerClient("http://localhost:11270");
+      const presigned = signedHex(fakePayment());
       const body = (client as any).buildSignRequestBody(
         [null],
         [null],
         undefined,
-        { 0: Buffer.from("signed-txn").toString("base64") },
+        { 0: Buffer.from(presigned, "hex").toString("base64") },
         { 0: { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 } },
         false,
       );
       assert.deepEqual(body.requests, [{
-        signed_txn_hex: Buffer.from("signed-txn").toString("hex"),
+        signed_txn_hex: presigned,
         lsig_resources: {
           program_bytes: 1612,
           argument_bytes: 1423,
@@ -3110,7 +3282,7 @@ describe("SignerClient", () => {
       const mockTxn = createMockTxn() as Parameters<typeof client.signTransactions>[0][0];
 
       await assert.rejects(
-        client.signTransactions([mockTxn, mockTxn], ["AUTH1", null]),
+        client.signTransactions([mockTxn, mockTxn], [fakeAddress(51), null]),
         { message: /foreign entries are only supported on \/plan/ },
       );
       assert.equal(mockFetch.mock.calls.length, 0);
@@ -3120,7 +3292,7 @@ describe("SignerClient", () => {
       const client = new SignerClient("http://localhost:11270");
       const mockTxn = createMockTxn() as Parameters<typeof client.signTransactionsList>[0][0];
       await assert.rejects(
-        client.signTransactionsList([mockTxn, mockTxn], ["AUTH1", null]),
+        client.signTransactionsList([mockTxn, mockTxn], [fakeAddress(51), null]),
         { message: /foreign entries are only supported on \/plan/ },
       );
       assert.equal(mockFetch.mock.calls.length, 0);
@@ -3128,63 +3300,49 @@ describe("SignerClient", () => {
   });
 
   describe("signing errors", () => {
-    const createMockTxn = () => ({
-      sender: {
-        toString: () => "SENDER_ADDRESS",
-      },
-      toByte: () => new Uint8Array([1, 2, 3, 4]),
-    });
+    const createMockTxn = () => fakePayment();
 
     it("rejects truncated /sign responses", async () => {
       queueStatusResponse();
-      mockFetch.mockResolvedValueOnce({
-        status: 200,
-        ok: true,
-        json: async () => ({ signed: ["aa"] }),
-      });
+      mockFetch.mockImplementationOnce(signerFetch({
+        tamper: (body) => {
+          body.signed = body.signed.slice(0, 1);
+        },
+      }));
 
       const client = new SignerClient("http://localhost:11270");
       await assert.rejects(
-        client.signRequests([
-          { auth_address: "AUTH1", txn_bytes_hex: "5458aa" },
-          { auth_address: "AUTH2", txn_bytes_hex: "5458bb" },
-        ]),
+        client.signRequests(signEntries(fakePayment(41, 42), fakePayment(43, 44))),
         /want at least 2/
       );
     });
 
     it("rejects empty signed slot for sign-mode request", async () => {
       queueStatusResponse();
-      mockFetch.mockResolvedValueOnce({
-        status: 200,
-        ok: true,
-        json: async () => ({ signed: ["aa", ""] }),
-      });
+      mockFetch.mockImplementationOnce(signerFetch({
+        tamper: (body) => {
+          body.signed[1] = "";
+        },
+      }));
 
       const client = new SignerClient("http://localhost:11270");
       await assert.rejects(
-        client.signRequests([
-          { auth_address: "AUTH1", txn_bytes_hex: "5458aa" },
-          { auth_address: "AUTH2", txn_bytes_hex: "5458bb" },
-        ]),
+        client.signRequests(signEntries(fakePayment(41, 42), fakePayment(43, 44))),
         /no signature for position 2/
       );
     });
 
-    it("tolerates empty foreign slot and trailing dummies", async () => {
+    it("leaves a foreign slot empty", async () => {
       queueStatusResponse();
-      mockFetch.mockResolvedValueOnce({
-        status: 200,
-        ok: true,
-        json: async () => ({ signed: ["aa", "", "dd"] }),
-      });
+      mockFetch.mockImplementationOnce(signerFetch());
 
+      const grouped = algosdk.assignGroupID([fakePayment(41, 42), fakePayment(43, 44)]);
+      const entries = signEntries(...grouped);
+      entries[1] = { txn_bytes_hex: entries[1].txn_bytes_hex };
       const client = new SignerClient("http://localhost:11270");
-      const data = await client.signRequests([
-        { auth_address: "AUTH1", txn_bytes_hex: "5458aa" },
-        { txn_bytes_hex: "5458bb" },
-      ]);
-      assert.deepEqual(data.signed, ["aa", "", "dd"]);
+      const data = await client.signRequests(entries);
+      assert.deepEqual(data.signed, [signedHex(grouped[0]), ""]);
+      assert.equal(data.mutations?.foreignCount, 1);
     });
 
     it("throws AuthenticationError on 401", async () => {
@@ -3211,7 +3369,7 @@ describe("SignerClient", () => {
       const client = new SignerClient("http://localhost:11270");
       const lockedTxn = createMockTxn() as Parameters<typeof client.signTransaction>[0];
       await assert.rejects(
-        client.signTransaction(lockedTxn, "A".repeat(58)),
+        client.signTransaction(lockedTxn, fakeAddress(52)),
         SignerUnavailableError
       );
     });
@@ -3431,18 +3589,14 @@ describe("SignerClient", () => {
         ok: false,
         json: async () => ({ error: "locked" }),
       });
-      mockFetch.mockResolvedValueOnce({
-        status: 200,
-        ok: true,
-        json: async () => ({ signed: ["deadbeef"] }),
-      });
+      mockFetch.mockImplementationOnce(signerFetch());
 
       const client = new SignerClient("http://localhost:11270");
       const mockTxn = createMockTxn() as Parameters<typeof client.signTransaction>[0];
 
       const signed = await client.signTransaction(mockTxn);
 
-      assert.equal(Buffer.from(signed, "base64").toString("hex"), "deadbeef");
+      assert.equal(Buffer.from(signed, "base64").toString("hex"), signedHex(mockTxn));
       assert.equal(mockFetch.mock.calls[0][0], "http://localhost:11270/status");
       assert.equal(mockFetch.mock.calls[1][0], "http://localhost:11270/sign");
     });
@@ -3471,24 +3625,10 @@ describe("SignerClient", () => {
     // typed camelCase fields.
     it("returns the mutation report in its typed camelCase form", async () => {
       queueStatusResponse();
-      mockFetch.mockResolvedValueOnce({
-        status: 200,
-        ok: true,
-        json: async () => ({
-          signed: ["deadbeef"],
-          mutations: {
-            dummies_added: 1,
-            group_id_changed: true,
-            fees_modified: [0],
-            total_fees_delta: 2000,
-            original_count: 1,
-            final_count: 2,
-          },
-        }),
-      });
+      mockFetch.mockImplementationOnce(signerFetch({ feeRaise: { 0: 2000 }, dummies: 1 }));
 
       const client = new SignerClient("http://localhost:11270");
-      const result = await client.signRequests([{ txn_bytes_hex: "545801", auth_address: "AUTH" }]);
+      const result = await client.signRequests(signEntries(fakePayment()));
 
       assert.equal(result.mutations?.dummiesAdded, 1);
       assert.equal(result.mutations?.groupIdChanged, true);
@@ -3500,36 +3640,38 @@ describe("SignerClient", () => {
 
     it("sends raw signing requests and returns raw response", async () => {
       queueStatusResponse();
-      mockFetch.mockResolvedValueOnce({
-        status: 200,
-        ok: true,
-        json: async () => ({ signed: ["deadbeef"] }),
-      });
+      mockFetch.mockImplementationOnce(signerFetch());
 
+      const txn = fakePayment();
+      const entry = {
+        txn_bytes_hex: encodeTransaction(txn)[0],
+        auth_address: txn.sender.toString(),
+        txn_sender: "SENDER",
+      };
       const client = new SignerClient("http://localhost:11270");
-      const result = await client.signRequests(
-        [
-          {
-            txn_bytes_hex: "545801",
-            auth_address: "AUTH",
-            txn_sender: "SENDER",
-          },
-        ],
-        { requestId: "raw-requests-id" },
-      );
+      const result = await client.signRequests([{ ...entry }], { requestId: "raw-requests-id" });
 
-      assert.deepEqual(result, { signed: ["deadbeef"] });
+      assert.deepEqual(result, { signed: [signedHex(txn)] });
       assert.equal(mockFetch.mock.calls[1][0], "http://localhost:11270/sign");
       assert.deepEqual(JSON.parse(mockFetch.mock.calls[1][1].body), {
         request_id: "raw-requests-id",
-        requests: [
-          {
-            txn_bytes_hex: "545801",
-            auth_address: "AUTH",
-            txn_sender: "SENDER",
-          },
-        ],
+        requests: [entry],
       });
+    });
+
+    it("rejects non-canonical transaction bytes before fetch", async () => {
+      const client = new SignerClient("http://localhost:11270");
+      const canonical = encodeTransaction(fakePayment())[0];
+      const callsBefore = mockFetch.mock.calls.length;
+      await assert.rejects(
+        client.signRequests([{ txn_bytes_hex: canonical.slice(4), auth_address: "AUTH" }]),
+        /transaction 1: txn_bytes_hex: missing TX prefix/,
+      );
+      await assert.rejects(
+        client.signRequests([{ txn_bytes_hex: `${canonical}00`, auth_address: "AUTH" }]),
+        /transaction 1: txn_bytes_hex: /,
+      );
+      assert.equal(mockFetch.mock.calls.length, callsBefore);
     });
 
     it("validates raw group request IDs", async () => {
@@ -3599,7 +3741,7 @@ describe("SignerClient", () => {
   describe("client-side signed simulation", () => {
     it("uses ordinary signing before calling the caller's algod", async () => {
       const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
-        sender: testAddress(1),
+        sender: fakeAccount(1),
         receiver: testAddress(2),
         amount: 1n,
         suggestedParams: {
@@ -3612,11 +3754,7 @@ describe("SignerClient", () => {
           flatFee: true,
         },
       });
-      const signature = new Uint8Array(64);
-      signature[63] = 1;
-      const signedBytes = algosdk.encodeMsgpack(
-        new algosdk.SignedTransaction({ txn, sig: signature }),
-      );
+      const signedBytes = algosdk.encodeMsgpack(authorize(txn, txn.sender.toString()));
       const signedHex = bytesToHex(signedBytes);
 
       queueStatusResponse();
@@ -3645,7 +3783,7 @@ describe("SignerClient", () => {
 
       const client = new SignerClient("http://localhost:11270");
       const result = await client.simulatePreparedGroup(algodClient, {
-        transactions: [{ transaction: txn, authAddress: testAddress(1) }],
+        transactions: [{ transaction: txn, authAddress: txn.sender.toString() }],
       });
 
       assert.equal(mockFetch.mock.calls[1][0], "http://localhost:11270/sign");
@@ -3667,7 +3805,7 @@ describe("SignerClient", () => {
     // field drops it on decode, so simulation would see an unsigned transaction.
     it("keeps a native post-quantum signature through simulation", async () => {
       const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
-        sender: testAddress(1),
+        sender: fakePQAccount(7),
         receiver: testAddress(2),
         amount: 1n,
         suggestedParams: {
@@ -3680,13 +3818,9 @@ describe("SignerClient", () => {
           flatFee: true,
         },
       });
-      const pqsig = {
-        sch: new TextEncoder().encode("f1"),
-        slt: 3,
-        pk: new Uint8Array(1793).fill(7),
-        sig: new Uint8Array(1232).fill(9),
-      };
-      const signedBytes = algosdk.encodeMsgpack(new algosdk.SignedTransaction({ txn, pqsig }));
+      const signed = authorize(txn, txn.sender.toString());
+      assert.notEqual(signed.pqsig, undefined);
+      const signedBytes = algosdk.encodeMsgpack(signed);
       const signedHex = bytesToHex(signedBytes);
 
       queueStatusResponse();
@@ -3711,12 +3845,12 @@ describe("SignerClient", () => {
 
       const client = new SignerClient("http://localhost:11270");
       const result = await client.simulatePreparedGroup(algodClient, {
-        transactions: [{ transaction: txn, authAddress: testAddress(1) }],
+        transactions: [{ transaction: txn, authAddress: txn.sender.toString() }],
       });
 
       const simulated = simulationRequests[0].txnGroups[0].txns[0];
-      assert.deepEqual(simulated.pqsig?.sig, pqsig.sig);
-      assert.deepEqual(simulated.pqsig?.pk, pqsig.pk);
+      assert.deepEqual(simulated.pqsig?.sig, signed.pqsig?.sig);
+      assert.deepEqual(simulated.pqsig?.pk, signed.pqsig?.pk);
       assert.deepEqual(algosdk.encodeMsgpack(simulated), signedBytes);
       assert.deepEqual(result.signedGroup, [signedHex]);
     });
@@ -4155,63 +4289,167 @@ describe("buildSignRequests", () => {
     mockFetch.mockReset();
   });
 
-  const createMockTxn = (sender = "SENDER_ADDRESS") => ({
-    sender: { toString: () => sender },
-    toByte: () => new Uint8Array([1, 2, 3, 4]),
-  });
+  const createMockTxn = (sender?: string) => fakePayment(41, 42, 1_000_000, sender);
 
   it("builds request with auth address", async () => {
     queueStatusResponse();
-    mockFetch.mockResolvedValueOnce({
-      status: 200,
-      ok: true,
-      json: async () => ({ signed: ["deadbeef"] }),
-    });
+    mockFetch.mockImplementationOnce(signerFetch());
 
     const client = new SignerClient("http://localhost:11270");
     const mockTxn = createMockTxn() as Parameters<typeof client.signTransaction>[0];
-    await client.signTransaction(mockTxn, "AUTH_ADDR");
+    await client.signTransaction(mockTxn, fakeAccount(50));
 
     const capturedBody = JSON.parse(mockFetch.mock.calls[1][1].body);
     assert.match(capturedBody.request_id, /^sdk-[0-9a-f]{32}$/);
     assert.equal(capturedBody.requests.length, 1);
-    assert.equal(capturedBody.requests[0].auth_address, "AUTH_ADDR");
+    assert.equal(capturedBody.requests[0].auth_address, fakeAccount(50));
     assert.notEqual(capturedBody.requests[0].txn_bytes_hex, undefined);
   });
 
   it("defaults auth address to sender", async () => {
     queueStatusResponse();
-    mockFetch.mockResolvedValueOnce({
-      status: 200,
-      ok: true,
-      json: async () => ({ signed: ["deadbeef"] }),
-    });
+    mockFetch.mockImplementationOnce(signerFetch());
 
     const client = new SignerClient("http://localhost:11270");
-    const mockTxn = createMockTxn("MY_SENDER") as Parameters<typeof client.signTransaction>[0];
+    const mockTxn = createMockTxn(fakeAccount(77)) as Parameters<typeof client.signTransaction>[0];
     await client.signTransaction(mockTxn);
 
     const capturedBody = JSON.parse(mockFetch.mock.calls[1][1].body);
-    assert.equal(capturedBody.requests[0].auth_address, "MY_SENDER");
+    assert.equal(capturedBody.requests[0].auth_address, fakeAccount(77));
   });
 
   it("includes lsig args as hex", async () => {
     queueStatusResponse();
-    mockFetch.mockResolvedValueOnce({
-      status: 200,
-      ok: true,
-      json: async () => ({ signed: ["deadbeef"] }),
-    });
+    mockFetch.mockImplementationOnce(signerFetch());
 
     const client = new SignerClient("http://localhost:11270");
-    const mockTxn = createMockTxn("LSIG_ADDR") as Parameters<typeof client.signTransaction>[0];
-    await client.signTransaction(mockTxn, "LSIG_ADDR", {
+    const mockTxn = createMockTxn(fakeLogicSigAccount(78)) as Parameters<typeof client.signTransaction>[0];
+    await client.signTransaction(mockTxn, fakeLogicSigAccount(78), {
       preimage: new Uint8Array([0x73, 0x65, 0x63, 0x72, 0x65, 0x74]),
     });
 
     const capturedBody = JSON.parse(mockFetch.mock.calls[1][1].body);
     assert.notEqual(capturedBody.requests[0].lsig_args, undefined);
     assert.equal(capturedBody.requests[0].lsig_args.preimage, "736563726574");
+  });
+
+  // Audit finding 22: args keyed under an address no position signs with were
+  // dropped without a word.
+  it("sends lsig args for the sender when no auth address is given", async () => {
+    const mockTxn = createMockTxn();
+    for (const authAddress of [undefined, ""]) {
+      const client = new SignerClient("http://localhost:11270");
+      mockFetch.mockReset();
+      queueStatusResponse();
+      mockFetch.mockImplementationOnce(signerFetch());
+      await client.signTransaction(mockTxn, authAddress, { preimage: new Uint8Array([0x73]) });
+
+      const request = JSON.parse(mockFetch.mock.calls.at(-1)?.[1].body).requests[0];
+      assert.equal(request.auth_address, mockTxn.sender.toString());
+      assert.deepEqual(request.lsig_args, { preimage: "73" });
+    }
+  });
+
+  it("rejects lsig args no position matches", async () => {
+    const client = new SignerClient("http://localhost:11270");
+    const mockTxn = createMockTxn();
+    const stray = { [fakeAddress(79)]: { preimage: new Uint8Array([0x73]) } };
+    const unmatched = /no transaction in the request has auth address/;
+
+    await assert.rejects(client.signTransactions([mockTxn], undefined, stray), unmatched);
+    await assert.rejects(client.signTransactionsList([mockTxn], undefined, stray), unmatched);
+    await assert.rejects(client.planGroup([mockTxn], undefined, stray), unmatched);
+    assert.equal(mockFetch.mock.calls.length, 0);
+  });
+
+  // Args keyed under the sender of a rekeyed account would be sent with no
+  // position, and the signature made without them.
+  it("matches lsig args to the authorizer, not a rekeyed sender", () => {
+    const client = new SignerClient("http://localhost:11270");
+    const sender = fakeAccount(41); // S, rekeyed
+    const passthroughKey = fakeAccount(45); // K, signed position 1 for S
+    const lsig = fakeLogicSigAccount(7); // L, signs position 2 for S
+    const grouped = algosdk.assignGroupID([
+      fakePayment(41, 42, 1, sender),
+      fakePayment(41, 43, 2, sender),
+    ]);
+    // Position 1 was signed by K on S's behalf, so its signed bytes name K.
+    // (Signed by S itself, S would be that position's authorizer and a key
+    // under S would rightly match it.)
+    const presigned = authorize(grouped[0], passthroughKey);
+    assert.equal(presigned.sgnr?.toString(), passthroughKey);
+    const passthrough = { 0: Buffer.from(algosdk.encodeMsgpack(presigned)).toString("base64") };
+    const auths = [null, lsig];
+    const args = { preimage: new Uint8Array([0x73]) };
+    const unmatched = /no transaction in the request has auth address/;
+    const build = (map: Record<string, unknown>) =>
+      (client as any).buildSignRequestBody(grouped, auths, map, passthrough, undefined, false);
+
+    assert.throws(() => build({ [sender]: args }), unmatched);
+    // The same without the passthrough: a sign position's sender is not its
+    // authorizer.
+    assert.throws(
+      () => (client as any).buildSignRequestBody([grouped[1]], [lsig], { [sender]: args }),
+      unmatched,
+    );
+
+    // Keyed under the authorizer, the args are sent with its position.
+    let body = build({ [lsig]: args });
+    assert.deepEqual(body.requests[1].lsig_args, { preimage: "73" });
+    assert.equal(body.requests[0].lsig_args, undefined);
+    // Keyed under the passthrough's signer, they are accepted and not sent:
+    // one map serves the call where K signs and this one.
+    body = build({ [passthroughKey]: args, [lsig]: args });
+    assert.deepEqual(Object.keys(body.requests[0]), ["signed_txn_hex"]);
+  });
+
+  it("ignores lsig args entries with no args", () => {
+    const client = new SignerClient("http://localhost:11270");
+    const mockTxn = createMockTxn();
+    const sender = mockTxn.sender.toString();
+    const body = (client as any).buildSignRequestBody([mockTxn], [sender], {
+      [fakeAddress(79)]: undefined,
+      [fakeAddress(80)]: {},
+    });
+    assert.equal(body.requests[0].lsig_args, undefined);
+  });
+
+  // One args map serves every call over a group: the plan with a foreign
+  // position, and the final signing once that position came back signed.
+  it("accepts a reused lsig args map", async () => {
+    const client = new SignerClient("http://localhost:11270");
+    const grouped = algosdk.assignGroupID([fakePayment(41, 42), fakePayment(43, 44)]);
+    const first = grouped[0].sender.toString();
+    const second = grouped[1].sender.toString();
+    const args = {
+      [first]: { preimage: new Uint8Array([1]) },
+      [second]: { preimage: new Uint8Array([2]) },
+    };
+
+    const planBody = (client as any).buildSignRequestBody(grouped, [first, null], args);
+    assert.deepEqual(planBody.requests[0].lsig_args, { preimage: "01" });
+    assert.equal(planBody.requests[1].lsig_args, undefined);
+
+    const signedSecond = Buffer.from(signedHex(grouped[1]), "hex").toString("base64");
+    const cases: Array<[string, any[], Array<string | null>]> = [
+      ["auth address given", grouped, [first, second]],
+      ["sender of the slot", grouped, [first, null]],
+      ["only the signed bytes", [grouped[0], null], [first, null]],
+    ];
+    for (const [name, txns, auths] of cases) {
+      const body = (client as any).buildSignRequestBody(
+        txns, auths, args, { 1: signedSecond }, undefined, false,
+      );
+      assert.deepEqual(body.requests[0].lsig_args, { preimage: "01" }, name);
+      assert.deepEqual(Object.keys(body.requests[1]), ["signed_txn_hex"], name);
+    }
+
+    queueStatusResponse();
+    mockFetch.mockImplementationOnce(signerFetch());
+    const signed = await client.signTransactionsList(
+      grouped, [first, second], args, { 1: signedSecond },
+    );
+    assert.equal(signed[1], signedSecond);
   });
 });
 
@@ -4472,52 +4710,45 @@ describe("connectSsh", () => {
 });
 
 describe("sign return format", () => {
-  const createMockTxn = () => ({
-    sender: { toString: () => "SENDER_ADDRESS" },
-    toByte: () => new Uint8Array([1, 2, 3, 4]),
-  });
+  const createMockTxn = () => fakePayment();
 
   beforeEach(() => {
     mockFetch.mockReset();
   });
 
   it("signTransactionsList returns individual base64 strings", async () => {
-    const hex1 = Buffer.from("signed-txn-1").toString("hex");
-    const hex2 = Buffer.from("signed-txn-2").toString("hex");
-
     queueStatusResponse();
-    mockFetch.mockResolvedValueOnce({
-      status: 200,
-      ok: true,
-      json: async () => ({ signed: [hex1, hex2] }),
-    });
+    mockFetch.mockImplementationOnce(signerFetch());
 
     const client = new SignerClient("http://localhost:11270");
-    const mockTxn = createMockTxn() as Parameters<typeof client.signTransactionsList>[0][0];
-    const result = await client.signTransactionsList([mockTxn, mockTxn]);
+    const txns = [fakePayment(41, 42), fakePayment(43, 44)];
+    const result = await client.signTransactionsList(txns);
 
     assert.equal(result.length, 2);
-    assert.equal(Buffer.from(result[0], "base64").toString(), "signed-txn-1");
-    assert.equal(Buffer.from(result[1], "base64").toString(), "signed-txn-2");
+    // Each slot signs its own transaction, changed only by the group ID the
+    // signer assigned.
+    result.forEach((item, index) => {
+      const signed = algosdk.decodeSignedTransaction(Buffer.from(item, "base64"));
+      assert.notEqual(signed.txn.group, undefined);
+      signed.txn.group = undefined;
+      assert.deepEqual(signed.txn.toByte(), txns[index].toByte());
+    });
   });
 
   it("signTransactions returns concatenated base64", async () => {
-    const hex1 = Buffer.from("signed-txn-1").toString("hex");
-    const hex2 = Buffer.from("signed-txn-2").toString("hex");
+    const client = new SignerClient("http://localhost:11270");
+    const txns = [fakePayment(41, 42), fakePayment(43, 44)];
 
     queueStatusResponse();
-    mockFetch.mockResolvedValueOnce({
-      status: 200,
-      ok: true,
-      json: async () => ({ signed: [hex1, hex2] }),
-    });
+    mockFetch.mockImplementationOnce(signerFetch());
+    const result = await client.signTransactions(txns);
+    mockFetch.mockImplementationOnce(signerFetch());
+    const individual = await client.signTransactionsList(txns);
 
-    const client = new SignerClient("http://localhost:11270");
-    const mockTxn = createMockTxn() as Parameters<typeof client.signTransactions>[0][0];
-    const result = await client.signTransactions([mockTxn, mockTxn]);
-
-    const decoded = Buffer.from(result, "base64").toString();
-    assert.equal(decoded, "signed-txn-1signed-txn-2");
+    assert.deepEqual(
+      Buffer.from(result, "base64"),
+      Buffer.concat(individual.map((item) => Buffer.from(item, "base64"))),
+    );
   });
 
   it("signTransactions rejects empty transaction arrays locally", async () => {

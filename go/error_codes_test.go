@@ -77,7 +77,7 @@ func TestSign_LockedCodeIsLocked(t *testing.T) {
 	defer server.Close()
 
 	txn := types.Transaction{Type: types.PaymentTx}
-	_, err := client.SignTransaction(txn, "ADDR", nil)
+	_, err := client.SignTransaction(txn, sdkTestAddress(0xA0), nil)
 	if err != ErrSignerLocked {
 		t.Fatalf("expected ErrSignerLocked, got: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestSign_ForbiddenCodeIsRejected(t *testing.T) {
 	defer server.Close()
 
 	txn := types.Transaction{Type: types.PaymentTx}
-	_, err := client.SignTransaction(txn, "ADDR", nil)
+	_, err := client.SignTransaction(txn, sdkTestAddress(0xA0), nil)
 	if err != ErrSigningRejected {
 		t.Fatalf("expected ErrSigningRejected, got: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestGenericErrorCarriesAPIErrorCode(t *testing.T) {
 	defer server.Close()
 
 	txn := types.Transaction{Type: types.PaymentTx}
-	_, err := client.PlanGroup([]types.Transaction{txn}, []string{"ADDR"}, nil, nil)
+	_, err := client.PlanGroup([]types.Transaction{txn}, []string{sdkTestAddress(0xA0)}, nil, nil)
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) {
 		t.Fatalf("expected *APIError, got: %v", err)
@@ -146,64 +146,6 @@ func TestGenericErrorCarriesAPIErrorCode(t *testing.T) {
 	want := "plan failed (500): failed to refresh signer key cache"
 	if apiErr.Error() != want {
 		t.Fatalf("Error() = %q, want %q", apiErr.Error(), want)
-	}
-}
-
-func TestValidateGroupSignResponse(t *testing.T) {
-	signReq := SignRequest{AuthAddress: "AUTH", TxnBytesHex: "5458aa"}
-	foreignReq := SignRequest{TxnBytesHex: "5458bb"}
-	passthroughReq := SignRequest{SignedTxnHex: "82a3"}
-
-	cases := []struct {
-		name     string
-		requests []SignRequest
-		signed   []string
-		wantErr  string
-	}{
-		{
-			name:     "truncated response rejected",
-			requests: []SignRequest{signReq, signReq},
-			signed:   []string{"aa"},
-			wantErr:  "want at least 2",
-		},
-		{
-			name:     "empty sign slot rejected",
-			requests: []SignRequest{signReq, signReq},
-			signed:   []string{"aa", ""},
-			wantErr:  "no signature for position 2",
-		},
-		{
-			name:     "empty foreign slot tolerated with trailing dummies",
-			requests: []SignRequest{signReq, foreignReq},
-			signed:   []string{"aa", "", "dd"},
-		},
-		{
-			name:     "empty dummy slot rejected",
-			requests: []SignRequest{signReq},
-			signed:   []string{"aa", ""},
-			wantErr:  "empty dummy transaction at position 2",
-		},
-		{
-			name:     "passthrough slot must be echoed",
-			requests: []SignRequest{passthroughReq},
-			signed:   []string{""},
-			wantErr:  "no signature for position 1",
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := validateGroupSignResponse(tc.requests, tc.signed)
-			if tc.wantErr == "" {
-				if err != nil {
-					t.Fatalf("validateGroupSignResponse() error = %v, want nil", err)
-				}
-				return
-			}
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("validateGroupSignResponse() error = %v, want containing %q", err, tc.wantErr)
-			}
-		})
 	}
 }
 
@@ -248,7 +190,7 @@ func TestForbiddenWithoutCodeIsGenericAPIError(t *testing.T) {
 		t.Run("sign/"+body, func(t *testing.T) {
 			client, server := newTestClient(handler)
 			defer server.Close()
-			_, err := client.SignTransaction(types.Transaction{Type: types.PaymentTx}, "ADDR", nil)
+			_, err := client.SignTransaction(types.Transaction{Type: types.PaymentTx}, sdkTestAddress(0xA0), nil)
 			requireUncodedAPIError(t, err, http.StatusForbidden)
 		})
 		t.Run("components/"+body, func(t *testing.T) {
@@ -277,6 +219,6 @@ func TestNotFoundMessageWithoutCodeIsNotKeyNotFound(t *testing.T) {
 		writeCodedError(w, http.StatusNotFound, "", "key not found")
 	})
 	defer server.Close()
-	_, err := client.PlanGroup([]types.Transaction{{Type: types.PaymentTx}}, []string{"ADDR"}, nil, nil)
+	_, err := client.PlanGroup([]types.Transaction{{Type: types.PaymentTx}}, []string{sdkTestAddress(0xA0)}, nil, nil)
 	requireUncodedAPIError(t, err, http.StatusNotFound)
 }

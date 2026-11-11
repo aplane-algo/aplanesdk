@@ -427,6 +427,17 @@ const signed = await client.signTransaction(txn, hashlockAddress, {
 });
 ```
 
+Without `authAddress` the sender signs for itself, and the args apply to the
+sender. `lsigArgsMap` is keyed by auth address. A key that is no position's
+authorizer throws `SignerError`. A position's authorizer is its auth address, not its
+sender when the account is rekeyed: for a passthrough position it is the
+signer its signed bytes name, and for a foreign position, where nothing names
+one, the sender. A key whose only positions in the request are passthrough or
+foreign is accepted, and its args are not sent, because the request does not
+sign for that address; this lets one map serve the plan and the final signing
+of the same group. An entry with no args is
+ignored.
+
 ### Sign A Transaction Group
 
 ```ts
@@ -612,6 +623,66 @@ never trigger another signing request automatically.
 
 The helper `sendRawTransaction()` accepts the base64 string returned by the SDK
 and handles common algod rejection cases with cleaner APlane error types.
+
+### What The SDK Checks Before Returning
+
+Every `/sign` and `/plan` result is checked against the request before
+`signTransaction()`, `signTransactions()`/`signTransactionsList()`, `signRequests()`, `planGroup()`/`planRequests()` or `simulatePreparedGroup()` returns it. The
+signer may change a request in three ways, and must report each in
+`mutations`:
+
+- raise the fee of a position it signs, listed in `fees_modified`, with the
+  sum of the raises equal to `total_fees_delta`
+- assign the group ID, which must be the ID computed over the returned group
+- append resource dummies, counted in `dummies_added`
+
+Anything else fails with `SignerError` whose message starts with
+`verify signer response:` or `verify signer plan:`, and nothing is returned:
+
+- a signed or planned position that differs from the requested transaction in
+  any field the report does not cover
+- a signed position that carries no authorization, more than one, or a
+  multisig
+- an authorization that is not the requested auth address's (the auth address
+  you passed, or the sender when you passed none): an Ed25519 signature that
+  does not verify over the transaction under that address; a LogicSig whose
+  program address is not that address, or one delegated by a signature; a
+  native Falcon proof whose scheme is not `f1`, whose public key or signature
+  is missing, or whose account address is not that address. The Falcon
+  signature itself is not verified.
+- a signer field (`sgnr`) that does not name the auth address when it differs
+  from the sender, or that is present when the sender signs for itself
+- a fee change that is unreported, is not an increase, or does not add up to
+  the reported total
+- any reported change (a fee raise, a group ID, an appended dummy) to a
+  request whose transactions already carried a group ID. The signer never
+  changes such a group, and positions it does not return would stay bound to
+  the original one.
+- report counts (`original_count`, `final_count`, `dummies_added`,
+  `passthrough_count`, `foreign_count`) that disagree with the request and
+  the returned group
+- an appended position that is not exactly the signer's resource dummy for
+  that group, or that carries any authorization but the dummy LogicSig
+- a passthrough position that does not come back byte for byte, or a foreign
+  position that comes back signed
+- signed transaction bytes that are not canonical msgpack, including bytes
+  after the signed transaction
+
+The SDK decodes request entries before sending them. Unsigned transaction
+bytes must be `TX`-prefixed canonical msgpack and passthrough entries must be
+canonical signed transactions, and the auth address of a position to sign
+must be a valid Algorand address, or the call throws `SignerError` before any request is made.
+A passthrough transaction must round-trip through the SDK's Algorand
+library (`algosdk`), so one that uses a field newer than that library is refused
+locally.
+
+### Rekeyed Senders In Prep Helpers
+
+The `prepare*` helpers and `resolveAuthAddress()` read the sender's auth
+address from algod account information. algosdk v3 returns it as an `Address`
+object and raw algod JSON as a string; both are accepted, and
+`ResolvedAuthAddress.authAddress` and `PreparedTransaction.authAddress` are
+always strings.
 
 ## Error Handling
 

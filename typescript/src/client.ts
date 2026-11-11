@@ -11,6 +11,7 @@ import type {
   KeyInfo,
   AccountInfoLookup,
   AccountInfoResult,
+  AuthAddressValue,
   ConnectSshOptions,
   FromEnvOptions,
   PaymentPrepParams,
@@ -77,6 +78,7 @@ import {
 } from "./types.js";
 import {
   SignerError,
+  errorText,
   AuthenticationError,
   SigningRejectedError,
   SignerUnavailableError,
@@ -92,6 +94,23 @@ import {
   hexToBytes,
 } from "./encoding.js";
 import { preparedGroupToSignRequests, preparedTransactionToSignRequest } from "./prepared.js";
+import {
+  DUMMY_PROGRAM as COSIGNED_DUMMY_PROGRAM,
+  MAX_GROUP_SIZE,
+  decodeCanonicalSignedTransaction,
+  decodeCanonicalTransaction,
+  decodePassthroughSlot,
+  decodeRequestSlots,
+  signSlot,
+  type RequestSlot,
+  groupIDBytes,
+  signCanonicalDummy,
+  signedTransactionMatchesCanonical,
+  validateCanonicalDummies,
+  validateCanonicalGroupID,
+  validatePlanResponse,
+  validateSignResponse,
+} from "./verify.js";
 import {
   SSH_USERNAME,
   normalizeSSHSetupTimeout,
@@ -120,11 +139,8 @@ const DEFAULT_SIGN_REQUEST_TIMEOUT = 360000;
 const MAX_DISCOVERED_APPROVAL_WAIT = 1800000;
 const APPROVAL_WAIT_REFRESH = 300000;
 const MAX_SIGN_REQUEST_ID_LENGTH = 128;
-const MAX_COMPONENT_GROUP_SIZE = 16;
 const APP_CALL_MAX_APP_ARGS = 16;
 const APP_CALL_METHOD_ARGS_TUPLE_THRESHOLD = APP_CALL_MAX_APP_ARGS - 2;
-const COSIGNED_MAX_GROUP_SIZE = 16;
-const COSIGNED_DUMMY_PROGRAM = new Uint8Array([0x03, 0x31, 0x20, 0x32, 0x03, 0x12]);
 
 // This must exactly mirror apsigner's canonical dummy lsigresource.Usage.
 // /plan and /sign must see the same declaration to keep fee planning idempotent.
@@ -229,95 +245,41 @@ async function resolveCosignerForTarget(
   };
 }
 
-function cloneTransaction(txn: Transaction): Transaction {
-  return algosdk.decodeUnsignedTransaction(txn.toByte());
-}
-
-function byteArraysEqual(left: Uint8Array, right: Uint8Array): boolean {
-  if (left.length !== right.length) return false;
-  return left.every((value, index) => value === right[index]);
-}
-
-function groupIDBytes(txn: Transaction): Uint8Array | undefined {
-  const group = txn.group;
-  if (
-    group === undefined ||
-    group.length === 0 ||
-    group.every((value) => value === 0)
-  ) {
-    return undefined;
-  }
-  if (group.length !== 32) {
-    throw new SignerError("transaction has invalid group ID");
-  }
-  return group;
-}
-
-function signCosignedDummies(dummies: Transaction[], startIndex: number): CosignedPassthroughItem[] {
+/** Sign the resource dummies a plan appended, after checking each is canonical. */
+function signCosignedDummies(
+  firstOriginal: Transaction,
+  groupID: Uint8Array | undefined,
+  dummies: Transaction[],
+  startIndex: number,
+): CosignedPassthroughItem[] {
   if (dummies.length === 0) {
     return [];
   }
-  validateCosignedDummies(dummies);
-  const dummyAccount = new algosdk.LogicSigAccount(COSIGNED_DUMMY_PROGRAM);
-  return dummies.map((txn, offset) => {
-    const signed = algosdk.signLogicSigTransactionObject(txn, dummyAccount);
-    return {
-      target_index: startIndex + offset,
-      signed_txn_hex: bytesToHex(signed.blob),
-      authorization: {
-        logicSigResources: cosignedDummyLogicSigResources(),
-      },
-    };
-  });
-}
-
-function validateCosignedDummies(dummies: Transaction[]): void {
-  const dummyAddress = new algosdk.LogicSigAccount(COSIGNED_DUMMY_PROGRAM).address().toString();
-  dummies.forEach((txn, index) => {
-    const payment = txn.payment;
-    if (
-      txn.type !== algosdk.TransactionType.pay ||
-      txn.sender.toString() !== dummyAddress ||
-      payment?.receiver.toString() !== dummyAddress ||
-      payment.amount !== 0n ||
-      txn.fee !== 0n ||
-      txn.note.length !== 1 ||
-      txn.note[0] !== index ||
-      txn.rekeyTo !== undefined ||
-      payment.closeRemainderTo !== undefined
-    ) {
-      throw new SignerError(
-        `signer-appended transaction ${index} is not a canonical cosigned budget dummy`,
-      );
-    }
-  });
+  validateCanonicalDummies(firstOriginal, groupID, dummies);
+  return dummies.map((txn, offset) => ({
+    target_index: startIndex + offset,
+    signed_txn_hex: bytesToHex(signCanonicalDummy(txn)),
+    authorization: {
+      logicSigResources: cosignedDummyLogicSigResources(),
+    },
+  }));
 }
 
 function decodeCanonicalGroup(groupBytesHex: string[]): Transaction[] {
   if (groupBytesHex.length === 0) {
     throw new SignerError("canonical group is empty");
   }
-  if (groupBytesHex.length > COSIGNED_MAX_GROUP_SIZE) {
+  if (groupBytesHex.length > MAX_GROUP_SIZE) {
     throw new SignerError(
-      `canonical group size ${groupBytesHex.length} exceeds max ${COSIGNED_MAX_GROUP_SIZE}`,
+      `canonical group size ${groupBytesHex.length} exceeds max ${MAX_GROUP_SIZE}`,
     );
   }
   const txns = groupBytesHex.map((encoded, index) => {
-    const raw = hexToBytes(encoded);
-    if (raw.length < 3 || raw[0] !== 0x54 || raw[1] !== 0x58) {
-      throw new SignerError(`transaction ${index} is missing TX prefix`);
-    }
     try {
-      const txn = algosdk.decodeUnsignedTransaction(raw.slice(2));
-      const canonical = algosdk.encodeUnsignedTransaction(txn);
-      if (!byteArraysEqual(raw.slice(2), canonical)) {
-        throw new SignerError(`transaction ${index} bytes are not canonical`);
-      }
-      return txn;
+      return decodeCanonicalTransaction(hexToBytes(encoded));
     } catch (error) {
-      if (error instanceof SignerError) throw error;
       throw new SignerError(
-        `transaction ${index} is invalid: ${error instanceof Error ? error.message : String(error)}`,
+        `transaction ${index}: ${errorText(error)}`,
       );
     }
   });
@@ -329,146 +291,8 @@ function decodeCanonicalGroup(groupBytesHex: string[]): Transaction[] {
     return txns;
   }
 
-  const groupID = groupIDBytes(txns[0]);
-  if (groupID === undefined) {
-    throw new SignerError("group transaction 0 has empty group ID");
-  }
-  txns.slice(1).forEach((txn, offset) => {
-    const current = groupIDBytes(txn);
-    const index = offset + 1;
-    if (current === undefined) {
-      throw new SignerError(`group transaction ${index} has empty group ID`);
-    }
-    if (!byteArraysEqual(current, groupID)) {
-      throw new SignerError(`group transaction ${index} has divergent group ID`);
-    }
-  });
-
-  const cleared = txns.map(cloneTransaction);
-  cleared.forEach((txn) => {
-    txn.group = undefined;
-  });
-  const computed = algosdk.computeGroupID(cleared);
-  if (!byteArraysEqual(computed, groupID)) {
-    throw new SignerError("group ID does not match decoded transactions");
-  }
+  validateCanonicalGroupID(txns);
   return txns;
-}
-
-function boundedMutationInteger(
-  mutations: MutationReport,
-  name: keyof MutationReport,
-): number {
-  const value = mutations[name] ?? 0;
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
-    throw new SignerError(`bounded mutation ${name} must be a non-negative safe integer`);
-  }
-  return value;
-}
-
-function validateBoundedComponentPlan(
-  original: Transaction[],
-  planned: Transaction[],
-  mutations?: MutationReport,
-): void {
-  if (planned.length < original.length) {
-    throw new SignerError(
-      `signer returned ${planned.length} bounded group positions, want at least ${original.length}`,
-    );
-  }
-  const appended = planned.length - original.length;
-  if (!mutations) {
-    if (appended !== 0) {
-      throw new SignerError(
-        `signer appended ${appended} bounded group positions without a mutation report`,
-      );
-    }
-  } else {
-    const originalCount = boundedMutationInteger(mutations, "originalCount");
-    const finalCount = boundedMutationInteger(mutations, "finalCount");
-    const dummiesAdded = boundedMutationInteger(mutations, "dummiesAdded");
-    if (originalCount !== original.length) {
-      throw new SignerError(
-        `bounded mutation original_count ${originalCount} does not match request count ${original.length}`,
-      );
-    }
-    if (finalCount !== planned.length) {
-      throw new SignerError(
-        `bounded mutation final_count ${finalCount} does not match returned count ${planned.length}`,
-      );
-    }
-    if (dummiesAdded !== appended) {
-      throw new SignerError(
-        `bounded mutation dummies_added ${dummiesAdded} does not match appended count ${appended}`,
-      );
-    }
-  }
-
-  const feeModified = new Set<number>();
-  if (
-    mutations?.groupIdChanged !== undefined &&
-    typeof mutations.groupIdChanged !== "boolean"
-  ) {
-    throw new SignerError("bounded mutation group_id_changed must be a boolean");
-  }
-  if (mutations?.feesModified !== undefined && !Array.isArray(mutations.feesModified)) {
-    throw new SignerError("bounded mutation fees_modified must be an array");
-  }
-  for (const index of mutations?.feesModified ?? []) {
-    if (!Number.isInteger(index) || index < 0 || index >= original.length) {
-      throw new SignerError(
-        `bounded mutation fee index ${index} is outside original positions`,
-      );
-    }
-    if (feeModified.has(index)) {
-      throw new SignerError(`bounded mutation fee index ${index} is duplicated`);
-    }
-    feeModified.add(index);
-  }
-
-  if (
-    mutations?.groupIdChanged &&
-    appended === 0 &&
-    feeModified.size === 0 &&
-    original.every((txn) => groupIDBytes(txn) !== undefined)
-  ) {
-    throw new SignerError(
-      "signer changed an existing bounded group ID without a fee or membership mutation",
-    );
-  }
-
-  let totalFeeDelta = 0n;
-  original.forEach((originalTxn, index) => {
-    const expected = cloneTransaction(originalTxn);
-    const actual = planned[index];
-    if (mutations?.groupIdChanged) {
-      expected.group = actual.group;
-    }
-    if (feeModified.has(index)) {
-      if (actual.fee < expected.fee) {
-        throw new SignerError(
-          `bounded mutation decreased fee at original position ${index}`,
-        );
-      }
-      totalFeeDelta += actual.fee - expected.fee;
-      expected.fee = actual.fee;
-    }
-    if (encodeTransaction(expected)[0] !== encodeTransaction(actual)[0]) {
-      throw new SignerError(
-        `signer changed unreported fields at bounded original position ${index}`,
-      );
-    }
-  });
-  if (
-    mutations &&
-    BigInt(boundedMutationInteger(mutations, "totalFeesDelta")) !== totalFeeDelta
-  ) {
-    throw new SignerError(
-      `bounded mutation total_fees_delta ${mutations.totalFeesDelta ?? 0} ` +
-      `does not match observed delta ${totalFeeDelta}`,
-    );
-  }
-  validateCosignedDummies(planned.slice(original.length));
 }
 
 function validateBoundedTargetFees(
@@ -507,30 +331,6 @@ function verifyBoundedAssembledGroup(
       groupBytesHex[index],
     );
   });
-}
-
-function signedTransactionMatchesCanonical(
-  label: string,
-  index: number,
-  signedHex: string,
-  canonicalHex: string,
-): void {
-  let signed: algosdk.SignedTransaction;
-  try {
-    signed = algosdk.decodeSignedTransaction(hexToBytes(signedHex));
-  } catch (error) {
-    throw new SignerError(
-      `${label} ${index}: decode failed: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-  }
-  const encoded = encodeTransaction(signed.txn)[0];
-  if (encoded !== canonicalHex.toLowerCase()) {
-    throw new SignerError(
-      `${label} ${index} does not match the submitted canonical bytes`,
-    );
-  }
 }
 
 function boundedCosignerPublicKey(key: KeyInfo): string {
@@ -697,11 +497,9 @@ export async function signPreparedCosignedGroup(
     );
   }
   const planned = decodeCanonicalGroup(frozenGroup);
-  validateBoundedComponentPlan(
-    prepared.map((item) => item.transaction as Transaction),
-    planned,
-    planResponse.mutations,
-  );
+  // planRequests has already checked the plan against the requests: only
+  // reported fee raises and group assignment on original positions, and
+  // canonical resource dummies after them.
   validateBoundedTargetFees(planned, targetMaxFees);
   const targetIndices = new Set(targets.map((target) => target.targetIndex));
   const componentResponse = await options.userClient.requestComponents(
@@ -810,7 +608,12 @@ export async function signPreparedCosignedGroup(
 
   const passthrough = [
     ...primary.passthrough,
-    ...signCosignedDummies(planned.slice(prepared.length), prepared.length),
+    ...signCosignedDummies(
+      prepared[0].transaction as Transaction,
+      groupIDBytes(planned[0]),
+      planned.slice(prepared.length),
+      prepared.length,
+    ),
   ];
   const assemblyTargets: AssemblyTarget[] = targets.map((target) => {
     const component = components.get(target.targetIndex);
@@ -889,11 +692,13 @@ async function simulateSignedGroup(
     if (!signedHex) {
       throw new SignerError(`signed group position ${index + 1} is empty`);
     }
+    // The raw hex is what gets submitted and the decoded value is what gets
+    // simulated, so the two must be the same transaction exactly.
     try {
-      return algosdk.decodeSignedTransaction(hexToBytes(signedHex));
+      return decodeCanonicalSignedTransaction(hexToBytes(signedHex));
     } catch (error) {
       throw new SignerError(
-        `signed group position ${index + 1} is invalid: ${error instanceof Error ? error.message : String(error)}`
+        `signed group position ${index + 1}: ${errorText(error)}`
       );
     }
   });
@@ -937,9 +742,9 @@ function validateComponentGroupBytes(items: string[]): void {
   if (!items || items.length === 0) {
     throw new SignerError("group_bytes_hex is empty");
   }
-  if (items.length > MAX_COMPONENT_GROUP_SIZE) {
+  if (items.length > MAX_GROUP_SIZE) {
     throw new SignerError(
-      `group_bytes_hex length ${items.length} exceeds max ${MAX_COMPONENT_GROUP_SIZE}`
+      `group_bytes_hex length ${items.length} exceeds max ${MAX_GROUP_SIZE}`
     );
   }
   items.forEach((item, index) => {
@@ -1638,13 +1443,22 @@ function extractAuthAddress(accountInfo: AccountInfoResult): string {
   if (typeof accountInfo === "string") {
     return accountInfo;
   }
-  return (
-    accountInfo["auth-addr"] ||
-    accountInfo.auth_addr ||
-    accountInfo.authAddr ||
-    accountInfo.authAddress ||
-    ""
-  );
+  // algosdk v3 returns the auth address as an Address object, which never
+  // compares equal to an address string; raw algod JSON carries a string.
+  const info = accountInfo as {
+    "auth-addr"?: AuthAddressValue | null;
+    auth_addr?: AuthAddressValue | null;
+    authAddr?: AuthAddressValue | null;
+    authAddress?: AuthAddressValue | null;
+  };
+  const authAddress = info["auth-addr"] || info.auth_addr || info.authAddr || info.authAddress;
+  if (authAddress) {
+    return authAddress.toString();
+  }
+  // A lookup may return the auth address itself rather than account
+  // information, and from algosdk that is an Address object too.
+  const direct = String(accountInfo);
+  return algosdk.isValidAddress(direct) ? direct : "";
 }
 
 function findSpendableKey(keys: KeyInfo[], address: string): KeyInfo | undefined {
@@ -2235,35 +2049,6 @@ function uint64Value(value: bigint): number | bigint {
  * await client.close();
  * ```
  */
-/**
- * Reject truncated or partially empty /sign responses so a malformed signer
- * reply can never submit an incomplete group. The server may append signed
- * dummy transactions after the request slots, and foreign-mode slots are
- * returned empty by design.
- */
-function validateGroupSignResponse(requests: SignRequest[], signed: string[]): void {
-  if (signed.length < requests.length) {
-    throw new SignerError(
-      `Server returned ${signed.length} signed transaction(s), want at least ${requests.length}`
-    );
-  }
-  requests.forEach((request, index) => {
-    const foreign =
-      !!request.txn_bytes_hex && !request.auth_address && !request.signed_txn_hex;
-    if (foreign) {
-      return;
-    }
-    if (!signed[index]) {
-      throw new SignerError(`Server returned no signature for position ${index + 1}`);
-    }
-  });
-  for (let i = requests.length; i < signed.length; i++) {
-    if (!signed[i]) {
-      throw new SignerError(`Server returned empty dummy transaction at position ${i + 1}`);
-    }
-  }
-}
-
 export class SignerClient {
   private baseUrl: string;
   private explicitTimeout?: number;
@@ -3755,6 +3540,9 @@ export class SignerClient {
    */
   async planRequests(requests: SignRequest[]): Promise<PlanGroupResponse> {
     validateSignRequests(requests);
+    // The slots the plan is checked against are decoded here, from the very
+    // entries that are sent.
+    const slots = decodeRequestSlots(requests);
 
     const response = await this.fetch("/plan", {
       method: "POST",
@@ -3791,6 +3579,14 @@ export class SignerClient {
         ...data,
         mutations: this.normalizeMutationReport(data.mutations),
       };
+    }
+
+    try {
+      validatePlanResponse(slots, data.transactions, data.mutations);
+    } catch (error) {
+      throw new SignerError(
+        `verify signer plan: ${errorText(error)}`,
+      );
     }
 
     return data;
@@ -3843,7 +3639,7 @@ export class SignerClient {
     lsigArgs?: LsigArgs,
     options?: SignOptions,
   ): Promise<string> {
-    const auth = authAddress ?? txn.sender.toString();
+    const auth = authAddress || txn.sender.toString();
     const lsigArgsMap = lsigArgs ? { [auth]: lsigArgs } : undefined;
 
     const signedList = await this.signRequest([txn], [auth], lsigArgsMap, undefined, undefined, options);
@@ -3958,6 +3754,9 @@ export class SignerClient {
     const requestId = options?.requestId ?? newSignRequestId();
     validateSignRequestId(requestId, true);
     validateSignRequests(requests);
+    // The slots the response is checked against are decoded here, from the
+    // very entries that are sent.
+    const slots = decodeRequestSlots(requests);
     const signBody: GroupSignRequest = { request_id: requestId, requests };
 
     await this.discoverApprovalWait();
@@ -4007,11 +3806,19 @@ export class SignerClient {
       throw new SignerError(data.error);
     }
 
-    validateGroupSignResponse(requests, data.signed ?? []);
-
     // The wire report is snake_case; callers read the typed camelCase fields.
     if (data.mutations) {
       data = { ...data, mutations: this.normalizeMutationReport(data.mutations) };
+    }
+
+    // Every sign path goes through here, so a truncated, altered or padded
+    // group can never be returned for submission or simulation.
+    try {
+      validateSignResponse(slots, data.signed ?? [], data.mutations);
+    } catch (error) {
+      throw new SignerError(
+        `verify signer response: ${errorText(error)}`,
+      );
     }
 
     return data;
@@ -4078,21 +3885,44 @@ export class SignerClient {
     }
 
     const signRequests: SignRequest[] = [];
+    const matchedLsigArgs = new Set<string>();
     for (let i = 0; i < txns.length; i++) {
       const txn = txns[i];
       const authAddr = authAddresses[i];
 
-      // Passthrough: include pre-signed transaction as-is
+      // Passthrough: include pre-signed transaction as-is. It is decoded
+      // strictly here to refuse a malformed one early and to match the
+      // LogicSig args; what is decoded goes no further.
       const passthroughEntry = passthroughByIndex.get(i);
       if (passthroughEntry !== undefined) {
-        const signedHex = Buffer.from(passthroughEntry, "base64").toString("hex");
-        const request: SignRequest = { signed_txn_hex: signedHex };
+        const signedBytes = Buffer.from(passthroughEntry, "base64");
+        let slot: RequestSlot;
+        try {
+          slot = decodePassthroughSlot(new Uint8Array(signedBytes));
+        } catch (error) {
+          throw new SignerError(`invalid passthrough[${i}]: ${errorText(error)}`);
+        }
+        // A passthrough position's authorizer is whoever signed it: the
+        // signer its bytes name, or the sender when they name none. An auth
+        // address given for the position counts too. The sender of a rekeyed
+        // account is not its authorizer.
+        if (authAddr) matchedLsigArgs.add(authAddr);
+        matchedLsigArgs.add(slot.signer ?? slot.txn.sender.toString());
+        const request: SignRequest = { signed_txn_hex: signedBytes.toString("hex") };
         const resources = lsigResourcesByIndex.get(i);
         if (resources) {
           request.lsig_resources = wireLogicSigResources(resources);
         }
         signRequests.push(request);
         continue;
+      }
+
+      // A sign or foreign position matches its auth address, or its sender
+      // when none is given.
+      if (authAddr) {
+        matchedLsigArgs.add(authAddr);
+      } else if (txn) {
+        matchedLsigArgs.add(txn.sender.toString());
       }
 
       if (authAddr && lsigResourcesByIndex.has(i)) {
@@ -4124,6 +3954,11 @@ export class SignerClient {
       if (!txn) {
         throw new SignerError(`transaction is required for sign-mode entry at index ${i}`);
       }
+      try {
+        signSlot(txn, authAddr);
+      } catch (error) {
+        throw new SignerError(`transaction ${i + 1}: ${errorText(error)}`);
+      }
 
       const [txnBytesHex, txnSender] = encodeTransaction(txn);
 
@@ -4139,6 +3974,24 @@ export class SignerClient {
       }
 
       signRequests.push(req);
+    }
+
+    // Args keyed under an address that authorizes no position are a mistake,
+    // and dropping them would sign without them; an optional arg left out can
+    // select a different authorization branch. A position's authorizer is its
+    // auth address, never its sender when the two differ. A key that is the
+    // authorizer of a passthrough or foreign position is fine: the same map
+    // can serve several calls over one group. An entry with no args is
+    // ignored.
+    const unmatched = Object.entries(lsigArgsMap ?? {})
+      .filter(([address, args]) =>
+        args && Object.keys(args).length > 0 && !matchedLsigArgs.has(address))
+      .map(([address]) => JSON.stringify(address))
+      .sort();
+    if (unmatched.length > 0) {
+      throw new SignerError(
+        `lsig args are keyed by auth address, and no transaction in the request has auth address ${unmatched.join(", ")}`,
+      );
     }
 
     return { requests: signRequests };

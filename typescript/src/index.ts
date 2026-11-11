@@ -129,6 +129,7 @@ export type {
   PaymentPrepParams,
   AsaTransferPrepParams,
   AccountInfoResult,
+  AuthAddressValue,
   AccountInfoLookup,
   ResolvedAuthAddress,
   ErrorResponse,
