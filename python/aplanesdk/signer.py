@@ -179,6 +179,10 @@ SEND_OUTCOME_CONFIRMED = "confirmed"
 # in a block within the wait.
 SEND_STAGE_SUBMIT = "submit"
 SEND_STAGE_CONFIRM = "confirm"
+# "unsent": the group was signed and the call's time limit passed before it
+# was sent to the node. The node does not have it; submit_signed_group sends
+# it.
+SEND_STAGE_UNSENT = "unsent"
 
 KEY_TYPE_WITNESS_FALCON1024 = "aplane.witness-falcon1024.v1"
 
@@ -483,7 +487,9 @@ class SubmissionUncertainError(SignerError):
     the outcome is known, because both could execute.
 
     Attributes:
-        stage: SEND_STAGE_SUBMIT or SEND_STAGE_CONFIRM
+        stage: SEND_STAGE_SUBMIT, SEND_STAGE_CONFIRM, or SEND_STAGE_UNSENT
+            when the call's time limit passed after signing and before
+            submission (the node does not have the group)
         signed_group: the signed bytes, hex msgpack, in group order
         tx_ids: their transaction IDs
         error: what ended the call
@@ -751,6 +757,48 @@ def _algod_options() -> Dict[str, Any]:
     if remaining is None or remaining >= 30:
         return {}
     return {"timeout": max(remaining, 0.001)}
+
+
+class _TimeLimitedAlgod:
+    """An algod client whose every call is held to the call's time limit:
+    each method is called with algosdk's per-request ``timeout`` set to what
+    remains (see _algod_options), unless the caller set one."""
+
+    __slots__ = ("_algod",)
+
+    def __init__(self, algod_client: Any):
+        self._algod = algod_client
+
+    def __getattr__(self, name: str) -> Any:
+        value = getattr(self._algod, name)
+        if not callable(value):
+            return value
+
+        def call(*args: Any, **kwargs: Any) -> Any:
+            if "timeout" not in kwargs:
+                kwargs.update(_algod_options())
+            return value(*args, **kwargs)
+
+        return call
+
+
+def _limited_algod(algod_client: Any) -> Any:
+    """algod_client held to the call's time limit, or itself when there is
+    none (or it is None)."""
+    if algod_client is None or _CALL_DEADLINE.get() is None:
+        return algod_client
+    if isinstance(algod_client, _TimeLimitedAlgod):
+        return algod_client
+    return _TimeLimitedAlgod(algod_client)
+
+
+def _node_error(what: str, error: BaseException) -> SignerError:
+    """The error for a failed node call before anything was signed:
+    SendTimeoutError when the time limit ended it, else a SignerError."""
+    timeout = _timed_out(what, error)
+    if timeout is not None:
+        return timeout
+    return SignerError(f"{what}: {error}")
 
 
 def _connection_error(error: BaseException) -> SignerError:
@@ -2451,11 +2499,14 @@ def _run_simulation(
 
     try:
         response = algod_client.simulate_transactions(simulation_request(True))
-    except Exception:
+    except Exception as first:
+        timed_out = _timed_out("simulating the group", first)
+        if timed_out is not None:
+            raise timed_out from first
         try:
             response = algod_client.simulate_transactions(simulation_request(False))
         except Exception as e:
-            raise SignerError(f"simulation API call failed: {e}") from e
+            raise _node_error("simulation API call failed", e) from e
 
     if not isinstance(response, dict):
         raise SignerError("simulation API returned an invalid response")
@@ -7261,6 +7312,7 @@ class SignerClient:
         cosigner_client: Optional["SignerClient"] = None,
         cosigner_component_key: str = "",
         cosigner_resolver: Optional[Any] = None,
+        timeout: Optional[float] = None,
     ) -> SendResult:
         """Sign a prepared transaction or group, check it, submit it, track it.
 
@@ -7301,6 +7353,18 @@ class SignerClient:
                 cosigned account's cosigner, used only when a position needs
                 one, and in place of the one endpoints.yaml lists. The caller
                 owns these clients; a send never closes them.
+            timeout: a limit, in seconds, on the whole call; None (the
+                default) sets none. Every request to a signer or the node is
+                held to what remains, and the steps check it between
+                requests. When it passes before any approval-bearing request
+                is posted, SendTimeoutError is raised: nothing was signed or
+                canceled. While such a request waits, a best-effort
+                /sign/cancel is sent and SignOutcomeUnknownError is raised
+                with the SendTimeoutError as its error. After signing and
+                before submission it is SubmissionUncertainError with stage
+                SEND_STAGE_UNSENT; during submission or the confirmation wait,
+                stage SEND_STAGE_SUBMIT or SEND_STAGE_CONFIRM. It does not
+                interrupt a call already blocked outside HTTP.
 
         Raises:
             UnsupportedSigningFlowError, UnsupportedGroupError,
@@ -7330,7 +7394,10 @@ class SignerClient:
             cosigner_component_key=cosigner_component_key,
             cosigner_resolver=cosigner_resolver,
         )
-        return self._send_prepared(algod_client, group, options, intent_built=False)
+        with _time_limit(timeout):
+            return self._send_prepared(
+                _limited_algod(algod_client), group, options, intent_built=False
+            )
 
     def send_payment(
         self,
@@ -7346,11 +7413,13 @@ class SignerClient:
         cosigner_client: Optional["SignerClient"] = None,
         cosigner_component_key: str = "",
         cosigner_resolver: Optional[Any] = None,
+        timeout: Optional[float] = None,
     ) -> SendResult:
         """Build an ALGO payment with prepare_payment, then sign, submit and
         track it with send_prepared. It works the same way for every account
         type send_prepared supports. ``amount`` and ``fee`` are in
-        microAlgos.
+        microAlgos. ``timeout`` limits the whole call, preparing included,
+        as for send_prepared.
 
         The SDK built the transaction, so a rotating account's send may
         rebuild its validity rounds without refresh_validity being set.
@@ -7362,10 +7431,24 @@ class SignerClient:
             cosigner_component_key=cosigner_component_key,
             cosigner_resolver=cosigner_resolver,
         )
-        prepared = self.prepare_payment(
-            algod_client, sender=sender, receiver=receiver, amount=amount, note=note, fee=fee
-        )
-        return self._send_prepared(algod_client, PreparedGroup([prepared]), options, True)
+        with _time_limit(timeout):
+            algod_client = _limited_algod(algod_client)
+            try:
+                prepared = self.prepare_payment(
+                    algod_client,
+                    sender=sender,
+                    receiver=receiver,
+                    amount=amount,
+                    note=note,
+                    fee=fee,
+                )
+            except Exception as e:
+                # Nothing was asked to sign yet.
+                timed_out = None if isinstance(e, SignerError) else _timed_out("preparing", e)
+                if timed_out is not None:
+                    raise timed_out from e
+                raise
+            return self._send_prepared(algod_client, PreparedGroup([prepared]), options, True)
 
     def submit_signed_group(
         self,
@@ -7461,15 +7544,20 @@ class SignerClient:
             try:
                 info = algod_client.account_info(sender)
             except Exception as e:
-                raise SignerError(
+                raise _node_error(
                     f"prepared transaction {index}: read the authorizer of rotating account "
-                    f"{sender}: {e}"
+                    f"{sender}",
+                    e,
                 ) from e
             if _address_key(_extract_auth_address(info)) != item.auth_address:
                 raise UnsupportedGroupError(
                     f"prepared transaction {index}: it names auth address {item.auth_address}, "
                     f"but rotating account {sender} is not rekeyed to it"
                 )
+
+        # Nothing has been asked of the signer yet, so a time limit that has
+        # passed is a plain stop, not an unknown outcome.
+        _check_time_left("before anything was asked to sign")
 
         if flow == SIGNING_FLOW_ROTATING1:
             return self._send_rotating(
@@ -7496,11 +7584,12 @@ class SignerClient:
                 # that request.
                 lost = _lost_answer(e)
                 if lost is not None:
+                    cause = _unknown_cause(e)
                     raise SignOutcomeUnknownError(
-                        e,
+                        cause,
                         request_id=getattr(lost, "request_id", ""),
                         last_valid=_group_last_valid(group),
-                    ) from e
+                    ) from cause
                 raise
             result.signed_group = list(signed.signed_group)
             result.mutations = copy.deepcopy(signed.plan_mutations)
@@ -7631,12 +7720,13 @@ class SignerClient:
             )
         except SignerError as e:
             if _answer_lost(e):
+                cause = _unknown_cause(e)
                 raise SignOutcomeUnknownError(
-                    e,
+                    cause,
                     request_id=request_id,
                     requests=sign_entries,
                     last_valid=_group_last_valid(group),
-                ) from e
+                ) from cause
             raise
 
     # -------------------------------------------------------------------------
@@ -7648,9 +7738,13 @@ class SignerClient:
         txn: transaction.Transaction,
         *,
         app_call_info: Optional[Dict[str, str]] = None,
+        timeout: Optional[float] = None,
     ) -> "PreparedRotating":
         """Ask the signer to prepare one transaction from a rotating account,
         and check the group it returns. Nothing is signed.
+
+        ``timeout`` is a limit, in seconds, on the call; when it passes,
+        SendTimeoutError is raised. None (the default) sets none.
 
         The transaction must be ungrouped, set no rekey_to, not close the
         account, and have a validity window of at most
@@ -7664,6 +7758,12 @@ class SignerClient:
         when the prepared spend is signed. The signer checks it against the
         spend's bytes and does not sign it.
         """
+        with _time_limit(timeout):
+            return self._prepare_rotating(txn, app_call_info)
+
+    def _prepare_rotating(
+        self, txn: transaction.Transaction, app_call_info: Optional[Dict[str, str]]
+    ) -> "PreparedRotating":
         if not isinstance(txn, transaction.Transaction):
             raise ValueError("transaction is required")
         # The account is named to the signer as the transaction's sender.
@@ -7738,6 +7838,7 @@ class SignerClient:
         prepared: "PreparedRotating",
         *,
         request_id: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> RotatingSignResult:
         """Ask the signer to sign a prepared rotating group, wait for operator
         approval, and check the signed group against the prepared one. It
@@ -7758,7 +7859,20 @@ class SignerClient:
         prepare a replacement until the first attempt's outcome is known;
         rotating_stage_changed in particular means a transaction from that
         stage has confirmed.
+
+        ``timeout`` is a limit, in seconds, on the call; None (the default)
+        sets none. When it passes before the sign request is posted,
+        SendTimeoutError is raised and nothing was signed. When it passes
+        while the request waits for approval, a best-effort /sign/cancel is
+        sent and SignOutcomeUnknownError is raised, with the SendTimeoutError
+        as its error.
         """
+        with _time_limit(timeout):
+            return self._sign_prepared_rotating(prepared, request_id)
+
+    def _sign_prepared_rotating(
+        self, prepared: "PreparedRotating", request_id: Optional[str]
+    ) -> RotatingSignResult:
         if not isinstance(prepared, PreparedRotating):
             raise ValueError("prepared rotating group is required")
         # The binding is checked again at the signing boundary.
@@ -7786,12 +7900,13 @@ class SignerClient:
                 request_id,
             )
         except (_AnswerLostError, _AnswerUnreadError) as e:
+            cause = _unknown_cause(e)
             raise SignOutcomeUnknownError(
-                e,
+                cause,
                 request_id=request_id,
                 rotating=prepared,
                 last_valid=_prepared_last_valid(prepared),
-            ) from e
+            ) from cause
         except BaseException as e:
             # An interrupt while approval was pending leaves the same unknown
             # as a lost answer, and the same recovery: sign this group again.
@@ -7854,7 +7969,7 @@ class SignerClient:
             try:
                 current_round = _last_round(algod_client.status())
             except Exception as e:
-                raise SignerError(f"read current round: {e}") from e
+                raise _node_error("read current round", e) from e
             if not _rotating_window_current(txn, current_round):
                 if not refresh:
                     _check_rotating_window(txn)
@@ -7872,7 +7987,17 @@ class SignerClient:
                 prepared = self.prepare_rotating(txn, app_call_info=item.app_call_info)
             except SignerError as e:
                 if e.code == ERR_CODE_ROTATING_STAGE_UNPROVEN and not last_attempt:
-                    time.sleep(attempt * _ROTATING_UNPROVEN_BACKOFF)
+                    backoff = attempt * _ROTATING_UNPROVEN_BACKOFF
+                    remaining = _time_remaining()
+                    if remaining is not None and remaining <= backoff:
+                        # The wait to retry would outlast the time limit.
+                        time.sleep(max(remaining, 0))
+                        raise SendTimeoutError(
+                            f"{e} (and the wait to retry ended: "
+                            f"{_time_limit_error('before preparing again')})",
+                            code=e.code,
+                        ) from e
+                    time.sleep(backoff)
                     attempt += 1
                     continue
                 raise
@@ -7905,12 +8030,17 @@ class SignerClient:
         try:
             try:
                 simulation = self.simulate_prepared_rotating(algod_client, prepared)
+            except SendTimeoutError:
+                raise
             except SignerError as e:
                 raise SignerError(
                     f"simulate prepared rotating group; nothing was signed: {e}"
                 ) from e
             if simulation.failed:
                 raise RotatingPreflightError(prepared, simulation.failure_message)
+            # Nothing has been asked to sign yet, so a time limit that has
+            # passed is a plain stop, not an unknown outcome.
+            _check_time_left("before the prepared rotating group was sent to be signed")
             return self.sign_prepared_rotating(prepared)
         except BaseException as e:
             _mark_interrupt(e, _ROTATING_INTERRUPT_NOTE, aplane_rotating=prepared)
@@ -9420,7 +9550,7 @@ def _refresh_rotating_validity(
     try:
         params = algod_client.suggested_params()
     except Exception as e:
-        raise SignerError(f"failed to get suggested params: {e}") from e
+        raise _node_error("failed to get suggested params", e) from e
     # A window shorter than the rounds that must remain can never be signed,
     # so it is not kept either.
     window = ROTATING_MAX_VALIDITY_WINDOW
@@ -9593,6 +9723,16 @@ def _submit_and_wait(
             stage, result.signed_group, result.tx_ids, error, last_valid=last_valid
         )
 
+    def failed(what: str, error: BaseException) -> BaseException:
+        """What ended a node call: the time limit's SendTimeoutError, or the
+        error itself."""
+        timed_out = _timed_out(what, error)
+        return timed_out if timed_out is not None else error
+
+    # The group is signed. A time limit that passed before it was sent leaves
+    # it with the caller, unsent.
+    if _time_limit_passed():
+        raise uncertain(SEND_STAGE_UNSENT, _time_limit_error("before the group was submitted"))
     try:
         sent_id = algod_client.send_raw_transaction(base64.b64encode(blob).decode())
     except Exception as e:
@@ -9602,7 +9742,7 @@ def _submit_and_wait(
         if not _already_known_to_node(e):
             if _is_bad_request(e):
                 raise SubmissionRejectedError(result.signed_group, result.tx_ids, e) from e
-            raise uncertain(SEND_STAGE_SUBMIT, e) from e
+            raise uncertain(SEND_STAGE_SUBMIT, failed("submitting the group", e)) from e
     else:
         if sent_id != txid:
             raise uncertain(
@@ -9617,10 +9757,15 @@ def _submit_and_wait(
         return
 
     wait_rounds = options.wait_rounds or DEFAULT_SEND_WAIT_ROUNDS
+    if _time_limit_passed():
+        raise uncertain(SEND_STAGE_CONFIRM, _time_limit_error("before the confirmation wait"))
     try:
         last = _last_round(algod_client.status())
     except Exception as e:
-        raise uncertain(SEND_STAGE_CONFIRM, SignerError(f"read current round: {e}")) from e
+        timed_out = _timed_out("reading the current round", e)
+        raise uncertain(
+            SEND_STAGE_CONFIRM, timed_out or SignerError(f"read current round: {e}")
+        ) from e
     # The group is looked up now and after each of the next wait_rounds
     # rounds.
     deadline = min(last + wait_rounds, _UINT64_MAX)
@@ -9652,12 +9797,17 @@ def _submit_and_wait(
             raise uncertain(
                 SEND_STAGE_CONFIRM, SignerError(f"not confirmed after {wait_rounds} rounds")
             )
+        if _time_limit_passed():
+            raise uncertain(
+                SEND_STAGE_CONFIRM, _time_limit_error(f"waiting for round {last + 1}")
+            )
         try:
             # status_after_block(n) returns once round n+1 exists.
             next_round = _last_round(algod_client.status_after_block(last))
         except Exception as e:
+            timed_out = _timed_out(f"waiting for round {last + 1}", e)
             raise uncertain(
-                SEND_STAGE_CONFIRM, SignerError(f"wait for round {last + 1}: {e}")
+                SEND_STAGE_CONFIRM, timed_out or SignerError(f"wait for round {last + 1}: {e}")
             ) from e
         last = next_round if next_round > last else last + 1
 

@@ -368,7 +368,7 @@ Failures:
 | The signing call's own `SignerError` | The signer refused (policy, operator, locked), or the SDK refused the signer's answer (`verify signer response: ...`, `MaxFeeIncreaseError`). Nothing was submitted. | Read the reason. If the SDK refused a sign answer, the signer did sign and the SDK discarded the result. |
 | `SignOutcomeUnknownError` | A signing exchange ended with no usable answer: none arrived, the signer's 200 answer could not be read (not exactly one JSON object of the expected shape: empty, cut off, `null`, not an object, text after it, or a field of the wrong type or out of range), or checking, decoding or describing it raised an exception that is not one of the SDK's own refusals (a fault in the SDK's checks, not a verdict on the answer). A signature may have been released; nothing was submitted. | Check with the operator or the audit log before signing again. The error's `request_id` names the request whose answer was lost: the `/sign` of the ordinary flow (which also carries `requests`), the `/sign/component`, `/sign/assemble` or primary `/sign` of the cosigned sequence (for a fault between its requests, the last of them that answered), or the rotating sign request, whose error carries the prepared group in `rotating` (see below). |
 | `SubmissionRejectedError` | The node refused the group or dropped it from its pool. | Read the reason. The signed bytes and IDs are in `signed_group` and `tx_ids`. |
-| `SubmissionUncertainError` | `stage` says where it stopped: `"submit"` (the submission's answer never arrived) or `"confirm"` (not confirmed within the wait). It may still confirm. | Look up `tx_ids`, or submit the same `signed_group` again with `submit_signed_group`. Do not sign a replacement until the outcome is known: both could execute. |
+| `SubmissionUncertainError` | `stage` says where it stopped: `"submit"` (the submission's answer never arrived), `"confirm"` (not confirmed within the wait), or `"unsent"` (the call's `timeout` passed after signing, before submission; the node does not have it). Unless unsent, it may still confirm. | Look up `tx_ids`, or submit the same `signed_group` again with `submit_signed_group`. Do not sign a replacement until the outcome is known: both could execute. |
 
 A node that answers "already in ledger" has a transaction with the same ID
 from an earlier submission of the group. The SDK treats that as submitted and
@@ -376,10 +376,31 @@ looks for the outcome; it is not a rejection. A committed transaction that
 carries a lease is the exception: the node refuses it for its lease, and the
 SDK reports a rejection.
 
-The call has no deadline of its own. Each signer request keeps its usual
-timeout, and a request that times out or disconnects while approval is
-pending is canceled with a best-effort `/sign/cancel`, as for the other
-signing calls; such an ending is a `SignOutcomeUnknownError`.
+By default the call has no deadline of its own. Each signer request keeps
+its usual timeout, and a request that times out or disconnects while
+approval is pending is canceled with a best-effort `/sign/cancel`, as for the
+other signing calls; such an ending is a `SignOutcomeUnknownError`.
+
+`timeout=` (seconds, the whole call) sets one, on `send_prepared`,
+`send_payment`, `prepare_rotating`, `sign_prepared_rotating` and
+`wait_for_outcome`. Every HTTP request to a signer, a cosigner or the node is
+held to what remains, and the steps check it in between; it does not
+interrupt a call already blocked outside HTTP. Where it passes decides what
+you get, as in the Go SDK when its context deadline passes:
+
+- before any approval-bearing request is posted: `SendTimeoutError` (a
+  `SignerError`), nothing signed, nothing canceled;
+- while an approval-bearing request is waiting: a best-effort `/sign/cancel`,
+  then `SignOutcomeUnknownError` with the request ID (the prepared group for
+  a rotating account, and `last_valid`), whose `error` is the
+  `SendTimeoutError`;
+- after signing, before submission: `SubmissionUncertainError` with stage
+  `"unsent"` (`SEND_STAGE_UNSENT`): the node does not have the group, and
+  `signed_group` holds it;
+- during submission or the confirmation wait: `SubmissionUncertainError` with
+  stage `"submit"` or `"confirm"`.
+
+`timeout=None` (the default) behaves exactly as before.
 
 A `KeyboardInterrupt`, or any other exception that is not an `Exception`, is
 not turned into an SDK error: it still stops the program. What it carries
