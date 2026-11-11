@@ -675,7 +675,8 @@ A cosigned account needs nothing extra when the signer client came from
 with role `cosigner`. With no `CosignerClient` and no `CosignerResolver`,
 `SendPrepared` and `SignPreparedCosignedGroup` then use an
 `EndpointCosignerResolver` for that data directory, made on first use, kept
-on the client and closed by its `Close`. A client from `NewSignerClient` or
+on the client and closed by its `Close`; after `Close` it is not made again,
+so a closed client opens no new connections. A client from `NewSignerClient` or
 `ConnectSSH` has none, and a cosigned send without a cosigner is refused
 ("cosigner client or resolver is required"). An explicit client or resolver
 always wins.

@@ -542,6 +542,24 @@ func TestDefaultCosignerResolverLifetime(t *testing.T) {
 	if f.open() != 0 || !client.cosignerResolver.closed {
 		t.Fatal("closing the client did not close its resolver's connections")
 	}
+
+	// A client closed before it made its resolver makes none that could open
+	// a connection: a later cosigned call fails with nothing opened.
+	closedFirst := NewSignerClient("http://127.0.0.1:1")
+	closedFirst.endpoints = &ClientEndpointRegistry{Endpoints: map[string]ClientEndpointConfig{
+		"cos": {Role: ClientEndpointRoleCosigner, URL: "ssh://127.0.0.1:1"},
+	}}
+	closedFirst.Close()
+	resolver := closedFirst.defaultCosignerResolver()
+	connects := 0
+	resolver.connect = func(context.Context, ClientEndpointConfig, EndpointCosignerResolverOptions) (*SignerClient, error) {
+		connects++
+		return nil, errors.New("connection refused")
+	}
+	_, _, err := resolver.ResolveCosigner(context.Background(), hex.EncodeToString(witnessOne), KeyTypeWitnessFalcon1024)
+	if !errors.Is(err, ErrCosignerDiscovery) || err.Error() != "cosigner discovery: the resolver is closed" || connects != 0 || resolver.sweeps != 0 {
+		t.Fatalf("after Close: %v, connects %d, sweeps %d; want the closed resolver's refusal", err, connects, resolver.sweeps)
+	}
 }
 
 // After a sweep only the live endpoints' connections are open, including when

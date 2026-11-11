@@ -352,7 +352,8 @@ func FromEnvWithContext(ctx context.Context, opts *FromEnvOptions) (*SignerClien
 
 // defaultCosignerResolver is the client's own cosigner resolver, over the
 // endpoint registry it was created from, made on first use. It is nil for a
-// client not created from a data directory.
+// client not created from a data directory. Once the client is closed, the
+// resolver is closed too, even one made after: it opens no connections.
 func (c *SignerClient) defaultCosignerResolver() *EndpointCosignerResolver {
 	if c == nil || c.endpoints == nil {
 		return nil
@@ -361,6 +362,9 @@ func (c *SignerClient) defaultCosignerResolver() *EndpointCosignerResolver {
 	defer c.resolverMu.Unlock()
 	if c.cosignerResolver == nil {
 		c.cosignerResolver = NewEndpointCosignerResolverFromRegistry(c.endpoints, &c.endpointOptions)
+		if c.closed.Load() {
+			c.cosignerResolver.Close()
+		}
 	}
 	return c.cosignerResolver
 }
