@@ -660,6 +660,8 @@ def _check_wire_shape(data: Dict[str, Any], shape: Dict[str, Any], label: str) -
 
 
 # The wire types of the approval-bearing answers (pkg/signerapi in aplane).
+# Each declares every field the SDK reads after the shape check: a field left
+# out would pass unchecked, so a wrongly typed error would read as a refusal.
 _MUTATION_REPORT_SHAPE: Dict[str, Any] = {
     "dummies_added": "int",
     "group_id_changed": "bool",
@@ -707,8 +709,13 @@ _COMPONENT_RESPONSE_SHAPE: Dict[str, Any] = {
             "path": "str",
         },
     ),
+    "error": "str",
 }
-_ASSEMBLY_RESPONSE_SHAPE: Dict[str, Any] = {"request_id": "str", "signed_group": "strs"}
+_ASSEMBLY_RESPONSE_SHAPE: Dict[str, Any] = {
+    "request_id": "str",
+    "signed_group": "strs",
+    "error": "str",
+}
 
 
 def _wire_zero(kind: Any) -> Any:

@@ -928,6 +928,15 @@ def test_a_well_typed_answer_that_fails_its_checks_is_a_refusal(fakes):
         ("/sign/component", {"request_id": "x", "components": [{"target_index": "0"}]}, True),
         ("/sign/assemble", {"request_id": 5, "signed_group": []}, True),
         ("/sign/assemble", {"request_id": "x", "signed_group": [7]}, True),
+        # An error field that is not a string cannot be read either: it is
+        # not taken as a refusal.
+        ("/sign/component", {"request_id": "x", "components": [], "error": {"x": 1}}, True),
+        ("/sign/component", {"request_id": "x", "components": [], "error": 5}, True),
+        ("/sign/assemble", {"request_id": "x", "signed_group": [], "error": {"x": 1}}, True),
+        ("/sign/assemble", {"request_id": "x", "signed_group": [], "error": 5}, True),
+        # A string error is the signer's refusal.
+        ("/sign/component", {"error": "refused"}, False),
+        ("/sign/assemble", {"error": "refused"}, False),
         # Planning releases nothing: a malformed plan is a plain failure.
         ("/plan", {"transactions": "none"}, False),
     ],
