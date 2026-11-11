@@ -7492,7 +7492,10 @@ class SignerClient:
         SignOutcomeUnknownError, which submitted nothing: a rotating
         account's prepared group is looked up first ("confirmed" or
         "pending"); otherwise "signable" until its last valid round has
-        passed, then "expired" (safe_to_replace). ``advice`` says what to do.
+        passed, then "expired" (safe_to_replace). For a rotating account,
+        whose prepared group may have been signed again and submitted,
+        "expired" lasts OUTCOME_NODE_MEMORY_ROUNDS rounds and "too_old"
+        follows, as for a submission. ``advice`` says what to do.
 
         Raises:
             SignerError: the error is of another type ("not an uncertain
@@ -9832,6 +9835,12 @@ def _outcome_advice(state: str, confirmed_round: int, last_valid: int, rotating:
             f"{last_valid} has passed."
         )
     if state == OUTCOME_TOO_OLD:
+        if rotating:
+            return (
+                f"The prepared group's validity ended more than {OUTCOME_NODE_MEMORY_ROUNDS} "
+                "rounds ago and this node may no longer remember it. Look the transaction ID "
+                "up on an indexer before sending again."
+            )
         return (
             f"The group's validity ended more than {OUTCOME_NODE_MEMORY_ROUNDS} rounds ago and "
             "this node may no longer remember it. Look the transaction ID up on an indexer "
@@ -9963,10 +9972,15 @@ def _resolve_outcome(algod_client: Any, error: Any) -> OutcomeReport:
         else:
             report.state = OUTCOME_TOO_OLD
     elif current <= last_valid:
-        # This call submitted nothing, so expiry alone settles a sign
-        # outcome: there is no too_old.
         report.state = OUTCOME_SIGNABLE
+    elif rotating is not None and current - last_valid > OUTCOME_NODE_MEMORY_ROUNDS:
+        # Signing the same prepared group again gives the same IDs, which the
+        # caller may then have submitted: the group can have confirmed, and
+        # past the node's memory not found does not say it did not.
+        report.state = OUTCOME_TOO_OLD
     else:
+        # This call submitted nothing, and the signed bytes of an account
+        # that is not rotating never leave the SDK, so expiry settles it.
         report.state = OUTCOME_EXPIRED
         report.safe_to_replace = True
     if report.state == OUTCOME_EXPIRED:

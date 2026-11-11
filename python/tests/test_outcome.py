@@ -57,6 +57,10 @@ TOO_OLD_ADVICE = (
     "The group's validity ended more than 500 rounds ago and this node may no longer remember "
     "it. Look the transaction ID up on an indexer before sending again."
 )
+ROTATING_TOO_OLD_ADVICE = (
+    "The prepared group's validity ended more than 500 rounds ago and this node may no longer "
+    "remember it. Look the transaction ID up on an indexer before sending again."
+)
 ROTATING_SIGNABLE_ADVICE = (
     "A signature may have been released and can execute until round 1000. Sign the same "
     "prepared group again, or wait until round 1000 has passed."
@@ -216,7 +220,12 @@ class TestSignTable:
             (POOL_ERROR, 1000, OUTCOME_SIGNABLE, False, ROTATING_SIGNABLE_ADVICE),
             (NOT_FOUND, 1001, OUTCOME_EXPIRED, True, SIGN_EXPIRED_ADVICE),
             (POOL_ERROR, 1001, OUTCOME_EXPIRED, True, SIGN_EXPIRED_ADVICE),
-            (NOT_FOUND, 9999, OUTCOME_EXPIRED, True, SIGN_EXPIRED_ADVICE),
+            (NOT_FOUND, 1500, OUTCOME_EXPIRED, True, SIGN_EXPIRED_ADVICE),
+            (POOL_ERROR, 1500, OUTCOME_EXPIRED, True, SIGN_EXPIRED_ADVICE),
+            (NOT_FOUND, 1501, OUTCOME_TOO_OLD, False, ROTATING_TOO_OLD_ADVICE),
+            (POOL_ERROR, 1501, OUTCOME_TOO_OLD, False, ROTATING_TOO_OLD_ADVICE),
+            (NOT_FOUND, 9999, OUTCOME_TOO_OLD, False, ROTATING_TOO_OLD_ADVICE),
+            (CONFIRMED, 9999, OUTCOME_CONFIRMED, False, CONFIRMED_ADVICE.format(990)),
         ],
         ids=[
             "confirmed",
@@ -226,7 +235,12 @@ class TestSignTable:
             "pool error at the last valid round",
             "not found one round after",
             "pool error one round after",
-            "long after: never too old",
+            "not found 500 rounds after",
+            "pool error 500 rounds after",
+            "not found 501 rounds after",
+            "pool error 501 rounds after",
+            "not found long after",
+            "confirmed long after",
         ],
     )
     def test_rotating_rows(self, node, lookup, current, state, safe, advice):
@@ -245,12 +259,15 @@ class TestSignTable:
             (999, OUTCOME_SIGNABLE, False, SIGNABLE_ADVICE),
             (1000, OUTCOME_SIGNABLE, False, SIGNABLE_ADVICE),
             (1001, OUTCOME_EXPIRED, True, SIGN_EXPIRED_ADVICE),
+            (1500, OUTCOME_EXPIRED, True, SIGN_EXPIRED_ADVICE),
             (1501, OUTCOME_EXPIRED, True, SIGN_EXPIRED_ADVICE),
+            (9999, OUTCOME_EXPIRED, True, SIGN_EXPIRED_ADVICE),
         ],
     )
     def test_rows_without_ids(self, node, current, state, safe, advice):
         # The signer may have changed the transactions, so their IDs are not
-        # known and nothing is looked up.
+        # known and nothing is looked up. Their signed bytes never left the
+        # SDK, so expiry alone settles it: never too old.
         algod = node(current, CONFIRMED)
         report = client().resolve_outcome(algod.client, sign_error())
         assert (report.state, report.safe_to_replace, report.advice) == (state, safe, advice)

@@ -481,10 +481,17 @@ For a `SignOutcomeUnknownError`, where this call submitted nothing:
   been released and can still execute (for a rotating account, sign the same
   prepared group again; otherwise wait until `last_valid` has passed before
   building a replacement);
-- the current round is past `last_valid`: `expired`, `safe_to_replace`. There
-  is no `too_old` here: this call never submitted, so expiry alone settles it.
-  An account that is not rotating has no IDs to look up (the signer may have
-  changed its transactions), so `tx_ids` is empty.
+- for a rotating account, the current round is past `last_valid` by at most
+  500 rounds: `expired`, `safe_to_replace`; past it by more than 500 rounds:
+  `too_old`. Signing the same prepared group again gives the same IDs, which
+  may then have been submitted, so the group can have confirmed, and the node
+  may no longer remember it. Look the ID up on an indexer before sending
+  again;
+- for an account that is not rotating, the current round is past
+  `last_valid`: `expired`, `safe_to_replace`. There is no `too_old` here: this
+  call never submitted, and the signed bytes never left the SDK, so expiry
+  alone settles it. There are no IDs to look up (the signer may have changed
+  the transactions), so `tx_ids` is empty.
 
 The state names are the constants `OUTCOME_CONFIRMED`, `OUTCOME_PENDING`,
 `OUTCOME_NOT_SEEN`, `OUTCOME_SIGNABLE`, `OUTCOME_EXPIRED` and
