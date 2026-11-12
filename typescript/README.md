@@ -520,9 +520,15 @@ if (error instanceof SubmissionError) {
   // Submit the same signedGroup again with submitSignedGroup; the node may
   // already have it.
   if (!error.submitted) throw error;
-  const { lastRound } = await algodClient.status().do();
-  const rounds = error.lastValid > lastRound ? error.lastValid - lastRound : 1n;
-  await algosdk.waitForConfirmation(algodClient, error.txIds[0], Number(rounds));
+  try {
+    const { lastRound } = await algodClient.status().do();
+    const rounds = error.lastValid > lastRound ? error.lastValid - lastRound : 1n;
+    await algosdk.waitForConfirmation(algodClient, error.txIds[0], Number(rounds));
+  } catch {
+    // Only the wait ended. Keep the original error: it holds the signed
+    // group, the IDs and the last valid round.
+    throw error;
+  }
 }
 ```
 

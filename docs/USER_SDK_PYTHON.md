@@ -512,10 +512,15 @@ except SubmissionError as error:
         # Submit the same signed_group again with submit_signed_group; the
         # node may already have it.
         raise
-    current = algod_client.status()["last-round"]
-    info = transaction.wait_for_confirmation(
-        algod_client, error.tx_ids[0], max(error.last_valid - current, 1)
-    )
+    try:
+        current = algod_client.status()["last-round"]
+        info = transaction.wait_for_confirmation(
+            algod_client, error.tx_ids[0], max(error.last_valid - current, 1)
+        )
+    except Exception:
+        # Only the wait ended. Keep the original error: it holds the signed
+        # group, the IDs and the last valid round.
+        raise error
     print("confirmed in round", info["confirmed-round"])
 ```
 

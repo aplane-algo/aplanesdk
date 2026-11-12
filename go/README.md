@@ -486,7 +486,7 @@ if errors.As(err, &failure) {
 	}
 	status, statusErr := algodClient.Status().Do(ctx)
 	if statusErr != nil {
-		return statusErr
+		return fmt.Errorf("%w (read current round: %v)", err, statusErr)
 	}
 	rounds := uint64(1)
 	if failure.LastValid > status.LastRound {
