@@ -43,6 +43,7 @@
         "layer3_policy": "fixed_allowlist",
         "rekey": "refused"
       },
+      "valid_rekey_target": false,
       "creation_params": [
         {
           "name": "recipients",
@@ -157,6 +158,7 @@
         "layer3_policy": "merkle_allowlist",
         "rekey": "refused"
       },
+      "valid_rekey_target": true,
       "creation_params": [
         {
           "name": "recipients",

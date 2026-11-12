@@ -219,6 +219,10 @@ ERR_CODE_ROTATING_STAGE_CHANGED = "rotating_stage_changed"
 # signer read. This attempt released no signature; rebuild the validity rounds
 # and prepare again.
 ERR_CODE_ROTATING_WINDOW_NOT_CURRENT = "rotating_window_not_current"
+# 403: a transaction rekeys an account, its own address included, to an aplane
+# key this signer holds that is not a valid rekey target (valid_rekey_target
+# false). Nothing was signed.
+ERR_CODE_REKEY_TARGET_NOT_VALID = "rekey_target_not_valid"
 
 
 class SignerError(Exception):
@@ -1148,6 +1152,7 @@ _KEY_INFO_SHAPE: Dict[str, Any] = {
     "parameters": "str_map",
     "template_provenance_status": "str",
     "template_provenance_note": "str",
+    "valid_rekey_target": "bool",
 }
 _KEYS_RESPONSE_SHAPE: Dict[str, Any] = {
     "count": "int",
@@ -1197,6 +1202,7 @@ _KEY_TYPES_RESPONSE_SHAPE: Dict[str, Any] = {
             "per_key_contract": "bool",
             "boundary_schema": "str",
             "bounded_authorization": _BOUNDED_AUTHORIZATION_SHAPE,
+            "valid_rekey_target": "bool",
             "creation_params": ("list", _CREATION_PARAM_SHAPE),
             "runtime_args": ("list", _RUNTIME_ARG_SHAPE),
         },
@@ -1423,6 +1429,11 @@ class KeyInfo:
     parameters: Optional[Dict[str, str]] = None
     template_provenance_status: str = ""
     template_provenance_note: str = ""
+    # The value this aplane key recorded when it was created: whether it may be
+    # the signing authority an account is rekeyed to, its own account included.
+    # A rekey to it when it is false is refused with
+    # ERR_CODE_REKEY_TARGET_NOT_VALID. False when the signer does not report it.
+    valid_rekey_target: bool = False
 
 
 @dataclass
@@ -1525,6 +1536,10 @@ class KeyTypeInfo:
     # or "" for one that takes none, such as a plain host.
     boundary_schema: str = ""
     bounded_authorization: Optional[BoundedAuthorizationInfo] = None
+    # The type's declaration of whether an aplane key of this type may be the
+    # signing authority an account is rekeyed to, its own account included.
+    # False when the signer does not report it.
+    valid_rekey_target: bool = False
     creation_params: Optional[List[CreationParam]] = None
     runtime_args: Optional[List[RuntimeArg]] = None
 
@@ -5287,6 +5302,7 @@ class SignerClient:
                 parameters=k.get("parameters") or None,
                 template_provenance_status=k.get("template_provenance_status", ""),
                 template_provenance_note=k.get("template_provenance_note", ""),
+                valid_rekey_target=k.get("valid_rekey_target", False),
             )
             for k in data["keys"]
         ]
@@ -6310,6 +6326,7 @@ class SignerClient:
                     bounded_authorization=_parse_bounded_authorization(
                         kt.get("bounded_authorization")
                     ),
+                    valid_rekey_target=kt.get("valid_rekey_target", False),
                     creation_params=creation_params,
                     runtime_args=_parse_runtime_args(kt.get("runtime_args")),
                 )

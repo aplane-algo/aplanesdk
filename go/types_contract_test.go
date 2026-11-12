@@ -378,6 +378,10 @@ func TestGoSDKContractKeyTypeMetadata(t *testing.T) {
 	if generic.MnemonicImport {
 		t.Fatal("generic template fixture should not allow mnemonic import")
 	}
+	if !resp.KeyTypes[0].ValidRekeyTarget || !resp.KeyTypes[1].ValidRekeyTarget || generic.ValidRekeyTarget {
+		t.Fatalf("ValidRekeyTarget = %v, %v, %v; want true, true, false",
+			resp.KeyTypes[0].ValidRekeyTarget, resp.KeyTypes[1].ValidRekeyTarget, generic.ValidRekeyTarget)
+	}
 	modes := generic.CreationParams[3].InputModes
 	if len(modes) != 2 {
 		t.Fatalf("InputModes length = %d, want 2", len(modes))
@@ -417,6 +421,9 @@ func TestGoSDKContractCosignerKeyMetadata(t *testing.T) {
 	}
 	if component.Keys[0].IsSpendingAccount == nil || *component.Keys[0].IsSpendingAccount {
 		t.Fatalf("component IsSpendingAccount = %#v, want false", component.Keys[0].IsSpendingAccount)
+	}
+	if component.Keys[0].ValidRekeyTarget {
+		t.Fatal("witness key ValidRekeyTarget = true, want false")
 	}
 	// Witness rows are not spending accounts, so the signer omits the field.
 	if got := component.Keys[0].AuthorizationKind; got != "" {
@@ -585,6 +592,7 @@ func signerAPIErrorCodes(t *testing.T) []string {
 		ErrCodeRotatingStageUnproven,
 		ErrCodeRotatingStageChanged,
 		ErrCodeRotatingWindowNotCurrent,
+		ErrCodeRekeyTargetNotValid,
 	}
 }
 

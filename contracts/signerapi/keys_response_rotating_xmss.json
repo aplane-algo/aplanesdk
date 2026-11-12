@@ -13,7 +13,8 @@
           "argument_bytes": 4179,
           "max_opcode_cost": 95857
         }
-      }
+      },
+      "valid_rekey_target": false
     }
   ]
 }

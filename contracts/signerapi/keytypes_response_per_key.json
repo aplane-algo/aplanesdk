@@ -13,6 +13,7 @@
       "cosigner_component_key_type": "aplane.witness-falcon1024.v1",
       "per_key_contract": true,
       "boundary_schema": "aplane.boundary.v1",
+      "valid_rekey_target": true,
       "creation_params": [
         {
           "name": "spend_effects",

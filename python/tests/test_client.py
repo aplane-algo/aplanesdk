@@ -864,6 +864,49 @@ class TestAnswersReadByShape:
         assert type(excinfo.value) is SignerError
         assert str(excinfo.value).startswith(f"failed to decode {what} response: answer field")
 
+    @pytest.mark.parametrize("what", ["keys", "key types"])
+    @pytest.mark.parametrize("wrong", [b'"true"', b"1", b"{}"])
+    def test_valid_rekey_target_of_the_wrong_type_is_a_plain_error(self, what, wrong):
+        method, call = _UNSIGNED_ANSWER_CALLS[what]
+        if what == "keys":
+            body = b'{"count":1,"keys":[{"address":"ADDR1","valid_rekey_target":' + wrong + b"}]}"
+        else:
+            body = b'{"key_types":[{"key_type":"ed25519","valid_rekey_target":' + wrong + b"}]}"
+        client = make_client()
+        with patch.object(client.session, method, return_value=raw_response(200, body)):
+            with pytest.raises(SignerError) as excinfo:
+                call(client)
+        assert type(excinfo.value) is SignerError
+        assert str(excinfo.value).startswith(f"failed to decode {what} response: answer field")
+        assert "valid_rekey_target is not a boolean" in str(excinfo.value)
+
+    def test_valid_rekey_target_is_read_as_sent_and_false_when_left_out(self):
+        keys = raw_response(200, json.dumps({
+            "count": 4,
+            "keys": [
+                {"address": "ADDR1", "key_type": "ed25519", "valid_rekey_target": True},
+                {"address": "ADDR2", "key_type": "aplane.htlc.v1", "valid_rekey_target": False},
+                {"address": "ADDR3", "key_type": "ed25519"},
+                {"address": "ADDR4", "key_type": "ed25519", "valid_rekey_target": None},
+            ],
+        }).encode())
+        client = make_client()
+        with patch.object(client.session, "get", return_value=keys):
+            read = client.list_keys(refresh=True)
+        assert [key.valid_rekey_target for key in read] == [True, False, False, False]
+
+        key_types = raw_response(200, json.dumps({
+            "key_types": [
+                {"key_type": "ed25519", "valid_rekey_target": True},
+                {"key_type": "aplane.htlc.v1", "valid_rekey_target": False},
+                {"key_type": "falcon1024"},
+                {"key_type": "aplane.falcon1024.v1", "valid_rekey_target": None},
+            ],
+        }).encode())
+        with patch.object(client.session, "get", return_value=key_types):
+            types = client.list_key_types()
+        assert [key_type.valid_rekey_target for key_type in types] == [True, False, False, False]
+
     def test_a_failed_key_list_read_keeps_the_cache(self):
         client = make_client()
         good = mock_response(200, {"count": 1, "keys": [{"address": "ADDR1", "key_type": "ed25519"}]})
@@ -2617,6 +2660,24 @@ class TestSigningErrors:
                 client.sign_transaction(self._make_mock_txn())
         assert type(exc_info.value) is SignerError
         assert exc_info.value.code == ""
+
+    def test_rekey_target_not_valid_is_a_coded_generic_error(self):
+        # Like every 403 code but locked and forbidden, it is a plain
+        # SignerError that keeps the code; it is not an operator rejection.
+        message = (
+            "transaction 0: rekey_target_not_valid: cannot rekey to ADDR: this signer "
+            "holds its aplane key (aplane.htlc.v1), which is not a valid rekey target "
+            "(valid_rekey_target: false)"
+        )
+        assert aplanesdk.ERR_CODE_REKEY_TARGET_NOT_VALID == "rekey_target_not_valid"
+        client = make_client()
+        resp = mock_response(403, {"error": message, "code": aplanesdk.ERR_CODE_REKEY_TARGET_NOT_VALID})
+        with patch.object(client.session, "post", return_value=resp):
+            with pytest.raises(SignerError) as exc_info:
+                client.sign_transaction(self._make_mock_txn())
+        assert type(exc_info.value) is SignerError
+        assert exc_info.value.code == aplanesdk.ERR_CODE_REKEY_TARGET_NOT_VALID
+        assert str(exc_info.value) == message
 
     def test_signer_unavailable(self):
         client = make_client()

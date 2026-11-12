@@ -31,6 +31,7 @@ from aplanesdk.signer import (
     ERR_CODE_ROTATING_STAGE_UNPROVEN,
     ERR_CODE_ROTATING_STAGE_CHANGED,
     ERR_CODE_ROTATING_WINDOW_NOT_CURRENT,
+    ERR_CODE_REKEY_TARGET_NOT_VALID,
     ERR_CODE_INVALID_PASSPHRASE,
     ERR_CODE_LOCKED,
     ERR_CODE_NOT_FOUND,
@@ -109,6 +110,7 @@ def sdk_error_codes() -> list[str]:
         ERR_CODE_ROTATING_STAGE_UNPROVEN,
         ERR_CODE_ROTATING_STAGE_CHANGED,
         ERR_CODE_ROTATING_WINDOW_NOT_CURRENT,
+        ERR_CODE_REKEY_TARGET_NOT_VALID,
     ]
 
 
@@ -217,6 +219,7 @@ def test_list_keys_maps_generic_lsig_metadata():
     assert generic.signing_args[0].label == "Preimage"
     assert generic.signing_args[0].required is True
     assert generic.signing_args[0].byte_length == 32
+    assert [key.valid_rekey_target for key in keys] == [True, False, True]
 
 
 def test_list_keys_maps_authorization_kind_for_native_pq_and_witness():
@@ -262,6 +265,7 @@ def test_list_key_types_maps_creation_and_runtime_metadata():
     assert generic_policy.requires_logicsig is True
     assert generic_policy.authorization_kind == "logic_sig"
     assert generic_policy.mnemonic_import is False
+    assert [key_type.valid_rekey_target for key_type in key_types] == [True, True, False]
     assert generic_policy.creation_params is not None
     assert generic_policy.creation_params[1].param_type == "address[]"
     assert generic_policy.creation_params[1].min_items == 1

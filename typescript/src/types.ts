@@ -213,6 +213,13 @@ export interface KeyInfo {
   templateProvenanceStatus?: string;
   /** Human-readable template provenance note */
   templateProvenanceNote?: string;
+  /**
+   * The value this aplane key recorded when it was created: whether it may be
+   * the signing authority an account is rekeyed to, its own account included.
+   * A rekey to it when it is false is refused with
+   * `ErrorCodes.RekeyTargetNotValid`. False when the signer does not report it.
+   */
+  validRekeyTarget?: boolean;
 }
 
 /**
@@ -403,6 +410,12 @@ export interface KeyTypeInfo {
   boundarySchema?: string;
   /** Definition-level transaction-authorization capability */
   boundedAuthorization?: BoundedAuthorizationInfo;
+  /**
+   * The type's declaration of whether an aplane key of this type may be the
+   * signing authority an account is rekeyed to, its own account included.
+   * False when the signer does not report it.
+   */
+  validRekeyTarget?: boolean;
   /** Creation parameters */
   creationParams?: CreationParam[];
   /** Runtime arguments for generic LogicSigs */
@@ -1251,6 +1264,12 @@ export const ErrorCodes = {
    * rounds and prepare again.
    */
   RotatingWindowNotCurrent: "rotating_window_not_current",
+  /**
+   * 403: a transaction rekeys an account, its own address included, to an
+   * aplane key this signer holds that is not a valid rekey target
+   * (`validRekeyTarget` false). Nothing was signed.
+   */
+  RekeyTargetNotValid: "rekey_target_not_valid",
   Internal: "internal",
 } as const;
 

@@ -96,6 +96,44 @@ func TestSign_ForbiddenCodeIsRejected(t *testing.T) {
 	}
 }
 
+// rekey_target_not_valid is a 403 the SDK knows by its code. Like every 403
+// code but locked and forbidden, it is returned as an *APIError that keeps the
+// code, so a caller can branch on it; it is not an operator rejection.
+func TestRekeyTargetNotValidCodeIsKeptOnAPIError(t *testing.T) {
+	const message = "transaction 0: rekey_target_not_valid: cannot rekey to ADDR: this signer holds its aplane key (aplane.htlc.v1), which is not a valid rekey target (valid_rekey_target: false)"
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		writeCodedError(w, http.StatusForbidden, ErrCodeRekeyTargetNotValid, message)
+	}
+	check := func(t *testing.T, err error) {
+		t.Helper()
+		if errors.Is(err, ErrSigningRejected) || errors.Is(err, ErrSignerLocked) || errors.Is(err, ErrKeyNotFound) {
+			t.Fatalf("rekey_target_not_valid misclassified as a sentinel: %v", err)
+		}
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) {
+			t.Fatalf("expected *APIError, got: %v", err)
+		}
+		if apiErr.Code != ErrCodeRekeyTargetNotValid || apiErr.StatusCode != http.StatusForbidden || apiErr.Message != message {
+			t.Fatalf("APIError = %+v, want rekey_target_not_valid 403 with the signer's message", apiErr)
+		}
+	}
+	t.Run("sign", func(t *testing.T) {
+		client, server := newTestClient(handler)
+		defer server.Close()
+		_, err := client.SignTransaction(types.Transaction{Type: types.PaymentTx}, sdkTestAddress(0xA0), nil)
+		check(t, err)
+	})
+	t.Run("components", func(t *testing.T) {
+		client, server := newTestClient(handler)
+		defer server.Close()
+		_, err := client.RequestComponents(ComponentRequest{
+			GroupBytesHex: []string{"5458aa"},
+			Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindCosigner}},
+		})
+		check(t, err)
+	})
+}
+
 func TestRequestComponents_CosignerKeyOnDenyAllDefaultIsRejected(t *testing.T) {
 	witnessKeyID := strings.Repeat("A", 52)
 	calls := 0

@@ -692,8 +692,12 @@ type KeyTypeInfo struct {
 	// a plain host.
 	BoundarySchema       string                    `json:"boundary_schema,omitempty"`
 	BoundedAuthorization *BoundedAuthorizationInfo `json:"bounded_authorization,omitempty"`
-	CreationParams       []CreationParam           `json:"creation_params"`
-	RuntimeArgs          []RuntimeArg              `json:"runtime_args"`
+	// ValidRekeyTarget is the type's declaration of whether an aplane key of
+	// this type may be the signing authority an account is rekeyed to, its own
+	// account included. False when the signer does not report it.
+	ValidRekeyTarget bool            `json:"valid_rekey_target"`
+	CreationParams   []CreationParam `json:"creation_params"`
+	RuntimeArgs      []RuntimeArg    `json:"runtime_args"`
 }
 
 // SigningFlowBounded1 names the transaction-aware LogicSig choreography.
@@ -793,6 +797,11 @@ type KeyInfo struct {
 	Parameters               map[string]string         `json:"parameters,omitempty"`
 	TemplateProvenanceStatus string                    `json:"template_provenance_status,omitempty"`
 	TemplateProvenanceNote   string                    `json:"template_provenance_note,omitempty"`
+	// ValidRekeyTarget is the value this aplane key recorded when it was
+	// created: whether it may be the signing authority an account is rekeyed
+	// to, its own account included. A rekey to it when it is false is refused
+	// with ErrCodeRekeyTargetNotValid. False when the signer does not report it.
+	ValidRekeyTarget bool `json:"valid_rekey_target"`
 }
 
 // KeysResponse is the response from the /keys endpoint.
