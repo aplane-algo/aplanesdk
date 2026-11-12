@@ -13,8 +13,7 @@ import {
   SigningRejectedError,
   SignOutcomeUnknownError,
   SignerUnavailableError,
-  SubmissionRejectedError,
-  SubmissionUncertainError,
+  SubmissionError,
   UnsupportedGroupError,
   UnsupportedSigningFlowError,
   errorText,
@@ -28,7 +27,13 @@ import {
   type ComponentRequest,
   type PreparedGroup,
 } from "../src/types.js";
-import { describeSignedGroup, submitAndTrack, type SendResult } from "../src/send.js";
+import {
+  describeSignedGroup,
+  earliestLastValid,
+  submitAndTrack,
+  type DescribedGroup,
+  type SendResult,
+} from "../src/send.js";
 import { SignerError, isLostAnswer, lostAnswerRequestId, markLostAnswer } from "../src/errors.js";
 import { bytesToBase64, encodeTransaction, hexToBytes } from "../src/encoding.js";
 import { readAnswer, type AnswerShape } from "../src/answers.js";
@@ -130,6 +135,8 @@ describe("sendPrepared", () => {
     const result = await client.sendPrepared(algod, preparedFor(txn), { noWait: true });
     assert.equal(result.outcome, "submitted");
     assert.equal(result.confirmedRound, 0n);
+    assert.equal(result.confirmation, undefined);
+    assert.ok(!("confirmation" in result), "a submitted result carries a confirmation field");
     assert.equal(node.lookups, 0);
   });
 
@@ -493,55 +500,72 @@ describe("sendPrepared", () => {
     });
   });
 
-  describe("submission failures keep the signed bytes", () => {
+  describe("submission failures are one SubmissionError keeping the signed bytes", () => {
     const txn = fakePayment(41, 42, 1);
     const wantHex = signedHex(txn);
     const wantId = txn.txID();
+    // Each case makes the node fail one way. cause says what the error's
+    // cause must be: the very error algosdk's submit call threw, or the
+    // message of the error algosdk's wait threw.
     const cases: Array<{
       name: string;
-      node: (node: FakeAlgod) => void;
+      node: (node: FakeAlgod) => unknown;
       waitRounds?: number;
-      rejected: boolean;
-      stage?: string;
-      text: string;
+      submitted: boolean;
+      waitMessage?: string;
     }> = [
       {
         name: "node refuses the group",
         node: (node) => {
+          const error = algodHttpError(400, "overspend");
           node.submit = () => {
-            throw algodHttpError(400, "overspend");
+            throw error;
           };
+          return error;
         },
-        rejected: true,
-        text: "overspend",
+        submitted: false,
       },
       {
-        name: "node fails without an answer about the group",
+        name: "node fails with a server error",
         node: (node) => {
+          const error = algodHttpError(500, "boom");
           node.submit = () => {
-            throw algodHttpError(500, "boom");
+            throw error;
           };
+          return error;
         },
-        rejected: false,
-        stage: "submit",
-        text: "boom",
+        submitted: false,
       },
       {
-        name: "node reports another transaction ID",
+        name: "connection dropped on submission",
         node: (node) => {
-          node.submit = () => ({ txid: "SOMEOTHERID" });
+          const error = new TypeError("fetch failed");
+          node.submit = () => {
+            throw error;
+          };
+          return error;
         },
-        rejected: false,
-        stage: "submit",
-        text: "SOMEOTHERID",
+        submitted: false,
+      },
+      {
+        // algosdk answers this like any other refusal, and so does the send.
+        name: "node already has the group",
+        node: (node) => {
+          const error = algodHttpError(400, `TransactionPool.Remember: transaction already in ledger: ${wantId}`);
+          node.submit = () => {
+            throw error;
+          };
+          return error;
+        },
+        submitted: false,
       },
       {
         name: "pool drops the group",
         node: (node) => {
           node.pending = () => ({ poolError: "fee too low" });
         },
-        rejected: true,
-        text: "fee too low",
+        submitted: true,
+        waitMessage: "Transaction Rejected: fee too low",
       },
       {
         name: "not confirmed within the wait",
@@ -549,43 +573,44 @@ describe("sendPrepared", () => {
           node.pending = () => ({});
         },
         waitRounds: 2,
-        rejected: false,
-        stage: "confirm",
-        text: "not confirmed after 2 rounds",
+        submitted: true,
+        waitMessage: "Transaction not confirmed after 2 rounds",
       },
     ];
     for (const test of cases) {
       it(test.name, async () => {
         const signer = new SendSigner([ordinaryKey(txn)]);
         const node = new FakeAlgod();
-        test.node(node);
+        const thrown = test.node(node);
         const { client, algod } = fixture(signer, node);
         await assert.rejects(
           client.sendPrepared(algod, preparedFor(txn), { waitRounds: test.waitRounds }),
           (error: unknown) => {
-            let kept: { signedGroup: string[]; txIds: string[] };
-            if (error instanceof SubmissionRejectedError) {
-              assert.ok(test.rejected, `error ${errorText(error)}, want an uncertain outcome`);
-              kept = error;
-            } else if (error instanceof SubmissionUncertainError) {
-              assert.ok(!test.rejected, `error ${errorText(error)}, want a rejection`);
-              assert.equal(error.stage, test.stage);
-              kept = error;
+            assert.ok(error instanceof SubmissionError, `error ${String(error)}, want a SubmissionError`);
+            assert.equal(Object.getPrototypeOf(error), SubmissionError.prototype, "want a SubmissionError, not a subclass");
+            assert.equal(error.name, "SubmissionError");
+            assert.ok(!("stage" in error), "a SubmissionError carries no stage");
+            assert.equal(error.submitted, test.submitted);
+            if (test.waitMessage === undefined) {
+              assert.equal(error.cause, thrown, "the cause is not algosdk's error object");
+              assert.ok(error.message.startsWith(`submit transaction ${wantId}: `), error.message);
             } else {
-              assert.fail(`error ${String(error)}, want a typed submission error`);
+              assert.ok(error.cause instanceof Error, `cause ${String(error.cause)}`);
+              assert.equal(error.cause.message, test.waitMessage);
+              assert.ok(error.message.startsWith(`wait for confirmation of transaction ${wantId}: `), error.message);
             }
-            assert.ok(errorText(error).includes(test.text), errorText(error));
-            assert.deepEqual(kept.signedGroup, [wantHex]);
-            assert.deepEqual(kept.txIds, [wantId]);
-            if (error instanceof SubmissionUncertainError) {
-              assert.equal(error.lastValid, txn.lastValid, "the error does not carry the signed group's last valid round");
-            }
+            assert.ok(error.message.endsWith(errorText(error.cause)), "the message does not quote the cause");
+            assert.deepEqual(error.signedGroup, [wantHex]);
+            assert.deepEqual(error.txIds, [wantId]);
+            assert.equal(error.lastValid, txn.lastValid, "the error does not carry the signed group's last valid round");
             return true;
           },
         );
         // Nothing is signed or submitted a second time.
         assert.equal(signer.count("/sign"), 1);
         assert.equal(node.submitted.length, 1);
+        // The wait starts only after a successful submit call.
+        assert.equal(node.lookups > 0, test.submitted);
       });
     }
   });
@@ -626,31 +651,89 @@ describe("sendPrepared", () => {
   describe("confirmation wait", () => {
     const txn = fakePayment(41, 42, 1);
 
-    it("looks once now and once after each round of the wait", async () => {
+    it("is algosdk's wait, for waitRounds rounds", async () => {
       for (const rounds of [1, 3]) {
         const node = new FakeAlgod();
         node.pending = () => ({});
         const { client, algod } = fixture(new SendSigner([ordinaryKey(txn)]), node);
         await assert.rejects(
           client.sendPrepared(algod, preparedFor(txn), { waitRounds: rounds }),
-          (error: unknown) => error instanceof SubmissionUncertainError && error.stage === "confirm",
+          (error: unknown) => {
+            assert.ok(error instanceof SubmissionError, String(error));
+            assert.equal(error.submitted, true);
+            assert.equal(errorText(error.cause), `Transaction not confirmed after ${rounds} rounds`);
+            return true;
+          },
         );
         restore?.();
-        assert.equal(node.lookups, rounds + 1, `waitRounds ${rounds}`);
-        // At round 10 the first wait follows round 10, so it ends when round
-        // 11 exists; the wait covers exactly the next rounds.
-        const want = rounds === 1 ? "10" : "10,11,12";
+        // algosdk reads the status once, then looks the transaction up and
+        // waits for the next block once per round, from the round after the
+        // current one.
+        assert.equal(node.statusReads, 1, `waitRounds ${rounds}`);
+        assert.equal(node.lookups, rounds, `waitRounds ${rounds}`);
+        const want = rounds === 1 ? "11" : "11,12,13";
         assert.equal(node.waits.join(","), want);
       }
     });
 
-    it("the largest wait does not wrap around", async () => {
+    it("waits 10 rounds when waitRounds is unset or zero", async () => {
+      for (const waitRounds of [undefined, 0, 0n]) {
+        const node = new FakeAlgod();
+        node.pending = () => ({});
+        const { client, algod } = fixture(new SendSigner([ordinaryKey(txn)]), node);
+        await assert.rejects(
+          client.sendPrepared(algod, preparedFor(txn), { waitRounds }),
+          (error: unknown) => {
+            assert.ok(error instanceof SubmissionError, String(error));
+            assert.equal(errorText(error.cause), "Transaction not confirmed after 10 rounds");
+            return true;
+          },
+        );
+        restore?.();
+        assert.equal(node.lookups, 10, `waitRounds ${String(waitRounds)}`);
+      }
+    });
+
+    it("waits on the first transaction ID of the signed group and reports the round algosdk returns", async () => {
+      const first = fakePayment(41, 42, 1);
+      const second = fakePayment(43, 44, 2);
+      const node = new FakeAlgod();
+      node.pending = () => ({ confirmedRound: 37n });
+      const { client, algod } = fixture(new SendSigner([ordinaryKey(first), ordinaryKey(second)]), node);
+      const result = await client.sendPrepared(algod, {
+        transactions: [
+          { transaction: first, authAddress: first.sender.toString() },
+          { transaction: second, authAddress: second.sender.toString() },
+        ],
+      });
+      // The signer assigned the group, so the first signed ID is not the
+      // draft's.
+      assert.notEqual(result.txIds[0], first.txID());
+      assert.deepEqual(node.pendingIds, [result.txIds[0]]);
+      assert.equal(result.outcome, "confirmed");
+      assert.equal(result.confirmedRound, 37n);
+      // The confirmation is the very object algosdk's wait returned.
+      assert.equal(node.pendingAnswers.length, 1);
+      assert.equal(result.confirmation, node.pendingAnswers[0]);
+    });
+
+    it("does not compare the transaction ID the node reports", async () => {
+      const node = new FakeAlgod();
+      node.submit = () => ({ txid: "SOMEOTHERID" });
+      const { client, algod } = fixture(new SendSigner([ordinaryKey(txn)]), node);
+      const result = await client.sendPrepared(algod, preparedFor(txn));
+      assert.equal(result.outcome, "confirmed");
+      assert.deepEqual(node.pendingIds, [txn.txID()]);
+    });
+
+    it("passes the largest wait to algosdk's wait", async () => {
       const node = new FakeAlgod();
       let lookups = 0;
       node.pending = () => (++lookups < 4 ? {} : { confirmedRound: 13n });
       const { client, algod } = fixture(new SendSigner([ordinaryKey(txn)]), node);
       const result = await client.sendPrepared(algod, preparedFor(txn), { waitRounds: (1n << 64n) - 1n });
       assert.equal(result.confirmedRound, 13n);
+      assert.equal(node.lookups, 4);
     });
 
     it("refuses a wait that is not a round count before signing", async () => {
@@ -663,38 +746,10 @@ describe("sendPrepared", () => {
     });
   });
 
-  it("treats an already known group as submitted", async () => {
-    const txn = fakePayment(41, 42, 1);
-    const node = new FakeAlgod();
-    node.submit = () => {
-      throw algodHttpError(400, `TransactionPool.Remember: transaction already in ledger: ${txn.txID()}`);
-    };
-    const { client, algod } = fixture(new SendSigner([ordinaryKey(txn)]), node);
-    // The node has these bytes from an earlier submission. That is not a
-    // refusal: a caller told "rejected" might sign a replacement.
-    const result = await client.sendPrepared(algod, preparedFor(txn));
-    assert.equal(result.outcome, "confirmed");
-  });
-
-  describe("submit failures that are not answers", () => {
+  describe("the signal", () => {
     const txn = fakePayment(41, 42, 1);
 
-    it("connection dropped on submission", async () => {
-      const node = new FakeAlgod();
-      node.submit = () => {
-        throw new TypeError("fetch failed");
-      };
-      const { client, algod } = fixture(new SendSigner([ordinaryKey(txn)]), node);
-      await assert.rejects(client.sendPrepared(algod, preparedFor(txn)), (error: unknown) => {
-        assert.ok(error instanceof SubmissionUncertainError, String(error));
-        assert.equal(error.stage, "submit");
-        assert.equal(error.signedGroup.length, 1);
-        return true;
-      });
-    });
-
-    it("signal aborted before submission", async () => {
-      const node = new FakeAlgod();
+    function signedResult(): { result: SendResult; described: DescribedGroup } {
       const result: SendResult = {
         flow: "",
         signedGroup: [signedHex(txn)],
@@ -705,21 +760,83 @@ describe("sendPrepared", () => {
         outcome: "submitted",
         confirmedRound: 0n,
       };
-      const raw = describeSignedGroup(result);
+      return { result, described: describeSignedGroup(result) };
+    }
+
+    it("aborted before submission posts nothing", async () => {
+      const node = new FakeAlgod();
+      const { result, described } = signedResult();
       const controller = new AbortController();
       controller.abort();
       await assert.rejects(
-        submitAndTrack(node, raw, result, { noWait: false, waitRounds: 10n, signal: controller.signal }),
+        submitAndTrack(node, described, result, { noWait: false, waitRounds: 10n, signal: controller.signal }),
         (error: unknown) => {
-          assert.ok(error instanceof SubmissionUncertainError, String(error));
-          assert.equal(error.stage, "unsent");
-          assert.equal(error.lastValid, txn.lastValid, "an unsent group's error does not carry its last valid round");
-          assert.ok(error.cause instanceof SignerUnavailableError, "want error.cause instanceof SignerUnavailableError");
-          assert.match(errorText(error.cause), /aborted by caller/);
+          assert.ok(error instanceof SubmissionError, String(error));
+          assert.equal(error.submitted, false);
+          assert.equal(error.cause, controller.signal.reason, "the cause is not the signal's reason");
+          assert.deepEqual(error.signedGroup, [signedHex(txn)]);
+          assert.equal(error.lastValid, txn.lastValid, "the error does not carry the group's last valid round");
           return true;
         },
       );
       assert.equal(node.submitted.length, 0, "an aborted signal still submitted");
+    });
+
+    it("aborted after a successful submit does not start the wait", async () => {
+      const node = new FakeAlgod();
+      const controller = new AbortController();
+      node.submit = (blob) => {
+        controller.abort();
+        return { txid: algosdk.decodeSignedTransaction(blob).txn.txID() };
+      };
+      const { client, algod } = fixture(new SendSigner([ordinaryKey(txn)]), node);
+      await assert.rejects(
+        client.sendPrepared(algod, preparedFor(txn), { signal: controller.signal }),
+        (error: unknown) => {
+          assert.ok(error instanceof SubmissionError, String(error));
+          assert.equal(error.submitted, true);
+          assert.equal(error.cause, controller.signal.reason, "the cause is not the signal's reason");
+          return true;
+        },
+      );
+      assert.equal(node.submitted.length, 1);
+      assert.equal(node.statusReads, 0, "the wait started");
+      assert.equal(node.lookups, 0, "the wait started");
+    });
+
+    it("with noWait, aborted after a successful submit, is a submitted result", async () => {
+      const node = new FakeAlgod();
+      const controller = new AbortController();
+      node.submit = (blob) => {
+        controller.abort();
+        return { txid: algosdk.decodeSignedTransaction(blob).txn.txID() };
+      };
+      const { client, algod } = fixture(new SendSigner([ordinaryKey(txn)]), node);
+      const result = await client.sendPrepared(algod, preparedFor(txn), { noWait: true, signal: controller.signal });
+      assert.equal(result.outcome, "submitted");
+    });
+
+    it("is passed to the submit call", async () => {
+      const node = new FakeAlgod();
+      const controller = new AbortController();
+      const { client, algod } = fixture(new SendSigner([ordinaryKey(txn)]), node);
+      await client.sendPrepared(algod, preparedFor(txn), { signal: controller.signal });
+      assert.equal(node.submitOptions.length, 1);
+      assert.equal((node.submitOptions[0] as { signal?: AbortSignal })?.signal, controller.signal);
+    });
+
+    it("does not interrupt algosdk's wait", async () => {
+      const node = new FakeAlgod();
+      const controller = new AbortController();
+      let lookups = 0;
+      node.pending = () => {
+        controller.abort();
+        return ++lookups < 3 ? {} : { confirmedRound: 12n };
+      };
+      const { client, algod } = fixture(new SendSigner([ordinaryKey(txn)]), node);
+      const result = await client.sendPrepared(algod, preparedFor(txn), { signal: controller.signal });
+      assert.equal(result.outcome, "confirmed");
+      assert.equal(result.confirmedRound, 12n);
     });
   });
 
@@ -751,11 +868,63 @@ describe("sendPrepared", () => {
     assert.throws(() => describeSignedGroup(result), /signed group has 1 transaction\(s\), fewer than the 2 prepared/);
   });
 
+  describe("the last valid round", () => {
+    function resultFor(signedGroup: string[]): SendResult {
+      return {
+        flow: "",
+        signedGroup,
+        originalCount: signedGroup.length,
+        txIds: [],
+        groupId: "",
+        fees: [],
+        outcome: "submitted",
+        confirmedRound: 0n,
+      };
+    }
+
+    it("is computed once, when the signed group is described, as the group's earliest", () => {
+      const first = fakePayment(41, 42, 1);
+      const second = fakePayment(43, 44, 2);
+      second.lastValid = 700n;
+      const group = regroup([first, second]);
+      const described = describeSignedGroup(resultFor(group.map((txn) => signedHex(txn))));
+      assert.equal(described.lastValid, 700n);
+      assert.equal(described.raw.length, 2);
+    });
+
+    it("is the SubmissionError's, with nothing decoded when the error is built", async () => {
+      const txn = fakePayment(41, 42, 1);
+      const result = resultFor([signedHex(txn)]);
+      describeSignedGroup(result);
+      const node = new FakeAlgod();
+      const thrown = new TypeError("fetch failed");
+      node.submit = () => {
+        throw thrown;
+      };
+      // Bytes that do not decode: building the error must not read them.
+      const described: DescribedGroup = { raw: [new Uint8Array([0xff])], lastValid: 77n };
+      await assert.rejects(
+        submitAndTrack(node, described, result, { noWait: false, waitRounds: 10n }),
+        (error: unknown) => {
+          assert.ok(error instanceof SubmissionError, String(error));
+          assert.equal(error.cause, thrown);
+          assert.equal(error.lastValid, 77n);
+          return true;
+        },
+      );
+    });
+
+    it("of no transactions is a fault, never 0", () => {
+      assert.throws(() => earliestLastValid([]), TypeError);
+    });
+  });
+
   it("submitSignedGroup submits a signed group as given", async () => {
     const txn = fakePayment(41, 42, 1);
     const node = new FakeAlgod();
     const result = await new SignerClient(SIGNER).submitSignedGroup(node as any, [signedHex(txn)]);
     assert.equal(result.outcome, "confirmed");
+    assert.equal(result.confirmation, node.pendingAnswers[0]);
     assert.deepEqual(result.txIds, [txn.txID()]);
     assert.equal(blobHex(node.submitted[0]), signedHex(txn));
     await assert.rejects(
@@ -764,21 +933,40 @@ describe("sendPrepared", () => {
     );
   });
 
-  it("submitSignedGroup's uncertain outcome carries the earliest last valid round of the signed group", async () => {
+  it("submitSignedGroup's SubmissionError carries the earliest last valid round of the signed group", async () => {
     const first = fakePayment(41, 42, 1);
     const second = fakePayment(43, 44, 2);
     second.lastValid = 700n;
     const group = regroup([first, second]);
     const node = new FakeAlgod();
+    const thrown = new TypeError("fetch failed");
     node.submit = () => {
-      throw new TypeError("fetch failed");
+      throw thrown;
     };
+    const signedGroup = group.map((txn) => signedHex(txn));
     await assert.rejects(
-      new SignerClient(SIGNER).submitSignedGroup(node as any, group.map((txn) => signedHex(txn))),
+      new SignerClient(SIGNER).submitSignedGroup(node as any, signedGroup),
       (error: unknown) => {
-        assert.ok(error instanceof SubmissionUncertainError, String(error));
-        assert.equal(error.stage, "submit");
+        assert.ok(error instanceof SubmissionError, String(error));
+        assert.equal(error.submitted, false);
+        assert.equal(error.cause, thrown);
+        assert.deepEqual(error.signedGroup, signedGroup);
         assert.equal(error.lastValid, 700n, `lastValid ${String(error.lastValid)}, want the group's earliest`);
+        return true;
+      },
+    );
+  });
+
+  it("submitSignedGroup's wait failure is submitted", async () => {
+    const txn = fakePayment(41, 42, 1);
+    const node = new FakeAlgod();
+    node.pending = () => ({ poolError: "overspend" });
+    await assert.rejects(
+      new SignerClient(SIGNER).submitSignedGroup(node as any, [signedHex(txn)]),
+      (error: unknown) => {
+        assert.ok(error instanceof SubmissionError, String(error));
+        assert.equal(error.submitted, true);
+        assert.equal(errorText(error.cause), "Transaction Rejected: overspend");
         return true;
       },
     );
@@ -938,6 +1126,38 @@ describe("sendPrepared with a cosigned account", () => {
     assert.equal(result.outcome, "confirmed");
     assert.equal(result.txIds[0], txn.txID());
     assert.equal(result.fees[0], 1000n);
+  });
+
+  it("reaches the same submission path: a failure is a SubmissionError", async () => {
+    for (const submitted of [false, true]) {
+      const { userClient, cosignerClient, algod, node, txn } = cosignedFixture("");
+      const thrown = algodHttpError(400, "overspend");
+      if (submitted) {
+        node.pending = () => ({ poolError: "overspend" });
+      } else {
+        node.submit = () => {
+          throw thrown;
+        };
+      }
+      await assert.rejects(
+        userClient.sendPrepared(algod, preparedFor(txn), {
+          cosignerClient,
+          cosignerComponentKey: "COSIGNER_COMPONENT",
+        }),
+        (error: unknown) => {
+          assert.ok(error instanceof SubmissionError, String(error));
+          assert.equal(error.submitted, submitted);
+          if (!submitted) assert.equal(error.cause, thrown);
+          assert.deepEqual(error.txIds, [txn.txID()]);
+          assert.equal(error.signedGroup.join(""), blobHex(node.submitted[0]));
+          assert.equal(error.lastValid, txn.lastValid);
+          return true;
+        },
+      );
+      assert.equal(node.submitted.length, 1);
+      restore?.();
+      restore = undefined;
+    }
   });
 
   it("refuses without a cosigner, before the group is planned", async () => {

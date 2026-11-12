@@ -12,7 +12,7 @@ import algosdk from "algosdk";
 import { SignerClient, signPreparedCosignedGroup } from "../src/client.js";
 import * as sdk from "../src/index.js";
 import { KeyNotFoundError } from "../src/errors.js";
-import { isNetworkAllowed, loadConfig, sendRawTransaction } from "../src/utils.js";
+import { isNetworkAllowed, loadConfig } from "../src/utils.js";
 import { base64ToBytes } from "../src/encoding.js";
 import { preparedGroupToSignRequests } from "../src/prepared.js";
 import { fakeAddress, fakePayment, signedHex } from "./fakeSigner.js";
@@ -613,15 +613,6 @@ describe("strict base64", () => {
         () => (client as any).buildSignRequestBody([null], [null], undefined, { 0: value }),
         /passthrough\[0\] is not valid base64/,
       );
-      // Never submitted, so a SignerError and not an algod rejection.
-      const algod = { sendRawTransaction: () => { throw new Error("submitted"); } } as any;
-      await assert.rejects(sendRawTransaction(algod, value), (error: unknown) => {
-        assert.ok(error instanceof sdk.SignerError);
-        assert.ok(!(error instanceof sdk.TransactionRejectedError));
-        assert.equal((error as Error).name, "SignerError");
-        assert.match((error as Error).message, /signed transaction is not valid base64/);
-        return true;
-      });
     });
   }
 });
@@ -743,9 +734,10 @@ describe("networks_allowed", () => {
 });
 
 describe("removed helpers", () => {
-  it("no longer exports assembleGroup", () => {
+  it("no longer exports assembleGroup or the submit helper", () => {
     assert.equal((sdk as any).assembleGroup, undefined);
-    assert.equal(typeof sdk.sendRawTransaction, "function");
+    assert.equal((sdk as any).sendRawTransaction, undefined);
+    assert.equal(typeof sdk.SignerClient, "function");
     assert.ok(algosdk);
   });
 });

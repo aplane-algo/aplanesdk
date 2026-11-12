@@ -79,16 +79,21 @@ func main() {
 	fmt.Printf("Sending atomic swap: %s... <-> %s...\n", alice[:8], bob[:8])
 	result, err := signer.SendPrepared(ctx, algodClient, *group, nil)
 	if err != nil {
-		// A group that was submitted, or a signature that may have been
-		// released: never build a replacement while it can still execute,
-		// because both could.
-		var uncertain *aplane.SubmissionUncertainError
-		if errors.As(err, &uncertain) {
-			round, waitErr := waitForGroup(ctx, algodClient, uncertain)
-			if waitErr != nil {
-				log.Fatalf("Outcome unknown: %v (wait: %v). After round %d, check an indexer before building a replacement.", err, waitErr, uncertain.LastValid)
+		// A signed group whose submit or wait failed, or a signature that may
+		// have been released: never build a replacement while it can still
+		// execute, because both could.
+		var failure *aplane.SubmissionError
+		if errors.As(err, &failure) {
+			if !failure.Submitted {
+				printSignedGroup(failure)
+				log.Fatalf("%v. If the cause is algod's HTTP 400, the node answered: read its reason. Otherwise the node may or may not have the group: follow the first ID for a few rounds and, if it does not confirm, submit the signed group above again with SubmitSignedGroup.", err)
 			}
-			fmt.Printf("Confirmed %s in round %d\n", uncertain.TxIDs[0], round)
+			round, waitErr := waitForGroup(ctx, algodClient, failure)
+			if waitErr != nil {
+				printSignedGroup(failure)
+				log.Fatalf("%v (wait: %v). You may follow the first ID until round %d; after it, check an indexer before building a replacement.", err, waitErr, failure.LastValid)
+			}
+			fmt.Printf("Confirmed %s in round %d\n", failure.TxIDs[0], round)
 			return
 		}
 		var unknown *aplane.SignOutcomeUnknownError
@@ -101,18 +106,29 @@ func main() {
 	fmt.Println("Atomic swap complete!")
 }
 
-// waitForGroup follows a submitted group with go-algorand-sdk until its last
-// valid round. A group confirms as a whole, so its first ID is enough. A
-// timeout means only that the wait ended.
-func waitForGroup(ctx context.Context, algodClient *algod.Client, uncertain *aplane.SubmissionUncertainError) (uint64, error) {
+// printSignedGroup prints what acting on a *aplane.SubmissionError needs:
+// each signed transaction as hex msgpack, the form SubmitSignedGroup takes,
+// with its ID, and the group's last valid round.
+func printSignedGroup(failure *aplane.SubmissionError) {
+	for i, entry := range failure.SignedGroup {
+		fmt.Printf("Signed transaction %d, ID %s:\n%s\n", i, failure.TxIDs[i], entry)
+	}
+	fmt.Printf("Last valid round: %d\n", failure.LastValid)
+}
+
+// waitForGroup follows a submitted group with go-algorand-sdk for 10 more
+// rounds, or until its last valid round if that comes first, so the example
+// does not block for most of the validity window. A group confirms as a
+// whole, so its first ID is enough. A timeout means only that the wait ended.
+func waitForGroup(ctx context.Context, algodClient *algod.Client, failure *aplane.SubmissionError) (uint64, error) {
 	status, err := algodClient.Status().Do(ctx)
 	if err != nil {
 		return 0, err
 	}
 	rounds := uint64(1)
-	if uncertain.LastValid > status.LastRound {
-		rounds = uncertain.LastValid - status.LastRound
+	if failure.LastValid > status.LastRound {
+		rounds = min(failure.LastValid-status.LastRound, 10)
 	}
-	info, err := transaction.WaitForConfirmation(algodClient, uncertain.TxIDs[0], rounds, ctx)
+	info, err := transaction.WaitForConfirmation(algodClient, failure.TxIDs[0], rounds, ctx)
 	return info.ConfirmedRound, err
 }

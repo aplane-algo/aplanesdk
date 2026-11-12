@@ -173,16 +173,6 @@ DEFAULT_SEND_WAIT_ROUNDS = 10
 # the group was seen in a block.
 SEND_OUTCOME_SUBMITTED = "submitted"
 SEND_OUTCOME_CONFIRMED = "confirmed"
-# Where a send's outcome became uncertain (SubmissionUncertainError.stage).
-# "submit": the submission's answer never arrived, so the node may or may not
-# have the group. "confirm": the node accepted the group, and it was not seen
-# in a block within the wait.
-SEND_STAGE_SUBMIT = "submit"
-SEND_STAGE_CONFIRM = "confirm"
-# "unsent": the group was signed and the call's time limit passed before it
-# was sent to the node. The node does not have it; submit_signed_group sends
-# it.
-SEND_STAGE_UNSENT = "unsent"
 
 KEY_TYPE_WITNESS_FALCON1024 = "aplane.witness-falcon1024.v1"
 
@@ -351,38 +341,6 @@ class KeyDeletionError(SignerError):
     pass
 
 
-class TransactionRejectedError(SignerError):
-    """Transaction was rejected by the network."""
-
-    def __init__(self, txid: str, reason: str):
-        self.txid = txid
-        self.reason = reason
-        super().__init__(f"Transaction {txid} rejected: {reason}")
-
-    def __reduce__(self) -> tuple:
-        # Exceptions pickle and copy by calling the class with the message
-        # alone; this one is built from its transaction ID and reason.
-        return (self.__class__, (self.txid, self.reason))
-
-
-class LogicSigRejectedError(TransactionRejectedError):
-    """LogicSig program returned false."""
-
-    pass
-
-
-class InsufficientFundsError(TransactionRejectedError):
-    """Account has insufficient funds for the transaction."""
-
-    pass
-
-
-class InvalidTransactionError(TransactionRejectedError):
-    """Transaction is malformed or invalid."""
-
-    pass
-
-
 class UnsupportedSigningFlowError(SignerError):
     """A key in the group needs a signing flow this SDK version cannot run.
     Raised by send_prepared before any signature is requested."""
@@ -468,73 +426,76 @@ def _first_or_empty(values: List[str]) -> str:
     return values[0] if values else ""
 
 
-class SubmissionRejectedError(SignerError):
-    """The network refused the signed group: the node rejected it on
-    submission, or dropped it from its pool.
+class SubmissionError(SignerError):
+    """Submitting a signed group, or waiting for it to confirm, failed.
 
-    Attributes:
-        signed_group: the signed bytes, hex msgpack, in group order
-        tx_ids: their transaction IDs
-        error: the node's refusal
-    """
+    A send submits the signed group with algosdk's ``send_raw_transaction``
+    and waits with algosdk's ``transaction.wait_for_confirmation``, both as
+    they are. This error reports their failure without reading it: ``error``
+    is algosdk's error, unchanged, and is also the ``__cause__``. Read it as
+    you would in any algosdk program. When the call's ``timeout`` had
+    already passed before the submission or before the wait, ``error`` is
+    the SendTimeoutError instead, and nothing was posted at that step.
 
-    def __init__(self, signed_group: List[str], tx_ids: List[str], error: BaseException):
-        super().__init__(f"network rejected transaction {_first_or_empty(tx_ids)}: {error}")
-        self.signed_group = list(signed_group)
-        self.tx_ids = list(tx_ids)
-        self.error = error
-
-    def __reduce__(self) -> tuple:
-        return (self.__class__, (self.signed_group, self.tx_ids, self.error))
-
-
-class SubmissionUncertainError(SignerError):
-    """A signed group this call did not see confirmed or refused. It may
-    still confirm. Wait for it with algosdk's
+    ``submitted`` is True when algosdk's submit call returned success and
+    the failure came later. Follow the group with algosdk's
     ``transaction.wait_for_confirmation`` on ``tx_ids[0]`` (a group confirms
-    as a whole) for ``last_valid`` minus the current round, at least 1
-    (algosdk reads 0 as 1000), or submit the same signed_group again with
-    submit_signed_group: it is the same transaction, so it cannot pay twice.
-    A timeout from the wait means only that the wait ended. Once
-    ``last_valid`` has passed, neither a node's "not found" nor a refused
-    resubmission proves that the group never confirmed (a node looks back
-    only about 1000 rounds from the current round, and refuses a dead group
-    before it checks for a duplicate); check an indexer before building a
-    replacement.
+    as a whole) for up to ``last_valid`` minus the current round, at least 1
+    (algosdk reads 0 as 1000).
+
+    ``submitted`` is False when the submit call did not return success, in
+    one of two cases. When ``error`` is algod's own HTTP 400 (an
+    ``algosdk.error.AlgodHTTPError`` whose ``code`` is 400), the node
+    answered: read its reason, as in any algosdk program. The reason decides
+    what to do. If the node says the transaction is already in the ledger or
+    its pool, it has the group: follow ``tx_ids[0]``. Some refusals the same
+    bytes will always get, such as an overspend or a failed signature or
+    program; after ``last_valid``, "dead" is such an answer too and proves
+    nothing about whether the group confirmed earlier. Others depend on the
+    moment, such as a fee below what the pool currently asks or a node that
+    is behind: submitting the same group later may work. Anything else (no
+    answer, a lost connection, a 5xx, the call's time limit) leaves it open
+    whether the node has the group. First look ``tx_ids[0]`` up with
+    algosdk's wait for a few rounds; if it does not confirm, submit the same
+    ``signed_group`` again with submit_signed_group. If that comes back as a
+    400 saying the transaction is already in the ledger, the node has it:
+    follow ``tx_ids[0]``. The SDK itself does not look at the cause.
+
+    Submitting the same signed group again cannot pay twice. After
+    ``last_valid`` the node refuses the group as dead whether or not it
+    confirmed, so a refusal then proves nothing. Once ``last_valid`` has
+    passed, neither a node's "not found" nor a refusal proves that the group
+    never confirmed: check an indexer before building a replacement.
 
     Attributes:
-        stage: SEND_STAGE_SUBMIT, SEND_STAGE_CONFIRM, or SEND_STAGE_UNSENT
-            when the call's time limit passed after signing and before
-            submission (the node never had the group, so there is nothing
-            to wait for; submit it with submit_signed_group)
         signed_group: the signed bytes, hex msgpack, in group order
         tx_ids: their transaction IDs
-        error: what ended the call
-        last_valid: the earliest last valid round in the signed group: after
-            it the group can no longer execute.
+        last_valid: the earliest last valid round in the signed group
+        submitted: whether algosdk's submit call returned success
+        error: algosdk's error, or the SendTimeoutError of the call's time
+            limit
     """
 
     def __init__(
         self,
-        stage: str,
         signed_group: List[str],
         tx_ids: List[str],
+        last_valid: int,
+        submitted: bool,
         error: BaseException,
-        last_valid: int = 0,
     ):
-        super().__init__(
-            f"outcome of transaction {_first_or_empty(tx_ids)} is unknown ({stage}): {error}"
-        )
-        self.stage = stage
+        step = "wait for confirmation of" if submitted else "submit"
+        super().__init__(f"{step} transaction {_first_or_empty(tx_ids)}: {error}")
         self.signed_group = list(signed_group)
         self.tx_ids = list(tx_ids)
-        self.error = error
         self.last_valid = last_valid
+        self.submitted = submitted
+        self.error = error
 
     def __reduce__(self) -> tuple:
         return (
             self.__class__,
-            (self.stage, self.signed_group, self.tx_ids, self.error, self.last_valid),
+            (self.signed_group, self.tx_ids, self.last_valid, self.submitted, self.error),
         )
 
 
@@ -580,8 +541,10 @@ class SendTimeoutError(SignerError):
     Raised as itself when the limit passed before any approval-bearing
     request was posted: nothing was signed and nothing was canceled. When it
     passed while such a request was waiting, the call raises
-    SignOutcomeUnknownError with this as its ``error``; after signing, a
-    SubmissionUncertainError with this as its ``error``.
+    SignOutcomeUnknownError with this as its ``error``. When it passed after
+    signing and before the submission, or after the submission and before
+    the confirmation wait, the call raises SubmissionError with this as its
+    ``error``.
     """
 
     pass
@@ -684,9 +647,10 @@ def _check_time_limit(timeout: Any) -> Optional[float]:
 def _time_limit(timeout: Optional[float]) -> Any:
     """Run the block under a time limit of timeout seconds: every HTTP call
     inside it, to a signer or a node, is held to what remains, and the steps
-    check it between calls. A limit already in force that ends sooner stays
-    in force. None sets no limit, so the block runs as it would without
-    one."""
+    check it between calls. algosdk's confirmation wait is the exception: it
+    runs on the caller's client, outside the limit. A limit already in force
+    that ends sooner stays in force. None sets no limit, so the block runs
+    as it would without one."""
     limit = _check_time_limit(timeout)
     if limit is None:
         yield
@@ -807,6 +771,13 @@ def _limited_algod(algod_client: Any) -> Any:
     if isinstance(algod_client, _TimeLimitedAlgod):
         return algod_client
     return _TimeLimitedAlgod(algod_client)
+
+
+def _unlimited_algod(algod_client: Any) -> Any:
+    """The caller's algod client, without the call's time limit."""
+    if isinstance(algod_client, _TimeLimitedAlgod):
+        return algod_client._algod
+    return algod_client
 
 
 def _node_error(what: str, error: BaseException) -> SignerError:
@@ -1915,10 +1886,19 @@ class SendResult:
     # confirmed_round is zero unless outcome is SEND_OUTCOME_CONFIRMED.
     outcome: str = ""
     confirmed_round: int = 0
+    # What algosdk's wait_for_confirmation returned, unchanged: the pending
+    # transaction response of the FIRST transaction of the signed group, the
+    # one the wait followed. Its inner transactions, logs and created IDs are
+    # read from it as in any algosdk program. None unless outcome is
+    # SEND_OUTCOME_CONFIRMED.
+    confirmation: Optional[Dict[str, Any]] = None
     # The component responses of a cosigned send.
     cosigned: Optional[CosignedSignResult] = None
     # The rotation a rotating account's send performed.
     rotating: Optional[RotatingSendDetails] = None
+    # The earliest last valid round of signed_group, set where the group is
+    # decoded and checked, for a SubmissionError.
+    _last_valid: int = field(default=0, init=False, repr=False, compare=False)
 
 
 @dataclass
@@ -1936,6 +1916,9 @@ class RotatingSignResult:
     txid: str
     group_id: str
     request_id: str = ""
+    # The earliest last valid round of the prepared group, from its check,
+    # for a SignOutcomeUnknownError after signing.
+    _last_valid: int = field(default=0, init=False, repr=False, compare=False)
 
 
 @dataclass
@@ -7329,8 +7312,9 @@ class SignerClient:
             no_wait: return as soon as the node accepts the group, with
                 outcome SEND_OUTCOME_SUBMITTED, instead of waiting for
                 confirmation
-            wait_rounds: how many further rounds to wait for confirmation;
-                zero means DEFAULT_SEND_WAIT_ROUNDS (10)
+            wait_rounds: how many rounds algosdk's wait_for_confirmation
+                waits for the first transaction to confirm; zero means
+                DEFAULT_SEND_WAIT_ROUNDS (10)
             refresh_validity: let a rotating account's send rebuild the
                 transaction's validity rounds when they are stale or the
                 window is too long. That changes the transaction's ID, so it
@@ -7341,17 +7325,20 @@ class SignerClient:
                 cosigned account's cosigner, used only when a position needs
                 one, and in place of the one endpoints.yaml lists. The caller
                 owns these clients; a send never closes them.
-            timeout: a limit, in seconds, on the whole call; None (the
-                default) sets none. Every request to a signer or the node is
-                held to what remains, and the steps check it between
-                requests. When it passes before any approval-bearing request
-                is posted, SendTimeoutError is raised: nothing was signed or
-                canceled. While such a request waits, a best-effort
-                /sign/cancel is sent and SignOutcomeUnknownError is raised
-                with the SendTimeoutError as its error. After signing and
-                before submission it is SubmissionUncertainError with stage
-                SEND_STAGE_UNSENT; during submission or the confirmation wait,
-                stage SEND_STAGE_SUBMIT or SEND_STAGE_CONFIRM. It does not
+            timeout: a limit, in seconds, on signing and submission; None
+                (the default) sets none. Every request to a signer or the
+                node up to the submission is held to what remains, and the
+                steps check it between requests. When it passes before any
+                approval-bearing request is posted, SendTimeoutError is
+                raised: nothing was signed or canceled. While such a request
+                waits, a best-effort /sign/cancel is sent and
+                SignOutcomeUnknownError is raised with the SendTimeoutError
+                as its error. When it has passed after signing and before
+                the submission, SubmissionError is raised with submitted
+                False and nothing is posted; after the submission and before
+                the confirmation wait, with submitted True. It does not
+                cover the wait itself: algosdk's wait_for_confirmation cannot
+                be interrupted, and wait_rounds bounds it. Nor does it
                 interrupt a call already blocked outside HTTP.
 
         Raises:
@@ -7361,8 +7348,9 @@ class SignerClient:
                 no usable answer: none arrived, it could not be read, or the
                 checks faulted on it. A signature may have been released;
                 ``request_id`` names the request.
-            SubmissionRejectedError, SubmissionUncertainError: the group was
-                signed; the error keeps the signed bytes and their IDs.
+            SubmissionError: the group was signed, and submitting it or
+                waiting for it failed; the error keeps the signed bytes,
+                their IDs and algosdk's error.
             RotatingPreflightError: a rotating spend failed its unsigned
                 simulation; nothing was signed.
             SignerError: the signer refused, or the SDK refused the signer's
@@ -7406,8 +7394,9 @@ class SignerClient:
         """Build an ALGO payment with prepare_payment, then sign, submit and
         track it with send_prepared. It works the same way for every account
         type send_prepared supports. ``amount`` and ``fee`` are in
-        microAlgos. ``timeout`` limits the whole call, preparing included,
-        as for send_prepared.
+        microAlgos. ``timeout`` limits signing and submission, preparing
+        included, as for send_prepared; it does not bound the confirmation
+        wait.
 
         The SDK built the transaction, so a rotating account's send may
         rebuild its validity rounds without refresh_validity being set.
@@ -7450,12 +7439,12 @@ class SignerClient:
         wait for confirmation. It signs nothing.
 
         Use it to submit a group from sign_prepared_rotating, or to submit
-        again the signed_group a SubmissionUncertainError kept: the same bytes
-        can execute only once. After the group's last valid round the node
-        refuses it as dead, raised as SubmissionRejectedError, even when it
-        confirmed earlier. Each entry must be one canonically encoded
-        signed transaction, hex msgpack, and a group of several must carry
-        the group ID computed over itself.
+        again the signed_group a SubmissionError kept: the same bytes can
+        execute only once. It submits and waits as a send does, with
+        algosdk's send_raw_transaction and wait_for_confirmation, and raises
+        their failures as SubmissionError. Each entry must be one
+        canonically encoded signed transaction, hex msgpack, and a group of
+        several must carry the group ID computed over itself.
         """
         if algod_client is None:
             raise ValueError("algod_client is required")
@@ -7516,6 +7505,18 @@ class SignerClient:
                 intent_built or options.refresh_validity,
             )
 
+        # An unknown outcome from here on names the group's last valid round.
+        # It is computed once, here, before anything is asked to sign, and a
+        # position whose round is not an unsigned integer is refused. The
+        # signer never changes a validity round (it may raise fees, append
+        # dummies on the first transaction's window, and set the group ID),
+        # so it is the signed group's round too.
+        last_valid = _earliest_last_valid(
+            [cast(transaction.Transaction, item.transaction) for item in group.transactions],
+            "prepared transaction",
+            start=0,
+            error=ValueError,
+        )
         result = SendResult(flow=flow, original_count=len(group.transactions))
         if flow == SIGNING_FLOW_COSIGNED1:
             try:
@@ -7537,7 +7538,7 @@ class SignerClient:
                     raise SignOutcomeUnknownError(
                         cause,
                         request_id=getattr(lost, "request_id", ""),
-                        last_valid=_group_last_valid(group),
+                        last_valid=last_valid,
                     ) from cause
                 raise
             result.signed_group = list(signed.signed_group)
@@ -7550,7 +7551,7 @@ class SignerClient:
             )
             sign_entries: Optional[List[Dict[str, Any]]] = None
         else:
-            response, released_by, sign_entries = self._sign_for_send(group)
+            response, released_by, sign_entries = self._sign_for_send(group, last_valid)
             result.signed_group = list(response.signed)
             result.mutations = copy.deepcopy(response.mutations)
 
@@ -7566,7 +7567,7 @@ class SignerClient:
                 _verification_error("verify signed group: ", e),
                 request_id=released_by,
                 requests=sign_entries,
-                last_valid=_group_last_valid(group),
+                last_valid=last_valid,
             ) from e
         _submit_and_track(algod_client, raw, result, options)
         return result
@@ -7653,12 +7654,13 @@ class SignerClient:
         return flow, left_rotation
 
     def _sign_for_send(
-        self, group: PreparedGroup
+        self, group: PreparedGroup, last_valid: int
     ) -> tuple[GroupSignResponse, str, List[Dict[str, Any]]]:
         """The ordinary /sign flow for a send: sign_requests, with an exchange
         that ended with no usable answer, or whose answer the checks faulted
         on, told apart from a refusal. Returns the response, the request ID
-        and the entries sent."""
+        and the entries sent. ``last_valid`` is the group's earliest last
+        valid round, computed before anything was asked to sign."""
         sign_entries = group.to_sign_requests()
         request_id = _new_sign_request_id()
         try:
@@ -7674,7 +7676,7 @@ class SignerClient:
                     cause,
                     request_id=request_id,
                     requests=sign_entries,
-                    last_valid=_group_last_valid(group),
+                    last_valid=last_valid,
                 ) from cause
             raise
 
@@ -7826,7 +7828,7 @@ class SignerClient:
             raise ValueError("prepared rotating group is required")
         # The binding is checked again at the signing boundary.
         try:
-            prepared._verify()
+            last_valid = prepared._verify()
         except SignerError as e:
             raise _verification_error("verify prepared rotating group: ", e) from e
         if not request_id:
@@ -7854,7 +7856,7 @@ class SignerClient:
                 cause,
                 request_id=request_id,
                 rotating=prepared,
-                last_valid=_prepared_last_valid(prepared),
+                last_valid=last_valid,
             ) from cause
         except BaseException as e:
             # An interrupt while approval was pending leaves the same unknown
@@ -7873,9 +7875,10 @@ class SignerClient:
                 _verification_error("verify signer response: ", e),
                 request_id=request_id,
                 rotating=prepared,
-                last_valid=_prepared_last_valid(prepared),
+                last_valid=last_valid,
             ) from e
         result.request_id = request_id
+        result._last_valid = last_valid
         return result
 
     def _send_rotating(
@@ -8031,7 +8034,7 @@ class SignerClient:
                 _verification_error("verify signed group: ", e),
                 request_id=signed.request_id,
                 rotating=prepared,
-                last_valid=_prepared_last_valid(prepared),
+                last_valid=signed._last_valid,
             ) from e
         _submit_and_track(algod_client, raw, result, options)
         return result
@@ -9354,8 +9357,9 @@ class PreparedRotating:
                 raise SignerError(f"prepared transaction {index}: {e}") from e
         return txns
 
-    def _verify(self) -> None:
-        """Check the prepared group against the transaction the caller sent.
+    def _verify(self) -> int:
+        """Check the prepared group against the transaction the caller sent,
+        and return the group's earliest last valid round.
 
         It is the client's authority boundary for a rotating spend: the signer
         may set rekey_to to the address it reports, raise the spend's fee,
@@ -9402,6 +9406,7 @@ class PreparedRotating:
             raise SignerError(str(e)) from e
         returned: List[Optional[transaction.Transaction]] = list(txns)
         _validate_group_mutations([slot], returned, self._mutations, self._max_fee_increase)
+        return _earliest_last_valid(txns, "prepared transaction")
 
     def _verify_signed(self, response: Any) -> RotatingSignResult:
         """Check that the signer signed exactly the prepared bytes: one
@@ -9644,8 +9649,8 @@ def _last_round(status: Any) -> int:
 
 
 def _describe_signed_group(result: SendResult) -> List[bytes]:
-    """Fill the result's IDs, fees and group ID from its signed bytes, and
-    return those bytes decoded. Each entry must be one canonically encoded
+    """Fill the result's IDs, fees, group ID and last valid round from its
+    signed bytes, and return those bytes decoded. Each entry must be one canonically encoded
     signed transaction, and a group of several must carry the group ID
     computed over itself."""
     try:
@@ -9659,68 +9664,38 @@ def _describe_signed_group(result: SendResult) -> List[bytes]:
         group_id = _validate_canonical_group_id(txns)
         if len(txns) == 1:
             group_id = _group_id_bytes(txns[0])
+        last_valid = _earliest_last_valid(txns, "signed group position")
     except SignerError as e:
         raise _verification_error("verify signed group: ", e) from e
+    result._last_valid = last_valid
     result.fees = [int(txn.fee) for txn in txns]
     result.group_id = base64.b64encode(group_id).decode() if group_id else ""
     result.tx_ids = [signed.get_txid() for signed in decoded]
     return [bytes.fromhex(entry) for entry in result.signed_group]
 
 
-def _earliest_last_valid(txns: List[Any]) -> int:
-    """The earliest last valid round of the transactions, 0 for none."""
-    rounds = [txn.last_valid_round for txn in txns if txn is not None]
-    rounds = [value for value in rounds if isinstance(value, int) and not isinstance(value, bool)]
-    return min(rounds) if rounds else 0
-
-
-def _group_last_valid(group: PreparedGroup) -> int:
-    """The earliest last valid round of a prepared group's transactions: what
-    was sent to be signed. The signer never changes a validity round (it may
-    raise fees, append dummies on the first transaction's window, and set the
-    group ID), so it is the signed group's too."""
-    return _earliest_last_valid([item.transaction for item in group.transactions])
-
-
-def _prepared_last_valid(prepared: "PreparedRotating") -> int:
-    """The earliest last valid round of a prepared rotating group."""
-    try:
-        return _earliest_last_valid(prepared._decoded())
-    except Exception:
-        return 0
-
-
-def _signed_group_last_valid(signed_group: List[str]) -> int:
-    """The earliest last valid round of a signed group, hex msgpack."""
-    try:
-        decoded = _decode_executable_signed_group(signed_group)
-    except Exception:
-        return 0
-    return _earliest_last_valid([signed.transaction for signed in decoded])
-
-
-def _is_bad_request(error: BaseException) -> bool:
-    return isinstance(error, algosdk_error.AlgodHTTPError) and error.code == 400
-
-
-def _already_known_to_node(error: BaseException) -> bool:
-    """Whether a submission was refused only because the node already has a
-    transaction with the same ID, in its pool or in a block.
-
-    algod answers that with a 400 like any refusal and no code, so the text is
-    all there is to go on. One case is not recognised: a committed
-    transaction that carries a lease is refused for its lease first, and that
-    answer is the same as a real lease conflict's.
-    """
-    return _is_bad_request(error) and "already in ledger" in str(error).lower()
+def _earliest_last_valid(
+    txns: List[transaction.Transaction], what: str, *, start: int = 1, error: type = SignerError
+) -> int:
+    """The earliest last valid round of a non-empty group. Every position's
+    round must be an unsigned integer; one that is not is refused with
+    ``error``, naming the position ``what`` and its number (counted from
+    ``start``)."""
+    return min(
+        _require_uint(txn.last_valid_round, f"{what} {index}: last_valid_round", error=error)
+        for index, txn in enumerate(txns, start=start)
+    )
 
 
 def _submit_and_track(
     algod_client: Any, raw: List[bytes], result: SendResult, options: _SendOptions
 ) -> None:
     """The one submission path of every send. It submits the signed bytes
-    exactly as given and, unless told not to, waits for the first transaction
-    to confirm. It never signs or rebuilds anything.
+    exactly as given with algosdk's send_raw_transaction and, unless told not
+    to, waits for the first transaction with algosdk's wait_for_confirmation.
+    It never signs or rebuilds anything, and never reads algosdk's errors: a
+    failure of either call is raised as SubmissionError with that error as
+    its cause.
 
     A KeyboardInterrupt or other BaseException that is not an Exception ends
     the call as it is, with the signed group attached, since it may have
@@ -9745,209 +9720,43 @@ def _submit_and_track(
 def _submit_and_wait(
     algod_client: Any, raw: List[bytes], result: SendResult, options: _SendOptions
 ) -> None:
-    blob = b"".join(raw)
-    txid = result.tx_ids[0]
-    last_valid = _signed_group_last_valid(result.signed_group)
-
-    def uncertain(stage: str, error: BaseException) -> SubmissionUncertainError:
-        return SubmissionUncertainError(
-            stage, result.signed_group, result.tx_ids, error, last_valid=last_valid
+    def failure(submitted: bool, error: BaseException) -> SubmissionError:
+        # The describe step computed the last valid round when it decoded the
+        # group, so building the error decodes nothing.
+        return SubmissionError(
+            result.signed_group, result.tx_ids, result._last_valid, submitted, error
         )
 
-    def failed(what: str, error: BaseException) -> BaseException:
-        """What ended a node call: the time limit's SendTimeoutError, or the
-        error itself."""
-        timed_out = _timed_out(what, error)
-        return timed_out if timed_out is not None else error
-
-    # The group is signed. A time limit that passed before it was sent leaves
-    # it with the caller, unsent.
+    # The group is signed. A time limit that passed before the submission
+    # leaves it with the caller, and nothing is posted.
     if _time_limit_passed():
-        raise uncertain(SEND_STAGE_UNSENT, _time_limit_error("before the group was submitted"))
+        ended = _time_limit_error("before the group was submitted")
+        raise failure(False, ended) from ended
     try:
-        sent_id = algod_client.send_raw_transaction(base64.b64encode(blob).decode())
+        algod_client.send_raw_transaction(base64.b64encode(b"".join(raw)).decode())
     except Exception as e:
-        # A node that already has a transaction with this ID, pending or
-        # committed, was reached by an earlier submission of this group. That
-        # is not a refusal, and the lookup below finds the outcome.
-        if not _already_known_to_node(e):
-            if _is_bad_request(e):
-                raise SubmissionRejectedError(result.signed_group, result.tx_ids, e) from e
-            raise uncertain(SEND_STAGE_SUBMIT, failed("submitting the group", e)) from e
-    else:
-        if sent_id != txid:
-            raise uncertain(
-                SEND_STAGE_SUBMIT,
-                SignerError(
-                    f"node reported transaction ID {sent_id} for a group whose first "
-                    f"transaction is {txid}"
-                ),
-            )
+        raise failure(False, e) from e
     result.outcome = SEND_OUTCOME_SUBMITTED
     if options.no_wait:
         return
 
-    wait_rounds = options.wait_rounds or DEFAULT_SEND_WAIT_ROUNDS
     if _time_limit_passed():
-        raise uncertain(SEND_STAGE_CONFIRM, _time_limit_error("before the confirmation wait"))
+        ended = _time_limit_error("before the confirmation wait")
+        raise failure(True, ended) from ended
+    # The wait is algosdk's own and is bounded by its round count, not by the
+    # call's time limit: it gets the caller's client, not the time-limited
+    # one.
     try:
-        last = _last_round(algod_client.status())
+        info = transaction.wait_for_confirmation(
+            _unlimited_algod(algod_client),
+            result.tx_ids[0],
+            options.wait_rounds or DEFAULT_SEND_WAIT_ROUNDS,
+        )
     except Exception as e:
-        timed_out = _timed_out("reading the current round", e)
-        raise uncertain(
-            SEND_STAGE_CONFIRM, timed_out or SignerError(f"read current round: {e}")
-        ) from e
-    # The group is looked up now and after each of the next wait_rounds
-    # rounds.
-    deadline = min(last + wait_rounds, _UINT64_MAX)
-    while True:
-        # A lookup error is not an answer: behind a load balancer another node
-        # may not have the transaction yet.
-        try:
-            info = algod_client.pending_transaction_info(txid)
-        except Exception:
-            info = None
-        if isinstance(info, dict):
-            pool_error = info.get("pool-error")
-            if isinstance(pool_error, str) and pool_error:
-                raise SubmissionRejectedError(
-                    result.signed_group,
-                    result.tx_ids,
-                    SignerError(f"dropped from the transaction pool: {pool_error}"),
-                )
-            confirmed = info.get("confirmed-round")
-            if (
-                isinstance(confirmed, int)
-                and not isinstance(confirmed, bool)
-                and 0 < confirmed <= _UINT64_MAX
-            ):
-                result.outcome = SEND_OUTCOME_CONFIRMED
-                result.confirmed_round = confirmed
-                return
-        if last >= deadline:
-            raise uncertain(
-                SEND_STAGE_CONFIRM, SignerError(f"not confirmed after {wait_rounds} rounds")
-            )
-        if _time_limit_passed():
-            raise uncertain(
-                SEND_STAGE_CONFIRM, _time_limit_error(f"waiting for round {last + 1}")
-            )
-        try:
-            # status_after_block(n) returns once round n+1 exists.
-            next_round = _last_round(algod_client.status_after_block(last))
-        except Exception as e:
-            timed_out = _timed_out(f"waiting for round {last + 1}", e)
-            raise uncertain(
-                SEND_STAGE_CONFIRM, timed_out or SignerError(f"wait for round {last + 1}: {e}")
-            ) from e
-        last = next_round if next_round > last else last + 1
-
-
-def send_raw_transaction(algod_client, signed_txn: str) -> str:
-    """
-    Submit a signed transaction to the network with clean error handling.
-
-    Args:
-        algod_client: algosdk AlgodClient instance
-        signed_txn: Base64-encoded string from sign_transaction()
-
-    Returns:
-        Transaction ID
-
-    Raises:
-        ValueError: If signed_txn is not standard, padded base64; nothing is
-            submitted
-        LogicSigRejectedError: If a LogicSig program returned false
-        InsufficientFundsError: If account has insufficient funds
-        InvalidTransactionError: If transaction is malformed
-        TransactionRejectedError: For other rejection reasons
-
-    Note:
-        You can also use algod_client.send_raw_transaction(signed_txn) directly
-        if you don't need the clean error types.
-    """
-    from algosdk.error import AlgodHTTPError
-
-    # Checked before anything is sent: algod's client decodes leniently and
-    # would submit a string with stray characters in it.
-    _strict_base64(signed_txn, "signed transaction")
-    try:
-        return algod_client.send_raw_transaction(signed_txn)
-    except AlgodHTTPError as e:
-        raise _parse_algod_error(e) from e
-
-
-def _parse_algod_error(e: Exception) -> Exception:
-    """
-    Parse algod HTTP error into a clean aplane exception.
-
-    Extracts the transaction ID and meaningful error reason from verbose
-    algod error messages that include full struct dumps.
-    """
-    msg = str(e)
-
-    # Try to extract transaction ID (appears before the colon in many errors)
-    # Format: "TransactionPool.Remember: transaction XXXXX: error details"
-    txid = "unknown"
-    txid_match = re.search(r"transaction ([A-Z0-9]{52}):", msg)
-    if txid_match:
-        txid = txid_match.group(1)
-
-    # LogicSig rejection
-    if "rejected by logic" in msg.lower():
-        return LogicSigRejectedError(txid, "LogicSig program returned false")
-
-    # Insufficient funds / overspend
-    if "overspend" in msg.lower() or "insufficient funds" in msg.lower():
-        # Try to extract balance info if present
-        balance_match = re.search(r"tried to spend \{(\d+)\}", msg)
-        if balance_match:
-            return InsufficientFundsError(
-                txid, f"insufficient funds (tried to spend {balance_match.group(1)} microAlgos)"
-            )
-        return InsufficientFundsError(txid, "insufficient funds")
-
-    # LogicSig pool budget exceeded
-    if "logicsigs" in msg.lower() and "pool" in msg.lower():
-        pool_match = re.search(r"had (\d+) bytes.*pool of (\d+) bytes", msg)
-        if pool_match:
-            return InvalidTransactionError(
-                txid,
-                f"LogicSig too large ({pool_match.group(1)} bytes exceeds {pool_match.group(2)} byte pool). "
-                "Fee pooling should be automatic - ensure you're using sign_transaction() or sign_transactions().",
-            )
-        return InvalidTransactionError(
-            txid,
-            "LogicSig exceeds pool budget - fee pooling should be automatic via sign_transaction()",
-        )
-
-    # Invalid group ID
-    if "group" in msg.lower() and ("invalid" in msg.lower() or "mismatch" in msg.lower()):
-        return InvalidTransactionError(txid, "invalid or mismatched group ID")
-
-    # Fee too low
-    if "fee" in msg.lower() and ("too small" in msg.lower() or "below" in msg.lower()):
-        return InvalidTransactionError(txid, "transaction fee too low")
-
-    # Round range errors
-    if "round" in msg.lower() and (
-        "past" in msg.lower() or "future" in msg.lower() or "invalid" in msg.lower()
-    ):
-        return InvalidTransactionError(
-            txid, "transaction round range invalid (expired or too far in future)"
-        )
-
-    # Generic rejection - extract a cleaner message if possible
-    # Look for the last meaningful phrase after struct dumps
-    reason_match = re.search(r"\}: (.+?)(?:\s*$|\s*\{)", msg)
-    if reason_match:
-        reason = reason_match.group(1).strip()
-        if reason:
-            return TransactionRejectedError(txid, reason)
-
-    # Fallback: return generic error with truncated message
-    truncated = msg[:200] + "..." if len(msg) > 200 else msg
-    return TransactionRejectedError(txid, truncated)
+        raise failure(True, e) from e
+    result.outcome = SEND_OUTCOME_CONFIRMED
+    result.confirmed_round = info["confirmed-round"]
+    result.confirmation = info
 
 
 # -----------------------------------------------------------------------------

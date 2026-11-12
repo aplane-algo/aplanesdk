@@ -172,7 +172,11 @@ export function passingGroupResult(count: number): { txnResults: unknown[] } {
   return { txnResults: Array.from({ length: count }, () => ({ txnResult: {} })) };
 }
 
-/** A fake node for send tests. */
+/**
+ * A fake node for send tests. It answers what algosdk's sendRawTransaction
+ * and waitForConfirmation ask of a node: the submission, the status, the
+ * pending-transaction lookup and the wait for a block.
+ */
 export class FakeAlgod {
   /** The node's current round. */
   round = 10n;
@@ -180,6 +184,14 @@ export class FakeAlgod {
   submit?: (blob: Uint8Array) => unknown;
   /** Answers the pending-transaction lookup; unset, it confirms in round 12. */
   pending?: () => { poolError?: string; confirmedRound?: bigint };
+  /** The request options each submission was given, such as the signal. */
+  submitOptions: unknown[] = [];
+  /** The transaction ID each pending-transaction lookup asked for. */
+  pendingIds: string[] = [];
+  /** The object each pending-transaction lookup returned. */
+  pendingAnswers: unknown[] = [];
+  /** How many times the status was read. */
+  statusReads = 0;
   /** The chain's auth address per account. */
   authAddrs: Record<string, string> = {};
   /**
@@ -197,7 +209,12 @@ export class FakeAlgod {
   waits: string[] = [];
 
   status() {
-    return { do: async () => ({ lastRound: this.round }) };
+    return {
+      do: async () => {
+        this.statusReads++;
+        return { lastRound: this.round };
+      },
+    };
   }
 
   statusAfterBlock(round: number | bigint) {
@@ -234,22 +251,28 @@ export class FakeAlgod {
     };
   }
 
-  sendRawTransaction(blob: Uint8Array) {
+  sendRawTransaction(stxOrStxs: Uint8Array | Uint8Array[]) {
+    // As algosdk does, a list of signed transactions is posted as one body.
+    const blob = Array.isArray(stxOrStxs) ? concatenate(stxOrStxs) : stxOrStxs;
     return {
-      do: async () => {
+      do: async (_headers?: unknown, options?: unknown) => {
         this.submitted.push(blob);
+        this.submitOptions.push(options);
         if (this.submit) return this.submit(blob);
         return { txid: firstSignedTransaction(blob).txn.txID() };
       },
     };
   }
 
-  pendingTransactionInformation(_txid: string) {
+  pendingTransactionInformation(txid: string) {
     return {
       do: async () => {
         this.lookups++;
+        this.pendingIds.push(txid);
         const info = this.pending ? this.pending() : { confirmedRound: 12n };
-        return { poolError: "", ...info };
+        const answer = { poolError: "", ...info };
+        this.pendingAnswers.push(answer);
+        return answer;
       },
     };
   }
@@ -263,6 +286,16 @@ export class FakeAlgod {
       },
     };
   }
+}
+
+function concatenate(parts: Uint8Array[]): Uint8Array {
+  const joined = new Uint8Array(parts.reduce((total, part) => total + part.length, 0));
+  let offset = 0;
+  for (const part of parts) {
+    joined.set(part, offset);
+    offset += part.length;
+  }
+  return joined;
 }
 
 export function signedHexOf(signed: algosdk.SignedTransaction): string {

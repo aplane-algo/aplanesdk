@@ -11,14 +11,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 
-	"math"
-
 	"github.com/algorand/go-algorand-sdk/v2/client/v2/algod"
+	"github.com/algorand/go-algorand-sdk/v2/client/v2/common"
 	"github.com/algorand/go-algorand-sdk/v2/client/v2/common/models"
 	"github.com/algorand/go-algorand-sdk/v2/crypto"
 	"github.com/algorand/go-algorand-sdk/v2/encoding/msgpack"
@@ -95,8 +97,8 @@ type sendAlgod struct {
 	submitted [][]byte
 	simulated []models.SimulateRequest
 	lookups   int
-	// waits are the rounds each wait-for-block call asked to follow.
-	waits []string
+	// followed is the transaction ID of each pending-transaction lookup.
+	followed []string
 }
 
 func (a *sendAlgod) currentRound() uint64 {
@@ -142,9 +144,6 @@ func (a *sendAlgod) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		json.NewEncoder(w).Encode(map[string]string{"txId": crypto.GetTxID(first.Txn)})
 	case strings.HasPrefix(r.URL.Path, "/v2/status/wait-for-block-after/"):
-		a.mu.Lock()
-		a.waits = append(a.waits, strings.TrimPrefix(r.URL.Path, "/v2/status/wait-for-block-after/"))
-		a.mu.Unlock()
 		json.NewEncoder(w).Encode(map[string]uint64{"last-round": a.currentRound()})
 	case r.URL.Path == "/v2/status":
 		json.NewEncoder(w).Encode(map[string]uint64{"last-round": a.currentRound()})
@@ -184,6 +183,7 @@ func (a *sendAlgod) handle(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(r.URL.Path, "/v2/transactions/pending/"):
 		a.mu.Lock()
 		a.lookups++
+		a.followed = append(a.followed, strings.TrimPrefix(r.URL.Path, "/v2/transactions/pending/"))
 		a.mu.Unlock()
 		info := models.PendingTransactionInfoResponse{ConfirmedRound: 12}
 		if a.pending != nil {
@@ -284,6 +284,10 @@ func TestSendPreparedGroupReportsGroupID(t *testing.T) {
 	if len(submitted) != 1 || hex.EncodeToString(submitted[0]) != strings.Join(result.SignedGroup, "") {
 		t.Fatalf("submission is not the signed group, in order, once")
 	}
+	// The wait follows the first signed transaction's ID.
+	if strings.Join(node.followed, ",") != result.TxIDs[0] {
+		t.Fatalf("the wait followed %v, want only %s", node.followed, result.TxIDs[0])
+	}
 }
 
 func TestSendPreparedNoWaitReturnsSubmitted(t *testing.T) {
@@ -301,6 +305,44 @@ func TestSendPreparedNoWaitReturnsSubmitted(t *testing.T) {
 	}
 	if node.lookups != 0 {
 		t.Fatalf("pending lookups = %d, want none", node.lookups)
+	}
+	if result.Confirmation != nil {
+		t.Fatalf("Confirmation = %+v, want nil without a wait", result.Confirmation)
+	}
+}
+
+// The result carries what go-algorand-sdk's wait returned for the first
+// transaction, unchanged, from a send and from SubmitSignedGroup alike.
+func TestSendResultCarriesTheWaitsConfirmation(t *testing.T) {
+	txn := verifyTestPayment(t, 41, 42, 1)
+	signer := &sendSigner{keys: []KeyInfo{ordinaryKey(txn)}}
+	node := &sendAlgod{pending: func() models.PendingTransactionInfoResponse {
+		return models.PendingTransactionInfoResponse{
+			ConfirmedRound: 12, ApplicationIndex: 77, Logs: [][]byte{[]byte("log")},
+			InnerTxns: []models.PendingTransactionResponse{{ConfirmedRound: 12, AssetIndex: 88}},
+		}
+	}}
+	client, algodClient := newSendFixture(t, signer, node)
+
+	want, err := transaction.WaitForConfirmation(algodClient, crypto.GetTxID(txn), 10, context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sent, err := client.SendPrepared(context.Background(), algodClient, preparedFor(txn), nil)
+	if err != nil {
+		t.Fatalf("SendPrepared() error = %v", err)
+	}
+	submitted, err := client.SubmitSignedGroup(context.Background(), algodClient, sent.SignedGroup, nil)
+	if err != nil {
+		t.Fatalf("SubmitSignedGroup() error = %v", err)
+	}
+	for name, result := range map[string]*SendResult{"SendPrepared": sent, "SubmitSignedGroup": submitted} {
+		if result.Confirmation == nil || !reflect.DeepEqual(*result.Confirmation, want) {
+			t.Fatalf("%s Confirmation = %+v, want go-algorand-sdk's %+v", name, result.Confirmation, want)
+		}
+		if result.ConfirmedRound != want.ConfirmedRound {
+			t.Fatalf("%s ConfirmedRound = %d, want %d", name, result.ConfirmedRound, want.ConfirmedRound)
+		}
 	}
 }
 
@@ -575,6 +617,8 @@ func TestSendPreparedSignFailures(t *testing.T) {
 	})
 }
 
+// A failed submit or wait comes back as one *SubmissionError holding the
+// signed group and go-algorand-sdk's own error, whatever the node answered.
 func TestSendPreparedSubmissionFailuresKeepSignedBytes(t *testing.T) {
 	txn := verifyTestPayment(t, 41, 42, 1)
 	wantHex := fakeSignedTxnHex(txn)
@@ -585,52 +629,53 @@ func TestSendPreparedSubmissionFailuresKeepSignedBytes(t *testing.T) {
 			json.NewEncoder(w).Encode(map[string]string{"message": message})
 		}
 	}
+	unconfirmed := func() models.PendingTransactionInfoResponse { return models.PendingTransactionInfoResponse{} }
 
 	tests := []struct {
 		name      string
 		node      *sendAlgod
 		opts      *SendOptions
-		rejected  bool
-		stage     string
+		submitted bool
 		text      string
-		wantLooks bool
 	}{
 		{
-			name:     "node refuses the group",
-			node:     &sendAlgod{submit: httpError(http.StatusBadRequest, "overspend")},
-			rejected: true,
-			text:     "overspend",
+			name: "node answers 400",
+			node: &sendAlgod{submit: httpError(http.StatusBadRequest, "overspend")},
+			text: "overspend",
 		},
 		{
-			name:  "node fails without an answer about the group",
-			node:  &sendAlgod{submit: httpError(http.StatusInternalServerError, "boom")},
-			stage: SendStageSubmit,
-			text:  "boom",
+			name: "node answers 400 because it already has the group",
+			node: &sendAlgod{submit: httpError(http.StatusBadRequest, "TransactionPool.Remember: transaction already in ledger: "+wantID)},
+			text: "already in ledger",
 		},
 		{
-			name: "node reports another transaction ID",
+			name: "node answers 500",
+			node: &sendAlgod{submit: httpError(http.StatusInternalServerError, "boom")},
+			text: "boom",
+		},
+		{
+			name: "connection dropped on submission",
 			node: &sendAlgod{submit: func(w http.ResponseWriter, _ []byte) {
-				json.NewEncoder(w).Encode(map[string]string{"txId": "SOMEOTHERID"})
+				if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+					conn.Close()
+				}
 			}},
-			stage: SendStageSubmit,
-			text:  "SOMEOTHERID",
+			text: "EOF",
 		},
 		{
 			name: "pool drops the group",
 			node: &sendAlgod{pending: func() models.PendingTransactionInfoResponse {
 				return models.PendingTransactionInfoResponse{PoolError: "fee too low"}
 			}},
-			rejected: true,
-			text:     "fee too low",
+			submitted: true,
+			text:      "fee too low",
 		},
 		{
-			name: "not confirmed within the wait",
-			node: &sendAlgod{pending: func() models.PendingTransactionInfoResponse {
-				return models.PendingTransactionInfoResponse{}
-			}},
-			opts:  &SendOptions{WaitRounds: 2},
-			stage: SendStageConfirm,
-			text:  "not confirmed after 2 rounds",
+			name:      "not confirmed within the wait",
+			node:      &sendAlgod{pending: unconfirmed},
+			opts:      &SendOptions{WaitRounds: 2},
+			submitted: true,
+			text:      "timed out",
 		},
 	}
 	for _, tt := range tests {
@@ -642,38 +687,58 @@ func TestSendPreparedSubmissionFailuresKeepSignedBytes(t *testing.T) {
 			if result != nil || err == nil {
 				t.Fatalf("SendPrepared() = %+v, %v; want an error", result, err)
 			}
-			var signedGroup, txIDs []string
-			var rejected *SubmissionRejectedError
-			var uncertain *SubmissionUncertainError
-			switch {
-			case errors.As(err, &rejected):
-				if !tt.rejected {
-					t.Fatalf("error = %v, want an uncertain outcome", err)
-				}
-				signedGroup, txIDs = rejected.SignedGroup, rejected.TxIDs
-			case errors.As(err, &uncertain):
-				if tt.rejected || uncertain.Stage != tt.stage {
-					t.Fatalf("error = %v (stage %q), want rejected=%v stage %q", err, uncertain.Stage, tt.rejected, tt.stage)
-				}
-				if uncertain.LastValid != uint64(txn.LastValid) {
-					t.Fatalf("LastValid = %d, want the signed group's %d", uncertain.LastValid, txn.LastValid)
-				}
-				signedGroup, txIDs = uncertain.SignedGroup, uncertain.TxIDs
-			default:
-				t.Fatalf("error = %v, want a typed submission error", err)
+			var failure *SubmissionError
+			if !errors.As(err, &failure) {
+				t.Fatalf("error = %v, want *SubmissionError", err)
 			}
-			if !strings.Contains(err.Error(), tt.text) {
-				t.Fatalf("error = %v, want it to mention %q", err, tt.text)
+			if failure.Submitted != tt.submitted || !strings.Contains(err.Error(), tt.text) {
+				t.Fatalf("error = %v (submitted %v), want submitted %v mentioning %q", err, failure.Submitted, tt.submitted, tt.text)
 			}
-			if len(signedGroup) != 1 || signedGroup[0] != wantHex || len(txIDs) != 1 || txIDs[0] != wantID {
-				t.Fatalf("kept signed group %v and IDs %v", signedGroup, txIDs)
+			if len(failure.SignedGroup) != 1 || failure.SignedGroup[0] != wantHex || len(failure.TxIDs) != 1 || failure.TxIDs[0] != wantID {
+				t.Fatalf("kept signed group %v and IDs %v", failure.SignedGroup, failure.TxIDs)
+			}
+			if failure.LastValid != uint64(txn.LastValid) {
+				t.Fatalf("LastValid = %d, want the signed group's %d", failure.LastValid, txn.LastValid)
+			}
+			if errors.Unwrap(err) != failure.Err {
+				t.Fatalf("Unwrap() = %v, want the cause %v", errors.Unwrap(err), failure.Err)
 			}
 			// Nothing is signed or submitted a second time.
-			if signer.count("/sign") != 1 || len(tt.node.submissions()) != 1 {
-				t.Fatalf("sign calls = %d, submissions = %d; want 1 and 1", signer.count("/sign"), len(tt.node.submissions()))
+			submitted := tt.node.submissions()
+			if signer.count("/sign") != 1 || len(submitted) != 1 {
+				t.Fatalf("sign calls = %d, submissions = %d; want 1 and 1", signer.count("/sign"), len(submitted))
+			}
+
+			// The cause is what go-algorand-sdk returns for the same call.
+			var want error
+			if tt.submitted {
+				_, want = transaction.WaitForConfirmation(algodClient, wantID, sendWaitRounds(tt.opts), context.Background())
+			} else {
+				_, want = algodClient.SendRawTransaction(submitted[0]).Do(context.Background())
+			}
+			if fmt.Sprintf("%T", failure.Err) != fmt.Sprintf("%T", want) || failure.Err.Error() != want.Error() {
+				t.Fatalf("cause = %T %v, want go-algorand-sdk's %T %v", failure.Err, failure.Err, want, want)
 			}
 		})
 	}
+
+	t.Run("the caller reads a 400 as go-algorand-sdk's", func(t *testing.T) {
+		node := &sendAlgod{submit: httpError(http.StatusBadRequest, "overspend")}
+		client, algodClient := newSendFixture(t, &sendSigner{keys: []KeyInfo{ordinaryKey(txn)}}, node)
+		_, err := client.SendPrepared(context.Background(), algodClient, preparedFor(txn), nil)
+		var bad common.BadRequest
+		if !errors.As(err, &bad) || bad.StatusCode != http.StatusBadRequest {
+			t.Fatalf("error = %v, want go-algorand-sdk's common.BadRequest in the chain", err)
+		}
+	})
+}
+
+// sendWaitRounds is the round count a send gives go-algorand-sdk's wait.
+func sendWaitRounds(opts *SendOptions) uint64 {
+	if opts == nil || opts.WaitRounds == 0 {
+		return defaultSendWaitRounds
+	}
+	return min(opts.WaitRounds, maxSendWaitRounds)
 }
 
 func TestSendPaymentPreparesThenSends(t *testing.T) {
@@ -745,33 +810,32 @@ func TestSendPreparedReportsWhatTheSignerAdded(t *testing.T) {
 	}
 }
 
+// The send gives the wait-rounds option to go-algorand-sdk's wait, which
+// looks the first transaction up once per round, and takes the confirmed
+// round from what that wait returns.
 func TestSendPreparedConfirmationWait(t *testing.T) {
 	txn := verifyTestPayment(t, 41, 42, 1)
 	unconfirmed := func() models.PendingTransactionInfoResponse { return models.PendingTransactionInfoResponse{} }
 
-	t.Run("looks once now and once after each round of the wait", func(t *testing.T) {
-		for _, rounds := range []uint64{1, 3} {
+	t.Run("the wait covers WaitRounds rounds, 10 by default", func(t *testing.T) {
+		for _, opts := range []*SendOptions{nil, {WaitRounds: 1}, {WaitRounds: 3}} {
 			signer := &sendSigner{keys: []KeyInfo{ordinaryKey(txn)}}
 			node := &sendAlgod{pending: unconfirmed}
 			client, algodClient := newSendFixture(t, signer, node)
-			_, err := client.SendPrepared(context.Background(), algodClient, preparedFor(txn), &SendOptions{WaitRounds: rounds})
-			var uncertain *SubmissionUncertainError
-			if !errors.As(err, &uncertain) || uncertain.Stage != SendStageConfirm {
-				t.Fatalf("error = %v", err)
+			_, err := client.SendPrepared(context.Background(), algodClient, preparedFor(txn), opts)
+			var failure *SubmissionError
+			if !errors.As(err, &failure) || !failure.Submitted {
+				t.Fatalf("error = %v, want a *SubmissionError after a successful submit", err)
 			}
-			if uint64(node.lookups) != rounds+1 {
-				t.Fatalf("WaitRounds %d made %d lookups, want %d", rounds, node.lookups, rounds+1)
-			}
-			// At round 10 the first wait follows round 10, so it ends when
-			// round 11 exists; the wait covers exactly the next rounds.
-			want := map[uint64]string{1: "10", 3: "10,11,12"}[rounds]
-			if got := strings.Join(node.waits, ","); got != want {
-				t.Fatalf("WaitRounds %d waited after rounds %s, want %s", rounds, got, want)
+			if want := sendWaitRounds(opts); uint64(node.lookups) != want {
+				t.Fatalf("a wait of %d rounds made %d lookups, want %d", want, node.lookups, want)
 			}
 		}
 	})
 
-	t.Run("the largest wait does not wrap around", func(t *testing.T) {
+	// go-algorand-sdk adds the count to the current round, so the largest
+	// count would wrap around there and time out before the first lookup.
+	t.Run("the largest WaitRounds still waits", func(t *testing.T) {
 		signer := &sendSigner{keys: []KeyInfo{ordinaryKey(txn)}}
 		node := &sendAlgod{}
 		lookups := 0
@@ -784,71 +848,104 @@ func TestSendPreparedConfirmationWait(t *testing.T) {
 		}
 		client, algodClient := newSendFixture(t, signer, node)
 		result, err := client.SendPrepared(context.Background(), algodClient, preparedFor(txn), &SendOptions{WaitRounds: math.MaxUint64})
-		if err != nil || result.ConfirmedRound != 13 {
-			t.Fatalf("SendPrepared() = %+v, %v", result, err)
+		if err != nil || result.ConfirmedRound != 13 || lookups != 4 {
+			t.Fatalf("SendPrepared() = %+v, %v after %d lookups; want confirmed in round 13 after 4", result, err, lookups)
 		}
 	})
-}
 
-func TestSubmitTreatsAnAlreadyKnownGroupAsSubmitted(t *testing.T) {
-	txn := verifyTestPayment(t, 41, 42, 1)
-	signer := &sendSigner{keys: []KeyInfo{ordinaryKey(txn)}}
-	node := &sendAlgod{submit: func(w http.ResponseWriter, _ []byte) {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"message": "TransactionPool.Remember: transaction already in ledger: " + crypto.GetTxID(txn)})
-	}}
-	client, algodClient := newSendFixture(t, signer, node)
-
-	// The node has these bytes from an earlier submission. That is not a
-	// refusal: a caller told "rejected" might sign a replacement.
-	result, err := client.SendPrepared(context.Background(), algodClient, preparedFor(txn), nil)
-	if err != nil || result.Outcome != SendOutcomeConfirmed {
-		t.Fatalf("SendPrepared() = %+v, %v; want the confirmed outcome", result, err)
-	}
-}
-
-func TestSubmitFailuresThatAreNotAnswers(t *testing.T) {
-	txn := verifyTestPayment(t, 41, 42, 1)
-
-	t.Run("connection dropped on submission", func(t *testing.T) {
+	t.Run("the confirmed round is the wait's", func(t *testing.T) {
 		signer := &sendSigner{keys: []KeyInfo{ordinaryKey(txn)}}
-		node := &sendAlgod{submit: func(w http.ResponseWriter, _ []byte) {
-			conn, _, err := w.(http.Hijacker).Hijack()
-			if err != nil {
-				t.Errorf("hijack: %v", err)
-				return
+		node := &sendAlgod{}
+		lookups := 0
+		node.pending = func() models.PendingTransactionInfoResponse {
+			lookups++
+			if lookups < 3 {
+				return models.PendingTransactionInfoResponse{}
 			}
-			conn.Close()
-		}}
+			return models.PendingTransactionInfoResponse{ConfirmedRound: 13}
+		}
 		client, algodClient := newSendFixture(t, signer, node)
-		_, err := client.SendPrepared(context.Background(), algodClient, preparedFor(txn), nil)
-		var uncertain *SubmissionUncertainError
-		if !errors.As(err, &uncertain) || uncertain.Stage != SendStageSubmit || len(uncertain.SignedGroup) != 1 {
-			t.Fatalf("error = %v, want an uncertain submission", err)
+		result, err := client.SendPrepared(context.Background(), algodClient, preparedFor(txn), nil)
+		if err != nil || result.Outcome != SendOutcomeConfirmed || result.ConfirmedRound != 13 || lookups != 3 {
+			t.Fatalf("SendPrepared() = %+v, %v after %d lookups; want confirmed in round 13 after 3", result, err, lookups)
 		}
 	})
+}
 
-	t.Run("context ended before submission", func(t *testing.T) {
-		node := &sendAlgod{t: t}
-		algodClient, closeAlgod := makeSimulationAlgodClient(t, node.handle)
-		defer closeAlgod()
-		result := &SendResult{SignedGroup: []string{fakeSignedTxnHex(txn)}, OriginalCount: 1}
-		raw, err := describeSignedGroup(result)
-		if err != nil {
-			t.Fatal(err)
-		}
+// cancelAfterSubmit is a transport that ends the call's context once the
+// answer to a submission has been read in full: the submit call succeeds, and
+// the context has ended before the wait.
+type cancelAfterSubmit struct{ cancel context.CancelFunc }
+
+func (c cancelAfterSubmit) RoundTrip(r *http.Request) (*http.Response, error) {
+	response, err := http.DefaultTransport.RoundTrip(r)
+	if err != nil || r.Method != http.MethodPost || r.URL.Path != "/v2/transactions" {
+		return response, err
+	}
+	body, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	response.Body = io.NopCloser(bytes.NewReader(body))
+	c.cancel()
+	return response, nil
+}
+
+// A context that has ended stops the send before the next go-algorand-sdk
+// call: before the submit nothing is posted, and after a successful submit
+// nothing is waited for.
+func TestSubmitWhenTheContextHasEnded(t *testing.T) {
+	txn := verifyTestPayment(t, 41, 42, 1)
+	signed := []string{fakeSignedTxnHex(txn)}
+
+	t.Run("before the submit call", func(t *testing.T) {
+		node := &sendAlgod{}
+		client, algodClient := newSendFixture(t, &sendSigner{}, node)
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		err = submitAndTrack(ctx, algodClient, raw, result, &SendOptions{})
-		var uncertain *SubmissionUncertainError
-		if !errors.As(err, &uncertain) || uncertain.Stage != SendStageUnsent || !errors.Is(err, context.Canceled) {
-			t.Fatalf("error = %v, want the unsent stage", err)
+		_, err := client.SubmitSignedGroup(ctx, algodClient, signed, nil)
+		var failure *SubmissionError
+		if !errors.As(err, &failure) || failure.Submitted || !errors.Is(err, context.Canceled) {
+			t.Fatalf("error = %v, want *SubmissionError, not submitted, caused by the context", err)
 		}
-		if uncertain.LastValid != uint64(txn.LastValid) {
-			t.Fatalf("LastValid = %d, want %d", uncertain.LastValid, txn.LastValid)
+		if len(failure.SignedGroup) != 1 || failure.SignedGroup[0] != signed[0] || failure.LastValid != uint64(txn.LastValid) {
+			t.Fatalf("failure = %+v", failure)
 		}
 		if len(node.submissions()) != 0 {
 			t.Fatalf("an ended context still submitted")
+		}
+	})
+
+	t.Run("after a successful submit, before the wait", func(t *testing.T) {
+		node := &sendAlgod{t: t}
+		var mu sync.Mutex
+		requests := 0
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			requests++
+			mu.Unlock()
+			node.handle(w, r)
+		}))
+		defer server.Close()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		algodClient, err := algod.MakeClientWithTransport(server.URL, "", nil, cancelAfterSubmit{cancel})
+		if err != nil {
+			t.Fatal(err)
+		}
+		client, signerServer := newTestClient((&sendSigner{t: t}).handle)
+		defer signerServer.Close()
+
+		_, err = client.SubmitSignedGroup(ctx, algodClient, signed, nil)
+		var failure *SubmissionError
+		if !errors.As(err, &failure) || !failure.Submitted || !errors.Is(err, context.Canceled) {
+			t.Fatalf("error = %v, want *SubmissionError, submitted, caused by the context", err)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if len(node.submissions()) != 1 || requests != 1 {
+			t.Fatalf("submissions = %d, node requests = %d; want the submission alone", len(node.submissions()), requests)
 		}
 	})
 }
@@ -1185,6 +1282,50 @@ func TestSendPreparedCosignedAnswerWithAnErrorIsARefusal(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Rotating and cosigned sends submit through the same path, so a failure
+// after signing is the same *SubmissionError, and nothing is signed again.
+func TestRotatingAndCosignedSendsSubmitThroughTheSamePath(t *testing.T) {
+	t.Run("rotating, the submit call fails", func(t *testing.T) {
+		signer, node, client, algodClient, txn := newRotatingFixture(t)
+		node.submit = func(w http.ResponseWriter, _ []byte) {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"message": "overspend"})
+		}
+		_, err := client.SendPrepared(context.Background(), algodClient, rotatingGroup(txn), nil)
+		var failure *SubmissionError
+		if !errors.As(err, &failure) || failure.Submitted || !strings.Contains(err.Error(), "overspend") {
+			t.Fatalf("error = %v, want *SubmissionError, not submitted, quoting the node", err)
+		}
+		submitted := node.submissions()
+		if len(submitted) != 1 || len(failure.SignedGroup) != 2 || hex.EncodeToString(submitted[0]) != strings.Join(failure.SignedGroup, "") {
+			t.Fatalf("the error does not carry the group that was submitted once")
+		}
+		if signer.count("/sign/rotating/prepare") != 1 || signer.count("/sign/rotating/sign") != 1 {
+			t.Fatalf("prepares %d, signs %d; want 1 and 1", signer.count("/sign/rotating/prepare"), signer.count("/sign/rotating/sign"))
+		}
+	})
+
+	t.Run("cosigned, the wait fails", func(t *testing.T) {
+		f := cosignedSendFixture(t, "", true)
+		f.node.pending = func() models.PendingTransactionInfoResponse {
+			return models.PendingTransactionInfoResponse{PoolError: "fee too low"}
+		}
+		_, err := f.send()
+		var failure *SubmissionError
+		if !errors.As(err, &failure) || !failure.Submitted || !strings.Contains(err.Error(), "fee too low") {
+			t.Fatalf("error = %v, want *SubmissionError, submitted, quoting the pool error", err)
+		}
+		// The ordinary position expires first.
+		if failure.LastValid != 90 {
+			t.Fatalf("LastValid = %d, want the group's earliest 90", failure.LastValid)
+		}
+		submitted := f.node.submissions()
+		if len(submitted) != 1 || hex.EncodeToString(submitted[0]) != strings.Join(failure.SignedGroup, "") || f.cosignerCalls != 1 {
+			t.Fatalf("submissions %d, cosigner calls %d; want the assembled group once and one cosigner call", len(submitted), f.cosignerCalls)
+		}
+	})
 }
 
 // A rotating account rekeyed to an ordinary key the signer holds has left

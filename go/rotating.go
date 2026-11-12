@@ -575,8 +575,8 @@ func apiErrorCode(err error) string {
 // signer said that attempt released no signature: it has not found the live
 // stage yet, the account's authorizer moved between prepare and sign, or the
 // window was not current at signing. Every attempt needs approval again. A
-// sign whose answer never arrived, and any failure after submission, ends the
-// send: it never builds a replacement spend on its own.
+// sign whose answer never arrived, and any *SubmissionError, ends the send:
+// it never builds a replacement spend on its own.
 func (c *SignerClient) sendRotating(ctx context.Context, algodClient *algod.Client, item PreparedTransaction, opts *SendOptions, refresh bool) (*SendResult, error) {
 	if len(item.LsigArgs) > 0 {
 		return nil, fmt.Errorf("%w: a rotating account takes no LogicSig arguments from the caller", ErrUnsupportedGroup)

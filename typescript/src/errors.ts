@@ -124,53 +124,6 @@ export class EnrollmentError extends SignerError {
   }
 }
 
-/**
- * Transaction was rejected by the network.
- */
-export class TransactionRejectedError extends SignerError {
-  /** Transaction ID (if known) */
-  txid: string;
-  /** Rejection reason */
-  reason: string;
-
-  constructor(txid: string, reason: string) {
-    super(`Transaction ${txid} rejected: ${reason}`);
-    this.name = "TransactionRejectedError";
-    this.txid = txid;
-    this.reason = reason;
-  }
-}
-
-/**
- * LogicSig program returned false.
- */
-export class LogicSigRejectedError extends TransactionRejectedError {
-  constructor(txid: string, reason: string = "LogicSig program returned false") {
-    super(txid, reason);
-    this.name = "LogicSigRejectedError";
-  }
-}
-
-/**
- * Account has insufficient funds for the transaction.
- */
-export class InsufficientFundsError extends TransactionRejectedError {
-  constructor(txid: string, reason: string = "Insufficient funds") {
-    super(txid, reason);
-    this.name = "InsufficientFundsError";
-  }
-}
-
-/**
- * Transaction is malformed or invalid.
- */
-export class InvalidTransactionError extends TransactionRejectedError {
-  constructor(txid: string, reason: string = "Invalid transaction") {
-    super(txid, reason);
-    this.name = "InvalidTransactionError";
-  }
-}
-
 /** The message of a caught value, which need not be an Error. */
 export function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -254,7 +207,7 @@ export class SignOutcomeUnknownError extends SignerError {
     requestId?: string;
     requests?: SignRequest[];
     rotating?: PreparedRotating;
-    lastValid?: bigint;
+    lastValid: bigint;
     cause: unknown;
   }) {
     const requestId = options.requestId ?? "";
@@ -267,7 +220,7 @@ export class SignOutcomeUnknownError extends SignerError {
     this.requestId = requestId;
     this.requests = options.requests;
     this.rotating = options.rotating;
-    this.lastValid = options.lastValid ?? 0n;
+    this.lastValid = options.lastValid;
     this.cause = options.cause;
   }
 }
@@ -277,76 +230,61 @@ function firstOrEmpty(values: string[]): string {
 }
 
 /**
- * The network refused the signed group: the node rejected it on submission,
- * or dropped it from its pool. The signed bytes (hex msgpack) and their IDs
- * are kept. After the group's last valid round, algod refuses it as "txn
- * dead" whether or not it confirmed earlier, because it checks the validity
- * rounds before it looks for a duplicate; such a refusal of a group
- * submitted again does not show that it never confirmed.
+ * A send signed a group, and algosdk's submit call or its confirmation wait
+ * then failed. It says which step failed and nothing about what the node did.
+ *
+ * `signedGroup` is the signed group, hex msgpack, and `txIds` its transaction
+ * IDs. `lastValid` is the earliest last valid round of the group. `submitted`
+ * is true when algosdk's sendRawTransaction returned success and the failure
+ * came later, and false when it did not return success. False does not mean
+ * the node lacks the group: the answer may have been lost. `cause` is
+ * algosdk's error, unchanged (the signal's reason when the call's signal was
+ * aborted); read it as in any algosdk program.
+ *
+ * When `submitted` is true, follow the group with algosdk's
+ * waitForConfirmation on the first of `txIds` for `lastValid` minus the
+ * current round, at least 1.
+ *
+ * When it is false, there are two cases. If `cause` is algod's own HTTP 400
+ * (algosdk's error then carries the answer, and `cause.response.status` is
+ * 400), the node answered: read its reason, as in any algosdk program. The
+ * reason decides what to do. A node that says the transaction is already in
+ * the ledger or the pool has the group: follow the first of `txIds`. A
+ * refusal the same bytes always get, such as an overspend or a failed
+ * signature or program, stands; after `lastValid`, "dead" is such an answer
+ * and proves nothing about whether the group confirmed earlier. A refusal
+ * that depends on the moment, such as a fee below what the pool asks now or
+ * a node that is behind, may not recur: submitting the same group later may
+ * work. Anything else (no answer, a lost connection, a 5xx, the signal)
+ * leaves open whether the node has the group: follow the first of `txIds`
+ * with algosdk's wait for a few rounds, and if it does not confirm, submit
+ * the same `signedGroup` again with SignerClient.submitSignedGroup. The same
+ * signed group cannot pay twice. After `lastValid` neither a refusal nor a
+ * node's "not found" proves anything; check an indexer. The SDK itself reads
+ * neither the status nor the text.
  */
-export class SubmissionRejectedError extends SignerError {
-  readonly signedGroup: string[];
-  readonly txIds: string[];
-  readonly cause: unknown;
-
-  constructor(signedGroup: string[], txIds: string[], cause: unknown) {
-    super(`network rejected transaction ${firstOrEmpty(txIds)}: ${errorText(cause)}`);
-    this.name = "SubmissionRejectedError";
-    this.signedGroup = [...signedGroup];
-    this.txIds = [...txIds];
-    this.cause = cause;
-  }
-}
-
-/** Where a send's outcome became uncertain. See SubmissionUncertainError. */
-export type SendStage = "unsent" | "submit" | "confirm";
-
-/** The submission's answer never arrived, so the node may or may not have the group. */
-export const SEND_STAGE_SUBMIT = "submit";
-/** The node accepted the group, and it was not seen in a block within the wait. */
-export const SEND_STAGE_CONFIRM = "confirm";
-/**
- * The group was signed and the call ended before it was sent to the node,
- * because the caller's signal was aborted. The node does not have it; submit
- * `signedGroup` to send it.
- */
-export const SEND_STAGE_UNSENT = "unsent";
-
-/**
- * A signed group this call did not see confirmed or refused. Unless `stage`
- * is "unsent" the group may still confirm. Wait for it with algosdk's
- * waitForConfirmation on the first of `txIds` (a group confirms as a whole),
- * for at least 1 round, or submit the same `signedGroup` again with
- * SignerClient.submitSignedGroup: the same bytes can execute only once. At
- * stage "unsent" the node never had the group, so submit it; there is
- * nothing to wait for. Never sign a replacement until the outcome is known,
- * because both could execute. `lastValid` is the earliest last valid round
- * of the signed group: after it, the group cannot execute, but neither a
- * node's "not found" nor a "txn dead" refusal of the group submitted again
- * proves that it never confirmed, so check an indexer before building a
- * replacement.
- */
-export class SubmissionUncertainError extends SignerError {
-  readonly stage: SendStage;
+export class SubmissionError extends SignerError {
   readonly signedGroup: string[];
   readonly txIds: string[];
   readonly lastValid: bigint;
+  readonly submitted: boolean;
   readonly cause: unknown;
 
-  constructor(
-    stage: SendStage,
-    signedGroup: string[],
-    txIds: string[],
-    cause: unknown,
-    lastValid: bigint = 0n,
-  ) {
-    super(`outcome of transaction ${firstOrEmpty(txIds)} is unknown (${stage}): ${errorText(cause)}`);
-    this.name = "SubmissionUncertainError";
-    this.stage = stage;
-    this.signedGroup = [...signedGroup];
-    this.txIds = [...txIds];
-    this.lastValid = lastValid;
-    this.cause = cause;
+  constructor(options: {
+    signedGroup: string[];
+    txIds: string[];
+    lastValid: bigint;
+    submitted: boolean;
+    cause: unknown;
+  }) {
+    const step = options.submitted ? "wait for confirmation of" : "submit";
+    super(`${step} transaction ${firstOrEmpty(options.txIds)}: ${errorText(options.cause)}`);
+    this.name = "SubmissionError";
+    this.signedGroup = [...options.signedGroup];
+    this.txIds = [...options.txIds];
+    this.lastValid = options.lastValid;
+    this.submitted = options.submitted;
+    this.cause = options.cause;
   }
 }
 

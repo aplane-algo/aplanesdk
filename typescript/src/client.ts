@@ -141,6 +141,7 @@ import {
   simulationFailure,
   submitAndTrack,
   type CheckedSendOptions,
+  type DescribedGroup,
   type SendOptions,
   type SendResult,
 } from "./send.js";
@@ -4731,9 +4732,9 @@ export class SignerClient {
    * refuses, come back as the signing call's own error; nothing was
    * submitted. The other failures are typed: SignOutcomeUnknownError (an
    * approval-bearing request ended with no usable answer, or the SDK failed
-   * while checking or describing one), SubmissionRejectedError
-   * and SubmissionUncertainError (the group was signed, and the error keeps
-   * the signed bytes and their IDs), RotatingPreflightError,
+   * while checking or describing one), SubmissionError (the group was
+   * signed, and algosdk's submit call or its confirmation wait failed; the
+   * error keeps the signed bytes and their IDs), RotatingPreflightError,
    * UnsupportedSigningFlowError and UnsupportedGroupError. A rotating send
    * may prepare and seek approval again, a bounded number of times, when the
    * signer says an attempt released no signature. No send ever builds a
@@ -4844,9 +4845,9 @@ export class SignerClient {
       released = { requestId, requests };
     }
 
-    let raw: Uint8Array[];
+    let described: DescribedGroup;
     try {
-      raw = describeSignedGroup(result);
+      described = describeSignedGroup(result);
     } catch (error) {
       // A fault in describing a signed group is not a refusal of it: the
       // signature is out.
@@ -4855,7 +4856,7 @@ export class SignerClient {
       }
       throw new SignerError(`verify signed group: ${errorText(error)}`);
     }
-    await submitAndTrack(algodClient, raw, result, checked);
+    await submitAndTrack(algodClient, described, result, checked);
     return result;
   }
 
@@ -4971,11 +4972,9 @@ export class SignerClient {
 
   /**
    * Submit a signed group exactly as given and, unless told not to, wait for
-   * confirmation. It signs nothing. Use it to submit a group from
-   * signPreparedRotating, or to submit again the signedGroup a
-   * SubmissionUncertainError kept: the same bytes can execute only once.
-   * After the group's last valid round the node refuses it as "txn dead"
-   * whether or not it confirmed, so that refusal does not show it never did.
+   * confirmation, on the same path as every send. It signs nothing. Use it
+   * to submit a group from signPreparedRotating, or to submit again the
+   * signedGroup a SubmissionError kept: the same bytes can execute only once.
    *
    * Each entry must be one canonically encoded signed transaction, hex
    * msgpack, and a group of several must carry the group ID computed over
@@ -4995,13 +4994,13 @@ export class SignerClient {
     }
     const result = emptySendResult("", signedGroup.length);
     result.signedGroup = [...signedGroup];
-    let raw: Uint8Array[];
+    let described: DescribedGroup;
     try {
-      raw = describeSignedGroup(result);
+      described = describeSignedGroup(result);
     } catch (error) {
       throw new SignerError(`verify signed group: ${errorText(error)}`);
     }
-    await submitAndTrack(algodClient, raw, result, checked);
+    await submitAndTrack(algodClient, described, result, checked);
     return result;
   }
 
@@ -5270,7 +5269,7 @@ export class SignerClient {
       }
 
       const result = emptySendResult(SIGNING_FLOW_ROTATING1, 1);
-      let raw: Uint8Array[];
+      let described: DescribedGroup;
       try {
         result.signedGroup = [...signed.signedGroup];
         result.mutations = prepared.mutations();
@@ -5282,7 +5281,7 @@ export class SignerClient {
           transaction: cloneTransaction(txn),
           requestId: signed.requestId,
         };
-        raw = describeSignedGroup(result);
+        described = describeSignedGroup(result);
       } catch (error) {
         // A fault in describing the signed group is not a refusal of it.
         if (!(error instanceof SignerError)) {
@@ -5295,7 +5294,7 @@ export class SignerClient {
         }
         throw new SignerError(`verify signed group: ${errorText(error)}`);
       }
-      await submitAndTrack(algodClient, raw, result, checked);
+      await submitAndTrack(algodClient, described, result, checked);
       return result;
     }
   }

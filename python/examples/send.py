@@ -31,7 +31,7 @@ Example endpoints.yaml (SSH tunnel):
 
 from algosdk import transaction
 from algosdk.v2client import algod
-from aplanesdk import SignerClient, SignOutcomeUnknownError, SubmissionUncertainError
+from aplanesdk import SignerClient, SignOutcomeUnknownError, SubmissionError
 
 # The account to pay from (the signer must hold its key) and the account to
 # pay. Replace both.
@@ -49,10 +49,12 @@ def main():
             result = signer.send_payment(
                 algod_client, sender=SENDER, receiver=RECEIVER, amount=1_000_000
             )
-        except SubmissionUncertainError as error:
-            # The signed group may be on the network. Never build a
-            # replacement until its outcome is known: both could execute.
-            confirmed_round = wait_for_group(algod_client, error)
+        except SubmissionError as error:
+            # The group was signed, and algosdk's submit call or its
+            # confirmation wait failed; error.error is algosdk's error. The
+            # group may be on the network. Never build a replacement until
+            # its outcome is known: both could execute.
+            confirmed_round = follow_group(algod_client, error)
             if not confirmed_round:
                 raise
             print(f"Confirmed {error.tx_ids[0]} in round {confirmed_round}")
@@ -78,27 +80,56 @@ def main():
             print(f"Rotated from stage {result.rotating.stage} to stage {result.rotating.target}")
 
 
-def wait_for_group(algod_client, error):
-    """Wait with algosdk for a signed group whose outcome is unknown, until
-    its last valid round. A group confirms as a whole, so its first
-    transaction is followed. Returns the round it confirmed in, or 0 when the
-    wait ended without seeing it, which means only that the wait ended. Once
-    the last valid round has passed, a node's "not found" is not proof that
-    the group never confirmed, so check an indexer before building a
-    replacement. (A send given a timeout can also end with stage "unsent":
-    the node never had the group, so submit it with submit_signed_group
-    instead of waiting.)"""
-    print(f"Outcome unknown for {', '.join(error.tx_ids)} ({error.stage}): {error}")
+def follow_group(algod_client, error):
+    """Follow a signed group after a SubmissionError. When algosdk's submit
+    call did not return success (error.submitted is False), say what to do
+    and return 0: if error.error is algod's HTTP 400 the node answered, so
+    read its reason; otherwise it may or may not have the group, so look the
+    first transaction up and then submit the same signed_group again with
+    submit_signed_group, which cannot pay twice. When it did return success,
+    wait with algosdk on the first transaction (a group confirms as a whole)
+    for at most 10 more rounds and not past the group's last valid round, at
+    least 1. Returns the round it confirmed in, or 0 when the wait ended
+    without seeing it, which means only that the wait ended. A caller may
+    wait up to the last valid round. Once the last valid round has
+    passed, neither a node's "not found" nor a refusal proves that the group
+    never confirmed, so check an indexer before building a replacement.
+    Whenever it returns 0 it prints what acting on that advice needs."""
+    print(f"Signed group {', '.join(error.tx_ids)}: {error}")
+    if not error.submitted:
+        print(
+            "The submit call did not return success. If the cause is algod's HTTP 400, the "
+            "node answered: read its reason. Otherwise it may or may not have the group: look "
+            "up the first transaction, then submit the same signed_group again with "
+            "submit_signed_group."
+        )
+        print_group(error)
+        return 0
     try:
         current = algod_client.status()["last-round"]
-        # At least 1 round: algosdk reads 0 as 1000.
-        info = transaction.wait_for_confirmation(
-            algod_client, error.tx_ids[0], max(error.last_valid - current, 1)
+        # At most 10 rounds, so the example never blocks for long, and at
+        # least 1: algosdk reads 0 as 1000.
+        rounds = max(min(error.last_valid - current, 10), 1)
+        info = transaction.wait_for_confirmation(algod_client, error.tx_ids[0], rounds)
+    except Exception as follow_error:
+        print(
+            f"Still unknown ({follow_error}); after round {error.last_valid}, check an indexer "
+            "before building a replacement."
         )
-    except Exception as wait_error:
-        print(f"Still unknown ({wait_error}); check an indexer before building a replacement.")
+        print_group(error)
         return 0
     return info["confirmed-round"]
+
+
+def print_group(error):
+    """Print what acting on a SubmissionError needs: every entry of the
+    signed group, in the form submit_signed_group takes, the transaction IDs
+    and the last valid round."""
+    print("Signed group (hex msgpack, for submit_signed_group):")
+    for entry in error.signed_group:
+        print(f"  {entry}")
+    print(f"Transaction IDs: {', '.join(error.tx_ids)}")
+    print(f"Last valid round: {error.last_valid}")
 
 
 if __name__ == "__main__":

@@ -21,7 +21,6 @@ from aplanesdk.signer import (
     _encode_abi_method_args,
     _require_uint,
     _strict_base64,
-    send_raw_transaction,
     load_config,
     sign_prepared_cosigned_group,
 )
@@ -829,20 +828,6 @@ def test_strict_base64_is_refused_at_every_site(bad):
     with pytest.raises(ValueError, match=r"passthrough\[0\] is not valid base64"):
         client.sign_transactions([fake_signer.payment()], passthrough={0: bad})
     client.session.post.assert_not_called()
-
-    # Never submitted: algod's client would decode it leniently and send it.
-    algod = MagicMock()
-    with pytest.raises(ValueError, match="signed transaction is not valid base64") as refusal:
-        send_raw_transaction(algod, bad)
-    assert not isinstance(refusal.value, SignerError)
-    algod.send_raw_transaction.assert_not_called()
-
-
-def test_send_raw_transaction_submits_valid_base64():
-    algod = MagicMock()
-    algod.send_raw_transaction.return_value = "TXID"
-    assert send_raw_transaction(algod, "QUJD") == "TXID"
-    algod.send_raw_transaction.assert_called_once_with("QUJD")
 
 
 # Whole config files the Go and TypeScript suites load too. A YAML alias is
