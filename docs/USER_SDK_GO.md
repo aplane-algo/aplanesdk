@@ -1158,6 +1158,9 @@ return an error and never trigger another signing request automatically.
   mutation report, already checked against the request.
 - Amounts and fees in the `*PrepParams` types are in microAlgos; an asset
   amount is in the asset's base units, not adjusted for its decimals.
+- `PrepareABIAppCall` takes the method's arguments in `Args`. A non-empty
+  `AppArgs` beside them is refused: the encoded method arguments are the
+  application arguments.
 - A foreign app or asset reference, and an ABI `application` or `asset`
   argument, must not be zero. A box's app index may be zero (the called app).
 - Group helpers check every sender against everything it pays across the

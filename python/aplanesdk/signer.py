@@ -6828,6 +6828,8 @@ class SignerClient:
 
         # Build request array
         sign_requests: List[Dict[str, Any]] = []
+        # Checked whole and first, so an entry no position uses is refused too.
+        encoded_lsig_args = _encode_lsig_args_map(lsig_args_map)
         matched_lsig_args: set = set()
         for i, (txn, auth_addr) in enumerate(zip(txns, auth_addresses)):
             # Passthrough: include pre-signed transaction as-is
@@ -6896,8 +6898,8 @@ class SignerClient:
             }
 
             # Add LogicSig args if provided
-            if lsig_args_map and lsig_args_map.get(auth_addr):
-                req["lsig_args"] = _encode_lsig_args(lsig_args_map[auth_addr])
+            if encoded_lsig_args.get(auth_addr):
+                req["lsig_args"] = encoded_lsig_args[auth_addr]
 
             sign_requests.append(req)
 
@@ -8800,12 +8802,41 @@ def _encode_lsig_args(args: Any) -> Dict[str, str]:
         )
     encoded: Dict[str, str] = {}
     for name, value in args.items():
+        if not isinstance(name, str):
+            raise ValueError(
+                f"lsig_args name {name!r} must be a str, not {type(name).__name__}"
+            )
         if not isinstance(value, (bytes, bytearray, memoryview)):
             raise ValueError(
                 f"lsig_args[{name!r}] must be bytes, not {type(value).__name__}"
             )
+        # A view of wider items would be sent in the host's byte order.
+        if isinstance(value, memoryview) and value.itemsize != 1:
+            raise ValueError(
+                f"lsig_args[{name!r}] must be a view of bytes, not of {value.itemsize}-byte items"
+            )
         encoded[name] = bytes(value).hex()
     return encoded
+
+
+def _encode_lsig_args_map(lsig_args_map: Any) -> Dict[str, Dict[str, str]]:
+    """A map of auth address to LogicSig arguments, each entry encoded.
+
+    Every entry is checked, whether or not a position uses it. An entry that
+    is None has no arguments.
+    """
+    if lsig_args_map is None:
+        return {}
+    if not isinstance(lsig_args_map, Mapping):
+        raise ValueError(
+            "lsig_args_map must be a mapping of auth address to arguments, "
+            f"not {type(lsig_args_map).__name__}"
+        )
+    return {
+        address: _encode_lsig_args(args)
+        for address, args in lsig_args_map.items()
+        if args is not None
+    }
 
 
 def _encode_cosigned_lsig_args(args: Optional[Dict[str, bytes]]) -> Optional[Dict[str, str]]:

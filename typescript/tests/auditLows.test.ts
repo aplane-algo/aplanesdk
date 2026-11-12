@@ -736,7 +736,56 @@ describe("LogicSig argument encoding", () => {
   }
 });
 
+describe("LogicSig argument map", () => {
+  const client = new SignerClient("http://localhost:1");
+  const txn = fakePayment(sender, receiver);
+  const body = (map: unknown) => (client as any).buildSignRequestBody([txn], [sender], map);
+
+  it("encodes the entry of a position's authorizer", () => {
+    assert.deepEqual(body({ [sender]: { preimage: new Uint8Array([1, 2]) } }).requests[0].lsig_args, { preimage: "0102" });
+    assert.equal(body(undefined).requests[0].lsig_args, undefined);
+  });
+
+  // Each was passed over as empty, so the request was signed without the
+  // arguments and with no error.
+  it("refuses a Map in place of the object", () => {
+    assert.throws(
+      () => body(new Map([[sender, { preimage: new Uint8Array([1]) }]])),
+      (err: any) => err instanceof sdk.SignerError
+        && err.message === "lsigArgsMap must be an object of auth address to arguments, not a Map",
+    );
+  });
+
+  it("refuses a Map of arguments under the authorizer and under an address no position uses", () => {
+    for (const address of [sender, receiver]) {
+      assert.throws(
+        () => body({ [address]: new Map([["preimage", new Uint8Array([1])]]) }),
+        (err: any) => err instanceof sdk.SignerError
+          && err.message === "lsigArgs must be an object of name to Uint8Array, not a Map",
+      );
+    }
+  });
+
+  it("still refuses arguments keyed under an address no position uses", () => {
+    assert.throws(
+      () => body({ [receiver]: { preimage: new Uint8Array([1]) } }),
+      (err: any) => err instanceof sdk.SignerError && /no transaction in the request has auth address/.test(err.message),
+    );
+  });
+});
+
 describe("prepareAbiAppCall and appArgs", () => {
+  it("accepts an empty appArgs, which drops nothing", async () => {
+    const client = new SignerClient("http://localhost:1");
+    await assert.rejects(
+      client.prepareAbiAppCall({} as any, {
+        sender, appId: 7, methodSignature: "do(uint64)void", args: [42], appArgs: [],
+      } as any),
+      (err: any) => !/appArgs is not accepted/.test(String(err?.message)),
+    );
+  });
+
+
   it("refuses appArgs from an untyped caller", async () => {
     const client = new SignerClient("http://localhost:1");
     await assert.rejects(

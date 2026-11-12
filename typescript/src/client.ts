@@ -99,6 +99,7 @@ import {
 import {
   encodeTransaction,
   encodeLsigArgs,
+  encodeLsigArgsMap,
   bytesToHex,
   hexToBytes,
   cloneSignedGroup,
@@ -3715,7 +3716,9 @@ export class SignerClient {
     // call's arguments become the application arguments, so it would be
     // dropped.
     const strayAppArgs = (params as { appArgs?: unknown }).appArgs;
-    if (strayAppArgs !== undefined && strayAppArgs !== null) {
+    const noAppArgs = strayAppArgs === undefined || strayAppArgs === null
+      || (Array.isArray(strayAppArgs) && strayAppArgs.length === 0);
+    if (!noAppArgs) {
       throw new SignerError("appArgs is not accepted for an ABI call: pass the method's arguments in args");
     }
     const method = (algosdk as any).ABIMethod.fromSignature(params.methodSignature);
@@ -5284,7 +5287,8 @@ export class SignerClient {
     checked: CheckedSendOptions,
     refresh: boolean,
   ): Promise<SendResult> {
-    if (item.lsigArgs && Object.keys(item.lsigArgs).length > 0) {
+    // Encoded only to check and count them: a Map has no own keys.
+    if (item.lsigArgs && Object.keys(encodeLsigArgs(item.lsigArgs)).length > 0) {
       throw new UnsupportedGroupError(
         "group not supported by unified sending: a rotating account takes no LogicSig arguments from the caller",
       );
@@ -5447,6 +5451,8 @@ export class SignerClient {
     }
 
     const signRequests: SignRequest[] = [];
+    // Checked whole and first, so an entry no position uses is refused too.
+    const encodedLsigArgs = encodeLsigArgsMap(lsigArgsMap);
     const matchedLsigArgs = new Set<string>();
     for (let i = 0; i < txns.length; i++) {
       const txn = txns[i];
@@ -5531,8 +5537,8 @@ export class SignerClient {
       };
 
       // Add LogicSig args if provided
-      if (lsigArgsMap && lsigArgsMap[authAddr]) {
-        req.lsig_args = encodeLsigArgs(lsigArgsMap[authAddr]);
+      if (Object.prototype.hasOwnProperty.call(encodedLsigArgs, authAddr)) {
+        req.lsig_args = encodedLsigArgs[authAddr];
       }
 
       signRequests.push(req);
@@ -5545,9 +5551,9 @@ export class SignerClient {
     // authorizer of a passthrough or foreign position is fine: the same map
     // can serve several calls over one group. An entry with no args is
     // ignored.
-    const unmatched = Object.entries(lsigArgsMap ?? {})
+    const unmatched = Object.entries(encodedLsigArgs)
       .filter(([address, args]) =>
-        args && Object.keys(args).length > 0 && !matchedLsigArgs.has(address))
+        Object.keys(args).length > 0 && !matchedLsigArgs.has(address))
       .map(([address]) => JSON.stringify(address))
       .sort();
     if (unmatched.length > 0) {

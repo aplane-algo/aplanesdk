@@ -20,6 +20,7 @@ from aplanesdk.signer import (
     _parse_lsig_resource_usage,
     _encode_abi_method_args,
     _encode_lsig_args,
+    _encode_lsig_args_map,
     _require_uint,
     load_config,
     sign_prepared_cosigned_group,
@@ -990,3 +991,29 @@ class TestLsigArgEncoding:
         )
         with pytest.raises(ValueError, match="must be bytes, not str"):
             prepared.to_sign_request()
+
+    def test_refuses_a_name_that_is_not_a_str(self):
+        with pytest.raises(ValueError, match="lsig_args name 1 must be a str, not int"):
+            _encode_lsig_args({1: b"x"})
+
+    # A view of two-byte items would be sent in the host's byte order.
+    def test_refuses_a_view_of_wider_items(self):
+        import array
+
+        with pytest.raises(ValueError, match="must be a view of bytes, not of 2-byte items"):
+            _encode_lsig_args({"n": memoryview(array.array("H", [1]))})
+
+    def test_map_encodes_every_entry_and_skips_none(self):
+        assert _encode_lsig_args_map(None) == {}
+        assert _encode_lsig_args_map({"A": {"p": b"\x01"}, "B": None}) == {"A": {"p": "01"}}
+
+    @pytest.mark.parametrize("bad, kind", [([("A", {"p": b"x"})], "list"), ("A", "str")])
+    def test_map_refuses_what_is_not_a_mapping(self, bad, kind):
+        with pytest.raises(ValueError, match=f"lsig_args_map must be a mapping of auth address to arguments, not {kind}"):
+            _encode_lsig_args_map(bad)
+
+    # An entry no position uses was never looked at.
+    @pytest.mark.parametrize("bad", ["", 0, [("p", b"x")]])
+    def test_map_refuses_an_entry_that_is_not_a_mapping(self, bad):
+        with pytest.raises(ValueError, match="lsig_args must be a mapping of name to bytes"):
+            _encode_lsig_args_map({"A": bad})

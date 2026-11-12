@@ -80,6 +80,28 @@ export function encodeLsigArgs(
   return encoded;
 }
 
+/**
+ * A map of auth address to LogicSig arguments, each entry encoded as
+ * encodeLsigArgs does. Every entry is checked, whether or not a position
+ * uses it: a Map in place of the object, or of one address's arguments, has
+ * no own entries and would otherwise be passed over as empty. An entry that
+ * is null or undefined has no arguments.
+ */
+export function encodeLsigArgsMap(
+  map: Record<string, Record<string, Uint8Array>> | undefined | null
+): Record<string, Record<string, string>> {
+  const encoded: Record<string, Record<string, string>> = {};
+  if (map === undefined || map === null) return encoded;
+  if (typeof map !== "object" || typeTag(map) !== "Object") {
+    throw new SignerError(`lsigArgsMap must be an object of auth address to arguments, not ${valueKind(map)}`);
+  }
+  for (const [address, args] of Object.entries(map)) {
+    if (args === undefined || args === null) continue;
+    encoded[address] = encodeLsigArgs(args);
+  }
+  return encoded;
+}
+
 /** The built-in type tag of value, such as "Uint8Array" or "DataView". */
 function typeTag(value: unknown): string {
   return Object.prototype.toString.call(value).slice(8, -1);
