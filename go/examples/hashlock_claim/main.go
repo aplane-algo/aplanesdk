@@ -40,6 +40,7 @@ import (
 	"log"
 
 	"github.com/algorand/go-algorand-sdk/v2/client/v2/algod"
+	"github.com/algorand/go-algorand-sdk/v2/transaction"
 	"github.com/aplane-algo/aplanesdk/go"
 )
 
@@ -92,13 +93,21 @@ func main() {
 	fmt.Println("Sending hashlock claim with preimage...")
 	result, err := signer.SendPrepared(ctx, algodClient, aplane.NewPreparedGroup(*prepared), nil)
 	if err != nil {
-		// A group that was signed, or a signature that may have been
-		// released: never build a replacement until the outcome is known,
-		// because both could execute.
+		// A group that was submitted, or a signature that may have been
+		// released: never build a replacement while it can still execute,
+		// because both could.
 		var uncertain *aplane.SubmissionUncertainError
+		if errors.As(err, &uncertain) {
+			round, waitErr := waitForGroup(ctx, algodClient, uncertain)
+			if waitErr != nil {
+				log.Fatalf("Outcome unknown: %v (wait: %v). After round %d, check an indexer before building a replacement.", err, waitErr, uncertain.LastValid)
+			}
+			fmt.Printf("Confirmed %s in round %d\n", uncertain.TxIDs[0], round)
+			return
+		}
 		var unknown *aplane.SignOutcomeUnknownError
-		if errors.As(err, &uncertain) || errors.As(err, &unknown) {
-			log.Fatalf("Outcome unknown: %v\n%s", err, advice(ctx, signer, algodClient, err))
+		if errors.As(err, &unknown) {
+			log.Fatalf("Outcome unknown: %v. Do not build a replacement until round %d has passed.", err, unknown.LastValid)
 		}
 		log.Fatalf("Failed to send: %v", err)
 	}
@@ -106,12 +115,18 @@ func main() {
 	fmt.Println("Hashlock claimed successfully!")
 }
 
-// advice asks the node where an uncertain outcome stands. It signs and
-// submits nothing.
-func advice(ctx context.Context, signer *aplane.SignerClient, algodClient *algod.Client, err error) string {
-	report, resolveErr := signer.ResolveOutcome(ctx, algodClient, err)
-	if resolveErr != nil {
-		return fmt.Sprintf("Could not check the outcome (%v); look the transaction up before sending again.", resolveErr)
+// waitForGroup follows a submitted group with go-algorand-sdk until its last
+// valid round. A group confirms as a whole, so its first ID is enough. A
+// timeout means only that the wait ended.
+func waitForGroup(ctx context.Context, algodClient *algod.Client, uncertain *aplane.SubmissionUncertainError) (uint64, error) {
+	status, err := algodClient.Status().Do(ctx)
+	if err != nil {
+		return 0, err
 	}
-	return fmt.Sprintf("%s: %s", report.State, report.Advice)
+	rounds := uint64(1)
+	if uncertain.LastValid > status.LastRound {
+		rounds = uncertain.LastValid - status.LastRound
+	}
+	info, err := transaction.WaitForConfirmation(algodClient, uncertain.TxIDs[0], rounds, ctx)
+	return info.ConfirmedRound, err
 }

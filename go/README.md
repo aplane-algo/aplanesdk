@@ -392,9 +392,9 @@ Failures:
 | Error | Meaning | What to do |
 |---|---|---|
 | The signing call's own error | The signer refused (policy, operator, locked), or the SDK refused the signer's answer (`verify signer response: ...`, `ErrMaxFeeIncreaseExceeded`). Nothing was submitted. | Read the reason. If the SDK refused a sign answer, the signer did sign and the SDK discarded the result. |
-| `*SignOutcomeUnknownError` | A signing exchange ended with no answer, or with a 200 answer that could not be read (not one JSON object of the expected shape). A signature may have been released; nothing was submitted. | Call `ResolveOutcome` (below), or check with the operator or the audit log, before signing again. The error carries the ID of the request whose answer was lost (for a cosigned account, the step's `/sign/component`, `/sign/assemble` or `/sign` request) and `LastValid`, the earliest last valid round of what was sent to be signed; for a rotating account it also carries the prepared group (see below). |
+| `*SignOutcomeUnknownError` | A signing exchange ended with no answer, or with a 200 answer that could not be read (not one JSON object of the expected shape). A signature may have been released; nothing was submitted. | See [After an unknown outcome](#after-an-unknown-outcome) before signing again, or check with the operator or the audit log. The error carries the ID of the request whose answer was lost (for a cosigned account, the step's `/sign/component`, `/sign/assemble` or `/sign` request) and `LastValid`, the earliest last valid round of what was sent to be signed; for a rotating account it also carries the prepared group (see below). |
 | `*SubmissionRejectedError` | The node refused the group or dropped it from its pool. | Read the reason. The signed bytes and IDs are in the error. |
-| `*SubmissionUncertainError` | `Stage` says where it stopped: `unsent` (signed, never sent: your context ended), `submit` (the submission's answer never arrived), or `confirm` (not confirmed within the wait). Except for `unsent`, it may still confirm. | Call `ResolveOutcome` (below), or submit the same `SignedGroup` again. Do not sign a replacement until the outcome is known: both could execute. `LastValid` is the signed group's earliest last valid round. |
+| `*SubmissionUncertainError` | `Stage` says where it stopped: `unsent` (signed, never sent: your context ended), `submit` (the submission's answer never arrived), or `confirm` (not confirmed within the wait). Except for `unsent`, it may still confirm. | Follow it with go-algorand-sdk, or submit the same `SignedGroup` again (see [After an unknown outcome](#after-an-unknown-outcome)). Do not sign a replacement while it can still execute: both could. `LastValid` is the signed group's earliest last valid round. |
 
 Every 200 answer from the signer, the key list included, is read as exactly
 one non-null JSON value: a `null` body or anything after the value is an
@@ -437,52 +437,61 @@ failure without a message" or "the node returned M transaction results for N
 transactions". Go's algod client reads a `null` group result as an empty one,
 so it fails on its count of transaction results.
 
-#### After an uncertain outcome
+#### After an unknown outcome
 
-`client.ResolveOutcome(ctx, algodClient, err)` takes either "do not just send again"
-error (`*SubmissionUncertainError` or `*SignOutcomeUnknownError`, wrapped or
-not) and says where things stand; any other error is refused with
-`ErrNotUncertainOutcome`. It reads the node's current round, looks up the
-group's first transaction ID when the IDs are known, and returns an
-`*OutcomeReport`: `State`, `ConfirmedRound`, `TxIDs`, `LastValid`,
-`CurrentRound`, `SafeToReplace`, the error's `SignedGroup` or `Rotating`
-group, and one sentence of `Advice`. It never signs, never submits and never
-calls the signer; a node failure is returned as an error, not a state.
-`WaitForOutcome(ctx, algodClient, err, opts)` checks once per round until the
-state is `confirmed`, `expired` or `too_old`, and when the context or
-`WaitOutcomeOptions.Timeout` ends first returns the last report with that
-error. A zero `Timeout` means no limit beyond the context; a negative one is
-refused (`timeout must not be negative`). It refuses what `ResolveOutcome`
-refuses first, then a negative `Timeout`, and only then looks at the context,
-so an ended context never hides a refusal.
+The SDK does not look an unknown outcome up for you. A node can show that a
+transaction confirmed, but not that it never did. What to do depends on the
+error:
 
-The signer never changes validity rounds, so after `LastValid` nothing from
-the request can execute. For a signed group (`*SubmissionUncertainError`):
+- **A group was submitted** (`*SubmissionUncertainError`). The error carries
+  `TxIDs`, `SignedGroup` and `LastValid`. Follow it with go-algorand-sdk's
+  own wait: `transaction.WaitForConfirmation` on `TxIDs[0]` (a group
+  confirms as a whole), waiting `LastValid` minus the current round, at
+  least 1. Or submit the same `SignedGroup` again with `SubmitSignedGroup`:
+  it is the same transaction, so it cannot pay twice. With `Stage` `unsent`
+  the node never had the group: submit it, as there is nothing to wait for.
+  A timeout from the wait means only that the wait ended. Once `LastValid`
+  has passed, a node's "not found" is not proof that the group never
+  confirmed: a node only looks back about 1000 rounds from its current
+  round. Submitting the group again after `LastValid` is refused
+  (`*SubmissionRejectedError`) whether or not it confirmed, so that is no
+  proof either. Check an indexer before building a replacement.
+- **Nothing was submitted** (`*SignOutcomeUnknownError`, any account that is
+  not rotating). A signature may exist that the SDK never received. Once
+  `LastValid` has passed, nothing signed by that request can execute, and a
+  replacement is safe. No lookup is needed. Before that, do not build a
+  replacement with different transaction IDs.
+- **Rotating accounts** (`*SignOutcomeUnknownError` whose `Rotating` field
+  holds the prepared group). Sign the same prepared group again with
+  `SignPreparedRotating`, and submit the result with `SubmitSignedGroup`. It
+  produces the same transaction IDs, so it cannot pay twice. See
+  [Rotating accounts](#rotating-accounts) for when that retry is refused.
 
-- found in a block: `confirmed`; do not send it again;
-- in the node's pool: `pending`; wait;
-- not found, or dropped from the pool, while the current round is at most
-  `LastValid`: `not_seen`; submit the same signed group again, or wait until
-  `LastValid` has passed;
-- not found, or dropped, within 500 rounds after `LastValid`: `expired`, and
-  `SafeToReplace`;
-- more than 500 rounds after `LastValid`: `too_old`; a node only answers for
-  recent rounds, so look the ID up on an indexer before sending again.
-
-For a signing exchange (`*SignOutcomeUnknownError`, nothing submitted by the
-call): a rotating group's IDs are known, so it is looked up first and is
-`confirmed` or `pending` when the node says so. Otherwise, while the current
-round is at most `LastValid`, it is `signable`: a signature may have been
-released (for a rotating account, sign the same prepared group again or wait;
-for any other, wait until `LastValid` has passed before building a
-replacement). After `LastValid` it is `expired`, and `SafeToReplace`, with one
-exception: a rotating group not found, or dropped, more than 500 rounds after
-`LastValid` is `too_old`. Signing the same prepared group again gives the same
-transaction IDs, which may have been submitted, and a node only answers for
-recent rounds, so look the ID up on an indexer before sending again. An
-ordinary or cosigned group is not looked up and its `TxIDs` are empty: the
-signer may have changed its transactions, and its signed bytes never left the
-SDK, so it is `expired` as soon as `LastValid` has passed.
+```go
+result, err := client.SendPayment(ctx, algodClient, params, nil)
+var uncertain *aplane.SubmissionUncertainError
+if errors.As(err, &uncertain) {
+	status, statusErr := algodClient.Status().Do(ctx)
+	if statusErr != nil {
+		return statusErr
+	}
+	rounds := uint64(1)
+	if uncertain.LastValid > status.LastRound {
+		rounds = uncertain.LastValid - status.LastRound
+	}
+	info, waitErr := transaction.WaitForConfirmation(algodClient, uncertain.TxIDs[0], rounds, ctx)
+	if waitErr != nil {
+		// Only the wait ended. Do not build a replacement on the strength of it.
+		return fmt.Errorf("%w (wait: %v)", err, waitErr)
+	}
+	fmt.Println(uncertain.TxIDs[0], info.ConfirmedRound)
+	return nil
+}
+if err != nil {
+	return err
+}
+fmt.Println(result.TxIDs[0], result.ConfirmedRound)
+```
 
 #### Rotating accounts
 

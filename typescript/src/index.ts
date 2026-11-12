@@ -76,22 +76,6 @@ export type {
   RotatingSignResult,
 } from "./rotating.js";
 
-// After an uncertain outcome
-export {
-  OUTCOME_CONFIRMED,
-  OUTCOME_PENDING,
-  OUTCOME_NOT_SEEN,
-  OUTCOME_SIGNABLE,
-  OUTCOME_EXPIRED,
-  OUTCOME_TOO_OLD,
-} from "./outcome.js";
-export type {
-  OutcomeState,
-  OutcomeReport,
-  ResolveOutcomeOptions,
-  WaitForOutcomeOptions,
-} from "./outcome.js";
-
 // Utilities
 export {
   sendRawTransaction,
@@ -140,7 +124,6 @@ export {
   SignOutcomeUnknownError,
   SubmissionRejectedError,
   SubmissionUncertainError,
-  WaitForOutcomeError,
   RotatingPreflightError,
   SEND_STAGE_SUBMIT,
   SEND_STAGE_CONFIRM,

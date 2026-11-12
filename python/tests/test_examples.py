@@ -1,8 +1,9 @@
 """The examples are not run in CI (they need a signer and a node), so check
 what can be checked without one: each compiles, every name it imports from
 aplanesdk exists, every method it calls on the signer client exists, and an
-uncertain outcome the node cannot be asked about is printed and raised as it
-was."""
+unknown outcome is handled as the SDK docs say: a submitted group is waited
+for with algosdk until its last valid round, an unknown sign outcome asks the
+node nothing, and an outcome the wait does not settle is raised as it was."""
 
 import ast
 import importlib.util
@@ -67,31 +68,92 @@ def _load(path):
     return module
 
 
-@pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
-@pytest.mark.parametrize("kind", ["submission", "sign"])
-def test_an_outcome_that_cannot_be_checked_raises_the_original_error(
-    path, kind, monkeypatch, capsys
-):
-    if kind == "submission":
-        error = SubmissionUncertainError(
-            SEND_STAGE_CONFIRM, ["aa", "bb"], ["TXONE", "TXTWO"], SignerError("gone"), last_valid=10
-        )
-    else:
-        error = SignOutcomeUnknownError(SignerError("gone"), request_id="req-7", last_valid=10)
+def _run(path, monkeypatch, error, algod_client):
+    """Run the example's main against a signer whose send raises error and an
+    algod client that is algod_client."""
     signer = mock.MagicMock()
     signer.get_key_info.return_value = None
     signer.send_prepared.side_effect = error
     signer.send_payment.side_effect = error
-    signer.resolve_outcome.side_effect = SignerError("node down")
     factory = mock.MagicMock()
     factory.from_env.return_value.__enter__.return_value = signer
+    algod_module = mock.MagicMock()
+    algod_module.AlgodClient.return_value = algod_client
     module = _load(path)
     monkeypatch.setattr(module, "SignerClient", factory)
+    monkeypatch.setattr(module, "algod", algod_module)
+    return module.main()
 
-    with pytest.raises(type(error)) as excinfo:
-        module.main()
+
+def _submission_error(last_valid=10):
+    return SubmissionUncertainError(
+        SEND_STAGE_CONFIRM,
+        ["aa", "bb"],
+        ["TXONE", "TXTWO"],
+        SignerError("gone"),
+        last_valid=last_valid,
+    )
+
+
+@pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
+def test_a_submission_the_wait_cannot_settle_raises_the_original_error(path, monkeypatch, capsys):
+    error = _submission_error()
+    algod_client = mock.MagicMock()
+    algod_client.status.side_effect = SignerError("node down")
+
+    with pytest.raises(SubmissionUncertainError) as excinfo:
+        _run(path, monkeypatch, error, algod_client)
 
     assert excinfo.value is error
     out = capsys.readouterr().out
-    assert ("TXONE, TXTWO" if kind == "submission" else "request req-7") in out
-    assert "Could not check the outcome (node down)" in out
+    assert "TXONE, TXTWO" in out
+    assert "Still unknown (node down)" in out
+
+
+@pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
+@pytest.mark.parametrize(
+    "current,waited",
+    [(5, [6, 7, 8, 9, 10]), (10, [11]), (20, [21])],
+    ids=["until last valid", "at last valid", "past last valid"],
+)
+def test_a_submitted_group_is_waited_for_until_its_last_valid_round(
+    path, current, waited, monkeypatch, capsys
+):
+    # The wait follows the first transaction for last valid - current rounds,
+    # at least one, then gives up without claiming anything.
+    error = _submission_error(last_valid=10)
+    algod_client = mock.MagicMock()
+    algod_client.status.return_value = {"last-round": current}
+    algod_client.pending_transaction_info.return_value = {"confirmed-round": 0, "pool-error": ""}
+
+    with pytest.raises(SubmissionUncertainError) as excinfo:
+        _run(path, monkeypatch, error, algod_client)
+
+    assert excinfo.value is error
+    assert {c.args[0] for c in algod_client.pending_transaction_info.call_args_list} == {"TXONE"}
+    assert [c.args[0] for c in algod_client.status_after_block.call_args_list] == waited
+    assert "check an indexer before building a replacement" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
+def test_a_submitted_group_the_wait_sees_confirmed_is_reported(path, monkeypatch, capsys):
+    algod_client = mock.MagicMock()
+    algod_client.status.return_value = {"last-round": 5}
+    algod_client.pending_transaction_info.return_value = {"confirmed-round": 7, "pool-error": ""}
+
+    _run(path, monkeypatch, _submission_error(), algod_client)
+
+    assert "Confirmed TXONE in round 7" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
+def test_an_unknown_sign_outcome_asks_the_node_nothing_and_raises(path, monkeypatch, capsys):
+    error = SignOutcomeUnknownError(SignerError("gone"), request_id="req-7", last_valid=10)
+    algod_client = mock.MagicMock()
+
+    with pytest.raises(SignOutcomeUnknownError) as excinfo:
+        _run(path, monkeypatch, error, algod_client)
+
+    assert excinfo.value is error
+    assert algod_client.mock_calls == []
+    assert "request req-7" in capsys.readouterr().out

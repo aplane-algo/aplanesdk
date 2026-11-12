@@ -306,13 +306,6 @@ class TestNoLimit:
         result = client.send_prepared(_StrictAlgod(node), prepared(txn), timeout=None)
         assert result.outcome == SEND_OUTCOME_CONFIRMED
 
-    def test_resolving_without_a_limit_calls_the_node_as_before(self, fakes):
-        node = fakes(FakeNode(round=50))
-        error = SignOutcomeUnknownError(SignerError("gone"), last_valid=40)
-        client = signer_client("http://127.0.0.1:9")
-        assert client.resolve_outcome(_StrictAlgod(node), error).state == "expired"
-        assert client.wait_for_outcome(_StrictAlgod(node), error).state == "expired"
-
     def test_a_limit_long_enough_changes_nothing(self, fakes):
         txn, signer, node, client = ordinary(fakes, "/none")
         result = client.send_prepared(node.client, prepared(txn), timeout=30)

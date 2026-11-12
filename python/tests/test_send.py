@@ -48,6 +48,7 @@ from tests.send_fakes import (
     alternate_spelling,
     key,
     reply,
+    rotating_payment,
     signer_client,
     status_body,
     truncated,
@@ -591,13 +592,19 @@ def test_typed_send_errors_pickle_with_their_fields():
     import pickle
 
     rejected = SubmissionRejectedError(["aa"], ["ID"], SignerError("no"))
-    uncertain = SubmissionUncertainError(SEND_STAGE_CONFIRM, ["aa"], ["ID"], SignerError("no"))
-    unknown = SignOutcomeUnknownError(SignerError("gone"), request_id="r1", requests=[{}])
+    uncertain = SubmissionUncertainError(
+        SEND_STAGE_CONFIRM, ["aa"], ["ID"], SignerError("no"), last_valid=1000
+    )
+    unknown = SignOutcomeUnknownError(
+        SignerError("gone"), request_id="r1", requests=[{}], last_valid=1000
+    )
     for error in (rejected, uncertain, unknown):
         clone = pickle.loads(pickle.dumps(error))
         assert type(clone) is type(error) and str(clone) == str(error)
     assert pickle.loads(pickle.dumps(uncertain)).stage == SEND_STAGE_CONFIRM
     assert pickle.loads(pickle.dumps(unknown)).request_id == "r1"
+    for error in (uncertain, unknown):
+        assert pickle.loads(pickle.dumps(error)).last_valid == 1000
 
 
 # -----------------------------------------------------------------------------
@@ -1734,3 +1741,113 @@ def test_a_rekey_to_a_rotating_account_spelled_otherwise_is_refused(fakes):
         client.prepare_rekey(node.client, sender=_SENDER, rekey_to=rotating)
     with pytest.raises(ValueError, match="not the canonical spelling"):
         client.prepare_rekey(node.client, sender=_SENDER, rekey_to=alternate_spelling(rotating))
+
+
+# -----------------------------------------------------------------------------
+# last_valid on the two uncertain errors, in every flow
+# -----------------------------------------------------------------------------
+
+
+def _payment_valid_to(sender_seed, receiver_seed, last_valid):
+    txn = fake_signer.payment(sender_seed, receiver_seed)
+    txn.last_valid_round = last_valid
+    return txn
+
+
+class TestLastValidInEveryFlow:
+    def test_an_ordinary_lost_answer(self, fakes):
+        first = _payment_valid_to(41, 42, 1500)
+        second = _payment_valid_to(43, 44, 1200)
+        signer, node, client = make(
+            fakes, SendSigner([key(first.sender), key(second.sender)], sign=lambda _: DROP)
+        )
+        group = PreparedGroup(
+            [
+                PreparedTransaction(transaction=first, auth_address=first.sender),
+                PreparedTransaction(transaction=second, auth_address=second.sender),
+            ]
+        )
+        with pytest.raises(SignOutcomeUnknownError) as excinfo:
+            client.send_prepared(node.client, group)
+        assert excinfo.value.last_valid == 1200
+
+    def test_an_ordinary_fault_describing_the_signed_group(self, fakes, monkeypatch):
+        txn = _payment_valid_to(41, 42, 1300)
+        signer, node, client = make(fakes, SendSigner([key(txn.sender)]))
+
+        def fault(result):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(signer_module, "_describe_signed_group", fault)
+        with pytest.raises(SignOutcomeUnknownError) as excinfo:
+            client.send_prepared(
+                node.client, PreparedTransaction(transaction=txn, auth_address=txn.sender)
+            )
+        assert excinfo.value.last_valid == 1300
+
+    @pytest.mark.parametrize("fault", ["/sign/component drop", "/sign/assemble truncate"])
+    def test_a_cosigned_lost_answer(self, fakes, fault):
+        fixture = CosignedFixture(fakes, fault=fault)
+        with pytest.raises(SignOutcomeUnknownError) as excinfo:
+            fixture.send(
+                cosigner_client=fixture.cosigner_client,
+                cosigner_component_key="COSIGNER_COMPONENT",
+            )
+        assert excinfo.value.last_valid == fixture.txn.last_valid_round == 100
+
+    def test_a_rotating_send(self, fakes):
+        signer = fakes(RotatingSigner(fake_signer.account(41)))
+        node = fakes(FakeNode())
+        client = signer_client(signer.http.url)
+        signer.sign_errors = [None]
+        txn = rotating_payment(signer.account, 10, 110)
+        with pytest.raises(SignOutcomeUnknownError) as excinfo:
+            client.send_prepared(
+                node.client, PreparedTransaction(transaction=txn, auth_address=txn.sender)
+            )
+        assert excinfo.value.rotating is not None
+        assert excinfo.value.last_valid == 110
+
+    def test_the_rotating_step_call(self, fakes):
+        signer = fakes(RotatingSigner(fake_signer.account(41)))
+        client = signer_client(signer.http.url)
+        prepared = client.prepare_rotating(rotating_payment(signer.account, 10, 105))
+        signer.sign_errors = [None]
+        with pytest.raises(SignOutcomeUnknownError) as excinfo:
+            client.sign_prepared_rotating(prepared)
+        assert excinfo.value.rotating is prepared
+        assert excinfo.value.last_valid == 105
+
+    def test_a_rotating_fault_describing_the_signed_group(self, fakes, monkeypatch):
+        signer = fakes(RotatingSigner(fake_signer.account(41)))
+        node = fakes(FakeNode())
+        client = signer_client(signer.http.url)
+        txn = rotating_payment(signer.account, 10, 108)
+
+        def fault(result):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(signer_module, "_describe_signed_group", fault)
+        with pytest.raises(SignOutcomeUnknownError) as excinfo:
+            client.send_prepared(
+                node.client, PreparedTransaction(transaction=txn, auth_address=txn.sender)
+            )
+        assert excinfo.value.last_valid == 108
+
+    @pytest.mark.parametrize(
+        "node_options,stage",
+        [
+            ({"submit": lambda _blob: reply(500, {"message": "boom"})}, SEND_STAGE_SUBMIT),
+            ({"pending": lambda: {}}, SEND_STAGE_CONFIRM),
+        ],
+    )
+    def test_a_submission(self, fakes, node_options, stage):
+        txn = _payment_valid_to(41, 42, 1400)
+        signer, node, client = make(fakes, SendSigner([key(txn.sender)]), FakeNode(**node_options))
+        with pytest.raises(SubmissionUncertainError) as excinfo:
+            client.send_prepared(
+                node.client,
+                PreparedTransaction(transaction=txn, auth_address=txn.sender),
+                wait_rounds=1,
+            )
+        assert excinfo.value.stage == stage and excinfo.value.last_valid == 1400

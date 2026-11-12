@@ -3,7 +3,6 @@
 
 import type { SignRequest } from "./types.js";
 import type { PreparedRotating } from "./rotating.js";
-import type { OutcomeReport } from "./outcome.js";
 
 /**
  * Base exception for signer errors.
@@ -232,15 +231,17 @@ export class CosignerDiscoveryError extends SignerError {
  * /sign/component, /sign/assemble or primary /sign request. `requests` is
  * set for the ordinary /sign flow; `rotating` is the prepared group of a
  * rotating account, and calling signPreparedRotating with it again asks for
- * the same transaction and is the safe recovery. Do not build and sign a replacement transaction on the
- * strength of this error alone: check the request with the operator or the
- * signer's audit log first, or call SignerClient.resolveOutcome with it.
- * `cause` is the failure that ended the exchange.
+ * the same transaction, with the same IDs, and is the safe recovery. For any
+ * other account, do not build a replacement with different transaction IDs
+ * until the round `lastValid` has passed; the operator or the signer's audit
+ * log can say what happened to the request. `cause` is the failure that
+ * ended the exchange.
  *
  * `lastValid` is the earliest last valid round among the transactions sent to
  * be signed (of the prepared group, for a rotating account). The signer never
  * changes a validity round, so after that round no signature the request
- * released can execute.
+ * released can execute, and for an account that is not rotating a
+ * replacement is then safe without any lookup.
  */
 export class SignOutcomeUnknownError extends SignerError {
   readonly requestId: string;
@@ -278,7 +279,10 @@ function firstOrEmpty(values: string[]): string {
 /**
  * The network refused the signed group: the node rejected it on submission,
  * or dropped it from its pool. The signed bytes (hex msgpack) and their IDs
- * are kept.
+ * are kept. After the group's last valid round, algod refuses it as "txn
+ * dead" whether or not it confirmed earlier, because it checks the validity
+ * rounds before it looks for a duplicate; such a refusal of a group
+ * submitted again does not show that it never confirmed.
  */
 export class SubmissionRejectedError extends SignerError {
   readonly signedGroup: string[];
@@ -310,11 +314,17 @@ export const SEND_STAGE_UNSENT = "unsent";
 
 /**
  * A signed group this call did not see confirmed or refused. Unless `stage`
- * is "unsent" the group may still confirm. Look its IDs up (or call
- * SignerClient.resolveOutcome with this error), or submit the same
- * `signedGroup` again while it is valid; never sign a replacement until the
- * outcome is known, because both could execute. `lastValid` is the earliest
- * last valid round of the signed group: after it, the group cannot execute.
+ * is "unsent" the group may still confirm. Wait for it with algosdk's
+ * waitForConfirmation on the first of `txIds` (a group confirms as a whole),
+ * for at least 1 round, or submit the same `signedGroup` again with
+ * SignerClient.submitSignedGroup: the same bytes can execute only once. At
+ * stage "unsent" the node never had the group, so submit it; there is
+ * nothing to wait for. Never sign a replacement until the outcome is known,
+ * because both could execute. `lastValid` is the earliest last valid round
+ * of the signed group: after it, the group cannot execute, but neither a
+ * node's "not found" nor a "txn dead" refusal of the group submitted again
+ * proves that it never confirmed, so check an indexer before building a
+ * replacement.
  */
 export class SubmissionUncertainError extends SignerError {
   readonly stage: SendStage;
@@ -336,24 +346,6 @@ export class SubmissionUncertainError extends SignerError {
     this.signedGroup = [...signedGroup];
     this.txIds = [...txIds];
     this.lastValid = lastValid;
-    this.cause = cause;
-  }
-}
-
-/**
- * waitForOutcome ended before the outcome settled: the caller's signal was
- * aborted, its time limit passed, or the node failed. `report` is the last
- * report it made, if it made one; `cause` says why the wait ended. Nothing
- * was signed or submitted by the wait.
- */
-export class WaitForOutcomeError extends SignerError {
-  readonly report?: OutcomeReport;
-  readonly cause: unknown;
-
-  constructor(report: OutcomeReport | undefined, cause: unknown) {
-    super(`waiting for the outcome ended before it settled: ${errorText(cause)}`);
-    this.name = "WaitForOutcomeError";
-    this.report = report;
     this.cause = cause;
   }
 }

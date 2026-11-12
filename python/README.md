@@ -366,9 +366,9 @@ Failures:
 | Exception | Meaning | What to do |
 |---|---|---|
 | The signing call's own `SignerError` | The signer refused (policy, operator, locked), or the SDK refused the signer's answer (`verify signer response: ...`, `MaxFeeIncreaseError`). Nothing was submitted. | Read the reason. If the SDK refused a sign answer, the signer did sign and the SDK discarded the result. |
-| `SignOutcomeUnknownError` | A signing exchange ended with no usable answer: none arrived, the signer's 200 answer could not be read (not exactly one JSON object of the expected shape: empty, cut off, `null`, not an object, text after it, or a field of the wrong type or out of range), or checking, decoding or describing it raised an exception that is not one of the SDK's own refusals (a fault in the SDK's checks, not a verdict on the answer). A signature may have been released; nothing was submitted. | Check with the operator or the audit log before signing again. The error's `request_id` names the request whose answer was lost: the `/sign` of the ordinary flow (which also carries `requests`), the `/sign/component`, `/sign/assemble` or primary `/sign` of the cosigned sequence (for a fault between its requests, the last of them that answered), or the rotating sign request, whose error carries the prepared group in `rotating` (see below). |
+| `SignOutcomeUnknownError` | A signing exchange ended with no usable answer: none arrived, the signer's 200 answer could not be read (not exactly one JSON object of the expected shape: empty, cut off, `null`, not an object, text after it, or a field of the wrong type or out of range), or checking, decoding or describing it raised an exception that is not one of the SDK's own refusals (a fault in the SDK's checks, not a verdict on the answer). A signature may have been released; nothing was submitted. | Do not send again; see "After an unknown outcome" below. The error's `request_id` names the request whose answer was lost: the `/sign` of the ordinary flow (which also carries `requests`), the `/sign/component`, `/sign/assemble` or primary `/sign` of the cosigned sequence (for a fault between its requests, the last of them that answered), or the rotating sign request, whose error carries the prepared group in `rotating` (see below). |
 | `SubmissionRejectedError` | The node refused the group or dropped it from its pool. | Read the reason. The signed bytes and IDs are in `signed_group` and `tx_ids`. |
-| `SubmissionUncertainError` | `stage` says where it stopped: `"submit"` (the submission's answer never arrived), `"confirm"` (not confirmed within the wait), or `"unsent"` (the call's `timeout` passed after signing, before submission; the node does not have it). Unless unsent, it may still confirm. | Look up `tx_ids`, or submit the same `signed_group` again with `submit_signed_group`. Do not sign a replacement until the outcome is known: both could execute. |
+| `SubmissionUncertainError` | `stage` says where it stopped: `"submit"` (the submission's answer never arrived), `"confirm"` (not confirmed within the wait), or `"unsent"` (the call's `timeout` passed after signing, before submission; the node does not have it). Unless unsent, it may still confirm. | Wait for `tx_ids[0]`, or submit the same `signed_group` again with `submit_signed_group`; see "After an unknown outcome" below. Do not sign a replacement until the outcome is known: both could execute. |
 
 A node that answers "already in ledger" has a transaction with the same ID
 from an earlier submission of the group. The SDK treats that as submitted and
@@ -382,8 +382,7 @@ approval is pending is canceled with a best-effort `/sign/cancel`, as for the
 other signing calls; such an ending is a `SignOutcomeUnknownError`.
 
 `timeout=` (seconds, the whole call) sets one, on `send_prepared`,
-`send_payment`, `prepare_rotating`, `sign_prepared_rotating` and
-`wait_for_outcome`. Every HTTP request to a signer, a cosigner or the node is
+`send_payment`, `prepare_rotating` and `sign_prepared_rotating`. Every HTTP request to a signer, a cosigner or the node is
 held to what remains, and the steps check it in between; it does not
 interrupt a call already blocked outside HTTP. Where it passes decides what
 you get, as in the Go SDK when its context deadline passes:
@@ -445,79 +444,58 @@ or "the node returned M transaction results for N transactions". Each field
 is chosen by presence: `txn-groups` is read when present, even empty, and
 `txn_groups` only when it is not, and so for the failure message.
 
-#### After an uncertain outcome
+#### After an unknown outcome
 
-`client.resolve_outcome(algod_client, error)` takes a
-`SignOutcomeUnknownError` or a `SubmissionUncertainError` and says where
-things stand, from the node alone: it never signs, never submits and never
-calls the signer. Both errors carry `last_valid`, the earliest last valid
-round of what was sent to be signed (the signer never changes validity
-rounds, so it is the signed group's too); after it nothing that request
-released can execute. The helper reads the node's current round, then looks
-up the first transaction ID when the IDs are known (a group is atomic). The
-`OutcomeReport` it returns has `state`, `confirmed_round` (0 unless
-confirmed), `tx_ids`, `last_valid`, `current_round`, `safe_to_replace`,
-`signed_group` and `rotating` (when the error carried them) and `advice`, one
-sentence on what to do.
+Which case applies depends on the error.
 
-For a `SubmissionUncertainError`, whose signed bytes and IDs are known:
+**A group was submitted** (`SubmissionUncertainError`). The error carries the
+transaction IDs (`tx_ids`), the signed group (`signed_group`) and the last
+valid round (`last_valid`, the earliest in the group). Follow it with
+algosdk's own wait: `transaction.wait_for_confirmation` on `tx_ids[0]` (a
+group confirms as a whole), waiting `last_valid` minus the current round, at
+least 1 (algosdk reads 0 as 1000 rounds). Or submit the same `signed_group`
+again with `submit_signed_group`: it is the same transaction, so it cannot pay
+twice.
 
-- the node has it in a block: `confirmed`;
-- it is in the node's pool: `pending`;
-- the node does not have it (or dropped it with a pool error) and the current
-  round is at most `last_valid`: `not_seen`, it can still execute; submit the
-  same signed group again, or wait until `last_valid` has passed;
-- not found, or a pool error, and the current round is past `last_valid` by
-  at most 500 rounds: `expired`, and `safe_to_replace` is true;
-- past `last_valid` by more than 500 rounds: `too_old`; a node answers only
-  for recent rounds, so a confirmed transaction can look not found. Look the
-  ID up on an indexer before sending again.
+- A timeout from the wait (`ConfirmationTimeoutError`) means only that the
+  wait ended.
+- With stage `"unsent"` the node never had the group, so there is nothing to
+  wait for: submit `signed_group` with `submit_signed_group`.
+- Submitting again tells you something only while the group is still valid.
+  After `last_valid`, algod refuses the group as dead even if it confirmed
+  earlier (it checks validity before duplicates), and the SDK reports that as
+  `SubmissionRejectedError`.
+- Once `last_valid` has passed, a node's "not found" is not proof that the
+  transaction never confirmed: a node only looks back about 1000 rounds from
+  the current round. Check an indexer before building a replacement.
 
-For a `SignOutcomeUnknownError`, where this call submitted nothing:
+**Nothing was submitted** (`SignOutcomeUnknownError`, any account that is not
+rotating). A signature may exist that the SDK never received. Once
+`last_valid` has passed, nothing signed by that request can execute, and a
+replacement is safe. No lookup is needed. Before that, do not build a
+replacement with different transaction IDs.
 
-- a rotating account's prepared group is looked up first: `confirmed` or
-  `pending` as above; not found, or a pool error, falls through to the rounds;
-- the current round is at most `last_valid`: `signable`, a signature may have
-  been released and can still execute (for a rotating account, sign the same
-  prepared group again; otherwise wait until `last_valid` has passed before
-  building a replacement);
-- for a rotating account, the current round is past `last_valid` by at most
-  500 rounds: `expired`, `safe_to_replace`; past it by more than 500 rounds:
-  `too_old`. Signing the same prepared group again gives the same IDs, which
-  may then have been submitted, so the group can have confirmed, and the node
-  may no longer remember it. Look the ID up on an indexer before sending
-  again;
-- for an account that is not rotating, the current round is past
-  `last_valid`: `expired`, `safe_to_replace`. There is no `too_old` here: this
-  call never submitted, and the signed bytes never left the SDK, so expiry
-  alone settles it. There are no IDs to look up (the signer may have changed
-  the transactions), so `tx_ids` is empty.
+**Rotating accounts** (`SignOutcomeUnknownError` whose `rotating` holds the
+prepared group). Sign the same prepared group again with
+`sign_prepared_rotating` and submit the result with `submit_signed_group` (see
+"If a sign answer is lost" below). It produces the same transaction IDs, so it
+cannot pay twice.
 
-The state names are the constants `OUTCOME_CONFIRMED`, `OUTCOME_PENDING`,
-`OUTCOME_NOT_SEEN`, `OUTCOME_SIGNABLE`, `OUTCOME_EXPIRED` and
-`OUTCOME_TOO_OLD`. Any other error, or `None`, is refused with `SignerError`
-"not an uncertain outcome"; so is an error with no last valid round, or a
-submission error with no transaction IDs. A node failure other than the
-lookup's "not found" is raised, never turned into a state.
-
-`client.wait_for_outcome(algod_client, error, timeout=None)` resolves once a
-round, waiting for each next round with the node's status-after-block call,
-until the state is `confirmed`, `expired` or `too_old`. `timeout` is in
-seconds, for the whole call: `None` (the default) sets no limit; 0, a
-negative or a non-finite number is refused with `ValueError`, but only after
-the refusals of the error above, which come first. The limit is checked
-before each check of the node: when it passes, `SendTimeoutError` is raised
-with the last report as its `report`, or `None`, with nothing asked of the
-node, when it passed before the first.
+A `SendTimeoutError` raised on its own means nothing that can execute was
+signed. When the time limit passes later in the call, it is the `error` of
+one of the two errors above, and that error's case applies.
 
 ```python
+from algosdk import transaction
+
 try:
     result = client.send_prepared(algod_client, prepared)
-except (SignOutcomeUnknownError, SubmissionUncertainError) as error:
-    report = client.resolve_outcome(algod_client, error)
-    print(report.state, report.advice)
-    if not report.safe_to_replace:
-        raise
+except SubmissionUncertainError as error:
+    current = algod_client.status()["last-round"]
+    info = transaction.wait_for_confirmation(
+        algod_client, error.tx_ids[0], max(error.last_valid - current, 1)
+    )
+    print("confirmed in round", info["confirmed-round"])
 ```
 
 #### Rotating accounts

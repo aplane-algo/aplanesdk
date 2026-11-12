@@ -415,95 +415,10 @@ Failures:
 | Error | Meaning | What to do |
 |---|---|---|
 | The signing call's own error | The signer refused (policy, operator, locked), or the SDK refused the signer's answer (`verify signer response: ...`, `MaxFeeIncreaseError`). Nothing was submitted. | Read the reason. If the SDK refused a sign answer, the signer did sign and the SDK discarded the result. |
-| `SignOutcomeUnknownError` | A signing exchange ended with no answer, or with a 200 answer that could not be read (not one JSON object of the expected shape), or the SDK failed while checking or describing a 200 answer (a fault in the SDK: anything thrown that is not a `SignerError`). A signature may have been released; nothing was submitted. | Call `resolveOutcome` with it (see [After an uncertain outcome](#after-an-uncertain-outcome)), or check with the operator or the audit log, before signing again. `requestId` names the request whose answer was lost: the `/sign` request of the ordinary flow, the rotating sign request, or the cosigned sequence's `/sign/component`, `/sign/assemble` or `/sign` request. `lastValid` is the earliest last valid round of the transactions sent to be signed. For the ordinary flow the error also carries `requests`; for a rotating account it carries the prepared group in `rotating` (see below). |
-| `SubmissionRejectedError` | The node refused the group or dropped it from its pool. | Read the reason. The signed bytes and IDs are in `signedGroup` and `txIds`. |
-| `SubmissionUncertainError` | `stage` says where it stopped: `"unsent"` (signed, never sent: your signal was aborted), `"submit"` (the submission's answer never arrived), or `"confirm"` (not confirmed within the wait). Except for `"unsent"`, it may still confirm. | Call `resolveOutcome` with it, look up `txIds`, or submit the same `signedGroup` again. Do not sign a replacement until the outcome is known: both could execute. `lastValid` is the signed group's earliest last valid round. |
+| `SignOutcomeUnknownError` | A signing exchange ended with no answer, or with a 200 answer that could not be read (not one JSON object of the expected shape), or the SDK failed while checking or describing a 200 answer (a fault in the SDK: anything thrown that is not a `SignerError`). A signature may have been released; nothing was submitted. | See [After an unknown outcome](#after-an-unknown-outcome): do not build a replacement with different transaction IDs until `lastValid` has passed, or check with the operator or the audit log. `requestId` names the request whose answer was lost: the `/sign` request of the ordinary flow, the rotating sign request, or the cosigned sequence's `/sign/component`, `/sign/assemble` or `/sign` request. `lastValid` is the earliest last valid round of the transactions sent to be signed. For the ordinary flow the error also carries `requests`; for a rotating account it carries the prepared group in `rotating` (see below). |
+| `SubmissionRejectedError` | The node refused the group or dropped it from its pool. | Read the reason. The signed bytes and IDs are in `signedGroup` and `txIds`. A "txn dead" refusal of a group submitted again after its last valid round does not show that it never confirmed. |
+| `SubmissionUncertainError` | `stage` says where it stopped: `"unsent"` (signed, never sent: your signal was aborted), `"submit"` (the submission's answer never arrived), or `"confirm"` (not confirmed within the wait). Except for `"unsent"`, it may still confirm. | Wait for the first of `txIds` with algosdk's `waitForConfirmation`, or submit the same `signedGroup` again (see [After an unknown outcome](#after-an-unknown-outcome)). Do not sign a replacement until the outcome is known: both could execute. `lastValid` is the signed group's earliest last valid round. |
 | `CosignerDiscoveryError` | The SDK could not route a cosigned account's witness key to exactly one cosigner endpoint of `endpoints.yaml`. Nothing was signed that needed the cosigner. | Read the reason: it names every cosigner endpoint and its state. |
-
-#### After an uncertain outcome
-
-`resolveOutcome(algodClient, error, options?)` takes a
-`SignOutcomeUnknownError` or a `SubmissionUncertainError` and says where
-things stand. It asks the node only: it never signs, never submits and never
-calls the signer. It rests on two facts: the signer never submits, so a
-signature it released reaches the chain only if someone holding the signed
-bytes submits them; and a transaction cannot execute after its last valid
-round, which the signer never changes. The report's `state` is one of
-`confirmed`, `pending`, `not_seen`, `signable`, `expired` and `too_old`;
-`safeToReplace` says whether building a replacement is safe now, `advice`
-says what to do in one sentence, and `confirmedRound`, `txIds`, `lastValid`,
-`currentRound`, `signedGroup` and `rotating` carry the details.
-
-```typescript
-try {
-  await client.sendPayment(algodClient, { sender, receiver, amount: 1_000_000 });
-} catch (error) {
-  if (error instanceof SignOutcomeUnknownError || error instanceof SubmissionUncertainError) {
-    try {
-      const report = await client.resolveOutcome(algodClient, error);
-      console.log(report.state, report.advice);
-    } catch (checkError) {
-      // The check failed; the outcome is still unknown, and error still stands.
-      console.log("could not check the outcome:", checkError);
-    }
-  }
-  throw error;
-}
-```
-
-The examples do the same: they print the uncertain error with its
-transaction IDs or request ID, then the report's advice or a line saying the
-outcome could not be checked, and throw the original error either way.
-
-After a `SubmissionUncertainError` the signed group and its IDs are known.
-The node's last round is read first, then the first transaction ID is looked
-up (a group is atomic, so one is enough):
-
-- found in a block: `confirmed`; do not send it again;
-- in the node's pool: `pending`; wait;
-- not found, or dropped from the pool, while the last round is at most
-  `lastValid`: `not_seen`; submit the same signed group again
-  (`submitSignedGroup`), or wait until `lastValid` has passed;
-- not found or dropped, and the last round is past `lastValid` by at most
-  500 rounds: `expired`, and safe to replace;
-- not found or dropped, more than 500 rounds past `lastValid`: `too_old`. A
-  node answers only for recent rounds, so past that margin a confirmed
-  transaction can look "not found": look the ID up on an indexer.
-
-After a `SignOutcomeUnknownError` nothing was submitted by the call. For a
-rotating account the prepared group's IDs are known, so the spend is looked
-up first: `confirmed` or `pending` as above, and otherwise the rounds decide.
-For any other account the signer may have changed the transactions, so there
-are no IDs and no lookup (`txIds` is empty):
-
-- the last round is at most `lastValid`: `signable`. A released signature can
-  still execute: for a rotating account sign the same prepared group again,
-  otherwise wait until `lastValid` has passed before building a replacement;
-- a rotating account, not found or dropped (or a hand-built prepared group
-  with no IDs to look up), more than 500 rounds past `lastValid`: `too_old`. Signing the same prepared group again gives the
-  same transaction IDs, which may since have been submitted, and past that
-  margin the node may no longer remember them: look the ID up on an indexer;
-- the last round is past `lastValid` (for a rotating account, by at most 500
-  rounds): `expired`, and safe to replace. Any other account has no
-  `too_old`: its signed bytes never leave the SDK, so expiry alone settles
-  it.
-
-Any other node failure is thrown, never turned into a state. Before the node
-is asked anything, these are refused, in this order: any other error, `null`
-included ("not an uncertain outcome"); an error with no last valid round; a
-`SubmissionUncertainError` with no transaction IDs (or an empty first one);
-a missing algod client.
-
-`waitForOutcome(algodClient, error, { signal?, timeoutMs? })` calls
-`resolveOutcome` once per round (it waits for each next round with the node's
-status-after-block call) until the state is `confirmed`, `expired` or
-`too_old`. If the signal is aborted, `timeoutMs` passes or the node fails
-first, it throws a `WaitForOutcomeError` whose `report` is the last report
-(none if the wait ended before the first check) and whose `cause` says why.
-It never signs or submits anything. `timeoutMs` unset or 0 means no limit; a
-negative, non-finite or non-number value, or one above 2^31-1 ms, is
-refused. The error refusals above come first: an error `resolveOutcome`
-would refuse is refused for that reason, whatever `timeoutMs` is.
 
 A node that answers "already in ledger" has a transaction with the same ID
 from an earlier submission of the group. The SDK treats that as submitted and
@@ -563,6 +478,49 @@ reported a failure without a message" for a failed-at alone, or "the node
 returned no result for the group", "the node returned N results for one
 group", "the node's result for the group is not an object" or "the node
 returned M transaction results for N transactions".
+
+#### After an unknown outcome
+
+**A group was submitted** (`SubmissionUncertainError`). The error carries the
+transaction IDs (`txIds`), the signed group (`signedGroup`) and the last valid
+round (`lastValid`). Follow it with algosdk's own wait: `waitForConfirmation`
+on the first transaction ID (a group confirms as a whole), waiting `lastValid`
+minus the current round, at least 1. Given 0 rounds, algosdk's wait throws
+without looking the transaction up. Or submit the same signed group again
+with `submitSignedGroup`: it is the same transaction, so it cannot pay twice.
+At stage `"unsent"` the node never had the group, so there is nothing to wait
+for: submit it with `submitSignedGroup`. A timeout from the wait means only
+that the wait ended. Once `lastValid` has passed, a node's "not found" is not
+proof that the transaction never confirmed (a node only looks back about 1000
+rounds from its current round). Submitting the group again is no proof
+either: after `lastValid`, algod refuses it as "txn dead" whether or not it
+confirmed, because it checks the validity rounds before it looks for a
+duplicate, and the SDK reports that as `SubmissionRejectedError`. Check an
+indexer before building a replacement.
+
+```typescript
+if (error instanceof SubmissionUncertainError) {
+  const { lastRound } = await algodClient.status().do();
+  const rounds = error.lastValid > lastRound ? error.lastValid - lastRound : 1n;
+  await algosdk.waitForConfirmation(algodClient, error.txIds[0], Number(rounds));
+}
+```
+
+**Nothing was submitted** (`SignOutcomeUnknownError`, any account that is not
+rotating). A signature may exist that never reached you. Once `lastValid` has
+passed, nothing signed by that request can execute, and a replacement is safe.
+No lookup is needed. Before that, do not build a replacement with different
+transaction IDs.
+
+**Rotating accounts** (`SignOutcomeUnknownError` whose `rotating` field holds
+the prepared group). Sign the same prepared group again with
+`signPreparedRotating(error.rotating)`, as shown under
+[Rotating accounts](#rotating-accounts). It produces the same transaction IDs,
+so it cannot pay twice.
+
+The examples do this: they follow a submitted group with
+`waitForConfirmation`, print the round to wait for when nothing was submitted,
+and throw the original error while the outcome is still unknown.
 
 #### Rotating accounts
 

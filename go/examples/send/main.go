@@ -42,6 +42,7 @@ import (
 	"log"
 
 	"github.com/algorand/go-algorand-sdk/v2/client/v2/algod"
+	"github.com/algorand/go-algorand-sdk/v2/transaction"
 	"github.com/aplane-algo/aplanesdk/go"
 )
 
@@ -71,18 +72,26 @@ func main() {
 		Sender: sender, Receiver: receiver, Amount: 1_000_000,
 	}, nil)
 	if err != nil {
-		// A group that was signed keeps its bytes and IDs in the error. Never
-		// send again until its outcome is known: both could execute.
+		// A group that was submitted keeps its bytes and IDs in the error.
+		// Never sign a replacement while it can still execute: both could.
 		var uncertain *aplane.SubmissionUncertainError
 		if errors.As(err, &uncertain) {
-			log.Fatalf("Outcome unknown for %v (%s): %v\n%s", uncertain.TxIDs, uncertain.Stage, err, advice(ctx, signer, algodClient, err))
+			round, waitErr := waitForGroup(ctx, algodClient, uncertain)
+			if waitErr != nil {
+				log.Fatalf("Outcome unknown for %v (%s): %v (wait: %v). After round %d, check an indexer before building a replacement.", uncertain.TxIDs, uncertain.Stage, err, waitErr, uncertain.LastValid)
+			}
+			fmt.Printf("Confirmed %s in round %d\n", uncertain.TxIDs[0], round)
+			return
 		}
 		// The sign answer was lost, so the signer may have released a
-		// signature. Do not build and sign a replacement while it can still
-		// execute.
+		// signature. Nothing was submitted.
 		var unknown *aplane.SignOutcomeUnknownError
 		if errors.As(err, &unknown) {
-			log.Fatalf("Sign outcome unknown (request %q): %v\n%s", unknown.RequestID, err, advice(ctx, signer, algodClient, err))
+			if unknown.Rotating != nil {
+				// The same prepared group signs to the same transaction IDs.
+				log.Fatalf("Sign outcome unknown (request %q): %v. Sign the same prepared group again with SignPreparedRotating.", unknown.RequestID, err)
+			}
+			log.Fatalf("Sign outcome unknown (request %q): %v. Do not build a replacement until round %d has passed.", unknown.RequestID, err, unknown.LastValid)
 		}
 		log.Fatalf("Failed to send: %v", err)
 	}
@@ -95,12 +104,18 @@ func main() {
 	}
 }
 
-// advice asks the node where an uncertain outcome stands. It signs and
-// submits nothing.
-func advice(ctx context.Context, signer *aplane.SignerClient, algodClient *algod.Client, err error) string {
-	report, resolveErr := signer.ResolveOutcome(ctx, algodClient, err)
-	if resolveErr != nil {
-		return fmt.Sprintf("Could not check the outcome (%v); look the transaction up before sending again.", resolveErr)
+// waitForGroup follows a submitted group with go-algorand-sdk until its last
+// valid round. A group confirms as a whole, so its first ID is enough. A
+// timeout means only that the wait ended.
+func waitForGroup(ctx context.Context, algodClient *algod.Client, uncertain *aplane.SubmissionUncertainError) (uint64, error) {
+	status, err := algodClient.Status().Do(ctx)
+	if err != nil {
+		return 0, err
 	}
-	return fmt.Sprintf("%s: %s", report.State, report.Advice)
+	rounds := uint64(1)
+	if uncertain.LastValid > status.LastRound {
+		rounds = uncertain.LastValid - status.LastRound
+	}
+	info, err := transaction.WaitForConfirmation(algodClient, uncertain.TxIDs[0], rounds, ctx)
+	return info.ConfirmedRound, err
 }

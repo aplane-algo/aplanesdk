@@ -18,7 +18,6 @@ The Go SDK is a user-facing integration surface for:
 - sending a transaction or group in one call (sign, check, submit and wait
   for confirmation) for every account type the signer holds
 - finding a cosigned account's cosigner from `endpoints.yaml`
-- saying where an uncertain outcome stands, from the node alone
 - planning and signing single transactions and groups without submitting them
 - assembling multi-party group results
 - building an `algod` client from the same client config
@@ -410,8 +409,8 @@ confirms the rekey.
 
 | Error | What it means | What to do |
 |---|---|---|
-| `*SignOutcomeUnknownError` | A signing request ended with no answer, or with a 200 answer that could not be read. A signature may have been released. Nothing was submitted. | Do not send again. Call `ResolveOutcome` (below), or check `RequestID` with the operator or the signer's audit log. |
-| `*SubmissionUncertainError` | The group was signed and the call did not see it confirmed or refused. `Stage` is `unsent` (your context ended before it was sent), `submit` (the submission's answer never arrived) or `confirm` (not confirmed within the wait). Except for `unsent`, it may still confirm. | Do not sign a replacement. Call `ResolveOutcome`, or submit the same `SignedGroup` again with `SubmitSignedGroup`. |
+| `*SignOutcomeUnknownError` | A signing request ended with no answer, or with a 200 answer that could not be read. A signature may have been released. Nothing was submitted. | Do not send again. See [After An Unknown Outcome](#after-an-unknown-outcome), or check `RequestID` with the operator or the signer's audit log. |
+| `*SubmissionUncertainError` | The group was signed and the call did not see it confirmed or refused. `Stage` is `unsent` (your context ended before it was sent), `submit` (the submission's answer never arrived) or `confirm` (not confirmed within the wait). Except for `unsent`, it may still confirm. | Do not sign a replacement. Follow it with go-algorand-sdk, or submit the same `SignedGroup` again with `SubmitSignedGroup` (see [After An Unknown Outcome](#after-an-unknown-outcome)). |
 | `*SubmissionRejectedError` | The node refused the group or dropped it from its pool. `SignedGroup` and `TxIDs` are kept. | Read the reason. |
 | `*RotatingPreflightError` | A rotating spend failed its unsigned simulation. Nothing was signed. | Read `Message`. |
 | `ErrUnsupportedSigningFlow`, `ErrUnsupportedGroup`, `ErrKeyNotFound`, `ErrCosignerDiscovery` | Refused before anything that can execute was signed. | Read the reason. |
@@ -432,51 +431,61 @@ signed can execute: the send was refused before signing, the signer refused,
 or the SDK refused the signer's answer and discarded it. It is safe to fix
 the cause and send again.
 
-### After An Uncertain Outcome
+### After An Unknown Outcome
 
-`client.ResolveOutcome(ctx, algodClient, err)` takes either uncertain error
-(wrapped or not) and says where things stand. It asks the node only: it never
-signs, never submits and never calls the signer. It rests on two facts: the
-signer never submits, and a transaction cannot execute after its last valid
-round, which the signer never changes. Both errors carry that round as
-`LastValid`. Any other error is refused with `ErrNotUncertainOutcome`, and a
-node failure is returned as an error, never as a state.
+The SDK does not look an unknown outcome up for you. A node can show that a
+transaction confirmed, but not that it never did. What to do depends on the
+error:
+
+- A group was submitted (`*SubmissionUncertainError`). The error carries
+  `TxIDs`, `SignedGroup` and `LastValid`. Follow it with go-algorand-sdk's
+  own wait: `transaction.WaitForConfirmation` on `TxIDs[0]` (a group
+  confirms as a whole), waiting `LastValid` minus the current round, at
+  least 1. Or submit the same `SignedGroup` again with `SubmitSignedGroup`:
+  it is the same transaction, so it cannot pay twice. With `Stage` `unsent`
+  the node never had the group: submit it, as there is nothing to wait for.
+  A timeout from the wait means only that the wait ended. Once `LastValid`
+  has passed, a node's "not found" is not proof that the group never
+  confirmed: a node only looks back about 1000 rounds from its current
+  round. Submitting the group again after `LastValid` is refused
+  (`*SubmissionRejectedError`) whether or not it confirmed, so that is no
+  proof either. Check an indexer before building a replacement.
+- Nothing was submitted (`*SignOutcomeUnknownError`, any account that is not
+  rotating). A signature may exist that the SDK never received. Once
+  `LastValid` has passed, nothing signed by that request can execute, and a
+  replacement is safe. No lookup is needed. Before that, do not build a
+  replacement with different transaction IDs.
+- Rotating accounts (`*SignOutcomeUnknownError` whose `Rotating` field holds
+  the prepared group). Sign the same prepared group again with
+  `SignPreparedRotating`, and submit the result with `SubmitSignedGroup`. It
+  produces the same transaction IDs, so it cannot pay twice. See
+  [Rotating Accounts](#rotating-accounts).
 
 ```go
 result, err := client.SendPayment(ctx, algodClient, params, nil)
-if err != nil {
-	report, checkErr := client.ResolveOutcome(ctx, algodClient, err)
-	if checkErr != nil {
-		// Not an uncertain outcome, or the node could not be asked.
-		return err
+var uncertain *aplane.SubmissionUncertainError
+if errors.As(err, &uncertain) {
+	status, statusErr := algodClient.Status().Do(ctx)
+	if statusErr != nil {
+		return statusErr
 	}
-	// report.SafeToReplace is true only once nothing from the first
-	// attempt can execute.
-	return fmt.Errorf("%s: %s: %w", report.State, report.Advice, err)
+	rounds := uint64(1)
+	if uncertain.LastValid > status.LastRound {
+		rounds = uncertain.LastValid - status.LastRound
+	}
+	info, waitErr := transaction.WaitForConfirmation(algodClient, uncertain.TxIDs[0], rounds, ctx)
+	if waitErr != nil {
+		// Only the wait ended. Do not build a replacement on the strength of it.
+		return fmt.Errorf("%w (wait: %v)", err, waitErr)
+	}
+	fmt.Println(uncertain.TxIDs[0], info.ConfirmedRound)
+	return nil
 }
-fmt.Println(result.TxIDs[0])
+if err != nil {
+	return err
+}
+fmt.Println(result.TxIDs[0], result.ConfirmedRound)
 ```
-
-`OutcomeReport.State` is one of six values:
-
-| State | Meaning | `SafeToReplace` |
-|---|---|---|
-| `OutcomeConfirmed` (`confirmed`) | The group is in a block, in `ConfirmedRound`. Do not send it again. | false |
-| `OutcomePending` (`pending`) | The group is in the node's pool. Wait. | false |
-| `OutcomeNotSeen` (`not_seen`) | The node does not have the signed group, and it can still execute until `LastValid`. Submit the same `SignedGroup` again, or wait until `LastValid` has passed. | false |
-| `OutcomeSignable` (`signable`) | A signature may have been released, and it can still execute until `LastValid`. Wait until that round has passed before building a replacement; for a rotating account, sign the same prepared group again. | false |
-| `OutcomeExpired` (`expired`) | Nothing from the request can execute any more. | true |
-| `OutcomeTooOld` (`too_old`) | Its validity ended more than 500 rounds ago, and the node may no longer remember it. Look the transaction ID up on an indexer before sending again. | false |
-
-`Advice` says what to do, in one sentence. The report also carries `TxIDs`
-(empty for an ordinary or cosigned sign outcome, whose transactions the
-signer may have changed), `LastValid`, `CurrentRound`, and the error's
-`SignedGroup` or `Rotating` group.
-
-`client.WaitForOutcome(ctx, algodClient, err, &aplane.WaitOutcomeOptions{Timeout: 5 * time.Minute})`
-checks once per round until the state is `confirmed`, `expired` or
-`too_old`. If the context or `Timeout` ends first, it returns the last report
-with the context's error. A zero `Timeout` means no limit beyond the context.
 
 ### Cancellation And Time Limits
 
@@ -495,8 +504,6 @@ shorter context deadline wins. Where the context ends decides what you get:
   `unsent`. The node does not have the group; `SubmitSignedGroup` submits it.
 - during submission or the confirmation wait: `*SubmissionUncertainError`
   with `Stage` `submit` or `confirm`.
-
-`WaitForOutcome` takes `WaitOutcomeOptions.Timeout` as well as its context.
 
 ## Common Tasks
 
@@ -1210,8 +1217,6 @@ Main sentinel errors:
   refused the group before signing
 - `aplane.ErrCosignerDiscovery`: a cosigned account's cosigner was not found
   in `endpoints.yaml`
-- `aplane.ErrNotUncertainOutcome`: `ResolveOutcome` or `WaitForOutcome` was
-  given an error that is not an uncertain outcome
 
 Typed errors, matched with `errors.As`:
 
@@ -1238,11 +1243,7 @@ if err != nil {
 	var uncertain *aplane.SubmissionUncertainError
 	switch {
 	case errors.As(err, &unknown), errors.As(err, &uncertain):
-		// Do not send again: ask the node where things stand.
-		report, checkErr := client.ResolveOutcome(ctx, algodClient, err)
-		if checkErr == nil {
-			log.Printf("%s: %s", report.State, report.Advice)
-		}
+		// Do not send again: see After An Unknown Outcome.
 		return err
 	case errors.Is(err, aplane.ErrAuthentication):
 		return fmt.Errorf("connection is not authenticated by an enrolled SSH key: %w", err)

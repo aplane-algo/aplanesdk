@@ -59,10 +59,10 @@ async function main() {
     // both execute.
     if (error instanceof SubmissionUncertainError) {
       console.error(`Outcome unknown for ${error.txIds.join(", ")} (${error.stage}): ${error.message}`);
-      console.error(await advice(signer, algodClient, error));
+      if (await waitForGroup(algodClient, error)) return;
     } else if (error instanceof SignOutcomeUnknownError) {
       console.error(`Sign outcome unknown (request ${error.requestId || "(no ID)"}): ${error.message}`);
-      console.error(await advice(signer, algodClient, error));
+      console.error(`Do not build a replacement until round ${error.lastValid} has passed.`);
     }
     throw error;
   } finally {
@@ -71,21 +71,24 @@ async function main() {
 }
 
 /**
- * Where an uncertain outcome stands, asked of the node; it signs and submits
- * nothing. A check that fails is said as such, and the error it was asked
- * about is still the one that is thrown.
+ * Follow a submitted group with algosdk until its last valid round, and for
+ * at least 1 round: given 0, algosdk's wait throws without looking. A group
+ * confirms as a whole, so its first ID is enough. A timeout means only that
+ * the wait ended.
  */
-async function advice(
-  signer: SignerClient,
-  algodClient: algosdk.Algodv2,
-  error: SubmissionUncertainError | SignOutcomeUnknownError,
-): Promise<string> {
+async function waitForGroup(algodClient: algosdk.Algodv2, error: SubmissionUncertainError): Promise<boolean> {
   try {
-    const report = await signer.resolveOutcome(algodClient, error);
-    return `${report.state}: ${report.advice}`;
-  } catch (checkError) {
-    const reason = checkError instanceof Error ? checkError.message : String(checkError);
-    return `Could not check the outcome (${reason}); look the transaction up before sending again.`;
+    const { lastRound } = await algodClient.status().do();
+    const rounds = error.lastValid > lastRound ? error.lastValid - lastRound : 1n;
+    const info = await algosdk.waitForConfirmation(algodClient, error.txIds[0], Number(rounds));
+    console.log(`Confirmed group in round ${info.confirmedRound}`);
+    return true;
+  } catch (waitError) {
+    const reason = waitError instanceof Error ? waitError.message : String(waitError);
+    console.error(
+      `Not seen confirmed (${reason}). After round ${error.lastValid}, check an indexer before building a replacement.`,
+    );
+    return false;
   }
 }
 
