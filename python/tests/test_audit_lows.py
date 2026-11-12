@@ -1017,3 +1017,33 @@ class TestLsigArgEncoding:
     def test_map_refuses_an_entry_that_is_not_a_mapping(self, bad):
         with pytest.raises(ValueError, match="lsig_args must be a mapping of name to bytes"):
             _encode_lsig_args_map({"A": bad})
+
+    # A falsy value of the wrong type was skipped by a truthiness test before
+    # anything looked at it.
+    @pytest.mark.parametrize("bad", ["", 0, []])
+    def test_prepared_transaction_request_refuses_a_falsy_non_mapping(self, bad):
+        prepared = PreparedTransaction(
+            transaction=transaction.PaymentTxn(
+                sdk_test_address(1),
+                transaction.SuggestedParams(1000, 1, 100, base64.b64encode(bytes(32)).decode(), flat_fee=True),
+                sdk_test_address(2),
+                1,
+            ),
+            auth_address=sdk_test_address(1),
+            lsig_args=bad,
+        )
+        with pytest.raises(ValueError, match="lsig_args must be a mapping of name to bytes"):
+            prepared.to_sign_request()
+
+    def test_prepared_transaction_request_sends_no_field_for_no_arguments(self):
+        prepared = PreparedTransaction(
+            transaction=transaction.PaymentTxn(
+                sdk_test_address(1),
+                transaction.SuggestedParams(1000, 1, 100, base64.b64encode(bytes(32)).decode(), flat_fee=True),
+                sdk_test_address(2),
+                1,
+            ),
+            auth_address=sdk_test_address(1),
+            lsig_args={},
+        )
+        assert "lsig_args" not in prepared.to_sign_request()

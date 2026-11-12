@@ -702,8 +702,9 @@ describe("LogicSig argument encoding", () => {
     assert.deepEqual(sdk.encodeLsigArgs({ preimage: Buffer.from("secret") }), { preimage: "736563726574" });
   });
 
-  // Each of these was sent as different bytes with no error: a string's
-  // characters as bytes, a number as nothing.
+  // A string was sent as its characters and a number as nothing, with no
+  // error. An array of numbers and another typed array are refused with
+  // them: only a Uint8Array says what its bytes are.
   for (const [label, bad, kind] of [
     ["a hex string", "a1b2c3", "a string"],
     ["a number", 7, "a number"],
@@ -766,6 +767,19 @@ describe("LogicSig argument map", () => {
     }
   });
 
+  // Assignment to "__proto__" sets a prototype and loses the entry.
+  it("keeps an entry or an argument named __proto__", () => {
+    const map = JSON.parse('{"__proto__": {"preimage": 1}}');
+    map["__proto__"].preimage = new Uint8Array([1]);
+    assert.throws(
+      () => body(map),
+      (err: any) => err instanceof sdk.SignerError && /no transaction in the request has auth address "__proto__"/.test(err.message),
+    );
+    const args = JSON.parse('{"__proto__": 1}');
+    Object.defineProperty(args, "__proto__", { value: new Uint8Array([7]), enumerable: true });
+    assert.equal(JSON.stringify(sdk.encodeLsigArgs(args)), '{"__proto__":"07"}');
+  });
+
   it("still refuses arguments keyed under an address no position uses", () => {
     assert.throws(
       () => body({ [receiver]: { preimage: new Uint8Array([1]) } }),
@@ -775,16 +789,17 @@ describe("LogicSig argument map", () => {
 });
 
 describe("prepareAbiAppCall and appArgs", () => {
+  // The stub algod throws when reached, which is past every argument check.
   it("accepts an empty appArgs, which drops nothing", async () => {
     const client = new SignerClient("http://localhost:1");
+    const reached = { getTransactionParams: () => { throw new Error("algod was reached"); } } as any;
     await assert.rejects(
-      client.prepareAbiAppCall({} as any, {
+      client.prepareAbiAppCall(reached, {
         sender, appId: 7, methodSignature: "do(uint64)void", args: [42], appArgs: [],
       } as any),
-      (err: any) => !/appArgs is not accepted/.test(String(err?.message)),
+      /algod was reached/,
     );
   });
-
 
   it("refuses appArgs from an untyped caller", async () => {
     const client = new SignerClient("http://localhost:1");

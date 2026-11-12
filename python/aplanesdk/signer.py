@@ -2039,8 +2039,12 @@ class PreparedTransaction:
             "auth_address": self.auth_address,
             "txn_sender": self.txn_sender or txn_sender,
         }
-        if self.lsig_args:
-            request["lsig_args"] = _encode_lsig_args(self.lsig_args)
+        # Checked whatever it is: a falsy value of the wrong type is refused
+        # too. No arguments are sent as no field.
+        if self.lsig_args is not None:
+            encoded_args = _encode_lsig_args(self.lsig_args)
+            if encoded_args:
+                request["lsig_args"] = encoded_args
         if self.app_call_info:
             request["app_call_info"] = self.app_call_info
         return request
@@ -6912,7 +6916,7 @@ class SignerClient:
         # group. An entry with no args is ignored.
         unmatched = sorted(
             repr(address)
-            for address, args in (lsig_args_map or {}).items()
+            for address, args in encoded_lsig_args.items()
             if args and address not in matched_lsig_args
         )
         if unmatched:
@@ -7240,7 +7244,7 @@ class SignerClient:
         if not auth_address:
             auth_address = txn.sender
 
-        lsig_args_map = {auth_address: lsig_args} if lsig_args else None
+        lsig_args_map = {auth_address: lsig_args} if lsig_args is not None else None
 
         return self._sign_request([txn], [auth_address], lsig_args_map, request_id=request_id)
 
@@ -8072,7 +8076,7 @@ class SignerClient:
         any failure after submission, ends the send: it never builds a
         replacement spend on its own.
         """
-        if item.lsig_args:
+        if item.lsig_args is not None and _encode_lsig_args(item.lsig_args):
             raise UnsupportedGroupError(
                 "a rotating account takes no LogicSig arguments from the caller"
             )
@@ -8840,9 +8844,9 @@ def _encode_lsig_args_map(lsig_args_map: Any) -> Dict[str, Dict[str, str]]:
 
 
 def _encode_cosigned_lsig_args(args: Optional[Dict[str, bytes]]) -> Optional[Dict[str, str]]:
-    if not args:
+    if args is None:
         return None
-    return _encode_lsig_args(args)
+    return _encode_lsig_args(args) or None
 
 
 def _resolve_cosigner_for_target(

@@ -615,8 +615,10 @@ func TestPrepareABIAppCall(t *testing.T) {
 
 	prepared, err := signer.PrepareABIAppCall(context.Background(), algodClient, ABIAppCallPrepParams{
 		AppCallPrepParams: AppCallPrepParams{
-			Sender:      sender,
-			AppID:       7,
+			Sender: sender,
+			AppID:  7,
+			// Empty but not nil: nothing would be dropped, so it is accepted.
+			AppArgs:     [][]byte{},
 			ForeignApps: []uint64{9},
 			ForeignAssets: []uint64{
 				1001,

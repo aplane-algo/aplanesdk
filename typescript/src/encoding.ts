@@ -75,9 +75,17 @@ export function encodeLsigArgs(
     if (!isUint8Array(value)) {
       throw new SignerError(`lsigArgs.${name} must be a Uint8Array, not ${valueKind(value)}`);
     }
-    encoded[name] = bytesToHex(value);
+    setOwn(encoded, name, bytesToHex(value));
   }
   return encoded;
+}
+
+/**
+ * Set an own property of target. Assignment would not for the name
+ * "__proto__": it sets the prototype, and the entry is gone.
+ */
+function setOwn<T>(target: Record<string, T>, name: string, value: T): void {
+  Object.defineProperty(target, name, { value, enumerable: true, writable: true, configurable: true });
 }
 
 /**
@@ -97,7 +105,7 @@ export function encodeLsigArgsMap(
   }
   for (const [address, args] of Object.entries(map)) {
     if (args === undefined || args === null) continue;
-    encoded[address] = encodeLsigArgs(args);
+    setOwn(encoded, address, encodeLsigArgs(args));
   }
   return encoded;
 }
