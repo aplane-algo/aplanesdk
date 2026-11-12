@@ -519,8 +519,8 @@ distinct sender, the SDK reads its account from the node and finds the
 signing address as the `prepare_*` helpers do (`resolve_auth_address`: the
 sender, or the address the chain says it is rekeyed to). It wraps each
 transaction, in the order given, in a `PreparedTransaction` naming its
-sender's signing address, and sends the group with `send_prepared`. It runs none of the `prepare_*` preflight checks, such as
-balances and opt-ins.
+sender's signing address, and sends the group with `send_prepared`. It runs
+none of the `prepare_*` preflight checks, such as balances and opt-ins.
 
 ```python
 payment = transaction.PaymentTxn(
@@ -549,11 +549,17 @@ Two rules on what you pass:
   signer group them.
 
 The options, the result and the failures are those of `send_prepared`,
-described above. An empty list is refused with a `ValueError`. The signer's
-keys are read once for the call. A failed account lookup is a plain
-`SignerError` (`SendTimeoutError` when the call's `timeout` ended it), and a
-failed resolution keeps its class (`KeyNotFoundError`, say); both name the
-transaction's position and sender and are raised before anything is signed.
+described above. An empty list is refused with a `ValueError`.
+`send_transactions` itself reads each distinct sender's account once, and
+the signer's keys once, before it hands the group to `send_prepared`, which
+makes its own reads as documented there. A failed account lookup is a plain
+`SignerError` (`SendTimeoutError` when the call's `timeout` ended it) naming
+the transaction's position and sender. A failed resolution of a sender is
+raised as it is, the same exception object (`KeyNotFoundError`, say), with a
+note naming the position and sender (`__notes__`, which Python 3.11 and later
+print with the traceback). A failed read of the signer's keys, such as a
+locked or unreachable signer, is raised as it is and names no transaction.
+All are raised before anything is signed.
 `examples/send_built.py` is a complete program.
 
 #### After an unknown outcome

@@ -88,15 +88,31 @@ export function isUint8Array(value: unknown): value is Uint8Array {
   return ArrayBuffer.isView(value) && typeTag(value) === "Uint8Array";
 }
 
-/** What a value that is not bytes is, for an error message. */
-function bytesKind(value: unknown): string {
+/**
+ * name with its indefinite article: "an Int8Array", "a Uint8Array". The
+ * names it gets begin with a U only as "Uint", which takes "a".
+ */
+function withArticle(name: string): string {
+  return `${/^[AEIO]/i.test(name) ? "an" : "a"} ${name}`;
+}
+
+/**
+ * What kind of value something is, for an error message: "null", "a
+ * string", "an array", "a Uint8Array", "an algosdk Address", "a
+ * Transaction", "an object" and so on. A typed array or a DataView is named
+ * by its internal type, which holds across realms; an object whose
+ * publicKey is 32 bytes is an algosdk Address, from any copy of algosdk;
+ * another object is named by its class, or is "an object".
+ */
+export function valueKind(value: unknown): string {
   if (value === null || value === undefined) return String(value);
   if (Array.isArray(value)) return "an array";
-  if (ArrayBuffer.isView(value)) {
-    const tag = typeTag(value);
-    return `${/^[AEIOU]/.test(tag) ? "an" : "a"} ${tag}`;
-  }
-  return typeof value === "object" ? "an object" : `a ${typeof value}`;
+  if (typeof value !== "object") return withArticle(typeof value);
+  if (ArrayBuffer.isView(value)) return withArticle(typeTag(value));
+  const publicKey = (value as { publicKey?: unknown }).publicKey;
+  if (isUint8Array(publicKey) && publicKey.length === 32) return "an algosdk Address";
+  const name = (value as { constructor?: { name?: unknown } }).constructor?.name;
+  return typeof name === "string" && name !== "" && name !== "Object" ? withArticle(name) : "an object";
 }
 
 /**
@@ -106,7 +122,7 @@ function bytesKind(value: unknown): string {
  */
 export function signedTransactionCopy(value: unknown, label: string): Uint8Array {
   if (!isUint8Array(value)) {
-    throw new SignerError(`${label} must be signed transaction bytes (a Uint8Array), not ${bytesKind(value)}`);
+    throw new SignerError(`${label} must be signed transaction bytes (a Uint8Array), not ${valueKind(value)}`);
   }
   return new Uint8Array(value);
 }

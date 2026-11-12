@@ -2211,17 +2211,60 @@ def test_send_transactions_reports_a_failed_account_lookup_and_signs_nothing(fak
     assert signer.count("/sign") == 0 and node.submissions() == []
 
 
+def _notes(error):
+    return list(getattr(error, "__notes__", []))
+
+
 def test_send_transactions_names_the_position_and_sender_of_a_failed_resolution(fakes):
-    # The error keeps its class, with the position and the sender in front.
+    # The resolution's own error is raised as it is, with a note naming the
+    # position and the sender.
     held = fake_signer.payment(45, 42)
     txn = fake_signer.payment(41, 42)
     signer, node, client = make(fakes, SendSigner([key(held.sender)]))
     with pytest.raises(KeyNotFoundError) as excinfo:
         client.send_transactions(node.client, [held, txn])
     assert type(excinfo.value) is KeyNotFoundError
-    assert str(excinfo.value).startswith(f"transaction 1, sender {txn.sender}: ")
-    assert "not available for signing" in str(excinfo.value)
-    assert isinstance(excinfo.value.__cause__, KeyNotFoundError)
+    assert str(excinfo.value) == f"{txn.sender} is not available for signing"
+    assert _notes(excinfo.value) == [f"transaction 1, sender {txn.sender}"]
+    assert signer.count("/sign") == 0 and node.submissions() == []
+
+
+def test_send_transactions_raises_the_resolutions_own_error_object(fakes, monkeypatch):
+    # An error that carries attributes of its own keeps them: it is the same
+    # object, with a note added.
+    txn = fake_signer.payment(41, 42)
+    signer, node, client = make(fakes, SendSigner([ordinary_key(txn)]))
+    error = KeyNotFoundError("refused by a test", code="test_code")
+    error.extra = {"kept": True}
+
+    def resolve(address, info, keys):
+        raise error
+
+    monkeypatch.setattr(client, "_resolve_auth", resolve)
+    with pytest.raises(KeyNotFoundError) as excinfo:
+        client.send_transactions(node.client, [txn])
+    assert excinfo.value is error
+    assert error.extra == {"kept": True} and error.code == "test_code"
+    assert str(error) == "refused by a test"
+    assert _notes(error) == [f"transaction 0, sender {txn.sender}"]
+
+
+def test_send_transactions_names_no_transaction_when_the_signer_is_locked(fakes):
+    # Reading the signer's keys is not about any one transaction.
+    txn = fake_signer.payment(41, 42)
+    signer, node, client = make(fakes, SendSigner([ordinary_key(txn)]))
+    answer = signer.http.server.app
+
+    def locked(method, path, body):
+        if path == "/status":
+            return reply(200, {**status_body(), "state": "locked", "signer_locked": True})
+        return answer(method, path, body)
+
+    signer.http.server.app = locked
+    with pytest.raises(SignerError) as excinfo:
+        client.send_transactions(node.client, [txn])
+    assert str(excinfo.value) == "signer is locked"
+    assert "transaction" not in str(excinfo.value) and _notes(excinfo.value) == []
     assert signer.count("/sign") == 0 and node.submissions() == []
 
 
@@ -2448,3 +2491,14 @@ def test_signed_group_base64_accepts_bytes_like_entries_and_refuses_the_rest():
         signed_group_base64("AQID")
     with pytest.raises(ValueError, match="signed_group is empty"):
         signed_group_base64([])
+
+
+def test_a_note_is_kept_where_the_exception_has_no_add_note():
+    # Python 3.10 has no add_note: the note goes to __notes__ itself.
+    class NoNotes(Exception):
+        add_note = None
+
+    error = NoNotes("x")
+    signer_module._add_note(error, "first")
+    signer_module._add_note(error, "second")
+    assert error.__notes__ == ["first", "second"]

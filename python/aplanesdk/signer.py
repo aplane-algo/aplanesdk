@@ -791,19 +791,19 @@ def _node_error(what: str, error: BaseException) -> SignerError:
     return SignerError(f"{what}: {error}")
 
 
-def _prefixed(error: Exception, prefix: str) -> Exception:
-    """An error of the same class as error whose message has prefix in
-    front, the code kept. A class that cannot be built from a message alone
-    gives error itself back, unchanged."""
-    message = f"{prefix}{error}"
-    try:
-        if isinstance(error, SignerError):
-            named: Exception = type(error)(message, code=error.code)
-        else:
-            named = type(error)(message)
-    except Exception:
-        return error
-    return named
+def _add_note(error: BaseException, note: str) -> None:
+    """Add a note to error, as BaseException.add_note does (Python 3.11 and
+    later, which print it with the traceback). On Python 3.10 the note is
+    kept in ``__notes__``, where a caller can read it."""
+    add_note = getattr(error, "add_note", None)
+    if add_note is not None:
+        add_note(note)
+        return
+    notes = getattr(error, "__notes__", None)
+    if not isinstance(notes, list):
+        notes = []
+        error.__notes__ = notes  # type: ignore[attr-defined]
+    notes.append(note)
 
 
 def _connection_error(error: BaseException) -> SignerError:
@@ -7499,10 +7499,15 @@ class SignerClient:
 
         The options, the result and the errors are send_prepared's; see its
         documentation for how a send behaves. An empty list is refused. The
-        signer's keys are read once for the call. A failed account lookup is a plain SignerError (or
-        SendTimeoutError when the call's ``timeout`` ended it), and a failed
-        resolution keeps its class (KeyNotFoundError, say); both name the
-        transaction's position and sender and are raised before anything is
+        call itself reads each distinct sender's account once, and the
+        signer's keys once, before it hands the group to send_prepared, which
+        makes its own reads as documented there. A failed account lookup is a
+        plain SignerError (or SendTimeoutError when the call's ``timeout``
+        ended it) naming the transaction's position and sender. A failed
+        resolution of a sender is raised as it is, the same object, with a
+        note (``add_note``) naming the position and sender. A failed read of
+        the signer's keys, such as a locked or unreachable signer, is raised
+        as it is and names no transaction. All are raised before anything is
         signed.
         """
         options = _SendOptions(
@@ -7522,8 +7527,8 @@ class SignerClient:
         with _time_limit(timeout):
             algod_client = _limited_algod(algod_client)
             slots = []
-            # Each distinct sender is read and resolved once, against one read
-            # of the signer's keys for the whole call.
+            # Each distinct sender is read and resolved once here, against one
+            # read of the signer's keys; the prepared send makes its own reads.
             keys: Optional[List[KeyInfo]] = None
             auth_by_sender: Dict[str, str] = {}
             for index, txn in enumerate(txns):
@@ -7533,7 +7538,6 @@ class SignerClient:
                     )
                 sender = txn.sender
                 if sender not in auth_by_sender:
-                    where = f"transaction {index}, sender {sender}: "
                     # As resolve_auth_address does: the signer lists
                     # addresses canonically.
                     _refuse_alternate_spelling(sender, f"transaction {index}: sender")
@@ -7543,15 +7547,17 @@ class SignerClient:
                         raise _node_error(
                             f"transaction {index}: read the account of sender {sender}", e
                         ) from e
+                    # The signer's keys are not this sender's: a failure to
+                    # read them is raised as it is.
+                    if keys is None:
+                        keys = self.list_keys_if_keyset_changed()
                     try:
-                        if keys is None:
-                            keys = self.list_keys_if_keyset_changed()
                         resolved = self._resolve_auth(sender, info, keys)
                     except Exception as e:
-                        named = _prefixed(e, where)
-                        if named is e:
-                            raise
-                        raise named from e
+                        # The original error, its class and attributes kept,
+                        # with a note naming the position and sender.
+                        _add_note(e, f"transaction {index}, sender {sender}")
+                        raise
                     auth_by_sender[sender] = resolved.auth_address
                 slots.append(
                     PreparedTransaction(transaction=txn, auth_address=auth_by_sender[sender])

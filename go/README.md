@@ -677,10 +677,11 @@ if err != nil {
 result, err := client.SendTransactions(ctx, algodClient, []types.Transaction{payment}, nil)
 ```
 
-For each distinct sender it reads the account from the node once and
-resolves the signing address as the `Prepare*` helpers do: the sender, or its
-on-chain auth address when the account is rekeyed. The signer's key list is
-read once for the call. It names that address in a prepared slot, sets nothing
+`SendTransactions` itself reads each distinct sender's account once, and the
+signer's key list once, before it hands the group to `SendPrepared`, which
+makes its own reads as documented there. It resolves each signing address as
+the `Prepare*` helpers do: the sender, or its on-chain auth address when the
+account is rekeyed. It names that address in a prepared slot, sets nothing
 else, and calls `SendPrepared` with the slots in the order given. It runs none
 of the `Prepare*` preflight checks, such as balances and opt-ins.
 

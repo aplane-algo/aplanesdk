@@ -7,6 +7,9 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { inspect } from "node:util";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import * as vm from "node:vm";
 import algosdk, { type Transaction } from "algosdk";
 import { SignerClient, signPreparedCosignedGroup } from "../src/client.js";
@@ -960,6 +963,21 @@ describe("sendPrepared", () => {
     assert.deepEqual(groupHex(result.signedGroup), [signedHex(txn)], "a change to the input changed the result");
   });
 
+  it("submitSignedGroup names a non-list argument for what it is", async () => {
+    const txn = fakePayment(41, 42, 1);
+    const node = new FakeAlgod();
+    for (const [value, kind] of [[hexToBytes(signedHex(txn)), "a Uint8Array"], [txn, "a Transaction"]] as Array<[unknown, string]>) {
+      await assert.rejects(
+        new SignerClient(SIGNER).submitSignedGroup(node as any, value as Uint8Array[]),
+        {
+          name: "SignerError",
+          message: `verify signed group: signed group must be a list of signed transactions (Uint8Array entries), not ${kind}`,
+        },
+      );
+    }
+    assert.equal(node.submitted.length, 0);
+  });
+
   it("submitSignedGroup refuses an entry that is not bytes, before anything is posted", async () => {
     const txn = fakePayment(41, 42, 1);
     const node = new FakeAlgod();
@@ -1111,6 +1129,15 @@ describe("signed bytes are the SDK's own copy", () => {
     const result = await new SignerClient(SIGNER).submitSignedGroup(node as any, input);
     input[0].fill(0);
     assert.deepEqual(groupHex(result.signedGroup), [wantHex]);
+  });
+
+  it("errors.ts imports nothing at run time", () => {
+    const source = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "../src/errors.ts"), "utf8");
+    const imports = source.split("\n").filter((line) => /^import\b/.test(line));
+    assert.ok(imports.length > 0);
+    for (const line of imports) {
+      assert.match(line, /^import type /, `a run-time import: ${line}`);
+    }
   });
 
   it("a SubmissionError holds its signed group as an own, enumerable property, copied when it is made", () => {
@@ -1313,7 +1340,7 @@ describe("sendTransactions", () => {
       [undefined, "undefined"],
       ["a transaction", "a string"],
       [{ sender: txn.sender }, "an object"],
-      [txn.toByte(), "an object"],
+      [txn.toByte(), "a Uint8Array"],
       [[txn], "an array"],
     ];
     for (const [entry, kind] of cases) {
@@ -1367,6 +1394,42 @@ describe("sendTransactions", () => {
       requests[0].map((entry) => entry.auth_address),
       [first.sender.toString(), first.sender.toString(), third.sender.toString()],
     );
+  });
+
+  it("names a non-list argument for what it is, before anything is asked", async () => {
+    const txn = fakePayment(41, 42, 1);
+    const { signer } = recordingSigner([ordinaryKey(txn)]);
+    const { client, algod } = fixture(signer);
+    for (const [value, kind] of [[txn, "a Transaction"], [txn.toByte(), "a Uint8Array"], [null, "null"]] as Array<[unknown, string]>) {
+      await assert.rejects(
+        client.sendTransactions(algod, value as Transaction[]),
+        { name: "SignerError", message: `transactions must be a list of algosdk Transactions, not ${kind}` },
+      );
+    }
+    assert.deepEqual(signer.paths, []);
+  });
+
+  it("an abort during the account reads is the caller's stop, not a lookup failure", async () => {
+    const txn = fakePayment(41, 42, 1);
+    const { signer } = recordingSigner([ordinaryKey(txn)]);
+    const node = new FakeAlgod();
+    const controller = new AbortController();
+    node.account = () => {
+      // As algosdk's request rejects once its signal is aborted.
+      controller.abort();
+      throw new DOMException("This operation was aborted", "AbortError");
+    };
+    const { client, algod } = fixture(signer, node);
+    await assert.rejects(
+      client.sendTransactions(algod, [txn], { signal: controller.signal }),
+      (error: unknown) => {
+        assert.ok(error instanceof SignerUnavailableError, String(error));
+        assert.equal(errorText(error), "Request aborted by caller");
+        return true;
+      },
+    );
+    assert.equal(signer.count("/sign"), 0);
+    assert.equal(node.submitted.length, 0);
   });
 
   it("refuses an empty list before anything is asked", async () => {

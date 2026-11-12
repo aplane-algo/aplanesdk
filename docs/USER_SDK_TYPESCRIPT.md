@@ -421,9 +421,11 @@ const result = await client.sendTransactions(algodClient, [payment]);
 console.log(result.txIds[0], result.outcome, result.confirmedRound);
 ```
 
-For each distinct sender the SDK reads the account from the node and
-resolves the signing address as the `prepare*` helpers do: the sender, or its
-auth address on the chain when the account is rekeyed. It wraps each
+`sendTransactions()` itself reads each distinct sender's account once before
+it hands the group to `sendPrepared()`, which makes its own reads as
+described there. From that account it resolves the signing address as the
+`prepare*` helpers do: the sender, or its auth address on the chain when the
+account is rekeyed. It wraps each
 transaction in a prepared slot that names that address and nothing else, and
 calls `sendPrepared()` with the slots in the order given. It runs none of the
 `prepare*` helpers' preflight checks, such as balances and asset opt-ins.
@@ -449,8 +451,9 @@ Two rules apply to what you pass:
   A rotating account's transaction that carries a group ID is refused
   before anything is signed.
 
-An entry that is not an algosdk `Transaction`, and an empty list, are
-refused with a `SignerError` before anything is asked. A failed account
+An argument that is not a list, an entry that is not an algosdk
+`Transaction`, and an empty list are refused with a `SignerError` before
+anything is asked. A failed account
 lookup is a plain `SignerError` naming the position, and nothing is signed.
 Anything else `sendPrepared()` refuses, such as a sender whose key the signer
 does not hold, is refused as it is there.

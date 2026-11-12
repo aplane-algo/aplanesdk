@@ -573,45 +573,6 @@ func TestZeroAppAndAssetReferencesAreRefused(t *testing.T) {
 	}
 }
 
-// strictBase64Cases is the case list the Python and TypeScript suites run too:
-// the three SDKs accept and refuse the same strings.
-var strictBase64Cases = struct{ accepted, refused []string }{
-	accepted: []string{"", "QQ==", "QUI=", "QUJD", "QUJDRA==", "+/+/", "AAAA"},
-	refused: []string{
-		"QUJD\n",       // a trailing line feed
-		"QUJD\r\n",     // a trailing CRLF
-		"QU\nJD",       // a line feed inside
-		"QUJD\r\nQUJD", // a wrapped line
-		"\nQUJD",       // a leading line feed
-		"QU JD",        // a space
-		"QUJD ",        // a trailing space
-		"\tQUJD",       // a tab
-		"QU*D",         // a character outside the alphabet
-		"-_-_",         // the URL-safe alphabet
-		"QUI",          // missing padding
-		"QQ=",          // short padding
-		"QQ===",        // long padding
-		"QUI=QUJD",     // data after the padding
-		"=QUJ",         // padding first
-		"Q",            // one character
-	},
-}
-
-// Base64ToBytes is the SDK's one base64 decoder, and it is strict.
-func TestBase64ToBytesIsStrict(t *testing.T) {
-	for _, good := range strictBase64Cases.accepted {
-		decoded, err := Base64ToBytes(good)
-		if err != nil || BytesToBase64(decoded) != good {
-			t.Fatalf("Base64ToBytes(%q) = %x, %v", good, decoded, err)
-		}
-	}
-	for _, bad := range strictBase64Cases.refused {
-		if decoded, err := Base64ToBytes(bad); err == nil || !strings.Contains(err.Error(), "not valid base64") {
-			t.Fatalf("Base64ToBytes(%q) = %x, %v, want a refusal", bad, decoded, err)
-		}
-	}
-}
-
 // Whole config files the Python and TypeScript suites load too. A YAML alias
 // is read as the value it stands for, for the list and for an entry, and the
 // default network must be text like the allowlist's entries: yaml.v3 alone

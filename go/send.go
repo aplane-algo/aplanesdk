@@ -623,11 +623,11 @@ func (c *SignerClient) SubmitSignedGroup(ctx context.Context, algodClient *algod
 // such as those its transaction.Make* constructors return. It takes the same
 // options as SendPrepared and returns the same result and errors.
 //
-// For each distinct sender it reads the account from the node once and
-// resolves the signing address as the Prepare* helpers do, as
-// ResolveAuthAddress does: the sender, or its on-chain auth address when the
-// account is rekeyed. The signer's key list is read once for the call. It
-// wraps each transaction in a PreparedTransaction that names that address and
+// SendTransactions itself reads each distinct sender's account once, and the
+// signer's key list once, before it hands the group to SendPrepared, which
+// makes its own reads as documented there. It resolves each signing address
+// as the Prepare* helpers do, as ResolveAuthAddress does: the sender, or its
+// on-chain auth address when the account is rekeyed. It wraps each transaction in a PreparedTransaction that names that address and
 // sets nothing else, and calls SendPrepared with them in the order given. It
 // runs none of the Prepare* preflight checks, such as balances and opt-ins.
 //

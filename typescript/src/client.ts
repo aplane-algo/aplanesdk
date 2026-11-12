@@ -104,6 +104,7 @@ import {
   cloneSignedGroup,
   signedGroupFromHex,
   signedTransactionCopy,
+  valueKind,
 } from "./encoding.js";
 import {
   preparedGroupToSignRequests,
@@ -1826,7 +1827,7 @@ interface PrepParams {
  */
 function requireCanonicalAddress(value: unknown, name: string): void {
   if (typeof value !== "string") {
-    throw new SignerError(`${name} must be an address string, not ${nonStringKind(value)}`);
+    throw new SignerError(`${name} must be an address string, not ${valueKind(value)}`);
   }
   const canonical = alternateAddressSpelling(value);
   if (canonical !== undefined) {
@@ -1859,20 +1860,6 @@ function isAlgosdkTransaction(value: unknown): value is Transaction {
   const txn = value as { toByte?: unknown; txID?: unknown; sender?: unknown };
   return typeof txn.toByte === "function" && typeof txn.txID === "function" &&
     addressPublicKey(txn.sender) !== undefined;
-}
-
-/** What a value is, for an error message. */
-function valueKind(value: unknown): string {
-  if (value === null || value === undefined) return String(value);
-  if (Array.isArray(value)) return "an array";
-  return typeof value === "object" ? "an object" : `a ${typeof value}`;
-}
-
-/** What a value that is not a string is, for an error message. */
-function nonStringKind(value: unknown): string {
-  if (addressPublicKey(value)) return "an algosdk Address: pass its toString()";
-  if (value === null || value === undefined) return String(value);
-  return typeof value === "object" ? "an object" : `a ${typeof value}`;
 }
 
 /** A send's result before signing fills it and submission settles its outcome. */
@@ -2166,7 +2153,7 @@ function requireBoxReferences(boxes: unknown): void {
  */
 function requireAccountReference(value: unknown, name: string): string {
   if (typeof value !== "string") {
-    throw new SignerError(`${name} must be an address string, not ${nonStringKind(value)}`);
+    throw new SignerError(`${name} must be an address string, not ${valueKind(value)}`);
   }
   if (!algosdk.isValidAddress(value)) {
     throw new SignerError(`${name} ${JSON.stringify(value)} is not a valid address`);
@@ -4751,9 +4738,11 @@ export class SignerClient {
    * makePaymentTxnWithSuggestedParamsFromObject, with the options and result
    * of sendPrepared.
    *
-   * For each distinct sender it reads the account from the node and resolves
-   * the signing address as the prepare helpers do: the sender, or its auth
-   * address on the chain when the account is rekeyed. It wraps each
+   * sendTransactions itself reads each distinct sender's account once before
+   * it hands the group to sendPrepared, which makes its own reads as
+   * described there. From that account it resolves the signing address as
+   * the prepare helpers do: the sender, or its auth address on the chain
+   * when the account is rekeyed. It wraps each
    * transaction in a prepared slot that names that address and sets nothing
    * else, and calls sendPrepared with the slots in the order given. It runs
    * none of the prepare helpers' preflight checks, such as balances and
@@ -4776,8 +4765,8 @@ export class SignerClient {
    * A rotating account's transaction that carries a group ID is refused
    * before anything is signed.
    *
-   * An entry that is not an algosdk Transaction, and an empty list, are
-   * refused before anything is asked. A failed account lookup is a plain
+   * An argument that is not a list, an entry that is not an algosdk
+   * Transaction, and an empty list are refused before anything is asked. A failed account lookup is a plain
    * error naming the position, and nothing is signed. Anything else
    * sendPrepared refuses, such as a sender whose key this signer does not
    * hold, is refused as it is there.
@@ -4791,7 +4780,10 @@ export class SignerClient {
       throw new SignerError("algodClient is required");
     }
     checkSendOptions(options);
-    if (!Array.isArray(txns) || txns.length === 0) {
+    if (!Array.isArray(txns)) {
+      throw new SignerError(`transactions must be a list of algosdk Transactions, not ${valueKind(txns)}`);
+    }
+    if (txns.length === 0) {
       throw new SignerError("transaction list is empty");
     }
     const signal = options?.signal;
@@ -4806,8 +4798,9 @@ export class SignerClient {
       }
     });
     // One read of the signer's keys resolves every sender, as one prepare
-    // helper's read resolves its sender, and each distinct sender's account
-    // is read once. An error names the sender's first position.
+    // helper's read resolves its sender, and this call reads each distinct
+    // sender's account once; sendPrepared makes its own reads. An error
+    // names the sender's first position.
     const keys = await this.listKeysIfKeysetChanged({ signal });
     const authAddresses = new Map<string, string>();
     for (let index = 0; index < txns.length; index++) {
@@ -4817,6 +4810,10 @@ export class SignerClient {
       try {
         info = await (algodClient as any).accountInformation(sender).do(undefined, algodOptions(signal));
       } catch (error) {
+        // An abort is the caller's stop, as anywhere else before signing.
+        if (signal?.aborted) {
+          throw callerAborted();
+        }
         throw new SignerError(`transaction ${index}: failed to query account info for ${sender}: ${errorText(error)}`);
       }
       let resolved: ResolvedAuthAddress;
@@ -5082,7 +5079,9 @@ export class SignerClient {
     }
     const checked = checkSendOptions(options);
     if (!Array.isArray(signedGroup)) {
-      throw new SignerError("verify signed group: signed group is empty");
+      throw new SignerError(
+        `verify signed group: signed group must be a list of signed transactions (Uint8Array entries), not ${valueKind(signedGroup)}`,
+      );
     }
     const result = emptySendResult("", signedGroup.length);
     let described: DescribedGroup;

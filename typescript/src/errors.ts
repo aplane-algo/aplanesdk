@@ -2,7 +2,6 @@
 // Copyright (C) 2026 APlane Project LLC
 
 import type { SignRequest } from "./types.js";
-import { cloneSignedGroup } from "./encoding.js";
 import type { PreparedRotating } from "./rotating.js";
 
 /**
@@ -283,7 +282,9 @@ export class SubmissionError extends SignerError {
     const step = options.submitted ? "wait for confirmation of" : "submit";
     super(`${step} transaction ${firstOrEmpty(options.txIds)}: ${errorText(options.cause)}`);
     this.name = "SubmissionError";
-    this.signedGroup = cloneSignedGroup(options.signedGroup);
+    // A copy that shares no bytes with the caller's group. This module
+    // imports nothing at run time, so the copy is made here.
+    this.signedGroup = options.signedGroup.map((entry) => new Uint8Array(entry));
     this.txIds = [...options.txIds];
     this.lastValid = options.lastValid;
     this.submitted = options.submitted;

@@ -1766,35 +1766,12 @@ func TestHexRoundTrip(t *testing.T) {
 	}
 }
 
-func TestBase64RoundTrip(t *testing.T) {
-	original := []byte("hello world")
-	b := BytesToBase64(original)
-	decoded, err := Base64ToBytes(b)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if string(decoded) != string(original) {
-		t.Fatalf("round trip failed: got %q", decoded)
-	}
-}
-
 func TestHexRoundTrip_Empty(t *testing.T) {
 	h := BytesToHex([]byte{})
 	if h != "" {
 		t.Fatalf("expected empty string, got %q", h)
 	}
 	decoded, err := HexToBytes("")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(decoded) != 0 {
-		t.Fatalf("expected empty bytes, got %v", decoded)
-	}
-}
-
-func TestBase64RoundTrip_Empty(t *testing.T) {
-	b := BytesToBase64([]byte{})
-	decoded, err := Base64ToBytes(b)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

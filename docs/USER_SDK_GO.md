@@ -372,10 +372,11 @@ if err != nil {
 fmt.Println(result.TxIDs[0], result.Outcome, result.ConfirmedRound)
 ```
 
-For each distinct sender it reads the account from the node once and
-resolves the signing address as the `Prepare*` helpers do: the sender, or its
-on-chain auth address when the account is rekeyed. The signer's key list is
-read once for the call. It wraps each transaction in a `PreparedTransaction`
+`SendTransactions` itself reads each distinct sender's account once, and the
+signer's key list once, before it hands the group to `SendPrepared`, which
+makes its own reads as documented there. It resolves each signing address as
+the `Prepare*` helpers do: the sender, or its on-chain auth address when the
+account is rekeyed. It wraps each transaction in a `PreparedTransaction`
 that names that address and sets nothing else, and calls `SendPrepared` with
 them in the order given. It runs none of the `Prepare*` preflight checks, such
 as balances and opt-ins.
@@ -1388,9 +1389,8 @@ fmt.Println(result.TxIDs[0])
   not on it. The list must hold network IDs written as text: a bare
   number, `true`/`false` or an empty entry is refused, so quote a name such as
   `"1"`. Quote a network name that YAML could read as a boolean, such as `"on"`, `"yes"` or `"no"`. The `network` value follows the same rule: it must be text and a network ID, and a bare number or `true`/`false` is refused.
-- `ResolveDataDir(...)`,
-  `ResolvePath(...)`, `Base64ToBytes(...)`, `BytesToBase64(...)`,
-  `HexToBytes(...)`, and `BytesToHex(...)` are exported for integration code.
+- `ResolveDataDir(...)`, `ResolvePath(...)`, `HexToBytes(...)`, and
+  `BytesToHex(...)` are exported for integration code.
 - `SignRequestsWithContext(...)` and `PlanRequestsWithContext(...)` let you
   bypass the transaction-to-request builder when you need raw request control.
 - Signing request deadlines are approval-wait-aware. A shorter caller context

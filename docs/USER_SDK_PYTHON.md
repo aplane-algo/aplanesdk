@@ -429,11 +429,16 @@ The keyword arguments, the result and the failures are those of
 `send_prepared()`, described in
 [Send A Payment Or A Prepared Group](#send-a-payment-or-a-prepared-group)
 and [Send Failures](#send-failures). An empty list is refused with a
-`ValueError`. The signer's keys are read once for the call. A failed
+`ValueError`. `send_transactions()` itself reads each distinct sender's
+account once, and the signer's keys once, before it hands the group to
+`send_prepared()`, which makes its own reads as documented there. A failed
 account lookup is a plain `SignerError` (`SendTimeoutError` when the call's
-`timeout` ended it), and a failed resolution keeps its class
-(`KeyNotFoundError`, say); both name the transaction's position and sender
-and are raised before anything is signed.
+`timeout` ended it) naming the transaction's position and sender. A failed
+resolution of a sender is raised as it is, the same exception object
+(`KeyNotFoundError`, say), with a note naming the position and sender
+(`__notes__`, which Python 3.11 and later print with the traceback). A failed
+read of the signer's keys, such as a locked or unreachable signer, is raised
+as it is and names no transaction. All are raised before anything is signed.
 `python/examples/send_built.py` is a complete program.
 
 ### Rotating Accounts
