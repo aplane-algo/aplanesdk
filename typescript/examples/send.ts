@@ -25,7 +25,7 @@
  * */
 
 import algosdk from "algosdk";
-import { SignOutcomeUnknownError, SignerClient, SubmissionUncertainError } from "aplanesdk";
+import { SignOutcomeUnknownError, SignerClient, SubmissionError } from "aplanesdk";
 
 // The account to pay from (the signer must hold its key) and the account to
 // pay. Replace both.
@@ -54,10 +54,18 @@ async function main() {
   } catch (error) {
     // Neither of these errors means "send again": a second payment and the
     // first could both execute.
-    if (error instanceof SubmissionUncertainError) {
-      // The group was signed and submitted; its bytes and IDs are in the error.
-      console.error(`Outcome unknown for ${error.txIds.join(", ")} (${error.stage}): ${error.message}`);
-      if (await waitForGroup(algodClient, error)) return;
+    if (error instanceof SubmissionError) {
+      // The group was signed; its bytes and IDs are in the error, and its
+      // cause is algosdk's error from the submit call or the wait.
+      console.error(error.message);
+      if (!error.submitted) {
+        console.error(
+          "The submit call did not return success; the node may or may not have the group. " +
+            "Submit the same signedGroup again with submitSignedGroup.",
+        );
+      } else if (await waitForGroup(algodClient, error)) {
+        return;
+      }
     } else if (error instanceof SignOutcomeUnknownError) {
       // The signer may have released a signature that was never received.
       // Nothing was submitted.
@@ -81,7 +89,7 @@ async function main() {
  * confirms as a whole, so its first ID is enough. A timeout means only that
  * the wait ended.
  */
-async function waitForGroup(algodClient: algosdk.Algodv2, error: SubmissionUncertainError): Promise<boolean> {
+async function waitForGroup(algodClient: algosdk.Algodv2, error: SubmissionError): Promise<boolean> {
   try {
     const { lastRound } = await algodClient.status().do();
     const rounds = error.lastValid > lastRound ? error.lastValid - lastRound : 1n;

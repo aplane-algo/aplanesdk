@@ -4731,9 +4731,9 @@ export class SignerClient {
    * refuses, come back as the signing call's own error; nothing was
    * submitted. The other failures are typed: SignOutcomeUnknownError (an
    * approval-bearing request ended with no usable answer, or the SDK failed
-   * while checking or describing one), SubmissionRejectedError
-   * and SubmissionUncertainError (the group was signed, and the error keeps
-   * the signed bytes and their IDs), RotatingPreflightError,
+   * while checking or describing one), SubmissionError (the group was
+   * signed, and algosdk's submit call or its confirmation wait failed; the
+   * error keeps the signed bytes and their IDs), RotatingPreflightError,
    * UnsupportedSigningFlowError and UnsupportedGroupError. A rotating send
    * may prepare and seek approval again, a bounded number of times, when the
    * signer says an attempt released no signature. No send ever builds a
@@ -4971,11 +4971,9 @@ export class SignerClient {
 
   /**
    * Submit a signed group exactly as given and, unless told not to, wait for
-   * confirmation. It signs nothing. Use it to submit a group from
-   * signPreparedRotating, or to submit again the signedGroup a
-   * SubmissionUncertainError kept: the same bytes can execute only once.
-   * After the group's last valid round the node refuses it as "txn dead"
-   * whether or not it confirmed, so that refusal does not show it never did.
+   * confirmation, on the same path as every send. It signs nothing. Use it
+   * to submit a group from signPreparedRotating, or to submit again the
+   * signedGroup a SubmissionError kept: the same bytes can execute only once.
    *
    * Each entry must be one canonically encoded signed transaction, hex
    * msgpack, and a group of several must carry the group ID computed over

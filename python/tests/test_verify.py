@@ -17,7 +17,6 @@ import pytest
 from algosdk import encoding, transaction
 
 from aplanesdk import (
-    InsufficientFundsError,
     MaxFeeIncreaseError,
     PreparedGroup,
     PreparedTransaction,
@@ -1026,13 +1025,6 @@ def test_max_fee_increase_error_pickles_and_copies():
         assert (clone.raised, clone.limit) == (5000, 4999)
         assert str(clone) == str(error)
         assert str(clone).startswith("verify signer response: signer raised fees by 5000")
-
-    # The same flaw, fixed the same way: an error built from more than its message.
-    rejected = InsufficientFundsError("TXID", "overspend")
-    for clone in (pickle.loads(pickle.dumps(rejected)), copy.copy(rejected)):
-        assert type(clone) is InsufficientFundsError
-        assert (clone.txid, clone.reason) == ("TXID", "overspend")
-        assert str(clone) == str(rejected)
 
 
 def test_validators_require_the_ceiling_argument():

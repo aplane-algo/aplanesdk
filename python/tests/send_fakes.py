@@ -174,15 +174,17 @@ def _genesis_hash() -> bytes:
 
 
 class FakeNode:
-    """A fake algod.
+    """A fake algod. It answers what algosdk's send_raw_transaction and
+    wait_for_confirmation ask for: the submission, the status, the wait for a
+    block and the pending transaction lookup.
 
     ``submit`` answers a submission given its bytes; None accepts the group
     and reports its first transaction's ID. ``pending`` answers the pending
     transaction lookup; None confirms in round 12. ``simulate`` answers the
     simulate endpoint; None reports success, with one transaction result per
     transaction. ``auth_addrs`` is the chain's auth address per account.
-    ``round`` is the node's current round, and ``wait_round`` the round a
-    wait for the next block answers with, when it is not that.
+    ``round`` is the node's current round, which a wait for a block answers
+    with too.
     """
 
     def __init__(
@@ -193,7 +195,6 @@ class FakeNode:
         auth_addrs: Optional[Dict[str, str]] = None,
         round: int = 10,
         accounts: Optional[Dict[str, Dict[str, Any]]] = None,
-        wait_round: Optional[int] = None,
     ):
         self.submit = submit
         self.pending = pending
@@ -201,12 +202,13 @@ class FakeNode:
         self.auth_addrs = auth_addrs or {}
         self.round = round
         self.accounts = accounts or {}
-        self.wait_round = wait_round
         self.lock = threading.Lock()
         self.submitted: List[bytes] = []
         self.simulated: List[Dict[str, Any]] = []
         self.lookups = 0
-        # The rounds each wait-for-block call asked to follow.
+        # The transaction ID each pending lookup asked for.
+        self.looked_up: List[str] = []
+        # The round each wait-for-block call asked for.
         self.waits: List[str] = []
         self.http = HTTPFake(self.app)
         self.client = algod.AlgodClient("", self.http.url)
@@ -232,8 +234,7 @@ class FakeNode:
         if path.startswith("/v2/status/wait-for-block-after/"):
             with self.lock:
                 self.waits.append(path.rsplit("/", 1)[1])
-            answer = self.round if self.wait_round is None else self.wait_round
-            return reply(200, {"last-round": answer})
+            return reply(200, {"last-round": self.round})
         if path == "/v2/status":
             return reply(200, {"last-round": self.round})
         if path.startswith("/v2/accounts/"):
@@ -269,6 +270,7 @@ class FakeNode:
         if path.startswith("/v2/transactions/pending/"):
             with self.lock:
                 self.lookups += 1
+                self.looked_up.append(path.rsplit("/", 1)[1])
             if self.pending is not None:
                 return reply(200, self.pending())
             return reply(200, {"confirmed-round": 12, "pool-error": ""})

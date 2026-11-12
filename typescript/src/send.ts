@@ -3,23 +3,14 @@
 
 /**
  * The one submission layer of every send: it submits signed bytes exactly as
- * given and tracks their outcome. It never signs or rebuilds anything.
+ * given with algosdk and waits with algosdk's own confirmation wait. It never
+ * signs or rebuilds anything.
  */
 
 import algosdk, { type Transaction } from "algosdk";
 import type { MutationReport } from "./types.js";
 import type { CosignedCosignerResolver, CosignedSignResult, SignerClient } from "./client.js";
-import {
-  SEND_STAGE_CONFIRM,
-  SEND_STAGE_SUBMIT,
-  SEND_STAGE_UNSENT,
-  SignerError,
-  SubmissionRejectedError,
-  SubmissionUncertainError,
-  callerAborted,
-  errorText,
-  type SendStage,
-} from "./errors.js";
+import { SignerError, SubmissionError, errorText } from "./errors.js";
 import { bytesToBase64, encodeTransaction, hexToBytes } from "./encoding.js";
 import {
   decodeCanonicalSignedTransaction,
@@ -36,11 +27,11 @@ const UINT64_MAX = (1n << 64n) - 1n;
 /** How far a send got on the network. */
 export type SendOutcome = "submitted" | "confirmed";
 /**
- * The node accepted the group; it was not seen in a block by this call.
- * Returned only when SendOptions.noWait is set.
+ * algosdk's submit call returned success, and the send did not wait for
+ * confirmation. Returned only when SendOptions.noWait is set.
  */
 export const SEND_OUTCOME_SUBMITTED = "submitted";
-/** The group was seen in a block. */
+/** algosdk's waitForConfirmation returned the group's confirmed round. */
 export const SEND_OUTCOME_CONFIRMED = "confirmed";
 
 /**
@@ -49,11 +40,14 @@ export const SEND_OUTCOME_CONFIRMED = "confirmed";
  */
 export interface SendOptions {
   /**
-   * Return as soon as the node accepts the group, with outcome "submitted",
-   * instead of waiting for confirmation.
+   * Return as soon as algosdk's submit call returns success, with outcome
+   * "submitted", instead of waiting for confirmation.
    */
   noWait?: boolean;
-  /** How many rounds to wait for confirmation. Unset or zero means 10. */
+  /**
+   * How many rounds algosdk's waitForConfirmation waits for the group. Unset
+   * or zero means 10. The wait takes no signal, so this is what bounds it.
+   */
   waitRounds?: number | bigint;
   /**
    * Let a send rebuild the validity rounds of a rotating account's
@@ -76,11 +70,18 @@ export interface SendOptions {
   cosignerComponentKey?: string;
   cosignerResolver?: CosignedCosignerResolver;
   /**
-   * Optional caller cancellation signal. An abort before anything is asked
-   * of the signer is a plain stop; once a group is signed, an abort before
-   * it is sent ends the send with a SubmissionUncertainError at stage
-   * "unsent". The signal is also passed to the algod requests the send
-   * makes.
+   * Optional caller cancellation signal. It covers signing and submission.
+   * An abort before anything is asked of the signer is a plain stop. Once a
+   * group is signed, an abort found before the submit call ends the send
+   * with a SubmissionError whose submitted is false, and nothing is posted;
+   * one found after a successful submit and before the confirmation wait
+   * starts ends it with a SubmissionError whose submitted is true. Either
+   * way the signal's reason is the cause. With noWait there is no wait to
+   * start, so a send whose submit call returned success returns its result
+   * whatever the signal. The signal is also passed to the algod requests
+   * the send makes, the submit call among them. algosdk's
+   * waitForConfirmation takes no signal, so the wait cannot be interrupted:
+   * waitRounds bounds it.
    */
   signal?: AbortSignal;
 }
@@ -139,6 +140,13 @@ export interface SendResult {
   outcome: SendOutcome;
   /** The round the group confirmed in; 0n unless outcome is "confirmed". */
   confirmedRound: bigint;
+  /**
+   * What algosdk's waitForConfirmation returned, unchanged; undefined unless
+   * outcome is "confirmed". It describes the first transaction of the signed
+   * group, the one the wait followed. Read its inner transactions, logs and
+   * created IDs as in any algosdk program.
+   */
+  confirmation?: algosdk.modelsv2.PendingTransactionResponse;
   /** The component responses of a cosigned send. */
   cosigned?: CosignedSignResult;
   /** The rotation a rotating account's send performed. */
@@ -326,42 +334,16 @@ export function earliestLastValid(txns: Transaction[]): bigint {
   return earliest ?? 0n;
 }
 
-/** The HTTP status of an algod error, when the node answered. */
-export function algodStatus(error: unknown): number | undefined {
-  const status = (error as { response?: { status?: unknown } } | null)?.response?.status;
-  return typeof status === "number" ? status : undefined;
-}
-
-/** The text of an algod error and of the body it carries. */
-function algodErrorText(error: unknown): string {
-  let text = errorText(error);
-  const body = (error as { response?: { body?: unknown } } | null)?.response?.body;
-  if (body instanceof Uint8Array && body.length > 0) {
-    try {
-      text += ` ${new TextDecoder().decode(body)}`;
-    } catch {
-      // The message alone is all there is.
-    }
-  }
-  return text;
-}
-
 /**
- * Whether a submission was refused only because the node already has a
- * transaction with the same ID, in its pool or in a block. algod answers that
- * with a 400 like any refusal and no code, so the text is all there is to go
- * on. One case is not recognised: a committed transaction that carries a
- * lease is refused for its lease first, and that answer is the same as a real
- * lease conflict's.
- */
-export function alreadyKnownToNode(error: unknown): boolean {
-  return algodStatus(error) === 400 && algodErrorText(error).toLowerCase().includes("already in ledger");
-}
-
-/**
- * The one submission path of every send. It submits the signed bytes exactly
- * as given and, unless told not to, waits for the first transaction to
- * confirm. It never signs or rebuilds anything.
+ * The one submission path of every send. It posts the signed bytes exactly as
+ * given with algosdk's sendRawTransaction and, unless noWait is set, waits
+ * with algosdk's waitForConfirmation on the first transaction ID for
+ * waitRounds rounds. It reads nothing into either call's answer or error: a
+ * failure of either is a SubmissionError whose cause is algosdk's error. It
+ * never signs or rebuilds anything.
+ *
+ * The signal is checked before the submit call and again before the wait,
+ * and is passed to the submit call. algosdk's wait takes no signal.
  */
 export async function submitAndTrack(
   algodClient: any,
@@ -369,101 +351,40 @@ export async function submitAndTrack(
   result: SendResult,
   options: CheckedSendOptions,
 ): Promise<void> {
-  const waitRounds = options.waitRounds;
-  const blob = new Uint8Array(raw.reduce((total, entry) => total + entry.length, 0));
-  let offset = 0;
-  for (const entry of raw) {
-    blob.set(entry, offset);
-    offset += entry.length;
-  }
-  const txId = result.txIds[0];
   const signal = options.signal;
   // The bytes were checked when the result was described; their rounds say
   // until when the group can execute.
   const lastValid = earliestLastValid(raw.map((entry) => algosdk.decodeSignedTransaction(entry).txn));
-  const uncertain = (stage: SendStage, cause: unknown) =>
-    new SubmissionUncertainError(stage, result.signedGroup, result.txIds, cause, lastValid);
+  const failed = (submitted: boolean, cause: unknown) =>
+    new SubmissionError({ signedGroup: result.signedGroup, txIds: result.txIds, lastValid, submitted, cause });
 
   if (signal?.aborted) {
-    throw uncertain(SEND_STAGE_UNSENT, callerAborted());
+    throw failed(false, signal.reason);
   }
-  let answered = false;
-  let sentId: unknown;
   try {
-    const response = await algodClient.sendRawTransaction(blob).do(undefined, algodOptions(signal));
-    answered = true;
-    sentId = response?.txid;
+    await algodClient.sendRawTransaction(raw).do(undefined, algodOptions(signal));
   } catch (error) {
-    if (alreadyKnownToNode(error)) {
-      // The node already has a transaction with this ID, pending or
-      // committed: an earlier submission of this group reached it. That is
-      // not a refusal, and the lookup below finds the outcome.
-    } else if (algodStatus(error) === 400) {
-      throw new SubmissionRejectedError(result.signedGroup, result.txIds, error);
-    } else {
-      throw uncertain(SEND_STAGE_SUBMIT, error);
-    }
-  }
-  if (answered && sentId !== txId) {
-    throw uncertain(
-      SEND_STAGE_SUBMIT,
-      new SignerError(`node reported transaction ID ${String(sentId)} for a group whose first transaction is ${txId}`),
-    );
+    throw failed(false, error);
   }
   result.outcome = SEND_OUTCOME_SUBMITTED;
   if (options.noWait) {
     return;
   }
 
-  let last: bigint;
+  if (signal?.aborted) {
+    throw failed(true, signal.reason);
+  }
+  let confirmation: algosdk.modelsv2.PendingTransactionResponse;
   try {
-    const status = await algodClient.status().do(undefined, algodOptions(signal));
-    last = algodRound(status?.lastRound, "last round");
+    // checkSendOptions never leaves waitRounds at 0, which algosdk's wait
+    // fails at once.
+    confirmation = await algosdk.waitForConfirmation(algodClient, result.txIds[0], Number(options.waitRounds));
   } catch (error) {
-    throw uncertain(SEND_STAGE_CONFIRM, new SignerError(`read current round: ${errorText(error)}`));
+    throw failed(true, error);
   }
-  // The group is looked up now and after each of the next waitRounds rounds.
-  const deadline = waitRounds < UINT64_MAX - last ? last + waitRounds : UINT64_MAX;
-  for (;;) {
-    // A lookup error is not an answer: behind a load balancer another node
-    // may not have the transaction yet.
-    let info: any;
-    try {
-      info = await algodClient.pendingTransactionInformation(txId).do(undefined, algodOptions(signal));
-    } catch {
-      info = undefined;
-    }
-    if (info) {
-      if (typeof info.poolError === "string" && info.poolError !== "") {
-        throw new SubmissionRejectedError(
-          result.signedGroup,
-          result.txIds,
-          new SignerError(`dropped from the transaction pool: ${info.poolError}`),
-        );
-      }
-      const confirmed = wholeNumber(info.confirmedRound);
-      if (confirmed !== undefined && confirmed > 0n) {
-        result.outcome = SEND_OUTCOME_CONFIRMED;
-        result.confirmedRound = confirmed;
-        return;
-      }
-    }
-    if (last >= deadline) {
-      throw uncertain(SEND_STAGE_CONFIRM, new SignerError(`not confirmed after ${waitRounds} rounds`));
-    }
-    // statusAfterBlock(n) returns once round n+1 exists.
-    let next: bigint;
-    try {
-      const status = await algodClient.statusAfterBlock(last).do(undefined, algodOptions(signal));
-      next = algodRound(status?.lastRound, "last round");
-    } catch (error) {
-      throw uncertain(
-        SEND_STAGE_CONFIRM,
-        new SignerError(`wait for round ${last + 1n}: ${errorText(error)}`),
-      );
-    }
-    last = next > last ? next : last + 1n;
-  }
+  result.outcome = SEND_OUTCOME_CONFIRMED;
+  result.confirmedRound = confirmation.confirmedRound ?? 0n;
+  result.confirmation = confirmation;
 }
 
 /** The TX-prefixed hex of the transactions in a signed group, for simulation results. */

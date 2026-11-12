@@ -9,37 +9,40 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"math"
 	"net/http"
-	"strings"
 
 	"github.com/algorand/go-algorand-sdk/v2/client/v2/algod"
-	"github.com/algorand/go-algorand-sdk/v2/client/v2/common"
+	"github.com/algorand/go-algorand-sdk/v2/client/v2/common/models"
+	"github.com/algorand/go-algorand-sdk/v2/transaction"
 	"github.com/algorand/go-algorand-sdk/v2/types"
 )
 
-// defaultSendWaitRounds is how many rounds SendPrepared waits for a submitted
-// group to confirm when SendOptions.WaitRounds is zero.
+// defaultSendWaitRounds is how many rounds a send waits for a submitted group
+// to confirm when SendOptions.WaitRounds is zero.
 const defaultSendWaitRounds = 10
 
-// SendOutcome says how far a send got on the network.
+// SendOutcome says how far a send got.
 type SendOutcome string
 
 const (
-	// SendOutcomeSubmitted: the node accepted the group; it was not seen in a
-	// block by this call. Returned only when SendOptions.NoWait is set.
+	// SendOutcomeSubmitted: go-algorand-sdk's submit call returned success,
+	// and the send did not wait for confirmation. Returned only when
+	// SendOptions.NoWait is set.
 	SendOutcomeSubmitted SendOutcome = "submitted"
-	// SendOutcomeConfirmed: the group was seen in a block.
+	// SendOutcomeConfirmed: go-algorand-sdk's confirmation wait returned the
+	// group's first transaction confirmed.
 	SendOutcomeConfirmed SendOutcome = "confirmed"
 )
 
 // SendOptions configures SendPrepared and the Send* conveniences. The zero
 // value signs, submits and waits for confirmation.
 type SendOptions struct {
-	// NoWait returns as soon as the node accepts the group, with
+	// NoWait returns once go-algorand-sdk's submit call returns success, with
 	// SendOutcomeSubmitted, instead of waiting for confirmation.
 	NoWait bool
-	// WaitRounds is how many rounds to wait for confirmation. Zero means 10.
+	// WaitRounds is the round count given to go-algorand-sdk's
+	// transaction.WaitForConfirmation for the group's first transaction.
+	// Zero means 10.
 	WaitRounds uint64
 
 	// RefreshValidity lets a send rebuild the validity rounds of a rotating
@@ -87,6 +90,12 @@ type SendResult struct {
 	// zero unless Outcome is SendOutcomeConfirmed.
 	Outcome        SendOutcome
 	ConfirmedRound uint64
+	// Confirmation is what go-algorand-sdk's transaction.WaitForConfirmation
+	// returned, unchanged. It describes the first transaction of SignedGroup,
+	// the one the wait followed. Read inner transactions, logs and created
+	// IDs from it as in any go-algorand-sdk program. Nil unless Outcome is
+	// SendOutcomeConfirmed.
+	Confirmation *models.PendingTransactionInfoResponse
 	// Cosigned carries the component responses of a cosigned send.
 	Cosigned *CosignedSignResult
 	// Rotating carries the rotation a rotating account's send performed.
@@ -168,61 +177,45 @@ func (e *SignOutcomeUnknownError) Unwrap() error {
 	return e.Err
 }
 
-// SubmissionRejectedError reports that the network refused the signed group:
-// the node rejected it on submission, or dropped it from its pool. The signed
-// bytes and their IDs are kept.
-type SubmissionRejectedError struct {
+// SubmissionError reports a signed and verified group whose submission or
+// confirmation wait failed. The send submits with go-algorand-sdk's
+// SendRawTransaction and waits with its transaction.WaitForConfirmation, and
+// Err is the error that call returned, unchanged, or the context's error when
+// the context ended before the call. Read it as in any go-algorand-sdk
+// program. The error makes no claim about what the node did.
+//
+// When Submitted is true, follow the group with
+// transaction.WaitForConfirmation on TxIDs[0]. When it is false, submit the
+// same SignedGroup again with SubmitSignedGroup; the node may already have it.
+// The same signed bytes execute at most once. After LastValid, neither a
+// node's "not found" nor a refusal proves the group never confirmed: check an
+// indexer before building a replacement.
+type SubmissionError struct {
+	// SignedGroup is the signed group, hex msgpack, in order.
 	SignedGroup []string
-	TxIDs       []string
-	Err         error
-}
-
-func (e *SubmissionRejectedError) Error() string {
-	return fmt.Sprintf("network rejected transaction %s: %v", firstOrEmpty(e.TxIDs), e.Err)
-}
-
-func (e *SubmissionRejectedError) Unwrap() error { return e.Err }
-
-// Stages at which a send's outcome can become uncertain.
-const (
-	// SendStageSubmit: the submission's answer never arrived, so the node may
-	// or may not have the group.
-	SendStageSubmit = "submit"
-	// SendStageConfirm: the node accepted the group, and it was not seen in a
-	// block within the wait.
-	SendStageConfirm = "confirm"
-	// SendStageUnsent: the group was signed and the call ended before it was
-	// sent to the node, because the caller's context had ended. The node does
-	// not have it. Submit SignedGroup to send it.
-	SendStageUnsent = "unsent"
-)
-
-// SubmissionUncertainError reports a signed group that this call did not see
-// confirmed or refused. Unless Stage is SendStageUnsent the group may still
-// confirm. Follow its first transaction ID with go-algorand-sdk's
-// transaction.WaitForConfirmation, or submit the same SignedGroup again with
-// SubmitSignedGroup while it is valid. Never sign a replacement while the
-// group can still execute, because both could. After LastValid, a node that
-// does not find the group does not prove it never confirmed: a node looks
-// back only about 1000 rounds from its current round. Check an indexer
-// before building a replacement.
-type SubmissionUncertainError struct {
-	Stage       string
-	SignedGroup []string
-	TxIDs       []string
+	// TxIDs are the IDs of the signed transactions, in SignedGroup order.
+	TxIDs []string
 	// LastValid is the earliest last valid round in SignedGroup: after it,
 	// the group can no longer execute.
 	LastValid uint64
+	// Submitted is true when go-algorand-sdk's submit call returned success
+	// and the failure came later. False means the submit call was not made,
+	// because the context had ended, or did not return success; it does not
+	// mean the node lacks the group, because the answer may have been lost.
+	Submitted bool
 	Err       error
 }
 
-func (e *SubmissionUncertainError) Error() string {
-	return fmt.Sprintf("outcome of transaction %s is unknown (%s): %v", firstOrEmpty(e.TxIDs), e.Stage, e.Err)
+func (e *SubmissionError) Error() string {
+	if e.Submitted {
+		return fmt.Sprintf("wait for confirmation of transaction %s: %v", firstOrEmpty(e.TxIDs), e.Err)
+	}
+	return fmt.Sprintf("submit transaction %s: %v", firstOrEmpty(e.TxIDs), e.Err)
 }
 
 // Unwrap returns the cause. A nil error has none, so errors.As can look past
 // one in a chain.
-func (e *SubmissionUncertainError) Unwrap() error {
+func (e *SubmissionError) Unwrap() error {
 	if e == nil {
 		return nil
 	}
@@ -267,9 +260,10 @@ func (c *SignerClient) SendPayment(ctx context.Context, algodClient *algod.Clien
 // A refusal by the signer, and an answer of the signer's that the SDK
 // refuses, come back as the signing call's own error; nothing was submitted.
 // The other failures are typed. *SignOutcomeUnknownError: an approval-bearing
-// request ended with no answer. *SubmissionRejectedError and
-// *SubmissionUncertainError: the group was signed, and the error keeps the
-// signed bytes and their IDs. A rotating send may prepare and seek approval
+// request ended with no answer. *SubmissionError: the group was signed, and
+// go-algorand-sdk's submit or confirmation wait failed, or the context ended
+// before one of them; the error keeps the signed bytes, their IDs and
+// go-algorand-sdk's error. A rotating send may prepare and seek approval
 // again, a bounded number of times, when the signer says an attempt released
 // no signature. No send ever builds a replacement for a transaction whose
 // outcome is unknown.
@@ -542,108 +536,50 @@ func (g PreparedGroup) earliestLastValid() uint64 {
 	return earliestLastValid(txns)
 }
 
-// submitAndTrack is the one submission path of every send. It submits the
-// signed bytes exactly as given and, unless told not to, waits for the first
-// transaction to confirm. It never signs or rebuilds anything.
+// submitAndTrack is the one submission path of every send. It posts the
+// signed bytes exactly as given with go-algorand-sdk's SendRawTransaction
+// and, unless told not to, waits with its transaction.WaitForConfirmation on
+// the first transaction ID. It reports their errors unchanged in a
+// *SubmissionError and never signs or rebuilds anything.
 func submitAndTrack(ctx context.Context, algodClient *algod.Client, raw [][]byte, result *SendResult, opts *SendOptions) error {
+	fail := func(submitted bool, err error) error {
+		return &SubmissionError{SignedGroup: result.SignedGroup, TxIDs: result.TxIDs, LastValid: result.lastValid, Submitted: submitted, Err: err}
+	}
+	if err := ctx.Err(); err != nil {
+		return fail(false, err)
+	}
 	var blob []byte
 	for _, entry := range raw {
 		blob = append(blob, entry...)
 	}
-	txID := result.TxIDs[0]
-	uncertain := func(stage string, err error) error {
-		return &SubmissionUncertainError{Stage: stage, SignedGroup: result.SignedGroup, TxIDs: result.TxIDs, LastValid: result.lastValid, Err: err}
-	}
-	if err := ctx.Err(); err != nil {
-		return uncertain(SendStageUnsent, err)
-	}
-	sentID, err := algodClient.SendRawTransaction(blob).Do(ctx)
-	switch {
-	case err == nil:
-		if sentID != txID {
-			return uncertain(SendStageSubmit, fmt.Errorf("node reported transaction ID %s for a group whose first transaction is %s", sentID, txID))
-		}
-	case alreadyKnownToNode(err):
-		// The node already has a transaction with this ID, pending or
-		// committed: an earlier submission of this group reached it. That is
-		// not a refusal, and the lookup below finds the outcome.
-	default:
-		var bad common.BadRequest
-		if errors.As(err, &bad) {
-			return &SubmissionRejectedError{SignedGroup: result.SignedGroup, TxIDs: result.TxIDs, Err: err}
-		}
-		return uncertain(SendStageSubmit, err)
+	if _, err := algodClient.SendRawTransaction(blob).Do(ctx); err != nil {
+		return fail(false, err)
 	}
 	result.Outcome = SendOutcomeSubmitted
 	if opts.NoWait {
 		return nil
 	}
-
+	if err := ctx.Err(); err != nil {
+		return fail(true, err)
+	}
 	waitRounds := opts.WaitRounds
 	if waitRounds == 0 {
 		waitRounds = defaultSendWaitRounds
 	}
-	status, err := algodClient.Status().Do(ctx)
+	info, err := transaction.WaitForConfirmation(algodClient, result.TxIDs[0], waitRounds, ctx)
 	if err != nil {
-		return uncertain(SendStageConfirm, fmt.Errorf("read current round: %w", err))
+		return fail(true, err)
 	}
-	// The group is looked up now and after each of the next waitRounds rounds.
-	last := status.LastRound
-	deadline := uint64(math.MaxUint64)
-	if waitRounds < math.MaxUint64-last {
-		deadline = last + waitRounds
-	}
-	for {
-		// A lookup error is not an answer: behind a load balancer another
-		// node may not have the transaction yet.
-		info, _, err := algodClient.PendingTransactionInformation(txID).Do(ctx)
-		if err == nil {
-			if info.PoolError != "" {
-				return &SubmissionRejectedError{
-					SignedGroup: result.SignedGroup, TxIDs: result.TxIDs,
-					Err: fmt.Errorf("dropped from the transaction pool: %s", info.PoolError),
-				}
-			}
-			if info.ConfirmedRound > 0 {
-				result.Outcome = SendOutcomeConfirmed
-				result.ConfirmedRound = info.ConfirmedRound
-				return nil
-			}
-		}
-		if last >= deadline {
-			return uncertain(SendStageConfirm, fmt.Errorf("not confirmed after %d rounds", waitRounds))
-		}
-		// StatusAfterBlock(n) returns once round n+1 exists.
-		next, err := algodClient.StatusAfterBlock(last).Do(ctx)
-		if err != nil {
-			return uncertain(SendStageConfirm, fmt.Errorf("wait for round %d: %w", last+1, err))
-		}
-		if next.LastRound > last {
-			last = next.LastRound
-		} else {
-			last++
-		}
-	}
-}
-
-// alreadyKnownToNode reports whether a submission was refused only because
-// the node already has a transaction with the same ID, in its pool or in a
-// block. algod answers that with a 400 like any refusal and no code, so the
-// text is all there is to go on. One case is not recognised: a committed
-// transaction that carries a lease is refused for its lease first, and that
-// answer is the same as a real lease conflict's.
-func alreadyKnownToNode(err error) bool {
-	var bad common.BadRequest
-	if !errors.As(err, &bad) {
-		return false
-	}
-	return strings.Contains(strings.ToLower(err.Error()), "already in ledger")
+	result.Outcome = SendOutcomeConfirmed
+	result.ConfirmedRound = info.ConfirmedRound
+	result.Confirmation = &info
+	return nil
 }
 
 // SubmitSignedGroup submits a signed group exactly as given and, unless told
 // not to, waits for confirmation. It signs nothing. Use it to submit a group
 // from SignPreparedRotating, or to submit again the SignedGroup a
-// *SubmissionUncertainError kept: the same bytes can execute only once.
+// *SubmissionError kept: the same bytes can execute only once.
 //
 // Each entry must be one canonically encoded signed transaction, hex msgpack,
 // and a group of several must carry the group ID computed over itself.

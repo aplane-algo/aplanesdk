@@ -12,11 +12,11 @@ approve later in apadmin, then connect):
     result = request_enrollment_from_env(label="ci-runner")
 
 Usage:
-    from aplanesdk import SignerClient, send_raw_transaction
+    from aplanesdk import SignerClient
 
     client = SignerClient.from_env()
     signed_txn = client.sign_transaction(txn)
-    txid = send_raw_transaction(algod_client, signed_txn)
+    txid = algod_client.send_raw_transaction(signed_txn)
     client.close()
 """
 from ._version import __version__
@@ -25,8 +25,7 @@ from .signer import (
     # Main client
     SignerClient,
 
-    # Submission helpers
-    send_raw_transaction,
+    # Cosigned signing
     sign_prepared_cosigned_group,
     simulate_prepared_cosigned_group,
 
@@ -42,9 +41,6 @@ from .signer import (
     DEFAULT_SEND_WAIT_ROUNDS,
     SEND_OUTCOME_SUBMITTED,
     SEND_OUTCOME_CONFIRMED,
-    SEND_STAGE_SUBMIT,
-    SEND_STAGE_CONFIRM,
-    SEND_STAGE_UNSENT,
     ROTATING_MAX_VALIDITY_WINDOW,
     ROTATING_MAX_LEAD,
     ROTATING_MIN_REMAINING,
@@ -83,15 +79,10 @@ from .signer import (
     KeyNotFoundError,
     KeyDeletionError,
     EnrollmentError,
-    TransactionRejectedError,
-    LogicSigRejectedError,
-    InsufficientFundsError,
-    InvalidTransactionError,
     UnsupportedSigningFlowError,
     UnsupportedGroupError,
     SignOutcomeUnknownError,
-    SubmissionRejectedError,
-    SubmissionUncertainError,
+    SubmissionError,
     RotatingPreflightError,
     CosignerDiscoveryError,
     SendTimeoutError,
@@ -164,8 +155,7 @@ __all__ = [
     # Main client
     "SignerClient",
 
-    # Submission helpers
-    "send_raw_transaction",
+    # Cosigned signing
     "sign_prepared_cosigned_group",
     "simulate_prepared_cosigned_group",
 
@@ -181,9 +171,6 @@ __all__ = [
     "DEFAULT_SEND_WAIT_ROUNDS",
     "SEND_OUTCOME_SUBMITTED",
     "SEND_OUTCOME_CONFIRMED",
-    "SEND_STAGE_SUBMIT",
-    "SEND_STAGE_CONFIRM",
-    "SEND_STAGE_UNSENT",
     "ROTATING_MAX_VALIDITY_WINDOW",
     "ROTATING_MAX_LEAD",
     "ROTATING_MIN_REMAINING",
@@ -222,15 +209,10 @@ __all__ = [
     "KeyNotFoundError",
     "KeyDeletionError",
     "EnrollmentError",
-    "TransactionRejectedError",
-    "LogicSigRejectedError",
-    "InsufficientFundsError",
-    "InvalidTransactionError",
     "UnsupportedSigningFlowError",
     "UnsupportedGroupError",
     "SignOutcomeUnknownError",
-    "SubmissionRejectedError",
-    "SubmissionUncertainError",
+    "SubmissionError",
     "RotatingPreflightError",
     "CosignerDiscoveryError",
     "SendTimeoutError",

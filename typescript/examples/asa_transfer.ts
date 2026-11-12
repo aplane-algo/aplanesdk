@@ -21,7 +21,7 @@
  * */
 
 import algosdk from "algosdk";
-import { SignOutcomeUnknownError, SignerClient, SubmissionUncertainError } from "aplanesdk";
+import { SignOutcomeUnknownError, SignerClient, SubmissionError } from "aplanesdk";
 
 // Transaction parameters (replace with your actual addresses)
 const SENDER = "ED255ACCOUNTEXAMPLE77777777777777777777777777777777777777777";
@@ -52,9 +52,16 @@ async function main() {
     console.log(`Confirmed ${result.txIds[0]} in round ${result.confirmedRound}`);
   } catch (error) {
     // Neither error means "send again": both transfers could execute.
-    if (error instanceof SubmissionUncertainError) {
-      console.error(`Outcome unknown for ${error.txIds.join(", ")} (${error.stage}): ${error.message}`);
-      if (await waitForGroup(algodClient, error)) return;
+    if (error instanceof SubmissionError) {
+      console.error(error.message);
+      if (!error.submitted) {
+        console.error(
+          "The submit call did not return success; the node may or may not have the group. " +
+            "Submit the same signedGroup again with submitSignedGroup.",
+        );
+      } else if (await waitForGroup(algodClient, error)) {
+        return;
+      }
     } else if (error instanceof SignOutcomeUnknownError) {
       console.error(`Sign outcome unknown (request ${error.requestId || "(no ID)"}): ${error.message}`);
       console.error(`Do not build a replacement until round ${error.lastValid} has passed.`);
@@ -71,7 +78,7 @@ async function main() {
  * confirms as a whole, so its first ID is enough. A timeout means only that
  * the wait ended.
  */
-async function waitForGroup(algodClient: algosdk.Algodv2, error: SubmissionUncertainError): Promise<boolean> {
+async function waitForGroup(algodClient: algosdk.Algodv2, error: SubmissionError): Promise<boolean> {
   try {
     const { lastRound } = await algodClient.status().do();
     const rounds = error.lastValid > lastRound ? error.lastValid - lastRound : 1n;

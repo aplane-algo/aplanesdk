@@ -17,11 +17,11 @@
  *         url: ssh://signer.example.com:1127
  *
  * Usage:
- *     import { SignerClient, sendRawTransaction } from "aplanesdk";
+ *     import { SignerClient } from "aplanesdk";
  *
  *     const client = await SignerClient.fromEnv();
  *     const signed = await client.signTransaction(txn);
- *     const txid = await sendRawTransaction(algodClient, signed);
+ *     const { txid } = await algodClient.sendRawTransaction(Buffer.from(signed, "base64")).do();
  *
  * A new client key is enrolled once. The request is queued for the operator
  * to approve later in apadmin; connect after that:
@@ -78,7 +78,6 @@ export type {
 
 // Utilities
 export {
-  sendRawTransaction,
   requestEnrollment,
   requestEnrollmentFromEnv,
   loadConfig,
@@ -114,22 +113,13 @@ export {
   KeyNotFoundError,
   KeyDeletionError,
   EnrollmentError,
-  TransactionRejectedError,
-  LogicSigRejectedError,
-  InsufficientFundsError,
-  InvalidTransactionError,
   UnsupportedSigningFlowError,
   UnsupportedGroupError,
   CosignerDiscoveryError,
   SignOutcomeUnknownError,
-  SubmissionRejectedError,
-  SubmissionUncertainError,
+  SubmissionError,
   RotatingPreflightError,
-  SEND_STAGE_SUBMIT,
-  SEND_STAGE_CONFIRM,
-  SEND_STAGE_UNSENT,
 } from "./errors.js";
-export type { SendStage } from "./errors.js";
 
 // Types
 export type {

@@ -93,16 +93,20 @@ func main() {
 	fmt.Println("Sending hashlock claim with preimage...")
 	result, err := signer.SendPrepared(ctx, algodClient, aplane.NewPreparedGroup(*prepared), nil)
 	if err != nil {
-		// A group that was submitted, or a signature that may have been
-		// released: never build a replacement while it can still execute,
-		// because both could.
-		var uncertain *aplane.SubmissionUncertainError
-		if errors.As(err, &uncertain) {
-			round, waitErr := waitForGroup(ctx, algodClient, uncertain)
-			if waitErr != nil {
-				log.Fatalf("Outcome unknown: %v (wait: %v). After round %d, check an indexer before building a replacement.", err, waitErr, uncertain.LastValid)
+		// A signed group whose submit or wait failed, or a signature that may
+		// have been released: never build a replacement while it can still
+		// execute, because both could.
+		var failure *aplane.SubmissionError
+		if errors.As(err, &failure) {
+			if !failure.Submitted {
+				// Submitting the same signed group again cannot pay twice.
+				log.Fatalf("%v. Submit the same SignedGroup again with SubmitSignedGroup; the node may already have it.", err)
 			}
-			fmt.Printf("Confirmed %s in round %d\n", uncertain.TxIDs[0], round)
+			round, waitErr := waitForGroup(ctx, algodClient, failure)
+			if waitErr != nil {
+				log.Fatalf("%v (wait: %v). After round %d, check an indexer before building a replacement.", err, waitErr, failure.LastValid)
+			}
+			fmt.Printf("Confirmed %s in round %d\n", failure.TxIDs[0], round)
 			return
 		}
 		var unknown *aplane.SignOutcomeUnknownError
@@ -118,15 +122,15 @@ func main() {
 // waitForGroup follows a submitted group with go-algorand-sdk until its last
 // valid round. A group confirms as a whole, so its first ID is enough. A
 // timeout means only that the wait ended.
-func waitForGroup(ctx context.Context, algodClient *algod.Client, uncertain *aplane.SubmissionUncertainError) (uint64, error) {
+func waitForGroup(ctx context.Context, algodClient *algod.Client, failure *aplane.SubmissionError) (uint64, error) {
 	status, err := algodClient.Status().Do(ctx)
 	if err != nil {
 		return 0, err
 	}
 	rounds := uint64(1)
-	if uncertain.LastValid > status.LastRound {
-		rounds = uncertain.LastValid - status.LastRound
+	if failure.LastValid > status.LastRound {
+		rounds = failure.LastValid - status.LastRound
 	}
-	info, err := transaction.WaitForConfirmation(algodClient, uncertain.TxIDs[0], rounds, ctx)
+	info, err := transaction.WaitForConfirmation(algodClient, failure.TxIDs[0], rounds, ctx)
 	return info.ConfirmedRound, err
 }

@@ -30,7 +30,7 @@ Prerequisites:
 
 from algosdk import transaction
 from algosdk.v2client import algod
-from aplanesdk import SignerClient, SignOutcomeUnknownError, SubmissionUncertainError
+from aplanesdk import SignerClient, SignOutcomeUnknownError, SubmissionError
 
 # The hashlock address (must exist in apsigner keystore)
 HASHLOCK_ADDRESS = "HASHLOCKEXAMPLE7777777777777777777777777777777777777777"
@@ -65,10 +65,12 @@ def main():
         print("Sending hashlock claim with preimage...")
         try:
             result = signer.send_prepared(algod_client, prepared)
-        except SubmissionUncertainError as error:
-            # The signed group may be on the network. Never build a
-            # replacement until its outcome is known: both could execute.
-            confirmed_round = wait_for_group(algod_client, error)
+        except SubmissionError as error:
+            # The group was signed, and algosdk's submit call or its
+            # confirmation wait failed; error.error is algosdk's error. The
+            # group may be on the network. Never build a replacement until
+            # its outcome is known: both could execute.
+            confirmed_round = follow_group(algod_client, error)
             if not confirmed_round:
                 raise
             print(f"Confirmed {error.tx_ids[0]} in round {confirmed_round}")
@@ -85,25 +87,33 @@ def main():
         print("Hashlock claimed successfully!")
 
 
-def wait_for_group(algod_client, error):
-    """Wait with algosdk for a signed group whose outcome is unknown, until
-    its last valid round. A group confirms as a whole, so its first
-    transaction is followed. Returns the round it confirmed in, or 0 when the
-    wait ended without seeing it, which means only that the wait ended. Once
-    the last valid round has passed, a node's "not found" is not proof that
-    the group never confirmed, so check an indexer before building a
-    replacement. (A send given a timeout can also end with stage "unsent":
-    the node never had the group, so submit it with submit_signed_group
-    instead of waiting.)"""
-    print(f"Outcome unknown for {', '.join(error.tx_ids)} ({error.stage}): {error}")
+def follow_group(algod_client, error):
+    """Follow a signed group after a SubmissionError. When algosdk's submit
+    call did not return success (error.submitted is False), the node may or
+    may not have the group: say so and return 0. The caller then submits the
+    same signed_group again with submit_signed_group, which cannot pay
+    twice. When it did return success, wait with algosdk on the first
+    transaction (a group confirms as a whole) until the group's last valid
+    round, and for at least 1 round. Returns the round it confirmed in, or 0
+    when the wait ended without seeing it, which means only that the wait
+    ended. Once the last valid round has passed, neither a node's "not found"
+    nor a refusal proves that the group never confirmed, so check an indexer
+    before building a replacement."""
+    print(f"Signed group {', '.join(error.tx_ids)}: {error}")
+    if not error.submitted:
+        print(
+            "The submit call did not return success, so the node may or may not have the "
+            "group. Submit the same signed_group again with submit_signed_group."
+        )
+        return 0
     try:
         current = algod_client.status()["last-round"]
         # At least 1 round: algosdk reads 0 as 1000.
         info = transaction.wait_for_confirmation(
             algod_client, error.tx_ids[0], max(error.last_valid - current, 1)
         )
-    except Exception as wait_error:
-        print(f"Still unknown ({wait_error}); check an indexer before building a replacement.")
+    except Exception as follow_error:
+        print(f"Still unknown ({follow_error}); check an indexer before building a replacement.")
         return 0
     return info["confirmed-round"]
 

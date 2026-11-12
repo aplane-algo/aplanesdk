@@ -15,13 +15,13 @@ import json
 import msgpack
 import pytest
 from algosdk import encoding, transaction
+from algosdk import error as algosdk_error
 
 from aplanesdk import (
+    DEFAULT_SEND_WAIT_ROUNDS,
     KEY_TYPE_WITNESS_FALCON1024,
     SEND_OUTCOME_CONFIRMED,
     SEND_OUTCOME_SUBMITTED,
-    SEND_STAGE_CONFIRM,
-    SEND_STAGE_SUBMIT,
     SIGNING_FLOW_BOUNDED1,
     SIGNING_FLOW_COSIGNED1,
     SIGNING_FLOW_ROTATING1,
@@ -31,8 +31,7 @@ from aplanesdk import (
     SignerError,
     SigningRejectedError,
     SignOutcomeUnknownError,
-    SubmissionRejectedError,
-    SubmissionUncertainError,
+    SubmissionError,
     UnsupportedGroupError,
     UnsupportedSigningFlowError,
 )
@@ -144,7 +143,32 @@ def test_send_prepared_no_wait_returns_submitted(fakes):
     result = client.send_prepared(node.client, prepared_for(txn), no_wait=True)
 
     assert result.outcome == SEND_OUTCOME_SUBMITTED and result.confirmed_round == 0
-    assert node.lookups == 0
+    assert result.confirmation is None
+    assert len(node.submissions()) == 1 and node.lookups == 0 and node.waits == []
+
+
+@pytest.mark.parametrize("call", ["send_prepared", "submit_signed_group"])
+def test_the_confirmation_is_what_algosdks_wait_returned(fakes, monkeypatch, call):
+    # The response describes the first transaction of the signed group, the
+    # one the wait followed.
+    txn = fake_signer.payment(41, 42)
+    signer, node, client = make(fakes, SendSigner([ordinary_key(txn)]))
+    real_wait = transaction.wait_for_confirmation
+    returned = []
+
+    def wait(*args, **kwargs):
+        returned.append(real_wait(*args, **kwargs))
+        return returned[-1]
+
+    monkeypatch.setattr(transaction, "wait_for_confirmation", wait)
+    if call == "send_prepared":
+        result = client.send_prepared(node.client, prepared_for(txn))
+    else:
+        result = client.submit_signed_group(node.client, [signed_hex(txn)])
+
+    assert len(returned) == 1 and result.confirmation is returned[0]
+    assert result.confirmation == {"confirmed-round": 12, "pool-error": ""}
+    assert result.confirmed_round == 12 and node.looked_up == [txn.get_txid()]
 
 
 def _refusal_cases():
@@ -439,52 +463,80 @@ def _http_error(status, message):
 
 
 @pytest.mark.parametrize(
-    "node_options,options,rejected,stage,text",
+    "node_options,options,submitted,cause,text",
     [
-        ({"submit": _http_error(400, "overspend")}, {}, True, "", "overspend"),
-        ({"submit": _http_error(500, "boom")}, {}, False, SEND_STAGE_SUBMIT, "boom"),
         (
-            {"submit": lambda _blob: reply(200, {"txId": "SOMEOTHERID"})},
+            {"submit": _http_error(400, "overspend")},
             {},
             False,
-            SEND_STAGE_SUBMIT,
-            "SOMEOTHERID",
+            algosdk_error.AlgodHTTPError,
+            "overspend",
         ),
-        ({"pending": lambda: {"pool-error": "fee too low"}}, {}, True, "", "fee too low"),
+        (
+            {"submit": _http_error(500, "boom")},
+            {},
+            False,
+            algosdk_error.AlgodHTTPError,
+            "boom",
+        ),
+        (
+            {"pending": lambda: {"pool-error": "fee too low"}},
+            {},
+            True,
+            algosdk_error.TransactionRejectedError,
+            "fee too low",
+        ),
         (
             {"pending": lambda: {}},
             {"wait_rounds": 2},
-            False,
-            SEND_STAGE_CONFIRM,
-            "not confirmed after 2 rounds",
+            True,
+            algosdk_error.ConfirmationTimeoutError,
+            "timed out",
         ),
     ],
     ids=[
-        "node refuses the group",
-        "node fails without an answer about the group",
-        "node reports another transaction ID",
-        "pool drops the group",
-        "not confirmed within the wait",
+        "the submit call fails with a 400",
+        "the submit call fails with a 500",
+        "the wait fails on a pool error",
+        "the wait times out",
     ],
 )
-def test_send_prepared_submission_failures_keep_signed_bytes(
-    fakes, node_options, options, rejected, stage, text
+def test_send_prepared_submission_failures_carry_algosdks_error(
+    fakes, node_options, options, submitted, cause, text
 ):
     txn = fake_signer.payment(41, 42)
     signer, node, client = make(fakes, SendSigner([ordinary_key(txn)]), FakeNode(**node_options))
 
-    with pytest.raises((SubmissionRejectedError, SubmissionUncertainError)) as excinfo:
+    with pytest.raises(SubmissionError) as excinfo:
         client.send_prepared(node.client, prepared_for(txn), **options)
 
     error = excinfo.value
-    if rejected:
-        assert isinstance(error, SubmissionRejectedError)
-    else:
-        assert isinstance(error, SubmissionUncertainError) and error.stage == stage
-    assert text in str(error)
+    assert type(error) is SubmissionError and error.submitted is submitted
+    # algosdk's error, unchanged, as both the error and the cause.
+    assert type(error.error) is cause and error.__cause__ is error.error
+    assert text in str(error.error) and str(error.error) in str(error)
+    step = "wait for confirmation of transaction" if submitted else "submit transaction"
+    assert str(error).startswith(f"{step} {txn.get_txid()}: ")
     assert error.signed_group == [signed_hex(txn)] and error.tx_ids == [txn.get_txid()]
+    assert error.last_valid == txn.last_valid_round
     # Nothing is signed or submitted a second time.
     assert signer.count("/sign") == 1 and len(node.submissions()) == 1
+
+
+def test_send_prepared_does_not_compare_the_nodes_transaction_id(fakes):
+    # The send waits on the first ID it computed from the signed bytes,
+    # whatever ID the node's answer names.
+    txn = fake_signer.payment(41, 42)
+    signer, node, client = make(
+        fakes,
+        SendSigner([ordinary_key(txn)]),
+        FakeNode(submit=lambda _blob: reply(200, {"txId": "SOMEOTHERID"})),
+    )
+
+    result = client.send_prepared(node.client, prepared_for(txn))
+
+    assert result.outcome == SEND_OUTCOME_CONFIRMED and result.confirmed_round == 12
+    assert node.looked_up == [txn.get_txid()]
 
 
 def test_send_payment_prepares_then_sends(fakes):
@@ -516,35 +568,32 @@ def test_send_prepared_reports_what_the_signer_added(fakes):
 
 
 class TestSendPreparedConfirmationWait:
-    @pytest.mark.parametrize("rounds,waits", [(1, ["10"]), (3, ["10", "11", "12"])])
-    def test_looks_once_now_and_once_after_each_round_of_the_wait(self, fakes, rounds, waits):
+    @pytest.mark.parametrize("rounds,lookups", [(0, DEFAULT_SEND_WAIT_ROUNDS), (1, 1), (3, 3)])
+    def test_algosdks_wait_runs_for_the_rounds_asked(self, fakes, rounds, lookups):
+        # algosdk's wait looks the group up once per round of the wait, on
+        # the first ID of the signed group. Zero is the default of 10, never
+        # algosdk's 0, which it reads as 1000.
         txn = fake_signer.payment(41, 42)
         signer, node, client = make(
             fakes, SendSigner([ordinary_key(txn)]), FakeNode(pending=lambda: {})
         )
 
-        with pytest.raises(SubmissionUncertainError) as excinfo:
+        with pytest.raises(SubmissionError) as excinfo:
             client.send_prepared(node.client, prepared_for(txn), wait_rounds=rounds)
 
-        assert excinfo.value.stage == SEND_STAGE_CONFIRM
-        assert node.lookups == rounds + 1
-        # At round 10 the first wait follows round 10, so it ends when round
-        # 11 exists; the wait covers exactly the next rounds.
-        assert node.waits == waits
+        assert excinfo.value.submitted is True
+        assert isinstance(excinfo.value.error, algosdk_error.ConfirmationTimeoutError)
+        assert node.looked_up == [txn.get_txid()] * lookups
 
-    def test_the_largest_wait_does_not_wrap_around(self, fakes):
+    def test_the_confirmed_round_is_what_algosdks_wait_returns(self, fakes):
         txn = fake_signer.payment(41, 42)
-        lookups = []
-
-        def pending():
-            lookups.append(1)
-            return {} if len(lookups) < 4 else {"confirmed-round": 13}
-
+        answers = iter([{}, {}, {"confirmed-round": 13}])
         signer, node, client = make(
-            fakes, SendSigner([ordinary_key(txn)]), FakeNode(pending=pending)
+            fakes, SendSigner([ordinary_key(txn)]), FakeNode(pending=lambda: next(answers))
         )
-        result = client.send_prepared(node.client, prepared_for(txn), wait_rounds=_UINT64_MAX)
-        assert result.confirmed_round == 13
+        result = client.send_prepared(node.client, prepared_for(txn), wait_rounds=5)
+        assert result.outcome == SEND_OUTCOME_CONFIRMED and result.confirmed_round == 13
+        assert node.lookups == 3
 
     def test_a_wait_beyond_uint64_is_refused_before_signing(self, fakes):
         txn = fake_signer.payment(41, 42)
@@ -554,30 +603,39 @@ class TestSendPreparedConfirmationWait:
         assert signer.paths == []
 
 
-def test_submit_treats_an_already_known_group_as_submitted(fakes):
+def test_submit_reports_any_answer_of_the_submit_call_without_reading_it(fakes):
+    # A node that already has the group answers 400. The SDK does not read
+    # the text: the caller gets algosdk's error, with submitted False, and
+    # nothing is waited for.
     txn = fake_signer.payment(41, 42)
     message = f"TransactionPool.Remember: transaction already in ledger: {txn.get_txid()}"
     signer, node, client = make(
         fakes, SendSigner([ordinary_key(txn)]), FakeNode(submit=_http_error(400, message))
     )
 
-    # The node has these bytes from an earlier submission. That is not a
-    # refusal: a caller told "rejected" might sign a replacement.
-    result = client.send_prepared(node.client, prepared_for(txn))
-    assert result.outcome == SEND_OUTCOME_CONFIRMED
+    with pytest.raises(SubmissionError) as excinfo:
+        client.send_prepared(node.client, prepared_for(txn))
+
+    error = excinfo.value
+    assert error.submitted is False
+    assert isinstance(error.error, algosdk_error.AlgodHTTPError) and error.error.code == 400
+    assert str(error.error) == message
+    assert node.lookups == 0
 
 
-def test_submit_connection_dropped_is_not_an_answer(fakes):
+def test_submit_connection_dropped_carries_the_error_algosdk_raised(fakes):
     txn = fake_signer.payment(41, 42)
     signer, node, client = make(
         fakes, SendSigner([ordinary_key(txn)]), FakeNode(submit=lambda _blob: DROP)
     )
 
-    with pytest.raises(SubmissionUncertainError) as excinfo:
+    with pytest.raises(SubmissionError) as excinfo:
         client.send_prepared(node.client, prepared_for(txn))
 
-    assert excinfo.value.stage == SEND_STAGE_SUBMIT
-    assert excinfo.value.signed_group == [signed_hex(txn)]
+    error = excinfo.value
+    assert error.submitted is False
+    assert not isinstance(error.error, SignerError) and error.__cause__ is error.error
+    assert error.signed_group == [signed_hex(txn)]
 
 
 def test_submit_signed_group_refuses_bytes_it_cannot_verify(fakes):
@@ -591,20 +649,20 @@ def test_submit_signed_group_refuses_bytes_it_cannot_verify(fakes):
 def test_typed_send_errors_pickle_with_their_fields():
     import pickle
 
-    rejected = SubmissionRejectedError(["aa"], ["ID"], SignerError("no"))
-    uncertain = SubmissionUncertainError(
-        SEND_STAGE_CONFIRM, ["aa"], ["ID"], SignerError("no"), last_valid=1000
+    submission = SubmissionError(
+        ["aa"], ["ID"], 1000, True, algosdk_error.AlgodHTTPError("no", 400)
     )
     unknown = SignOutcomeUnknownError(
         SignerError("gone"), request_id="r1", requests=[{}], last_valid=1000
     )
-    for error in (rejected, uncertain, unknown):
+    for error in (submission, unknown):
         clone = pickle.loads(pickle.dumps(error))
         assert type(clone) is type(error) and str(clone) == str(error)
-    assert pickle.loads(pickle.dumps(uncertain)).stage == SEND_STAGE_CONFIRM
+        assert clone.last_valid == 1000
+    clone = pickle.loads(pickle.dumps(submission))
+    assert (clone.signed_group, clone.tx_ids, clone.submitted) == (["aa"], ["ID"], True)
+    assert type(clone.error) is algosdk_error.AlgodHTTPError and str(clone.error) == "no"
     assert pickle.loads(pickle.dumps(unknown)).request_id == "r1"
-    for error in (uncertain, unknown):
-        assert pickle.loads(pickle.dumps(error)).last_valid == 1000
 
 
 # -----------------------------------------------------------------------------
@@ -1538,6 +1596,51 @@ def test_an_interrupt_during_submission_carries_the_signed_group(fakes, method):
         assert any("aplane_signed_group" in note for note in interrupt.__notes__)
 
 
+def _failing_node(submitted):
+    """A node whose submit call fails, or whose wait fails after a successful
+    submit call."""
+    if submitted:
+        return FakeNode(pending=lambda: {"pool-error": "fee too low"})
+    return FakeNode(submit=_http_error(400, "overspend"))
+
+
+@pytest.mark.parametrize("submitted", [False, True], ids=["submit fails", "wait fails"])
+def test_a_cosigned_send_reaches_the_same_submission_path(fakes, submitted):
+    fixture = CosignedFixture(fakes)
+    fixture.node = fakes(_failing_node(submitted))
+
+    with pytest.raises(SubmissionError) as excinfo:
+        fixture.send(
+            cosigner_client=fixture.cosigner_client, cosigner_component_key="COSIGNER_COMPONENT"
+        )
+
+    error = excinfo.value
+    assert error.submitted is submitted and error.last_valid == 100
+    (submission,) = fixture.node.submissions()
+    assert "".join(error.signed_group) == submission.hex() and error.tx_ids
+
+
+@pytest.mark.parametrize("submitted", [False, True], ids=["submit fails", "wait fails"])
+def test_a_rotating_send_reaches_the_same_submission_path(fakes, submitted):
+    # The rotating retries happen before anything is submitted: a failure
+    # after signing ends the send, with one prepare and one sign.
+    signer = fakes(RotatingSigner(fake_signer.account(41)))
+    node = fakes(_failing_node(submitted))
+    txn = rotating_payment(signer.account, 10, 110)
+
+    with pytest.raises(SubmissionError) as excinfo:
+        signer_client(signer.http.url).send_prepared(
+            node.client, PreparedTransaction(transaction=txn, auth_address=txn.sender)
+        )
+
+    error = excinfo.value
+    assert error.submitted is submitted and error.last_valid == 110
+    (submission,) = node.submissions()
+    assert "".join(error.signed_group) == submission.hex()
+    assert signer.count("/sign/rotating/prepare") == 1
+    assert signer.count("/sign/rotating/sign") == 1
+
+
 # -----------------------------------------------------------------------------
 # Checks the tests above would not notice missing
 # -----------------------------------------------------------------------------
@@ -1613,19 +1716,6 @@ def test_a_signed_simulation_passes_only_with_one_full_group_result(fakes, answe
     result = client.simulate_prepared_group(node.client, prepared_for(txn))
     assert result.failure_message == message
     assert result.failed is bool(message)
-
-
-def test_the_confirmation_wait_follows_a_node_that_jumps_ahead(fakes):
-    # The wait after round 10 answers round 20: three rounds of waiting are
-    # used up, and the group is looked up once more, not once per round.
-    txn = fake_signer.payment(41, 42)
-    signer, node, client = make(
-        fakes, SendSigner([ordinary_key(txn)]), FakeNode(pending=lambda: {}, wait_round=20)
-    )
-    with pytest.raises(SubmissionUncertainError) as excinfo:
-        client.send_prepared(node.client, prepared_for(txn), wait_rounds=3)
-    assert excinfo.value.stage == SEND_STAGE_CONFIRM
-    assert node.lookups == 2 and node.waits == ["10"]
 
 
 # -----------------------------------------------------------------------------
@@ -1835,19 +1925,19 @@ class TestLastValidInEveryFlow:
         assert excinfo.value.last_valid == 108
 
     @pytest.mark.parametrize(
-        "node_options,stage",
+        "node_options,submitted",
         [
-            ({"submit": lambda _blob: reply(500, {"message": "boom"})}, SEND_STAGE_SUBMIT),
-            ({"pending": lambda: {}}, SEND_STAGE_CONFIRM),
+            ({"submit": lambda _blob: reply(500, {"message": "boom"})}, False),
+            ({"pending": lambda: {}}, True),
         ],
     )
-    def test_a_submission(self, fakes, node_options, stage):
+    def test_a_submission(self, fakes, node_options, submitted):
         txn = _payment_valid_to(41, 42, 1400)
         signer, node, client = make(fakes, SendSigner([key(txn.sender)]), FakeNode(**node_options))
-        with pytest.raises(SubmissionUncertainError) as excinfo:
+        with pytest.raises(SubmissionError) as excinfo:
             client.send_prepared(
                 node.client,
                 PreparedTransaction(transaction=txn, auth_address=txn.sender),
                 wait_rounds=1,
             )
-        assert excinfo.value.stage == stage and excinfo.value.last_valid == 1400
+        assert excinfo.value.submitted is submitted and excinfo.value.last_valid == 1400

@@ -51,7 +51,7 @@ npm install aplanesdk algosdk --legacy-peer-deps
 ## Quick Start
 
 ```typescript
-import { SignerClient, sendRawTransaction } from "aplanesdk";
+import { SignerClient } from "aplanesdk";
 import algosdk from "algosdk";
 
 // Connect to signer
@@ -71,8 +71,8 @@ const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
 // Sign via apsigner (waits for operator approval)
 const signed = await client.signTransaction(txn);
 
-// Submit to network (signed is ready to use, no processing needed)
-const txid = await sendRawTransaction(algodClient, signed);
+// Submit with algosdk (signed is ready to use, no processing needed)
+const { txid } = await algodClient.sendRawTransaction(Buffer.from(signed, "base64")).do();
 console.log(`Submitted: ${txid}`);
 ```
 
@@ -262,8 +262,8 @@ const signed = await client.signTransaction(
   { preimage: new Uint8Array([/* secret value */]) }
 );
 
-// Submit directly (no processing needed)
-const txid = await sendRawTransaction(algodClient, signed);
+// Submit with algosdk (no processing needed)
+const { txid } = await algodClient.sendRawTransaction(Buffer.from(signed, "base64")).do();
 ```
 
 #### `signTransactions(txns, authAddresses?, lsigArgsMap?): Promise<string>`
@@ -368,11 +368,23 @@ payment.
   computed from the signed bytes. A signer may raise a fee or assign a group,
   so `txIds` can differ from the IDs of the transactions you prepared.
   `confirmedRound` is a bigint, `0n` unless `outcome` is `"confirmed"`.
-- **Options.** `noWait` returns once the node accepts the group, with outcome
-  `"submitted"`. `waitRounds` is how many further rounds to wait for
-  confirmation (default 10). A cosigned account needs nothing extra when the
-  client was made with `fromEnv` and `endpoints.yaml` lists its cosigner: the
-  SDK finds it there (see [Cosigner discovery](#cosigner-discovery)).
+  `confirmation` is what algosdk's `waitForConfirmation` returned for the
+  first transaction of the signed group, unchanged (algosdk's
+  `PendingTransactionResponse`), and is undefined unless `outcome` is
+  `"confirmed"`; read inner transactions, logs and created IDs from it as in
+  any algosdk program.
+- **Submission.** Once the group is signed and checked, the send posts it
+  with algosdk's `sendRawTransaction` and waits with algosdk's
+  `waitForConfirmation` on the first transaction ID. It reads nothing into
+  either call's answer or error: a failure of either is a `SubmissionError`
+  whose `cause` is algosdk's error.
+- **Options.** `noWait` returns once algosdk's submit call returns success,
+  with outcome `"submitted"`. `waitRounds` is how many rounds algosdk's wait
+  waits for confirmation (default 10; zero also means 10, because algosdk's
+  wait given 0 fails without looking). A cosigned account needs nothing
+  extra when the client was made with `fromEnv` and `endpoints.yaml` lists
+  its cosigner: the SDK finds it there (see
+  [Cosigner discovery](#cosigner-discovery)).
   Otherwise pass `cosignerClient` with `cosignerComponentKey`, or a
   `cosignerResolver`; either wins over discovery, and the SDK does not close
   a cosigner client you pass. `signal` is an `AbortSignal`; see
@@ -387,16 +399,23 @@ payment.
   had already been aborted or its body could not be encoded, is a plain error,
   and no `/sign/cancel` is sent for it. An abort while such a request is in
   flight ends it, which counts as a lost answer (`SignOutcomeUnknownError`),
-  as in the Go SDK. Once the group is signed, an abort before it is sent is a
-  `SubmissionUncertainError` at stage `"unsent"`. These requests take the
-  signal and are aborted with it: `/sign` (including the cosigned sequence's
-  other positions), the cosigned sequence's key listing (`/status` and
+  as in the Go SDK. Once the group is signed, an abort found before the
+  submit call is a `SubmissionError` with `submitted` false, and nothing is
+  posted; one found after a successful submit, before the wait starts, is a
+  `SubmissionError` with `submitted` true. Either way `cause` is the
+  signal's `reason`. With `noWait` there is no wait to start, so once the
+  submit call returns success the send returns its result. The signal covers
+  signing and submission. These requests take it and are aborted with it:
+  `/sign` (including the cosigned sequence's other positions), the cosigned
+  sequence's key listing (`/status` and
   `/keys`), its `/plan`, its `/sign/component` requests and `/sign/assemble`,
   the rotating `/sign/rotating/prepare` and `/sign/rotating/sign`, and every
-  algod request the send makes (the account lookup for an account that left
-  rotation, round reads, the suggested parameters for rebuilt rounds, the
-  simulation, the submission and the confirmation wait). These do not, and run
-  to completion or their own timeout: the prepare step inside `sendPayment`
+  algod request the send makes before the wait (the account lookup for an
+  account that left rotation, round reads, the suggested parameters for
+  rebuilt rounds, the simulation and the submit call). algosdk's
+  `waitForConfirmation` takes no signal, so the wait cannot be interrupted:
+  `waitRounds` bounds it. A few requests do not take the signal, and run to
+  completion or their own timeout: the prepare step inside `sendPayment`
   (its algod and key lookups), the key listing that picks the flow, and the
   `/status` call that discovers the approval wait. None of them signs
   anything. The best-effort `/sign/cancel` sent after an aborted or lost
@@ -416,15 +435,8 @@ Failures:
 |---|---|---|
 | The signing call's own error | The signer refused (policy, operator, locked), or the SDK refused the signer's answer (`verify signer response: ...`, `MaxFeeIncreaseError`). Nothing was submitted. | Read the reason. If the SDK refused a sign answer, the signer did sign and the SDK discarded the result. |
 | `SignOutcomeUnknownError` | A signing exchange ended with no answer, or with a 200 answer that could not be read (not one JSON object of the expected shape), or the SDK failed while checking or describing a 200 answer (a fault in the SDK: anything thrown that is not a `SignerError`). A signature may have been released; nothing was submitted. | See [After an unknown outcome](#after-an-unknown-outcome): do not build a replacement with different transaction IDs until `lastValid` has passed, or check with the operator or the audit log. `requestId` names the request whose answer was lost: the `/sign` request of the ordinary flow, the rotating sign request, or the cosigned sequence's `/sign/component`, `/sign/assemble` or `/sign` request. `lastValid` is the earliest last valid round of the transactions sent to be signed. For the ordinary flow the error also carries `requests`; for a rotating account it carries the prepared group in `rotating` (see below). |
-| `SubmissionRejectedError` | The node refused the group or dropped it from its pool. | Read the reason. The signed bytes and IDs are in `signedGroup` and `txIds`. A "txn dead" refusal of a group submitted again after its last valid round does not show that it never confirmed. |
-| `SubmissionUncertainError` | `stage` says where it stopped: `"unsent"` (signed, never sent: your signal was aborted), `"submit"` (the submission's answer never arrived), or `"confirm"` (not confirmed within the wait). Except for `"unsent"`, it may still confirm. | Wait for the first of `txIds` with algosdk's `waitForConfirmation`, or submit the same `signedGroup` again (see [After an unknown outcome](#after-an-unknown-outcome)). Do not sign a replacement until the outcome is known: both could execute. `lastValid` is the signed group's earliest last valid round. |
+| `SubmissionError` | The group was signed, and algosdk's submit call or its confirmation wait then failed. The error carries the signed group (`signedGroup`), its IDs (`txIds`), its earliest last valid round (`lastValid`) and algosdk's error as `cause`, unchanged. `submitted` is true when the submit call returned success and the failure came later, and false when it did not return success; false does not mean the node lacks the group, because the answer may have been lost. The message says which step failed and quotes the cause. | Read `cause` as you would in any algosdk program. Do not sign a replacement: both could execute. See [After an unknown outcome](#after-an-unknown-outcome). |
 | `CosignerDiscoveryError` | The SDK could not route a cosigned account's witness key to exactly one cosigner endpoint of `endpoints.yaml`. Nothing was signed that needed the cosigner. | Read the reason: it names every cosigner endpoint and its state. |
-
-A node that answers "already in ledger" has a transaction with the same ID
-from an earlier submission of the group. The SDK treats that as submitted and
-looks for the outcome; it is not a rejection. A committed transaction that
-carries a lease is the exception: the node refuses it for its lease, and the
-SDK reports a rejection.
 
 Every 200 answer from the signer is read as the Go SDK reads it, against the
 answer's declared shape: `/status`, `/keys`, `/keytypes`, `/plan`,
@@ -481,25 +493,33 @@ returned M transaction results for N transactions".
 
 #### After an unknown outcome
 
-**A group was submitted** (`SubmissionUncertainError`). The error carries the
-transaction IDs (`txIds`), the signed group (`signedGroup`) and the last valid
-round (`lastValid`). Follow it with algosdk's own wait: `waitForConfirmation`
-on the first transaction ID (a group confirms as a whole), waiting `lastValid`
-minus the current round, at least 1. Given 0 rounds, algosdk's wait throws
-without looking the transaction up. Or submit the same signed group again
-with `submitSignedGroup`: it is the same transaction, so it cannot pay twice.
-At stage `"unsent"` the node never had the group, so there is nothing to wait
-for: submit it with `submitSignedGroup`. A timeout from the wait means only
-that the wait ended. Once `lastValid` has passed, a node's "not found" is not
-proof that the transaction never confirmed (a node only looks back about 1000
-rounds from its current round). Submitting the group again is no proof
-either: after `lastValid`, algod refuses it as "txn dead" whether or not it
-confirmed, because it checks the validity rounds before it looks for a
-duplicate, and the SDK reports that as `SubmissionRejectedError`. Check an
-indexer before building a replacement.
+**A group was signed** (`SubmissionError`). The error carries the signed
+group (`signedGroup`), the transaction IDs (`txIds`), the last valid round
+(`lastValid`), and algosdk's error as its `cause`; read the cause as you would
+in any algosdk program.
+
+- `submitted` true: algosdk's submit call returned success. Follow the group
+  with algosdk's own wait: `waitForConfirmation` on the first transaction ID
+  (a group confirms as a whole), waiting `lastValid` minus the current round,
+  at least 1. Given 0 rounds, algosdk's wait throws without looking the
+  transaction up. A timeout from the wait means only that the wait ended.
+- `submitted` false: submit the same signed group again with
+  `submitSignedGroup`; the node may already have it.
+
+Submitting the same signed group again cannot pay twice. If the node already
+has it, algosdk reports a 400 whose text says the transaction is already in
+the ledger; that is good news, not a refusal. After the last valid round the
+node refuses the group as dead whether or not it confirmed.
+
+Once `lastValid` has passed, neither a node's "not found" nor a refusal
+proves the group never confirmed (a node only looks back about 1000 rounds
+from its current round): check an indexer before building a replacement.
 
 ```typescript
-if (error instanceof SubmissionUncertainError) {
+if (error instanceof SubmissionError) {
+  // Submit the same signedGroup again with submitSignedGroup; the node may
+  // already have it.
+  if (!error.submitted) throw error;
   const { lastRound } = await algodClient.status().do();
   const rounds = error.lastValid > lastRound ? error.lastValid - lastRound : 1n;
   await algosdk.waitForConfirmation(algodClient, error.txIds[0], Number(rounds));
@@ -518,9 +538,12 @@ the prepared group). Sign the same prepared group again with
 [Rotating accounts](#rotating-accounts). It produces the same transaction IDs,
 so it cannot pay twice.
 
-The examples do this: they follow a submitted group with
-`waitForConfirmation`, print the round to wait for when nothing was submitted,
-and throw the original error while the outcome is still unknown.
+The examples do this: after a `SubmissionError` they follow the group with
+`waitForConfirmation` when `submitted` is true, and when it is false they
+print that the node may or may not have the group and that the same
+`signedGroup` can be submitted again with `submitSignedGroup`; after a
+`SignOutcomeUnknownError` they print the round to wait for; and they throw
+the original error when the group was not seen confirmed.
 
 #### Rotating accounts
 
@@ -621,7 +644,7 @@ try {
 ```
 
 `submitSignedGroup` also submits again the `signedGroup` kept by a
-`SubmissionUncertainError`; the same bytes can execute only once.
+`SubmissionError`; the same bytes can execute only once.
 
 A rotating account that was rekeyed to an ordinary key the signer holds has
 left rotation. The `prepare*` helpers name that key as its `authAddress`, and
@@ -801,38 +824,10 @@ try {
 }
 ```
 
-### Submission Exceptions
-
-`sendRawTransaction()` wraps verbose algod errors into clean exceptions:
-
-```typescript
-import {
-  sendRawTransaction,
-  TransactionRejectedError,
-  LogicSigRejectedError,
-  InsufficientFundsError,
-  InvalidTransactionError,
-} from "aplanesdk";
-
-try {
-  const txid = await sendRawTransaction(algodClient, signed);
-} catch (error) {
-  if (error instanceof LogicSigRejectedError) {
-    console.log(`LogicSig failed: ${error.reason}`); // error.txid also available
-  } else if (error instanceof InsufficientFundsError) {
-    console.log(`Not enough funds: ${error.reason}`);
-  } else if (error instanceof InvalidTransactionError) {
-    console.log(`Invalid transaction: ${error.reason}`);
-  } else if (error instanceof TransactionRejectedError) {
-    console.log(`Rejected: ${error.reason}`);
-  }
-}
-```
-
 ## Example: Complete Workflow
 
 ```typescript
-import { SignerClient, SignerError, sendRawTransaction } from "aplanesdk";
+import { SignerClient, SignerError } from "aplanesdk";
 import algosdk from "algosdk";
 
 async function main() {
@@ -860,8 +855,8 @@ async function main() {
     const signed = await client.signTransaction(txn);
     console.log("Signed!");
 
-    // Submit directly (no processing needed)
-    const txid = await sendRawTransaction(algodClient, signed);
+    // Submit with algosdk (no processing needed)
+    const { txid } = await algodClient.sendRawTransaction(Buffer.from(signed, "base64")).do();
     console.log(`TxID: ${txid}`);
 
     // Wait for confirmation
@@ -908,7 +903,7 @@ const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
 
 // Server automatically adds dummies - just sign and submit
 const signed = await client.signTransaction(txn);
-const txid = await sendRawTransaction(algodClient, signed);
+const { txid } = await algodClient.sendRawTransaction(Buffer.from(signed, "base64")).do();
 ```
 
 ### Fee Impact

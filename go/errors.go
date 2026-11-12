@@ -48,21 +48,6 @@ var (
 	ErrMaxFeeIncreaseExceeded = errors.New("signer raised fees by more than the max fee increase")
 )
 
-// Transaction submission errors
-var (
-	// ErrLogicSigRejected indicates the LogicSig program returned false.
-	ErrLogicSigRejected = errors.New("LogicSig program rejected")
-
-	// ErrInsufficientFunds indicates the account has insufficient balance.
-	ErrInsufficientFunds = errors.New("insufficient funds")
-
-	// ErrInvalidTransaction indicates the transaction is malformed or invalid.
-	ErrInvalidTransaction = errors.New("invalid transaction")
-
-	// ErrTransactionRejected indicates the transaction was rejected by the network.
-	ErrTransactionRejected = errors.New("transaction rejected")
-)
-
 // Configuration errors
 var (
 	// ErrConfigNotFound indicates config.yaml was not found.

@@ -372,10 +372,14 @@ payment.
   `OriginalCount` entries are yours and the rest are resource dummies the
   signer appended. `TxIDs`, `Fees` and `GroupID` are computed from the signed
   bytes. A signer may raise a fee or assign a group, so `TxIDs` can differ from
-  the IDs of the transactions you prepared.
-- **Options.** `NoWait` returns once the node accepts the group, with outcome
-  `submitted`. `WaitRounds` is how many further rounds to wait for
-  confirmation (default 10). A cosigned account needs nothing extra when
+  the IDs of the transactions you prepared. When the outcome is `confirmed`,
+  `Confirmation` is what go-algorand-sdk's `transaction.WaitForConfirmation`
+  returned for the first transaction, unchanged: read inner transactions,
+  logs and created IDs from it as in any go-algorand-sdk program.
+- **Options.** `NoWait` returns once go-algorand-sdk's submit call returns
+  success, with outcome `submitted`. `WaitRounds` is the round count given to
+  go-algorand-sdk's `transaction.WaitForConfirmation` (default 10). A
+  cosigned account needs nothing extra when
   the client came from `FromEnv` and `endpoints.yaml` lists its cosigner (see
   [Cosigner discovery](#cosigner-discovery)). Otherwise give
   `CosignerClient` with `CosignerComponentKey`, or a `CosignerResolver`; the
@@ -393,8 +397,7 @@ Failures:
 |---|---|---|
 | The signing call's own error | The signer refused (policy, operator, locked), or the SDK refused the signer's answer (`verify signer response: ...`, `ErrMaxFeeIncreaseExceeded`). Nothing was submitted. | Read the reason. If the SDK refused a sign answer, the signer did sign and the SDK discarded the result. |
 | `*SignOutcomeUnknownError` | A signing exchange ended with no answer, or with a 200 answer that could not be read (not one JSON object of the expected shape). A signature may have been released; nothing was submitted. | See [After an unknown outcome](#after-an-unknown-outcome) before signing again, or check with the operator or the audit log. The error carries the ID of the request whose answer was lost (for a cosigned account, the step's `/sign/component`, `/sign/assemble` or `/sign` request) and `LastValid`, the earliest last valid round of what was sent to be signed; for a rotating account it also carries the prepared group (see below). |
-| `*SubmissionRejectedError` | The node refused the group or dropped it from its pool. | Read the reason. The signed bytes and IDs are in the error. |
-| `*SubmissionUncertainError` | `Stage` says where it stopped: `unsent` (signed, never sent: your context ended), `submit` (the submission's answer never arrived), or `confirm` (not confirmed within the wait). Except for `unsent`, it may still confirm. | Follow it with go-algorand-sdk, or submit the same `SignedGroup` again (see [After an unknown outcome](#after-an-unknown-outcome)). Do not sign a replacement while it can still execute: both could. `LastValid` is the signed group's earliest last valid round. |
+| `*SubmissionError` | The group was signed, and go-algorand-sdk's submit or confirmation wait returned an error, or your context ended before one of them. `Err` is that error, unchanged. `Submitted` is true when the submit call returned success and the failure came later; false does not mean the node lacks the group, because the answer may have been lost. | See [After an unknown outcome](#after-an-unknown-outcome). Do not sign a replacement while it can still execute: both could. `SignedGroup`, `TxIDs` and `LastValid`, the signed group's earliest last valid round, are in the error. |
 
 Every 200 answer from the signer, the key list included, is read as exactly
 one non-null JSON value: a `null` body or anything after the value is an
@@ -419,11 +422,10 @@ reaches:
   only.
 - An integer of more than 4300 digits is unreadable in Python only.
 
-A node that answers "already in ledger" has a transaction with the same ID
-from an earlier submission of the group. The SDK treats that as submitted and
-looks for the outcome; it is not a rejection. A committed transaction that
-carries a lease is the exception: the node refuses it for its lease, and the
-SDK reports a rejection.
+The send submits with go-algorand-sdk's `SendRawTransaction` and waits with
+its `transaction.WaitForConfirmation` on `TxIDs[0]`, both given your context.
+It does not read the node's answers itself: a failure of either call comes
+back as `*SubmissionError` with go-algorand-sdk's error unchanged.
 
 The existing `Sign*` and `Simulate*` calls are unchanged. A `Simulate*`
 result is `Failed` unless the node returned exactly one group result, that
@@ -443,19 +445,26 @@ The SDK does not look an unknown outcome up for you. A node can show that a
 transaction confirmed, but not that it never did. What to do depends on the
 error:
 
-- **A group was submitted** (`*SubmissionUncertainError`). The error carries
-  `TxIDs`, `SignedGroup` and `LastValid`. Follow it with go-algorand-sdk's
-  own wait: `transaction.WaitForConfirmation` on `TxIDs[0]` (a group
-  confirms as a whole), waiting `LastValid` minus the current round, at
-  least 1. Or submit the same `SignedGroup` again with `SubmitSignedGroup`:
-  it is the same transaction, so it cannot pay twice. With `Stage` `unsent`
-  the node never had the group: submit it, as there is nothing to wait for.
-  A timeout from the wait means only that the wait ended. Once `LastValid`
-  has passed, a node's "not found" is not proof that the group never
-  confirmed: a node only looks back about 1000 rounds from its current
-  round. Submitting the group again after `LastValid` is refused
-  (`*SubmissionRejectedError`) whether or not it confirmed, so that is no
-  proof either. Check an indexer before building a replacement.
+- **A signed group whose submit or wait failed** (`*SubmissionError`). The
+  error carries `SignedGroup`, `TxIDs` and `LastValid`, and go-algorand-sdk's
+  error as its cause in `Err` (also reached through `errors.As` and
+  `errors.Unwrap`). Read the cause as you would in any go-algorand-sdk
+  program.
+  - `Submitted` true: follow the group with `transaction.WaitForConfirmation`
+    on `TxIDs[0]` (a group confirms as a whole), waiting `LastValid` minus
+    the current round, at least 1. A timeout from the wait means only that
+    the wait ended.
+  - `Submitted` false: submit the same `SignedGroup` again with
+    `SubmitSignedGroup`. The node may already have it.
+
+  Submitting the same signed group again cannot pay twice. If the node
+  already has it, go-algorand-sdk reports a 400 whose text says the
+  transaction is already in the ledger; that is good news, not a refusal.
+  After `LastValid` the node refuses the group as dead whether or not it
+  confirmed. Once `LastValid` has passed, neither a node's "not found" nor a
+  refusal proves the group never confirmed: a node only looks back about
+  1000 rounds from its current round. Check an indexer before building a
+  replacement.
 - **Nothing was submitted** (`*SignOutcomeUnknownError`, any account that is
   not rotating). A signature may exist that the SDK never received. Once
   `LastValid` has passed, nothing signed by that request can execute, and a
@@ -469,22 +478,26 @@ error:
 
 ```go
 result, err := client.SendPayment(ctx, algodClient, params, nil)
-var uncertain *aplane.SubmissionUncertainError
-if errors.As(err, &uncertain) {
+var failure *aplane.SubmissionError
+if errors.As(err, &failure) {
+	if !failure.Submitted {
+		// Submitting the same signed group again cannot pay twice.
+		return fmt.Errorf("%w: submit the same SignedGroup again with SubmitSignedGroup; the node may already have it", err)
+	}
 	status, statusErr := algodClient.Status().Do(ctx)
 	if statusErr != nil {
 		return statusErr
 	}
 	rounds := uint64(1)
-	if uncertain.LastValid > status.LastRound {
-		rounds = uncertain.LastValid - status.LastRound
+	if failure.LastValid > status.LastRound {
+		rounds = failure.LastValid - status.LastRound
 	}
-	info, waitErr := transaction.WaitForConfirmation(algodClient, uncertain.TxIDs[0], rounds, ctx)
+	info, waitErr := transaction.WaitForConfirmation(algodClient, failure.TxIDs[0], rounds, ctx)
 	if waitErr != nil {
 		// Only the wait ended. Do not build a replacement on the strength of it.
 		return fmt.Errorf("%w (wait: %v)", err, waitErr)
 	}
-	fmt.Println(uncertain.TxIDs[0], info.ConfirmedRound)
+	fmt.Println(failure.TxIDs[0], info.ConfirmedRound)
 	return nil
 }
 if err != nil {
@@ -571,7 +584,7 @@ do not prepare a replacement until the first attempt's outcome is known:
 `rotating_stage_changed` means a transaction from that stage has confirmed.
 
 `SubmitSignedGroup` also submits again the `SignedGroup` kept by a
-`*SubmissionUncertainError`; the same bytes can execute only once.
+`*SubmissionError`; the same bytes can execute only once.
 
 A rotating account that was rekeyed to an ordinary key the signer holds has
 left rotation. The `Prepare*` helpers name that key as its `AuthAddress`, and

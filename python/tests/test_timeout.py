@@ -2,7 +2,9 @@
 # Copyright (C) 2026 APlane Project LLC
 
 """The time limit of a send and of the rotating steps (timeout=), stage by
-stage, as Go behaves when its context deadline passes at the same point."""
+stage. Up to the submission it ends a call where Go's context deadline would;
+unlike Go's, it does not cover the confirmation wait, which algosdk's
+wait_for_confirmation runs and its round count bounds."""
 
 import json
 import time
@@ -12,14 +14,12 @@ import pytest
 from aplanesdk import (
     ERR_CODE_ROTATING_STAGE_UNPROVEN,
     SEND_OUTCOME_CONFIRMED,
-    SEND_STAGE_CONFIRM,
-    SEND_STAGE_SUBMIT,
-    SEND_STAGE_UNSENT,
+    SEND_OUTCOME_SUBMITTED,
     PreparedTransaction,
     SendTimeoutError,
     SignerError,
     SignOutcomeUnknownError,
-    SubmissionUncertainError,
+    SubmissionError,
 )
 from aplanesdk import signer as signer_module
 from tests import fake_signer
@@ -234,7 +234,7 @@ class TestWhileApprovalWaits:
 
 
 class TestAfterSigning:
-    def test_before_submission_the_group_is_unsent(self, fakes, monkeypatch):
+    def test_a_limit_passed_before_the_submission_posts_nothing(self, fakes, monkeypatch):
         txn, signer, node, client = ordinary(fakes, "/none")
         real = signer_module._describe_signed_group
 
@@ -244,44 +244,83 @@ class TestAfterSigning:
             return raw
 
         monkeypatch.setattr(signer_module, "_describe_signed_group", slow_describe)
-        with pytest.raises(SubmissionUncertainError) as excinfo:
+        with pytest.raises(SubmissionError) as excinfo:
             client.send_prepared(node.client, prepared(txn), timeout=LIMIT)
         error = excinfo.value
-        assert error.stage == SEND_STAGE_UNSENT
-        assert isinstance(error.error, SendTimeoutError)
+        assert error.submitted is False
+        assert isinstance(error.error, SendTimeoutError) and error.__cause__ is error.error
         assert error.signed_group and error.tx_ids and error.last_valid == txn.last_valid_round
         assert node.submissions() == []
 
-    def test_a_slow_submission(self, fakes):
+    def test_a_slow_submission_carries_the_error_algosdk_raised(self, fakes):
+        # The submit call is held to what remains of the limit. What ends it
+        # is algosdk's error, unchanged.
         node = FakeNode()
         slowed_node = fakes(Slowed(node.app, "/v2/transactions"))
         txn, signer, _, client = ordinary(fakes, "/none")
         from algosdk.v2client import algod
 
-        with pytest.raises(SubmissionUncertainError) as excinfo:
+        started = time.monotonic()
+        with pytest.raises(SubmissionError) as excinfo:
             client.send_prepared(
                 algod.AlgodClient("", slowed_node.http.url), prepared(txn), timeout=LIMIT
             )
-        assert excinfo.value.stage == SEND_STAGE_SUBMIT
-        assert isinstance(excinfo.value.error, SendTimeoutError)
+        assert _quick(started)
+        error = excinfo.value
+        assert error.submitted is False
+        assert not isinstance(error.error, SignerError) and error.__cause__ is error.error
+        assert isinstance(error.error, OSError)
 
-    def test_a_slow_confirmation(self, fakes):
-        node = FakeNode(pending=lambda: {})
+    def test_a_limit_passed_after_the_submission_ends_before_the_wait(self, fakes):
+        txn, signer, node, client = ordinary(fakes, "/none")
+        real = node.client.send_raw_transaction
+
+        def slow_submit(*args, **kwargs):
+            sent = real(*args, **kwargs)
+            time.sleep(LIMIT + 0.1)
+            return sent
+
+        node.client.send_raw_transaction = slow_submit
+        with pytest.raises(SubmissionError) as excinfo:
+            client.send_prepared(node.client, prepared(txn), timeout=LIMIT)
+        error = excinfo.value
+        assert error.submitted is True
+        assert isinstance(error.error, SendTimeoutError) and error.__cause__ is error.error
+        assert len(node.submissions()) == 1 and node.lookups == 0
+
+    def test_with_no_wait_a_limit_passed_after_the_submission_is_success(self, fakes):
+        # There is no wait to start, so nothing failed.
+        txn, signer, node, client = ordinary(fakes, "/none")
+        real = node.client.send_raw_transaction
+
+        def slow_submit(*args, **kwargs):
+            sent = real(*args, **kwargs)
+            time.sleep(LIMIT + 0.1)
+            return sent
+
+        node.client.send_raw_transaction = slow_submit
+        result = client.send_prepared(node.client, prepared(txn), no_wait=True, timeout=LIMIT)
+        assert result.outcome == SEND_OUTCOME_SUBMITTED
+        assert len(node.submissions()) == 1 and node.lookups == 0
+
+    def test_the_limit_does_not_cover_the_confirmation_wait(self, fakes):
+        # algosdk's wait cannot be interrupted: it runs on the caller's
+        # client, bounded by its round count, after the limit has passed.
+        answers = iter([{}, {"confirmed-round": 12}])
+        node = FakeNode(pending=lambda: next(answers))
         slowed_node = fakes(
-            Slowed(node.app, "/v2/status/wait-for-block-after/", prefix=True)
+            Slowed(node.app, "/v2/status/wait-for-block-after/", delay=LIMIT + 0.2, prefix=True)
         )
         txn, signer, _, client = ordinary(fakes, "/none")
         from algosdk.v2client import algod
 
         started = time.monotonic()
-        with pytest.raises(SubmissionUncertainError) as excinfo:
-            client.send_prepared(
-                algod.AlgodClient("", slowed_node.http.url), prepared(txn), timeout=LIMIT
-            )
-        assert _quick(started)
-        assert excinfo.value.stage == SEND_STAGE_CONFIRM
-        assert isinstance(excinfo.value.error, SendTimeoutError)
-        assert len(node.submissions()) == 1
+        result = client.send_prepared(
+            algod.AlgodClient("", slowed_node.http.url), prepared(txn), timeout=LIMIT
+        )
+        assert time.monotonic() - started > LIMIT
+        assert result.outcome == SEND_OUTCOME_CONFIRMED and result.confirmed_round == 12
+        assert len(node.submissions()) == 1 and node.lookups == 2
 
 
 class _StrictAlgod:

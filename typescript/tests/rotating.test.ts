@@ -19,6 +19,7 @@ import {
   SignerUnavailableError,
   SigningRejectedError,
   SignOutcomeUnknownError,
+  SubmissionError,
   UnsupportedGroupError,
   errorText,
 } from "../src/errors.js";
@@ -366,6 +367,40 @@ describe("sendPrepared with a rotating account", () => {
     assert.equal(result.signedGroup.length, 1);
     assert.equal(result.groupId, "");
     assert.equal(result.mutations, undefined);
+  });
+
+  // The retries all come before submission: a failure of algosdk's submit
+  // call or wait ends the send, with nothing prepared or signed again.
+  it("reaches the same submission path: a failure is a SubmissionError", async () => {
+    for (const submitted of [false, true]) {
+      const { signer, node, algod, client, txn } = rotatingFixture();
+      const thrown = new TypeError("fetch failed");
+      if (submitted) {
+        node.pending = () => ({ poolError: "overspend" });
+      } else {
+        node.submit = () => {
+          throw thrown;
+        };
+      }
+      await assert.rejects(client.sendPrepared(algod, rotatingGroup(txn)), (error: unknown) => {
+        assert.ok(error instanceof SubmissionError, String(error));
+        assert.equal(error.submitted, submitted);
+        if (submitted) {
+          assert.equal(errorText(error.cause), "Transaction Rejected: overspend");
+        } else {
+          assert.equal(error.cause, thrown);
+        }
+        assert.equal(error.signedGroup.length, 2);
+        assert.equal(error.signedGroup.join(""), blobHex(node.submitted[0]));
+        assert.equal(error.lastValid, txn.lastValid);
+        return true;
+      });
+      assert.equal(signer.count("/sign/rotating/prepare"), 1);
+      assert.equal(signer.count("/sign/rotating/sign"), 1);
+      assert.equal(node.submitted.length, 1);
+      restore?.();
+      restore = undefined;
+    }
   });
 });
 

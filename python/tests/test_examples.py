@@ -2,8 +2,10 @@
 what can be checked without one: each compiles, every name it imports from
 aplanesdk exists, every method it calls on the signer client exists, and an
 unknown outcome is handled as the SDK docs say: a submitted group is waited
-for with algosdk until its last valid round, an unknown sign outcome asks the
-node nothing, and an outcome the wait does not settle is raised as it was."""
+for with algosdk until its last valid round, a group whose submit call did not
+return success is left to the caller to submit again, an unknown sign outcome
+asks the node nothing, and an outcome the wait does not settle is raised as it
+was."""
 
 import ast
 import importlib.util
@@ -15,11 +17,10 @@ import pytest
 
 import aplanesdk
 from aplanesdk import (
-    SEND_STAGE_CONFIRM,
     SignerClient,
     SignerError,
     SignOutcomeUnknownError,
-    SubmissionUncertainError,
+    SubmissionError,
 )
 
 EXAMPLES = sorted((pathlib.Path(__file__).resolve().parents[1] / "examples").glob("*.py"))
@@ -68,10 +69,10 @@ def _load(path):
     return module
 
 
-def _run(path, monkeypatch, error, algod_client):
+def _run(path, monkeypatch, error, algod_client, signer=None):
     """Run the example's main against a signer whose send raises error and an
     algod client that is algod_client."""
-    signer = mock.MagicMock()
+    signer = signer or mock.MagicMock()
     signer.get_key_info.return_value = None
     signer.send_prepared.side_effect = error
     signer.send_payment.side_effect = error
@@ -85,13 +86,13 @@ def _run(path, monkeypatch, error, algod_client):
     return module.main()
 
 
-def _submission_error(last_valid=10):
-    return SubmissionUncertainError(
-        SEND_STAGE_CONFIRM,
+def _submission_error(last_valid=10, submitted=True, cause=None):
+    return SubmissionError(
         ["aa", "bb"],
         ["TXONE", "TXTWO"],
-        SignerError("gone"),
-        last_valid=last_valid,
+        last_valid,
+        submitted,
+        cause or SignerError("gone"),
     )
 
 
@@ -101,7 +102,7 @@ def test_a_submission_the_wait_cannot_settle_raises_the_original_error(path, mon
     algod_client = mock.MagicMock()
     algod_client.status.side_effect = SignerError("node down")
 
-    with pytest.raises(SubmissionUncertainError) as excinfo:
+    with pytest.raises(SubmissionError) as excinfo:
         _run(path, monkeypatch, error, algod_client)
 
     assert excinfo.value is error
@@ -122,14 +123,17 @@ def test_a_submitted_group_is_waited_for_until_its_last_valid_round(
     # The wait follows the first transaction for last valid - current rounds,
     # at least one, then gives up without claiming anything.
     error = _submission_error(last_valid=10)
+    signer = mock.MagicMock()
     algod_client = mock.MagicMock()
     algod_client.status.return_value = {"last-round": current}
     algod_client.pending_transaction_info.return_value = {"confirmed-round": 0, "pool-error": ""}
 
-    with pytest.raises(SubmissionUncertainError) as excinfo:
-        _run(path, monkeypatch, error, algod_client)
+    with pytest.raises(SubmissionError) as excinfo:
+        _run(path, monkeypatch, error, algod_client, signer)
 
     assert excinfo.value is error
+    # The submit call returned success, so the group is not submitted again.
+    signer.submit_signed_group.assert_not_called()
     assert {c.args[0] for c in algod_client.pending_transaction_info.call_args_list} == {"TXONE"}
     assert [c.args[0] for c in algod_client.status_after_block.call_args_list] == waited
     assert "check an indexer before building a replacement" in capsys.readouterr().out
@@ -144,6 +148,28 @@ def test_a_submitted_group_the_wait_sees_confirmed_is_reported(path, monkeypatch
     _run(path, monkeypatch, _submission_error(), algod_client)
 
     assert "Confirmed TXONE in round 7" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
+def test_a_group_whose_submit_did_not_succeed_is_not_resubmitted_and_raises(
+    path, monkeypatch, capsys
+):
+    # The example says what to do and raises the original error: it does not
+    # submit again, wait, or read the cause.
+    error = _submission_error(submitted=False)
+    signer = mock.MagicMock()
+    algod_client = mock.MagicMock()
+
+    with pytest.raises(SubmissionError) as excinfo:
+        _run(path, monkeypatch, error, algod_client, signer)
+
+    assert excinfo.value is error
+    signer.submit_signed_group.assert_not_called()
+    assert algod_client.mock_calls == []
+    out = capsys.readouterr().out
+    assert "TXONE, TXTWO" in out
+    assert "may or may not have the group" in out
+    assert "Submit the same signed_group again with submit_signed_group" in out
 
 
 @pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
