@@ -35,8 +35,13 @@ Package aplane provides a Go client for signing Algorand transactions via apsign
 		log.Fatal(err)
 	}
 
-	// Submit the whole group using standard go-algorand-sdk
-	txid, _ := algodClient.SendRawTransaction(bytes.Join(signed, nil)).Do(context.Background())
+	// Submit the whole group and wait: with the SDK, which returns a
+	// SendResult or a *SubmissionError,
+	result, err := client.SubmitSignedGroup(context.Background(), algodClient, signed, nil)
+
+	// or with standard go-algorand-sdk and its own wait.
+	txid, err := algodClient.SendRawTransaction(bytes.Join(signed, nil)).Do(context.Background())
+	info, err := transaction.WaitForConfirmation(algodClient, txid, 10, context.Background())
 
 # Connection Methods
 
@@ -88,9 +93,13 @@ Transaction group (do NOT pre-assign group IDs):
 	)
 
 The result is one signed transaction's msgpack bytes per entry, in group
-order, dummies included. Submit it with go-algorand-sdk:
+order, dummies included. Submit it with SubmitSignedGroup, which submits and
+waits, or with go-algorand-sdk:
+
+	result, err := client.SubmitSignedGroup(ctx, algodClient, signed, nil)
 
 	txid, err := algodClient.SendRawTransaction(bytes.Join(signed, nil)).Do(ctx)
+	info, err := transaction.WaitForConfirmation(algodClient, txid, 10, ctx)
 
 With LogicSig runtime arguments:
 

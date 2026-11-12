@@ -791,6 +791,21 @@ def _node_error(what: str, error: BaseException) -> SignerError:
     return SignerError(f"{what}: {error}")
 
 
+def _prefixed(error: Exception, prefix: str) -> Exception:
+    """An error of the same class as error whose message has prefix in
+    front, the code kept. A class that cannot be built from a message alone
+    gives error itself back, unchanged."""
+    message = f"{prefix}{error}"
+    try:
+        if isinstance(error, SignerError):
+            named: Exception = type(error)(message, code=error.code)
+        else:
+            named = type(error)(message)
+    except Exception:
+        return error
+    return named
+
+
 def _connection_error(error: BaseException) -> SignerError:
     """The error for a signer request whose exchange failed: SendTimeoutError
     when the call's time limit ended it, SignerUnavailableError otherwise."""
@@ -2668,6 +2683,38 @@ def _caller_signed_bytes(value: Any, label: str) -> bytes:
             "bytes of one signed transaction"
         )
     return bytes(value)
+
+
+def signed_group_base64(signed_group: List[bytes]) -> str:
+    """The text algosdk's ``send_raw_transaction`` takes for a signed group:
+    the base64 of its entries joined in order.
+
+    ``signed_group`` is what the sign calls return and the results and
+    errors hold: a list with one entry per transaction, each the raw bytes of
+    one signed transaction. A bytearray or memoryview entry is accepted. A
+    ``str`` entry, a value that is not a list and an empty list are refused
+    with a ValueError naming what is wrong.
+
+    It reads no node and no answer. It does not check that the entries are
+    signed transactions: they come from the SDK's verified output, and the
+    node checks what it is sent.
+
+    Submit with algosdk, then wait with algosdk::
+
+        txid = algod_client.send_raw_transaction(signed_group_base64(group))
+        transaction.wait_for_confirmation(algod_client, txid, 10)
+    """
+    if not isinstance(signed_group, (list, tuple)):
+        raise ValueError(
+            "signed_group must be a list of signed transactions, each one's raw bytes"
+        )
+    if not signed_group:
+        raise ValueError("signed_group is empty")
+    joined = b"".join(
+        _caller_signed_bytes(entry, f"signed group position {index}")
+        for index, entry in enumerate(signed_group, start=1)
+    )
+    return base64.b64encode(joined).decode()
 
 
 def _strict_hex(value: Any) -> bytes:
@@ -5318,13 +5365,19 @@ class SignerClient:
         except Exception as e:
             raise SignerError(f"failed to query account info: {e}") from e
 
+        return self._resolve_auth(address, account_info, self.list_keys_if_keyset_changed())
+
+    def _resolve_auth(
+        self, address: str, account_info: Any, keys: List[KeyInfo]
+    ) -> ResolvedAuthAddress:
+        """resolve_auth_address from an account read and a key list the
+        caller already has, so a call that resolves several senders reads
+        each once. The caller has refused another spelling of ``address``."""
         # The chain's answer is compared in canonical form.
         auth_addr = _address_key(_extract_auth_address(account_info))
         signing_addr = address
         if auth_addr and auth_addr != address:
             signing_addr = auth_addr
-
-        keys = self.list_keys_if_keyset_changed()
 
         # A rotating account is authorized by its current stage, which the
         # signer derives from the account's key and never lists. The signer
@@ -7163,8 +7216,9 @@ class SignerClient:
             The signed group, one entry per transaction, each the raw msgpack
             bytes of one signed transaction. The first entry is the
             transaction given; any after it are resource dummies the server
-            appended. Submit the whole list, as algosdk takes it:
-            algod_client.send_raw_transaction(base64.b64encode(b"".join(signed)).decode()).
+            appended. Submit the whole list: with submit_signed_group, which
+            submits and waits, or with algosdk as
+            algod_client.send_raw_transaction(signed_group_base64(signed)).
         """
         if not auth_address:
             auth_address = txn.sender
@@ -7225,8 +7279,9 @@ class SignerClient:
             The signed group, one entry per transaction in group order: the
             transactions given, passthrough positions included, then any
             resource dummies the server appended. Each entry is the raw
-            msgpack bytes of one signed transaction. Submit it with algosdk as
-            algod_client.send_raw_transaction(base64.b64encode(b"".join(group)).decode()).
+            msgpack bytes of one signed transaction. Submit it with
+            submit_signed_group, which submits and waits, or with algosdk as
+            algod_client.send_raw_transaction(signed_group_base64(group)).
         """
         if auth_addresses is None:
             auth_addresses = [txn.sender if txn else None for txn in txns]
@@ -7414,22 +7469,40 @@ class SignerClient:
         """Send transactions built with algosdk's own constructors, such as
         ``transaction.PaymentTxn``, through send_prepared.
 
-        For each transaction, in the order given, it reads the sender's
-        account from the node and resolves the signing address as the
-        prepare_* helpers do (resolve_auth_address: the sender, or the auth
-        address the chain reports when it is rekeyed). It wraps each
-        transaction in a PreparedTransaction that names that address and sets
-        nothing else, and sends the group with send_prepared. It runs none of
-        the prepare_* preflight checks, such as balances and opt-ins.
+        For each distinct sender it reads the sender's account from the node
+        and resolves the signing address as the prepare_* helpers do
+        (resolve_auth_address: the sender, or the auth address the chain
+        reports when it is rekeyed). It wraps each transaction, in the order
+        given, in a PreparedTransaction that names its sender's signing
+        address and sets nothing else, and sends the group with
+        send_prepared. It runs none of the prepare_* preflight checks, such as
+        balances and opt-ins.
 
         The call does not modify the transaction objects you pass in. It
         validates and submits the signer's returned group using the existing
         prepared-send flow. Use the transaction IDs in the result.
 
+        Two rules on what you pass:
+
+        - A rotating account accepts a validity window of at most
+          ROTATING_MAX_VALIDITY_WINDOW (100) rounds, and algosdk's
+          suggested_params() gives 1000, so a rotating sender's transaction
+          built with the defaults is refused unless you set
+          ``refresh_validity`` or build it with a window of 100 rounds or
+          less.
+        - A group ID you set is kept, and the SDK then refuses an answer in
+          which the signer raised a fee, appended a transaction or changed
+          the group ID (a rotating account's transaction that carries one is
+          refused before anything is signed), so transactions whose accounts
+          need a fee raise or resource dummies cannot be sent with one: leave
+          the group ID unset and let the signer group them.
+
         The options, the result and the errors are send_prepared's; see its
-        documentation for how a send behaves. An empty list is refused. A
-        failed account lookup is a plain SignerError (or SendTimeoutError
-        when the call's ``timeout`` ended it), raised before anything is
+        documentation for how a send behaves. An empty list is refused. The
+        signer's keys are read once for the call. A failed account lookup is a plain SignerError (or
+        SendTimeoutError when the call's ``timeout`` ended it), and a failed
+        resolution keeps its class (KeyNotFoundError, say); both name the
+        transaction's position and sender and are raised before anything is
         signed.
         """
         options = _SendOptions(
@@ -7449,21 +7522,39 @@ class SignerClient:
         with _time_limit(timeout):
             algod_client = _limited_algod(algod_client)
             slots = []
+            # Each distinct sender is read and resolved once, against one read
+            # of the signer's keys for the whole call.
+            keys: Optional[List[KeyInfo]] = None
+            auth_by_sender: Dict[str, str] = {}
             for index, txn in enumerate(txns):
                 if not isinstance(txn, transaction.Transaction):
                     raise ValueError(
                         f"transaction {index}: a {type(txn).__name__}, not an algosdk Transaction"
                     )
                 sender = txn.sender
-                try:
-                    info = algod_client.account_info(sender)
-                except Exception as e:
-                    raise _node_error(
-                        f"transaction {index}: read the account of sender {sender}", e
-                    ) from e
-                resolved = self.resolve_auth_address(sender, lambda _, info=info: info)
+                if sender not in auth_by_sender:
+                    where = f"transaction {index}, sender {sender}: "
+                    # As resolve_auth_address does: the signer lists
+                    # addresses canonically.
+                    _refuse_alternate_spelling(sender, f"transaction {index}: sender")
+                    try:
+                        info = algod_client.account_info(sender)
+                    except Exception as e:
+                        raise _node_error(
+                            f"transaction {index}: read the account of sender {sender}", e
+                        ) from e
+                    try:
+                        if keys is None:
+                            keys = self.list_keys_if_keyset_changed()
+                        resolved = self._resolve_auth(sender, info, keys)
+                    except Exception as e:
+                        named = _prefixed(e, where)
+                        if named is e:
+                            raise
+                        raise named from e
+                    auth_by_sender[sender] = resolved.auth_address
                 slots.append(
-                    PreparedTransaction(transaction=txn, auth_address=resolved.auth_address)
+                    PreparedTransaction(transaction=txn, auth_address=auth_by_sender[sender])
                 )
             return self._send_prepared(algod_client, PreparedGroup(slots), options, False)
 
@@ -7501,8 +7592,8 @@ class SignerClient:
             for index, entry in enumerate(signed_group, start=1)
         ]
         result = SendResult(signed_group=entries, original_count=len(entries))
-        raw = _describe_signed_group(result)
-        _submit_and_track(algod_client, raw, result, options)
+        _describe_signed_group(result)
+        _submit_and_track(algod_client, result, options)
         return result
 
     def _send_prepared(
@@ -7609,7 +7700,7 @@ class SignerClient:
         try:
             if signed_hex is not None:
                 result.signed_group = _signed_group_from_hex(signed_hex)
-            raw = _describe_signed_group(result)
+            _describe_signed_group(result)
         except SignerError:
             raise
         except Exception as e:
@@ -7622,7 +7713,7 @@ class SignerClient:
                 requests=sign_entries,
                 last_valid=last_valid,
             ) from e
-        _submit_and_track(algod_client, raw, result, options)
+        _submit_and_track(algod_client, result, options)
         return result
 
     def _classify_send(self, group: PreparedGroup) -> tuple[str, List[int]]:
@@ -8076,7 +8167,7 @@ class SignerClient:
                     request_id=signed.request_id,
                 ),
             )
-            raw = _describe_signed_group(result)
+            _describe_signed_group(result)
         except SignerError:
             raise
         except Exception as e:
@@ -8089,7 +8180,7 @@ class SignerClient:
                 rotating=prepared,
                 last_valid=signed._last_valid,
             ) from e
-        _submit_and_track(algod_client, raw, result, options)
+        _submit_and_track(algod_client, result, options)
         return result
 
 
@@ -9703,9 +9794,9 @@ def _last_round(status: Any) -> int:
     return _require_uint(value, "node status last-round", error=SignerError)
 
 
-def _describe_signed_group(result: SendResult) -> List[bytes]:
+def _describe_signed_group(result: SendResult) -> None:
     """Fill the result's IDs, fees, group ID and last valid round from its
-    signed bytes, and return the bytes to submit. Each entry must be one
+    signed bytes, which are what is submitted. Each entry must be one
     canonically encoded signed transaction, and a group of several must carry
     the group ID computed over itself."""
     try:
@@ -9726,7 +9817,6 @@ def _describe_signed_group(result: SendResult) -> List[bytes]:
     result.fees = [int(txn.fee) for txn in txns]
     result.group_id = base64.b64encode(group_id).decode() if group_id else ""
     result.tx_ids = [signed.get_txid() for signed in decoded]
-    return list(result.signed_group)
 
 
 def _earliest_last_valid(
@@ -9742,9 +9832,7 @@ def _earliest_last_valid(
     )
 
 
-def _submit_and_track(
-    algod_client: Any, raw: List[bytes], result: SendResult, options: _SendOptions
-) -> None:
+def _submit_and_track(algod_client: Any, result: SendResult, options: _SendOptions) -> None:
     """The one submission path of every send. It submits the signed bytes
     exactly as given with algosdk's send_raw_transaction and, unless told not
     to, waits for the first transaction with algosdk's wait_for_confirmation.
@@ -9759,7 +9847,7 @@ def _submit_and_track(
     a note where the exception takes notes.
     """
     try:
-        _submit_and_wait(algod_client, raw, result, options)
+        _submit_and_wait(algod_client, result, options)
     except Exception:
         raise
     except BaseException as e:
@@ -9773,9 +9861,7 @@ def _submit_and_track(
         raise
 
 
-def _submit_and_wait(
-    algod_client: Any, raw: List[bytes], result: SendResult, options: _SendOptions
-) -> None:
+def _submit_and_wait(algod_client: Any, result: SendResult, options: _SendOptions) -> None:
     def failure(submitted: bool, error: BaseException) -> SubmissionError:
         # The describe step computed the last valid round when it decoded the
         # group, so building the error decodes nothing.
@@ -9789,7 +9875,7 @@ def _submit_and_wait(
         ended = _time_limit_error("before the group was submitted")
         raise failure(False, ended) from ended
     try:
-        algod_client.send_raw_transaction(base64.b64encode(b"".join(raw)).decode())
+        algod_client.send_raw_transaction(signed_group_base64(result.signed_group))
     except Exception as e:
         raise failure(False, e) from e
     result.outcome = SEND_OUTCOME_SUBMITTED

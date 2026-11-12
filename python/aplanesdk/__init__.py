@@ -16,7 +16,8 @@ Usage:
 
     client = SignerClient.from_env()
     signed = client.sign_transaction(txn)  # the signed group: raw bytes per transaction
-    txid = algod_client.send_raw_transaction(base64.b64encode(b"".join(signed)).decode())
+    result = client.submit_signed_group(algod_client, signed)  # submits and waits
+    # or with algosdk: algod_client.send_raw_transaction(signed_group_base64(signed))
     client.close()
 """
 from ._version import __version__
@@ -51,6 +52,7 @@ from .signer import (
     EnrollmentResult,
 
     # Utility
+    signed_group_base64,
     load_config,
     load_client_endpoint_registry,
     resolve_client_endpoint,
@@ -181,6 +183,7 @@ __all__ = [
     "EnrollmentResult",
 
     # Utility
+    "signed_group_base64",
     "load_config",
     "load_client_endpoint_registry",
     "resolve_client_endpoint",

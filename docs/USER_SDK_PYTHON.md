@@ -389,11 +389,12 @@ positions. They do not submit and do not wait.
 ### Send Transactions Built With algosdk
 
 `send_transactions()` sends transactions you built with algosdk's own
-constructors. For each one, in the order given, it reads the sender's account
-from the node and finds the signing address as the `prepare_*` helpers do
+constructors. For each distinct sender, it reads the sender's account from
+the node and finds the signing address as the `prepare_*` helpers do
 (`resolve_auth_address()`: the sender, or the address the chain says it is
-rekeyed to), wraps it in a `PreparedTransaction` naming that address, and
-sends the group with `send_prepared()`. It runs none of the `prepare_*`
+rekeyed to). It wraps each transaction, in the order given, in a
+`PreparedTransaction` naming its sender's signing address, and sends the
+group with `send_prepared()`. It runs none of the `prepare_*`
 preflight checks, such as balances and opt-ins.
 
 ```python
@@ -410,14 +411,30 @@ The call does not modify the transaction objects you pass in. It validates
 and submits the signer's returned group using the existing prepared-send
 flow. Use the transaction IDs in the result.
 
+Two rules on what you pass:
+
+- A rotating account accepts a validity window of at most
+  `ROTATING_MAX_VALIDITY_WINDOW` (100) rounds, and algosdk's
+  `suggested_params()` gives 1000, so a rotating sender's transaction built
+  with the defaults is refused unless you pass `refresh_validity=True` or
+  build it with a window of 100 rounds or less.
+- A group ID you set is kept, and the SDK then refuses an answer in which
+  the signer raised a fee, appended a transaction or changed the group ID (a
+  rotating account's transaction that carries one is refused before anything
+  is signed), so transactions whose accounts need a fee raise or resource
+  dummies cannot be sent with one: leave the group ID unset and let the
+  signer group them.
+
 The keyword arguments, the result and the failures are those of
 `send_prepared()`, described in
 [Send A Payment Or A Prepared Group](#send-a-payment-or-a-prepared-group)
 and [Send Failures](#send-failures). An empty list is refused with a
-`ValueError`. A failed account lookup is a plain `SignerError` naming the
-transaction's position (`SendTimeoutError` when the call's `timeout` ended
-it), raised before anything is signed. `python/examples/send_built.py` is a
-complete program.
+`ValueError`. The signer's keys are read once for the call. A failed
+account lookup is a plain `SignerError` (`SendTimeoutError` when the call's
+`timeout` ended it), and a failed resolution keeps its class
+(`KeyNotFoundError`, say); both name the transaction's position and sender
+and are raised before anything is signed.
+`python/examples/send_built.py` is a complete program.
 
 ### Rotating Accounts
 
@@ -809,13 +826,19 @@ to send, use `send_payment()`, `send_prepared()` or `send_transactions()`
 `sign_transaction()` returns the signed group: a list with one entry per
 transaction, each the raw msgpack bytes of one signed transaction. The first
 entry is your transaction; any after it are resource dummies the signer
-appended, and the whole list is what must be submitted. algosdk's
-`send_raw_transaction()` takes the group as base64 text:
+appended, and the whole list is what must be submitted. Submit it one of two
+ways:
+
+- `submit_signed_group()` submits it and waits for confirmation, returning a
+  `SendResult` or raising `SubmissionError`, as a send does;
+- or algosdk submits it and you wait with algosdk: `signed_group_base64()`
+  gives the base64 text of the entries joined in order, which is what
+  algosdk's `send_raw_transaction()` takes. It reads no node and does not
+  check the entries: they come from the SDK's verified output, and the node
+  checks what it is sent.
 
 ```python
-import base64
-
-from aplanesdk import SignerClient
+from aplanesdk import SignerClient, signed_group_base64
 from algosdk import transaction
 from algosdk.v2client import algod
 
@@ -831,8 +854,14 @@ txn = transaction.PaymentTxn(
 )
 
 signed = client.sign_transaction(txn)
-txid = algod_client.send_raw_transaction(base64.b64encode(b"".join(signed)).decode())
-print(txid)
+
+# Submit and wait with the SDK
+result = client.submit_signed_group(algod_client, signed)
+print(result.tx_ids[0], result.confirmed_round)
+
+# Or submit and wait with algosdk
+# txid = algod_client.send_raw_transaction(signed_group_base64(signed))
+# transaction.wait_for_confirmation(algod_client, txid, 4)
 ```
 
 For a rekeyed account, these calls take the auth address explicitly. (The
@@ -869,7 +898,8 @@ ignored.
 
 ```python
 signed_group = client.sign_transactions([txn1, txn2])
-txid = algod_client.send_raw_transaction(base64.b64encode(b"".join(signed_group)).decode())
+result = client.submit_signed_group(algod_client, signed_group)
+# or: txid = algod_client.send_raw_transaction(signed_group_base64(signed_group))
 ```
 
 `sign_transactions()` returns the signed group as `sign_transaction()` does:
@@ -918,7 +948,9 @@ Important behavior:
 
 - `sign_transaction()` and `sign_transactions()` return the signed group, a
   list of bytes; the first entries are the transactions given, and any
-  resource dummies the signer appended follow them
+  resource dummies the signer appended follow them. Submit it with
+  `submit_signed_group()`, or with algosdk's `send_raw_transaction()` given
+  `signed_group_base64(signed_group)`
 - a signed transaction the caller supplies (a `passthrough` value, a
   `PreparedTransaction.signed_transaction`, an entry given to
   `submit_signed_group()`) must be bytes; a `bytearray` or `memoryview` is
@@ -1136,6 +1168,17 @@ bytes, such as a hex or base64 string, raises `ValueError` naming its
 position, and so does one that is not exactly one canonically encoded signed
 transaction, before any request is made. A `PreparedTransaction` takes a
 pre-signed slot the same way, as `signed_transaction` bytes.
+
+py-algorand-sdk's signers return `SignedTransaction` objects; turn one into
+the bytes the SDK takes with `encoding.msgpack_encode`, which gives base64:
+
+```python
+import base64
+from algosdk import encoding
+
+signed_bytes = base64.b64decode(encoding.msgpack_encode(signed_txn))
+```
+
 When passthrough entries are present:
 
 - the caller must pre-assign group IDs on all transactions

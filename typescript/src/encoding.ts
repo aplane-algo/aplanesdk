@@ -72,23 +72,48 @@ export function encodeLsigArgs(
   return encoded;
 }
 
+/** The built-in type tag of value, such as "Uint8Array" or "DataView". */
+function typeTag(value: unknown): string {
+  return Object.prototype.toString.call(value).slice(8, -1);
+}
+
+/**
+ * Whether value is a Uint8Array, a Node Buffer among them, told by its
+ * internal type rather than by instanceof: a Uint8Array from another realm,
+ * such as a vm context or a frame, is not an instance of this realm's class.
+ * ArrayBuffer.isView reads the internal slot, so an object that only claims
+ * the tag is not one. Another typed array or a DataView is not one either.
+ */
+export function isUint8Array(value: unknown): value is Uint8Array {
+  return ArrayBuffer.isView(value) && typeTag(value) === "Uint8Array";
+}
+
 /** What a value that is not bytes is, for an error message. */
 function bytesKind(value: unknown): string {
   if (value === null || value === undefined) return String(value);
   if (Array.isArray(value)) return "an array";
+  if (ArrayBuffer.isView(value)) {
+    const tag = typeTag(value);
+    return `${/^[AEIOU]/.test(tag) ? "an" : "a"} ${tag}`;
+  }
   return typeof value === "object" ? "an object" : `a ${typeof value}`;
 }
 
 /**
- * A copy of one signed transaction a caller supplied, as a plain Uint8Array.
- * Anything else, such as a hex or base64 string, is refused, and label names
- * its position in the error.
+ * A copy of one signed transaction a caller supplied, as a plain Uint8Array
+ * of this realm. Anything else, such as a hex or base64 string, is refused,
+ * and label names its position in the error.
  */
 export function signedTransactionCopy(value: unknown, label: string): Uint8Array {
-  if (!(value instanceof Uint8Array)) {
+  if (!isUint8Array(value)) {
     throw new SignerError(`${label} must be signed transaction bytes (a Uint8Array), not ${bytesKind(value)}`);
   }
   return new Uint8Array(value);
+}
+
+/** A copy of a signed group that shares no bytes with it. */
+export function cloneSignedGroup(group: readonly Uint8Array[]): Uint8Array[] {
+  return group.map((entry) => new Uint8Array(entry));
 }
 
 /**
@@ -103,29 +128,6 @@ export function signedGroupFromHex(signed: string[]): Uint8Array[] {
       throw new SignerError(`signed transaction ${index + 1} is invalid hex: ${error instanceof Error ? error.message : String(error)}`);
     }
   });
-}
-
-const STRICT_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
-
-/**
- * Decode standard base64, strictly: the standard alphabet, with padding, and
- * nothing else. Buffer.from(value, "base64") stops at the first "=", skips
- * characters it does not know and accepts the URL-safe alphabet, so it takes
- * strings the Go and Python SDKs refuse.
- */
-export function base64ToBytes(value: string, label = "value"): Uint8Array {
-  if (typeof value !== "string" || !STRICT_BASE64.test(value)) {
-    throw new SignerError(`${label} is not valid base64`);
-  }
-  if (typeof Buffer !== "undefined") {
-    return new Uint8Array(Buffer.from(value, "base64"));
-  }
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
 }
 
 // bytesToBase64 encodes bytes as base64, using Buffer in Node.js and a chunked

@@ -988,7 +988,8 @@ func (c *SignerClient) PlanRequestsWithContext(ctx context.Context, requests []S
 // SignTransaction signs a single transaction. It returns the signed group as
 // SignTransactions does: the first entry is the caller's transaction, and any
 // further entries are resource dummies the signer appended. The whole list is
-// what must be submitted, as SendRawTransaction(bytes.Join(signed, nil)).
+// what must be submitted, with SubmitSignedGroup or with go-algorand-sdk as
+// SendRawTransaction(bytes.Join(signed, nil)).
 // An empty authAddress means the sender signs for itself; lsigArgs then apply
 // to the sender.
 func (c *SignerClient) SignTransaction(txn types.Transaction, authAddress string, lsigArgs LsigArgs) ([][]byte, error) {
@@ -1001,8 +1002,9 @@ func (c *SignerClient) SignTransaction(txn types.Transaction, authAddress string
 // SignTransactions signs multiple transactions as a group. It returns the
 // signed group, one canonical msgpack-encoded signed transaction per entry, in
 // group order: the transactions given, then any resource dummies the signer
-// appended. Submit it with go-algorand-sdk as
-// SendRawTransaction(bytes.Join(signed, nil)).
+// appended. Submit it with SubmitSignedGroup, which submits and waits, or
+// with go-algorand-sdk as SendRawTransaction(bytes.Join(signed, nil)) followed
+// by its transaction.WaitForConfirmation.
 func (c *SignerClient) SignTransactions(txns []types.Transaction, authAddresses []string, lsigArgsMap LsigArgsMap) ([][]byte, error) {
 	requests, err := buildSignRequests(txns, authAddresses, lsigArgsMap)
 	if err != nil {

@@ -421,7 +421,7 @@ const result = await client.sendTransactions(algodClient, [payment]);
 console.log(result.txIds[0], result.outcome, result.confirmedRound);
 ```
 
-For each transaction the SDK reads the sender's account from the node and
+For each distinct sender the SDK reads the account from the node and
 resolves the signing address as the `prepare*` helpers do: the sender, or its
 auth address on the chain when the account is rekeyed. It wraps each
 transaction in a prepared slot that names that address and nothing else, and
@@ -434,10 +434,27 @@ flow. Use the transaction IDs in the result. See
 [Send A Payment Or A Prepared Group](#send-a-payment-or-a-prepared-group) for
 what that flow does.
 
-An empty list is refused. A failed account lookup is a plain `SignerError`
-naming the position, and nothing is signed. Anything else `sendPrepared()`
-refuses, such as a sender whose key the signer does not hold, is refused as
-it is there. `typescript/examples/send_built.ts` is a complete program.
+Two rules apply to what you pass:
+
+- **Rotating sender.** A rotating account accepts a validity window of at
+  most `ROTATING_MAX_VALIDITY_WINDOW` (100) rounds, and algosdk's suggested
+  parameters give 1000, so a rotating sender's transaction built with the
+  defaults is refused unless you set `refreshValidity` or build it with a
+  window of 100 rounds or less.
+- **Group ID.** A group ID you set is kept, and the SDK then refuses an answer
+  in which the signer raised a fee, appended a transaction or changed the
+  group ID, so transactions whose accounts need a fee raise or resource
+  dummies cannot be sent with one: leave the group ID unset and let the
+  signer group them.
+  A rotating account's transaction that carries a group ID is refused
+  before anything is signed.
+
+An entry that is not an algosdk `Transaction`, and an empty list, are
+refused with a `SignerError` before anything is asked. A failed account
+lookup is a plain `SignerError` naming the position, and nothing is signed.
+Anything else `sendPrepared()` refuses, such as a sender whose key the signer
+does not hold, is refused as it is there.
+`typescript/examples/send_built.ts` is a complete program.
 
 ### Rotating Accounts
 
@@ -519,7 +536,7 @@ confirms the rekey.
 | Error | What it means | What to do |
 |---|---|---|
 | `SignOutcomeUnknownError` | A signing request ended with no answer, or with a 200 answer that could not be read, or the SDK failed while checking one. A signature may have been released. Nothing was submitted. | Do not send again. See [After An Unknown Outcome](#after-an-unknown-outcome), or check `requestId` with the operator or the signer's audit log. |
-| `SubmissionError` | The group was signed, and algosdk's submit call or its confirmation wait then failed. It carries the signed group (`signedGroup`, one signed transaction of bytes per entry; each read returns a copy), its IDs (`txIds`), its earliest last valid round (`lastValid`) and algosdk's error as `cause`, unchanged. `submitted` is true when the submit call returned success and the failure came later, and false when it did not return success; false does not mean the node lacks the group, because the answer may have been lost. | Read `cause` as you would in any algosdk program. With `submitted` false, a `cause` that is algod's own HTTP 400 (`cause.response.status` is 400) is the node's answer, and its reason decides what to do; anything else leaves open whether the node has the group. Do not sign a replacement while the group may confirm. See [After An Unknown Outcome](#after-an-unknown-outcome). |
+| `SubmissionError` | The group was signed, and algosdk's submit call or its confirmation wait then failed. It carries the signed group (`signedGroup`, one signed transaction of bytes per entry, copied when the error is made), its IDs (`txIds`), its earliest last valid round (`lastValid`) and algosdk's error as `cause`, unchanged. `submitted` is true when the submit call returned success and the failure came later, and false when it did not return success; false does not mean the node lacks the group, because the answer may have been lost. | Read `cause` as you would in any algosdk program. With `submitted` false, a `cause` that is algod's own HTTP 400 (`cause.response.status` is 400) is the node's answer, and its reason decides what to do; anything else leaves open whether the node has the group. Do not sign a replacement while the group may confirm. See [After An Unknown Outcome](#after-an-unknown-outcome). |
 | `RotatingPreflightError` | A rotating spend failed its unsigned simulation. Nothing was signed. | Read `failureMessage`. |
 | `UnsupportedSigningFlowError`, `UnsupportedGroupError`, `KeyNotFoundError`, `CosignerDiscoveryError` | Refused before anything that can execute was signed. | Read the reason. |
 | Any other error | The signer refused (policy, operator, locked), or the SDK refused its answer (`verify signer response: ...`, `MaxFeeIncreaseError`). Nothing was submitted. | Read the reason. When the SDK refused a sign answer, the signer did sign and the SDK discarded the result. |
@@ -792,13 +809,20 @@ const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
 });
 
 const signed = await client.signTransaction(txn);
+
+// Either: the SDK submits and waits, returns a SendResult, and throws
+// SubmissionError when algosdk's submit or wait fails.
+const result = await client.submitSignedGroup(algodClient, signed);
+
+// Or: algosdk submits, and algosdk's own wait follows.
 const { txid } = await algodClient.sendRawTransaction(signed).do();
+await algosdk.waitForConfirmation(algodClient, txid, 10);
 ```
 
 `signTransaction()` returns a list: the first entry is your transaction, and
 the rest are resource dummies the signer appended, which the transaction
-needs. Submit the whole list, as above; algosdk's `sendRawTransaction` takes
-it as it is.
+needs. Submit the whole list, either way; algosdk's `sendRawTransaction`
+takes it as it is, so no conversion is needed.
 
 For a rekeyed account, these calls take the signing key explicitly. (The
 `prepare*` helpers read it from the chain for you, so `sendPayment()` and
@@ -842,7 +866,9 @@ For ordinary signer-managed groups without passthrough:
 - do not pre-assign a group ID
 - the signer computes the group after dummy insertion and fee pooling
 - the returned list, your transactions in order and then any dummies, is
-  ready for algod submission: `algodClient.sendRawTransaction(signedGroup)`
+  ready for submission as it is: `client.submitSignedGroup(algodClient,
+  signedGroup)`, or `algodClient.sendRawTransaction(signedGroup)` followed by
+  `algosdk.waitForConfirmation()`
 
 ### Plan Without Signing
 
@@ -903,11 +929,16 @@ const signedGroup = await client.signTransactions(
   undefined,
   { 1: otherPartySigned },
 );
-await algodClient.sendRawTransaction(signedGroup).do();
+// Either submit and wait with the SDK...
+const result = await client.submitSignedGroup(algodClient, signedGroup);
+// ...or with algosdk, which takes the list as it is.
+const { txid } = await algodClient.sendRawTransaction(signedGroup).do();
+await algosdk.waitForConfirmation(algodClient, txid, 10);
 ```
 
 A passthrough value is one signed transaction as bytes (a `Uint8Array`; a
-Node `Buffer` is one), and must be exactly one canonically encoded signed
+Node `Buffer` is one, and so is a `Uint8Array` from another realm, such as a
+`vm` context or a frame), and must be exactly one canonically encoded signed
 transaction: bytes holding two transactions, trailing bytes or a
 non-canonical encoding are refused before the signer is asked. A value that
 is not bytes, such as a hex or base64 string, is refused, naming its
@@ -1157,9 +1188,12 @@ throw and never trigger another signing request automatically.
   copies the entries when the call is made.
 
 `sendPrepared()`, `sendTransactions()` and `sendPayment()` submit for you.
-Submit what the `sign*` calls return with algosdk's own
-`algodClient.sendRawTransaction(signed).do()`, and wait with
-`algosdk.waitForConfirmation()`.
+What the `sign*` calls return can be submitted two ways:
+`client.submitSignedGroup(algodClient, signed)`, which submits and waits and
+gives a `SendResult` or a `SubmissionError`; or algosdk's own
+`algodClient.sendRawTransaction(signed).do()`, which takes the list as it is,
+followed by `algosdk.waitForConfirmation()`. There is no conversion helper
+because none is needed.
 
 ### What The SDK Checks Before Returning
 

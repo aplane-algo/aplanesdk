@@ -3973,6 +3973,8 @@ class TestSignReturnFormat:
         # the bytes it decodes to: the group, concatenated, exactly.
         from algosdk.v2client import algod
 
+        from aplanesdk import signed_group_base64
+
         client = make_client()
         txns = [fake_signer.payment(41, 42), fake_signer.payment(43, 44)]
         with patch.object(client, "_discover_approval_wait"), \
@@ -3983,10 +3985,39 @@ class TestSignReturnFormat:
         with patch.object(
             algod_client, "algod_request", return_value={"txId": "TXID"}
         ) as request:
-            algod_client.send_raw_transaction(base64.b64encode(b"".join(group)).decode())
+            algod_client.send_raw_transaction(signed_group_base64(group))
 
         assert request.call_args.args[:2] == ("POST", "/transactions")
         assert request.call_args.kwargs["data"] == b"".join(group)
+
+    def test_what_algosdks_signers_return_becomes_bytes_as_the_docs_show(self):
+        # py-algorand-sdk's signers return SignedTransaction objects; the docs'
+        # snippet turns one into the bytes a passthrough and a pre-signed
+        # slot take.
+        from algosdk.atomic_transaction_composer import AccountTransactionSigner
+
+        private_key, sender = account.generate_account()
+        first, second = fake_signer.payment(41, 42), fake_signer.payment(sender=sender)
+        transaction.assign_group_id([first, second])
+        (signed_txn,) = AccountTransactionSigner(private_key).sign_transactions([second], [0])
+
+        signed_bytes = base64.b64decode(algo_encoding.msgpack_encode(signed_txn))
+
+        assert type(signed_bytes) is bytes
+        client = make_client()
+        entries = client._build_sign_requests(
+            [first, None], [first.sender, None], passthrough={1: signed_bytes},
+            allow_foreign=False,
+        )
+        assert entries[1] == {"signed_txn_hex": signed_bytes.hex()}
+        slot = PreparedGroup([
+            PreparedTransaction(transaction=first, auth_address=first.sender),
+            PreparedTransaction(signed_transaction=signed_bytes),
+        ])
+        from aplanesdk.signer import _decode_request_slots
+
+        (_, passthrough) = _decode_request_slots(slot.to_sign_requests())
+        assert passthrough.mode == "passthrough" and passthrough.signed_bytes == signed_bytes
 
     def test_sign_transactions_rejects_empty_slot(self):
         client = make_client()

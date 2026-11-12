@@ -404,6 +404,37 @@ describe("sendPrepared with a rotating account", () => {
     }
   });
 
+  it("sendTransactions refuses algosdk's default 1000-round window from a rotating sender, and sends it with refreshValidity", async () => {
+    const { signer, node, algod, client } = rotatingFixture();
+    const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+      sender: signer.account,
+      receiver: fakeAddress(42),
+      amount: 5000,
+      suggestedParams: await node.getTransactionParams().do(),
+    });
+    assert.equal(txn.lastValid - txn.firstValid, 1000n, "the fixture's window is not algosdk's default");
+    const before = bytesToHex(txn.toByte());
+
+    await assert.rejects(
+      client.sendTransactions(algod, [txn]),
+      {
+        name: "SignerError",
+        message:
+          "validity window is 1000 rounds; a rotating account accepts at most 100 " +
+          "(build the transaction with a prepare helper, or set refreshValidity)",
+      },
+    );
+    assert.equal(signer.count("/sign/rotating/prepare"), 0);
+    assert.equal(node.submitted.length, 0);
+
+    const result = await client.sendTransactions(algod, [txn], { refreshValidity: true });
+    assert.equal(result.outcome, "confirmed");
+    const sent = result.rotating?.transaction;
+    assert.ok(sent && sent.lastValid - sent.firstValid <= BigInt(ROTATING_MAX_VALIDITY_WINDOW));
+    // The object passed in encodes as it did before either call.
+    assert.equal(bytesToHex(txn.toByte()), before);
+  });
+
   it("sendTransactions sends a rotating sender's transaction as itself, as built", async () => {
     const { signer, node, algod, client, txn } = rotatingFixture();
     // After rotations the chain names the live stage's address, which the

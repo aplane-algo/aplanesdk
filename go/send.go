@@ -623,18 +623,31 @@ func (c *SignerClient) SubmitSignedGroup(ctx context.Context, algodClient *algod
 // such as those its transaction.Make* constructors return. It takes the same
 // options as SendPrepared and returns the same result and errors.
 //
-// For each transaction it reads the sender's account from the node and
-// resolves the signing address as the Prepare* helpers do: the sender, or its
-// on-chain auth address when the account is rekeyed, through
-// ResolveAuthAddress. It wraps each transaction in a PreparedTransaction that
-// names that address and sets nothing else, and calls SendPrepared with them
-// in the order given. It runs none of the Prepare* preflight checks, such as
-// balances and opt-ins.
+// For each distinct sender it reads the account from the node once and
+// resolves the signing address as the Prepare* helpers do, as
+// ResolveAuthAddress does: the sender, or its on-chain auth address when the
+// account is rekeyed. The signer's key list is read once for the call. It
+// wraps each transaction in a PreparedTransaction that names that address and
+// sets nothing else, and calls SendPrepared with them in the order given. It
+// runs none of the Prepare* preflight checks, such as balances and opt-ins.
 //
 // The call does not modify the transaction objects you pass in. It validates
 // and submits the signer's returned group using the existing prepared-send
 // flow. Use the transaction IDs in the result (SendResult.TxIDs). SendPrepared
 // describes that flow.
+//
+// Two rules apply to what you pass. A rotating account accepts a validity
+// window of at most RotatingMaxValidityWindow (100) rounds, and
+// go-algorand-sdk's suggested parameters give 1000, so a rotating sender's
+// transaction built with the defaults is refused unless you set
+// SendOptions.RefreshValidity or build it with a window of 100 rounds or
+// less. A group ID you set is kept, and the SDK then refuses an answer in
+// which the signer raised a fee, appended a transaction or changed the group
+// ID, so transactions whose accounts need a fee raise or resource dummies
+// cannot be sent with one: leave the group ID unset and let the signer group
+// them.
+// A rotating account's transaction that carries a group ID is refused
+// before anything is signed.
 //
 // An empty list is refused. A failed account lookup is returned as a plain
 // error, and nothing is signed.
@@ -645,21 +658,39 @@ func (c *SignerClient) SendTransactions(ctx context.Context, algodClient *algod.
 	if len(txns) == 0 {
 		return nil, fmt.Errorf("transaction list is empty")
 	}
-	group := PreparedGroup{Transactions: make([]PreparedTransaction, len(txns))}
+	// One account read per distinct sender, in the order the senders first
+	// appear.
+	authAddrs := make(map[string]string, len(txns))
 	for i := range txns {
-		txn := txns[i]
-		sender := txn.Sender.String()
+		sender := txns[i].Sender.String()
+		if _, read := authAddrs[sender]; read {
+			continue
+		}
 		account, err := algodClient.AccountInformation(sender).Do(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("transaction %d: failed to get sender account info: %w", i, err)
 		}
-		resolved, err := c.ResolveAuthAddress(ctx, sender, func(context.Context, string) (string, error) {
-			return account.AuthAddr, nil
-		})
-		if err != nil {
-			return nil, fmt.Errorf("transaction %d: %w", i, err)
+		authAddrs[sender] = account.AuthAddr
+	}
+	keys, err := c.ListKeysIfKeysetChangedWithContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	resolved := make(map[string]string, len(authAddrs))
+	group := PreparedGroup{Transactions: make([]PreparedTransaction, len(txns))}
+	for i := range txns {
+		txn := txns[i]
+		sender := txn.Sender.String()
+		authAddress, done := resolved[sender]
+		if !done {
+			resolution, err := resolveAuthAddressWithKeys(sender, authAddrs[sender], keys)
+			if err != nil {
+				return nil, fmt.Errorf("transaction %d: %w", i, err)
+			}
+			authAddress = resolution.AuthAddress
+			resolved[sender] = authAddress
 		}
-		group.Transactions[i] = PreparedTransaction{Transaction: &txn, AuthAddress: resolved.AuthAddress}
+		group.Transactions[i] = PreparedTransaction{Transaction: &txn, AuthAddress: authAddress}
 	}
 	return c.SendPrepared(ctx, algodClient, group, opts)
 }

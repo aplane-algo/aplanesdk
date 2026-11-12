@@ -75,14 +75,20 @@ func (c *SignerClient) ResolveAuthAddress(ctx context.Context, address string, l
 		return nil, fmt.Errorf("failed to query account info: %w", err)
 	}
 
-	signingAddr := address
-	if authAddr != "" && authAddr != address {
-		signingAddr = authAddr
-	}
-
 	keys, err := c.ListKeysIfKeysetChangedWithContext(ctx)
 	if err != nil {
 		return nil, err
+	}
+	return resolveAuthAddressWithKeys(address, authAddr, keys)
+}
+
+// resolveAuthAddressWithKeys is ResolveAuthAddress for an address whose
+// on-chain auth address (empty when it is not rekeyed) and the signer's key
+// list have already been read.
+func resolveAuthAddressWithKeys(address, authAddr string, keys []KeyInfo) (*ResolvedAuthAddress, error) {
+	signingAddr := address
+	if authAddr != "" && authAddr != address {
+		signingAddr = authAddr
 	}
 
 	// A rotating account is authorized by its current stage, which the

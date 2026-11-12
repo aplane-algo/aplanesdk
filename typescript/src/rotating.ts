@@ -434,7 +434,7 @@ export class PreparedRotating {
       );
     }
     return {
-      signedGroup: signedGroup.map((entry) => new Uint8Array(entry)),
+      signedGroup,
       stage: this.#stage,
       target: this.#target,
       txId,

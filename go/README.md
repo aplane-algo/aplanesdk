@@ -19,7 +19,6 @@ go get github.com/aplane-algo/aplanesdk/go
 package main
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"log"
@@ -67,9 +66,17 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Submit the whole group using standard go-algorand-sdk
-	txid, _ := algodClient.SendRawTransaction(bytes.Join(signed, nil)).Do(context.Background())
-	fmt.Printf("Submitted: %s\n", txid)
+	// Submit the whole group and wait for confirmation with the SDK: a
+	// SendResult, or a *SubmissionError that keeps the signed group.
+	result, err := client.SubmitSignedGroup(context.Background(), algodClient, signed, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("Confirmed %s in round %d\n", result.TxIDs[0], result.ConfirmedRound)
+
+	// Or submit and wait with go-algorand-sdk's own calls instead:
+	//   txid, err := algodClient.SendRawTransaction(bytes.Join(signed, nil)).Do(ctx)
+	//   info, err := transaction.WaitForConfirmation(algodClient, txid, 10, ctx)
 }
 ```
 
@@ -255,7 +262,7 @@ for _, key := range keys {
 Sign a single transaction. Returns the signed group, as `SignTransactions`
 does: the first entry is your transaction, and any further entries are
 resource dummies the signer appended. The whole list is what must be
-submitted, as `SendRawTransaction(bytes.Join(signed, nil))`.
+submitted; see [Submitting a signed group](#submitting-a-signed-group).
 
 ```go
 // Basic signing
@@ -287,14 +294,26 @@ signed, err := client.SignTransactions(
 	[]string{authAddr1, authAddr2},
 	nil,
 )
-if err != nil {
-	log.Fatal(err)
-}
-txid, err := algodClient.SendRawTransaction(bytes.Join(signed, nil)).Do(ctx)
 ```
 
 `SignTransactionsWithOptions` returns the same, with passthrough positions
 from `SignOptions.Passthrough` (signed transaction bytes) included.
+
+#### Submitting a signed group
+
+Submit what a `Sign*` call returned in either of two ways. `SubmitSignedGroup`
+submits and waits, and returns a `SendResult` or a `*SubmissionError` that
+keeps the signed group. Or use go-algorand-sdk's own calls, with the entries
+joined in order into the bytes `SendRawTransaction` takes:
+
+```go
+// With the SDK.
+result, err := client.SubmitSignedGroup(ctx, algodClient, signed, nil)
+
+// With go-algorand-sdk.
+txid, err := algodClient.SendRawTransaction(bytes.Join(signed, nil)).Do(ctx)
+info, err := transaction.WaitForConfirmation(algodClient, txid, 10, ctx)
+```
 
 #### `GetKeysResponseWithContext(ctx) (*KeysResult, error)`
 
@@ -658,17 +677,29 @@ if err != nil {
 result, err := client.SendTransactions(ctx, algodClient, []types.Transaction{payment}, nil)
 ```
 
-For each transaction it reads the sender's account from the node and resolves
-the signing address as the `Prepare*` helpers do: the sender, or its on-chain
-auth address when the account is rekeyed. It names that address in a prepared
-slot, sets nothing else, and calls `SendPrepared` with the slots in the order
-given. It runs none of the `Prepare*` preflight checks, such as balances and
-opt-ins.
+For each distinct sender it reads the account from the node once and
+resolves the signing address as the `Prepare*` helpers do: the sender, or its
+on-chain auth address when the account is rekeyed. The signer's key list is
+read once for the call. It names that address in a prepared slot, sets nothing
+else, and calls `SendPrepared` with the slots in the order given. It runs none
+of the `Prepare*` preflight checks, such as balances and opt-ins.
 
 The call does not modify the transaction objects you pass in. It validates
 and submits the signer's returned group using the existing prepared-send
 flow. Use the transaction IDs in the result (`SendResult.TxIDs`). That flow
 is described under `SendPrepared`, above.
+
+Two rules apply to what you pass. A rotating account accepts a validity
+window of at most 100 rounds (`RotatingMaxValidityWindow`), and
+go-algorand-sdk's suggested parameters give 1000, so a rotating sender's
+transaction built with the defaults is refused unless you set
+`SendOptions.RefreshValidity` or build it with a window of 100 rounds or less.
+A group ID you set is kept, and the SDK then refuses an answer in which the
+signer raised a fee, appended a transaction or changed the group ID, so
+transactions whose accounts need a fee raise or resource dummies cannot be
+sent with one: leave the group ID unset and let the signer group them.
+A rotating account's transaction that carries a group ID is refused
+before anything is signed.
 
 An empty list is refused. A failed account lookup is a plain error, and
 nothing is signed. A sender whose key the signer does not hold is refused with
@@ -751,7 +782,8 @@ if err != nil {
 	log.Fatal(err)
 }
 // One signed transaction's msgpack bytes per entry, in group order.
-txid, err := algodClient.SendRawTransaction(bytes.Join(result.SignedGroup, nil)).Do(ctx)
+submitted, err := userClient.SubmitSignedGroup(ctx, algodClient, result.SignedGroup, nil)
+// Or: algodClient.SendRawTransaction(bytes.Join(result.SignedGroup, nil)).Do(ctx)
 ```
 
 The SDK first freezes the complete canonical group through `/plan`; the user
@@ -856,7 +888,8 @@ membership, and the group ID before signing:
 ```go
 signed, err := client.SignTransaction(txn, "", nil)
 // A LogicSig account's signed group holds its dummies too: submit all of it.
-txid, _ := algodClient.SendRawTransaction(bytes.Join(signed, nil)).Do(ctx)
+result, err := client.SubmitSignedGroup(ctx, algodClient, signed, nil)
+// Or: algodClient.SendRawTransaction(bytes.Join(signed, nil)).Do(ctx)
 ```
 
 ### Fee Impact

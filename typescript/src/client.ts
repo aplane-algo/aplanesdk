@@ -101,6 +101,7 @@ import {
   encodeLsigArgs,
   bytesToHex,
   hexToBytes,
+  cloneSignedGroup,
   signedGroupFromHex,
   signedTransactionCopy,
 } from "./encoding.js";
@@ -887,14 +888,14 @@ async function simulateSignedGroup(
   if (!algodClient) {
     throw new SignerError("algodClient is required");
   }
-  const { decoded: signedTransactions, raw } = decodeExecutableSignedGroup(signedGroup);
+  const signedTransactions = decodeExecutableSignedGroup(signedGroup);
   const response = await runSimulation(algodClient, signedTransactions, false);
   const failureMessage = simulationFailure(response, signedTransactions.length);
 
   return {
     txIds: signedTransactions.map((signed) => signed.txn.txID()),
     transactions: signedGroupTransactions(signedTransactions),
-    signedGroup: raw,
+    signedGroup: cloneSignedGroup(signedGroup),
     mutations,
     response,
     failed: failureMessage !== "",
@@ -1844,6 +1845,27 @@ function addressPublicKey(value: unknown): Uint8Array | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const publicKey = (value as { publicKey?: unknown }).publicKey;
   return publicKey instanceof Uint8Array && publicKey.length === 32 ? publicKey : undefined;
+}
+
+/**
+ * Whether value is an algosdk Transaction, told by its structure: an object
+ * with toByte and txID methods whose sender is an algosdk Address. A
+ * Transaction from another copy of algosdk (its ESM and CJS builds, or
+ * another installed version) is not an instance of this copy's class, but
+ * has the same structure.
+ */
+function isAlgosdkTransaction(value: unknown): value is Transaction {
+  if (typeof value !== "object" || value === null) return false;
+  const txn = value as { toByte?: unknown; txID?: unknown; sender?: unknown };
+  return typeof txn.toByte === "function" && typeof txn.txID === "function" &&
+    addressPublicKey(txn.sender) !== undefined;
+}
+
+/** What a value is, for an error message. */
+function valueKind(value: unknown): string {
+  if (value === null || value === undefined) return String(value);
+  if (Array.isArray(value)) return "an array";
+  return typeof value === "object" ? "an object" : `a ${typeof value}`;
 }
 
 /** What a value that is not a string is, for an error message. */
@@ -4443,7 +4465,10 @@ export class SignerClient {
    * ```typescript
    * // Basic signing (uses txn.sender as authAddress)
    * const signed = await client.signTransaction(txn);
-   * await algodClient.sendRawTransaction(signed).do();
+   * // Submit and wait with the SDK, or with algosdk, which takes the list as it is.
+   * const result = await client.submitSignedGroup(algodClient, signed);
+   * // or: const { txid } = await algodClient.sendRawTransaction(signed).do();
+   * //     await algosdk.waitForConfirmation(algodClient, txid, 10);
    *
    * // Rekeyed account
    * const signed = await client.signTransaction(txn, "SIGNER_KEY_ADDRESS");
@@ -4726,9 +4751,9 @@ export class SignerClient {
    * makePaymentTxnWithSuggestedParamsFromObject, with the options and result
    * of sendPrepared.
    *
-   * For each transaction it reads the sender's account from the node and
-   * resolves the signing address as the prepare helpers do: the sender, or
-   * its auth address on the chain when the account is rekeyed. It wraps each
+   * For each distinct sender it reads the account from the node and resolves
+   * the signing address as the prepare helpers do: the sender, or its auth
+   * address on the chain when the account is rekeyed. It wraps each
    * transaction in a prepared slot that names that address and sets nothing
    * else, and calls sendPrepared with the slots in the order given. It runs
    * none of the prepare helpers' preflight checks, such as balances and
@@ -4739,10 +4764,23 @@ export class SignerClient {
    * sendPrepared flow. Use the transaction IDs in the result. sendPrepared
    * describes that flow.
    *
-   * An empty list is refused. A failed account lookup is a plain error naming
-   * the position, and nothing is signed. Anything else sendPrepared refuses,
-   * such as a sender whose key this signer does not hold, is refused as it is
-   * there.
+   * Two rules apply to what you pass. A rotating account accepts a validity
+   * window of at most ROTATING_MAX_VALIDITY_WINDOW (100) rounds, and
+   * algosdk's suggested parameters give 1000, so a rotating sender's
+   * transaction built with the defaults is refused unless you set
+   * refreshValidity or build it with a window of 100 rounds or less. A group
+   * ID you set is kept, and the SDK then refuses an answer in which the
+   * signer raised a fee, appended a transaction or changed the group ID, so
+   * transactions whose accounts need a fee raise or resource dummies cannot
+   * be sent with one: leave the group ID unset and let the signer group them.
+   * A rotating account's transaction that carries a group ID is refused
+   * before anything is signed.
+   *
+   * An entry that is not an algosdk Transaction, and an empty list, are
+   * refused before anything is asked. A failed account lookup is a plain
+   * error naming the position, and nothing is signed. Anything else
+   * sendPrepared refuses, such as a sender whose key this signer does not
+   * hold, is refused as it is there.
    */
   async sendTransactions(
     algodClient: Algodv2,
@@ -4761,18 +4799,20 @@ export class SignerClient {
     if (signal?.aborted) {
       throw callerAborted();
     }
-    // One read of the signer's keys resolves every sender, as one prepare
-    // helper's read resolves its sender.
-    const keys = await this.listKeysIfKeysetChanged({ signal });
-    const transactions: PreparedTransaction[] = [];
-    for (let index = 0; index < txns.length; index++) {
-      const txn = txns[index];
-      if (!txn) {
-        // sendPrepared refuses a slot without a transaction.
-        transactions.push({ transaction: txn });
-        continue;
+    // Every entry is checked before anything is asked.
+    txns.forEach((txn, index) => {
+      if (!isAlgosdkTransaction(txn)) {
+        throw new SignerError(`transaction ${index}: must be an algosdk Transaction, not ${valueKind(txn)}`);
       }
-      const sender = txn.sender.toString();
+    });
+    // One read of the signer's keys resolves every sender, as one prepare
+    // helper's read resolves its sender, and each distinct sender's account
+    // is read once. An error names the sender's first position.
+    const keys = await this.listKeysIfKeysetChanged({ signal });
+    const authAddresses = new Map<string, string>();
+    for (let index = 0; index < txns.length; index++) {
+      const sender = txns[index].sender.toString();
+      if (authAddresses.has(sender)) continue;
       let info: AccountInfoResult;
       try {
         info = await (algodClient as any).accountInformation(sender).do(undefined, algodOptions(signal));
@@ -4789,8 +4829,12 @@ export class SignerClient {
         }
         throw error;
       }
-      transactions.push({ transaction: txn, authAddress: resolved.authAddress });
+      authAddresses.set(sender, resolved.authAddress);
     }
+    const transactions: PreparedTransaction[] = txns.map((txn) => ({
+      transaction: txn,
+      authAddress: authAddresses.get(txn.sender.toString()),
+    }));
     return this.sendPrepared(algodClient, { transactions }, options);
   }
 
@@ -4880,7 +4924,7 @@ export class SignerClient {
         }
         throw error;
       }
-      result.signedGroup = signed.signedGroup.map((entry) => new Uint8Array(entry));
+      result.signedGroup = cloneSignedGroup(signed.signedGroup);
       result.mutations = signed.planMutations;
       result.cosigned = signed;
       released = { requestId: signed.boundedAssemblyResponse?.request_id ?? "" };
@@ -5320,7 +5364,8 @@ export class SignerClient {
       const result = emptySendResult(SIGNING_FLOW_ROTATING1, 1);
       let described: DescribedGroup;
       try {
-        result.signedGroup = signed.signedGroup.map((entry) => new Uint8Array(entry));
+        // signed is this send's own, and nothing else holds its group.
+        result.signedGroup = signed.signedGroup;
         result.mutations = prepared.mutations();
         result.rotating = {
           stage: signed.stage,

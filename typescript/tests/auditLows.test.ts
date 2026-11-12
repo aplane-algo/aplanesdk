@@ -13,7 +13,6 @@ import { SignerClient, signPreparedCosignedGroup } from "../src/client.js";
 import * as sdk from "../src/index.js";
 import { KeyNotFoundError } from "../src/errors.js";
 import { isNetworkAllowed, loadConfig } from "../src/utils.js";
-import { base64ToBytes } from "../src/encoding.js";
 import { preparedGroupToSignRequests } from "../src/prepared.js";
 import { fakeAddress, fakePayment, signedHex } from "./fakeSigner.js";
 
@@ -566,60 +565,6 @@ describe("cosigned group key record", () => {
       signPreparedCosignedGroup({ userClient, preparedGroup: { transactions: [{ transaction: txn }] } }),
       /auth address is required/,
     );
-  });
-});
-
-describe("strict base64", () => {
-  const good = Buffer.from(signedHex(fakePayment()), "hex").toString("base64");
-  // The case list the Go and Python suites run too: the three SDKs accept and
-  // refuse the same strings.
-  const accepted = ["", "QQ==", "QUI=", "QUJD", "QUJDRA==", "+/+/", "AAAA"];
-  const lenient: Array<[string, string]> = [
-    ["a trailing line feed", "QUJD\n"],
-    ["a trailing CRLF", "QUJD\r\n"],
-    ["a line feed inside", "QU\nJD"],
-    ["a wrapped line", "QUJD\r\nQUJD"],
-    ["a leading line feed", "\nQUJD"],
-    ["a space", "QU JD"],
-    ["a trailing space", "QUJD "],
-    ["a tab", "\tQUJD"],
-    ["a character outside the alphabet", "QU*D"],
-    ["the URL-safe alphabet", "-_-_"],
-    ["missing padding", "QUI"],
-    ["short padding", "QQ="],
-    ["long padding", "QQ==="],
-    ["data after the padding", "QUI=QUJD"],
-    ["padding first", "=QUJ"],
-    ["one character", "Q"],
-  ];
-
-  it("decodes standard base64", () => {
-    assert.deepEqual(Buffer.from(base64ToBytes(good)).toString("base64"), good);
-    for (const value of accepted) {
-      assert.equal(Buffer.from(base64ToBytes(value)).toString("base64"), value);
-    }
-  });
-
-  for (const [name, value] of lenient) {
-    it(`refuses ${name}`, async () => {
-      assert.throws(() => base64ToBytes(value, "input"), /input is not valid base64/);
-    });
-  }
-
-  // The caller-facing sites take the signed bytes themselves, so no string,
-  // valid base64 or not, is decoded there.
-  it("is not applied to a signed transaction a caller supplies, which must be bytes", () => {
-    const client = new SignerClient("http://localhost:11270");
-    for (const value of [good, ...lenient.map(([, text]) => text)]) {
-      assert.throws(
-        () => preparedGroupToSignRequests({ transactions: [{ signedTransaction: value as any }] }),
-        { message: "prepared transaction 0: signedTransaction must be signed transaction bytes (a Uint8Array), not a string" },
-      );
-      assert.throws(
-        () => (client as any).buildSignRequestBody([null], [null], undefined, { 0: value }),
-        { message: "passthrough[0] must be signed transaction bytes (a Uint8Array), not a string" },
-      );
-    }
   });
 });
 

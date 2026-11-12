@@ -98,6 +98,8 @@ type sendAlgod struct {
 	submitted [][]byte
 	simulated []models.SimulateRequest
 	lookups   int
+	// accountReads counts account lookups.
+	accountReads int
 	// followed is the transaction ID of each pending-transaction lookup.
 	followed []string
 }
@@ -150,6 +152,9 @@ func (a *sendAlgod) handle(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]uint64{"last-round": a.currentRound()})
 	case strings.HasPrefix(r.URL.Path, "/v2/accounts/"):
 		address := strings.TrimPrefix(r.URL.Path, "/v2/accounts/")
+		a.mu.Lock()
+		a.accountReads++
+		a.mu.Unlock()
 		account := map[string]any{"address": address, "amount": 5_000_000, "min-balance": 100_000}
 		if auth := a.authAddrs[address]; auth != "" {
 			account["auth-addr"] = auth
@@ -1641,6 +1646,93 @@ func TestSendTransactionsDoesNotModifyTheTransactions(t *testing.T) {
 			t.Fatalf("transaction %d encodes differently after the send", i)
 		}
 	}
+}
+
+// Each distinct sender is resolved once per call: one account read, and the
+// signer's key list read once whatever the number of transactions.
+func TestSendTransactionsResolvesEachSenderOnce(t *testing.T) {
+	// statusBeforeSign is how many /status requests the call made before its
+	// /sign request.
+	statusBeforeSign := func(signer *sendSigner) int {
+		signer.mu.Lock()
+		defer signer.mu.Unlock()
+		n := 0
+		for _, path := range signer.paths {
+			if path == "/sign" {
+				break
+			}
+			if path == "/status" {
+				n++
+			}
+		}
+		return n
+	}
+	send := func(t *testing.T, count int) (*sendSigner, *sendAlgod) {
+		t.Helper()
+		var txns []types.Transaction
+		for i := 0; i < count; i++ {
+			txns = append(txns, verifyTestPayment(t, 41, 42, uint64(i+1)))
+		}
+		signer := &sendSigner{keys: []KeyInfo{ordinaryKey(txns[0])}}
+		node := &sendAlgod{}
+		client, algodClient := newSendFixture(t, signer, node)
+		result, err := client.SendTransactions(context.Background(), algodClient, txns, nil)
+		if err != nil {
+			t.Fatalf("SendTransactions() error = %v", err)
+		}
+		if len(result.SignedGroup) != count {
+			t.Fatalf("signed %d transaction(s), want %d", len(result.SignedGroup), count)
+		}
+		return signer, node
+	}
+
+	oneSigner, oneNode := send(t, 1)
+	threeSigner, threeNode := send(t, 3)
+	if oneNode.accountReads != 1 || threeNode.accountReads != 1 {
+		t.Fatalf("account reads = %d for one transaction, %d for three from the same sender; want 1 and 1", oneNode.accountReads, threeNode.accountReads)
+	}
+	if one, three := statusBeforeSign(oneSigner), statusBeforeSign(threeSigner); one != three {
+		t.Fatalf("status reads before signing = %d for one transaction, %d for three; the key list must be read once per call", one, three)
+	}
+}
+
+// A rotating account accepts a window of at most 100 rounds. The 1000-round
+// window of go-algorand-sdk's suggested parameters is refused unless the
+// send may rebuild it, and either way the caller's transaction is unchanged.
+func TestSendTransactionsRotatingSenderWithTheDefaultWindow(t *testing.T) {
+	t.Run("refused", func(t *testing.T) {
+		signer, node, client, algodClient, _ := newRotatingFixture(t)
+		txns := []types.Transaction{rotatingPayment(t, signer.account, 10, 1010)}
+		before := encodeTxn(txns[0])
+		_, err := client.SendTransactions(context.Background(), algodClient, txns, nil)
+		if err == nil || !strings.Contains(err.Error(), "validity window is 1000 rounds; a rotating account accepts at most 100") || !strings.Contains(err.Error(), "set RefreshValidity") {
+			t.Fatalf("error = %v, want the window refused", err)
+		}
+		if signer.count("/sign/rotating/prepare") != 0 || len(node.submissions()) != 0 {
+			t.Fatal("something was prepared or submitted")
+		}
+		if !bytes.Equal(encodeTxn(txns[0]), before) {
+			t.Fatal("the caller's transaction changed")
+		}
+	})
+	t.Run("sent with RefreshValidity", func(t *testing.T) {
+		signer, node, client, algodClient, _ := newRotatingFixture(t)
+		txns := []types.Transaction{rotatingPayment(t, signer.account, 10, 1010)}
+		before := encodeTxn(txns[0])
+		result, err := client.SendTransactions(context.Background(), algodClient, txns, &SendOptions{RefreshValidity: true})
+		if err != nil {
+			t.Fatalf("SendTransactions() error = %v", err)
+		}
+		if result.Rotating == nil || uint64(result.Rotating.Transaction.LastValid-result.Rotating.Transaction.FirstValid) > RotatingMaxValidityWindow {
+			t.Fatalf("result = %+v, want a rebuilt window", result.Rotating)
+		}
+		if len(node.submissions()) != 1 {
+			t.Fatal("the group was not submitted once")
+		}
+		if !bytes.Equal(encodeTxn(txns[0]), before) {
+			t.Fatal("the caller's transaction changed")
+		}
+	})
 }
 
 func TestSendTransactionsRefusesAnEmptyList(t *testing.T) {

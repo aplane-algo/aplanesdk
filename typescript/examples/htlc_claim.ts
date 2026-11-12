@@ -123,8 +123,9 @@ function printSignedGroup(error: SubmissionError): void {
   console.error(`Transaction IDs: ${error.txIds.join(", ")}`);
   console.error(`Last valid round: ${error.lastValid}`);
   // The entries are bytes; this prints each one as hex, one line per
-  // transaction. hexToBytes turns each line back into the bytes
-  // submitSignedGroup takes.
+  // transaction. hexToBytes turns each line back into bytes; the list of
+  // them is what submitSignedGroup takes, and algosdk's sendRawTransaction
+  // takes it as it is.
   console.error("Signed group, each entry printed as hex msgpack, one per transaction:");
   for (const entry of error.signedGroup) {
     console.error(`  ${bytesToHex(entry)}`);

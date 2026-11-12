@@ -2,6 +2,7 @@
 // Copyright (C) 2026 APlane Project LLC
 
 import type { SignRequest } from "./types.js";
+import { cloneSignedGroup } from "./encoding.js";
 import type { PreparedRotating } from "./rotating.js";
 
 /**
@@ -234,9 +235,9 @@ function firstOrEmpty(values: string[]): string {
  * then failed. It says which step failed and nothing about what the node did.
  *
  * `signedGroup` is the signed group, one canonical msgpack-encoded signed
- * transaction per entry, in order; each read returns a copy. `txIds` are its
- * transaction IDs. `lastValid` is the earliest last valid round of the
- * group. `submitted` is true when algosdk's sendRawTransaction returned
+ * transaction per entry, in order, copied when the error is made. `txIds`
+ * are its transaction IDs. `lastValid` is the earliest last valid round of
+ * the group. `submitted` is true when algosdk's sendRawTransaction returned
  * success and the failure came later, and false when it did not return
  * success. False does not mean the node lacks the group: the answer may have
  * been lost. `cause` is algosdk's error, unchanged (the signal's reason when
@@ -266,7 +267,7 @@ function firstOrEmpty(values: string[]): string {
  * neither the status nor the text.
  */
 export class SubmissionError extends SignerError {
-  readonly #signedGroup: Uint8Array[];
+  readonly signedGroup: Uint8Array[];
   readonly txIds: string[];
   readonly lastValid: bigint;
   readonly submitted: boolean;
@@ -282,16 +283,11 @@ export class SubmissionError extends SignerError {
     const step = options.submitted ? "wait for confirmation of" : "submit";
     super(`${step} transaction ${firstOrEmpty(options.txIds)}: ${errorText(options.cause)}`);
     this.name = "SubmissionError";
-    this.#signedGroup = options.signedGroup.map((entry) => new Uint8Array(entry));
+    this.signedGroup = cloneSignedGroup(options.signedGroup);
     this.txIds = [...options.txIds];
     this.lastValid = options.lastValid;
     this.submitted = options.submitted;
     this.cause = options.cause;
-  }
-
-  /** The signed group, a fresh copy on every read. */
-  get signedGroup(): Uint8Array[] {
-    return this.#signedGroup.map((entry) => new Uint8Array(entry));
   }
 }
 
