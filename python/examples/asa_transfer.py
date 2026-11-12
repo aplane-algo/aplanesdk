@@ -76,22 +76,27 @@ def main():
 
 def follow_group(algod_client, error):
     """Follow a signed group after a SubmissionError. When algosdk's submit
-    call did not return success (error.submitted is False), the node may or
-    may not have the group: say so and return 0. The caller then submits the
-    same signed_group again with submit_signed_group, which cannot pay
-    twice. When it did return success, wait with algosdk on the first
-    transaction (a group confirms as a whole) until the group's last valid
-    round, and for at least 1 round. Returns the round it confirmed in, or 0
-    when the wait ended without seeing it, which means only that the wait
-    ended. Once the last valid round has passed, neither a node's "not found"
-    nor a refusal proves that the group never confirmed, so check an indexer
-    before building a replacement."""
+    call did not return success (error.submitted is False), say what to do
+    and return 0: if error.error is algod's HTTP 400 the node refused the
+    group; otherwise it may or may not have it, so look the first
+    transaction up and then submit the same signed_group again with
+    submit_signed_group, which cannot pay twice. When it did return success,
+    wait with algosdk on the first transaction (a group confirms as a whole)
+    until the group's last valid round, and for at least 1 round. Returns
+    the round it confirmed in, or 0 when the wait ended without seeing it,
+    which means only that the wait ended. Once the last valid round has
+    passed, neither a node's "not found" nor a refusal proves that the group
+    never confirmed, so check an indexer before building a replacement.
+    Whenever it returns 0 it prints what acting on that advice needs."""
     print(f"Signed group {', '.join(error.tx_ids)}: {error}")
     if not error.submitted:
         print(
-            "The submit call did not return success, so the node may or may not have the "
-            "group. Submit the same signed_group again with submit_signed_group."
+            "The submit call did not return success. If the cause is algod's HTTP 400, the "
+            "node refused the group. Otherwise it may or may not have the group: look up the "
+            "first transaction, then submit the same signed_group again with "
+            "submit_signed_group."
         )
+        print_group(error)
         return 0
     try:
         current = algod_client.status()["last-round"]
@@ -100,9 +105,24 @@ def follow_group(algod_client, error):
             algod_client, error.tx_ids[0], max(error.last_valid - current, 1)
         )
     except Exception as follow_error:
-        print(f"Still unknown ({follow_error}); check an indexer before building a replacement.")
+        print(
+            f"Still unknown ({follow_error}); after round {error.last_valid}, check an indexer "
+            "before building a replacement."
+        )
+        print_group(error)
         return 0
     return info["confirmed-round"]
+
+
+def print_group(error):
+    """Print what acting on a SubmissionError needs: every entry of the
+    signed group, in the form submit_signed_group takes, the transaction IDs
+    and the last valid round."""
+    print("Signed group (hex msgpack, for submit_signed_group):")
+    for entry in error.signed_group:
+        print(f"  {entry}")
+    print(f"Transaction IDs: {', '.join(error.tx_ids)}")
+    print(f"Last valid round: {error.last_valid}")
 
 
 if __name__ == "__main__":

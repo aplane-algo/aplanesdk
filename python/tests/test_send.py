@@ -147,6 +147,19 @@ def test_send_prepared_no_wait_returns_submitted(fakes):
     assert len(node.submissions()) == 1 and node.lookups == 0 and node.waits == []
 
 
+def test_a_confirmed_send_decodes_the_signed_group_once(fakes, monkeypatch):
+    # The last valid round is read from the signed group only for an error.
+    txn = fake_signer.payment(41, 42)
+    signer, node, client = make(fakes, SendSigner([ordinary_key(txn)]))
+
+    def decode_again(signed_group):
+        raise AssertionError("the success path decoded the signed group again")
+
+    monkeypatch.setattr(signer_module, "_signed_group_last_valid", decode_again)
+    result = client.send_prepared(node.client, prepared_for(txn))
+    assert result.outcome == SEND_OUTCOME_CONFIRMED
+
+
 @pytest.mark.parametrize("call", ["send_prepared", "submit_signed_group"])
 def test_the_confirmation_is_what_algosdks_wait_returned(fakes, monkeypatch, call):
     # The response describes the first transaction of the signed group, the

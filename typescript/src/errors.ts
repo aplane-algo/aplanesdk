@@ -243,9 +243,20 @@ function firstOrEmpty(values: string[]): string {
  *
  * When `submitted` is true, follow the group with algosdk's
  * waitForConfirmation on the first of `txIds` for `lastValid` minus the
- * current round, at least 1. When it is false, submit the same `signedGroup`
- * again with SignerClient.submitSignedGroup; the node may already have it.
- * The same signed group cannot pay twice.
+ * current round, at least 1.
+ *
+ * When it is false, there are two cases. If `cause` is algod's own HTTP 400
+ * (algosdk's error then carries the answer, and `cause.response.status` is
+ * 400), the node answered and refused: read the reason; the same bytes
+ * submitted again get the same answer. Anything else (no answer, a lost
+ * connection, a 5xx, the signal) leaves open whether the node has the group:
+ * follow the first of `txIds` with algosdk's wait for a few rounds, and if it
+ * does not confirm, submit the same `signedGroup` again with
+ * SignerClient.submitSignedGroup. A 400 to that resubmit saying the
+ * transaction is already in the ledger means the node has it: follow the ID.
+ * The same signed group cannot pay twice. After `lastValid` a refusal proves
+ * nothing; check an indexer. The SDK itself reads neither the status nor the
+ * text.
  */
 export class SubmissionError extends SignerError {
   readonly signedGroup: string[];

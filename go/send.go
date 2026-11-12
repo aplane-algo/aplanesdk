@@ -42,7 +42,9 @@ type SendOptions struct {
 	NoWait bool
 	// WaitRounds is the round count given to go-algorand-sdk's
 	// transaction.WaitForConfirmation for the group's first transaction.
-	// Zero means 10.
+	// Zero means 10. That wait looks the transaction up WaitRounds times; a
+	// value near the largest uint64 overflows inside go-algorand-sdk and the
+	// wait times out at once.
 	WaitRounds uint64
 
 	// RefreshValidity lets a send rebuild the validity rounds of a rotating
@@ -185,11 +187,17 @@ func (e *SignOutcomeUnknownError) Unwrap() error {
 // program. The error makes no claim about what the node did.
 //
 // When Submitted is true, follow the group with
-// transaction.WaitForConfirmation on TxIDs[0]. When it is false, submit the
-// same SignedGroup again with SubmitSignedGroup; the node may already have it.
-// The same signed bytes execute at most once. After LastValid, neither a
-// node's "not found" nor a refusal proves the group never confirmed: check an
-// indexer before building a replacement.
+// transaction.WaitForConfirmation on TxIDs[0]. When it is false, the cause
+// tells two cases apart. A go-algorand-sdk common.BadRequest is algod's HTTP
+// 400: the node answered and refused the group, and the same bytes get the
+// same answer, so read the reason. Any other cause (no answer, a lost
+// connection, a 5xx, the context ended) leaves it open whether the node has
+// the group: follow TxIDs[0] for a few rounds and, if it does not confirm,
+// submit the same SignedGroup again with SubmitSignedGroup. A 400 to that
+// resubmission whose text says the transaction is already in the ledger means
+// the node has it: follow the ID. The same signed bytes execute at most once.
+// After LastValid, neither a node's "not found" nor a refusal proves the
+// group never confirmed: check an indexer before building a replacement.
 type SubmissionError struct {
 	// SignedGroup is the signed group, hex msgpack, in order.
 	SignedGroup []string

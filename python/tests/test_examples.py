@@ -96,6 +96,15 @@ def _submission_error(last_valid=10, submitted=True, cause=None):
     )
 
 
+def _assert_prints_what_acting_needs(out, last_valid=10):
+    """Every entry of the signed group, as submit_signed_group takes it, the
+    transaction IDs and the last valid round."""
+    lines = [line.strip() for line in out.splitlines()]
+    assert "aa" in lines and "bb" in lines
+    assert "Transaction IDs: TXONE, TXTWO" in lines
+    assert f"Last valid round: {last_valid}" in lines
+
+
 @pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
 def test_a_submission_the_wait_cannot_settle_raises_the_original_error(path, monkeypatch, capsys):
     error = _submission_error()
@@ -107,8 +116,8 @@ def test_a_submission_the_wait_cannot_settle_raises_the_original_error(path, mon
 
     assert excinfo.value is error
     out = capsys.readouterr().out
-    assert "TXONE, TXTWO" in out
     assert "Still unknown (node down)" in out
+    _assert_prints_what_acting_needs(out)
 
 
 @pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
@@ -136,7 +145,9 @@ def test_a_submitted_group_is_waited_for_until_its_last_valid_round(
     signer.submit_signed_group.assert_not_called()
     assert {c.args[0] for c in algod_client.pending_transaction_info.call_args_list} == {"TXONE"}
     assert [c.args[0] for c in algod_client.status_after_block.call_args_list] == waited
-    assert "check an indexer before building a replacement" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "after round 10, check an indexer before building a replacement" in out
+    _assert_prints_what_acting_needs(out)
 
 
 @pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
@@ -147,7 +158,9 @@ def test_a_submitted_group_the_wait_sees_confirmed_is_reported(path, monkeypatch
 
     _run(path, monkeypatch, _submission_error(), algod_client)
 
-    assert "Confirmed TXONE in round 7" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Confirmed TXONE in round 7" in out
+    assert "Last valid round" not in out
 
 
 @pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
@@ -167,9 +180,10 @@ def test_a_group_whose_submit_did_not_succeed_is_not_resubmitted_and_raises(
     signer.submit_signed_group.assert_not_called()
     assert algod_client.mock_calls == []
     out = capsys.readouterr().out
-    assert "TXONE, TXTWO" in out
+    assert "algod's HTTP 400, the node refused the group" in out
     assert "may or may not have the group" in out
-    assert "Submit the same signed_group again with submit_signed_group" in out
+    assert "submit the same signed_group again with submit_signed_group" in out
+    _assert_prints_what_acting_needs(out)
 
 
 @pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)

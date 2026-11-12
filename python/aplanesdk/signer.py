@@ -441,18 +441,25 @@ class SubmissionError(SignerError):
     the failure came later. Follow the group with algosdk's
     ``transaction.wait_for_confirmation`` on ``tx_ids[0]`` (a group confirms
     as a whole) for ``last_valid`` minus the current round, at least 1
-    (algosdk reads 0 as 1000). ``submitted`` is False when the submit call
-    did not return success. That does not mean the node lacks the group:
-    its answer may have been lost. Submit the same ``signed_group`` again
-    with submit_signed_group.
+    (algosdk reads 0 as 1000).
 
-    Submitting the same signed group again cannot pay twice. If the node
-    already has it, algosdk reports a 400 whose text says the transaction is
-    already in the ledger; that is good news, not a refusal. After
+    ``submitted`` is False when the submit call did not return success, in
+    one of two cases. When ``error`` is algod's own HTTP 400 (an
+    ``algosdk.error.AlgodHTTPError`` whose ``code`` is 400), the node
+    answered and refused the group: read the reason, as in any algosdk
+    program; submitting the same bytes again gets the same answer. Anything
+    else (no answer, a lost connection, a 5xx, the call's time limit) leaves
+    it open whether the node has the group. First look ``tx_ids[0]`` up with
+    algosdk's wait for a few rounds; if it does not confirm, submit the same
+    ``signed_group`` again with submit_signed_group. If that comes back as a
+    400 saying the transaction is already in the ledger, the node has it:
+    follow ``tx_ids[0]``. The SDK itself does not look at the cause.
+
+    Submitting the same signed group again cannot pay twice. After
     ``last_valid`` the node refuses the group as dead whether or not it
-    confirmed. Once ``last_valid`` has passed, neither a node's "not found"
-    nor a refusal proves that the group never confirmed: check an indexer
-    before building a replacement.
+    confirmed, so a refusal then proves nothing. Once ``last_valid`` has
+    passed, neither a node's "not found" nor a refusal proves that the group
+    never confirmed: check an indexer before building a replacement.
 
     Attributes:
         signed_group: the signed bytes, hex msgpack, in group order
@@ -634,9 +641,10 @@ def _check_time_limit(timeout: Any) -> Optional[float]:
 def _time_limit(timeout: Optional[float]) -> Any:
     """Run the block under a time limit of timeout seconds: every HTTP call
     inside it, to a signer or a node, is held to what remains, and the steps
-    check it between calls. A limit already in force that ends sooner stays
-    in force. None sets no limit, so the block runs as it would without
-    one."""
+    check it between calls. algosdk's confirmation wait is the exception: it
+    runs on the caller's client, outside the limit. A limit already in force
+    that ends sooner stays in force. None sets no limit, so the block runs
+    as it would without one."""
     limit = _check_time_limit(timeout)
     if limit is None:
         yield
@@ -7374,8 +7382,9 @@ class SignerClient:
         """Build an ALGO payment with prepare_payment, then sign, submit and
         track it with send_prepared. It works the same way for every account
         type send_prepared supports. ``amount`` and ``fee`` are in
-        microAlgos. ``timeout`` limits the whole call, preparing included,
-        as for send_prepared.
+        microAlgos. ``timeout`` limits signing and submission, preparing
+        included, as for send_prepared; it does not bound the confirmation
+        wait.
 
         The SDK built the transaction, so a rotating account's send may
         rebuild its validity rounds without refresh_validity being set.
@@ -9700,9 +9709,10 @@ def _submit_and_track(
 def _submit_and_wait(
     algod_client: Any, raw: List[bytes], result: SendResult, options: _SendOptions
 ) -> None:
-    last_valid = _signed_group_last_valid(result.signed_group)
-
     def failure(submitted: bool, error: BaseException) -> SubmissionError:
+        # The last valid round is read from the signed group only when it is
+        # needed: the success path does not decode the group again.
+        last_valid = _signed_group_last_valid(result.signed_group)
         return SubmissionError(result.signed_group, result.tx_ids, last_valid, submitted, error)
 
     # The group is signed. A time limit that passed before the submission

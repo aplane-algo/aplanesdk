@@ -352,11 +352,16 @@ export async function submitAndTrack(
   options: CheckedSendOptions,
 ): Promise<void> {
   const signal = options.signal;
-  // The bytes were checked when the result was described; their rounds say
-  // until when the group can execute.
-  const lastValid = earliestLastValid(raw.map((entry) => algosdk.decodeSignedTransaction(entry).txn));
+  // The bytes were checked when the result was described. Their rounds say
+  // until when the group can execute; they are read only for an error.
   const failed = (submitted: boolean, cause: unknown) =>
-    new SubmissionError({ signedGroup: result.signedGroup, txIds: result.txIds, lastValid, submitted, cause });
+    new SubmissionError({
+      signedGroup: result.signedGroup,
+      txIds: result.txIds,
+      lastValid: earliestLastValid(raw.map((entry) => algosdk.decodeSignedTransaction(entry).txn)),
+      submitted,
+      cause,
+    });
 
   if (signal?.aborted) {
     throw failed(false, signal.reason);

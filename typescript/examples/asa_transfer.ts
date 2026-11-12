@@ -56,9 +56,12 @@ async function main() {
       console.error(error.message);
       if (!error.submitted) {
         console.error(
-          "The submit call did not return success; the node may or may not have the group. " +
-            "Submit the same signedGroup again with submitSignedGroup.",
+          "The submit call did not return success. If the cause is algod's own HTTP 400, the node " +
+            "refused the group. Otherwise the node may or may not have it: follow the first ID with " +
+            "algosdk's wait, and if it does not confirm, submit the same signed group again with " +
+            "submitSignedGroup.",
         );
+        printSignedGroup(error);
       } else if (await waitForGroup(algodClient, error)) {
         return;
       }
@@ -90,7 +93,18 @@ async function waitForGroup(algodClient: algosdk.Algodv2, error: SubmissionError
     console.error(
       `Not seen confirmed (${reason}). After round ${error.lastValid}, check an indexer before building a replacement.`,
     );
+    printSignedGroup(error);
     return false;
+  }
+}
+
+/** Print what following the group, or submitting it again with submitSignedGroup, needs. */
+function printSignedGroup(error: SubmissionError): void {
+  console.error(`Transaction IDs: ${error.txIds.join(", ")}`);
+  console.error(`Last valid round: ${error.lastValid}`);
+  console.error("Signed group, hex msgpack, one entry per transaction (submitSignedGroup takes this list):");
+  for (const entry of error.signedGroup) {
+    console.error(`  ${entry}`);
   }
 }
 
