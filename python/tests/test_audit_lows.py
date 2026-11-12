@@ -19,6 +19,8 @@ from aplanesdk.signer import (
     KeyNotFoundError,
     _parse_lsig_resource_usage,
     _encode_abi_method_args,
+    _encode_lsig_args,
+    _encode_lsig_args_map,
     _require_uint,
     load_config,
     sign_prepared_cosigned_group,
@@ -955,3 +957,97 @@ def test_abi_bool_refusal_names_the_methods_own_argument():
     )
     with pytest.raises(ValueError, match=r"ABI argument 1 \(amount\) must be an integer, not bool"):
         _encode_abi_method_args(named, [1001, True], SENDER, 7, None, None, None)
+
+
+class TestLsigArgEncoding:
+    def test_encodes_bytes_like_values_as_hex(self):
+        assert _encode_lsig_args(
+            {"a": b"secret", "b": bytearray(b"\x01\x02"), "c": memoryview(b"\xff"), "d": b""}
+        ) == {"a": "736563726574", "b": "0102", "c": "ff", "d": ""}
+
+    # float has a hex() of its own, so 1.5 was sent as "0x1.8000000000000p+0".
+    @pytest.mark.parametrize(
+        "bad, kind", [("a1b2c3", "str"), (7, "int"), (1.5, "float"), ([1, 2], "list"), (None, "NoneType")]
+    )
+    def test_refuses_a_value_that_is_not_bytes(self, bad, kind):
+        with pytest.raises(ValueError, match=rf"lsig_args\['preimage'\] must be bytes, not {kind}"):
+            _encode_lsig_args({"preimage": bad})
+
+    @pytest.mark.parametrize("bad, kind", [([("preimage", b"x")], "list"), ("preimage", "str")])
+    def test_refuses_arguments_that_are_not_a_mapping(self, bad, kind):
+        with pytest.raises(ValueError, match=f"lsig_args must be a mapping of name to bytes, not {kind}"):
+            _encode_lsig_args(bad)
+
+    def test_prepared_transaction_request_refuses_a_str_value(self):
+        prepared = PreparedTransaction(
+            transaction=transaction.PaymentTxn(
+                sdk_test_address(1),
+                transaction.SuggestedParams(1000, 1, 100, base64.b64encode(bytes(32)).decode(), flat_fee=True),
+                sdk_test_address(2),
+                1,
+            ),
+            auth_address=sdk_test_address(1),
+            lsig_args={"preimage": "a1b2c3"},
+        )
+        with pytest.raises(ValueError, match="must be bytes, not str"):
+            prepared.to_sign_request()
+
+    def test_refuses_a_name_that_is_not_a_str(self):
+        with pytest.raises(ValueError, match="lsig_args name 1 must be a str, not int"):
+            _encode_lsig_args({1: b"x"})
+
+    # A view of two-byte items would be sent in the host's byte order.
+    def test_refuses_a_view_of_wider_items(self):
+        import array
+
+        with pytest.raises(ValueError, match="must be a view of bytes, not of 2-byte items"):
+            _encode_lsig_args({"n": memoryview(array.array("H", [1]))})
+
+    def test_map_encodes_every_entry_and_skips_none(self):
+        assert _encode_lsig_args_map(None) == {}
+        assert _encode_lsig_args_map({"A": {"p": b"\x01"}, "B": None}) == {"A": {"p": "01"}}
+
+    @pytest.mark.parametrize("bad, kind", [([("A", {"p": b"x"})], "list"), ("A", "str")])
+    def test_map_refuses_what_is_not_a_mapping(self, bad, kind):
+        with pytest.raises(ValueError, match=f"lsig_args_map must be a mapping of auth address to arguments, not {kind}"):
+            _encode_lsig_args_map(bad)
+
+    # An entry no position uses was never looked at.
+    @pytest.mark.parametrize("bad", ["", 0, [("p", b"x")]])
+    def test_map_refuses_an_entry_that_is_not_a_mapping(self, bad):
+        with pytest.raises(ValueError, match="lsig_args must be a mapping of name to bytes"):
+            _encode_lsig_args_map({"A": bad})
+
+    # A falsy value of the wrong type was skipped by a truthiness test before
+    # anything looked at it.
+    @pytest.mark.parametrize("bad", ["", 0, []])
+    def test_prepared_transaction_request_refuses_a_falsy_non_mapping(self, bad):
+        prepared = PreparedTransaction(
+            transaction=transaction.PaymentTxn(
+                sdk_test_address(1),
+                transaction.SuggestedParams(1000, 1, 100, base64.b64encode(bytes(32)).decode(), flat_fee=True),
+                sdk_test_address(2),
+                1,
+            ),
+            auth_address=sdk_test_address(1),
+            lsig_args=bad,
+        )
+        with pytest.raises(ValueError, match="lsig_args must be a mapping of name to bytes"):
+            prepared.to_sign_request()
+
+    def test_prepared_transaction_request_sends_no_field_for_no_arguments(self):
+        prepared = PreparedTransaction(
+            transaction=transaction.PaymentTxn(
+                sdk_test_address(1),
+                transaction.SuggestedParams(1000, 1, 100, base64.b64encode(bytes(32)).decode(), flat_fee=True),
+                sdk_test_address(2),
+                1,
+            ),
+            auth_address=sdk_test_address(1),
+            lsig_args={},
+        )
+        assert "lsig_args" not in prepared.to_sign_request()
+
+    def test_map_refuses_an_address_key_that_is_not_a_str(self):
+        with pytest.raises(ValueError, match="lsig_args_map key b'A' must be an address str, not bytes"):
+            _encode_lsig_args_map({b"A": {"p": b"x"}})

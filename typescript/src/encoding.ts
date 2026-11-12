@@ -56,18 +56,70 @@ export function encodeTransaction(txn: Transaction): [string, string] {
 }
 
 /**
- * Encode LogicSig args for the API request.
- * Converts Uint8Array values to hex strings.
- *
- * @param args - Map of argument name to Uint8Array value
- * @returns Map of argument name to hex-encoded value
+ * Encode LogicSig runtime arguments for the signer: each value as hex.
+ * args must be a plain object of name to Uint8Array. Anything else is
+ * refused, because it would otherwise be sent as different bytes with no
+ * error: a string's characters are not its bytes, a number has none, and a
+ * Map has no own entries.
  */
 export function encodeLsigArgs(
   args: Record<string, Uint8Array>
 ): Record<string, string> {
+  // Told by the internal type, which holds across realms: a Map, a Set and
+  // an array are objects but not this.
+  if (args === null || typeof args !== "object" || typeTag(args) !== "Object") {
+    throw new SignerError(`lsigArgs must be an object of name to Uint8Array, not ${valueKind(args)}`);
+  }
   const encoded: Record<string, string> = {};
   for (const [name, value] of Object.entries(args)) {
-    encoded[name] = bytesToHex(value);
+    if (!isUint8Array(value)) {
+      throw new SignerError(`lsigArgs.${name} must be a Uint8Array, not ${valueKind(value)}`);
+    }
+    setOwn(encoded, name, bytesToHex(value));
+  }
+  return encoded;
+}
+
+/**
+ * The arguments to send for one position: encoded as encodeLsigArgs does,
+ * or undefined when there are none, so that no arguments are sent as no
+ * field. Only null and undefined mean absent: any other value is checked,
+ * a falsy one of the wrong type included.
+ */
+export function encodeLsigArgsOrNone(
+  args: Record<string, Uint8Array> | undefined | null
+): Record<string, string> | undefined {
+  if (args === undefined || args === null) return undefined;
+  const encoded = encodeLsigArgs(args);
+  return Object.keys(encoded).length > 0 ? encoded : undefined;
+}
+
+/**
+ * Set an own property of target. Assignment would not for the name
+ * "__proto__": it sets the prototype, and the entry is gone.
+ */
+function setOwn<T>(target: Record<string, T>, name: string, value: T): void {
+  Object.defineProperty(target, name, { value, enumerable: true, writable: true, configurable: true });
+}
+
+/**
+ * A map of auth address to LogicSig arguments, each entry encoded as
+ * encodeLsigArgs does. Every entry is checked, whether or not a position
+ * uses it: a Map in place of the object, or of one address's arguments, has
+ * no own entries and would otherwise be passed over as empty. An entry that
+ * is null or undefined has no arguments.
+ */
+export function encodeLsigArgsMap(
+  map: Record<string, Record<string, Uint8Array>> | undefined | null
+): Record<string, Record<string, string>> {
+  const encoded: Record<string, Record<string, string>> = {};
+  if (map === undefined || map === null) return encoded;
+  if (typeof map !== "object" || typeTag(map) !== "Object") {
+    throw new SignerError(`lsigArgsMap must be an object of auth address to arguments, not ${valueKind(map)}`);
+  }
+  for (const [address, args] of Object.entries(map)) {
+    if (args === undefined || args === null) continue;
+    setOwn(encoded, address, encodeLsigArgs(args));
   }
   return encoded;
 }

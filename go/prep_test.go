@@ -586,6 +586,27 @@ func TestPrepareAppCall(t *testing.T) {
 	}
 }
 
+// AppArgs beside an ABI method call would be dropped: the method's
+// arguments become the application arguments.
+func TestPrepareABIAppCallRefusesAppArgs(t *testing.T) {
+	sender := sdkTestAddress(1)
+	signer, algodClient, cleanup := newPrepTestClients(t, sender, sdkTestAddress(2), 2_000_000, 0, false)
+	defer cleanup()
+
+	_, err := signer.PrepareABIAppCall(context.Background(), algodClient, ABIAppCallPrepParams{
+		AppCallPrepParams: AppCallPrepParams{
+			Sender:  sender,
+			AppID:   7,
+			AppArgs: [][]byte{[]byte("memo")},
+		},
+		MethodSignature: "do(uint64)void",
+		Args:            []any{uint64(42)},
+	})
+	if err == nil || !strings.Contains(err.Error(), "AppArgs must be empty for an ABI call") {
+		t.Fatalf("PrepareABIAppCall() error = %v, want the AppArgs refusal", err)
+	}
+}
+
 func TestPrepareABIAppCall(t *testing.T) {
 	sender := sdkTestAddress(1)
 	receiver := sdkTestAddress(2)
@@ -594,8 +615,10 @@ func TestPrepareABIAppCall(t *testing.T) {
 
 	prepared, err := signer.PrepareABIAppCall(context.Background(), algodClient, ABIAppCallPrepParams{
 		AppCallPrepParams: AppCallPrepParams{
-			Sender:      sender,
-			AppID:       7,
+			Sender: sender,
+			AppID:  7,
+			// Empty but not nil: nothing would be dropped, so it is accepted.
+			AppArgs:     [][]byte{},
 			ForeignApps: []uint64{9},
 			ForeignAssets: []uint64{
 				1001,

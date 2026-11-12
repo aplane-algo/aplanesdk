@@ -54,7 +54,7 @@ import socket
 import threading
 import time
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
-from typing import Optional, Dict, List, Any, Callable, cast
+from typing import Optional, Dict, List, Any, Callable, Mapping, cast
 from urllib.parse import urlparse
 
 from algosdk import abi, constants, encoding, transaction
@@ -2039,8 +2039,11 @@ class PreparedTransaction:
             "auth_address": self.auth_address,
             "txn_sender": self.txn_sender or txn_sender,
         }
-        if self.lsig_args:
-            request["lsig_args"] = {name: value.hex() for name, value in self.lsig_args.items()}
+        # Checked whatever it is: a falsy value of the wrong type is refused
+        # too. No arguments are sent as no field.
+        encoded_args = _encode_lsig_args_or_none(self.lsig_args)
+        if encoded_args:
+            request["lsig_args"] = encoded_args
         if self.app_call_info:
             request["app_call_info"] = self.app_call_info
         return request
@@ -6828,6 +6831,8 @@ class SignerClient:
 
         # Build request array
         sign_requests: List[Dict[str, Any]] = []
+        # Checked whole and first, so an entry no position uses is refused too.
+        encoded_lsig_args = _encode_lsig_args_map(lsig_args_map)
         matched_lsig_args: set = set()
         for i, (txn, auth_addr) in enumerate(zip(txns, auth_addresses)):
             # Passthrough: include pre-signed transaction as-is
@@ -6896,10 +6901,9 @@ class SignerClient:
             }
 
             # Add LogicSig args if provided
-            if lsig_args_map and lsig_args_map.get(auth_addr):
-                req["lsig_args"] = {
-                    name: value.hex() for name, value in lsig_args_map[auth_addr].items()
-                }
+            # Each position gets its own copy.
+            if encoded_lsig_args.get(auth_addr):
+                req["lsig_args"] = dict(encoded_lsig_args[auth_addr])
 
             sign_requests.append(req)
 
@@ -6912,7 +6916,7 @@ class SignerClient:
         # group. An entry with no args is ignored.
         unmatched = sorted(
             repr(address)
-            for address, args in (lsig_args_map or {}).items()
+            for address, args in encoded_lsig_args.items()
             if args and address not in matched_lsig_args
         )
         if unmatched:
@@ -7240,7 +7244,7 @@ class SignerClient:
         if not auth_address:
             auth_address = txn.sender
 
-        lsig_args_map = {auth_address: lsig_args} if lsig_args else None
+        lsig_args_map = {auth_address: lsig_args} if lsig_args is not None else None
 
         return self._sign_request([txn], [auth_address], lsig_args_map, request_id=request_id)
 
@@ -8072,7 +8076,7 @@ class SignerClient:
         any failure after submission, ends the send: it never builds a
         replacement spend on its own.
         """
-        if item.lsig_args:
+        if _encode_lsig_args_or_none(item.lsig_args):
             raise UnsupportedGroupError(
                 "a rotating account takes no LogicSig arguments from the caller"
             )
@@ -8789,10 +8793,70 @@ def _sign_cosigned_dummies(
     return passthrough
 
 
-def _encode_cosigned_lsig_args(args: Optional[Dict[str, bytes]]) -> Optional[Dict[str, str]]:
-    if not args:
+def _encode_lsig_args(args: Any) -> Dict[str, str]:
+    """LogicSig runtime arguments as the signer takes them: each value as hex.
+
+    args must be a mapping of name to bytes. A str, a number or another
+    value is refused: float has a hex() of its own that is not its bytes, and
+    a str would otherwise fail with an error that does not name the argument.
+    """
+    if not isinstance(args, Mapping):
+        raise ValueError(
+            f"lsig_args must be a mapping of name to bytes, not {type(args).__name__}"
+        )
+    encoded: Dict[str, str] = {}
+    for name, value in args.items():
+        if not isinstance(name, str):
+            raise ValueError(
+                f"lsig_args name {name!r} must be a str, not {type(name).__name__}"
+            )
+        if not isinstance(value, (bytes, bytearray, memoryview)):
+            raise ValueError(
+                f"lsig_args[{name!r}] must be bytes, not {type(value).__name__}"
+            )
+        # A view of wider items would be sent in the host's byte order.
+        if isinstance(value, memoryview) and value.itemsize != 1:
+            raise ValueError(
+                f"lsig_args[{name!r}] must be a view of bytes, not of {value.itemsize}-byte items"
+            )
+        encoded[name] = bytes(value).hex()
+    return encoded
+
+
+def _encode_lsig_args_map(lsig_args_map: Any) -> Dict[str, Dict[str, str]]:
+    """A map of auth address to LogicSig arguments, each entry encoded.
+
+    Every entry is checked, whether or not a position uses it. An entry that
+    is None has no arguments.
+    """
+    if lsig_args_map is None:
+        return {}
+    if not isinstance(lsig_args_map, Mapping):
+        raise ValueError(
+            "lsig_args_map must be a mapping of auth address to arguments, "
+            f"not {type(lsig_args_map).__name__}"
+        )
+    encoded: Dict[str, Dict[str, str]] = {}
+    for address, args in lsig_args_map.items():
+        if not isinstance(address, str):
+            raise ValueError(
+                f"lsig_args_map key {address!r} must be an address str, "
+                f"not {type(address).__name__}"
+            )
+        if args is not None:
+            encoded[address] = _encode_lsig_args(args)
+    return encoded
+
+
+def _encode_lsig_args_or_none(args: Any) -> Optional[Dict[str, str]]:
+    """The arguments to send for one position, or None when there are none.
+
+    No arguments are sent as no field. Only None means absent: any other
+    value is checked, a falsy one of the wrong type included.
+    """
+    if args is None:
         return None
-    return {name: value.hex() for name, value in args.items()}
+    return _encode_lsig_args(args) or None
 
 
 def _resolve_cosigner_for_target(
@@ -9152,7 +9216,7 @@ def sign_prepared_cosigned_group(
                 "target_index": index,
                 "auth_address": item.auth_address,
                 "txn_sender": item.txn_sender,
-                "lsig_args": _encode_cosigned_lsig_args(item.lsig_args),
+                "lsig_args": _encode_lsig_args_or_none(item.lsig_args),
                 "app_call_info": item.app_call_info,
             }
         )

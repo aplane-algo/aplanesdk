@@ -692,3 +692,149 @@ describe("removed helpers", () => {
     assert.ok(algosdk);
   });
 });
+
+describe("LogicSig argument encoding", () => {
+  it("encodes Uint8Array values as hex", () => {
+    assert.deepEqual(
+      sdk.encodeLsigArgs({ preimage: new Uint8Array([0xa1, 0xb2, 0xc3]), empty: new Uint8Array() }),
+      { preimage: "a1b2c3", empty: "" },
+    );
+    assert.deepEqual(sdk.encodeLsigArgs({ preimage: Buffer.from("secret") }), { preimage: "736563726574" });
+  });
+
+  // A string was sent as its characters and a number as nothing, with no
+  // error. An array of numbers and another typed array are refused with
+  // them: only a Uint8Array says what its bytes are.
+  for (const [label, bad, kind] of [
+    ["a hex string", "a1b2c3", "a string"],
+    ["a number", 7, "a number"],
+    ["an array of numbers", [1, 2, 3], "an array"],
+    ["a Uint16Array", new Uint16Array([1]), "a Uint16Array"],
+    ["null", null, "null"],
+  ] as [string, unknown, string][]) {
+    it(`refuses ${label} as a value`, () => {
+      assert.throws(
+        () => sdk.encodeLsigArgs({ preimage: bad } as any),
+        (err: any) => err instanceof sdk.SignerError
+          && err.message === `lsigArgs.preimage must be a Uint8Array, not ${kind}`,
+      );
+    });
+  }
+
+  // A Map has no own entries, so every argument in it was dropped.
+  for (const [label, bad, kind] of [
+    ["a Map", new Map([["preimage", new Uint8Array([1])]]), "a Map"],
+    ["an array", [new Uint8Array([1])], "an array"],
+    ["a string", "preimage", "a string"],
+  ] as [string, unknown, string][]) {
+    it(`refuses ${label} as the arguments`, () => {
+      assert.throws(
+        () => sdk.encodeLsigArgs(bad as any),
+        (err: any) => err instanceof sdk.SignerError
+          && err.message === `lsigArgs must be an object of name to Uint8Array, not ${kind}`,
+      );
+    });
+  }
+});
+
+describe("LogicSig argument map", () => {
+  const client = new SignerClient("http://localhost:1");
+  const txn = fakePayment(sender, receiver);
+  const body = (map: unknown) => (client as any).buildSignRequestBody([txn], [sender], map);
+
+  it("encodes the entry of a position's authorizer", () => {
+    assert.deepEqual(body({ [sender]: { preimage: new Uint8Array([1, 2]) } }).requests[0].lsig_args, { preimage: "0102" });
+    assert.equal(body(undefined).requests[0].lsig_args, undefined);
+  });
+
+  // Each was passed over as empty, so the request was signed without the
+  // arguments and with no error.
+  it("refuses a Map in place of the object", () => {
+    assert.throws(
+      () => body(new Map([[sender, { preimage: new Uint8Array([1]) }]])),
+      (err: any) => err instanceof sdk.SignerError
+        && err.message === "lsigArgsMap must be an object of auth address to arguments, not a Map",
+    );
+  });
+
+  it("refuses a Map of arguments under the authorizer and under an address no position uses", () => {
+    for (const address of [sender, receiver]) {
+      assert.throws(
+        () => body({ [address]: new Map([["preimage", new Uint8Array([1])]]) }),
+        (err: any) => err instanceof sdk.SignerError
+          && err.message === "lsigArgs must be an object of name to Uint8Array, not a Map",
+      );
+    }
+  });
+
+  // Assignment to "__proto__" sets a prototype and loses the entry.
+  it("keeps an entry or an argument named __proto__", () => {
+    const map = JSON.parse('{"__proto__": {"preimage": 1}}');
+    map["__proto__"].preimage = new Uint8Array([1]);
+    assert.throws(
+      () => body(map),
+      (err: any) => err instanceof sdk.SignerError && /no transaction in the request has auth address "__proto__"/.test(err.message),
+    );
+    const args = JSON.parse('{"__proto__": 1}');
+    Object.defineProperty(args, "__proto__", { value: new Uint8Array([7]), enumerable: true });
+    assert.equal(JSON.stringify(sdk.encodeLsigArgs(args)), '{"__proto__":"07"}');
+  });
+
+  // The three SDKs agree: no arguments are sent as no field, and only null
+  // and undefined mean none. A falsy value of the wrong type was skipped by
+  // a truthiness test before anything looked at it.
+  it("sends no field for an empty arguments object", () => {
+    assert.equal("lsig_args" in body({ [sender]: {} }).requests[0], false);
+    const [request] = preparedGroupToSignRequests({ transactions: [{ transaction: txn, authAddress: sender, lsigArgs: {} }] });
+    assert.equal("lsig_args" in request, false);
+  });
+
+  for (const bad of ["", 0, false] as any[]) {
+    it(`refuses ${JSON.stringify(bad)} as a prepared item's arguments`, () => {
+      assert.throws(
+        () => preparedGroupToSignRequests({ transactions: [{ transaction: txn, authAddress: sender, lsigArgs: bad }] }),
+        /lsigArgs must be an object of name to Uint8Array/,
+      );
+    });
+  }
+
+  it("gives each position its own copy of the arguments", () => {
+    const requests = (client as any).buildSignRequestBody(
+      [txn, fakePayment(sender, receiver)], [sender, sender], { [sender]: { preimage: new Uint8Array([1]) } },
+    ).requests;
+    assert.deepEqual(requests[0].lsig_args, requests[1].lsig_args);
+    assert.notEqual(requests[0].lsig_args, requests[1].lsig_args);
+  });
+
+  it("still refuses arguments keyed under an address no position uses", () => {
+    assert.throws(
+      () => body({ [receiver]: { preimage: new Uint8Array([1]) } }),
+      (err: any) => err instanceof sdk.SignerError && /no transaction in the request has auth address/.test(err.message),
+    );
+  });
+});
+
+describe("prepareAbiAppCall and appArgs", () => {
+  // The stub algod throws when reached, which is past every argument check.
+  it("accepts an empty appArgs, which drops nothing", async () => {
+    const client = new SignerClient("http://localhost:1");
+    const reached = { getTransactionParams: () => { throw new Error("algod was reached"); } } as any;
+    await assert.rejects(
+      client.prepareAbiAppCall(reached, {
+        sender, appId: 7, methodSignature: "do(uint64)void", args: [42], appArgs: [],
+      } as any),
+      /algod was reached/,
+    );
+  });
+
+  it("refuses appArgs from an untyped caller", async () => {
+    const client = new SignerClient("http://localhost:1");
+    await assert.rejects(
+      client.prepareAbiAppCall({} as any, {
+        sender, appId: 7, methodSignature: "do(uint64)void", args: [42],
+        appArgs: [new Uint8Array([1])],
+      } as any),
+      (err: any) => err instanceof sdk.SignerError && /appArgs is not accepted for an ABI call/.test(err.message),
+    );
+  });
+});

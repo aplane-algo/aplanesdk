@@ -8,7 +8,7 @@ import type {
 } from "./types.js";
 import { PQ_SCHEME_FALCON1024, wireLogicSigResources } from "./types.js";
 import { SignerError } from "./errors.js";
-import { encodeLsigArgs, encodeTransaction, bytesToHex, signedTransactionCopy } from "./encoding.js";
+import { encodeLsigArgsOrNone, encodeTransaction, bytesToHex, signedTransactionCopy } from "./encoding.js";
 
 /**
  * A copy of a prepared slot's pre-signed transaction, or undefined when the
@@ -89,8 +89,9 @@ export function preparedTransactionToSignRequest(
     auth_address: prepared.authAddress,
     txn_sender: prepared.txnSender || txnSender,
   };
-  if (prepared.lsigArgs) {
-    request.lsig_args = encodeLsigArgs(prepared.lsigArgs);
+  const lsigArgs = encodeLsigArgsOrNone(prepared.lsigArgs);
+  if (lsigArgs) {
+    request.lsig_args = lsigArgs;
   }
   if (prepared.appCallInfo) {
     request.app_call_info = prepared.appCallInfo;
