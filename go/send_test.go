@@ -6,6 +6,7 @@ package aplane
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -97,6 +98,8 @@ type sendAlgod struct {
 	submitted [][]byte
 	simulated []models.SimulateRequest
 	lookups   int
+	// accountReads counts account lookups.
+	accountReads int
 	// followed is the transaction ID of each pending-transaction lookup.
 	followed []string
 }
@@ -149,6 +152,9 @@ func (a *sendAlgod) handle(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]uint64{"last-round": a.currentRound()})
 	case strings.HasPrefix(r.URL.Path, "/v2/accounts/"):
 		address := strings.TrimPrefix(r.URL.Path, "/v2/accounts/")
+		a.mu.Lock()
+		a.accountReads++
+		a.mu.Unlock()
 		account := map[string]any{"address": address, "amount": 5_000_000, "min-balance": 100_000}
 		if auth := a.authAddrs[address]; auth != "" {
 			account["auth-addr"] = auth
@@ -223,6 +229,16 @@ func preparedFor(txn types.Transaction) PreparedGroup {
 	return NewPreparedGroup(PreparedTransaction{Transaction: &txn, AuthAddress: txn.Sender.String()})
 }
 
+// hexEntries is a signed group in the signer's hex wire form, for comparing
+// with a wire answer or writing a vector.
+func hexEntries(group [][]byte) []string {
+	entries := make([]string, len(group))
+	for i, entry := range group {
+		entries[i] = hex.EncodeToString(entry)
+	}
+	return entries
+}
+
 func TestSendPreparedSignsSubmitsAndConfirms(t *testing.T) {
 	txn := verifyTestPayment(t, 41, 42, 1)
 	signer := &sendSigner{keys: []KeyInfo{ordinaryKey(txn)}}
@@ -234,8 +250,8 @@ func TestSendPreparedSignsSubmitsAndConfirms(t *testing.T) {
 		t.Fatalf("SendPrepared() error = %v", err)
 	}
 	wantHex := fakeSignedTxnHex(txn)
-	if len(result.SignedGroup) != 1 || result.SignedGroup[0] != wantHex {
-		t.Fatalf("signed group = %v", result.SignedGroup)
+	if len(result.SignedGroup) != 1 || hex.EncodeToString(result.SignedGroup[0]) != wantHex {
+		t.Fatalf("signed group = %x", result.SignedGroup)
 	}
 	submitted := node.submissions()
 	if len(submitted) != 1 || hex.EncodeToString(submitted[0]) != wantHex {
@@ -281,7 +297,7 @@ func TestSendPreparedGroupReportsGroupID(t *testing.T) {
 		t.Fatalf("txid %s is the ungrouped draft's ID", result.TxIDs[0])
 	}
 	submitted := node.submissions()
-	if len(submitted) != 1 || hex.EncodeToString(submitted[0]) != strings.Join(result.SignedGroup, "") {
+	if len(submitted) != 1 || !bytes.Equal(submitted[0], bytes.Join(result.SignedGroup, nil)) {
 		t.Fatalf("submission is not the signed group, in order, once")
 	}
 	// The wait follows the first signed transaction's ID.
@@ -351,7 +367,7 @@ func TestSendPreparedRefusesBeforeSigning(t *testing.T) {
 	other := verifyTestPayment(t, 45, 46, 1)
 	sender := txn.Sender.String()
 	holder := other.Sender.String()
-	signedBase64, err := hexArrayToBase64([]string{fakeSignedTxnHex(txn)})
+	signedBytes, err := hex.DecodeString(fakeSignedTxnHex(txn))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +422,7 @@ func TestSendPreparedRefusesBeforeSigning(t *testing.T) {
 		{
 			name:  "pre-signed position",
 			keys:  []KeyInfo{{Address: sender}},
-			group: NewPreparedGroup(PreparedTransaction{SignedTransactionBase64: signedBase64}),
+			group: NewPreparedGroup(PreparedTransaction{SignedTransaction: signedBytes}),
 			want:  ErrUnsupportedGroup,
 			text:  "already signed",
 		},
@@ -694,8 +710,8 @@ func TestSendPreparedSubmissionFailuresKeepSignedBytes(t *testing.T) {
 			if failure.Submitted != tt.submitted || !strings.Contains(err.Error(), tt.text) {
 				t.Fatalf("error = %v (submitted %v), want submitted %v mentioning %q", err, failure.Submitted, tt.submitted, tt.text)
 			}
-			if len(failure.SignedGroup) != 1 || failure.SignedGroup[0] != wantHex || len(failure.TxIDs) != 1 || failure.TxIDs[0] != wantID {
-				t.Fatalf("kept signed group %v and IDs %v", failure.SignedGroup, failure.TxIDs)
+			if len(failure.SignedGroup) != 1 || hex.EncodeToString(failure.SignedGroup[0]) != wantHex || len(failure.TxIDs) != 1 || failure.TxIDs[0] != wantID {
+				t.Fatalf("kept signed group %x and IDs %v", failure.SignedGroup, failure.TxIDs)
 			}
 			if failure.LastValid != uint64(txn.LastValid) {
 				t.Fatalf("LastValid = %d, want the signed group's %d", failure.LastValid, txn.LastValid)
@@ -805,7 +821,7 @@ func TestSendPreparedReportsWhatTheSignerAdded(t *testing.T) {
 		t.Fatalf("txid is the draft's, not the signed transaction's")
 	}
 	submitted := node.submissions()
-	if len(submitted) != 1 || hex.EncodeToString(submitted[0]) != strings.Join(result.SignedGroup, "") {
+	if len(submitted) != 1 || !bytes.Equal(submitted[0], bytes.Join(result.SignedGroup, nil)) {
 		t.Fatalf("submission is not the signed group with its dummy, once")
 	}
 }
@@ -897,7 +913,7 @@ func (c cancelAfterSubmit) RoundTrip(r *http.Request) (*http.Response, error) {
 // nothing is waited for.
 func TestSubmitWhenTheContextHasEnded(t *testing.T) {
 	txn := verifyTestPayment(t, 41, 42, 1)
-	signed := []string{fakeSignedTxnHex(txn)}
+	signed := [][]byte{mustDecodeHex(t, fakeSignedTxnHex(txn))}
 
 	t.Run("before the submit call", func(t *testing.T) {
 		node := &sendAlgod{}
@@ -909,7 +925,7 @@ func TestSubmitWhenTheContextHasEnded(t *testing.T) {
 		if !errors.As(err, &failure) || failure.Submitted || !errors.Is(err, context.Canceled) {
 			t.Fatalf("error = %v, want *SubmissionError, not submitted, caused by the context", err)
 		}
-		if len(failure.SignedGroup) != 1 || failure.SignedGroup[0] != signed[0] || failure.LastValid != uint64(txn.LastValid) {
+		if len(failure.SignedGroup) != 1 || !bytes.Equal(failure.SignedGroup[0], signed[0]) || failure.LastValid != uint64(txn.LastValid) {
 			t.Fatalf("failure = %+v", failure)
 		}
 		if len(node.submissions()) != 0 {
@@ -1187,7 +1203,7 @@ func TestSendPreparedCosignedGroup(t *testing.T) {
 				t.Fatalf("primary sign response = %+v", result.Cosigned.PrimarySignResponse)
 			}
 			submitted := f.node.submissions()
-			if len(submitted) != 1 || hex.EncodeToString(submitted[0]) != strings.Join(result.SignedGroup, "") || result.Outcome != SendOutcomeConfirmed {
+			if len(submitted) != 1 || !bytes.Equal(submitted[0], bytes.Join(result.SignedGroup, nil)) || result.Outcome != SendOutcomeConfirmed {
 				t.Fatalf("the assembled group was not submitted once and confirmed")
 			}
 			// With a second position the plan groups the transaction, which
@@ -1299,7 +1315,7 @@ func TestRotatingAndCosignedSendsSubmitThroughTheSamePath(t *testing.T) {
 			t.Fatalf("error = %v, want *SubmissionError, not submitted, quoting the node", err)
 		}
 		submitted := node.submissions()
-		if len(submitted) != 1 || len(failure.SignedGroup) != 2 || hex.EncodeToString(submitted[0]) != strings.Join(failure.SignedGroup, "") {
+		if len(submitted) != 1 || len(failure.SignedGroup) != 2 || !bytes.Equal(submitted[0], bytes.Join(failure.SignedGroup, nil)) {
 			t.Fatalf("the error does not carry the group that was submitted once")
 		}
 		if signer.count("/sign/rotating/prepare") != 1 || signer.count("/sign/rotating/sign") != 1 {
@@ -1322,7 +1338,7 @@ func TestRotatingAndCosignedSendsSubmitThroughTheSamePath(t *testing.T) {
 			t.Fatalf("LastValid = %d, want the group's earliest 90", failure.LastValid)
 		}
 		submitted := f.node.submissions()
-		if len(submitted) != 1 || hex.EncodeToString(submitted[0]) != strings.Join(failure.SignedGroup, "") || f.cosignerCalls != 1 {
+		if len(submitted) != 1 || !bytes.Equal(submitted[0], bytes.Join(failure.SignedGroup, nil)) || f.cosignerCalls != 1 {
 			t.Fatalf("submissions %d, cosigner calls %d; want the assembled group once and one cosigner call", len(submitted), f.cosignerCalls)
 		}
 	})
@@ -1442,6 +1458,462 @@ func TestSendPreparedCancelFailureDoesNotMaskTheSend(t *testing.T) {
 			}
 			if len(node.submissions()) != 0 {
 				t.Fatal("submitted")
+			}
+		})
+	}
+}
+
+// recordingSign answers /sign as the fake signer does and records each
+// request's entries.
+func recordingSign(t *testing.T, seen *[][]SignRequest, mu *sync.Mutex) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var request GroupSignRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode sign request: %v", err)
+			return
+		}
+		mu.Lock()
+		*seen = append(*seen, request.Requests)
+		mu.Unlock()
+		json.NewEncoder(w).Encode(fakeSigner{}.sign(t, request.Requests))
+	}
+}
+
+func TestSendTransactionsSendsAnOrdinarySender(t *testing.T) {
+	txn := verifyTestPayment(t, 41, 42, 1)
+	before := encodeTxn(txn)
+	var seen [][]SignRequest
+	var mu sync.Mutex
+	signer := &sendSigner{keys: []KeyInfo{ordinaryKey(txn)}}
+	signer.sign = recordingSign(t, &seen, &mu)
+	node := &sendAlgod{}
+	client, algodClient := newSendFixture(t, signer, node)
+
+	txns := []types.Transaction{txn}
+	result, err := client.SendTransactions(context.Background(), algodClient, txns, nil)
+	if err != nil {
+		t.Fatalf("SendTransactions() error = %v", err)
+	}
+	if len(seen) != 1 || len(seen[0]) != 1 {
+		t.Fatalf("sign requests = %+v, want one with one entry", seen)
+	}
+	request := seen[0][0]
+	if request.AuthAddress != txn.Sender.String() || request.TxnSender != txn.Sender.String() || request.TxnBytesHex != hex.EncodeToString(before) {
+		t.Fatalf("sign request = %+v, want the transaction as built, signed by its sender", request)
+	}
+	if request.LsigArgs != nil || request.AppCallInfo != nil || request.LsigResources != nil || request.PQScheme != "" {
+		t.Fatalf("sign request = %+v, want no field but the auth address set", request)
+	}
+	if result.Flow != "" || result.Outcome != SendOutcomeConfirmed || len(result.SignedGroup) != 1 || result.TxIDs[0] != crypto.GetTxID(txn) {
+		t.Fatalf("result = %+v", result)
+	}
+	submitted := node.submissions()
+	if len(submitted) != 1 || !bytes.Equal(submitted[0], bytes.Join(result.SignedGroup, nil)) {
+		t.Fatal("submission is not the signed group, once")
+	}
+	if !bytes.Equal(encodeTxn(txns[0]), before) {
+		t.Fatal("SendTransactions changed the caller's transaction")
+	}
+}
+
+func TestSendTransactionsUsesTheChainAuthAddressOfARekeyedSender(t *testing.T) {
+	txn := verifyTestPayment(t, 41, 42, 1)
+	sender := txn.Sender.String()
+	authorizer := fakeAccount(45)
+	var seen [][]SignRequest
+	var mu sync.Mutex
+	signer := &sendSigner{keys: []KeyInfo{{Address: authorizer, KeyType: "ed25519"}}}
+	signer.sign = recordingSign(t, &seen, &mu)
+	node := &sendAlgod{authAddrs: map[string]string{sender: authorizer}}
+	client, algodClient := newSendFixture(t, signer, node)
+
+	result, err := client.SendTransactions(context.Background(), algodClient, []types.Transaction{txn}, nil)
+	if err != nil {
+		t.Fatalf("SendTransactions() error = %v", err)
+	}
+	if len(seen) != 1 || seen[0][0].AuthAddress != authorizer || seen[0][0].TxnSender != sender {
+		t.Fatalf("sign requests = %+v, want the chain's auth address %s for sender %s", seen, authorizer, sender)
+	}
+	var signed types.SignedTxn
+	if err := msgpack.Decode(result.SignedGroup[0], &signed); err != nil {
+		t.Fatal(err)
+	}
+	if signed.AuthAddr.String() != authorizer {
+		t.Fatalf("signed by %s, want %s", signed.AuthAddr, authorizer)
+	}
+}
+
+func TestSendTransactionsSendsARotatingSender(t *testing.T) {
+	signer, node, client, algodClient, txn := newRotatingFixture(t)
+	// After a rotation the chain names a stage address, which the signer does
+	// not list; the account signs as itself.
+	node.authAddrs = map[string]string{signer.account: rotatingStageAddress(rotatingTestProgram).String()}
+
+	result, err := client.SendTransactions(context.Background(), algodClient, []types.Transaction{txn}, nil)
+	if err != nil {
+		t.Fatalf("SendTransactions() error = %v", err)
+	}
+	if result.Flow != SigningFlowRotating1 || result.Rotating == nil || len(result.SignedGroup) != 2 {
+		t.Fatalf("result = %+v", result)
+	}
+	if signer.count("/sign/rotating/prepare") != 1 || signer.count("/sign/rotating/sign") != 1 || signer.count("/sign") != 0 {
+		t.Fatalf("signer paths = %v", signer.paths)
+	}
+	// The transaction went to the signer as built.
+	if len(signer.prepareSeen) != 1 || !bytes.Equal(encodeTxn(signer.prepareSeen[0]), encodeTxn(txn)) {
+		t.Fatal("the rotating prepare did not get the transaction as built")
+	}
+	submitted := node.submissions()
+	if len(submitted) != 1 || !bytes.Equal(submitted[0], bytes.Join(result.SignedGroup, nil)) {
+		t.Fatal("submission is not the signed group, once")
+	}
+}
+
+func TestSendTransactionsSendsATwoTransactionGroup(t *testing.T) {
+	first := verifyTestPayment(t, 41, 42, 1)
+	second := verifyTestPayment(t, 43, 44, 2)
+
+	t.Run("ungrouped", func(t *testing.T) {
+		signer := &sendSigner{keys: []KeyInfo{ordinaryKey(first), ordinaryKey(second)}}
+		node := &sendAlgod{}
+		client, algodClient := newSendFixture(t, signer, node)
+
+		txns := []types.Transaction{first, second}
+		result, err := client.SendTransactions(context.Background(), algodClient, txns, nil)
+		if err != nil {
+			t.Fatalf("SendTransactions() error = %v", err)
+		}
+		// The signer assigned the group, so the IDs are not the drafts'.
+		if len(result.SignedGroup) != 2 || result.OriginalCount != 2 || result.GroupID == "" || result.TxIDs[0] == crypto.GetTxID(first) {
+			t.Fatalf("result = %+v", result)
+		}
+		for i, want := range []types.Transaction{first, second} {
+			var signed types.SignedTxn
+			if err := msgpack.Decode(result.SignedGroup[i], &signed); err != nil {
+				t.Fatal(err)
+			}
+			if signed.Txn.Sender != want.Sender || signed.Txn.Amount != want.Amount {
+				t.Fatalf("entry %d is not transaction %d", i, i)
+			}
+		}
+		submitted := node.submissions()
+		if len(submitted) != 1 || !bytes.Equal(submitted[0], bytes.Join(result.SignedGroup, nil)) {
+			t.Fatal("submission is not the signed group, in order, once")
+		}
+	})
+
+	t.Run("grouped by the caller", func(t *testing.T) {
+		signer := &sendSigner{keys: []KeyInfo{ordinaryKey(first), ordinaryKey(second)}}
+		node := &sendAlgod{}
+		client, algodClient := newSendFixture(t, signer, node)
+
+		grouped, err := transaction.AssignGroupID([]types.Transaction{first, second}, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := client.SendTransactions(context.Background(), algodClient, grouped, nil)
+		if err != nil {
+			t.Fatalf("SendTransactions() error = %v", err)
+		}
+		// The caller's group ID is kept, so the IDs are the ones built.
+		if result.GroupID != base64.StdEncoding.EncodeToString(grouped[0].Group[:]) || result.TxIDs[0] != crypto.GetTxID(grouped[0]) || result.TxIDs[1] != crypto.GetTxID(grouped[1]) {
+			t.Fatalf("result = %+v, want the caller's group and IDs", result)
+		}
+	})
+}
+
+// The call does not modify the transactions passed in, even when the signer
+// raises a fee, appends a dummy and groups what it signs.
+func TestSendTransactionsDoesNotModifyTheTransactions(t *testing.T) {
+	first := verifyTestPayment(t, 41, 42, 1)
+	second := verifyTestPayment(t, 43, 44, 2)
+	first.Note = []byte("first")
+	signer := &sendSigner{keys: []KeyInfo{ordinaryKey(first), ordinaryKey(second)}, behaviour: fakeSigner{feeRaise: map[int]uint64{0: 500}, dummies: 1}}
+	node := &sendAlgod{}
+	client, algodClient := newSendFixture(t, signer, node)
+
+	txns := []types.Transaction{first, second}
+	before := [][]byte{encodeTxn(txns[0]), encodeTxn(txns[1])}
+	result, err := client.SendTransactions(context.Background(), algodClient, txns, nil)
+	if err != nil {
+		t.Fatalf("SendTransactions() error = %v", err)
+	}
+	if len(result.SignedGroup) != 3 || result.Mutations == nil || result.Mutations.TotalFeesDelta != 500 {
+		t.Fatalf("result = %+v, want the signer's changes in the signed group", result)
+	}
+	for i := range txns {
+		if !bytes.Equal(encodeTxn(txns[i]), before[i]) {
+			t.Fatalf("transaction %d encodes differently after the send", i)
+		}
+	}
+}
+
+// Each distinct sender is resolved once per call: one account read, and the
+// signer's key list read once whatever the number of transactions.
+func TestSendTransactionsResolvesEachSenderOnce(t *testing.T) {
+	// statusBeforeSign is how many /status requests the call made before its
+	// /sign request.
+	statusBeforeSign := func(signer *sendSigner) int {
+		signer.mu.Lock()
+		defer signer.mu.Unlock()
+		n := 0
+		for _, path := range signer.paths {
+			if path == "/sign" {
+				break
+			}
+			if path == "/status" {
+				n++
+			}
+		}
+		return n
+	}
+	send := func(t *testing.T, count int) (*sendSigner, *sendAlgod) {
+		t.Helper()
+		var txns []types.Transaction
+		for i := 0; i < count; i++ {
+			txns = append(txns, verifyTestPayment(t, 41, 42, uint64(i+1)))
+		}
+		signer := &sendSigner{keys: []KeyInfo{ordinaryKey(txns[0])}}
+		node := &sendAlgod{}
+		client, algodClient := newSendFixture(t, signer, node)
+		result, err := client.SendTransactions(context.Background(), algodClient, txns, nil)
+		if err != nil {
+			t.Fatalf("SendTransactions() error = %v", err)
+		}
+		if len(result.SignedGroup) != count {
+			t.Fatalf("signed %d transaction(s), want %d", len(result.SignedGroup), count)
+		}
+		return signer, node
+	}
+
+	oneSigner, oneNode := send(t, 1)
+	threeSigner, threeNode := send(t, 3)
+	if oneNode.accountReads != 1 || threeNode.accountReads != 1 {
+		t.Fatalf("account reads = %d for one transaction, %d for three from the same sender; want 1 and 1", oneNode.accountReads, threeNode.accountReads)
+	}
+	if one, three := statusBeforeSign(oneSigner), statusBeforeSign(threeSigner); one != three {
+		t.Fatalf("status reads before signing = %d for one transaction, %d for three; the key list must be read once per call", one, three)
+	}
+}
+
+// A rotating account accepts a window of at most 100 rounds. The 1000-round
+// window of go-algorand-sdk's suggested parameters is refused unless the
+// send may rebuild it, and either way the caller's transaction is unchanged.
+func TestSendTransactionsRotatingSenderWithTheDefaultWindow(t *testing.T) {
+	t.Run("refused", func(t *testing.T) {
+		signer, node, client, algodClient, _ := newRotatingFixture(t)
+		txns := []types.Transaction{rotatingPayment(t, signer.account, 10, 1010)}
+		before := encodeTxn(txns[0])
+		_, err := client.SendTransactions(context.Background(), algodClient, txns, nil)
+		if err == nil || !strings.Contains(err.Error(), "validity window is 1000 rounds; a rotating account accepts at most 100") || !strings.Contains(err.Error(), "set RefreshValidity") {
+			t.Fatalf("error = %v, want the window refused", err)
+		}
+		if signer.count("/sign/rotating/prepare") != 0 || len(node.submissions()) != 0 {
+			t.Fatal("something was prepared or submitted")
+		}
+		if !bytes.Equal(encodeTxn(txns[0]), before) {
+			t.Fatal("the caller's transaction changed")
+		}
+	})
+	t.Run("sent with RefreshValidity", func(t *testing.T) {
+		signer, node, client, algodClient, _ := newRotatingFixture(t)
+		txns := []types.Transaction{rotatingPayment(t, signer.account, 10, 1010)}
+		before := encodeTxn(txns[0])
+		result, err := client.SendTransactions(context.Background(), algodClient, txns, &SendOptions{RefreshValidity: true})
+		if err != nil {
+			t.Fatalf("SendTransactions() error = %v", err)
+		}
+		if result.Rotating == nil || uint64(result.Rotating.Transaction.LastValid-result.Rotating.Transaction.FirstValid) > RotatingMaxValidityWindow {
+			t.Fatalf("result = %+v, want a rebuilt window", result.Rotating)
+		}
+		if len(node.submissions()) != 1 {
+			t.Fatal("the group was not submitted once")
+		}
+		if !bytes.Equal(encodeTxn(txns[0]), before) {
+			t.Fatal("the caller's transaction changed")
+		}
+	})
+}
+
+func TestSendTransactionsRefusesAnEmptyList(t *testing.T) {
+	signer := &sendSigner{}
+	node := &sendAlgod{}
+	client, algodClient := newSendFixture(t, signer, node)
+
+	for name, txns := range map[string][]types.Transaction{"nil": nil, "empty": {}} {
+		_, err := client.SendTransactions(context.Background(), algodClient, txns, nil)
+		if err == nil || !strings.Contains(err.Error(), "transaction list is empty") {
+			t.Fatalf("%s: error = %v, want the empty list refused", name, err)
+		}
+	}
+	if len(signer.paths) != 0 || len(node.submissions()) != 0 {
+		t.Fatalf("signer paths %v, %d submission(s); want nothing asked", signer.paths, len(node.submissions()))
+	}
+}
+
+func TestSendTransactionsAccountLookupFailureSignsNothing(t *testing.T) {
+	first := verifyTestPayment(t, 41, 42, 1)
+	second := verifyTestPayment(t, 43, 44, 2)
+	signer := &sendSigner{keys: []KeyInfo{ordinaryKey(first), ordinaryKey(second)}}
+	node := &sendAlgod{t: t}
+	signer.t = t
+	client, signerServer := newTestClient(signer.handle)
+	defer signerServer.Close()
+	algodClient, closeAlgod := makeSimulationAlgodClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v2/accounts/"+second.Sender.String() {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"message": "lookup broke"})
+			return
+		}
+		node.handle(w, r)
+	})
+	defer closeAlgod()
+
+	_, err := client.SendTransactions(context.Background(), algodClient, []types.Transaction{first, second}, nil)
+	if err == nil || !strings.Contains(err.Error(), "transaction 1: failed to get sender account info") || !strings.Contains(err.Error(), "lookup broke") {
+		t.Fatalf("error = %v, want the second lookup's failure", err)
+	}
+	var submission *SubmissionError
+	var unknown *SignOutcomeUnknownError
+	if errors.As(err, &submission) || errors.As(err, &unknown) {
+		t.Fatalf("error = %T, want a plain error", err)
+	}
+	if signer.count("/sign") != 0 || len(node.submissions()) != 0 {
+		t.Fatal("something was signed or submitted")
+	}
+}
+
+// A sender this signer holds no key for is refused by the auth-address
+// resolution, as the Prepare* helpers refuse it, before anything is signed.
+func TestSendTransactionsRefusesAKeyNotHeld(t *testing.T) {
+	txn := verifyTestPayment(t, 41, 42, 1)
+	signer := &sendSigner{keys: []KeyInfo{{Address: fakeAccount(45), KeyType: "ed25519"}}}
+	node := &sendAlgod{}
+	client, algodClient := newSendFixture(t, signer, node)
+
+	_, err := client.SendTransactions(context.Background(), algodClient, []types.Transaction{txn}, nil)
+	if !errors.Is(err, ErrKeyNotFound) || !strings.Contains(err.Error(), "transaction 0") {
+		t.Fatalf("error = %v, want ErrKeyNotFound for transaction 0", err)
+	}
+	if signer.count("/sign") != 0 || len(node.submissions()) != 0 {
+		t.Fatal("something was signed or submitted")
+	}
+}
+
+// Buffer ownership: a caller who changes a buffer it passed in, during the
+// call or after it, changes nothing a result, an error or the SDK holds. A
+// returned entry is a plain slice the caller owns; a later read of the same
+// field shows the caller's own change, which Go cannot cheaply prevent.
+func TestSignedGroupOwnership(t *testing.T) {
+	txn := verifyTestPayment(t, 41, 42, 1)
+	want := mustDecodeHex(t, fakeSignedTxnHex(txn))
+	accept := func(w http.ResponseWriter, _ []byte) {
+		json.NewEncoder(w).Encode(map[string]string{"txId": crypto.GetTxID(txn)})
+	}
+	refuse := func(w http.ResponseWriter, _ []byte) {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"message": "overspend"})
+	}
+
+	// (a) The input to SubmitSignedGroup, changed while the call runs and
+	// after it returns.
+	for name, answer := range map[string]func(http.ResponseWriter, []byte){"result": accept, "SubmissionError": refuse} {
+		t.Run("SubmitSignedGroup input, "+name, func(t *testing.T) {
+			group := [][]byte{append([]byte(nil), want...)}
+			node := &sendAlgod{submit: func(w http.ResponseWriter, blob []byte) {
+				group[0][0] ^= 0xff // the caller changes its buffer mid-call
+				answer(w, blob)
+			}}
+			client, algodClient := newSendFixture(t, &sendSigner{}, node)
+			result, err := client.SubmitSignedGroup(context.Background(), algodClient, group, nil)
+			group[0][1] ^= 0xff // and again after the call
+			var held [][]byte
+			var failure *SubmissionError
+			switch {
+			case err == nil:
+				held = result.SignedGroup
+			case errors.As(err, &failure):
+				held = failure.SignedGroup
+			default:
+				t.Fatalf("SubmitSignedGroup() error = %v", err)
+			}
+			if len(held) != 1 || !bytes.Equal(held[0], want) {
+				t.Fatalf("the %s holds %x, want the bytes as given %x", name, held, want)
+			}
+			if submitted := node.submissions(); len(submitted) != 1 || !bytes.Equal(submitted[0], want) {
+				t.Fatal("the bytes posted are not the bytes as given")
+			}
+		})
+	}
+
+	// (c) A pre-signed slot's bytes.
+	t.Run("prepared signed transaction", func(t *testing.T) {
+		presigned := append([]byte(nil), want...)
+		requests, err := NewPreparedGroup(PreparedTransaction{SignedTransaction: presigned}).SignRequests()
+		if err != nil {
+			t.Fatalf("SignRequests() error = %v", err)
+		}
+		presigned[0] ^= 0xff
+		if requests[0].SignedTxnHex != hex.EncodeToString(want) {
+			t.Fatal("changing the slot's bytes changed the request built from them")
+		}
+	})
+	t.Run("passthrough changed while signing", func(t *testing.T) {
+		first := verifyTestPayment(t, 43, 44, 2)
+		grouped, err := transaction.AssignGroupID([]types.Transaction{first, txn}, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		passthroughWant := mustDecodeHex(t, fakeSignedTxnHex(grouped[1]))
+		passthrough := append([]byte(nil), passthroughWant...)
+		client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/sign" {
+				passthrough[0] ^= 0xff // the caller changes its buffer mid-call
+			}
+			fakeSignHandler(t, fakeSigner{})(w, r)
+		})
+		defer server.Close()
+		signed, err := client.SignTransactionsWithOptions(grouped, []string{first.Sender.String(), ""}, nil, &SignOptions{Passthrough: map[int][]byte{1: passthrough}})
+		if err != nil {
+			t.Fatalf("SignTransactionsWithOptions() error = %v", err)
+		}
+		if len(signed) != 2 || !bytes.Equal(signed[1], passthroughWant) {
+			t.Fatal("the passthrough entry returned is not the bytes as given")
+		}
+	})
+}
+
+// Every caller-supplied entry is checked as exactly one canonical signed
+// transaction: two transactions in one entry, trailing bytes and a
+// non-canonical encoding are refused before anything is posted.
+func TestSignedEntriesMustBeOneCanonicalSignedTransaction(t *testing.T) {
+	txn := verifyTestPayment(t, 41, 42, 1)
+	other := verifyTestPayment(t, 43, 44, 2)
+	signed := mustDecodeHex(t, fakeSignedTxnHex(txn))
+	bad := map[string][]byte{
+		"two transactions": append(append([]byte(nil), signed...), mustDecodeHex(t, fakeSignedTxnHex(other))...),
+		"trailing bytes":   append(append([]byte(nil), signed...), 0x00),
+		// The same fields, with the zero-valued signature written out.
+		"non-canonical": append([]byte{0x82, 0xa3, 's', 'i', 'g', 0xc4, 0x00, 0xa3, 't', 'x', 'n'}, encodeTxn(txn)[2:]...),
+		"empty":         {},
+	}
+	for name, entry := range bad {
+		t.Run(name, func(t *testing.T) {
+			node := &sendAlgod{}
+			signer := &sendSigner{keys: []KeyInfo{ordinaryKey(txn)}}
+			client, algodClient := newSendFixture(t, signer, node)
+
+			if _, err := client.SubmitSignedGroup(context.Background(), algodClient, [][]byte{entry}, nil); err == nil || !strings.Contains(err.Error(), "verify signed group") {
+				t.Fatalf("SubmitSignedGroup() error = %v, want the entry refused", err)
+			}
+			if _, err := client.SignTransactionsWithOptions([]types.Transaction{txn}, []string{""}, nil, &SignOptions{Passthrough: map[int][]byte{0: entry}}); err == nil || !strings.Contains(err.Error(), "invalid passthrough transaction 1") {
+				t.Fatalf("passthrough: error = %v, want the entry refused", err)
+			}
+			if _, err := client.SimulatePreparedGroup(context.Background(), algodClient, NewPreparedGroup(PreparedTransaction{SignedTransaction: entry})); err == nil {
+				t.Fatal("SimulatePreparedGroup() accepted the pre-signed slot")
+			}
+			if len(node.submissions()) != 0 || len(node.simulations()) != 0 || signer.count("/sign") != 0 {
+				t.Fatal("something was posted")
 			}
 		})
 	}

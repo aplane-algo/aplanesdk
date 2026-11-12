@@ -46,6 +46,7 @@ import {
   blobHex,
   faultOnce,
   installSigners,
+  joinedHex,
   passingGroupResult,
   statusBody,
   testGenesisHash,
@@ -339,8 +340,8 @@ describe("sendPrepared with a rotating account", () => {
     assert.equal(result.signedGroup.length, 2);
     assert.notEqual(result.groupId, "");
     assert.equal(node.submitted.length, 1);
-    assert.equal(blobHex(node.submitted[0]), result.signedGroup.join(""));
-    const spend = algosdk.decodeSignedTransaction(hexToBytes(result.signedGroup[0]));
+    assert.equal(blobHex(node.submitted[0]), joinedHex(result.signedGroup));
+    const spend = algosdk.decodeSignedTransaction(result.signedGroup[0]);
     assert.equal(spend.txn.rekeyTo?.toString(), signer.nextTarget().toString());
     assert.equal(spend.txn.fee, 2000n);
     assert.equal(spend.sgnr?.toString(), stageAddress(rotatingTestProgram).toString());
@@ -391,7 +392,7 @@ describe("sendPrepared with a rotating account", () => {
           assert.equal(error.cause, thrown);
         }
         assert.equal(error.signedGroup.length, 2);
-        assert.equal(error.signedGroup.join(""), blobHex(node.submitted[0]));
+        assert.equal(joinedHex(error.signedGroup), blobHex(node.submitted[0]));
         assert.equal(error.lastValid, txn.lastValid);
         return true;
       });
@@ -401,6 +402,56 @@ describe("sendPrepared with a rotating account", () => {
       restore?.();
       restore = undefined;
     }
+  });
+
+  it("sendTransactions refuses algosdk's default 1000-round window from a rotating sender, and sends it with refreshValidity", async () => {
+    const { signer, node, algod, client } = rotatingFixture();
+    const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+      sender: signer.account,
+      receiver: fakeAddress(42),
+      amount: 5000,
+      suggestedParams: await node.getTransactionParams().do(),
+    });
+    assert.equal(txn.lastValid - txn.firstValid, 1000n, "the fixture's window is not algosdk's default");
+    const before = bytesToHex(txn.toByte());
+
+    await assert.rejects(
+      client.sendTransactions(algod, [txn]),
+      {
+        name: "SignerError",
+        message:
+          "validity window is 1000 rounds; a rotating account accepts at most 100 " +
+          "(build the transaction with a prepare helper, or set refreshValidity)",
+      },
+    );
+    assert.equal(signer.count("/sign/rotating/prepare"), 0);
+    assert.equal(node.submitted.length, 0);
+
+    const result = await client.sendTransactions(algod, [txn], { refreshValidity: true });
+    assert.equal(result.outcome, "confirmed");
+    const sent = result.rotating?.transaction;
+    assert.ok(sent && sent.lastValid - sent.firstValid <= BigInt(ROTATING_MAX_VALIDITY_WINDOW));
+    // The object passed in encodes as it did before either call.
+    assert.equal(bytesToHex(txn.toByte()), before);
+  });
+
+  it("sendTransactions sends a rotating sender's transaction as itself, as built", async () => {
+    const { signer, node, algod, client, txn } = rotatingFixture();
+    // After rotations the chain names the live stage's address, which the
+    // signer does not list.
+    node.authAddrs[signer.account] = stageAddress(rotatingTestProgram).toString();
+    const before = bytesToHex(txn.toByte());
+    const result = await client.sendTransactions(algod, [txn]);
+    // The object passed in encodes as it did before the send.
+    assert.equal(bytesToHex(txn.toByte()), before);
+    assert.equal(result.flow, SIGNING_FLOW_ROTATING1);
+    assert.equal(signer.count("/sign/rotating/prepare"), 1);
+    assert.equal(signer.count("/sign"), 0);
+    // The transaction went to the signer unchanged.
+    assert.equal(signer.prepareSeen[0].txID(), txn.txID());
+    assert.equal(result.rotating?.transaction.txID(), txn.txID());
+    assert.equal(node.submitted.length, 1);
+    assert.equal(blobHex(node.submitted[0]), joinedHex(result.signedGroup));
   });
 });
 

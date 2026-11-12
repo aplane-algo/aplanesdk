@@ -20,8 +20,8 @@
  *     import { SignerClient } from "aplanesdk";
  *
  *     const client = await SignerClient.fromEnv();
- *     const signed = await client.signTransaction(txn);
- *     const { txid } = await algodClient.sendRawTransaction(Buffer.from(signed, "base64")).do();
+ *     const result = await client.sendTransactions(algodClient, [txn]);
+ *     console.log(result.txIds[0], result.confirmedRound);
  *
  * A new client key is enrolled once. The request is queued for the operator
  * to approve later in apadmin; connect after that:
@@ -92,7 +92,6 @@ export {
 export {
   encodeTransaction,
   encodeLsigArgs,
-  concatenateSignedTxns,
   bytesToHex,
   hexToBytes,
 } from "./encoding.js";

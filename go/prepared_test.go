@@ -4,7 +4,6 @@
 package aplane
 
 import (
-	"encoding/base64"
 	"encoding/hex"
 	"strings"
 	"testing"
@@ -149,8 +148,8 @@ func TestPreparedGroupSignRequestsRejectsAuthorizationHintsInSignMode(t *testing
 
 func TestPreparedGroupSignRequestsRejectsNativePQHintInPassthroughMode(t *testing.T) {
 	_, err := NewPreparedGroup(PreparedTransaction{
-		SignedTransactionBase64: base64.StdEncoding.EncodeToString([]byte("signed-txn")),
-		PQScheme:                PQSchemeFalcon1024,
+		SignedTransaction: []byte("signed-txn"),
+		PQScheme:          PQSchemeFalcon1024,
 	}).SignRequests()
 	if err == nil || !strings.Contains(err.Error(), "pq_scheme is allowed only for foreign transactions") {
 		t.Fatalf("SignRequests() error = %v", err)
@@ -161,8 +160,8 @@ func TestPreparedGroupSignRequestsPassthroughMode(t *testing.T) {
 	signed := []byte("signed-txn")
 	resources := &LogicSigResourceUsage{ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000}
 	group := NewPreparedGroup(PreparedTransaction{
-		SignedTransactionBase64: base64.StdEncoding.EncodeToString(signed),
-		LsigResources:           resources,
+		SignedTransaction: signed,
+		LsigResources:     resources,
 	})
 
 	requests, err := group.SignRequests()

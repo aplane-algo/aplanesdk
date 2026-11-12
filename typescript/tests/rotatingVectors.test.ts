@@ -16,7 +16,7 @@ import { newPreparedRotating } from "../src/rotating.js";
 import { SignOutcomeUnknownError, SignerError, errorText } from "../src/errors.js";
 import { SignerClient } from "../src/client.js";
 import algosdk from "algosdk";
-import { alternateSpellings, installSigners, statusBody } from "./fakeNetwork.js";
+import { alternateSpellings, groupHex, installSigners, statusBody } from "./fakeNetwork.js";
 
 interface RotatingVectorCase {
   key_type: string;
@@ -174,7 +174,8 @@ describe("rotating vectors", () => {
       try {
         const signed = await new SignerClient("http://signer.test").signPreparedRotating(prepared);
         got = "accepted";
-        assert.deepEqual(signed.signedGroup, c.sign.signed, `${entry.case}: ${entry.name}: accepted another group`);
+        // The vector is the signer's wire answer, hex; the result is bytes.
+        assert.deepEqual(groupHex(signed.signedGroup), c.sign.signed, `${entry.case}: ${entry.name}: accepted another group`);
       } catch (error) {
         if (error instanceof SignOutcomeUnknownError) {
           got = error.rotating === prepared ? "unknown" : "unknown without the prepared group";

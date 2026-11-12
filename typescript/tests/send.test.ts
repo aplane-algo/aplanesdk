@@ -6,6 +6,11 @@
 
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { inspect } from "node:util";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
+import * as vm from "node:vm";
 import algosdk, { type Transaction } from "algosdk";
 import { SignerClient, signPreparedCosignedGroup } from "../src/client.js";
 import {
@@ -35,8 +40,9 @@ import {
   type SendResult,
 } from "../src/send.js";
 import { SignerError, isLostAnswer, lostAnswerRequestId, markLostAnswer } from "../src/errors.js";
-import { bytesToBase64, encodeTransaction, hexToBytes } from "../src/encoding.js";
+import { bytesToHex, encodeTransaction, hexToBytes } from "../src/encoding.js";
 import { readAnswer, type AnswerShape } from "../src/answers.js";
+import { preparedGroupToSignRequests } from "../src/prepared.js";
 import { fakeAccount, fakeAddress, fakePayment, planResponse, regroup, signEntries, signResponse, signedHex } from "./fakeSigner.js";
 import {
   FakeAlgod,
@@ -45,7 +51,10 @@ import {
   algodHttpError,
   blobHex,
   faultOnce,
+  groupHex,
+  hexGroup,
   installSigners,
+  joinedHex,
   signedHexOf,
   statusBody,
   type FakeReply,
@@ -95,7 +104,8 @@ describe("sendPrepared", () => {
 
     const result = await client.sendPrepared(algod, preparedFor(txn));
     const wantHex = signedHex(txn);
-    assert.deepEqual(result.signedGroup, [wantHex]);
+    assert.deepEqual(groupHex(result.signedGroup), [wantHex]);
+    assert.ok(result.signedGroup.every((entry) => Object.getPrototypeOf(entry) === Uint8Array.prototype));
     assert.equal(node.submitted.length, 1, "submitted exactly the signed bytes once");
     assert.equal(blobHex(node.submitted[0]), wantHex);
     assert.equal(result.outcome, "confirmed");
@@ -126,7 +136,7 @@ describe("sendPrepared", () => {
     // The signer assigned the group, so the signed IDs are not the drafts'.
     assert.notEqual(result.txIds[0], first.txID());
     assert.equal(node.submitted.length, 1);
-    assert.equal(blobHex(node.submitted[0]), result.signedGroup.join(""));
+    assert.equal(blobHex(node.submitted[0]), joinedHex(result.signedGroup));
   });
 
   it("returns submitted with noWait", async () => {
@@ -145,7 +155,7 @@ describe("sendPrepared", () => {
     const other = fakePayment(45, 46, 1);
     const sender = txn.sender.toString();
     const holder = other.sender.toString();
-    const signedBase64 = bytesToBase64(hexToBytes(signedHex(txn)));
+    const signedBytes = hexToBytes(signedHex(txn));
     const cases: Array<{
       name: string;
       keys: WireKey[];
@@ -206,9 +216,16 @@ describe("sendPrepared", () => {
       {
         name: "pre-signed position",
         keys: [{ address: sender }],
-        group: { transactions: [{ signedTransactionBase64: signedBase64 }] },
+        group: { transactions: [{ signedTransaction: signedBytes }] },
         want: UnsupportedGroupError,
         text: "already signed",
+      },
+      {
+        name: "pre-signed position as a string",
+        keys: [{ address: sender }],
+        group: { transactions: [{ signedTransaction: signedHex(txn) as any }] },
+        want: SignerError,
+        text: "prepared transaction 0: signedTransaction must be signed transaction bytes (a Uint8Array), not a string",
       },
       {
         name: "foreign position",
@@ -600,7 +617,7 @@ describe("sendPrepared", () => {
               assert.ok(error.message.startsWith(`wait for confirmation of transaction ${wantId}: `), error.message);
             }
             assert.ok(error.message.endsWith(errorText(error.cause)), "the message does not quote the cause");
-            assert.deepEqual(error.signedGroup, [wantHex]);
+            assert.deepEqual(groupHex(error.signedGroup), [wantHex]);
             assert.deepEqual(error.txIds, [wantId]);
             assert.equal(error.lastValid, txn.lastValid, "the error does not carry the signed group's last valid round");
             return true;
@@ -645,7 +662,7 @@ describe("sendPrepared", () => {
     assert.equal(result.mutations?.totalFeesDelta, 500);
     assert.notEqual(result.txIds[0], txn.txID(), "the txid is the draft's, not the signed transaction's");
     assert.equal(node.submitted.length, 1);
-    assert.equal(blobHex(node.submitted[0]), result.signedGroup.join(""));
+    assert.equal(blobHex(node.submitted[0]), joinedHex(result.signedGroup));
   });
 
   describe("confirmation wait", () => {
@@ -752,7 +769,7 @@ describe("sendPrepared", () => {
     function signedResult(): { result: SendResult; described: DescribedGroup } {
       const result: SendResult = {
         flow: "",
-        signedGroup: [signedHex(txn)],
+        signedGroup: hexGroup(signedHex(txn)),
         originalCount: 1,
         txIds: [],
         groupId: "",
@@ -774,7 +791,7 @@ describe("sendPrepared", () => {
           assert.ok(error instanceof SubmissionError, String(error));
           assert.equal(error.submitted, false);
           assert.equal(error.cause, controller.signal.reason, "the cause is not the signal's reason");
-          assert.deepEqual(error.signedGroup, [signedHex(txn)]);
+          assert.deepEqual(groupHex(error.signedGroup), [signedHex(txn)]);
           assert.equal(error.lastValid, txn.lastValid, "the error does not carry the group's last valid round");
           return true;
         },
@@ -846,7 +863,7 @@ describe("sendPrepared", () => {
     const node = new FakeAlgod();
     // Two signed transactions that were never grouped.
     await assert.rejects(
-      new SignerClient(SIGNER).submitSignedGroup(node as any, [signedHex(first), signedHex(second)]),
+      new SignerClient(SIGNER).submitSignedGroup(node as any, hexGroup(signedHex(first), signedHex(second))),
       /verify signed group: returned transaction 1 does not carry the canonical group ID/,
     );
     assert.equal(node.submitted.length, 0);
@@ -857,7 +874,7 @@ describe("sendPrepared", () => {
     // directly: a signer response cannot be shorter and pass its own check.
     const result: SendResult = {
       flow: "",
-      signedGroup: [signedHex(fakePayment(41, 42, 1))],
+      signedGroup: hexGroup(signedHex(fakePayment(41, 42, 1))),
       originalCount: 2,
       txIds: [],
       groupId: "",
@@ -872,7 +889,7 @@ describe("sendPrepared", () => {
     function resultFor(signedGroup: string[]): SendResult {
       return {
         flow: "",
-        signedGroup,
+        signedGroup: hexGroup(...signedGroup),
         originalCount: signedGroup.length,
         txIds: [],
         groupId: "",
@@ -889,7 +906,6 @@ describe("sendPrepared", () => {
       const group = regroup([first, second]);
       const described = describeSignedGroup(resultFor(group.map((txn) => signedHex(txn))));
       assert.equal(described.lastValid, 700n);
-      assert.equal(described.raw.length, 2);
     });
 
     it("is the SubmissionError's, with nothing decoded when the error is built", async () => {
@@ -902,13 +918,15 @@ describe("sendPrepared", () => {
         throw thrown;
       };
       // Bytes that do not decode: building the error must not read them.
-      const described: DescribedGroup = { raw: [new Uint8Array([0xff])], lastValid: 77n };
+      result.signedGroup = [new Uint8Array([0xff])];
+      const described: DescribedGroup = { lastValid: 77n };
       await assert.rejects(
         submitAndTrack(node, described, result, { noWait: false, waitRounds: 10n }),
         (error: unknown) => {
           assert.ok(error instanceof SubmissionError, String(error));
           assert.equal(error.cause, thrown);
           assert.equal(error.lastValid, 77n);
+          assert.deepEqual(error.signedGroup, [new Uint8Array([0xff])]);
           return true;
         },
       );
@@ -922,15 +940,67 @@ describe("sendPrepared", () => {
   it("submitSignedGroup submits a signed group as given", async () => {
     const txn = fakePayment(41, 42, 1);
     const node = new FakeAlgod();
-    const result = await new SignerClient(SIGNER).submitSignedGroup(node as any, [signedHex(txn)]);
+    const result = await new SignerClient(SIGNER).submitSignedGroup(node as any, hexGroup(signedHex(txn)));
     assert.equal(result.outcome, "confirmed");
     assert.equal(result.confirmation, node.pendingAnswers[0]);
     assert.deepEqual(result.txIds, [txn.txID()]);
     assert.equal(blobHex(node.submitted[0]), signedHex(txn));
     await assert.rejects(
-      new SignerClient(SIGNER).submitSignedGroup(node as any, [signedHex(txn) + "00"]),
+      new SignerClient(SIGNER).submitSignedGroup(node as any, hexGroup(signedHex(txn) + "00")),
       /verify signed group/,
     );
+  });
+
+  it("submitSignedGroup takes the bytes algosdk's signers return, and copies them", async () => {
+    const txn = fakePayment(41, 42, 1);
+    const own = algosdk.decodeSignedTransaction(hexToBytes(signedHex(txn)));
+    const signed = algosdk.encodeMsgpack(own);
+    const node = new FakeAlgod();
+    const result = await new SignerClient(SIGNER).submitSignedGroup(node as any, [signed]);
+    assert.deepEqual(groupHex(result.signedGroup), [signedHex(txn)]);
+    assert.notEqual(result.signedGroup[0], signed, "the result holds the caller's array");
+    signed.fill(0);
+    assert.deepEqual(groupHex(result.signedGroup), [signedHex(txn)], "a change to the input changed the result");
+  });
+
+  it("submitSignedGroup names a non-list argument for what it is", async () => {
+    const txn = fakePayment(41, 42, 1);
+    const node = new FakeAlgod();
+    for (const [value, kind] of [[hexToBytes(signedHex(txn)), "a Uint8Array"], [txn, "a Transaction"]] as Array<[unknown, string]>) {
+      await assert.rejects(
+        new SignerClient(SIGNER).submitSignedGroup(node as any, value as Uint8Array[]),
+        {
+          name: "SignerError",
+          message: `verify signed group: signed group must be a list of signed transactions (Uint8Array entries), not ${kind}`,
+        },
+      );
+    }
+    assert.equal(node.submitted.length, 0);
+  });
+
+  it("submitSignedGroup refuses an entry that is not bytes, before anything is posted", async () => {
+    const txn = fakePayment(41, 42, 1);
+    const node = new FakeAlgod();
+    const hex = signedHex(txn);
+    const base64 = Buffer.from(hex, "hex").toString("base64");
+    for (const [entry, kind] of [[hex, "a string"], [base64, "a string"], [[1, 2], "an array"], [null, "null"]] as Array<[unknown, string]>) {
+      await assert.rejects(
+        new SignerClient(SIGNER).submitSignedGroup(node as any, [hexToBytes(hex), entry as Uint8Array]),
+        (error: unknown) => {
+          assert.ok(error instanceof SignerError && !(error instanceof SubmissionError), String(error));
+          assert.equal(
+            errorText(error),
+            `verify signed group: signed group position 2 must be signed transaction bytes (a Uint8Array), not ${kind}`,
+          );
+          return true;
+        },
+      );
+    }
+    await assert.rejects(
+      new SignerClient(SIGNER).submitSignedGroup(node as any, [new Uint8Array(0)]),
+      /verify signed group: signed group position 1 is empty/,
+    );
+    assert.equal(node.submitted.length, 0);
   });
 
   it("submitSignedGroup's SubmissionError carries the earliest last valid round of the signed group", async () => {
@@ -945,12 +1015,12 @@ describe("sendPrepared", () => {
     };
     const signedGroup = group.map((txn) => signedHex(txn));
     await assert.rejects(
-      new SignerClient(SIGNER).submitSignedGroup(node as any, signedGroup),
+      new SignerClient(SIGNER).submitSignedGroup(node as any, hexGroup(...signedGroup)),
       (error: unknown) => {
         assert.ok(error instanceof SubmissionError, String(error));
         assert.equal(error.submitted, false);
         assert.equal(error.cause, thrown);
-        assert.deepEqual(error.signedGroup, signedGroup);
+        assert.deepEqual(groupHex(error.signedGroup), signedGroup);
         assert.equal(error.lastValid, 700n, `lastValid ${String(error.lastValid)}, want the group's earliest`);
         return true;
       },
@@ -962,7 +1032,7 @@ describe("sendPrepared", () => {
     const node = new FakeAlgod();
     node.pending = () => ({ poolError: "overspend" });
     await assert.rejects(
-      new SignerClient(SIGNER).submitSignedGroup(node as any, [signedHex(txn)]),
+      new SignerClient(SIGNER).submitSignedGroup(node as any, hexGroup(signedHex(txn))),
       (error: unknown) => {
         assert.ok(error instanceof SubmissionError, String(error));
         assert.equal(error.submitted, true);
@@ -970,6 +1040,435 @@ describe("sendPrepared", () => {
         return true;
       },
     );
+  });
+});
+
+/** txn's signed bytes with its fee written in a wider integer than msgpack's canonical one. */
+function nonCanonicalSigned(txn: Transaction): Uint8Array {
+  const hex = signedHex(txn);
+  const canonicalFee = "a3666565cd03e8"; // "fee": 1000 as a uint16
+  assert.ok(hex.includes(canonicalFee), "the fixture's fee is not 1000");
+  const altered = hexToBytes(hex.replace(canonicalFee, "a3666565ce000003e8")); // as a uint32
+  // algosdk reads it as the same transaction, which is what makes it a test.
+  assert.equal(algosdk.decodeSignedTransaction(altered).txn.txID(), txn.txID());
+  return altered;
+}
+
+describe("every caller-supplied entry is one canonical signed transaction", () => {
+  const txn = fakePayment(41, 42, 1);
+  const other = fakePayment(43, 44, 2);
+  const one = hexToBytes(signedHex(txn));
+  const cases: Array<[string, Uint8Array, RegExp]> = [
+    ["two transactions in one entry", new Uint8Array([...one, ...hexToBytes(signedHex(other))]), /invalid msgpack/],
+    ["a trailing byte", new Uint8Array([...one, 0]), /invalid msgpack/],
+    ["a non-canonical encoding", nonCanonicalSigned(txn), /bytes are not a canonical signed transaction/],
+  ];
+
+  for (const [name, entry, text] of cases) {
+    it(`submitSignedGroup refuses ${name}`, async () => {
+      const node = new FakeAlgod();
+      await assert.rejects(
+        new SignerClient(SIGNER).submitSignedGroup(node as any, [entry]),
+        (error: unknown) => {
+          assert.ok(error instanceof SignerError && !(error instanceof SubmissionError), String(error));
+          assert.match(errorText(error), /^verify signed group: signed group position 1: /);
+          assert.match(errorText(error), text);
+          return true;
+        },
+      );
+      assert.equal(node.submitted.length, 0);
+    });
+
+    it(`a passthrough position refuses ${name} before the signer is asked`, async () => {
+      const signer = new SendSigner([ordinaryKey(txn)]);
+      const { client } = fixture(signer);
+      await assert.rejects(client.signTransactions([null], [null], undefined, { 0: entry }), text);
+      await assert.rejects(client.planGroup([null], [null], undefined, { 0: entry }), text);
+      assert.deepEqual(signer.paths, []);
+    });
+
+    it(`a pre-signed slot refuses ${name} before the signer is asked to sign`, async () => {
+      const signer = new SendSigner([ordinaryKey(txn)]);
+      const { client, algod } = fixture(signer);
+      await assert.rejects(
+        client.simulatePreparedGroup(algod, { transactions: [{ signedTransaction: entry }] }),
+        (error: unknown) => {
+          assert.match(errorText(error), /transaction 1: passthrough transaction: /);
+          assert.match(errorText(error), text);
+          return true;
+        },
+      );
+      assert.equal(signer.count("/sign"), 0);
+    });
+  }
+});
+
+describe("signed bytes are the SDK's own copy", () => {
+  const txn = fakePayment(41, 42, 1);
+  const wantHex = signedHex(txn);
+
+  it("a change to submitSignedGroup's input after the call started reaches neither the node nor the error", async () => {
+    const input = hexGroup(wantHex);
+    const node = new FakeAlgod();
+    const thrown = new TypeError("fetch failed");
+    node.submit = () => {
+      input[0].fill(0);
+      throw thrown;
+    };
+    await assert.rejects(new SignerClient(SIGNER).submitSignedGroup(node as any, input), (error: unknown) => {
+      assert.ok(error instanceof SubmissionError, String(error));
+      assert.deepEqual(groupHex(error.signedGroup), [wantHex]);
+      return true;
+    });
+    assert.equal(blobHex(node.submitted[0]), wantHex);
+  });
+
+  it("a change to submitSignedGroup's input after it returned does not reach the result", async () => {
+    const input = hexGroup(wantHex);
+    const node = new FakeAlgod();
+    const result = await new SignerClient(SIGNER).submitSignedGroup(node as any, input);
+    input[0].fill(0);
+    assert.deepEqual(groupHex(result.signedGroup), [wantHex]);
+  });
+
+  it("errors.ts imports nothing at run time", () => {
+    const source = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "../src/errors.ts"), "utf8");
+    const imports = source.split("\n").filter((line) => /^import\b/.test(line));
+    assert.ok(imports.length > 0);
+    for (const line of imports) {
+      assert.match(line, /^import type /, `a run-time import: ${line}`);
+    }
+  });
+
+  it("a SubmissionError holds its signed group as an own, enumerable property, copied when it is made", () => {
+    const input = hexGroup(wantHex);
+    const error = new SubmissionError({ signedGroup: input, txIds: [txn.txID()], lastValid: 5n, submitted: false, cause: "x" });
+    assert.ok(Object.keys(error).includes("signedGroup"), `own keys ${Object.keys(error).join(", ")}`);
+    assert.deepEqual(groupHex({ ...error }.signedGroup), [wantHex]);
+    assert.match(inspect(error), /signedGroup/);
+    assert.notEqual(error.signedGroup[0], input[0], "the error holds the caller's array");
+    input[0].fill(0);
+    assert.deepEqual(groupHex(error.signedGroup), [wantHex], "a change to the input reached the error");
+  });
+
+  it("a change to a pre-signed slot's bytes after the call started does not reach the signer or the result", async () => {
+    const signer = new SendSigner([ordinaryKey(txn)]);
+    const sent: string[] = [];
+    signer.sign = (body) => {
+      sent.push(body.requests[0].signed_txn_hex);
+      return { body: signResponse(body.requests) };
+    };
+    const { client, algod } = fixture(signer);
+    const slot = { signedTransaction: hexToBytes(wantHex) };
+    const pending = client.simulatePreparedGroup(algod, { transactions: [slot] });
+    slot.signedTransaction.fill(0);
+    const result = await pending;
+    assert.deepEqual(sent, [wantHex]);
+    assert.deepEqual(groupHex(result.signedGroup), [wantHex]);
+  });
+
+  it("a change to a passthrough entry after the call started does not reach the signer or the result", async () => {
+    const signer = new SendSigner([ordinaryKey(txn)]);
+    const sent: string[] = [];
+    signer.sign = (body) => {
+      sent.push(body.requests[0].signed_txn_hex);
+      return { body: signResponse(body.requests) };
+    };
+    const { client } = fixture(signer);
+    const entry = hexToBytes(wantHex);
+    const pending = client.signTransactions([null], [null], undefined, { 0: entry });
+    entry.fill(0);
+    const signed = await pending;
+    assert.deepEqual(sent, [wantHex]);
+    assert.deepEqual(groupHex(signed), [wantHex]);
+    assert.notEqual(signed[0], entry);
+  });
+});
+
+describe("caller-supplied bytes are recognised by their type, not their realm", () => {
+  const txn = fakePayment(41, 42, 1);
+  const wantHex = signedHex(txn);
+  /** The bytes of hex as a Uint8Array made in another realm. */
+  const otherRealm = (hex: string): Uint8Array =>
+    vm.runInNewContext(`Uint8Array.from(${JSON.stringify(Array.from(hexToBytes(hex)))})`);
+
+  it("a Uint8Array from another realm is accepted, and copied into this one", async () => {
+    const entry = otherRealm(wantHex);
+    assert.ok(!(entry instanceof Uint8Array), "the fixture is from this realm");
+    const node = new FakeAlgod();
+    const result = await new SignerClient(SIGNER).submitSignedGroup(node as any, [entry]);
+    assert.deepEqual(groupHex(result.signedGroup), [wantHex]);
+    assert.ok(result.signedGroup[0] instanceof Uint8Array, "the result holds the other realm's array");
+    assert.equal(blobHex(node.submitted[0]), wantHex);
+
+    assert.deepEqual(
+      preparedGroupToSignRequests({ transactions: [{ signedTransaction: otherRealm(wantHex) }] }),
+      [{ signed_txn_hex: wantHex }],
+    );
+    const { client } = fixture(new SendSigner([ordinaryKey(txn)]));
+    const signed = await client.signTransactions([null], [null], undefined, { 0: otherRealm(wantHex) });
+    assert.deepEqual(groupHex(signed), [wantHex]);
+  });
+
+  it("a DataView, another typed array, a plain array, a lookalike and a string are refused", async () => {
+    const bytes = hexToBytes(wantHex);
+    const cases: Array<[unknown, string]> = [
+      [new DataView(bytes.buffer), "a DataView"],
+      [new Int8Array(bytes.buffer), "an Int8Array"],
+      [Array.from(bytes), "an array"],
+      [{ [Symbol.toStringTag]: "Uint8Array", length: 0 }, "an object"],
+      [wantHex, "a string"],
+    ];
+    const node = new FakeAlgod();
+    const client = new SignerClient(SIGNER);
+    for (const [entry, kind] of cases) {
+      const refused = `must be signed transaction bytes (a Uint8Array), not ${kind}`;
+      await assert.rejects(
+        client.submitSignedGroup(node as any, [entry as Uint8Array]),
+        { message: `verify signed group: signed group position 1 ${refused}` },
+      );
+      assert.throws(
+        () => preparedGroupToSignRequests({ transactions: [{ signedTransaction: entry as Uint8Array }] }),
+        { message: `prepared transaction 0: signedTransaction ${refused}` },
+      );
+      await assert.rejects(
+        client.signTransactions([null], [null], undefined, { 0: entry as Uint8Array }),
+        { message: `passthrough[0] ${refused}` },
+      );
+    }
+    assert.equal(node.submitted.length, 0);
+  });
+});
+
+describe("sendTransactions", () => {
+  /** A signer that holds keys and records each /sign request's entries. */
+  function recordingSigner(keys: WireKey[]) {
+    const requests: any[][] = [];
+    const signer = new SendSigner(keys, {
+      sign: (body) => {
+        requests.push(body.requests);
+        return { body: signResponse(body.requests) };
+      },
+    });
+    return { signer, requests };
+  }
+
+  it("sends an ordinary sender's transaction as built, signed by the sender", async () => {
+    const txn = fakePayment(41, 42, 1);
+    const sender = txn.sender.toString();
+    const { signer, requests } = recordingSigner([ordinaryKey(txn)]);
+    const { client, algod, node } = fixture(signer);
+
+    const result = await client.sendTransactions(algod, [txn]);
+    assert.equal(result.outcome, "confirmed");
+    assert.deepEqual(groupHex(result.signedGroup), [signedHex(txn)]);
+    // Nothing about the transaction changed: same ID, fee and rounds.
+    assert.deepEqual(result.txIds, [txn.txID()]);
+    assert.deepEqual(result.fees, [txn.fee]);
+    assert.equal(requests.length, 1);
+    // The slot names the resolved address and nothing else.
+    assert.deepEqual(requests[0], [{
+      txn_bytes_hex: encodeTransaction(txn)[0],
+      auth_address: sender,
+      txn_sender: sender,
+    }]);
+    assert.equal(node.submitted.length, 1);
+  });
+
+  it("signs a rekeyed sender's transaction with its auth address on the chain", async () => {
+    const txn = fakePayment(41, 42, 1);
+    const sender = txn.sender.toString();
+    const holder = fakeAccount(45);
+    const { signer, requests } = recordingSigner([{ address: holder, key_type: "ed25519" }]);
+    const node = new FakeAlgod();
+    node.authAddrs[sender] = holder;
+    const { client, algod } = fixture(signer, node);
+
+    const result = await client.sendTransactions(algod, [txn]);
+    assert.equal(requests[0][0].auth_address, holder);
+    assert.equal(requests[0][0].txn_sender, sender);
+    const sent = algosdk.decodeSignedTransaction(result.signedGroup[0]);
+    assert.equal(sent.sgnr?.toString(), holder);
+    assert.deepEqual(result.txIds, [txn.txID()]);
+  });
+
+  it("sends two transactions as one group, in the order given", async () => {
+    const first = fakePayment(41, 42, 1);
+    const second = fakePayment(43, 44, 2);
+    const { signer, requests } = recordingSigner([ordinaryKey(first), ordinaryKey(second)]);
+    const { client, algod, node } = fixture(signer);
+    const before = [first, second].map((txn) => bytesToHex(txn.toByte()));
+
+    const result = await client.sendTransactions(algod, [first, second]);
+    // The objects passed in encode as they did before the send.
+    assert.deepEqual([first, second].map((txn) => bytesToHex(txn.toByte())), before);
+    assert.equal(signer.count("/sign"), 1);
+    assert.deepEqual(
+      requests[0].map((entry) => [entry.auth_address, entry.txn_bytes_hex]),
+      [[first.sender.toString(), encodeTransaction(first)[0]], [second.sender.toString(), encodeTransaction(second)[0]]],
+    );
+    // The IDs to use are the result's.
+    assert.equal(result.originalCount, 2);
+    assert.notEqual(result.groupId, "");
+    assert.notEqual(result.txIds[0], first.txID());
+    assert.equal(node.submitted.length, 1);
+    assert.equal(blobHex(node.submitted[0]), joinedHex(result.signedGroup));
+  });
+
+  it("signs a group that already carries its group ID with that ID", async () => {
+    const group = algosdk.assignGroupID([fakePayment(41, 42, 1), fakePayment(43, 44, 2)]);
+    const { signer } = recordingSigner(group.map(ordinaryKey));
+    const { client, algod } = fixture(signer);
+
+    const result = await client.sendTransactions(algod, group);
+    assert.deepEqual(result.txIds, group.map((txn) => txn.txID()));
+  });
+
+  it("keeps a group ID set by the caller, and refuses an answer that raises a fee on it", async () => {
+    const group = algosdk.assignGroupID([fakePayment(41, 42, 1), fakePayment(43, 44, 2)]);
+    const { client, algod, node } = fixture(
+      new SendSigner(group.map(ordinaryKey), { behaviour: { feeRaise: { 0: 500 } } }),
+    );
+    await assert.rejects(client.sendTransactions(algod, group), /verify signer response: .*already grouped/);
+    assert.equal(node.submitted.length, 0);
+  });
+
+  it("refuses an entry that is not an algosdk Transaction, naming its position, before anything is asked", async () => {
+    const txn = fakePayment(41, 42, 1);
+    const cases: Array<[unknown, string]> = [
+      [null, "null"],
+      [undefined, "undefined"],
+      ["a transaction", "a string"],
+      [{ sender: txn.sender }, "an object"],
+      [txn.toByte(), "a Uint8Array"],
+      [[txn], "an array"],
+    ];
+    for (const [entry, kind] of cases) {
+      const { signer } = recordingSigner([ordinaryKey(txn)]);
+      const node = new FakeAlgod();
+      let reads = 0;
+      node.account = (address) => {
+        reads++;
+        return { address, amount: 5_000_000n, minBalance: 100_000n };
+      };
+      const { client, algod } = fixture(signer, node);
+      await assert.rejects(
+        client.sendTransactions(algod, [txn, entry as Transaction]),
+        { name: "SignerError", message: `transaction 1: must be an algosdk Transaction, not ${kind}` },
+      );
+      assert.deepEqual(signer.paths, []);
+      assert.equal(reads, 0);
+    }
+  });
+
+  it("accepts a Transaction from another copy of algosdk, told by its structure", async () => {
+    const txn = fakePayment(41, 42, 1);
+    // Another copy's Transaction is not an instance of this copy's class.
+    const copy = Object.assign(Object.create(null), { ...txn }, {
+      toByte: () => txn.toByte(),
+      txID: () => txn.txID(),
+    });
+    assert.ok(!(copy instanceof algosdk.Transaction));
+    const { signer } = recordingSigner([ordinaryKey(txn)]);
+    const { client, algod } = fixture(signer);
+    const result = await client.sendTransactions(algod, [copy]);
+    assert.deepEqual(result.txIds, [txn.txID()]);
+  });
+
+  it("reads each distinct sender's account once, and the signer's keys once", async () => {
+    const first = fakePayment(41, 42, 1);
+    const second = fakePayment(41, 44, 2);
+    const third = fakePayment(43, 44, 3);
+    const { signer, requests } = recordingSigner([ordinaryKey(first), ordinaryKey(third)]);
+    const node = new FakeAlgod();
+    const reads: string[] = [];
+    node.account = (address) => {
+      reads.push(address);
+      return { address, amount: 5_000_000n, minBalance: 100_000n };
+    };
+    const { client, algod } = fixture(signer, node);
+    await client.sendTransactions(algod, [first, second, third]);
+    assert.deepEqual(reads, [first.sender.toString(), third.sender.toString()]);
+    assert.equal(signer.count("/keys"), 1);
+    assert.deepEqual(
+      requests[0].map((entry) => entry.auth_address),
+      [first.sender.toString(), first.sender.toString(), third.sender.toString()],
+    );
+  });
+
+  it("names a non-list argument for what it is, before anything is asked", async () => {
+    const txn = fakePayment(41, 42, 1);
+    const { signer } = recordingSigner([ordinaryKey(txn)]);
+    const { client, algod } = fixture(signer);
+    for (const [value, kind] of [[txn, "a Transaction"], [txn.toByte(), "a Uint8Array"], [null, "null"]] as Array<[unknown, string]>) {
+      await assert.rejects(
+        client.sendTransactions(algod, value as Transaction[]),
+        { name: "SignerError", message: `transactions must be a list of algosdk Transactions, not ${kind}` },
+      );
+    }
+    assert.deepEqual(signer.paths, []);
+  });
+
+  it("an abort during the account reads is the caller's stop, not a lookup failure", async () => {
+    const txn = fakePayment(41, 42, 1);
+    const { signer } = recordingSigner([ordinaryKey(txn)]);
+    const node = new FakeAlgod();
+    const controller = new AbortController();
+    node.account = () => {
+      // As algosdk's request rejects once its signal is aborted.
+      controller.abort();
+      throw new DOMException("This operation was aborted", "AbortError");
+    };
+    const { client, algod } = fixture(signer, node);
+    await assert.rejects(
+      client.sendTransactions(algod, [txn], { signal: controller.signal }),
+      (error: unknown) => {
+        assert.ok(error instanceof SignerUnavailableError, String(error));
+        assert.equal(errorText(error), "Request aborted by caller");
+        return true;
+      },
+    );
+    assert.equal(signer.count("/sign"), 0);
+    assert.equal(node.submitted.length, 0);
+  });
+
+  it("refuses an empty list before anything is asked", async () => {
+    const { signer } = recordingSigner([]);
+    const { client, algod, node } = fixture(signer);
+    await assert.rejects(client.sendTransactions(algod, []), rejectsWith(SignerError, "transaction list is empty"));
+    assert.deepEqual(signer.paths, []);
+    assert.equal(node.submitted.length, 0);
+  });
+
+  it("a failed account lookup is a plain error, and nothing is signed", async () => {
+    const txn = fakePayment(41, 42, 1);
+    const sender = txn.sender.toString();
+    const { signer } = recordingSigner([ordinaryKey(txn)]);
+    const node = new FakeAlgod();
+    node.account = () => {
+      throw algodHttpError(500, "node is down");
+    };
+    const { client, algod } = fixture(signer, node);
+    await assert.rejects(client.sendTransactions(algod, [txn]), (error: unknown) => {
+      assert.ok(error instanceof SignerError, String(error));
+      assert.ok(!(error instanceof SignOutcomeUnknownError) && !(error instanceof SubmissionError), String(error));
+      assert.match(errorText(error), new RegExp(`^transaction 0: failed to query account info for ${sender}: .*node is down`));
+      return true;
+    });
+    assert.equal(signer.count("/sign"), 0);
+    assert.equal(node.submitted.length, 0);
+  });
+
+  it("a sender whose key the signer does not hold is refused, and nothing is signed", async () => {
+    const txn = fakePayment(41, 42, 1);
+    const { signer } = recordingSigner([{ address: fakeAccount(45) }]);
+    const { client, algod, node } = fixture(signer);
+    await assert.rejects(
+      client.sendTransactions(algod, [txn]),
+      rejectsWith(KeyNotFoundError, `transaction 0: ${txn.sender.toString()} is not available for signing`),
+    );
+    assert.equal(signer.count("/sign"), 0);
+    assert.equal(node.submitted.length, 0);
   });
 });
 
@@ -1122,7 +1621,10 @@ describe("sendPrepared with a cosigned account", () => {
     assert.ok(result.cosigned?.boundedAssemblyResponse, "want result.cosigned?.boundedAssemblyResponse");
     assert.equal(cosignerCalls(), 1);
     assert.equal(node.submitted.length, 1);
-    assert.equal(blobHex(node.submitted[0]), result.signedGroup.join(""));
+    assert.equal(blobHex(node.submitted[0]), joinedHex(result.signedGroup));
+    // The cosigned result is bytes too; its assembly answer stays the signer's hex.
+    assert.deepEqual(groupHex(result.cosigned?.signedGroup ?? []), result.cosigned?.boundedAssemblyResponse?.signed_group);
+    assert.notEqual(result.cosigned?.signedGroup[0], result.signedGroup[0], "the result and its cosigned part share bytes");
     assert.equal(result.outcome, "confirmed");
     assert.equal(result.txIds[0], txn.txID());
     assert.equal(result.fees[0], 1000n);
@@ -1149,7 +1651,7 @@ describe("sendPrepared with a cosigned account", () => {
           assert.equal(error.submitted, submitted);
           if (!submitted) assert.equal(error.cause, thrown);
           assert.deepEqual(error.txIds, [txn.txID()]);
-          assert.equal(error.signedGroup.join(""), blobHex(node.submitted[0]));
+          assert.equal(joinedHex(error.signedGroup), blobHex(node.submitted[0]));
           assert.equal(error.lastValid, txn.lastValid);
           return true;
         },

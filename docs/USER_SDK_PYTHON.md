@@ -323,9 +323,10 @@ Every position must name, in `auth_address`, a key this signer holds, as the
 
 `SendResult` carries:
 
-- `signed_group`: the group as submitted, hex msgpack. The first
-  `original_count` entries are your transactions, in order; the rest are
-  resource dummies the signer appended.
+- `signed_group`: the group as submitted, a list with one entry per
+  transaction, each the raw msgpack bytes of one signed transaction. The
+  first `original_count` entries are your transactions, in order; the rest
+  are resource dummies the signer appended.
 - `tx_ids`, `fees` (microAlgos) and `group_id`, computed from the signed
   bytes. The signer may raise a fee or assign a group ID, so `tx_ids` can
   differ from the IDs of the transactions you prepared.
@@ -348,8 +349,8 @@ Keyword arguments (all optional):
 - `wait_rounds`: how many rounds algosdk's `wait_for_confirmation` looks for
   the group; 0 means 10. The SDK never passes algosdk 0, which it reads as
   1000.
-- `refresh_validity=True` (`send_prepared()` only): let a rotating account's
-  send rebuild the transaction's validity rounds; see
+- `refresh_validity=True` (`send_prepared()` and `send_transactions()`): let
+  a rotating account's send rebuild the transaction's validity rounds; see
   [Rotating Accounts](#rotating-accounts).
 - `cosigner_client` with `cosigner_component_key`, or `cosigner_resolver`: a
   cosigned account's cosigner, when it is not found from `endpoints.yaml`;
@@ -379,11 +380,66 @@ Refused before anything is signed:
   group.
 - `KeyNotFoundError`: a position names a key the signer does not hold.
 
-The `sign_*` and `plan_*` calls under [Common Tasks](#common-tasks) remain
-for callers who want signed bytes without the SDK submitting them: to submit
+The `sign_*` and `plan_*` calls under [Common Tasks](#common-tasks) are for
+callers who want signed bytes without the SDK submitting them: to submit
 through their own node or pipeline, to hold a signed group, or to sign a
 group the send does not take, such as a multi-party group with passthrough
 positions. They do not submit and do not wait.
+
+### Send Transactions Built With algosdk
+
+`send_transactions()` sends transactions you built with algosdk's own
+constructors. For each distinct sender, it reads the sender's account from
+the node and finds the signing address as the `prepare_*` helpers do
+(`resolve_auth_address()`: the sender, or the address the chain says it is
+rekeyed to). It wraps each transaction, in the order given, in a
+`PreparedTransaction` naming its sender's signing address, and sends the
+group with `send_prepared()`. It runs none of the `prepare_*`
+preflight checks, such as balances and opt-ins.
+
+```python
+from algosdk import transaction
+
+payment = transaction.PaymentTxn(
+    sender=sender, sp=algod_client.suggested_params(), receiver=receiver, amt=1_000_000
+)
+result = client.send_transactions(algod_client, [payment])
+print(result.tx_ids[0], result.outcome, result.confirmed_round)
+```
+
+The call does not modify the transaction objects you pass in. It validates
+and submits the signer's returned group using the existing prepared-send
+flow. Use the transaction IDs in the result.
+
+Two rules on what you pass:
+
+- A rotating account accepts a validity window of at most
+  `ROTATING_MAX_VALIDITY_WINDOW` (100) rounds, and algosdk's
+  `suggested_params()` gives 1000, so a rotating sender's transaction built
+  with the defaults is refused unless you pass `refresh_validity=True` or
+  build it with a window of 100 rounds or less.
+- A group ID you set is kept, and the SDK then refuses an answer in which
+  the signer raised a fee, appended a transaction or changed the group ID (a
+  rotating account's transaction that carries one is refused before anything
+  is signed), so transactions whose accounts need a fee raise or resource
+  dummies cannot be sent with one: leave the group ID unset and let the
+  signer group them.
+
+The keyword arguments, the result and the failures are those of
+`send_prepared()`, described in
+[Send A Payment Or A Prepared Group](#send-a-payment-or-a-prepared-group)
+and [Send Failures](#send-failures). An empty list is refused with a
+`ValueError`. `send_transactions()` itself reads each distinct sender's
+account once, and the signer's keys once, before it hands the group to
+`send_prepared()`, which makes its own reads as documented there. A failed
+account lookup is a plain `SignerError` (`SendTimeoutError` when the call's
+`timeout` ended it) naming the transaction's position and sender. A failed
+resolution of a sender is raised as it is, the same exception object
+(`KeyNotFoundError`, say), with a note naming the position and sender
+(`__notes__`, which Python 3.11 and later print with the traceback). A failed
+read of the signer's keys, such as a locked or unreachable signer, is raised
+as it is and names no transaction. All are raised before anything is signed.
+`python/examples/send_built.py` is a complete program.
 
 ### Rotating Accounts
 
@@ -444,6 +500,10 @@ signed = client.sign_prepared_rotating(prepared)                        # waits 
 result = client.submit_signed_group(algod_client, signed.signed_group)
 ```
 
+`signed.signed_group` is a list of bytes, one signed transaction per entry, in
+prepared order. `prepared.transactions` are the unsigned prepared
+transactions, hex msgpack with the `TX` prefix.
+
 Submit a signed rotating group promptly: the stage's one-time keys are
 revealed until that transaction or a later rotation confirms.
 
@@ -490,7 +550,8 @@ the cause and send again.
 Which case applies depends on the error.
 
 **The group was signed** (`SubmissionError`). The error carries the signed
-group (`signed_group`), the transaction IDs (`tx_ids`), the last valid round
+group (`signed_group`, a list of bytes with one signed transaction per
+entry), the transaction IDs (`tx_ids`), the last valid round
 (`last_valid`, the earliest in the group), and algosdk's error as its cause
 (`error`, also `__cause__`). Read the cause as you would in any algosdk
 program.
@@ -579,8 +640,8 @@ two errors above, and that error's case applies.
 
 ### Cancellation And Time Limits
 
-`send_prepared()` and `send_payment()` take `timeout=` (seconds, for signing
-and submission). `None`, the default, sets no limit of its own: each signing
+`send_prepared()`, `send_payment()` and `send_transactions()` take
+`timeout=` (seconds, for signing and submission). `None`, the default, sets no limit of its own: each signing
 request waits as long as the signer's approval wait allows, unless the
 client was created with a shorter request `timeout`. Every HTTP request to a
 signer, a cosigner or the node up to the submission is held to what
@@ -616,8 +677,8 @@ assembly request was pending, it carries the request's ID as
 awaiting approval), and for a rotating account the prepared group as
 `aplane_rotating`: treat it like a `SignOutcomeUnknownError`. Raised while the
 signed group was submitted or its confirmation awaited, it carries
-`aplane_signed_group` and `aplane_tx_ids`: treat it like a
-`SubmissionError`.
+`aplane_signed_group` (a list of bytes, one signed transaction per entry) and
+`aplane_tx_ids`: treat it like a `SubmissionError`.
 
 ## Common Tasks
 
@@ -764,11 +825,25 @@ This is also an authenticated admin operation and requires an unlocked signer.
 
 The `sign_*` calls in this and the following sections return signed bytes
 and submit nothing. Use them when you want the signed transactions yourself;
-to send, use `send_payment()` or `send_prepared()` (see
-[Sending Transactions](#sending-transactions)).
+to send, use `send_payment()`, `send_prepared()` or `send_transactions()`
+(see [Sending Transactions](#sending-transactions)).
+
+`sign_transaction()` returns the signed group: a list with one entry per
+transaction, each the raw msgpack bytes of one signed transaction. The first
+entry is your transaction; any after it are resource dummies the signer
+appended, and the whole list is what must be submitted. Submit it one of two
+ways:
+
+- `submit_signed_group()` submits it and waits for confirmation, returning a
+  `SendResult` or raising `SubmissionError`, as a send does;
+- or algosdk submits it and you wait with algosdk: `signed_group_base64()`
+  gives the base64 text of the entries joined in order, which is what
+  algosdk's `send_raw_transaction()` takes. It reads no node and does not
+  check the entries: they come from the SDK's verified output, and the node
+  checks what it is sent.
 
 ```python
-from aplanesdk import SignerClient
+from aplanesdk import SignerClient, signed_group_base64
 from algosdk import transaction
 from algosdk.v2client import algod
 
@@ -784,8 +859,14 @@ txn = transaction.PaymentTxn(
 )
 
 signed = client.sign_transaction(txn)
-txid = algod_client.send_raw_transaction(signed)
-print(txid)
+
+# Submit and wait with the SDK
+result = client.submit_signed_group(algod_client, signed)
+print(result.tx_ids[0], result.confirmed_round)
+
+# Or submit and wait with algosdk
+# txid = algod_client.send_raw_transaction(signed_group_base64(signed))
+# transaction.wait_for_confirmation(algod_client, txid, 4)
 ```
 
 For a rekeyed account, these calls take the auth address explicitly. (The
@@ -822,6 +903,19 @@ ignored.
 
 ```python
 signed_group = client.sign_transactions([txn1, txn2])
+result = client.submit_signed_group(algod_client, signed_group)
+# or: txid = algod_client.send_raw_transaction(signed_group_base64(signed_group))
+```
+
+`sign_transactions()` returns the signed group as `sign_transaction()` does:
+one entry per transaction in group order, the transactions given and then
+any dummies the signer appended, each the raw msgpack bytes of one signed
+transaction. To keep a signed group as text, write each entry as hex and
+read it back with `bytes.fromhex()`:
+
+```python
+lines = [entry.hex() for entry in signed_group]
+signed_group = [bytes.fromhex(line) for line in lines]
 ```
 
 Without passthrough entries:
@@ -829,12 +923,6 @@ Without passthrough entries:
 - do not pre-assign a group ID
 - do not pre-insert dummy transactions
 - let the signer compute grouping, dummy insertion, and fee pooling
-
-If you want per-slot outputs instead of one concatenated base64 blob:
-
-```python
-signed_list = client.sign_transactions_list([txn1, txn2])
-```
 
 ### Plan A Group Without Signing
 
@@ -852,16 +940,31 @@ Use `plan_group()` when you need:
 
 ## Transaction Semantics
 
-The Python SDK uses `py-algorand-sdk` transaction objects as input. The
-`sign_*` calls return base64-encoded signed payloads for you to submit;
-`send_prepared()` and `send_payment()` submit for you.
+The Python SDK uses `py-algorand-sdk` transaction objects as input. A signed
+transaction, wherever the SDK returns or takes one, is `bytes`: the raw
+canonical msgpack of one signed transaction, and a signed group is a
+`List[bytes]`, one entry per transaction, in group order. The `sign_*` calls
+return them for you to submit; `send_prepared()`, `send_payment()` and
+`send_transactions()` submit for you. The signer's wire shapes hold hex, as
+the signer sends it: `sign_requests()`, `request_assemble()` and the plan
+answers return what the signer sent.
 
 Important behavior:
 
-- `sign_transaction()` returns a single base64 string
-- `sign_transactions()` returns one base64 string containing the concatenated
-  signed group
-- `sign_transactions_list()` returns one base64 string per slot
+- `sign_transaction()` and `sign_transactions()` return the signed group, a
+  list of bytes; the first entries are the transactions given, and any
+  resource dummies the signer appended follow them. Submit it with
+  `submit_signed_group()`, or with algosdk's `send_raw_transaction()` given
+  `signed_group_base64(signed_group)`
+- a signed transaction the caller supplies (a `passthrough` value, a
+  `PreparedTransaction.signed_transaction`, an entry given to
+  `submit_signed_group()`) must be bytes; a `bytearray` or `memoryview` is
+  copied to bytes when it is taken, so a later change to the buffer reaches
+  nothing the SDK holds. Anything else, such as a hex or base64 string, is
+  refused with a `ValueError` naming its position before anything is sent.
+  Each must be exactly one canonically encoded signed transaction: two
+  transactions in one entry, trailing bytes and a non-canonical encoding are
+  refused before anything is sent
 - these simple sign calls return only the signed transactions; to read what
   the signer changed (the fee it added, the group ID, appended dummies), call
   `sign_requests()`, whose `mutations` is the mutation report, already checked
@@ -890,18 +993,18 @@ Important behavior:
 - `sign_requests()` accepts one or more raw `/sign` request entries and returns the raw
   `/sign` response
 - for large LogicSigs, the signer may add dummy transactions for fee pooling
-- the high-level signing helpers convert the server’s hex response to base64
-- `send_prepared()` and `send_payment()` sign, submit and wait; their
-  `SendResult.signed_group` is hex msgpack, one entry per transaction
-- `submit_signed_group()` submits a signed hex group exactly as given (a
-  rotating group from `sign_prepared_rotating()`, or the `signed_group` a
-  `SubmissionError` kept) and waits for confirmation, as a send does. It
-  signs nothing
+- `send_prepared()`, `send_payment()` and `send_transactions()` sign, submit
+  and wait; their `SendResult.signed_group` is a list of bytes, one signed
+  transaction per entry
+- `submit_signed_group()` submits a signed group exactly as given, a list of
+  bytes (a rotating group from `sign_prepared_rotating()`, or the
+  `signed_group` a `SubmissionError` kept), and waits for confirmation, as a
+  send does. It signs nothing
 
 ### What The SDK Checks Before Returning
 
 Every `/sign` and `/plan` result is checked against the request before
-`sign_transaction()`, `sign_transactions()`/`sign_transactions_list()`, `sign_requests()`, `plan_group()`/`plan_requests()` or `simulate_prepared_group()` returns it, and before `send_prepared()` submits anything. The
+`sign_transaction()`, `sign_transactions()`, `sign_requests()`, `plan_group()`/`plan_requests()` or `simulate_prepared_group()` returns it, and before `send_prepared()` submits anything. The
 signer may change a request in three ways, and must report each in
 `mutations`:
 
@@ -1062,11 +1165,25 @@ metadata.
 
 ### Passthrough And Multi-Party Assembly
 
-`passthrough` lets you include base64-encoded signed transaction msgpack slots
-in a final signing request. Passthrough values are standard base64 with
-padding. A string that is not (a line break or other whitespace, URL-safe
-characters, missing padding, data after the padding) raises `ValueError`, as
-the Go and TypeScript SDKs refuse it.
+`passthrough` maps a group index to a transaction another party already
+signed, included in a final signing request as it is. Each value is the raw
+msgpack bytes of one signed transaction, as `sign_transactions()` returns
+them; a `bytearray` or `memoryview` is copied to bytes. A value that is not
+bytes, such as a hex or base64 string, raises `ValueError` naming its
+position, and so does one that is not exactly one canonically encoded signed
+transaction, before any request is made. A `PreparedTransaction` takes a
+pre-signed slot the same way, as `signed_transaction` bytes.
+
+py-algorand-sdk's signers return `SignedTransaction` objects; turn one into
+the bytes the SDK takes with `encoding.msgpack_encode`, which gives base64:
+
+```python
+import base64
+from algosdk import encoding
+
+signed_bytes = base64.b64decode(encoding.msgpack_encode(signed_txn))
+```
+
 When passthrough entries are present:
 
 - the caller must pre-assign group IDs on all transactions
@@ -1218,7 +1335,7 @@ result = sign_prepared_cosigned_group(
     user_client=user_client,
     prepared_group=prepared_group,
 )
-signed_group = result.signed_group
+signed_group = result.signed_group  # a list of bytes, one signed transaction per entry
 ```
 
 Pass `cosigner_client` and `cosigner_component_key`, or `cosigner_resolver`,
@@ -1262,8 +1379,10 @@ if simulation.failed:
 cosigned = simulate_prepared_cosigned_group(algod_client, **cosigned_options)
 ```
 
-`SimulationResult.signed_group` contains fully executable signed transactions
-that remain submittable until expiry. Keep them confidential. The helper sends
+`SimulationResult.signed_group` contains fully executable signed transactions,
+a list of bytes with one signed transaction per entry, that remain
+submittable until expiry; its `transactions` are the same transactions
+unsigned, as hex. Keep them confidential. The helper sends
 the exact signed group to the supplied algod with empty-signature overrides
 disabled. A missing algod client fails before any signing request. A
 simulation is `failed` unless the node returned exactly one group result, an

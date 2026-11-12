@@ -40,12 +40,14 @@ from aplanesdk.signer import COSIGNED_DUMMY_PROGRAM, _UINT64_MAX
 from tests import fake_signer
 from tests.send_fakes import (
     DROP,
+    ROTATING_TEST_PROGRAM,
     FakeNode,
     HTTPFake,
     RotatingSigner,
     SendSigner,
     alternate_spelling,
     key,
+    program_address,
     reply,
     rotating_payment,
     signer_client,
@@ -86,6 +88,10 @@ def signed_hex(txn):
     return fake_signer.signed_hex(txn)
 
 
+def signed_bytes(txn):
+    return fake_signer.signed_bytes(txn)
+
+
 def decode_first(blob):
     unpacker = msgpack.Unpacker(raw=False)
     unpacker.feed(blob)
@@ -98,9 +104,9 @@ def test_send_prepared_signs_submits_and_confirms(fakes):
 
     result = client.send_prepared(node.client, prepared_for(txn))
 
-    want_hex = signed_hex(txn)
-    assert result.signed_group == [want_hex]
-    assert [blob.hex() for blob in node.submissions()] == [want_hex]
+    want = signed_bytes(txn)
+    assert result.signed_group == [want]
+    assert node.submissions() == [want]
     assert result.outcome == SEND_OUTCOME_CONFIRMED and result.confirmed_round == 12
     assert result.flow == "" and result.original_count == 1 and result.group_id == ""
     assert result.tx_ids == [txn.get_txid()]
@@ -131,9 +137,10 @@ def test_send_prepared_group_reports_group_id(fakes):
     result = client.send_prepared(node.client, group)
 
     assert len(result.signed_group) == 2 and result.original_count == 2 and result.group_id
+    assert all(type(entry) is bytes for entry in result.signed_group)
     # The signer assigned the group, so the signed IDs are not the drafts'.
     assert result.tx_ids[0] != first.get_txid()
-    assert [blob.hex() for blob in node.submissions()] == ["".join(result.signed_group)]
+    assert node.submissions() == [b"".join(result.signed_group)]
 
 
 def test_send_prepared_no_wait_returns_submitted(fakes):
@@ -199,7 +206,7 @@ def test_the_confirmation_is_what_algosdks_wait_returned(fakes, monkeypatch, cal
     if call == "send_prepared":
         result = client.send_prepared(node.client, prepared_for(txn))
     else:
-        result = client.submit_signed_group(node.client, [signed_hex(txn)])
+        result = client.submit_signed_group(node.client, [signed_bytes(txn)])
 
     assert len(returned) == 1 and result.confirmation is returned[0]
     assert result.confirmation == {"confirmed-round": 12, "pool-error": ""}
@@ -210,7 +217,6 @@ def _refusal_cases():
     txn = fake_signer.payment(41, 42)
     other = fake_signer.payment(45, 46)
     sender, holder = txn.sender, other.sender
-    signed_base64 = base64.b64encode(bytes.fromhex(signed_hex(txn))).decode()
     return [
         (
             "rotating sender in a group",
@@ -262,7 +268,7 @@ def _refusal_cases():
         (
             "pre-signed position",
             [key(sender)],
-            PreparedGroup([PreparedTransaction(signed_transaction_base64=signed_base64)]),
+            PreparedGroup([PreparedTransaction(signed_transaction=signed_bytes(txn))]),
             UnsupportedGroupError,
             "already signed",
         ),
@@ -552,7 +558,7 @@ def test_send_prepared_submission_failures_carry_algosdks_error(
     assert text in str(error.error) and str(error.error) in str(error)
     step = "wait for confirmation of transaction" if submitted else "submit transaction"
     assert str(error).startswith(f"{step} {txn.get_txid()}: ")
-    assert error.signed_group == [signed_hex(txn)] and error.tx_ids == [txn.get_txid()]
+    assert error.signed_group == [signed_bytes(txn)] and error.tx_ids == [txn.get_txid()]
     assert error.last_valid == txn.last_valid_round
     # Nothing is signed or submitted a second time.
     assert signer.count("/sign") == 1 and len(node.submissions()) == 1
@@ -599,7 +605,7 @@ def test_send_prepared_reports_what_the_signer_added(fakes):
     assert result.fees == [1500, 0]
     assert result.mutations["dummies_added"] == 1 and result.mutations["total_fees_delta"] == 500
     assert result.tx_ids[0] != txn.get_txid()
-    assert [blob.hex() for blob in node.submissions()] == ["".join(result.signed_group)]
+    assert node.submissions() == [b"".join(result.signed_group)]
 
 
 class TestSendPreparedConfirmationWait:
@@ -670,14 +676,14 @@ def test_submit_connection_dropped_carries_the_error_algosdk_raised(fakes):
     error = excinfo.value
     assert error.submitted is False
     assert not isinstance(error.error, SignerError) and error.__cause__ is error.error
-    assert error.signed_group == [signed_hex(txn)]
+    assert error.signed_group == [signed_bytes(txn)]
 
 
 def test_submit_signed_group_refuses_bytes_it_cannot_verify(fakes):
     txn = fake_signer.payment(41, 42)
     signer, node, client = make(fakes, SendSigner([ordinary_key(txn)]))
     with pytest.raises(SignerError, match="verify signed group"):
-        client.submit_signed_group(node.client, [signed_hex(txn) + "00"])
+        client.submit_signed_group(node.client, [signed_bytes(txn) + b"\x00"])
     assert node.submissions() == []
 
 
@@ -685,7 +691,7 @@ def test_typed_send_errors_pickle_with_their_fields():
     import pickle
 
     submission = SubmissionError(
-        ["aa"], ["ID"], 1000, True, algosdk_error.AlgodHTTPError("no", 400)
+        [b"\xaa"], ["ID"], 1000, True, algosdk_error.AlgodHTTPError("no", 400)
     )
     unknown = SignOutcomeUnknownError(
         SignerError("gone"), request_id="r1", requests=[{}], last_valid=1000
@@ -695,7 +701,7 @@ def test_typed_send_errors_pickle_with_their_fields():
         assert type(clone) is type(error) and str(clone) == str(error)
         assert clone.last_valid == 1000
     clone = pickle.loads(pickle.dumps(submission))
-    assert (clone.signed_group, clone.tx_ids, clone.submitted) == (["aa"], ["ID"], True)
+    assert (clone.signed_group, clone.tx_ids, clone.submitted) == ([b"\xaa"], ["ID"], True)
     assert type(clone.error) is algosdk_error.AlgodHTTPError and str(clone.error) == "no"
     assert pickle.loads(pickle.dumps(unknown)).request_id == "r1"
 
@@ -875,7 +881,7 @@ def test_send_prepared_cosigned_group(fakes):
     assert result.flow == SIGNING_FLOW_COSIGNED1
     assert result.cosigned is not None and result.cosigned.bounded_assembly_response is not None
     assert fixture.cosigner_calls == 1
-    assert [blob.hex() for blob in fixture.node.submissions()] == ["".join(result.signed_group)]
+    assert fixture.node.submissions() == [b"".join(result.signed_group)]
     assert result.outcome == SEND_OUTCOME_CONFIRMED
     assert result.tx_ids[0] == fixture.txn.get_txid() and result.fees[0] == 1000
 
@@ -1625,7 +1631,7 @@ def test_an_interrupt_during_submission_carries_the_signed_group(fakes, method):
         client.send_prepared(_Interrupting(node.client, method), prepared_for(txn))
 
     interrupt = excinfo.value
-    assert interrupt.aplane_signed_group == [signed_hex(txn)]
+    assert interrupt.aplane_signed_group == [signed_bytes(txn)]
     assert interrupt.aplane_tx_ids == [txn.get_txid()]
     if hasattr(interrupt, "add_note"):
         assert any("aplane_signed_group" in note for note in interrupt.__notes__)
@@ -1652,7 +1658,7 @@ def test_a_cosigned_send_reaches_the_same_submission_path(fakes, submitted):
     error = excinfo.value
     assert error.submitted is submitted and error.last_valid == 100
     (submission,) = fixture.node.submissions()
-    assert "".join(error.signed_group) == submission.hex() and error.tx_ids
+    assert b"".join(error.signed_group) == submission and error.tx_ids
 
 
 @pytest.mark.parametrize("submitted", [False, True], ids=["submit fails", "wait fails"])
@@ -1671,7 +1677,7 @@ def test_a_rotating_send_reaches_the_same_submission_path(fakes, submitted):
     error = excinfo.value
     assert error.submitted is submitted and error.last_valid == 110
     (submission,) = node.submissions()
-    assert "".join(error.signed_group) == submission.hex()
+    assert b"".join(error.signed_group) == submission
     assert signer.count("/sign/rotating/prepare") == 1
     assert signer.count("/sign/rotating/sign") == 1
 
@@ -2066,3 +2072,433 @@ class TestTheAdmittedLastValidRound:
                 cosigner_component_key="COSIGNER_COMPONENT",
             )
         assert excinfo.value.last_valid == 100
+
+
+# -----------------------------------------------------------------------------
+# send_transactions: transactions built with algosdk
+# -----------------------------------------------------------------------------
+
+
+def _recording_signer(keys, **options):
+    """A SendSigner that keeps the /sign requests it answered."""
+    seen = []
+
+    def sign(request):
+        seen.append(request)
+        return reply(
+            200,
+            fake_signer.sign_response(
+                request["requests"], options.get("fee_raise"), options.get("dummies", 0)
+            ),
+        )
+
+    return SendSigner(keys, sign=sign), seen
+
+
+def _encoded(txns):
+    return [encoding.msgpack_encode(txn) for txn in txns]
+
+
+def test_send_transactions_signs_an_ordinary_sender_as_itself(fakes):
+    txn = fake_signer.payment(41, 42)
+    signer, seen = _recording_signer([ordinary_key(txn)])
+    signer, node, client = make(fakes, signer)
+
+    result = client.send_transactions(node.client, [txn])
+
+    assert result.outcome == SEND_OUTCOME_CONFIRMED and result.flow == ""
+    assert result.signed_group == [signed_bytes(txn)]
+    assert node.submissions() == [signed_bytes(txn)]
+    assert result.tx_ids == [txn.get_txid()]
+    (request,) = seen
+    assert request["requests"][0]["auth_address"] == txn.sender
+
+
+def test_send_transactions_signs_a_rekeyed_sender_with_its_auth_address(fakes):
+    # The chain says the sender is rekeyed to a key the signer holds, so that
+    # key signs, as prepare_payment would resolve it.
+    txn = fake_signer.payment(41, 42)
+    auth = fake_signer.account(45)
+    signer, seen = _recording_signer([key(auth)])
+    signer, node, client = make(fakes, signer, FakeNode(auth_addrs={txn.sender: auth}))
+
+    result = client.send_transactions(node.client, [txn])
+
+    (request,) = seen
+    assert request["requests"][0]["auth_address"] == auth
+    signed = decode_first(node.submissions()[0])
+    assert signed.authorizing_address == auth
+    assert result.tx_ids == [txn.get_txid()]
+
+
+def test_send_transactions_sends_a_rotating_sender_through_the_rotating_flow(fakes):
+    # After rotations the chain names a stage address, which the signer does
+    # not list; the account itself is the auth address, as for prepare_*.
+    rotating = RotatingSigner(fake_signer.account(41))
+    stage_address = program_address(ROTATING_TEST_PROGRAM)
+    node = FakeNode(auth_addrs={rotating.account: stage_address})
+    signer, node, client = make(fakes, rotating, node)
+    txn = rotating_payment(rotating.account, 10, 110)
+    before = _encoded([txn])
+
+    result = client.send_transactions(node.client, [txn])
+
+    assert result.flow == SIGNING_FLOW_ROTATING1 and result.rotating is not None
+    assert signer.count("/sign/rotating/prepare") == 1 and signer.count("/sign") == 0
+    assert node.submissions() == [b"".join(result.signed_group)]
+    assert _encoded([txn]) == before
+
+
+def test_send_transactions_sends_two_transactions_as_one_group(fakes):
+    first = fake_signer.payment(41, 42)
+    second = fake_signer.payment(43, 44, amount=2)
+    signer, seen = _recording_signer([ordinary_key(first), ordinary_key(second)])
+    signer, node, client = make(fakes, signer)
+
+    result = client.send_transactions(node.client, [first, second])
+
+    (request,) = seen
+    assert [entry["auth_address"] for entry in request["requests"]] == [
+        first.sender,
+        second.sender,
+    ]
+    assert result.original_count == 2 and len(result.signed_group) == 2 and result.group_id
+    assert node.submissions() == [b"".join(result.signed_group)]
+
+
+def test_send_transactions_does_not_modify_the_transactions_passed_in(fakes):
+    # The signer raises a fee, appends a dummy and groups the transactions;
+    # the objects the caller passed still encode to the same bytes.
+    first = fake_signer.payment(41, 42)
+    second = fake_signer.payment(43, 44, amount=2)
+    before = _encoded([first, second])
+    signer, _ = _recording_signer(
+        [ordinary_key(first), ordinary_key(second)], fee_raise={0: 500}, dummies=1
+    )
+    signer, node, client = make(fakes, signer)
+
+    result = client.send_transactions(node.client, [first, second])
+
+    assert _encoded([first, second]) == before
+    assert first.group is None and second.group is None
+    assert result.tx_ids[0] != first.get_txid() and len(result.signed_group) == 3
+
+
+def test_send_transactions_refuses_an_empty_list(fakes):
+    signer, node, client = make(fakes, SendSigner([]))
+    with pytest.raises(ValueError, match="txns is empty"):
+        client.send_transactions(node.client, [])
+    assert signer.paths == [] and node.submissions() == []
+
+
+def test_send_transactions_reports_a_failed_account_lookup_and_signs_nothing(fakes):
+    txn = fake_signer.payment(41, 42)
+    signer, node, client = make(fakes, SendSigner([ordinary_key(txn)]))
+    answer = node.http.server.app
+
+    def accounts_down(method, path, body):
+        if path.startswith("/v2/accounts/"):
+            return reply(500, {"message": "node down"})
+        return answer(method, path, body)
+
+    node.http.server.app = accounts_down
+    with pytest.raises(SignerError) as excinfo:
+        client.send_transactions(node.client, [txn])
+
+    assert type(excinfo.value) is SignerError
+    assert f"transaction 0: read the account of sender {txn.sender}" in str(excinfo.value)
+    assert "node down" in str(excinfo.value)
+    assert signer.count("/sign") == 0 and node.submissions() == []
+
+
+def _notes(error):
+    return list(getattr(error, "__notes__", []))
+
+
+def test_send_transactions_names_the_position_and_sender_of_a_failed_resolution(fakes):
+    # The resolution's own error is raised as it is, with a note naming the
+    # position and the sender.
+    held = fake_signer.payment(45, 42)
+    txn = fake_signer.payment(41, 42)
+    signer, node, client = make(fakes, SendSigner([key(held.sender)]))
+    with pytest.raises(KeyNotFoundError) as excinfo:
+        client.send_transactions(node.client, [held, txn])
+    assert type(excinfo.value) is KeyNotFoundError
+    assert str(excinfo.value) == f"{txn.sender} is not available for signing"
+    assert _notes(excinfo.value) == [f"transaction 1, sender {txn.sender}"]
+    assert signer.count("/sign") == 0 and node.submissions() == []
+
+
+def test_send_transactions_raises_the_resolutions_own_error_object(fakes, monkeypatch):
+    # An error that carries attributes of its own keeps them: it is the same
+    # object, with a note added.
+    txn = fake_signer.payment(41, 42)
+    signer, node, client = make(fakes, SendSigner([ordinary_key(txn)]))
+    error = KeyNotFoundError("refused by a test", code="test_code")
+    error.extra = {"kept": True}
+
+    def resolve(address, info, keys):
+        raise error
+
+    monkeypatch.setattr(client, "_resolve_auth", resolve)
+    with pytest.raises(KeyNotFoundError) as excinfo:
+        client.send_transactions(node.client, [txn])
+    assert excinfo.value is error
+    assert error.extra == {"kept": True} and error.code == "test_code"
+    assert str(error) == "refused by a test"
+    assert _notes(error) == [f"transaction 0, sender {txn.sender}"]
+
+
+def test_send_transactions_names_no_transaction_when_the_signer_is_locked(fakes):
+    # Reading the signer's keys is not about any one transaction.
+    txn = fake_signer.payment(41, 42)
+    signer, node, client = make(fakes, SendSigner([ordinary_key(txn)]))
+    answer = signer.http.server.app
+
+    def locked(method, path, body):
+        if path == "/status":
+            return reply(200, {**status_body(), "state": "locked", "signer_locked": True})
+        return answer(method, path, body)
+
+    signer.http.server.app = locked
+    with pytest.raises(SignerError) as excinfo:
+        client.send_transactions(node.client, [txn])
+    assert str(excinfo.value) == "signer is locked"
+    assert "transaction" not in str(excinfo.value) and _notes(excinfo.value) == []
+    assert signer.count("/sign") == 0 and node.submissions() == []
+
+
+def test_send_transactions_refuses_another_spelling_of_a_sender_before_reading_it(fakes):
+    txn = fake_signer.payment(41, 42)
+    txn.sender = alternate_spelling(txn.sender)
+    signer, node, client = make(fakes, SendSigner([ordinary_key(fake_signer.payment(41, 42))]))
+    with pytest.raises(ValueError, match="transaction 0: sender .* is not the canonical spelling"):
+        client.send_transactions(node.client, [txn])
+    assert signer.paths == [] and node.submissions() == []
+
+
+def _counting_account_reads(node):
+    """Count the node's account reads, by address."""
+    reads = []
+    answer = node.http.server.app
+
+    def app(method, path, body):
+        if path.startswith("/v2/accounts/"):
+            reads.append(path.rsplit("/", 1)[1])
+        return answer(method, path, body)
+
+    node.http.server.app = app
+    return reads
+
+
+def test_send_transactions_reads_each_distinct_sender_once(fakes):
+    # Three transactions from one sender and one from another: one account
+    # read per sender, and one read of the signer's keys for the resolution
+    # (the prepared send then makes its own).
+    first = [fake_signer.payment(41, 42, amount=amount) for amount in (1, 2, 3)]
+    other = fake_signer.payment(43, 44)
+    signer, node, client = make(fakes, SendSigner([ordinary_key(first[0]), ordinary_key(other)]))
+    reads = _counting_account_reads(node)
+
+    result = client.send_transactions(node.client, first + [other])
+
+    assert sorted(reads) == sorted([first[0].sender, other.sender])
+    assert signer.count("/status") == 2 and signer.count("/keys") == 1
+    assert result.original_count == 4 and len(node.submissions()) == 1
+
+
+def test_send_transactions_refuses_a_rotating_window_from_suggested_params(fakes):
+    # algosdk's suggested parameters give a 1000-round window, and a rotating
+    # account accepts at most 100: refused before the signer is asked, and
+    # sent once refresh_validity lets the send rebuild the rounds. The
+    # caller's object is unchanged either way.
+    rotating = RotatingSigner(fake_signer.account(41))
+    signer, node, client = make(fakes, rotating)
+    params = node.client.suggested_params()
+    assert params.last - params.first == 1000
+    txn = transaction.PaymentTxn(rotating.account, params, fake_signer.test_address(42), 5000)
+    before = _encoded([txn])
+
+    with pytest.raises(SignerError) as excinfo:
+        client.send_transactions(node.client, [txn])
+    assert type(excinfo.value) is SignerError
+    assert "validity window is 1000 rounds; a rotating account accepts at most 100" in str(
+        excinfo.value
+    )
+    assert "refresh_validity" in str(excinfo.value)
+    assert signer.count("/sign/rotating/prepare") == 0 and node.submissions() == []
+    assert _encoded([txn]) == before
+
+    result = client.send_transactions(node.client, [txn], refresh_validity=True)
+
+    assert result.flow == SIGNING_FLOW_ROTATING1 and result.outcome == SEND_OUTCOME_CONFIRMED
+    sent = result.rotating.transaction
+    assert sent.last_valid_round - sent.first_valid_round <= 100
+    assert _encoded([txn]) == before
+
+
+def test_send_transactions_keeps_a_group_id_the_caller_set(fakes):
+    # A group the caller already grouped is sent with its own group ID, and a
+    # signer answer that raised a fee on it (and so regrouped it) is refused.
+    first = fake_signer.payment(41, 42)
+    second = fake_signer.payment(43, 44, amount=2)
+    transaction.assign_group_id([first, second])
+    signer, node, client = make(fakes, SendSigner([ordinary_key(first), ordinary_key(second)]))
+    result = client.send_transactions(node.client, [first, second])
+    assert base64.b64decode(result.group_id) == first.group
+    assert result.tx_ids == [first.get_txid(), second.get_txid()]
+
+    raising = fakes(SendSigner([ordinary_key(first), ordinary_key(second)], fee_raise={0: 500}))
+    client = signer_client(raising.http.url)
+    with pytest.raises(SignerError, match="for a request that was already grouped"):
+        client.send_transactions(node.client, [first, second])
+    assert len(node.submissions()) == 1
+
+
+# -----------------------------------------------------------------------------
+# Buffer ownership: what the SDK holds is its own bytes
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("wrap", [bytearray, lambda raw: memoryview(bytearray(raw))])
+def test_submit_signed_group_holds_its_own_copy_of_the_input(fakes, wrap):
+    # The caller changes its buffer while the submission runs and after the
+    # call: the submission, the result and the error keep the original bytes.
+    txn = fake_signer.payment(41, 42)
+    original = signed_bytes(txn)
+    buffer = wrap(original)
+
+    def scribble():
+        buffer[:] = bytes(len(original))
+
+    def submit(_blob):
+        scribble()
+        return reply(500, {"message": "boom"})
+
+    signer, node, client = make(fakes, SendSigner([ordinary_key(txn)]), FakeNode(submit=submit))
+    with pytest.raises(SubmissionError) as excinfo:
+        client.submit_signed_group(node.client, [buffer])
+    assert node.submissions() == [original]
+    assert excinfo.value.signed_group == [original]
+    assert type(excinfo.value.signed_group[0]) is bytes
+
+    other = fakes(FakeNode())
+    buffer = wrap(original)
+    result = client.submit_signed_group(other.client, [buffer])
+    scribble()
+    assert result.signed_group == [original] and type(result.signed_group[0]) is bytes
+    assert other.submissions() == [original]
+
+
+def test_an_entry_of_a_result_or_an_error_cannot_be_changed_in_place(fakes):
+    # Every entry is bytes, which Python does not let anyone change, so a later
+    # read of the same field returns what the SDK put there.
+    txn = fake_signer.payment(41, 42)
+    original = signed_bytes(txn)
+    signer, node, client = make(
+        fakes, SendSigner([ordinary_key(txn)]), FakeNode(submit=_http_error(500, "boom"))
+    )
+    with pytest.raises(SubmissionError) as excinfo:
+        client.submit_signed_group(node.client, [bytearray(original)])
+    error = excinfo.value
+    with pytest.raises(TypeError):
+        error.signed_group[0][0] = 0
+    assert error.signed_group == [original]
+
+    accepting = fakes(FakeNode())
+    result = client.submit_signed_group(accepting.client, [memoryview(bytearray(original))])
+    with pytest.raises(TypeError):
+        result.signed_group[0][0] = 0
+    assert result.signed_group == [original] and type(result.signed_group[0]) is bytes
+
+
+def test_a_pre_signed_slot_holds_its_own_copy_of_the_bytes():
+    # A pre-signed slot and a passthrough copy a buffer the caller can change.
+    first, second = fake_signer.payment(41, 42), fake_signer.payment(43, 44)
+    transaction.assign_group_id([first, second])
+    original = signed_bytes(second)
+    for wrap in (bytearray, lambda raw: memoryview(bytearray(raw))):
+        buffer = wrap(original)
+        slot = PreparedTransaction(signed_transaction=buffer)
+        buffer[:] = bytes(len(original))
+        assert slot.signed_transaction == original and type(slot.signed_transaction) is bytes
+        assert slot.to_sign_request() == {"signed_txn_hex": original.hex()}
+        # A buffer assigned later is copied when the slot is turned into a
+        # request.
+        buffer = wrap(original)
+        slot.signed_transaction = buffer
+        request = slot.to_sign_request()
+        buffer[:] = bytes(len(original))
+        assert request == {"signed_txn_hex": original.hex()}
+
+    from unittest.mock import patch
+
+    from tests.test_client import make_client
+
+    client = make_client()
+    buffer = bytearray(original)
+
+    def scribble(body):
+        # While the signer answers, the caller changes the buffer it passed.
+        buffer[:] = bytes(len(original))
+
+    with patch.object(client, "_discover_approval_wait"), patch.object(
+        client.session, "post", side_effect=fake_signer.signer_post(tamper=scribble)
+    ):
+        signed = client.sign_transactions(
+            [first, None], [first.sender, None], passthrough={1: buffer}
+        )
+    assert signed[1] == original
+
+
+# -----------------------------------------------------------------------------
+# signed_group_base64: submitting with algosdk directly
+# -----------------------------------------------------------------------------
+
+
+def test_signed_group_base64_is_what_algosdk_submits(fakes):
+    # The helper's text, given to the installed py-algorand-sdk's
+    # send_raw_transaction, reaches the node as the group joined in order:
+    # the same as the manual join.
+    from aplanesdk import signed_group_base64
+
+    first = fake_signer.payment(41, 42)
+    second = fake_signer.payment(43, 44, amount=2)
+    signer, node, client = make(fakes, SendSigner([ordinary_key(first), ordinary_key(second)]))
+    group = client.sign_transactions([first, second])
+
+    text = signed_group_base64(group)
+
+    assert text == base64.b64encode(b"".join(group)).decode()
+    txid = node.client.send_raw_transaction(text)
+    assert node.submissions() == [b"".join(group)]
+    assert txid == decode_first(group[0]).get_txid()
+    assert transaction.wait_for_confirmation(node.client, txid, 1)["confirmed-round"] == 12
+
+
+def test_signed_group_base64_accepts_bytes_like_entries_and_refuses_the_rest():
+    from aplanesdk import signed_group_base64
+
+    raw = [b"\x01\x02", b"\x03"]
+    want = base64.b64encode(b"\x01\x02\x03").decode()
+    assert signed_group_base64(raw) == want
+    assert signed_group_base64([bytearray(raw[0]), memoryview(raw[1])]) == want
+    with pytest.raises(ValueError, match="signed group position 2 is a str, not bytes"):
+        signed_group_base64([raw[0], "03"])
+    with pytest.raises(ValueError, match="signed_group must be a list"):
+        signed_group_base64(b"\x01\x02\x03")
+    with pytest.raises(ValueError, match="signed_group must be a list"):
+        signed_group_base64("AQID")
+    with pytest.raises(ValueError, match="signed_group is empty"):
+        signed_group_base64([])
+
+
+def test_a_note_is_kept_where_the_exception_has_no_add_note():
+    # Python 3.10 has no add_note: the note goes to __notes__ itself.
+    class NoNotes(Exception):
+        add_note = None
+
+    error = NoNotes("x")
+    signer_module._add_note(error, "first")
+    signer_module._add_note(error, "second")
+    assert error.__notes__ == ["first", "second"]

@@ -8,10 +8,23 @@ import type {
 } from "./types.js";
 import { PQ_SCHEME_FALCON1024, wireLogicSigResources } from "./types.js";
 import { SignerError } from "./errors.js";
-import { base64ToBytes, encodeLsigArgs, encodeTransaction, bytesToHex } from "./encoding.js";
+import { encodeLsigArgs, encodeTransaction, bytesToHex, signedTransactionCopy } from "./encoding.js";
 
-function base64ToHex(value: string): string {
-  return bytesToHex(base64ToBytes(value, "signedTransactionBase64"));
+/**
+ * A copy of a prepared slot's pre-signed transaction, or undefined when the
+ * slot has none: signedTransaction unset, null or empty. A value that is not
+ * a Uint8Array, such as a string, is refused, with label naming it.
+ */
+export function preparedSignedTransaction(
+  prepared: PreparedTransaction,
+  label = "signedTransaction",
+): Uint8Array | undefined {
+  const value: unknown = prepared.signedTransaction;
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  const bytes = signedTransactionCopy(value, label);
+  return bytes.length === 0 ? undefined : bytes;
 }
 
 /**
@@ -20,12 +33,13 @@ function base64ToHex(value: string): string {
 export function preparedTransactionToSignRequest(
   prepared: PreparedTransaction,
 ): SignRequest {
-  if (prepared.signedTransactionBase64) {
+  const presigned = preparedSignedTransaction(prepared);
+  if (presigned) {
     if (prepared.pqScheme) {
       throw new SignerError("pqScheme is allowed only for foreign transactions");
     }
     const request: SignRequest = {
-      signed_txn_hex: base64ToHex(prepared.signedTransactionBase64),
+      signed_txn_hex: bytesToHex(presigned),
     };
     if (prepared.lsigResources) {
       request.lsig_resources = wireLogicSigResources(

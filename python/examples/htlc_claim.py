@@ -130,11 +130,12 @@ def follow_group(algod_client, error):
 
 def print_group(error):
     """Print what acting on a SubmissionError needs: every entry of the
-    signed group, in the form submit_signed_group takes, the transaction IDs
-    and the last valid round."""
-    print("Signed group (hex msgpack, for submit_signed_group):")
+    signed group, each signed transaction as hex, the transaction IDs and the
+    last valid round. submit_signed_group takes the entries as bytes:
+    [bytes.fromhex(line) for line in the printed lines]."""
+    print("Signed group, one signed transaction per line, as hex:")
     for entry in error.signed_group:
-        print(f"  {entry}")
+        print(f"  {entry.hex()}")
     print(f"Transaction IDs: {', '.join(error.tx_ids)}")
     print(f"Last valid round: {error.last_valid}")
 

@@ -99,7 +99,10 @@ type resolvedCosigner struct {
 // CosignedSignResult contains the final assembled group and intermediate
 // component-sign responses for audit and UI correlation.
 type CosignedSignResult struct {
-	SignedGroup                []string
+	// SignedGroup is the assembled group, one canonical msgpack-encoded
+	// signed transaction per entry, in order. The responses below are the
+	// signer's answers as sent, in hex.
+	SignedGroup                [][]byte
 	CosignerComponentResponses []*ComponentResponse
 	PrimarySignResponse        *GroupSignResponse
 	BoundedComponentResponse   *ComponentResponse

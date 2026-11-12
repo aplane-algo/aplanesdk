@@ -72,11 +72,21 @@ def _load(path):
 
 def _run(path, monkeypatch, error, algod_client, signer=None):
     """Run the example's main against a signer whose send raises error and an
-    algod client that is algod_client."""
+    algod client that is algod_client.
+
+    What an example asks the node before it sends, such as the suggested
+    parameters an example that builds its own transaction reads, is not under
+    test: the node's record of calls starts when the send fails."""
     signer = signer or mock.MagicMock()
     signer.get_key_info.return_value = None
-    signer.send_prepared.side_effect = error
-    signer.send_payment.side_effect = error
+
+    def fail(*args, **kwargs):
+        algod_client.reset_mock()
+        raise error
+
+    signer.send_prepared.side_effect = fail
+    signer.send_payment.side_effect = fail
+    signer.send_transactions.side_effect = fail
     factory = mock.MagicMock()
     factory.from_env.return_value.__enter__.return_value = signer
     algod_module = mock.MagicMock()
@@ -89,7 +99,7 @@ def _run(path, monkeypatch, error, algod_client, signer=None):
 
 def _submission_error(last_valid=10, submitted=True, cause=None):
     return SubmissionError(
-        ["aa", "bb"],
+        [b"\xaa", b"\xbb"],
         ["TXONE", "TXTWO"],
         last_valid,
         submitted,
@@ -98,8 +108,8 @@ def _submission_error(last_valid=10, submitted=True, cause=None):
 
 
 def _assert_prints_what_acting_needs(out, last_valid=10):
-    """Every entry of the signed group, as submit_signed_group takes it, the
-    transaction IDs and the last valid round."""
+    """Every entry of the signed group as hex, the transaction IDs and the
+    last valid round."""
     lines = [line.strip() for line in out.splitlines()]
     assert "aa" in lines and "bb" in lines
     assert "Transaction IDs: TXONE, TXTWO" in lines

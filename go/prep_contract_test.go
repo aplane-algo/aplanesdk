@@ -4,7 +4,6 @@
 package aplane
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -79,7 +78,7 @@ func prepParityBuilders(t *testing.T) map[string]func() PreparedGroup {
 		foreign    = "AYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQGAYDADPLZKY"
 		appAccount = "A4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DVZ36IB4"
 	)
-	passthrough := base64.StdEncoding.EncodeToString([]byte{0x82, 0xa3, 0x73, 0x69, 0x67, 0xc4, 0x40})
+	passthrough := []byte{0x82, 0xa3, 0x73, 0x69, 0x67, 0xc4, 0x40}
 
 	signed := func(txn types.Transaction, extras ...func(*PreparedTransaction)) PreparedTransaction {
 		prepared := PreparedTransaction{Transaction: &txn, AuthAddress: auth}
@@ -92,7 +91,7 @@ func prepParityBuilders(t *testing.T) map[string]func() PreparedGroup {
 		return PreparedTransaction{Transaction: &txn, LsigResources: &LogicSigResourceUsage{ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000}}
 	}
 	passthroughSlot := func() PreparedTransaction {
-		return PreparedTransaction{SignedTransactionBase64: passthrough}
+		return PreparedTransaction{SignedTransaction: passthrough}
 	}
 	must := func(txn types.Transaction, err error) types.Transaction {
 		t.Helper()

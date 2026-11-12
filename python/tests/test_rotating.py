@@ -147,7 +147,7 @@ def test_send_prepared_rotating_prepares_simulates_signs_submits(fakes):
 
     assert result.flow == SIGNING_FLOW_ROTATING1 and result.original_count == 1
     assert len(result.signed_group) == 2 and result.group_id
-    assert [blob.hex() for blob in f.node.submissions()] == ["".join(result.signed_group)]
+    assert f.node.submissions() == [b"".join(result.signed_group)]
     spend = decode_signed(f.node.submissions()[0])
     assert spend.transaction.rekey_to == f.signer.next_target()
     assert spend.transaction.fee == 2000

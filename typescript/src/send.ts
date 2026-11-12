@@ -11,7 +11,7 @@ import algosdk, { type Transaction } from "algosdk";
 import type { MutationReport } from "./types.js";
 import type { CosignedCosignerResolver, CosignedSignResult, SignerClient } from "./client.js";
 import { SignerError, SubmissionError, errorText } from "./errors.js";
-import { bytesToBase64, encodeTransaction, hexToBytes } from "./encoding.js";
+import { bytesToBase64, encodeTransaction, isUint8Array } from "./encoding.js";
 import {
   decodeCanonicalSignedTransaction,
   groupIDBytes,
@@ -35,8 +35,9 @@ export const SEND_OUTCOME_SUBMITTED = "submitted";
 export const SEND_OUTCOME_CONFIRMED = "confirmed";
 
 /**
- * Options for sendPrepared, sendPayment and submitSignedGroup. With none
- * set, a send signs, submits and waits for confirmation.
+ * Options for sendPrepared, sendTransactions, sendPayment and
+ * submitSignedGroup. With none set, a send signs, submits and waits for
+ * confirmation.
  */
 export interface SendOptions {
   /**
@@ -115,11 +116,12 @@ export interface SendResult {
    */
   flow: string;
   /**
-   * The exact group submitted, hex msgpack, in order. The first
-   * originalCount entries are the caller's transactions, in the order given;
-   * the rest are resource dummies the signer appended.
+   * The exact group submitted, one canonical msgpack-encoded signed
+   * transaction per entry, in order: algosdk's sendRawTransaction takes it as
+   * it is. The first originalCount entries are the caller's transactions, in
+   * the order given; the rest are resource dummies the signer appended.
    */
-  signedGroup: string[];
+  signedGroup: Uint8Array[];
   originalCount: number;
   /**
    * The IDs of the signed transactions, in signedGroup order. A signer may
@@ -198,33 +200,30 @@ export function algodRound(value: unknown, label: string): bigint {
 
 /**
  * Decode a signed group for submission or simulation: each entry one
- * canonically encoded signed transaction, hex msgpack. The raw hex is what
- * gets submitted and the decoded value what gets simulated, so the two must
+ * canonically encoded signed transaction, as bytes. The entries are what
+ * gets submitted and the decoded values what gets simulated, so the two must
  * be the same transaction exactly.
  */
-export function decodeExecutableSignedGroup(signedGroup: string[]): {
-  decoded: algosdk.SignedTransaction[];
-  raw: Uint8Array[];
-} {
+export function decodeExecutableSignedGroup(signedGroup: Uint8Array[]): algosdk.SignedTransaction[] {
   if (!Array.isArray(signedGroup) || signedGroup.length === 0) {
     throw new SignerError("signed group is empty");
   }
-  const raw: Uint8Array[] = [];
-  const decoded = signedGroup.map((signedHex, index) => {
-    if (!signedHex) {
+  return signedGroup.map((entry, index) => {
+    if (!isUint8Array(entry)) {
+      // A send builds its signed group itself, so this is a fault in the SDK.
+      throw new TypeError(`signed group position ${index + 1} is not a Uint8Array`);
+    }
+    if (entry.length === 0) {
       throw new SignerError(`signed group position ${index + 1} is empty`);
     }
     try {
-      const bytes = hexToBytes(signedHex);
-      raw.push(bytes);
-      return decodeCanonicalSignedTransaction(bytes);
+      return decodeCanonicalSignedTransaction(entry);
     } catch (error) {
       // Anything but a refusal is a fault in the SDK, left as it is.
       if (!(error instanceof SignerError)) throw error;
       throw new SignerError(`signed group position ${index + 1}: ${errorText(error)}`);
     }
   });
-  return { decoded, raw };
 }
 
 /**
@@ -299,25 +298,23 @@ export function simulationFailure(response: any, transactionCount: number): stri
 }
 
 /**
- * A signed group as describeSignedGroup checked it: the bytes to submit and
- * the round after which the group cannot execute. It goes to submitAndTrack
- * beside the result, so a SubmissionError never decodes anything.
+ * What describeSignedGroup read from a result's signed group: the round
+ * after which the group cannot execute. It goes to submitAndTrack beside the
+ * result, so a SubmissionError never decodes anything.
  */
 export interface DescribedGroup {
-  /** The signed transactions decoded from hex, in order. */
-  raw: Uint8Array[];
   /** The earliest last valid round of the signed group. */
   lastValid: bigint;
 }
 
 /**
  * Fill the result's IDs, fees and group ID from its signed bytes, and return
- * those bytes decoded from hex with the group's earliest last valid round.
- * Each entry must be one canonically encoded signed transaction, and a group
- * of several must carry the group ID computed over itself.
+ * the group's earliest last valid round. Each entry must be one canonically
+ * encoded signed transaction, and a group of several must carry the group ID
+ * computed over itself.
  */
 export function describeSignedGroup(result: SendResult): DescribedGroup {
-  const { decoded, raw } = decodeExecutableSignedGroup(result.signedGroup);
+  const decoded = decodeExecutableSignedGroup(result.signedGroup);
   if (decoded.length < result.originalCount) {
     throw new SignerError(
       `signed group has ${decoded.length} transaction(s), fewer than the ${result.originalCount} prepared`,
@@ -331,7 +328,7 @@ export function describeSignedGroup(result: SendResult): DescribedGroup {
   result.fees = txns.map((txn) => txn.fee);
   result.groupId = groupID === undefined ? "" : bytesToBase64(groupID);
   result.txIds = txns.map((txn) => txn.txID());
-  return { raw, lastValid: earliestLastValid(txns) };
+  return { lastValid: earliestLastValid(txns) };
 }
 
 /**
@@ -367,7 +364,7 @@ export async function submitAndTrack(
   result: SendResult,
   options: CheckedSendOptions,
 ): Promise<void> {
-  const { raw, lastValid } = group;
+  const { lastValid } = group;
   const signal = options.signal;
   const failed = (submitted: boolean, cause: unknown) =>
     new SubmissionError({ signedGroup: result.signedGroup, txIds: result.txIds, lastValid, submitted, cause });
@@ -376,7 +373,7 @@ export async function submitAndTrack(
     throw failed(false, signal.reason);
   }
   try {
-    await algodClient.sendRawTransaction(raw).do(undefined, algodOptions(signal));
+    await algodClient.sendRawTransaction(result.signedGroup).do(undefined, algodOptions(signal));
   } catch (error) {
     throw failed(false, error);
   }

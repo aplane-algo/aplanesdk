@@ -72,54 +72,78 @@ export function encodeLsigArgs(
   return encoded;
 }
 
-/**
- * Concatenate signed transactions and convert to base64 for submission.
- *
- * @param signedHexes - Array of hex-encoded signed transactions
- * @returns Base64-encoded concatenated transactions ready for algod
- */
-export function concatenateSignedTxns(signedHexes: string[]): string {
-  // Calculate total length
-  let totalLength = 0;
-  const byteArrays: Uint8Array[] = [];
-  for (const hex of signedHexes) {
-    const bytes = hexToBytes(hex);
-    byteArrays.push(bytes);
-    totalLength += bytes.length;
-  }
-
-  // Concatenate all bytes
-  const combined = new Uint8Array(totalLength);
-  let offset = 0;
-  for (const bytes of byteArrays) {
-    combined.set(bytes, offset);
-    offset += bytes.length;
-  }
-
-  return bytesToBase64(combined);
+/** The built-in type tag of value, such as "Uint8Array" or "DataView". */
+function typeTag(value: unknown): string {
+  return Object.prototype.toString.call(value).slice(8, -1);
 }
 
-const STRICT_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+/**
+ * Whether value is a Uint8Array, a Node Buffer among them, told by its
+ * internal type rather than by instanceof: a Uint8Array from another realm,
+ * such as a vm context or a frame, is not an instance of this realm's class.
+ * ArrayBuffer.isView reads the internal slot, so an object that only claims
+ * the tag is not one. Another typed array or a DataView is not one either.
+ */
+export function isUint8Array(value: unknown): value is Uint8Array {
+  return ArrayBuffer.isView(value) && typeTag(value) === "Uint8Array";
+}
 
 /**
- * Decode standard base64, strictly: the standard alphabet, with padding, and
- * nothing else. Buffer.from(value, "base64") stops at the first "=", skips
- * characters it does not know and accepts the URL-safe alphabet, so it takes
- * strings the Go and Python SDKs refuse.
+ * name with its indefinite article: "an Int8Array", "a Uint8Array". The
+ * names it gets begin with a U only as "Uint", which takes "a".
  */
-export function base64ToBytes(value: string, label = "value"): Uint8Array {
-  if (typeof value !== "string" || !STRICT_BASE64.test(value)) {
-    throw new SignerError(`${label} is not valid base64`);
+function withArticle(name: string): string {
+  return `${/^[AEIO]/i.test(name) ? "an" : "a"} ${name}`;
+}
+
+/**
+ * What kind of value something is, for an error message: "null", "a
+ * string", "an array", "a Uint8Array", "an algosdk Address", "a
+ * Transaction", "an object" and so on. A typed array or a DataView is named
+ * by its internal type, which holds across realms; an object whose
+ * publicKey is 32 bytes is an algosdk Address, from any copy of algosdk;
+ * another object is named by its class, or is "an object".
+ */
+export function valueKind(value: unknown): string {
+  if (value === null || value === undefined) return String(value);
+  if (Array.isArray(value)) return "an array";
+  if (typeof value !== "object") return withArticle(typeof value);
+  if (ArrayBuffer.isView(value)) return withArticle(typeTag(value));
+  const publicKey = (value as { publicKey?: unknown }).publicKey;
+  if (isUint8Array(publicKey) && publicKey.length === 32) return "an algosdk Address";
+  const name = (value as { constructor?: { name?: unknown } }).constructor?.name;
+  return typeof name === "string" && name !== "" && name !== "Object" ? withArticle(name) : "an object";
+}
+
+/**
+ * A copy of one signed transaction a caller supplied, as a plain Uint8Array
+ * of this realm. Anything else, such as a hex or base64 string, is refused,
+ * and label names its position in the error.
+ */
+export function signedTransactionCopy(value: unknown, label: string): Uint8Array {
+  if (!isUint8Array(value)) {
+    throw new SignerError(`${label} must be signed transaction bytes (a Uint8Array), not ${valueKind(value)}`);
   }
-  if (typeof Buffer !== "undefined") {
-    return new Uint8Array(Buffer.from(value, "base64"));
-  }
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
+  return new Uint8Array(value);
+}
+
+/** A copy of a signed group that shares no bytes with it. */
+export function cloneSignedGroup(group: readonly Uint8Array[]): Uint8Array[] {
+  return group.map((entry) => new Uint8Array(entry));
+}
+
+/**
+ * The signer's hex entries of a signed group as bytes, one per transaction,
+ * in order. An empty entry stays empty.
+ */
+export function signedGroupFromHex(signed: string[]): Uint8Array[] {
+  return signed.map((entry, index) => {
+    try {
+      return hexToBytes(entry);
+    } catch (error) {
+      throw new SignerError(`signed transaction ${index + 1} is invalid hex: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  });
 }
 
 // bytesToBase64 encodes bytes as base64, using Buffer in Node.js and a chunked

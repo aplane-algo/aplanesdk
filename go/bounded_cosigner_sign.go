@@ -39,7 +39,7 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 		return nil, fmt.Errorf("resolve signer keys: %w", err)
 	}
 	for i, item := range prepared {
-		if item.SignedTransactionBase64 != "" {
+		if len(item.SignedTransaction) != 0 {
 			return nil, fmt.Errorf("prepared transaction %d: passthrough entries are not supported in prepared bounded-cosigner groups", i)
 		}
 		if item.Transaction == nil {
@@ -281,8 +281,12 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 	if err := verifyAssembledGroup(planResp.Transactions, assemblyResp.SignedGroup); err != nil {
 		return nil, err
 	}
+	signedGroup, err := signedGroupFromHex(assemblyResp.SignedGroup)
+	if err != nil {
+		return nil, err
+	}
 	result.BoundedAssemblyResponse = assemblyResp
-	result.SignedGroup = append([]string(nil), assemblyResp.SignedGroup...)
+	result.SignedGroup = signedGroup
 	return result, nil
 }
 

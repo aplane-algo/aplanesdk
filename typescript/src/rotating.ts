@@ -87,8 +87,11 @@ export interface RotatingSignOptions {
  * a later rotation confirms.
  */
 export interface RotatingSignResult {
-  /** The signed group, hex msgpack, in prepared order. */
-  signedGroup: string[];
+  /**
+   * The signed group, one canonical msgpack-encoded signed transaction per
+   * entry, in prepared order.
+   */
+  signedGroup: Uint8Array[];
   stage: number;
   target: number;
   /**
@@ -368,9 +371,11 @@ export class PreparedRotating {
       );
     }
     const spend = txns[0];
+    const signedGroup: Uint8Array[] = [];
     signed.forEach((signedHex, index) => {
       const position = index + 1;
       const raw = decodeHex(signedHex, `signed transaction ${position}`);
+      signedGroup.push(raw);
       // A check's refusal is reworded; anything else thrown is a fault in
       // the SDK, not a refusal, and is left as it is.
       let stxn: algosdk.SignedTransaction;
@@ -429,7 +434,7 @@ export class PreparedRotating {
       );
     }
     return {
-      signedGroup: [...signed],
+      signedGroup,
       stage: this.#stage,
       target: this.#target,
       txId,

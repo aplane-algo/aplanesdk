@@ -13,7 +13,6 @@ import { SignerClient, signPreparedCosignedGroup } from "../src/client.js";
 import * as sdk from "../src/index.js";
 import { KeyNotFoundError } from "../src/errors.js";
 import { isNetworkAllowed, loadConfig } from "../src/utils.js";
-import { base64ToBytes } from "../src/encoding.js";
 import { preparedGroupToSignRequests } from "../src/prepared.js";
 import { fakeAddress, fakePayment, signedHex } from "./fakeSigner.js";
 
@@ -567,54 +566,6 @@ describe("cosigned group key record", () => {
       /auth address is required/,
     );
   });
-});
-
-describe("strict base64", () => {
-  const good = Buffer.from(signedHex(fakePayment()), "hex").toString("base64");
-  // The case list the Go and Python suites run too: the three SDKs accept and
-  // refuse the same strings.
-  const accepted = ["", "QQ==", "QUI=", "QUJD", "QUJDRA==", "+/+/", "AAAA"];
-  const lenient: Array<[string, string]> = [
-    ["a trailing line feed", "QUJD\n"],
-    ["a trailing CRLF", "QUJD\r\n"],
-    ["a line feed inside", "QU\nJD"],
-    ["a wrapped line", "QUJD\r\nQUJD"],
-    ["a leading line feed", "\nQUJD"],
-    ["a space", "QU JD"],
-    ["a trailing space", "QUJD "],
-    ["a tab", "\tQUJD"],
-    ["a character outside the alphabet", "QU*D"],
-    ["the URL-safe alphabet", "-_-_"],
-    ["missing padding", "QUI"],
-    ["short padding", "QQ="],
-    ["long padding", "QQ==="],
-    ["data after the padding", "QUI=QUJD"],
-    ["padding first", "=QUJ"],
-    ["one character", "Q"],
-  ];
-
-  it("decodes standard base64", () => {
-    assert.deepEqual(Buffer.from(base64ToBytes(good)).toString("base64"), good);
-    for (const value of accepted) {
-      assert.equal(Buffer.from(base64ToBytes(value)).toString("base64"), value);
-    }
-  });
-
-  for (const [name, value] of lenient) {
-    it(`refuses ${name}`, async () => {
-      assert.throws(() => base64ToBytes(value, "input"), /input is not valid base64/);
-      // The same strings Buffer.from would have taken, at each caller-facing site.
-      assert.throws(
-        () => preparedGroupToSignRequests({ transactions: [{ signedTransactionBase64: value }] }),
-        /signedTransactionBase64 is not valid base64/,
-      );
-      const client = new SignerClient("http://localhost:11270");
-      assert.throws(
-        () => (client as any).buildSignRequestBody([null], [null], undefined, { 0: value }),
-        /passthrough\[0\] is not valid base64/,
-      );
-    });
-  }
 });
 
 describe("networks_allowed", () => {

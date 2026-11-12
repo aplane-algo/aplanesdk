@@ -99,7 +99,7 @@ test(
       assert.ok(keys.some((key) => key.address === address));
 
       const signed = await client.signTransaction(selfPaymentTxn(address), address);
-      assert.ok(Buffer.from(signed, "base64").length > 0);
+      assert.ok(signed.length > 0 && signed[0].length > 0);
 
       await client.deleteKey(address);
       cleanup = false;
@@ -146,7 +146,8 @@ test(
         "native Falcon generate"
       );
       const signed = await client.signTransaction(selfPaymentTxn(address), address);
-      assertNativeFalconEnvelope(Buffer.from(signed, "base64"));
+      assert.equal(signed.length, 1);
+      assertNativeFalconEnvelope(signed[0]);
 
       await client.deleteKey(address);
       cleanup = false;
@@ -191,14 +192,14 @@ test(
       assert.ok(address);
       await waitForKeysetRevision(client, before.keysetRevision, "LogicSig generate");
 
-      const single = await client.signTransactionsList([selfPaymentTxn(address)], [address]);
+      const single = await client.signTransaction(selfPaymentTxn(address), address);
       assert.ok(single.length > 1, "a Falcon LogicSig account needs resource dummies");
-      const first = algosdk.decodeObj(Buffer.from(single[0], "base64")) as {
+      const first = algosdk.decodeObj(single[0]) as {
         lsig?: { l?: Uint8Array };
       };
       assert.ok(first.lsig?.l?.length, "the position is not signed by a LogicSig");
 
-      const pair = await client.signTransactionsList(
+      const pair = await client.signTransactions(
         [selfPaymentTxn(address), selfPaymentTxn(address, "second")],
         [address, address]
       );
@@ -254,7 +255,7 @@ test(
       assert.equal(result.failed, false, result.response.txnGroups?.[0]?.failureMessage);
       assert.equal(result.signedGroup.length, 1);
 
-      const signedBytes = Buffer.from(result.signedGroup[0], "hex");
+      const signedBytes = Buffer.from(result.signedGroup[0]);
       assertNativeFalconEnvelope(signedBytes);
 
       // Flip one byte of the signature in place, so nothing else in the

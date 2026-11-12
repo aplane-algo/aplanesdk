@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -725,8 +724,8 @@ func TestSignAndPlanCallsRejectASubstitutedTransaction(t *testing.T) {
 	if _, err := client.SignTransaction(txn, "", nil); err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("SignTransaction() error = %v, want %q", err, want)
 	}
-	if _, err := client.SignTransactionsList([]types.Transaction{txn}, nil, nil); err == nil || !strings.Contains(err.Error(), want) {
-		t.Fatalf("SignTransactionsList() error = %v, want %q", err, want)
+	if _, err := client.SignTransactions([]types.Transaction{txn}, nil, nil); err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("SignTransactions() error = %v, want %q", err, want)
 	}
 	if _, err := client.SignRequestsWithContext(context.Background(), signRequestsFor(txn)); err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("SignRequestsWithContext() error = %v, want %q", err, want)
@@ -749,18 +748,14 @@ func TestSignTransactionAcceptsARaisedFeeAndDummies(t *testing.T) {
 	client, server := newTestClient(fakeSignHandler(t, fakeSigner{feeRaise: map[int]uint64{0: 2000}, dummies: 1}))
 	defer server.Close()
 
-	list, err := client.SignTransactionsList([]types.Transaction{txn}, nil, nil)
+	list, err := client.SignTransactions([]types.Transaction{txn}, nil, nil)
 	if err != nil {
-		t.Fatalf("SignTransactionsList() error = %v", err)
+		t.Fatalf("SignTransactions() error = %v", err)
 	}
 	if len(list) != 2 {
-		t.Fatalf("SignTransactionsList() returned %d slots, want the transaction and one dummy", len(list))
+		t.Fatalf("SignTransactions() returned %d slots, want the transaction and one dummy", len(list))
 	}
-	raw, err := base64.StdEncoding.DecodeString(list[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	stxn, err := decodeCanonicalSignedTxn(raw)
+	stxn, err := decodeCanonicalSignedTxn(list[0])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -853,8 +848,8 @@ func TestBuildSignRequestsAcceptsAReusedLsigArgsMap(t *testing.T) {
 
 	// Position 2 is passthrough, with its auth address given, defaulted from
 	// the transaction, or known only from the signed bytes.
-	passthrough := base64.StdEncoding.EncodeToString(mustDecodeHex(t, fakeSignedTxnHex(grouped[1])))
-	opts := &SignOptions{Passthrough: map[int]string{1: passthrough}}
+	passthrough := mustDecodeHex(t, fakeSignedTxnHex(grouped[1]))
+	opts := &SignOptions{Passthrough: map[int][]byte{1: passthrough}}
 	for name, tc := range map[string]struct {
 		txns  []types.Transaction
 		auths []string
@@ -875,8 +870,8 @@ func TestBuildSignRequestsAcceptsAReusedLsigArgsMap(t *testing.T) {
 	// The whole call goes through with the reused map.
 	client, server := newTestClient(fakeSignHandler(t, fakeSigner{}))
 	defer server.Close()
-	if _, err := client.SignTransactionsListWithOptions(grouped, []string{first, second}, args, opts); err != nil {
-		t.Fatalf("SignTransactionsListWithOptions() with a reused args map: %v", err)
+	if _, err := client.SignTransactionsWithOptions(grouped, []string{first, second}, args, opts); err != nil {
+		t.Fatalf("SignTransactionsWithOptions() with a reused args map: %v", err)
 	}
 }
 
@@ -898,7 +893,7 @@ func TestSignedTransactionIdentityChecksRejectTrailingBytes(t *testing.T) {
 	if err := signedTxnMatchesCanonical("slot", 0, signed, canonical); err != nil {
 		t.Fatalf("signedTxnMatchesCanonical() error = %v", err)
 	}
-	if _, _, _, err := decodeExecutableSignedGroup([]string{signed}); err != nil {
+	if _, _, _, err := decodeExecutableSignedGroup([][]byte{mustDecodeHex(t, signed)}); err != nil {
 		t.Fatalf("decodeExecutableSignedGroup() error = %v", err)
 	}
 
@@ -908,7 +903,7 @@ func TestSignedTransactionIdentityChecksRejectTrailingBytes(t *testing.T) {
 	if err := signedTxnMatchesCanonical("slot", 0, concatenated, canonical); err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("signedTxnMatchesCanonical() error = %v, want %q", err, want)
 	}
-	if _, _, _, err := decodeExecutableSignedGroup([]string{concatenated}); err == nil || !strings.Contains(err.Error(), want) {
+	if _, _, _, err := decodeExecutableSignedGroup([][]byte{mustDecodeHex(t, concatenated)}); err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("decodeExecutableSignedGroup() error = %v, want %q", err, want)
 	}
 	if err := verifyAssembledGroup([]string{canonical}, []string{concatenated}); err == nil || !strings.Contains(err.Error(), want) {
@@ -998,8 +993,6 @@ func TestMaxFeeIncrease(t *testing.T) {
 			}
 			_, err := client.SignTransactions(tc.txns, nil, nil)
 			check("SignTransactions()", "verify signer response: ", err)
-			_, err = client.SignTransactionsList(tc.txns, nil, nil)
-			check("SignTransactionsList()", "verify signer response: ", err)
 			_, err = client.SignRequestsWithContext(context.Background(), signRequestsFor(tc.txns...))
 			check("SignRequestsWithContext()", "verify signer response: ", err)
 			_, err = client.PlanGroup(tc.txns, auths, nil, nil)
@@ -1436,7 +1429,7 @@ func TestBuildSignRequestsMatchesLsigArgsToTheAuthorizer(t *testing.T) {
 	if presigned.AuthAddr.String() != passthroughKey {
 		t.Fatalf("test setup: passthrough signer = %s, want %s", presigned.AuthAddr, passthroughKey)
 	}
-	opts := &SignOptions{Passthrough: map[int]string{0: base64.StdEncoding.EncodeToString(msgpack.Encode(presigned))}}
+	opts := &SignOptions{Passthrough: map[int][]byte{0: msgpack.Encode(presigned)}}
 	auths := []string{"", lsig}
 	args := LsigArgs{"preimage": []byte("secret")}
 	const want = "no transaction in the request has auth address"

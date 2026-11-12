@@ -4,6 +4,7 @@
 package aplane
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/hex"
@@ -328,7 +329,7 @@ func TestSendPreparedRotatingPreparesSimulatesSignsSubmits(t *testing.T) {
 		t.Fatalf("result = %+v", result)
 	}
 	submitted := node.submissions()
-	if len(submitted) != 1 || hex.EncodeToString(submitted[0]) != strings.Join(result.SignedGroup, "") {
+	if len(submitted) != 1 || !bytes.Equal(submitted[0], bytes.Join(result.SignedGroup, nil)) {
 		t.Fatalf("submission is not the signed group, once")
 	}
 	var spend types.SignedTxn

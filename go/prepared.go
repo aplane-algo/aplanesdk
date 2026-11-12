@@ -22,28 +22,27 @@ type PreparedCheck struct {
 // PreparedTransaction is the SDK-side representation of one transaction slot
 // after client preparation and before apsigner planning/signing.
 type PreparedTransaction struct {
-	Transaction             *types.Transaction
-	AuthAddress             string
-	TxnSender               string
-	LsigArgs                LsigArgs
-	LsigResources           *LogicSigResourceUsage
-	PQScheme                string
-	AppCallInfo             *AppCallInfo
-	SignedTransactionBase64 string
-	Checks                  []PreparedCheck
+	Transaction   *types.Transaction
+	AuthAddress   string
+	TxnSender     string
+	LsigArgs      LsigArgs
+	LsigResources *LogicSigResourceUsage
+	PQScheme      string
+	AppCallInfo   *AppCallInfo
+	// SignedTransaction, when set, makes the slot a passthrough: one signed
+	// transaction from another signer, canonical msgpack bytes as
+	// go-algorand-sdk's signers return them, sent to the signer as is.
+	SignedTransaction []byte
+	Checks            []PreparedCheck
 }
 
 // SignRequest converts the prepared slot to the signer wire request shape.
 func (p PreparedTransaction) SignRequest() (SignRequest, error) {
-	if p.SignedTransactionBase64 != "" {
+	if len(p.SignedTransaction) != 0 {
 		if p.PQScheme != "" {
 			return SignRequest{}, fmt.Errorf("pq_scheme is allowed only for foreign transactions")
 		}
-		decoded, err := Base64ToBytes(p.SignedTransactionBase64)
-		if err != nil {
-			return SignRequest{}, fmt.Errorf("invalid passthrough transaction: invalid base64: %w", err)
-		}
-		req := SignRequest{SignedTxnHex: hex.EncodeToString(decoded)}
+		req := SignRequest{SignedTxnHex: hex.EncodeToString(p.SignedTransaction)}
 		if p.LsigResources != nil {
 			resources := *p.LsigResources
 			req.LsigResources = &resources

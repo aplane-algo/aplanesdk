@@ -468,7 +468,9 @@ class SubmissionError(SignerError):
     never confirmed: check an indexer before building a replacement.
 
     Attributes:
-        signed_group: the signed bytes, hex msgpack, in group order
+        signed_group: the signed transactions, in group order, each the raw
+            msgpack bytes of one signed transaction, as submit_signed_group
+            takes them
         tx_ids: their transaction IDs
         last_valid: the earliest last valid round in the signed group
         submitted: whether algosdk's submit call returned success
@@ -478,7 +480,7 @@ class SubmissionError(SignerError):
 
     def __init__(
         self,
-        signed_group: List[str],
+        signed_group: List[bytes],
         tx_ids: List[str],
         last_valid: int,
         submitted: bool,
@@ -486,7 +488,7 @@ class SubmissionError(SignerError):
     ):
         step = "wait for confirmation of" if submitted else "submit"
         super().__init__(f"{step} transaction {_first_or_empty(tx_ids)}: {error}")
-        self.signed_group = list(signed_group)
+        self.signed_group = [bytes(entry) for entry in signed_group]
         self.tx_ids = list(tx_ids)
         self.last_valid = last_valid
         self.submitted = submitted
@@ -787,6 +789,21 @@ def _node_error(what: str, error: BaseException) -> SignerError:
     if timeout is not None:
         return timeout
     return SignerError(f"{what}: {error}")
+
+
+def _add_note(error: BaseException, note: str) -> None:
+    """Add a note to error, as BaseException.add_note does (Python 3.11 and
+    later, which print it with the traceback). On Python 3.10 the note is
+    kept in ``__notes__``, where a caller can read it."""
+    add_note = getattr(error, "add_note", None)
+    if add_note is not None:
+        add_note(note)
+        return
+    notes = getattr(error, "__notes__", None)
+    if not isinstance(notes, list):
+        notes = []
+        error.__notes__ = notes  # type: ignore[attr-defined]
+    notes.append(note)
 
 
 def _connection_error(error: BaseException) -> SignerError:
@@ -1667,11 +1684,16 @@ class SimulationResult:
     any other answer checked less than the group. ``failure_message`` says
     why: the node's failure-message, or what was wrong with its answer. It is
     empty when the group passed.
+
+    ``transactions`` holds the simulated transactions unsigned, hex msgpack
+    with the TX prefix. ``signed_group`` holds the signed group that was
+    simulated, each entry the raw msgpack bytes of one signed transaction;
+    it is empty for an unsigned simulation.
     """
 
     tx_ids: List[str]
     transactions: List[str]
-    signed_group: List[str]
+    signed_group: List[bytes]
     response: Dict[str, Any]
     mutations: Optional[Dict[str, Any]] = None
     failed: bool = False
@@ -1819,9 +1841,13 @@ class CosignedPassthroughItem:
 
 @dataclass
 class CosignedSignResult:
-    """Result from sign_prepared_cosigned_group"""
+    """Result from sign_prepared_cosigned_group. ``signed_group`` is the
+    assembled group, each entry the raw msgpack bytes of one signed
+    transaction, in group order. The wire answers it holds
+    (``primary_sign_response``, ``bounded_assembly_response``) are hex, as
+    the signer sent them."""
 
-    signed_group: List[str]
+    signed_group: List[bytes]
     cosigner_component_responses: List[ComponentResponse]
     primary_sign_response: Optional[GroupSignResponse] = None
     bounded_component_response: Optional[ComponentResponse] = None
@@ -1866,10 +1892,11 @@ class SendResult:
     # The signing flow the group took: "" for the ordinary /sign flow,
     # SIGNING_FLOW_COSIGNED1 or SIGNING_FLOW_ROTATING1.
     flow: str = ""
-    # The exact group submitted, hex msgpack, in order. The first
-    # original_count entries are the caller's transactions, in the order
-    # given; the rest are resource dummies the signer appended.
-    signed_group: List[str] = field(default_factory=list)
+    # The exact group submitted, in order, each entry the raw msgpack bytes
+    # of one signed transaction. The first original_count entries are the
+    # caller's transactions, in the order given; the rest are resource
+    # dummies the signer appended.
+    signed_group: List[bytes] = field(default_factory=list)
     original_count: int = 0
     # The IDs of the signed transactions, in signed_group order. A signer may
     # raise a fee or assign a group, so these can differ from the IDs of the
@@ -1907,8 +1934,9 @@ class RotatingSignResult:
     promptly: the stage's one-time keys are revealed until this transaction
     or a later rotation confirms."""
 
-    # The signed group, hex msgpack, in prepared order.
-    signed_group: List[str]
+    # The signed group, in prepared order, each entry the raw msgpack bytes
+    # of one signed transaction.
+    signed_group: List[bytes]
     stage: int
     target: int
     # Computed from the prepared bytes; the signer's own report of them was
@@ -1933,7 +1961,11 @@ class PreparedCheck:
 
 @dataclass
 class PreparedTransaction:
-    """One prepared transaction slot before apsigner planning/signing."""
+    """One prepared transaction slot before apsigner planning/signing.
+
+    ``signed_transaction`` makes the slot a passthrough: the raw msgpack
+    bytes of one signed transaction, included in the group as they are.
+    """
 
     transaction: Optional[transaction.Transaction] = None
     auth_address: Optional[str] = None
@@ -1942,17 +1974,21 @@ class PreparedTransaction:
     lsig_resources: Optional[LogicSigResourceUsage] = None
     pq_scheme: str = ""
     app_call_info: Optional[Dict[str, str]] = None
-    signed_transaction_base64: str = ""
+    signed_transaction: bytes = b""
     checks: Optional[List[PreparedCheck]] = None
+
+    def __post_init__(self) -> None:
+        # A buffer the caller can change is copied to bytes, so the slot keeps
+        # what it was given.
+        if isinstance(self.signed_transaction, (bytearray, memoryview)):
+            self.signed_transaction = bytes(self.signed_transaction)
 
     def to_sign_request(self) -> Dict[str, Any]:
         """Convert this prepared slot to a signer SignRequest entry."""
-        if self.signed_transaction_base64:
+        if self.signed_transaction:
             if self.pq_scheme:
                 raise ValueError("pq_scheme is allowed only for foreign transactions")
-            signed_hex = _strict_base64(
-                self.signed_transaction_base64, "signed_transaction_base64"
-            ).hex()
+            signed_hex = _caller_signed_bytes(self.signed_transaction, "signed_transaction").hex()
             request = {"signed_txn_hex": signed_hex}
             if self.lsig_resources is not None:
                 request["lsig_resources"] = _wire_lsig_resources(self.lsig_resources)
@@ -2362,7 +2398,7 @@ def encode_transaction(txn: transaction.Transaction) -> tuple:
 
 def _simulate_signed_group(
     algod_client: Any,
-    signed_group: List[str],
+    signed_group: List[bytes],
     mutations: Optional[Dict[str, Any]] = None,
 ) -> SimulationResult:
     if algod_client is None:
@@ -2381,25 +2417,28 @@ def _simulate_signed_group(
     )
 
 
-def _decode_executable_signed_group(signed_group: List[str]) -> List[Any]:
+def _signed_group_from_hex(signed_hex: List[str]) -> List[bytes]:
+    """A signed group as a signer's wire answer holds it, hex, as raw bytes:
+    one entry per signed transaction. The answer has been checked, so every
+    entry is hex."""
+    return [_strict_hex(entry) for entry in signed_hex]
+
+
+def _decode_executable_signed_group(signed_group: List[bytes]) -> List[Any]:
     """Decode a signed group that is to be simulated or submitted.
 
     Every position must be one canonically encoded signed transaction: the
-    raw hex is what gets submitted and the decoded value is what gets
+    raw bytes are what gets submitted and the decoded value is what gets
     simulated, so the two must be the same transaction exactly.
     """
     if not signed_group:
         raise SignerError("signed group is empty")
     signed_transactions = []
-    for index, signed_hex in enumerate(signed_group, start=1):
-        if not signed_hex:
+    for index, signed_bytes in enumerate(signed_group, start=1):
+        if not signed_bytes:
             raise SignerError(f"signed group position {index} is empty")
         try:
-            signed_bytes = _strict_hex(signed_hex)
-        except ValueError as e:
-            raise SignerError(f"signed group position {index} is invalid hex: {e}") from e
-        try:
-            signed = _decode_canonical_signed_txn(signed_bytes)
+            signed = _decode_canonical_signed_txn(bytes(signed_bytes))
         except SignerError as e:
             raise SignerError(f"signed group position {index}: {e}") from e
         signed_transactions.append(signed)
@@ -2630,23 +2669,52 @@ def _validate_authorization(signed: Any, auth: str) -> None:
 _HEX = re.compile(r"(?:[0-9a-fA-F]{2})*")
 
 
-# Standard base64 and nothing else: the standard alphabet in groups of four,
-# padded.
-_STRICT_BASE64 = re.compile(
-    r"(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?"
-)
+def _caller_signed_bytes(value: Any, label: str) -> bytes:
+    """A signed transaction a caller supplied, as bytes the SDK owns.
 
-
-def _strict_base64(value: Any, label: str = "value") -> bytes:
-    """Decode standard, padded base64; the SDK's one decoder for caller input.
-
-    base64.b64decode skips characters outside the alphabet unless asked to
-    validate, and py-algorand-sdk does not ask, so they take strings the Go and
-    TypeScript SDKs refuse.
+    It must be bytes; a bytearray or memoryview is copied to bytes, so a
+    change the caller makes to its buffer afterwards reaches nothing the SDK
+    holds. Anything else, such as a base64 or hex string, is refused with a
+    ValueError naming ``label``, before anything is sent.
     """
-    if not isinstance(value, str) or _STRICT_BASE64.fullmatch(value) is None:
-        raise ValueError(f"{label} is not valid base64")
-    return base64.b64decode(value, validate=True)
+    if not isinstance(value, (bytes, bytearray, memoryview)):
+        raise ValueError(
+            f"{label} is a {type(value).__name__}, not bytes: pass the raw msgpack "
+            "bytes of one signed transaction"
+        )
+    return bytes(value)
+
+
+def signed_group_base64(signed_group: List[bytes]) -> str:
+    """The text algosdk's ``send_raw_transaction`` takes for a signed group:
+    the base64 of its entries joined in order.
+
+    ``signed_group`` is what the sign calls return and the results and
+    errors hold: a list with one entry per transaction, each the raw bytes of
+    one signed transaction. A bytearray or memoryview entry is accepted. A
+    ``str`` entry, a value that is not a list and an empty list are refused
+    with a ValueError naming what is wrong.
+
+    It reads no node and no answer. It does not check that the entries are
+    signed transactions: they come from the SDK's verified output, and the
+    node checks what it is sent.
+
+    Submit with algosdk, then wait with algosdk::
+
+        txid = algod_client.send_raw_transaction(signed_group_base64(group))
+        transaction.wait_for_confirmation(algod_client, txid, 10)
+    """
+    if not isinstance(signed_group, (list, tuple)):
+        raise ValueError(
+            "signed_group must be a list of signed transactions, each one's raw bytes"
+        )
+    if not signed_group:
+        raise ValueError("signed_group is empty")
+    joined = b"".join(
+        _caller_signed_bytes(entry, f"signed group position {index}")
+        for index, entry in enumerate(signed_group, start=1)
+    )
+    return base64.b64encode(joined).decode()
 
 
 def _strict_hex(value: Any) -> bytes:
@@ -5297,13 +5365,19 @@ class SignerClient:
         except Exception as e:
             raise SignerError(f"failed to query account info: {e}") from e
 
+        return self._resolve_auth(address, account_info, self.list_keys_if_keyset_changed())
+
+    def _resolve_auth(
+        self, address: str, account_info: Any, keys: List[KeyInfo]
+    ) -> ResolvedAuthAddress:
+        """resolve_auth_address from an account read and a key list the
+        caller already has, so a call that resolves several senders reads
+        each once. The caller has refused another spelling of ``address``."""
         # The chain's answer is compared in canonical form.
         auth_addr = _address_key(_extract_auth_address(account_info))
         signing_addr = address
         if auth_addr and auth_addr != address:
             signing_addr = auth_addr
-
-        keys = self.list_keys_if_keyset_changed()
 
         # A rotating account is authorized by its current stage, which the
         # signer derives from the account's key and never lists. The signer
@@ -6680,7 +6754,7 @@ class SignerClient:
         txns: List[Optional[transaction.Transaction]],
         auth_addresses: List[Optional[str]],
         lsig_args_map: Optional[Dict[str, Dict[str, bytes]]] = None,
-        passthrough: Optional[Dict[int, str]] = None,
+        passthrough: Optional[Dict[int, bytes]] = None,
         lsig_resources: Optional[Dict[int, LogicSigResourceUsage]] = None,
         allow_foreign: bool = True,
     ) -> List[Dict[str, Any]]:
@@ -6688,17 +6762,18 @@ class SignerClient:
         Build the request entries for /sign and /plan.
 
         It refuses early what the signer could not use (an auth address that
-        is not an address, a passthrough that is not a canonical signed
-        transaction) and matches the LogicSig args against the positions. What
-        it decodes to do that goes no further: the slots a response is checked
-        against are decoded from the entries actually sent.
+        is not an address, a passthrough that is not bytes or not a canonical
+        signed transaction) and matches the LogicSig args against the
+        positions. What it decodes to do that goes no further: the slots a
+        response is checked against are decoded from the entries actually
+        sent.
 
         Args:
             txns: List of transactions
             auth_addresses: Auth address for each transaction
             lsig_args_map: Optional mapping of address -> lsig_args
-            passthrough: Optional mapping of group index -> base64-encoded
-                pre-signed transaction
+            passthrough: Optional mapping of group index -> pre-signed
+                transaction, the raw msgpack bytes of one signed transaction
             lsig_resources: Optional mapping of group index -> independent
                 LogicSig program-byte, argument-byte, and opcode-cost demand
                 for foreign or passthrough transactions.
@@ -6740,7 +6815,7 @@ class SignerClient:
         for i, (txn, auth_addr) in enumerate(zip(txns, auth_addresses)):
             # Passthrough: include pre-signed transaction as-is
             if passthrough and i in passthrough:
-                signed_bytes = _strict_base64(passthrough[i], f"passthrough[{i}]")
+                signed_bytes = _caller_signed_bytes(passthrough[i], f"passthrough[{i}]")
                 try:
                     slot = _decode_passthrough_slot(signed_bytes)
                 except SignerError as e:
@@ -6836,10 +6911,10 @@ class SignerClient:
         txns: List[Optional[transaction.Transaction]],
         auth_addresses: List[Optional[str]],
         lsig_args_map: Optional[Dict[str, Dict[str, bytes]]] = None,
-        passthrough: Optional[Dict[int, str]] = None,
+        passthrough: Optional[Dict[int, bytes]] = None,
         lsig_resources: Optional[Dict[int, LogicSigResourceUsage]] = None,
         request_id: Optional[str] = None,
-    ) -> List[str]:
+    ) -> List[bytes]:
         """
         Send signing request to the /sign endpoint.
 
@@ -6857,12 +6932,12 @@ class SignerClient:
             txns: List of transactions to sign
             auth_addresses: Auth address for each transaction
             lsig_args_map: Optional mapping of address -> lsig_args
-            passthrough: Optional mapping of group index -> base64-encoded
-                pre-signed transaction. Passthrough transactions are included
-                as-is in the group (the server does not re-sign them). Use this
-                for multi-party workflows where another signer has already
-                signed their transaction. All indices must be in range
-                [0, len(txns)).
+            passthrough: Optional mapping of group index -> pre-signed
+                transaction, the raw msgpack bytes of one signed transaction.
+                Passthrough transactions are included as-is in the group (the
+                server does not re-sign them). Use this for multi-party
+                workflows where another signer has already signed their
+                transaction. All indices must be in range [0, len(txns)).
             lsig_resources: Optional mapping of group index -> independent
                 LogicSig resource demand for foreign or passthrough transactions.
             request_id: Optional caller-owned /sign request ID. Applications
@@ -6870,8 +6945,9 @@ class SignerClient:
                 pending approval from another thread.
 
         Returns:
-            List of base64-encoded signed transactions (includes any dummies
-            added by server).
+            The signed group, one entry per transaction (any dummies added by
+            the server included), each the raw msgpack bytes of one signed
+            transaction.
 
         Raises:
             ValueError: If a passthrough index is out of range or a
@@ -6882,20 +6958,16 @@ class SignerClient:
         )
         data = self.sign_requests(entries, request_id=request_id)
 
-        # Parse signed transactions (convert hex to base64 for algosdk compatibility)
         signed_hexes = data.signed
         if not signed_hexes:
             raise SignerError("Server returned no signed transactions")
-
-        result = []
         for h in signed_hexes:
             if not h:
                 raise SignerError(
                     "Server returned empty signed transaction slot; use /plan "
                     "for foreign or partial groups"
                 )
-            result.append(base64.b64encode(bytes.fromhex(h)).decode())
-        return result
+        return _signed_group_from_hex(signed_hexes)
 
     def sign_requests(
         self,
@@ -6984,7 +7056,7 @@ class SignerClient:
         txns: List[Optional[transaction.Transaction]],
         auth_addresses: Optional[List[Optional[str]]] = None,
         lsig_args_map: Optional[Dict[str, Dict[str, bytes]]] = None,
-        passthrough: Optional[Dict[int, str]] = None,
+        passthrough: Optional[Dict[int, bytes]] = None,
         lsig_resources: Optional[Dict[int, LogicSigResourceUsage]] = None,
     ) -> dict:
         """
@@ -7008,8 +7080,8 @@ class SignerClient:
                 defaults to each txn's sender. Passthrough and foreign indices
                 may be None.
             lsig_args_map: Optional mapping of address -> lsig_args
-            passthrough: Optional mapping of group index -> base64-encoded
-                pre-signed transaction
+            passthrough: Optional mapping of group index -> pre-signed
+                transaction, the raw msgpack bytes of one signed transaction
             lsig_resources: Optional mapping of group index -> independent
                 LogicSig resource demand for foreign transactions
                 (auth_address is None).
@@ -7097,7 +7169,9 @@ class SignerClient:
                 "signed simulation requires a complete group; signer returned "
                 f"{foreign_count} foreign transaction(s)"
             )
-        return _simulate_signed_group(algod_client, response.signed, response.mutations)
+        return _simulate_signed_group(
+            algod_client, _signed_group_from_hex(response.signed), response.mutations
+        )
 
     def simulate_prepared_transaction(
         self,
@@ -7120,7 +7194,7 @@ class SignerClient:
         lsig_args: Optional[Dict[str, bytes]] = None,
         *,
         request_id: Optional[str] = None,
-    ) -> str:
+    ) -> List[bytes]:
         """
         Sign a transaction via apsigner.
 
@@ -7139,32 +7213,30 @@ class SignerClient:
                 another thread.
 
         Returns:
-            Base64-encoded signed transaction(s), ready for algod_client.send_raw_transaction().
-            If dummies were added, returns concatenated group as single base64 string.
+            The signed group, one entry per transaction, each the raw msgpack
+            bytes of one signed transaction. The first entry is the
+            transaction given; any after it are resource dummies the server
+            appended. Submit the whole list: with submit_signed_group, which
+            submits and waits, or with algosdk as
+            algod_client.send_raw_transaction(signed_group_base64(signed)).
         """
         if not auth_address:
             auth_address = txn.sender
 
         lsig_args_map = {auth_address: lsig_args} if lsig_args else None
 
-        signed_list = self._sign_request(
-            [txn], [auth_address], lsig_args_map, request_id=request_id
-        )
-
-        # Concatenate all signed txns and return as single base64 string
-        all_bytes = b"".join(base64.b64decode(s) for s in signed_list)
-        return base64.b64encode(all_bytes).decode()
+        return self._sign_request([txn], [auth_address], lsig_args_map, request_id=request_id)
 
     def sign_transactions(
         self,
         txns: List[Optional[transaction.Transaction]],
         auth_addresses: Optional[List[Optional[str]]] = None,
         lsig_args_map: Optional[Dict[str, Dict[str, bytes]]] = None,
-        passthrough: Optional[Dict[int, str]] = None,
+        passthrough: Optional[Dict[int, bytes]] = None,
         lsig_resources: Optional[Dict[int, LogicSigResourceUsage]] = None,
         *,
         request_id: Optional[str] = None,
-    ) -> str:
+    ) -> List[bytes]:
         """
         Sign multiple transactions as a group.
 
@@ -7191,10 +7263,12 @@ class SignerClient:
                            may be None.
             lsig_args_map: Optional mapping of address -> lsig_args.
                            Example: {"HASHLOCK_ADDR...": {"preimage": b"secret"}}
-            passthrough: Optional mapping of group index -> base64-encoded
-                pre-signed transaction. These transactions are included as-is
-                in the group without re-signing. Use for multi-party workflows.
-                All indices must be in range [0, len(txns)).
+            passthrough: Optional mapping of group index -> pre-signed
+                transaction, the raw msgpack bytes of one signed transaction.
+                These transactions are included as-is in the group without
+                re-signing. Use for multi-party workflows. All indices must be
+                in range [0, len(txns)). A value that is not bytes is refused
+                before anything is sent.
             lsig_resources: Optional mapping of group index -> independent
                 LogicSig resource demand for foreign or passthrough transactions.
             request_id: Optional caller-owned /sign request ID. Use the same
@@ -7202,61 +7276,12 @@ class SignerClient:
                 another thread.
 
         Returns:
-            Base64-encoded concatenated signed transactions for the entire group,
-            ready for algod_client.send_raw_transaction().
-        """
-        if auth_addresses is None:
-            auth_addresses = [txn.sender if txn else None for txn in txns]
-
-        if len(auth_addresses) != len(txns):
-            raise ValueError("auth_addresses length must match txns length")
-
-        signed_list = self._sign_request(
-            txns, auth_addresses, lsig_args_map, passthrough, lsig_resources, request_id=request_id
-        )
-
-        # Concatenate all signed txns and return as single base64 string
-        all_bytes = b"".join(base64.b64decode(s) for s in signed_list)
-        return base64.b64encode(all_bytes).decode()
-
-    def sign_transactions_list(
-        self,
-        txns: List[Optional[transaction.Transaction]],
-        auth_addresses: Optional[List[Optional[str]]] = None,
-        lsig_args_map: Optional[Dict[str, Dict[str, bytes]]] = None,
-        passthrough: Optional[Dict[int, str]] = None,
-        lsig_resources: Optional[Dict[int, LogicSigResourceUsage]] = None,
-        *,
-        request_id: Optional[str] = None,
-    ) -> List[str]:
-        """
-        Sign multiple transactions and return as a list.
-
-        Like sign_transactions() but returns individual base64-encoded signed
-        transactions instead of concatenated. Useful when you need to inspect
-        or handle transactions individually, especially in multi-party workflows.
-
-        See sign_transactions() for passthrough/foreign semantics and group ID
-        requirements.
-
-        Args:
-            txns: List of algosdk Transaction objects. Passthrough indices
-                may use None as a placeholder.
-            auth_addresses: List of auth addresses (one per txn).
-                Passthrough indices may be None.
-            lsig_args_map: Optional mapping of address -> lsig_args
-            passthrough: Optional mapping of group index -> base64-encoded
-                pre-signed transaction. These transactions are included as-is
-                in the group without re-signing. Use for multi-party workflows.
-                All indices must be in range [0, len(txns)).
-            lsig_resources: Optional mapping of group index -> independent
-                LogicSig resource demand for planning foreign transactions.
-            request_id: Optional caller-owned /sign request ID. Use the same
-                ID with cancel_sign_request() to cancel a pending approval from
-                another thread.
-
-        Returns:
-            List of base64-encoded signed transactions (includes any dummies).
+            The signed group, one entry per transaction in group order: the
+            transactions given, passthrough positions included, then any
+            resource dummies the server appended. Each entry is the raw
+            msgpack bytes of one signed transaction. Submit it with
+            submit_signed_group, which submits and waits, or with algosdk as
+            algod_client.send_raw_transaction(signed_group_base64(group)).
         """
         if auth_addresses is None:
             auth_addresses = [txn.sender if txn else None for txn in txns]
@@ -7302,7 +7327,8 @@ class SignerClient:
         position, is refused before anything is signed.
 
         Every position must be one whose key this signer holds, and must name
-        it in ``auth_address``, as the prepare_* helpers do. The signed result
+        it in ``auth_address``, as the prepare_* helpers do; send_transactions
+        does that for transactions built with algosdk. The signed result
         is checked against what was prepared, exactly those bytes are
         submitted, and by default the call waits for confirmation.
 
@@ -7427,10 +7453,121 @@ class SignerClient:
                 raise
             return self._send_prepared(algod_client, PreparedGroup([prepared]), options, True)
 
+    def send_transactions(
+        self,
+        algod_client: Any,
+        txns: List[transaction.Transaction],
+        *,
+        no_wait: bool = False,
+        wait_rounds: int = 0,
+        refresh_validity: bool = False,
+        cosigner_client: Optional["SignerClient"] = None,
+        cosigner_component_key: str = "",
+        cosigner_resolver: Optional[Any] = None,
+        timeout: Optional[float] = None,
+    ) -> SendResult:
+        """Send transactions built with algosdk's own constructors, such as
+        ``transaction.PaymentTxn``, through send_prepared.
+
+        For each distinct sender it reads the sender's account from the node
+        and resolves the signing address as the prepare_* helpers do
+        (resolve_auth_address: the sender, or the auth address the chain
+        reports when it is rekeyed). It wraps each transaction, in the order
+        given, in a PreparedTransaction that names its sender's signing
+        address and sets nothing else, and sends the group with
+        send_prepared. It runs none of the prepare_* preflight checks, such as
+        balances and opt-ins.
+
+        The call does not modify the transaction objects you pass in. It
+        validates and submits the signer's returned group using the existing
+        prepared-send flow. Use the transaction IDs in the result.
+
+        Two rules on what you pass:
+
+        - A rotating account accepts a validity window of at most
+          ROTATING_MAX_VALIDITY_WINDOW (100) rounds, and algosdk's
+          suggested_params() gives 1000, so a rotating sender's transaction
+          built with the defaults is refused unless you set
+          ``refresh_validity`` or build it with a window of 100 rounds or
+          less.
+        - A group ID you set is kept, and the SDK then refuses an answer in
+          which the signer raised a fee, appended a transaction or changed
+          the group ID (a rotating account's transaction that carries one is
+          refused before anything is signed), so transactions whose accounts
+          need a fee raise or resource dummies cannot be sent with one: leave
+          the group ID unset and let the signer group them.
+
+        The options, the result and the errors are send_prepared's; see its
+        documentation for how a send behaves. An empty list is refused. The
+        call itself reads each distinct sender's account once, and the
+        signer's keys once, before it hands the group to send_prepared, which
+        makes its own reads as documented there. A failed account lookup is a
+        plain SignerError (or SendTimeoutError when the call's ``timeout``
+        ended it) naming the transaction's position and sender. A failed
+        resolution of a sender is raised as it is, the same object, with a
+        note (``add_note``) naming the position and sender. A failed read of
+        the signer's keys, such as a locked or unreachable signer, is raised
+        as it is and names no transaction. All are raised before anything is
+        signed.
+        """
+        options = _SendOptions(
+            no_wait=no_wait,
+            wait_rounds=wait_rounds,
+            refresh_validity=refresh_validity,
+            cosigner_client=cosigner_client,
+            cosigner_component_key=cosigner_component_key,
+            cosigner_resolver=cosigner_resolver,
+        )
+        if algod_client is None:
+            raise ValueError("algod_client is required")
+        if not isinstance(txns, (list, tuple)):
+            raise ValueError("txns must be a list of algosdk Transaction objects")
+        if not txns:
+            raise ValueError("txns is empty: there is no transaction to send")
+        with _time_limit(timeout):
+            algod_client = _limited_algod(algod_client)
+            slots = []
+            # Each distinct sender is read and resolved once here, against one
+            # read of the signer's keys; the prepared send makes its own reads.
+            keys: Optional[List[KeyInfo]] = None
+            auth_by_sender: Dict[str, str] = {}
+            for index, txn in enumerate(txns):
+                if not isinstance(txn, transaction.Transaction):
+                    raise ValueError(
+                        f"transaction {index}: a {type(txn).__name__}, not an algosdk Transaction"
+                    )
+                sender = txn.sender
+                if sender not in auth_by_sender:
+                    # As resolve_auth_address does: the signer lists
+                    # addresses canonically.
+                    _refuse_alternate_spelling(sender, f"transaction {index}: sender")
+                    try:
+                        info = algod_client.account_info(sender)
+                    except Exception as e:
+                        raise _node_error(
+                            f"transaction {index}: read the account of sender {sender}", e
+                        ) from e
+                    # The signer's keys are not this sender's: a failure to
+                    # read them is raised as it is.
+                    if keys is None:
+                        keys = self.list_keys_if_keyset_changed()
+                    try:
+                        resolved = self._resolve_auth(sender, info, keys)
+                    except Exception as e:
+                        # The original error, its class and attributes kept,
+                        # with a note naming the position and sender.
+                        _add_note(e, f"transaction {index}, sender {sender}")
+                        raise
+                    auth_by_sender[sender] = resolved.auth_address
+                slots.append(
+                    PreparedTransaction(transaction=txn, auth_address=auth_by_sender[sender])
+                )
+            return self._send_prepared(algod_client, PreparedGroup(slots), options, False)
+
     def submit_signed_group(
         self,
         algod_client: Any,
-        signed_group: List[str],
+        signed_group: List[bytes],
         *,
         no_wait: bool = False,
         wait_rounds: int = 0,
@@ -7442,18 +7579,27 @@ class SignerClient:
         again the signed_group a SubmissionError kept: the same bytes can
         execute only once. It submits and waits as a send does, with
         algosdk's send_raw_transaction and wait_for_confirmation, and raises
-        their failures as SubmissionError. Each entry must be one
-        canonically encoded signed transaction, hex msgpack, and a group of
-        several must carry the group ID computed over itself.
+        their failures as SubmissionError. ``signed_group`` is a list with
+        one entry per transaction, in group order, each the raw msgpack
+        bytes of one canonically encoded signed transaction; a group of
+        several must carry the group ID computed over itself. An entry that
+        is not bytes, such as a hex or base64 string, is refused with a
+        ValueError naming its position, before anything is posted.
         """
         if algod_client is None:
             raise ValueError("algod_client is required")
         options = _SendOptions(no_wait=no_wait, wait_rounds=wait_rounds)
-        if isinstance(signed_group, (str, bytes)) or not isinstance(signed_group, (list, tuple)):
-            raise ValueError("signed_group must be a list of hex strings")
-        result = SendResult(signed_group=list(signed_group), original_count=len(signed_group))
-        raw = _describe_signed_group(result)
-        _submit_and_track(algod_client, raw, result, options)
+        if not isinstance(signed_group, (list, tuple)):
+            raise ValueError(
+                "signed_group must be a list of signed transactions, each one's raw bytes"
+            )
+        entries = [
+            _caller_signed_bytes(entry, f"signed group position {index}")
+            for index, entry in enumerate(signed_group, start=1)
+        ]
+        result = SendResult(signed_group=entries, original_count=len(entries))
+        _describe_signed_group(result)
+        _submit_and_track(algod_client, result, options)
         return result
 
     def _send_prepared(
@@ -7550,13 +7696,17 @@ class SignerClient:
                 else ""
             )
             sign_entries: Optional[List[Dict[str, Any]]] = None
+            # The /sign answer of the ordinary flow, as hex.
+            signed_hex: Optional[List[str]] = None
         else:
             response, released_by, sign_entries = self._sign_for_send(group, last_valid)
-            result.signed_group = list(response.signed)
+            signed_hex = response.signed
             result.mutations = copy.deepcopy(response.mutations)
 
         try:
-            raw = _describe_signed_group(result)
+            if signed_hex is not None:
+                result.signed_group = _signed_group_from_hex(signed_hex)
+            _describe_signed_group(result)
         except SignerError:
             raise
         except Exception as e:
@@ -7569,7 +7719,7 @@ class SignerClient:
                 requests=sign_entries,
                 last_valid=last_valid,
             ) from e
-        _submit_and_track(algod_client, raw, result, options)
+        _submit_and_track(algod_client, result, options)
         return result
 
     def _classify_send(self, group: PreparedGroup) -> tuple[str, List[int]]:
@@ -7588,7 +7738,7 @@ class SignerClient:
         flow = ""
         left_rotation: List[int] = []
         for index, item in enumerate(group.transactions):
-            if item.signed_transaction_base64:
+            if item.signed_transaction:
                 raise UnsupportedGroupError(
                     f"prepared transaction {index}: it is already signed; use the lower-level "
                     "signing calls for a pre-signed position"
@@ -8023,7 +8173,7 @@ class SignerClient:
                     request_id=signed.request_id,
                 ),
             )
-            raw = _describe_signed_group(result)
+            _describe_signed_group(result)
         except SignerError:
             raise
         except Exception as e:
@@ -8036,7 +8186,7 @@ class SignerClient:
                 rotating=prepared,
                 last_valid=signed._last_valid,
             ) from e
-        _submit_and_track(algod_client, raw, result, options)
+        _submit_and_track(algod_client, result, options)
         return result
 
 
@@ -8918,7 +9068,7 @@ def sign_prepared_cosigned_group(
     # signer's keyset revision has changed: the lookup the prepare helpers make.
     signer_keys = user_client.list_keys_if_keyset_changed()
     for index, item in enumerate(prepared):
-        if item.signed_transaction_base64:
+        if item.signed_transaction:
             raise ValueError(
                 f"prepared transaction {index}: passthrough entries are not "
                 "supported in prepared bounded-cosigner groups"
@@ -9207,7 +9357,7 @@ def sign_prepared_cosigned_group(
             # leaves the outcome unknown.
             raise _check_fault("verify assembled group: ", e, answered) from e
         return CosignedSignResult(
-            signed_group=list(assembly_response.signed_group),
+            signed_group=_signed_group_from_hex(assembly_response.signed_group),
             cosigner_component_responses=cosigner_component_responses,
             primary_sign_response=primary_response,
             bounded_component_response=component_response,
@@ -9430,12 +9580,14 @@ class PreparedRotating:
                 f"{self._target}"
             )
         spend = txns[0]
+        signed_group: List[bytes] = []
         for index, signed_hex in enumerate(signed):
             position = index + 1
             try:
                 raw = _strict_hex(signed_hex)
             except ValueError as e:
                 raise SignerError(f"signed transaction {position}: invalid hex: {e}") from e
+            signed_group.append(raw)
             try:
                 stxn = _decode_canonical_signed_txn(raw)
             except SignerError as e:
@@ -9482,7 +9634,7 @@ class PreparedRotating:
         if reported != group_id and not (group_id == "" and reported == zero_group):
             raise SignerError(f"signer reports group ID {reported!r}, the spend's is {group_id!r}")
         return RotatingSignResult(
-            signed_group=list(signed),
+            signed_group=signed_group,
             stage=cast(int, self._stage),
             target=cast(int, self._target),
             txid=txid,
@@ -9648,11 +9800,11 @@ def _last_round(status: Any) -> int:
     return _require_uint(value, "node status last-round", error=SignerError)
 
 
-def _describe_signed_group(result: SendResult) -> List[bytes]:
+def _describe_signed_group(result: SendResult) -> None:
     """Fill the result's IDs, fees, group ID and last valid round from its
-    signed bytes, and return those bytes decoded. Each entry must be one canonically encoded
-    signed transaction, and a group of several must carry the group ID
-    computed over itself."""
+    signed bytes, which are what is submitted. Each entry must be one
+    canonically encoded signed transaction, and a group of several must carry
+    the group ID computed over itself."""
     try:
         decoded = _decode_executable_signed_group(result.signed_group)
         if len(decoded) < result.original_count:
@@ -9671,7 +9823,6 @@ def _describe_signed_group(result: SendResult) -> List[bytes]:
     result.fees = [int(txn.fee) for txn in txns]
     result.group_id = base64.b64encode(group_id).decode() if group_id else ""
     result.tx_ids = [signed.get_txid() for signed in decoded]
-    return [bytes.fromhex(entry) for entry in result.signed_group]
 
 
 def _earliest_last_valid(
@@ -9687,9 +9838,7 @@ def _earliest_last_valid(
     )
 
 
-def _submit_and_track(
-    algod_client: Any, raw: List[bytes], result: SendResult, options: _SendOptions
-) -> None:
+def _submit_and_track(algod_client: Any, result: SendResult, options: _SendOptions) -> None:
     """The one submission path of every send. It submits the signed bytes
     exactly as given with algosdk's send_raw_transaction and, unless told not
     to, waits for the first transaction with algosdk's wait_for_confirmation.
@@ -9699,11 +9848,12 @@ def _submit_and_track(
 
     A KeyboardInterrupt or other BaseException that is not an Exception ends
     the call as it is, with the signed group attached, since it may have
-    reached the node: as ``aplane_signed_group`` and ``aplane_tx_ids``, and a
-    note where the exception takes notes.
+    reached the node: as ``aplane_signed_group`` (one entry per transaction,
+    each the raw bytes of one signed transaction) and ``aplane_tx_ids``, and
+    a note where the exception takes notes.
     """
     try:
-        _submit_and_wait(algod_client, raw, result, options)
+        _submit_and_wait(algod_client, result, options)
     except Exception:
         raise
     except BaseException as e:
@@ -9717,9 +9867,7 @@ def _submit_and_track(
         raise
 
 
-def _submit_and_wait(
-    algod_client: Any, raw: List[bytes], result: SendResult, options: _SendOptions
-) -> None:
+def _submit_and_wait(algod_client: Any, result: SendResult, options: _SendOptions) -> None:
     def failure(submitted: bool, error: BaseException) -> SubmissionError:
         # The describe step computed the last valid round when it decoded the
         # group, so building the error decodes nothing.
@@ -9733,7 +9881,7 @@ def _submit_and_wait(
         ended = _time_limit_error("before the group was submitted")
         raise failure(False, ended) from ended
     try:
-        algod_client.send_raw_transaction(base64.b64encode(b"".join(raw)).decode())
+        algod_client.send_raw_transaction(signed_group_base64(result.signed_group))
     except Exception as e:
         raise failure(False, e) from e
     result.outcome = SEND_OUTCOME_SUBMITTED

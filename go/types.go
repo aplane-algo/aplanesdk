@@ -906,6 +906,9 @@ type FromEnvOptions struct {
 
 // SignOptions contains options for signing with passthrough and foreign support.
 type SignOptions struct {
-	Passthrough   map[int]string
+	// Passthrough maps a position to a signed transaction from another
+	// signer: canonical msgpack bytes, as go-algorand-sdk's signers return
+	// them. It is sent to the signer as is.
+	Passthrough   map[int][]byte
 	LsigResources map[int]LogicSigResourceUsage
 }

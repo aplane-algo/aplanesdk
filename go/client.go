@@ -9,7 +9,6 @@ import (
 	"crypto/rand"
 	"crypto/sha512"
 	"encoding/base32"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -986,53 +985,38 @@ func (c *SignerClient) PlanRequestsWithContext(ctx context.Context, requests []S
 	return &planResp, nil
 }
 
-// SignTransaction signs a single transaction.
-// Returns the signed transaction as base64.
+// SignTransaction signs a single transaction. It returns the signed group as
+// SignTransactions does: the first entry is the caller's transaction, and any
+// further entries are resource dummies the signer appended. The whole list is
+// what must be submitted, with SubmitSignedGroup or with go-algorand-sdk as
+// SendRawTransaction(bytes.Join(signed, nil)).
 // An empty authAddress means the sender signs for itself; lsigArgs then apply
 // to the sender.
-func (c *SignerClient) SignTransaction(txn types.Transaction, authAddress string, lsigArgs LsigArgs) (string, error) {
+func (c *SignerClient) SignTransaction(txn types.Transaction, authAddress string, lsigArgs LsigArgs) ([][]byte, error) {
 	if authAddress == "" {
 		authAddress = txn.Sender.String()
 	}
-	signed, err := c.SignTransactions([]types.Transaction{txn}, []string{authAddress}, lsigArgsToMap(authAddress, lsigArgs))
-	return signed, err
+	return c.SignTransactions([]types.Transaction{txn}, []string{authAddress}, lsigArgsToMap(authAddress, lsigArgs))
 }
 
-// SignTransactions signs multiple transactions as a group.
-// Returns concatenated signed transactions as base64.
-func (c *SignerClient) SignTransactions(txns []types.Transaction, authAddresses []string, lsigArgsMap LsigArgsMap) (string, error) {
-	requests, err := buildSignRequests(txns, authAddresses, lsigArgsMap)
-	if err != nil {
-		return "", err
-	}
-	return c.sign(requests)
-}
-
-// SignTransactionsWithOptions signs transactions with passthrough support.
-// Returns concatenated signed transactions as base64.
-func (c *SignerClient) SignTransactionsWithOptions(txns []types.Transaction, authAddresses []string, lsigArgsMap LsigArgsMap, opts *SignOptions) (string, error) {
-	requests, err := buildSignRequestsWithOptions(txns, authAddresses, lsigArgsMap, opts)
-	if err != nil {
-		return "", err
-	}
-	if hasForeignRequests(requests) {
-		return "", fmt.Errorf("foreign entries are only supported on /plan; use PlanGroup first, then resubmit foreign slots as passthrough")
-	}
-	return c.sign(requests)
-}
-
-// SignTransactionsList signs transactions and returns individual base64 strings.
-func (c *SignerClient) SignTransactionsList(txns []types.Transaction, authAddresses []string, lsigArgsMap LsigArgsMap) ([]string, error) {
+// SignTransactions signs multiple transactions as a group. It returns the
+// signed group, one canonical msgpack-encoded signed transaction per entry, in
+// group order: the transactions given, then any resource dummies the signer
+// appended. Submit it with SubmitSignedGroup, which submits and waits, or
+// with go-algorand-sdk as SendRawTransaction(bytes.Join(signed, nil)) followed
+// by its transaction.WaitForConfirmation.
+func (c *SignerClient) SignTransactions(txns []types.Transaction, authAddresses []string, lsigArgsMap LsigArgsMap) ([][]byte, error) {
 	requests, err := buildSignRequests(txns, authAddresses, lsigArgsMap)
 	if err != nil {
 		return nil, err
 	}
-	return c.signList(requests)
+	return c.sign(requests)
 }
 
-// SignTransactionsListWithOptions signs transactions with passthrough support
-// and returns individual base64 strings.
-func (c *SignerClient) SignTransactionsListWithOptions(txns []types.Transaction, authAddresses []string, lsigArgsMap LsigArgsMap, opts *SignOptions) ([]string, error) {
+// SignTransactionsWithOptions signs transactions with passthrough support. It
+// returns the signed group as SignTransactions does, passthrough positions
+// included.
+func (c *SignerClient) SignTransactionsWithOptions(txns []types.Transaction, authAddresses []string, lsigArgsMap LsigArgsMap, opts *SignOptions) ([][]byte, error) {
 	requests, err := buildSignRequestsWithOptions(txns, authAddresses, lsigArgsMap, opts)
 	if err != nil {
 		return nil, err
@@ -1040,7 +1024,7 @@ func (c *SignerClient) SignTransactionsListWithOptions(txns []types.Transaction,
 	if hasForeignRequests(requests) {
 		return nil, fmt.Errorf("foreign entries are only supported on /plan; use PlanGroup first, then resubmit foreign slots as passthrough")
 	}
-	return c.signList(requests)
+	return c.sign(requests)
 }
 
 // buildSignRequestsWithOptions converts transactions into sign requests with
@@ -1081,11 +1065,8 @@ func buildRequests(txns []types.Transaction, authAddresses []string, lsigArgsMap
 		}
 
 		// Passthrough: include pre-signed transaction as-is
-		if b64, ok := opts.Passthrough[i]; ok {
-			decoded, err := Base64ToBytes(b64)
-			if err != nil {
-				return nil, fmt.Errorf("invalid passthrough transaction %d: invalid base64: %w", i+1, err)
-			}
+		if signed, ok := opts.Passthrough[i]; ok {
+			decoded := append([]byte(nil), signed...)
 			req := SignRequest{SignedTxnHex: hex.EncodeToString(decoded), LsigResources: resources}
 			if err := req.Validate(); err != nil {
 				return nil, fmt.Errorf("invalid passthrough transaction %d: %w", i+1, err)
@@ -1469,34 +1450,14 @@ func (c *SignerClient) CancelSignRequestWithContext(ctx context.Context, request
 	return &cancelResp, nil
 }
 
-// sign performs the actual signing request.
-func (c *SignerClient) sign(requests []SignRequest) (string, error) {
-	groupResp, err := c.signResponse(requests)
-	if err != nil {
-		return "", err
-	}
-
-	// Concatenate signed transactions and convert to base64
-	return hexArrayToBase64(groupResp.Signed)
-}
-
-// signList performs a signing request and returns individual base64 strings.
-func (c *SignerClient) signList(requests []SignRequest) ([]string, error) {
+// sign performs the actual signing request and returns the signed group, one
+// raw signed transaction per entry.
+func (c *SignerClient) sign(requests []SignRequest) ([][]byte, error) {
 	groupResp, err := c.signResponse(requests)
 	if err != nil {
 		return nil, err
 	}
-
-	// Convert each signed transaction individually
-	result := make([]string, len(groupResp.Signed))
-	for i, h := range groupResp.Signed {
-		decoded, err := hex.DecodeString(h)
-		if err != nil {
-			return nil, fmt.Errorf("failed to decode signed transaction %d: %w", i, err)
-		}
-		result[i] = base64.StdEncoding.EncodeToString(decoded)
-	}
-	return result, nil
+	return signedGroupFromHex(groupResp.Signed)
 }
 
 // signResponse is the /sign call behind SignTransactions and its variants. It

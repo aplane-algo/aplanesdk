@@ -109,8 +109,8 @@ func TestSimulatePreparedGroupUsesOrdinarySignThenClientAlgod(t *testing.T) {
 	if algodCalls != 1 || !result.Failed || result.Response.LastRound != 7 {
 		t.Fatalf("simulation result = %+v, algod calls = %d", result, algodCalls)
 	}
-	if len(result.SignedGroup) != 1 || result.SignedGroup[0] != signedHex {
-		t.Fatalf("signed group = %v", result.SignedGroup)
+	if len(result.SignedGroup) != 1 || hex.EncodeToString(result.SignedGroup[0]) != signedHex {
+		t.Fatalf("signed group = %x", result.SignedGroup)
 	}
 	if result.Mutations == nil || result.Mutations.FinalCount != 1 {
 		t.Fatalf("mutations = %+v", result.Mutations)
@@ -208,7 +208,7 @@ func TestSimulatePreparedCosignedGroupRequiresAlgodBeforeSigning(t *testing.T) {
 }
 
 func TestDecodeExecutableSignedGroupRejectsEmptyPosition(t *testing.T) {
-	_, _, _, err := decodeExecutableSignedGroup([]string{""})
+	_, _, _, err := decodeExecutableSignedGroup([][]byte{{}})
 	if err == nil || !strings.Contains(err.Error(), "position 1 is empty") {
 		t.Fatalf("decodeExecutableSignedGroup() error = %v", err)
 	}

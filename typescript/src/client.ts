@@ -99,13 +99,18 @@ import {
 import {
   encodeTransaction,
   encodeLsigArgs,
-  concatenateSignedTxns,
-  bytesToBase64,
   bytesToHex,
   hexToBytes,
-  base64ToBytes,
+  cloneSignedGroup,
+  signedGroupFromHex,
+  signedTransactionCopy,
+  valueKind,
 } from "./encoding.js";
-import { preparedGroupToSignRequests, preparedTransactionToSignRequest } from "./prepared.js";
+import {
+  preparedGroupToSignRequests,
+  preparedSignedTransaction,
+  preparedTransactionToSignRequest,
+} from "./prepared.js";
 import {
   DUMMY_OPCODE_COST,
   DUMMY_PROGRAM as COSIGNED_DUMMY_PROGRAM,
@@ -576,7 +581,7 @@ export async function signPreparedCosignedGroup(
   const signerKeys = await options.userClient.listKeysIfKeysetChanged({ signal: options.signal });
   for (let index = 0; index < prepared.length; index++) {
     const item = prepared[index];
-    if (item.signedTransactionBase64) {
+    if (preparedSignedTransaction(item, `prepared transaction ${index}: signedTransaction`)) {
       throw new SignerError(
         `prepared transaction ${index}: passthrough entries are not supported in prepared bounded-cosigner groups`,
       );
@@ -846,7 +851,7 @@ export async function signPreparedCosignedGroup(
       assemblyResponse.signed_group,
     );
     return {
-      signedGroup: [...assemblyResponse.signed_group],
+      signedGroup: signedGroupFromHex(assemblyResponse.signed_group),
       cosignerComponentResponses,
       primarySignResponse: primary.response,
       boundedComponentResponse: componentResponse,
@@ -878,20 +883,20 @@ export async function simulatePreparedCosignedGroup(
 
 async function simulateSignedGroup(
   algodClient: Algodv2,
-  signedGroup: string[],
+  signedGroup: Uint8Array[],
   mutations?: MutationReport,
 ): Promise<SimulationResult> {
   if (!algodClient) {
     throw new SignerError("algodClient is required");
   }
-  const { decoded: signedTransactions } = decodeExecutableSignedGroup(signedGroup);
+  const signedTransactions = decodeExecutableSignedGroup(signedGroup);
   const response = await runSimulation(algodClient, signedTransactions, false);
   const failureMessage = simulationFailure(response, signedTransactions.length);
 
   return {
     txIds: signedTransactions.map((signed) => signed.txn.txID()),
     transactions: signedGroupTransactions(signedTransactions),
-    signedGroup: [...signedGroup],
+    signedGroup: cloneSignedGroup(signedGroup),
     mutations,
     response,
     failed: failureMessage !== "",
@@ -1747,7 +1752,12 @@ export interface PreparedCosignedGroupOptions {
 }
 
 export interface CosignedSignResult {
-  signedGroup: string[];
+  /**
+   * The assembled group, one canonical msgpack-encoded signed transaction per
+   * entry, in order. boundedAssemblyResponse keeps the signer's answer as it
+   * came, hex.
+   */
+  signedGroup: Uint8Array[];
   cosignerComponentResponses: ComponentResponse[];
   primarySignResponse?: GroupSignResponse;
   boundedComponentResponse?: ComponentResponse;
@@ -1817,7 +1827,7 @@ interface PrepParams {
  */
 function requireCanonicalAddress(value: unknown, name: string): void {
   if (typeof value !== "string") {
-    throw new SignerError(`${name} must be an address string, not ${nonStringKind(value)}`);
+    throw new SignerError(`${name} must be an address string, not ${valueKind(value)}`);
   }
   const canonical = alternateAddressSpelling(value);
   if (canonical !== undefined) {
@@ -1838,11 +1848,18 @@ function addressPublicKey(value: unknown): Uint8Array | undefined {
   return publicKey instanceof Uint8Array && publicKey.length === 32 ? publicKey : undefined;
 }
 
-/** What a value that is not a string is, for an error message. */
-function nonStringKind(value: unknown): string {
-  if (addressPublicKey(value)) return "an algosdk Address: pass its toString()";
-  if (value === null || value === undefined) return String(value);
-  return typeof value === "object" ? "an object" : `a ${typeof value}`;
+/**
+ * Whether value is an algosdk Transaction, told by its structure: an object
+ * with toByte and txID methods whose sender is an algosdk Address. A
+ * Transaction from another copy of algosdk (its ESM and CJS builds, or
+ * another installed version) is not an instance of this copy's class, but
+ * has the same structure.
+ */
+function isAlgosdkTransaction(value: unknown): value is Transaction {
+  if (typeof value !== "object" || value === null) return false;
+  const txn = value as { toByte?: unknown; txID?: unknown; sender?: unknown };
+  return typeof txn.toByte === "function" && typeof txn.txID === "function" &&
+    addressPublicKey(txn.sender) !== undefined;
 }
 
 /** A send's result before signing fills it and submission settles its outcome. */
@@ -2136,7 +2153,7 @@ function requireBoxReferences(boxes: unknown): void {
  */
 function requireAccountReference(value: unknown, name: string): string {
   if (typeof value !== "string") {
-    throw new SignerError(`${name} must be an address string, not ${nonStringKind(value)}`);
+    throw new SignerError(`${name} must be an address string, not ${valueKind(value)}`);
   }
   if (!algosdk.isValidAddress(value)) {
     throw new SignerError(`${name} ${JSON.stringify(value)} is not a valid address`);
@@ -4335,7 +4352,7 @@ export class SignerClient {
    * @param txns - List of algosdk Transaction objects
    * @param authAddresses - List of auth addresses (one per txn)
    * @param lsigArgsMap - Optional mapping of address -> lsigArgs
-   * @param passthrough - Optional mapping of group index -> base64-encoded pre-signed transaction
+   * @param passthrough - Optional mapping of group index -> pre-signed transaction bytes
    * @param lsigResources - Optional mapping of group index to independent LogicSig resource demand
    * @returns PlanGroupResponse with transactions and mutations
    */
@@ -4343,7 +4360,7 @@ export class SignerClient {
     txns: (Transaction | null)[],
     authAddresses?: (string | null)[],
     lsigArgsMap?: LsigArgsMap,
-    passthrough?: Record<number, string>,
+    passthrough?: Record<number, Uint8Array>,
     lsigResources?: Record<number, LogicSigResourceUsage>,
   ): Promise<PlanGroupResponse> {
     const authAddrs = authAddresses ?? txns.map((txn) => txn?.sender?.toString() ?? null);
@@ -4425,12 +4442,20 @@ export class SignerClient {
    * @param txn - algosdk Transaction object
    * @param authAddress - Key to sign with (defaults to txn.sender)
    * @param lsigArgs - Optional runtime args for generic LogicSigs
-   * @returns Base64-encoded signed transaction(s), ready for algodClient.sendRawTransaction()
+   * @returns The signed group, one canonical msgpack-encoded signed
+   *   transaction per entry. The first entry is the caller's transaction; the
+   *   rest are resource dummies the signer appended, and the transaction
+   *   needs them. Submit the whole list: algosdk's sendRawTransaction takes
+   *   it as it is.
    *
    * @example
    * ```typescript
    * // Basic signing (uses txn.sender as authAddress)
    * const signed = await client.signTransaction(txn);
+   * // Submit and wait with the SDK, or with algosdk, which takes the list as it is.
+   * const result = await client.submitSignedGroup(algodClient, signed);
+   * // or: const { txid } = await algodClient.sendRawTransaction(signed).do();
+   * //     await algosdk.waitForConfirmation(algodClient, txid, 10);
    *
    * // Rekeyed account
    * const signed = await client.signTransaction(txn, "SIGNER_KEY_ADDRESS");
@@ -4446,14 +4471,12 @@ export class SignerClient {
     authAddress?: string,
     lsigArgs?: LsigArgs,
     options?: SignOptions,
-  ): Promise<string> {
+  ): Promise<Uint8Array[]> {
     const auth = authAddress || txn.sender.toString();
     const lsigArgsMap = lsigArgs ? { [auth]: lsigArgs } : undefined;
 
     const signedList = await this.signRequest([txn], [auth], lsigArgsMap, undefined, undefined, options);
-
-    // Concatenate all signed txns and return as single base64 string
-    return concatenateSignedTxns(signedList);
+    return signedGroupFromHex(signedList);
   }
 
   /**
@@ -4471,18 +4494,21 @@ export class SignerClient {
    * @param txns - List of algosdk Transaction objects (null for passthrough slots)
    * @param authAddresses - List of auth addresses (one per txn, null for foreign)
    * @param lsigArgsMap - Optional mapping of address -> lsigArgs
-   * @param passthrough - Optional mapping of group index -> base64-encoded pre-signed transaction
+   * @param passthrough - Optional mapping of group index -> pre-signed transaction bytes
    * @param lsigResources - Optional mapping of group index to independent LogicSig resource demand
-   * @returns Base64-encoded concatenated signed transactions for the entire group
+   * @returns The signed group, one canonical msgpack-encoded signed
+   *   transaction per entry, in group order: the transactions given, then any
+   *   resource dummies the signer appended. algosdk's sendRawTransaction
+   *   takes it as it is.
    */
   async signTransactions(
     txns: (Transaction | null)[],
     authAddresses?: (string | null)[],
     lsigArgsMap?: LsigArgsMap,
-    passthrough?: Record<number, string>,
+    passthrough?: Record<number, Uint8Array>,
     lsigResources?: Record<number, LogicSigResourceUsage>,
     options?: SignOptions,
-  ): Promise<string> {
+  ): Promise<Uint8Array[]> {
     const authAddrs =
       authAddresses ?? txns.map((txn) => txn?.sender?.toString() ?? null);
 
@@ -4504,48 +4530,7 @@ export class SignerClient {
       );
     }
 
-    // Concatenate all signed txns and return as single base64 string
-    return concatenateSignedTxns(signedList);
-  }
-
-  /**
-   * Sign multiple transactions and return as a list.
-   *
-   * Like signTransactions() but returns individual base64-encoded signed
-   * transactions instead of concatenated. Useful when you need to inspect
-   * or handle transactions individually, especially in multi-party workflows.
-   *
-   * @param txns - List of algosdk Transaction objects (null for passthrough slots)
-   * @param authAddresses - List of auth addresses (one per txn, passthrough slots may be null)
-   * @param lsigArgsMap - Optional mapping of address -> lsigArgs
-   * @param passthrough - Optional mapping of group index -> base64-encoded pre-signed transaction
-   * @param lsigResources - Optional mapping of group index to independent LogicSig resource demand
-   * @returns List of base64-encoded signed transactions
-   */
-  async signTransactionsList(
-    txns: (Transaction | null)[],
-    authAddresses?: (string | null)[],
-    lsigArgsMap?: LsigArgsMap,
-    passthrough?: Record<number, string>,
-    lsigResources?: Record<number, LogicSigResourceUsage>,
-    options?: SignOptions,
-  ): Promise<string[]> {
-    const authAddrs =
-      authAddresses ?? txns.map((txn) => txn?.sender?.toString() ?? null);
-
-    if (authAddrs.length !== txns.length) {
-      throw new SignerError("authAddresses length must match txns length");
-    }
-
-    const signedHexes = await this.signRequest(
-      txns, authAddrs, lsigArgsMap, passthrough, lsigResources, options,
-    );
-
-    // Convert each hex to base64 (empty strings stay empty for foreign entries)
-    return signedHexes.map((hex) => {
-      if (hex === "") return "";
-      return bytesToBase64(hexToBytes(hex));
-    });
+    return signedGroupFromHex(signedList);
   }
 
   /**
@@ -4682,7 +4667,7 @@ export class SignerClient {
         `signed simulation requires a complete group; signer returned ${mutations?.foreignCount} foreign transaction(s)`
       );
     }
-    return simulateSignedGroup(algodClient, response.signed ?? [], mutations);
+    return simulateSignedGroup(algodClient, signedGroupFromHex(response.signed ?? []), mutations);
   }
 
   /**
@@ -4746,6 +4731,108 @@ export class SignerClient {
     options?: SendOptions,
   ): Promise<SendResult> {
     return this.sendPreparedGroup(algodClient, group, options, false);
+  }
+
+  /**
+   * Send transactions built with algosdk's own constructors, such as
+   * makePaymentTxnWithSuggestedParamsFromObject, with the options and result
+   * of sendPrepared.
+   *
+   * sendTransactions itself reads each distinct sender's account once before
+   * it hands the group to sendPrepared, which makes its own reads as
+   * described there. From that account it resolves the signing address as
+   * the prepare helpers do: the sender, or its auth address on the chain
+   * when the account is rekeyed. It wraps each
+   * transaction in a prepared slot that names that address and sets nothing
+   * else, and calls sendPrepared with the slots in the order given. It runs
+   * none of the prepare helpers' preflight checks, such as balances and
+   * asset opt-ins.
+   *
+   * The call does not modify the transaction objects you pass in. It
+   * validates and submits the signer's returned group using the existing
+   * sendPrepared flow. Use the transaction IDs in the result. sendPrepared
+   * describes that flow.
+   *
+   * Two rules apply to what you pass. A rotating account accepts a validity
+   * window of at most ROTATING_MAX_VALIDITY_WINDOW (100) rounds, and
+   * algosdk's suggested parameters give 1000, so a rotating sender's
+   * transaction built with the defaults is refused unless you set
+   * refreshValidity or build it with a window of 100 rounds or less. A group
+   * ID you set is kept, and the SDK then refuses an answer in which the
+   * signer raised a fee, appended a transaction or changed the group ID, so
+   * transactions whose accounts need a fee raise or resource dummies cannot
+   * be sent with one: leave the group ID unset and let the signer group them.
+   * A rotating account's transaction that carries a group ID is refused
+   * before anything is signed.
+   *
+   * An argument that is not a list, an entry that is not an algosdk
+   * Transaction, and an empty list are refused before anything is asked. A failed account lookup is a plain
+   * error naming the position, and nothing is signed. Anything else
+   * sendPrepared refuses, such as a sender whose key this signer does not
+   * hold, is refused as it is there.
+   */
+  async sendTransactions(
+    algodClient: Algodv2,
+    txns: Transaction[],
+    options?: SendOptions,
+  ): Promise<SendResult> {
+    if (!algodClient) {
+      throw new SignerError("algodClient is required");
+    }
+    checkSendOptions(options);
+    if (!Array.isArray(txns)) {
+      throw new SignerError(`transactions must be a list of algosdk Transactions, not ${valueKind(txns)}`);
+    }
+    if (txns.length === 0) {
+      throw new SignerError("transaction list is empty");
+    }
+    const signal = options?.signal;
+    // An aborted signal stops the send before anything is asked.
+    if (signal?.aborted) {
+      throw callerAborted();
+    }
+    // Every entry is checked before anything is asked.
+    txns.forEach((txn, index) => {
+      if (!isAlgosdkTransaction(txn)) {
+        throw new SignerError(`transaction ${index}: must be an algosdk Transaction, not ${valueKind(txn)}`);
+      }
+    });
+    // One read of the signer's keys resolves every sender, as one prepare
+    // helper's read resolves its sender, and this call reads each distinct
+    // sender's account once; sendPrepared makes its own reads. An error
+    // names the sender's first position.
+    const keys = await this.listKeysIfKeysetChanged({ signal });
+    const authAddresses = new Map<string, string>();
+    for (let index = 0; index < txns.length; index++) {
+      const sender = txns[index].sender.toString();
+      if (authAddresses.has(sender)) continue;
+      let info: AccountInfoResult;
+      try {
+        info = await (algodClient as any).accountInformation(sender).do(undefined, algodOptions(signal));
+      } catch (error) {
+        // An abort is the caller's stop, as anywhere else before signing.
+        if (signal?.aborted) {
+          throw callerAborted();
+        }
+        throw new SignerError(`transaction ${index}: failed to query account info for ${sender}: ${errorText(error)}`);
+      }
+      let resolved: ResolvedAuthAddress;
+      try {
+        resolved = this.resolveFromAccountInfo(sender, info, keys);
+      } catch (error) {
+        // The resolution's refusal, with the position named and its class kept.
+        if (error instanceof KeyNotFoundError) {
+          throw new KeyNotFoundError(`transaction ${index}: ${error.message}`, error.code);
+        }
+        throw error;
+      }
+      authAddresses.set(sender, resolved.authAddress);
+    }
+    const transactions: PreparedTransaction[] = txns.map((txn) => ({
+      transaction: txn,
+      authAddress: authAddresses.get(txn.sender.toString()),
+    }));
+    return this.sendPrepared(algodClient, { transactions }, options);
   }
 
   /**
@@ -4834,13 +4921,13 @@ export class SignerClient {
         }
         throw error;
       }
-      result.signedGroup = [...signed.signedGroup];
+      result.signedGroup = cloneSignedGroup(signed.signedGroup);
       result.mutations = signed.planMutations;
       result.cosigned = signed;
       released = { requestId: signed.boundedAssemblyResponse?.request_id ?? "" };
     } else {
       const { response, requestId, requests } = await this.signForSend(group, lastValid, signal);
-      result.signedGroup = [...(response.signed ?? [])];
+      result.signedGroup = signedGroupFromHex(response.signed ?? []);
       result.mutations = response.mutations;
       released = { requestId, requests };
     }
@@ -4879,7 +4966,7 @@ export class SignerClient {
     const leftRotation: number[] = [];
     for (let index = 0; index < items.length; index++) {
       const item = items[index];
-      if (item.signedTransactionBase64) {
+      if (preparedSignedTransaction(item, `prepared transaction ${index}: signedTransaction`)) {
         throw new UnsupportedGroupError(
           `prepared transaction ${index}: group not supported by unified sending: it is already signed; ` +
             "use the lower-level signing calls for a pre-signed position",
@@ -4976,13 +5063,15 @@ export class SignerClient {
    * to submit a group from signPreparedRotating, or to submit again the
    * signedGroup a SubmissionError kept: the same bytes can execute only once.
    *
-   * Each entry must be one canonically encoded signed transaction, hex
-   * msgpack, and a group of several must carry the group ID computed over
-   * itself.
+   * Each entry must be one canonically encoded signed transaction, as bytes
+   * (a Uint8Array, the form algosdk's signers return), and a group of several
+   * must carry the group ID computed over itself. An entry that is not bytes,
+   * such as a hex or base64 string, is refused before anything is posted.
+   * The entries are copied, so a later change to them changes nothing here.
    */
   async submitSignedGroup(
     algodClient: Algodv2,
-    signedGroup: string[],
+    signedGroup: Uint8Array[],
     options?: SendOptions,
   ): Promise<SendResult> {
     if (!algodClient) {
@@ -4990,12 +5079,15 @@ export class SignerClient {
     }
     const checked = checkSendOptions(options);
     if (!Array.isArray(signedGroup)) {
-      throw new SignerError("verify signed group: signed group is empty");
+      throw new SignerError(
+        `verify signed group: signed group must be a list of signed transactions (Uint8Array entries), not ${valueKind(signedGroup)}`,
+      );
     }
     const result = emptySendResult("", signedGroup.length);
-    result.signedGroup = [...signedGroup];
     let described: DescribedGroup;
     try {
+      result.signedGroup = signedGroup.map((entry, index) =>
+        signedTransactionCopy(entry, `signed group position ${index + 1}`));
       described = describeSignedGroup(result);
     } catch (error) {
       throw new SignerError(`verify signed group: ${errorText(error)}`);
@@ -5271,7 +5363,8 @@ export class SignerClient {
       const result = emptySendResult(SIGNING_FLOW_ROTATING1, 1);
       let described: DescribedGroup;
       try {
-        result.signedGroup = [...signed.signedGroup];
+        // signed is this send's own, and nothing else holds its group.
+        result.signedGroup = signed.signedGroup;
         result.mutations = prepared.mutations();
         result.rotating = {
           stage: signed.stage,
@@ -5324,7 +5417,7 @@ export class SignerClient {
     txns: (Transaction | null)[],
     authAddresses: (string | null)[],
     lsigArgsMap?: LsigArgsMap,
-    passthrough?: Record<number, string>,
+    passthrough?: Record<number, Uint8Array>,
     lsigResources?: Record<number, LogicSigResourceUsage>,
     allowForeign = true,
   ): { requests: SignRequest[] } {
@@ -5355,7 +5448,7 @@ export class SignerClient {
       // LogicSig args; what is decoded goes no further.
       const passthroughEntry = passthroughByIndex.get(i);
       if (passthroughEntry !== undefined) {
-        const signedBytes = base64ToBytes(passthroughEntry, `passthrough[${i}]`);
+        const signedBytes = signedTransactionCopy(passthroughEntry, `passthrough[${i}]`);
         let slot: RequestSlot;
         try {
           slot = decodePassthroughSlot(signedBytes);
@@ -5465,7 +5558,7 @@ export class SignerClient {
     txns: (Transaction | null)[],
     authAddresses: (string | null)[],
     lsigArgsMap?: LsigArgsMap,
-    passthrough?: Record<number, string>,
+    passthrough?: Record<number, Uint8Array>,
     lsigResources?: Record<number, LogicSigResourceUsage>,
     options?: SignOptions,
   ): Promise<string[]> {

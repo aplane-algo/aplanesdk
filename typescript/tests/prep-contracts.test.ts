@@ -48,7 +48,7 @@ function buildGroups(addresses: Record<string, string>): Record<string, Prepared
   const rekeyTo = addresses.rekey_to;
   const foreign = addresses.foreign;
   const appAccount = addresses.app_account;
-  const passthrough = Buffer.from("82a3736967c440", "hex").toString("base64");
+  const passthrough = new Uint8Array(Buffer.from("82a3736967c440", "hex"));
 
   const payment = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
     sender,
@@ -174,7 +174,7 @@ function buildGroups(addresses: Record<string, string>): Record<string, Prepared
     transaction,
     lsigResources: { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 },
   });
-  const passthroughSlot = { signedTransactionBase64: passthrough };
+  const passthroughSlot = { signedTransaction: passthrough };
 
   return {
     payment_sign_mode_lsig_args: {
@@ -276,7 +276,7 @@ describe("prepared sign request parity fixtures", () => {
     assert.throws(
       () => preparedGroupToSignRequests({
         transactions: [{
-          signedTransactionBase64: Buffer.from("signed-txn").toString("base64"),
+          signedTransaction: new Uint8Array(Buffer.from("signed-txn")),
           lsigResources: { programBytes: 0, argumentBytes: 0, maxOpcodeCost: 0 },
         }],
       }),

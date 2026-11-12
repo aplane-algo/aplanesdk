@@ -26,7 +26,7 @@ import {
   KeyDeletionError,
 } from "../src/errors.js";
 import { parseEnrollmentReply, requestEnrollment, requestEnrollmentFromEnv } from "../src/utils.js";
-import { bytesToHex, hexToBytes, concatenateSignedTxns, encodeTransaction, encodeLsigArgs } from "../src/encoding.js";
+import { bytesToBase64, bytesToHex, hexToBytes, signedGroupFromHex, encodeTransaction, encodeLsigArgs } from "../src/encoding.js";
 import {
   loadClientEndpointRegistry,
   loadConfig,
@@ -2585,7 +2585,7 @@ describe("SignerClient", () => {
       assembledTxn = txn;
       const result = await signCosignedWithHeldKeys(options);
 
-      assert.deepEqual(result.signedGroup, [signedTxnHex(txn)]);
+      assert.deepEqual(result.signedGroup.map(bytesToHex), [signedTxnHex(txn)]);
       assert.ok(result.boundedComponentResponse);
       assert.ok(result.boundedAssemblyResponse);
     });
@@ -3284,7 +3284,7 @@ describe("SignerClient", () => {
         [null],
         [null],
         undefined,
-        { 0: Buffer.from(presigned, "hex").toString("base64") },
+        { 0: hexToBytes(presigned) },
         { 0: { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 } },
         false,
       );
@@ -3325,12 +3325,23 @@ describe("SignerClient", () => {
       assert.equal(mockFetch.mock.calls.length, 0);
     });
 
-    it("signTransactionsList rejects foreign entries before calling /sign", async () => {
+    it("refuses a passthrough entry that is not bytes before calling /sign", async () => {
       const client = new SignerClient("http://localhost:11270");
-      const mockTxn = createMockTxn() as Parameters<typeof client.signTransactionsList>[0][0];
+      const mockTxn = createMockTxn() as Parameters<typeof client.signTransactions>[0][0];
+      const presigned = signedHex(fakePayment());
+      for (const entry of [presigned, Buffer.from(presigned, "hex").toString("base64")]) {
+        await assert.rejects(
+          client.signTransactions([mockTxn, null], [fakeAddress(51), null], undefined, { 1: entry as any }),
+          { message: "passthrough[1] must be signed transaction bytes (a Uint8Array), not a string" },
+        );
+        await assert.rejects(
+          client.planGroup([mockTxn, null], [fakeAddress(51), null], undefined, { 1: entry as any }),
+          { message: "passthrough[1] must be signed transaction bytes (a Uint8Array), not a string" },
+        );
+      }
       await assert.rejects(
-        client.signTransactionsList([mockTxn, mockTxn], [fakeAddress(51), null]),
-        { message: /foreign entries are only supported on \/plan/ },
+        client.signTransactions([null], [null], undefined, { 0: new Uint8Array(0) }),
+        { message: /invalid passthrough\[0\]: empty signed transaction/ },
       );
       assert.equal(mockFetch.mock.calls.length, 0);
     });
@@ -3633,7 +3644,7 @@ describe("SignerClient", () => {
 
       const signed = await client.signTransaction(mockTxn);
 
-      assert.equal(Buffer.from(signed, "base64").toString("hex"), signedHex(mockTxn));
+      assert.deepEqual(signed.map(bytesToHex), [signedHex(mockTxn)]);
       assert.equal(mockFetch.mock.calls[0][0], "http://localhost:11270/status");
       assert.equal(mockFetch.mock.calls[1][0], "http://localhost:11270/sign");
     });
@@ -3833,7 +3844,7 @@ describe("SignerClient", () => {
         algosdk.encodeMsgpack(simulationRequests[0].txnGroups[0].txns[0]),
         signedBytes,
       );
-      assert.deepEqual(result.signedGroup, [signedHex]);
+      assert.deepEqual(result.signedGroup, [hexToBytes(signedHex)]);
       assert.deepEqual(result.txIds, [txn.txID()]);
       assert.equal(result.mutations?.finalCount, 1);
       assert.equal(result.failed, true);
@@ -3890,7 +3901,7 @@ describe("SignerClient", () => {
       assert.deepEqual(simulated.pqsig?.sig, signed.pqsig?.sig);
       assert.deepEqual(simulated.pqsig?.pk, signed.pqsig?.pk);
       assert.deepEqual(algosdk.encodeMsgpack(simulated), signedBytes);
-      assert.deepEqual(result.signedGroup, [signedHex]);
+      assert.deepEqual(result.signedGroup, [hexToBytes(signedHex)]);
     });
 
     // An answer without exactly one group result, an object holding one
@@ -4245,28 +4256,26 @@ describe("encoding utilities", () => {
     });
   });
 
-  describe("concatenateSignedTxns", () => {
-    it("concatenates hex strings to base64", () => {
-      const hexes = ["0102", "0304"];
-      const result = concatenateSignedTxns(hexes);
-      // Should be base64 of [1, 2, 3, 4]
-      assert.equal(result, "AQIDBA==");
+  describe("signedGroupFromHex", () => {
+    it("decodes each entry to bytes, in order", () => {
+      assert.deepEqual(signedGroupFromHex(["0102", "", "deadbeef"]), [
+        new Uint8Array([1, 2]),
+        new Uint8Array([]),
+        new Uint8Array([0xde, 0xad, 0xbe, 0xef]),
+      ]);
     });
 
-    it("handles single transaction", () => {
-      const hexes = ["deadbeef"];
-      const result = concatenateSignedTxns(hexes);
-      // Should be base64 of [0xde, 0xad, 0xbe, 0xef]
-      assert.equal(result, "3q2+7w==");
+    it("names the entry that is not hex", () => {
+      assert.throws(() => signedGroupFromHex(["0102", "zz"]), /signed transaction 2 is invalid hex/);
     });
+  });
 
+  describe("bytesToBase64", () => {
     it("encodes a large group without exceeding the argument-spread limit", () => {
-      // ~64 KB across 16 entries: would overflow String.fromCharCode(...bytes)
-      // in the browser fallback if not chunked. Verify it round-trips.
-      const big = "ab".repeat(2048); // 2 KB per entry
-      const hexes = Array.from({ length: 16 }, () => big);
-      const result = concatenateSignedTxns(hexes);
-      const decoded = Buffer.from(result, "base64");
+      // ~32 KB: would overflow String.fromCharCode(...bytes) in the browser
+      // fallback if not chunked. Verify it round-trips.
+      const bytes = new Uint8Array(16 * 2048).fill(0xab);
+      const decoded = Buffer.from(bytesToBase64(bytes), "base64");
       assert.equal(decoded.length, 16 * 2048);
     });
   });
@@ -4672,7 +4681,6 @@ describe("buildSignRequests", () => {
     const unmatched = /no transaction in the request has auth address/;
 
     await assert.rejects(client.signTransactions([mockTxn], undefined, stray), unmatched);
-    await assert.rejects(client.signTransactionsList([mockTxn], undefined, stray), unmatched);
     await assert.rejects(client.planGroup([mockTxn], undefined, stray), unmatched);
     assert.equal(mockFetch.mock.calls.length, 0);
   });
@@ -4693,7 +4701,7 @@ describe("buildSignRequests", () => {
     // under S would rightly match it.)
     const presigned = authorize(grouped[0], passthroughKey);
     assert.equal(presigned.sgnr?.toString(), passthroughKey);
-    const passthrough = { 0: Buffer.from(algosdk.encodeMsgpack(presigned)).toString("base64") };
+    const passthrough = { 0: algosdk.encodeMsgpack(presigned) };
     const auths = [null, lsig];
     const args = { preimage: new Uint8Array([0x73]) };
     const unmatched = /no transaction in the request has auth address/;
@@ -4745,7 +4753,7 @@ describe("buildSignRequests", () => {
     assert.deepEqual(planBody.requests[0].lsig_args, { preimage: "01" });
     assert.equal(planBody.requests[1].lsig_args, undefined);
 
-    const signedSecond = Buffer.from(signedHex(grouped[1]), "hex").toString("base64");
+    const signedSecond = hexToBytes(signedHex(grouped[1]));
     const cases: Array<[string, any[], Array<string | null>]> = [
       ["auth address given", grouped, [first, second]],
       ["sender of the slot", grouped, [first, null]],
@@ -4761,10 +4769,10 @@ describe("buildSignRequests", () => {
 
     queueStatusResponse();
     mockFetch.mockImplementationOnce(signerFetch());
-    const signed = await client.signTransactionsList(
+    const signed = await client.signTransactions(
       grouped, [first, second], args, { 1: signedSecond },
     );
-    assert.equal(signed[1], signedSecond);
+    assert.deepEqual(signed[1], signedSecond);
   });
 });
 
@@ -4815,7 +4823,7 @@ describe("preparedGroupToSignRequests", () => {
   it("builds passthrough requests", () => {
     const requests = preparedGroupToSignRequests({
       transactions: [{
-        signedTransactionBase64: Buffer.from("signed-txn").toString("base64"),
+        signedTransaction: new Uint8Array(Buffer.from("signed-txn")),
         lsigResources: { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 },
       }],
     });
@@ -4828,6 +4836,37 @@ describe("preparedGroupToSignRequests", () => {
         max_opcode_cost: 20000,
       },
     }]);
+  });
+
+  it("refuses a pre-signed transaction that is not bytes, naming its position", () => {
+    const signed = Buffer.from("signed-txn");
+    for (const [value, kind] of [
+      [signed.toString("base64"), "a string"],
+      [signed.toString("hex"), "a string"],
+      [[...signed], "an array"],
+    ] as Array<[unknown, string]>) {
+      assert.throws(
+        () => preparedGroupToSignRequests({
+          transactions: [
+            { transaction: createMockTxn() as any, authAddress: "AUTH_ADDR" },
+            { signedTransaction: value as Uint8Array },
+          ],
+        }),
+        { message: `prepared transaction 1: signedTransaction must be signed transaction bytes (a Uint8Array), not ${kind}` },
+      );
+    }
+  });
+
+  it("reads an empty pre-signed transaction as none", () => {
+    const requests = preparedGroupToSignRequests({
+      transactions: [{
+        transaction: createMockTxn() as any,
+        authAddress: "AUTH_ADDR",
+        signedTransaction: new Uint8Array(0),
+      }],
+    });
+    assert.equal(requests[0].signed_txn_hex, undefined);
+    assert.equal(requests[0].auth_address, "AUTH_ADDR");
   });
 
   it("rejects authorization hints in sign and passthrough modes", () => {
@@ -4854,7 +4893,7 @@ describe("preparedGroupToSignRequests", () => {
     assert.throws(
       () => preparedGroupToSignRequests({
         transactions: [{
-          signedTransactionBase64: Buffer.from("signed-txn").toString("base64"),
+          signedTransaction: new Uint8Array(Buffer.from("signed-txn")),
           pqScheme: "f1",
         }],
       }),
@@ -5055,52 +5094,59 @@ describe("sign return format", () => {
     mockFetch.mockReset();
   });
 
-  it("signTransactionsList returns individual base64 strings", async () => {
+  it("signTransactions returns one signed transaction of bytes per entry", async () => {
     queueStatusResponse();
     mockFetch.mockImplementationOnce(signerFetch());
 
     const client = new SignerClient("http://localhost:11270");
     const txns = [fakePayment(41, 42), fakePayment(43, 44)];
-    const result = await client.signTransactionsList(txns);
+    const result = await client.signTransactions(txns);
 
     assert.equal(result.length, 2);
     // Each slot signs its own transaction, changed only by the group ID the
     // signer assigned.
     result.forEach((item, index) => {
-      const signed = algosdk.decodeSignedTransaction(Buffer.from(item, "base64"));
+      assert.equal(Object.getPrototypeOf(item), Uint8Array.prototype);
+      const signed = algosdk.decodeSignedTransaction(item);
       assert.notEqual(signed.txn.group, undefined);
       signed.txn.group = undefined;
       assert.deepEqual(signed.txn.toByte(), txns[index].toByte());
     });
   });
 
-  it("signTransactions returns concatenated base64", async () => {
-    const client = new SignerClient("http://localhost:11270");
-    const txns = [fakePayment(41, 42), fakePayment(43, 44)];
-
+  it("signTransactions returns the resource dummies the signer appended as entries", async () => {
     queueStatusResponse();
-    mockFetch.mockImplementationOnce(signerFetch());
-    const result = await client.signTransactions(txns);
-    mockFetch.mockImplementationOnce(signerFetch());
-    const individual = await client.signTransactionsList(txns);
+    mockFetch.mockImplementationOnce(signerFetch({ dummies: 2 }));
 
-    assert.deepEqual(
-      Buffer.from(result, "base64"),
-      Buffer.concat(individual.map((item) => Buffer.from(item, "base64"))),
-    );
+    const client = new SignerClient("http://localhost:11270");
+    const result = await client.signTransactions([fakePayment(41, 42)]);
+    assert.equal(result.length, 3);
+    for (const item of result) {
+      algosdk.decodeSignedTransaction(item);
+    }
+  });
+
+  it("signTransaction returns the whole signed group, the caller's transaction first", async () => {
+    queueStatusResponse();
+    mockFetch.mockImplementationOnce(signerFetch({ dummies: 2 }));
+
+    const client = new SignerClient("http://localhost:11270");
+    const txn = fakePayment(41, 42);
+    const result = await client.signTransaction(txn);
+    assert.equal(result.length, 3, "the appended dummies were dropped");
+    const first = algosdk.decodeSignedTransaction(result[0]);
+    assert.equal(first.txn.sender.toString(), txn.sender.toString());
+    first.txn.group = undefined;
+    assert.deepEqual(first.txn.toByte(), txn.toByte());
+    for (const item of result.slice(1)) {
+      assert.notEqual(algosdk.decodeSignedTransaction(item).lsig, undefined, "a dummy is signed by its program");
+    }
   });
 
   it("signTransactions rejects empty transaction arrays locally", async () => {
     mockFetch.mockReset();
     const client = new SignerClient("http://localhost:11270");
     await assert.rejects(client.signTransactions([]), SignerError);
-    assert.equal(mockFetch.mock.calls.length, 0);
-  });
-
-  it("signTransactionsList rejects empty transaction arrays locally", async () => {
-    mockFetch.mockReset();
-    const client = new SignerClient("http://localhost:11270");
-    await assert.rejects(client.signTransactionsList([]), SignerError);
     assert.equal(mockFetch.mock.calls.length, 0);
   });
 
