@@ -19,6 +19,7 @@ from aplanesdk.signer import (
     KeyNotFoundError,
     _parse_lsig_resource_usage,
     _encode_abi_method_args,
+    _encode_lsig_args,
     _require_uint,
     load_config,
     sign_prepared_cosigned_group,
@@ -955,3 +956,37 @@ def test_abi_bool_refusal_names_the_methods_own_argument():
     )
     with pytest.raises(ValueError, match=r"ABI argument 1 \(amount\) must be an integer, not bool"):
         _encode_abi_method_args(named, [1001, True], SENDER, 7, None, None, None)
+
+
+class TestLsigArgEncoding:
+    def test_encodes_bytes_like_values_as_hex(self):
+        assert _encode_lsig_args(
+            {"a": b"secret", "b": bytearray(b"\x01\x02"), "c": memoryview(b"\xff"), "d": b""}
+        ) == {"a": "736563726574", "b": "0102", "c": "ff", "d": ""}
+
+    # float has a hex() of its own, so 1.5 was sent as "0x1.8000000000000p+0".
+    @pytest.mark.parametrize(
+        "bad, kind", [("a1b2c3", "str"), (7, "int"), (1.5, "float"), ([1, 2], "list"), (None, "NoneType")]
+    )
+    def test_refuses_a_value_that_is_not_bytes(self, bad, kind):
+        with pytest.raises(ValueError, match=rf"lsig_args\['preimage'\] must be bytes, not {kind}"):
+            _encode_lsig_args({"preimage": bad})
+
+    @pytest.mark.parametrize("bad, kind", [([("preimage", b"x")], "list"), ("preimage", "str")])
+    def test_refuses_arguments_that_are_not_a_mapping(self, bad, kind):
+        with pytest.raises(ValueError, match=f"lsig_args must be a mapping of name to bytes, not {kind}"):
+            _encode_lsig_args(bad)
+
+    def test_prepared_transaction_request_refuses_a_str_value(self):
+        prepared = PreparedTransaction(
+            transaction=transaction.PaymentTxn(
+                sdk_test_address(1),
+                transaction.SuggestedParams(1000, 1, 100, base64.b64encode(bytes(32)).decode(), flat_fee=True),
+                sdk_test_address(2),
+                1,
+            ),
+            auth_address=sdk_test_address(1),
+            lsig_args={"preimage": "a1b2c3"},
+        )
+        with pytest.raises(ValueError, match="must be bytes, not str"):
+            prepared.to_sign_request()

@@ -411,6 +411,11 @@ func (c *SignerClient) PrepareABIAppCall(ctx context.Context, algodClient *algod
 	if err := requireNonZeroReferences(params.ForeignApps, params.ForeignAssets); err != nil {
 		return nil, err
 	}
+	// The method call's arguments become the application arguments, so
+	// AppArgs set beside them would be dropped.
+	if len(params.AppArgs) > 0 {
+		return nil, fmt.Errorf("AppArgs must be empty for an ABI call: pass the method's arguments in Args")
+	}
 	raw := params.AppCallPrepParams
 	raw.AppArgs, raw.Accounts, raw.ForeignApps, raw.ForeignAssets, err = encodeABIMethodArgs(method, params.Args, raw.Sender, raw.AppID, raw.Accounts, raw.ForeignApps, raw.ForeignAssets)
 	if err != nil {

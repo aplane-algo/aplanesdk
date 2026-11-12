@@ -692,3 +692,59 @@ describe("removed helpers", () => {
     assert.ok(algosdk);
   });
 });
+
+describe("LogicSig argument encoding", () => {
+  it("encodes Uint8Array values as hex", () => {
+    assert.deepEqual(
+      sdk.encodeLsigArgs({ preimage: new Uint8Array([0xa1, 0xb2, 0xc3]), empty: new Uint8Array() }),
+      { preimage: "a1b2c3", empty: "" },
+    );
+    assert.deepEqual(sdk.encodeLsigArgs({ preimage: Buffer.from("secret") }), { preimage: "736563726574" });
+  });
+
+  // Each of these was sent as different bytes with no error: a string's
+  // characters as bytes, a number as nothing.
+  for (const [label, bad, kind] of [
+    ["a hex string", "a1b2c3", "a string"],
+    ["a number", 7, "a number"],
+    ["an array of numbers", [1, 2, 3], "an array"],
+    ["a Uint16Array", new Uint16Array([1]), "a Uint16Array"],
+    ["null", null, "null"],
+  ] as [string, unknown, string][]) {
+    it(`refuses ${label} as a value`, () => {
+      assert.throws(
+        () => sdk.encodeLsigArgs({ preimage: bad } as any),
+        (err: any) => err instanceof sdk.SignerError
+          && err.message === `lsigArgs.preimage must be a Uint8Array, not ${kind}`,
+      );
+    });
+  }
+
+  // A Map has no own entries, so every argument in it was dropped.
+  for (const [label, bad, kind] of [
+    ["a Map", new Map([["preimage", new Uint8Array([1])]]), "a Map"],
+    ["an array", [new Uint8Array([1])], "an array"],
+    ["a string", "preimage", "a string"],
+  ] as [string, unknown, string][]) {
+    it(`refuses ${label} as the arguments`, () => {
+      assert.throws(
+        () => sdk.encodeLsigArgs(bad as any),
+        (err: any) => err instanceof sdk.SignerError
+          && err.message === `lsigArgs must be an object of name to Uint8Array, not ${kind}`,
+      );
+    });
+  }
+});
+
+describe("prepareAbiAppCall and appArgs", () => {
+  it("refuses appArgs from an untyped caller", async () => {
+    const client = new SignerClient("http://localhost:1");
+    await assert.rejects(
+      client.prepareAbiAppCall({} as any, {
+        sender, appId: 7, methodSignature: "do(uint64)void", args: [42],
+        appArgs: [new Uint8Array([1])],
+      } as any),
+      (err: any) => err instanceof sdk.SignerError && /appArgs is not accepted for an ABI call/.test(err.message),
+    );
+  });
+});

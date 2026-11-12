@@ -3711,6 +3711,13 @@ export class SignerClient {
     }
     requireUint(params.appId, "appId", true);
     requireAppReferences(params);
+    // The type has no appArgs, but an untyped caller can pass it. The method
+    // call's arguments become the application arguments, so it would be
+    // dropped.
+    const strayAppArgs = (params as { appArgs?: unknown }).appArgs;
+    if (strayAppArgs !== undefined && strayAppArgs !== null) {
+      throw new SignerError("appArgs is not accepted for an ABI call: pass the method's arguments in args");
+    }
     const method = (algosdk as any).ABIMethod.fromSignature(params.methodSignature);
     const encoded = encodeAbiMethodArgs(
       method,

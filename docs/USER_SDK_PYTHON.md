@@ -894,7 +894,8 @@ signed = client.sign_transaction(
 ```
 
 Without `auth_address` the sender signs for itself, and the args apply to the
-sender. `lsig_args_map` is keyed by auth address. A key that is no position's
+sender. `lsig_args_map` is keyed by auth address. Each argument value must be
+`bytes`: a `str` or a number raises `ValueError`. A key that is no position's
 authorizer raises `ValueError`. A position's authorizer is its auth address, not its
 sender when the account is rekeyed: for a passthrough position it is the
 signer its signed bytes name, and for a foreign position, where nothing names

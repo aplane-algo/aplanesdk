@@ -56,17 +56,25 @@ export function encodeTransaction(txn: Transaction): [string, string] {
 }
 
 /**
- * Encode LogicSig args for the API request.
- * Converts Uint8Array values to hex strings.
- *
- * @param args - Map of argument name to Uint8Array value
- * @returns Map of argument name to hex-encoded value
+ * Encode LogicSig runtime arguments for the signer: each value as hex.
+ * args must be a plain object of name to Uint8Array. Anything else is
+ * refused, because it would otherwise be sent as different bytes with no
+ * error: a string's characters are not its bytes, a number has none, and a
+ * Map has no own entries.
  */
 export function encodeLsigArgs(
   args: Record<string, Uint8Array>
 ): Record<string, string> {
+  // Told by the internal type, which holds across realms: a Map, a Set and
+  // an array are objects but not this.
+  if (args === null || typeof args !== "object" || typeTag(args) !== "Object") {
+    throw new SignerError(`lsigArgs must be an object of name to Uint8Array, not ${valueKind(args)}`);
+  }
   const encoded: Record<string, string> = {};
   for (const [name, value] of Object.entries(args)) {
+    if (!isUint8Array(value)) {
+      throw new SignerError(`lsigArgs.${name} must be a Uint8Array, not ${valueKind(value)}`);
+    }
     encoded[name] = bytesToHex(value);
   }
   return encoded;

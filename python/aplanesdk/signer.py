@@ -54,7 +54,7 @@ import socket
 import threading
 import time
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
-from typing import Optional, Dict, List, Any, Callable, cast
+from typing import Optional, Dict, List, Any, Callable, Mapping, cast
 from urllib.parse import urlparse
 
 from algosdk import abi, constants, encoding, transaction
@@ -2040,7 +2040,7 @@ class PreparedTransaction:
             "txn_sender": self.txn_sender or txn_sender,
         }
         if self.lsig_args:
-            request["lsig_args"] = {name: value.hex() for name, value in self.lsig_args.items()}
+            request["lsig_args"] = _encode_lsig_args(self.lsig_args)
         if self.app_call_info:
             request["app_call_info"] = self.app_call_info
         return request
@@ -6897,9 +6897,7 @@ class SignerClient:
 
             # Add LogicSig args if provided
             if lsig_args_map and lsig_args_map.get(auth_addr):
-                req["lsig_args"] = {
-                    name: value.hex() for name, value in lsig_args_map[auth_addr].items()
-                }
+                req["lsig_args"] = _encode_lsig_args(lsig_args_map[auth_addr])
 
             sign_requests.append(req)
 
@@ -8789,10 +8787,31 @@ def _sign_cosigned_dummies(
     return passthrough
 
 
+def _encode_lsig_args(args: Any) -> Dict[str, str]:
+    """LogicSig runtime arguments as the signer takes them: each value as hex.
+
+    args must be a mapping of name to bytes. A str, a number or another
+    value is refused: float has a hex() of its own that is not its bytes, and
+    a str would otherwise fail with an error that does not name the argument.
+    """
+    if not isinstance(args, Mapping):
+        raise ValueError(
+            f"lsig_args must be a mapping of name to bytes, not {type(args).__name__}"
+        )
+    encoded: Dict[str, str] = {}
+    for name, value in args.items():
+        if not isinstance(value, (bytes, bytearray, memoryview)):
+            raise ValueError(
+                f"lsig_args[{name!r}] must be bytes, not {type(value).__name__}"
+            )
+        encoded[name] = bytes(value).hex()
+    return encoded
+
+
 def _encode_cosigned_lsig_args(args: Optional[Dict[str, bytes]]) -> Optional[Dict[str, str]]:
     if not args:
         return None
-    return {name: value.hex() for name, value in args.items()}
+    return _encode_lsig_args(args)
 
 
 def _resolve_cosigner_for_target(

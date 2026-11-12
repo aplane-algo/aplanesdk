@@ -851,8 +851,9 @@ const signed = await client.signTransaction(txn, hashlockAddress, {
 ```
 
 Without `authAddress` the sender signs for itself, and the args apply to the
-sender. `lsigArgsMap` is keyed by auth address. A key that is no position's
-authorizer throws `SignerError`. A position's authorizer is its auth address, not its
+sender. `lsigArgsMap` is keyed by auth address. Each argument value must be a
+`Uint8Array`: a string, a number or a `Map` of arguments throws `SignerError`.
+A key that is no position's authorizer throws `SignerError`. A position's authorizer is its auth address, not its
 sender when the account is rekeyed: for a passthrough position it is the
 signer its signed bytes name, and for a foreign position, where nothing names
 one, the sender. A key whose only positions in the request are passthrough or
