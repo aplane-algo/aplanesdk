@@ -2654,26 +2654,6 @@ def _validate_authorization(signed: Any, auth: str) -> None:
 _HEX = re.compile(r"(?:[0-9a-fA-F]{2})*")
 
 
-# Standard base64 and nothing else: the standard alphabet in groups of four,
-# padded.
-_STRICT_BASE64 = re.compile(
-    r"(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?"
-)
-
-
-def _strict_base64(value: Any, label: str = "value") -> bytes:
-    """Decode standard, padded base64; the SDK's one decoder for base64 text
-    input. Signed transactions are taken as bytes, never as base64.
-
-    base64.b64decode skips characters outside the alphabet unless asked to
-    validate, and py-algorand-sdk does not ask, so they take strings the Go and
-    TypeScript SDKs refuse.
-    """
-    if not isinstance(value, str) or _STRICT_BASE64.fullmatch(value) is None:
-        raise ValueError(f"{label} is not valid base64")
-    return base64.b64decode(value, validate=True)
-
-
 def _caller_signed_bytes(value: Any, label: str) -> bytes:
     """A signed transaction a caller supplied, as bytes the SDK owns.
 

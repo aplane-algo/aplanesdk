@@ -20,7 +20,6 @@ from aplanesdk.signer import (
     _parse_lsig_resource_usage,
     _encode_abi_method_args,
     _require_uint,
-    _strict_base64,
     load_config,
     sign_prepared_cosigned_group,
 )
@@ -783,40 +782,6 @@ def test_assemble_group_is_gone():
     assert not hasattr(aplanesdk, "assemble_group")
     assert not hasattr(aplanesdk.signer, "assemble_group")
     assert SignerClient is aplanesdk.SignerClient
-
-
-# The case list the Go and TypeScript suites run too: the three SDKs accept and
-# refuse the same strings.
-BASE64_ACCEPTED = ["", "QQ==", "QUI=", "QUJD", "QUJDRA==", "+/+/", "AAAA"]
-BASE64_REFUSED = [
-    "QUJD\n",  # a trailing line feed
-    "QUJD\r\n",  # a trailing CRLF
-    "QU\nJD",  # a line feed inside
-    "QUJD\r\nQUJD",  # a wrapped line
-    "\nQUJD",  # a leading line feed
-    "QU JD",  # a space
-    "QUJD ",  # a trailing space
-    "\tQUJD",  # a tab
-    "QU*D",  # a character outside the alphabet
-    "-_-_",  # the URL-safe alphabet
-    "QUI",  # missing padding
-    "QQ=",  # short padding
-    "QQ===",  # long padding
-    "QUI=QUJD",  # data after the padding
-    "=QUJ",  # padding first
-    "Q",  # one character
-]
-
-
-@pytest.mark.parametrize("good", BASE64_ACCEPTED)
-def test_strict_base64_accepts_standard_padded_base64(good):
-    assert base64.b64encode(_strict_base64(good)).decode() == good
-
-
-@pytest.mark.parametrize("bad", BASE64_REFUSED + [None, b"QUJD", 5])
-def test_strict_base64_refuses_anything_but_standard_padded_base64(bad):
-    with pytest.raises(ValueError, match="input is not valid base64"):
-        _strict_base64(bad, "input")
 
 
 # A signed transaction as text: base64, hex, a string that is both, and an
