@@ -28,6 +28,7 @@ Prerequisites:
     - You must know the preimage that hashes to the stored hash
 """
 
+from algosdk import transaction
 from algosdk.v2client import algod
 from aplanesdk import SignerClient, SignOutcomeUnknownError, SubmissionUncertainError
 
@@ -64,35 +65,47 @@ def main():
         print("Sending hashlock claim with preimage...")
         try:
             result = signer.send_prepared(algod_client, prepared)
-        except (SubmissionUncertainError, SignOutcomeUnknownError) as error:
-            # A group that was signed, or a signature that may have been
-            # released: never build a replacement until the outcome is
-            # known, because both could execute. The node says where it
-            # stands.
-            print_outcome(signer, algod_client, error)
+        except SubmissionUncertainError as error:
+            # The signed group may be on the network. Never build a
+            # replacement until its outcome is known: both could execute.
+            confirmed_round = wait_for_group(algod_client, error)
+            if not confirmed_round:
+                raise
+            print(f"Confirmed {error.tx_ids[0]} in round {confirmed_round}")
+            return
+        except SignOutcomeUnknownError as error:
+            # Nothing was submitted, but the signer may have released a
+            # signature this call never received. Do not build a replacement
+            # until round error.last_valid has passed; after it, nothing
+            # signed by that request can execute.
+            print(f"Sign outcome unknown (request {error.request_id or 'unnamed'}): {error}")
             raise
 
         print(f"Confirmed {result.tx_ids[0]} in round {result.confirmed_round}")
         print("Hashlock claimed successfully!")
 
 
-def print_outcome(signer, algod_client, error):
-    """Print an uncertain outcome and where the node says it stands. It signs
-    and submits nothing. When the node cannot be asked, the error still
-    stands, and is raised next as it was."""
-    if isinstance(error, SubmissionUncertainError):
-        print(f"Outcome unknown for {', '.join(error.tx_ids)} ({error.stage}): {error}")
-    else:
-        print(f"Sign outcome unknown (request {error.request_id or 'unnamed'}): {error}")
+def wait_for_group(algod_client, error):
+    """Wait with algosdk for a signed group whose outcome is unknown, until
+    its last valid round. A group confirms as a whole, so its first
+    transaction is followed. Returns the round it confirmed in, or 0 when the
+    wait ended without seeing it, which means only that the wait ended. Once
+    the last valid round has passed, a node's "not found" is not proof that
+    the group never confirmed, so check an indexer before building a
+    replacement. (A send given a timeout can also end with stage "unsent":
+    the node never had the group, so submit it with submit_signed_group
+    instead of waiting.)"""
+    print(f"Outcome unknown for {', '.join(error.tx_ids)} ({error.stage}): {error}")
     try:
-        report = signer.resolve_outcome(algod_client, error)
-    except Exception as check_error:
-        print(
-            f"Could not check the outcome ({check_error}); look the transaction up "
-            "before sending again."
+        current = algod_client.status()["last-round"]
+        # At least 1 round: algosdk reads 0 as 1000.
+        info = transaction.wait_for_confirmation(
+            algod_client, error.tx_ids[0], max(error.last_valid - current, 1)
         )
-        return
-    print(f"{report.state}: {report.advice}")
+    except Exception as wait_error:
+        print(f"Still unknown ({wait_error}); check an indexer before building a replacement.")
+        return 0
+    return info["confirmed-round"]
 
 
 if __name__ == "__main__":

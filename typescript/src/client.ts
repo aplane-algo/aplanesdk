@@ -176,13 +176,6 @@ import {
   type AnswerShape,
 } from "./answers.js";
 import {
-  resolveOutcome as resolveUncertainOutcome,
-  waitForOutcome as waitForUncertainOutcome,
-  type OutcomeReport,
-  type ResolveOutcomeOptions,
-  type WaitForOutcomeOptions,
-} from "./outcome.js";
-import {
   SSH_USERNAME,
   markSshSetupFailure,
   normalizeSSHSetupTimeout,
@@ -4981,6 +4974,8 @@ export class SignerClient {
    * confirmation. It signs nothing. Use it to submit a group from
    * signPreparedRotating, or to submit again the signedGroup a
    * SubmissionUncertainError kept: the same bytes can execute only once.
+   * After the group's last valid round the node refuses it as "txn dead"
+   * whether or not it confirmed, so that refusal does not show it never did.
    *
    * Each entry must be one canonically encoded signed transaction, hex
    * msgpack, and a group of several must carry the group ID computed over
@@ -5008,37 +5003,6 @@ export class SignerClient {
     }
     await submitAndTrack(algodClient, raw, result, checked);
     return result;
-  }
-
-  /**
-   * Say where things stand after a SignOutcomeUnknownError or a
-   * SubmissionUncertainError, from the node alone: the outcome's state,
-   * whether a replacement is safe now, and one sentence of advice. It never
-   * signs, never submits and never calls the signer. Any other error, null
-   * included, is refused with "not an uncertain outcome". A node failure
-   * other than a lookup's "not found" is thrown, never turned into a state.
-   */
-  async resolveOutcome(
-    algodClient: Algodv2,
-    error: unknown,
-    options?: ResolveOutcomeOptions,
-  ): Promise<OutcomeReport> {
-    return resolveUncertainOutcome(algodClient, error, options);
-  }
-
-  /**
-   * resolveOutcome once per round, until the state is "confirmed",
-   * "expired" or "too_old". If options.signal is aborted, options.timeoutMs
-   * passes or the node fails first, it throws a WaitForOutcomeError whose
-   * `report` is the last report (none if the wait ended before the first
-   * check) and whose `cause` says why. It never signs or submits anything.
-   */
-  async waitForOutcome(
-    algodClient: Algodv2,
-    error: unknown,
-    options?: WaitForOutcomeOptions,
-  ): Promise<OutcomeReport> {
-    return waitForUncertainOutcome(algodClient, error, options);
   }
 
   /**

@@ -127,9 +127,11 @@ var (
 // SignOutcomeUnknownError reports a signing exchange that ended with no
 // usable answer: a /sign request, or a step of the cosigned sequence. The
 // signer may or may not have released a signature. Nothing was submitted by
-// this call. Do not build and sign a replacement transaction on the strength
-// of this error alone: check the request with the operator or the signer's
-// audit log first, or ask ResolveOutcome where things stand.
+// this call. Do not build and sign a replacement transaction until the
+// network's current round is past LastValid: after it, nothing the request
+// signed can execute. For a rotating account, sign Rotating again with
+// SignPreparedRotating instead. RequestID lets the operator check the
+// signer's audit log.
 type SignOutcomeUnknownError struct {
 	// RequestID is the ID of the request whose answer was lost, as the
 	// signer's audit log records it: the /sign request, or for a cosigned
@@ -197,9 +199,13 @@ const (
 
 // SubmissionUncertainError reports a signed group that this call did not see
 // confirmed or refused. Unless Stage is SendStageUnsent the group may still
-// confirm. Look its IDs up (ResolveOutcome does), or submit the same
-// SignedGroup again while it is valid; never sign a replacement until the
-// outcome is known, because both could execute.
+// confirm. Follow its first transaction ID with go-algorand-sdk's
+// transaction.WaitForConfirmation, or submit the same SignedGroup again with
+// SubmitSignedGroup while it is valid. Never sign a replacement while the
+// group can still execute, because both could. After LastValid, a node that
+// does not find the group does not prove it never confirmed: a node looks
+// back only about 1000 rounds from its current round. Check an indexer
+// before building a replacement.
 type SubmissionUncertainError struct {
 	Stage       string
 	SignedGroup []string
