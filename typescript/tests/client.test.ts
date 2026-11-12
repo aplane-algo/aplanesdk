@@ -385,6 +385,26 @@ describe("SignerClient", () => {
       assert.equal(keys[1].templateProvenanceNote, "template fingerprint unavailable");
     });
 
+    it("reads valid_rekey_target as sent, and false when left out or null", async () => {
+      mockFetch.mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: async () => ({
+          count: 4,
+          keys: [
+            { address: "ADDR1", key_type: "ed25519", valid_rekey_target: true },
+            { address: "ADDR2", key_type: "aplane.htlc.v1", valid_rekey_target: false },
+            { address: "ADDR3", key_type: "ed25519" },
+            { address: "ADDR4", key_type: "ed25519", valid_rekey_target: null },
+          ],
+        }),
+      });
+
+      const keys = await new SignerClient("http://localhost:11270").listKeys(true);
+
+      assert.deepEqual(keys.map((key) => key.validRekeyTarget), [true, false, false, false]);
+    });
+
     it("throws AuthenticationError on 401", async () => {
       mockFetch.mockResolvedValueOnce({
         status: 401,
@@ -1461,6 +1481,25 @@ describe("SignerClient", () => {
       assert.equal(types[1].creationParams![0].name, "network");
       assert.equal(types[1].creationParams![0].required, true);
       assert.equal(types[1].creationParams![1].paramType, "address[]");
+    });
+
+    it("reads valid_rekey_target as sent, and false when left out or null", async () => {
+      mockFetch.mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: async () => ({
+          key_types: [
+            { key_type: "ed25519", valid_rekey_target: true },
+            { key_type: "aplane.htlc.v1", valid_rekey_target: false },
+            { key_type: "falcon1024" },
+            { key_type: "aplane.falcon1024.v1", valid_rekey_target: null },
+          ],
+        }),
+      });
+
+      const types = await new SignerClient("http://localhost:11270").listKeyTypes();
+
+      assert.deepEqual(types.map((type) => type.validRekeyTarget), [true, false, false, false]);
     });
 
     it("throws AuthenticationError on 401", async () => {
@@ -4050,10 +4089,12 @@ describe("SignerClient", () => {
       ["/keys", () => client().listKeys(true), [
         "", "null", '{"keys":"x"}', '{"keys":[{"address":42}]}', '{"keys":[{"is_spending_account":"no"}]}',
         '{"count":"1"}', '{"keys":[{"bounded_authorization":{"max_fee":"1000"}}]}',
+        '{"keys":[{"valid_rekey_target":"true"}]}', '{"keys":[{"valid_rekey_target":1}]}',
       ]],
       ["/keytypes", () => client().listKeyTypes(), [
         "", "null", '{"key_types":"x"}', '{"key_types":[{"creation_params":[{"min":-1}]}]}',
         '{"key_types":[{"requires_logicsig":"yes"}]}',
+        '{"key_types":[{"valid_rekey_target":"true"}]}', '{"key_types":[{"valid_rekey_target":1}]}',
         '{"key_types":[{"creation_params":[{"max":-1}]}]}', '{"key_types":[{"creation_params":[{"max":1.5}]}]}',
         '{"key_types":[{"creation_params":[{"min":0.5}]}]}', '{"key_types":[{"creation_params":[{"max":"5"}]}]}',
         '{"key_types":[{"creation_params":[{"max":1e400}]}]}', '{"key_types":[{"creation_params":[{"max":1e30}]}]}',

@@ -1025,6 +1025,66 @@ func TestListKeyTypes_Success(t *testing.T) {
 	}
 }
 
+// valid_rekey_target is read from /keys and /keytypes: true and false as sent,
+// left out or null as false, and any other type makes the answer unreadable.
+func TestValidRekeyTargetIsRead(t *testing.T) {
+	address := sdkTestAddress(0xA3)
+	cases := []struct {
+		name  string
+		field string
+		want  bool
+	}{
+		{"true", `,"valid_rekey_target":true`, true},
+		{"false", `,"valid_rekey_target":false`, false},
+		{"absent", ``, false},
+		{"null", `,"valid_rekey_target":null`, false},
+	}
+	for _, tc := range cases {
+		t.Run("keys "+tc.name, func(t *testing.T) {
+			body := `{"count":1,"keys":[{"address":"` + address + `","key_type":"ed25519"` + tc.field + `}]}`
+			client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(body)) })
+			defer server.Close()
+			keys, err := client.ListKeys(true)
+			if err != nil || len(keys) != 1 {
+				t.Fatalf("ListKeys() = %+v, %v", keys, err)
+			}
+			if keys[0].ValidRekeyTarget != tc.want {
+				t.Fatalf("ValidRekeyTarget = %v, want %v", keys[0].ValidRekeyTarget, tc.want)
+			}
+		})
+		t.Run("keytypes "+tc.name, func(t *testing.T) {
+			body := `{"key_types":[{"key_type":"ed25519"` + tc.field + `}]}`
+			client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(body)) })
+			defer server.Close()
+			kts, err := client.ListKeyTypes()
+			if err != nil || len(kts) != 1 {
+				t.Fatalf("ListKeyTypes() = %+v, %v", kts, err)
+			}
+			if kts[0].ValidRekeyTarget != tc.want {
+				t.Fatalf("ValidRekeyTarget = %v, want %v", kts[0].ValidRekeyTarget, tc.want)
+			}
+		})
+	}
+	for _, wrong := range []string{`"true"`, `1`, `{}`} {
+		t.Run("keys wrong type "+wrong, func(t *testing.T) {
+			body := `{"count":1,"keys":[{"address":"` + address + `","key_type":"ed25519","valid_rekey_target":` + wrong + `}]}`
+			client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(body)) })
+			defer server.Close()
+			if result, err := client.GetKeysResponseWithContext(context.Background()); err == nil || !strings.Contains(err.Error(), "failed to decode response") {
+				t.Fatalf("GetKeysResponseWithContext() = %+v, %v; want a decode error", result, err)
+			}
+		})
+		t.Run("keytypes wrong type "+wrong, func(t *testing.T) {
+			body := `{"key_types":[{"key_type":"ed25519","valid_rekey_target":` + wrong + `}]}`
+			client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(body)) })
+			defer server.Close()
+			if kts, err := client.ListKeyTypes(); err == nil || !strings.Contains(err.Error(), "failed to decode response") {
+				t.Fatalf("ListKeyTypes() = %+v, %v; want a decode error", kts, err)
+			}
+		})
+	}
+}
+
 func TestListKeyTypes_AuthError(t *testing.T) {
 	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(401)

@@ -231,6 +231,9 @@ Returns list of `KeyInfo`:
   maximum-opcode-cost demand by authorization path.
 - `is_generic_lsig`: True if no cryptographic signature needed
 - `signing_args`: List of `SigningArg` for LogicSigs (name, arg_type, description)
+- `valid_rekey_target`: whether an account of another key type may be rekeyed
+  to an account of this type; the signer refuses a rekey to a held aplane key
+  whose type is not one.
 
 **Discovering required arguments for generic LogicSigs:**
 

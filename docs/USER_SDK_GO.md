@@ -672,6 +672,9 @@ for _, key := range keys {
 - `SigningArgs`
 - `TemplateProvenanceStatus`
 - `TemplateProvenanceNote`
+- `ValidRekeyTarget`: whether an account of another key type may be rekeyed to
+  an account of this type; the signer refuses a rekey to a held aplane key
+  whose type is not one.
 
 `LogicSigResources` publishes independent program-byte, argument-byte, and
 maximum-opcode-cost demand by authorization path. Non-bounded LogicSig keys
@@ -732,6 +735,9 @@ This is the easiest way to discover:
 - per-key types through `PerKeyContract`, and whether one takes a boundary file
   through `BoundarySchema`: `aplane.boundary.v1` on the general bounded type,
   empty on a plain host, whose parameters are given directly
+- through `ValidRekeyTarget`, whether an account of another key type may be
+  rekeyed to an account of this type; the signer refuses a rekey to a held
+  aplane key whose type is not one
 
 ### Generate And Delete A Key
 

@@ -734,6 +734,9 @@ Useful `KeyInfo` fields include:
 - `signing_args`
 - `template_provenance_status`
 - `template_provenance_note`
+- `valid_rekey_target`: whether an account of another key type may be rekeyed
+  to an account of this type; the signer refuses a rekey to a held aplane key
+  whose type is not one.
 
 `logic_sig_resources` publishes independent program-byte, argument-byte, and
 maximum-opcode-cost demand by authorization path. Non-bounded LogicSig keys
@@ -788,7 +791,9 @@ Creation and runtime metadata are surfaced through `creation_params` and
 type whose accounts each select their contract at generation, and
 `boundary_schema` says whether its requests take a boundary file:
 `aplane.boundary.v1` on the general bounded type, empty on a plain host, whose
-parameters are given directly.
+parameters are given directly. `valid_rekey_target` says whether an account of
+another key type may be rekeyed to an account of this type; the signer refuses
+a rekey to a held aplane key whose type is not one.
 
 ### Generate A Key
 

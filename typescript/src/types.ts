@@ -213,6 +213,12 @@ export interface KeyInfo {
   templateProvenanceStatus?: string;
   /** Human-readable template provenance note */
   templateProvenanceNote?: string;
+  /**
+   * The key's key type's validRekeyTarget: whether an account of another key
+   * type may be rekeyed to this account. False when the signer does not
+   * report it.
+   */
+  validRekeyTarget?: boolean;
 }
 
 /**
@@ -403,6 +409,12 @@ export interface KeyTypeInfo {
   boundarySchema?: string;
   /** Definition-level transaction-authorization capability */
   boundedAuthorization?: BoundedAuthorizationInfo;
+  /**
+   * Whether an account of another key type may be rekeyed to an account of
+   * this type. The signer refuses a rekey to a held aplane key whose type is
+   * not one. False when the signer does not report it.
+   */
+  validRekeyTarget?: boolean;
   /** Creation parameters */
   creationParams?: CreationParam[];
   /** Runtime arguments for generic LogicSigs */

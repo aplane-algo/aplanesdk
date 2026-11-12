@@ -225,6 +225,7 @@ describe("signer API contract fixtures", () => {
     assert.equal(keys[1].signingArgs?.[0].label, "Preimage");
     assert.equal(keys[1].signingArgs?.[0].required, true);
     assert.equal(keys[1].signingArgs?.[0].byteLength, 32);
+    assert.deepEqual(keys.map((key) => key.validRekeyTarget), [true, false, true]);
   });
 
   it("maps /keytypes wire fields to public KeyTypeInfo fields", async () => {
@@ -249,6 +250,7 @@ describe("signer API contract fixtures", () => {
     assert.equal(genericPolicy.authorizationKind, "logic_sig");
     assert.equal(genericPolicy.mnemonicWordCount, 0);
     assert.equal(genericPolicy.mnemonicImport, false);
+    assert.deepEqual(keyTypes.map((keyType) => keyType.validRekeyTarget), [true, true, false]);
     assert.equal(genericPolicy.creationParams?.[1].paramType, "address[]");
     assert.equal(genericPolicy.creationParams?.[1].minItems, 1);
     assert.equal(genericPolicy.creationParams?.[1].maxItems, 8);

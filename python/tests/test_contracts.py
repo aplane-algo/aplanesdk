@@ -217,6 +217,7 @@ def test_list_keys_maps_generic_lsig_metadata():
     assert generic.signing_args[0].label == "Preimage"
     assert generic.signing_args[0].required is True
     assert generic.signing_args[0].byte_length == 32
+    assert [key.valid_rekey_target for key in keys] == [True, False, True]
 
 
 def test_list_keys_maps_authorization_kind_for_native_pq_and_witness():
@@ -262,6 +263,7 @@ def test_list_key_types_maps_creation_and_runtime_metadata():
     assert generic_policy.requires_logicsig is True
     assert generic_policy.authorization_kind == "logic_sig"
     assert generic_policy.mnemonic_import is False
+    assert [key_type.valid_rekey_target for key_type in key_types] == [True, True, False]
     assert generic_policy.creation_params is not None
     assert generic_policy.creation_params[1].param_type == "address[]"
     assert generic_policy.creation_params[1].min_items == 1

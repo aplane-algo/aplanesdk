@@ -58,7 +58,8 @@
       },
       "parameters": {
         "recipients": "ADDR1,ADDR2"
-      }
+      },
+      "valid_rekey_target": true
     },
     {
       "address": "CORRIDORADDR00000000000000000000000000000000000000000000",
@@ -180,7 +181,8 @@
       "parameters": {
         "recipients": "ADDR1,ADDR2",
         "cosigner_public_key": "11223344556677889900aabbccddeeff"
-      }
+      },
+      "valid_rekey_target": true
     }
   ]
 }

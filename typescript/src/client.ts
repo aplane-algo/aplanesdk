@@ -3079,6 +3079,7 @@ export class SignerClient {
         parameters: raw.parameters,
         templateProvenanceStatus: raw.template_provenance_status || undefined,
         templateProvenanceNote: raw.template_provenance_note || undefined,
+        validRekeyTarget: raw.valid_rekey_target,
       };
       keys.push(keyInfo);
       // One record per address. Should the signer list an address twice, the
@@ -4040,6 +4041,7 @@ export class SignerClient {
         perKeyContract: kt.per_key_contract || undefined,
         boundarySchema: kt.boundary_schema || undefined,
         boundedAuthorization: mapBoundedAuthorization(kt.bounded_authorization),
+        validRekeyTarget: kt.valid_rekey_target,
         creationParams,
         runtimeArgs,
       });

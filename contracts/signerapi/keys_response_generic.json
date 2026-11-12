@@ -5,7 +5,8 @@
       "address": "ED25519ADDR000000000000000000000000000000000000000000000",
       "public_key_hex": "00112233445566778899aabbccddeeff",
       "key_type": "ed25519",
-      "authorization_kind": "ed25519"
+      "authorization_kind": "ed25519",
+      "valid_rekey_target": true
     },
     {
       "address": "GENERICADDR00000000000000000000000000000000000000000000",
@@ -35,13 +36,15 @@
           "label": "Memo",
           "description": "Optional memo argument"
         }
-      ]
+      ],
+      "valid_rekey_target": false
     },
     {
       "address": "FALCON1024ADDR0000000000000000000000000000000000000000000",
       "public_key_hex": "aabbccddeeff00112233445566778899",
       "key_type": "falcon1024",
-      "authorization_kind": "native_pq"
+      "authorization_kind": "native_pq",
+      "valid_rekey_target": true
     }
   ]
 }

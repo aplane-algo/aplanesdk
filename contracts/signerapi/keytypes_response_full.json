@@ -10,6 +10,7 @@
       "mnemonic_word_count": 25,
       "mnemonic_import": true,
       "mnemonic_scheme": "algorand",
+      "valid_rekey_target": true,
       "creation_params": [],
       "runtime_args": []
     },
@@ -23,6 +24,7 @@
       "mnemonic_word_count": 25,
       "mnemonic_import": true,
       "mnemonic_scheme": "algorand",
+      "valid_rekey_target": true,
       "creation_params": [],
       "runtime_args": []
     },
@@ -36,6 +38,7 @@
       "mnemonic_word_count": 0,
       "mnemonic_import": false,
       "mnemonic_scheme": "",
+      "valid_rekey_target": false,
       "creation_params": [
         {
           "name": "beneficiary",

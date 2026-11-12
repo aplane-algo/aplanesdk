@@ -370,6 +370,7 @@ const KEY_INFO: AnswerShape = {
     parameters: { map: "string" },
     template_provenance_status: "string",
     template_provenance_note: "string",
+    valid_rekey_target: "bool",
   },
 };
 
@@ -430,6 +431,7 @@ export const KEYTYPES_ANSWER: AnswerShape = {
           per_key_contract: "bool",
           boundary_schema: "string",
           bounded_authorization: BOUNDED_AUTHORIZATION,
+          valid_rekey_target: "bool",
           creation_params: { list: CREATION_PARAM },
           runtime_args: { list: RUNTIME_ARG },
         },

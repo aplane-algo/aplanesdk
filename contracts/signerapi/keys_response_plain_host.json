@@ -76,7 +76,8 @@
       },
       "parameters": {
         "cosigner_public_key": "11223344556677889900aabbccddeeff"
-      }
+      },
+      "valid_rekey_target": true
     }
   ]
 }
