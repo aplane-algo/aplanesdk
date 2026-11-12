@@ -81,6 +81,20 @@ export function encodeLsigArgs(
 }
 
 /**
+ * The arguments to send for one position: encoded as encodeLsigArgs does,
+ * or undefined when there are none, so that no arguments are sent as no
+ * field. Only null and undefined mean absent: any other value is checked,
+ * a falsy one of the wrong type included.
+ */
+export function encodeLsigArgsOrNone(
+  args: Record<string, Uint8Array> | undefined | null
+): Record<string, string> | undefined {
+  if (args === undefined || args === null) return undefined;
+  const encoded = encodeLsigArgs(args);
+  return Object.keys(encoded).length > 0 ? encoded : undefined;
+}
+
+/**
  * Set an own property of target. Assignment would not for the name
  * "__proto__": it sets the prototype, and the entry is gone.
  */

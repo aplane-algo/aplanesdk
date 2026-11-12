@@ -2041,10 +2041,9 @@ class PreparedTransaction:
         }
         # Checked whatever it is: a falsy value of the wrong type is refused
         # too. No arguments are sent as no field.
-        if self.lsig_args is not None:
-            encoded_args = _encode_lsig_args(self.lsig_args)
-            if encoded_args:
-                request["lsig_args"] = encoded_args
+        encoded_args = _encode_lsig_args_or_none(self.lsig_args)
+        if encoded_args:
+            request["lsig_args"] = encoded_args
         if self.app_call_info:
             request["app_call_info"] = self.app_call_info
         return request
@@ -6902,8 +6901,9 @@ class SignerClient:
             }
 
             # Add LogicSig args if provided
+            # Each position gets its own copy.
             if encoded_lsig_args.get(auth_addr):
-                req["lsig_args"] = encoded_lsig_args[auth_addr]
+                req["lsig_args"] = dict(encoded_lsig_args[auth_addr])
 
             sign_requests.append(req)
 
@@ -8076,7 +8076,7 @@ class SignerClient:
         any failure after submission, ends the send: it never builds a
         replacement spend on its own.
         """
-        if item.lsig_args is not None and _encode_lsig_args(item.lsig_args):
+        if _encode_lsig_args_or_none(item.lsig_args):
             raise UnsupportedGroupError(
                 "a rotating account takes no LogicSig arguments from the caller"
             )
@@ -8836,14 +8836,24 @@ def _encode_lsig_args_map(lsig_args_map: Any) -> Dict[str, Dict[str, str]]:
             "lsig_args_map must be a mapping of auth address to arguments, "
             f"not {type(lsig_args_map).__name__}"
         )
-    return {
-        address: _encode_lsig_args(args)
-        for address, args in lsig_args_map.items()
-        if args is not None
-    }
+    encoded: Dict[str, Dict[str, str]] = {}
+    for address, args in lsig_args_map.items():
+        if not isinstance(address, str):
+            raise ValueError(
+                f"lsig_args_map key {address!r} must be an address str, "
+                f"not {type(address).__name__}"
+            )
+        if args is not None:
+            encoded[address] = _encode_lsig_args(args)
+    return encoded
 
 
-def _encode_cosigned_lsig_args(args: Optional[Dict[str, bytes]]) -> Optional[Dict[str, str]]:
+def _encode_lsig_args_or_none(args: Any) -> Optional[Dict[str, str]]:
+    """The arguments to send for one position, or None when there are none.
+
+    No arguments are sent as no field. Only None means absent: any other
+    value is checked, a falsy one of the wrong type included.
+    """
     if args is None:
         return None
     return _encode_lsig_args(args) or None
@@ -9206,7 +9216,7 @@ def sign_prepared_cosigned_group(
                 "target_index": index,
                 "auth_address": item.auth_address,
                 "txn_sender": item.txn_sender,
-                "lsig_args": _encode_cosigned_lsig_args(item.lsig_args),
+                "lsig_args": _encode_lsig_args_or_none(item.lsig_args),
                 "app_call_info": item.app_call_info,
             }
         )

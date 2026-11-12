@@ -1047,3 +1047,7 @@ class TestLsigArgEncoding:
             lsig_args={},
         )
         assert "lsig_args" not in prepared.to_sign_request()
+
+    def test_map_refuses_an_address_key_that_is_not_a_str(self):
+        with pytest.raises(ValueError, match="lsig_args_map key b'A' must be an address str, not bytes"):
+            _encode_lsig_args_map({b"A": {"p": b"x"}})

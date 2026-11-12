@@ -780,6 +780,32 @@ describe("LogicSig argument map", () => {
     assert.equal(JSON.stringify(sdk.encodeLsigArgs(args)), '{"__proto__":"07"}');
   });
 
+  // The three SDKs agree: no arguments are sent as no field, and only null
+  // and undefined mean none. A falsy value of the wrong type was skipped by
+  // a truthiness test before anything looked at it.
+  it("sends no field for an empty arguments object", () => {
+    assert.equal("lsig_args" in body({ [sender]: {} }).requests[0], false);
+    const [request] = preparedGroupToSignRequests({ transactions: [{ transaction: txn, authAddress: sender, lsigArgs: {} }] });
+    assert.equal("lsig_args" in request, false);
+  });
+
+  for (const bad of ["", 0, false] as any[]) {
+    it(`refuses ${JSON.stringify(bad)} as a prepared item's arguments`, () => {
+      assert.throws(
+        () => preparedGroupToSignRequests({ transactions: [{ transaction: txn, authAddress: sender, lsigArgs: bad }] }),
+        /lsigArgs must be an object of name to Uint8Array/,
+      );
+    });
+  }
+
+  it("gives each position its own copy of the arguments", () => {
+    const requests = (client as any).buildSignRequestBody(
+      [txn, fakePayment(sender, receiver)], [sender, sender], { [sender]: { preimage: new Uint8Array([1]) } },
+    ).requests;
+    assert.deepEqual(requests[0].lsig_args, requests[1].lsig_args);
+    assert.notEqual(requests[0].lsig_args, requests[1].lsig_args);
+  });
+
   it("still refuses arguments keyed under an address no position uses", () => {
     assert.throws(
       () => body({ [receiver]: { preimage: new Uint8Array([1]) } }),

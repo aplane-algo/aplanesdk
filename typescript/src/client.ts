@@ -98,8 +98,8 @@ import {
 } from "./errors.js";
 import {
   encodeTransaction,
-  encodeLsigArgs,
   encodeLsigArgsMap,
+  encodeLsigArgsOrNone,
   bytesToHex,
   hexToBytes,
   cloneSignedGroup,
@@ -646,7 +646,7 @@ export async function signPreparedCosignedGroup(
       targetIndex: index,
       authAddress: item.authAddress,
       txnSender: item.txnSender,
-      lsigArgs: item.lsigArgs ? encodeLsigArgs(item.lsigArgs) : undefined,
+      lsigArgs: encodeLsigArgsOrNone(item.lsigArgs),
       appCallInfo: item.appCallInfo,
     });
   }
@@ -4485,7 +4485,8 @@ export class SignerClient {
     options?: SignOptions,
   ): Promise<Uint8Array[]> {
     const auth = authAddress || txn.sender.toString();
-    const lsigArgsMap = lsigArgs ? { [auth]: lsigArgs } : undefined;
+    // Only null and undefined mean no arguments: any other value is checked.
+    const lsigArgsMap = lsigArgs === undefined || lsigArgs === null ? undefined : { [auth]: lsigArgs };
 
     const signedList = await this.signRequest([txn], [auth], lsigArgsMap, undefined, undefined, options);
     return signedGroupFromHex(signedList);
@@ -5288,7 +5289,7 @@ export class SignerClient {
     refresh: boolean,
   ): Promise<SendResult> {
     // Encoded only to check and count them: a Map has no own keys.
-    if (item.lsigArgs && Object.keys(encodeLsigArgs(item.lsigArgs)).length > 0) {
+    if (encodeLsigArgsOrNone(item.lsigArgs)) {
       throw new UnsupportedGroupError(
         "group not supported by unified sending: a rotating account takes no LogicSig arguments from the caller",
       );
@@ -5537,8 +5538,10 @@ export class SignerClient {
       };
 
       // Add LogicSig args if provided
-      if (Object.prototype.hasOwnProperty.call(encodedLsigArgs, authAddr)) {
-        req.lsig_args = encodedLsigArgs[authAddr];
+      // No arguments are sent as no field. Each position gets its own copy.
+      if (Object.prototype.hasOwnProperty.call(encodedLsigArgs, authAddr)
+        && Object.keys(encodedLsigArgs[authAddr]).length > 0) {
+        req.lsig_args = { ...encodedLsigArgs[authAddr] };
       }
 
       signRequests.push(req);
