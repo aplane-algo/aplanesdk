@@ -98,7 +98,8 @@ def test_every_captured_answer_is_accepted(name):
     result = verify_signed(prepared, case["sign"])
     assert result.stage == case["sign"]["stage"] and result.target == case["sign"]["target"]
     assert result.txid == case["sign"]["txid"]
-    assert result.signed_group == case["sign"]["signed"]
+    # The vector holds the signer's wire answer, hex; the result holds its bytes.
+    assert result.signed_group == [bytes.fromhex(entry) for entry in case["sign"]["signed"]]
     assert prepared.tx_ids[0] == case["sign"]["txid"]
 
 
@@ -180,7 +181,7 @@ def test_every_raw_sign_answer_is_read_as_the_vectors_say(raw_signer, entry):
     if entry["expect"] == "accepted":
         result = client.sign_prepared_rotating(prepared)
         assert isinstance(result, RotatingSignResult)
-        assert result.signed_group == case["sign"]["signed"]
+        assert result.signed_group == [bytes.fromhex(entry) for entry in case["sign"]["signed"]]
     elif entry["expect"] == "refused":
         with pytest.raises(SignerError) as excinfo:
             client.sign_prepared_rotating(prepared)

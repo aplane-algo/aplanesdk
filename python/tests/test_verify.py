@@ -442,8 +442,6 @@ def test_public_calls_reject_a_substituted_transaction():
         with pytest.raises(SignerError, match=error):
             client.sign_transactions([txn])
         with pytest.raises(SignerError, match=error):
-            client.sign_transactions_list([txn])
-        with pytest.raises(SignerError, match=error):
             client.sign_requests(fake_signer.sign_entries(txn))
         with pytest.raises(SignerError, match=error):
             client.plan_group([txn])
@@ -463,11 +461,12 @@ def test_sign_transaction_accepts_a_raised_fee_and_dummies():
         patch.object(client, "_discover_approval_wait"),
         patch.object(client.session, "post", side_effect=post),
     ):
-        signed = client.sign_transactions_list([txn])
+        signed = client.sign_transaction(txn)
         plan = client.plan_group([txn])
 
     assert len(signed) == 2
-    assert encoding.msgpack_decode(signed[0]).transaction.fee == txn.fee + 2000
+    first = encoding.msgpack_decode(base64.b64encode(signed[0]).decode())
+    assert first.transaction.fee == txn.fee + 2000
     assert len(plan["transactions"]) == 2
     assert plan["mutations"]["dummies_added"] == 1
 
@@ -497,13 +496,59 @@ def test_signed_transaction_identity_checks_reject_noncanonical_bytes():
             _verify_bounded_assembled_group([canonical_hex], [bad])
         algod_client = MagicMock()
         with pytest.raises(SignerError, match="signed group position 1: "):
-            _simulate_signed_group(algod_client, [bad])
+            _simulate_signed_group(algod_client, [bytes.fromhex(bad)])
         algod_client.simulate_transactions.assert_not_called()
 
     with pytest.raises(SignerError, match="does not match the submitted canonical bytes"):
         _verify_signed_transaction_matches_canonical(
             "slot", 0, fake_signer.signed_hex(other), canonical_hex
         )
+
+
+def _not_one_canonical_signed_transaction(txn, other):
+    """Bytes that are not exactly one canonical signed transaction: two
+    transactions, trailing bytes, keys out of canonical order, an unknown
+    field."""
+    signed = fake_signer.signed_bytes(txn)
+    fields = msgpack.unpackb(signed, raw=False, strict_map_key=False)
+    reordered = msgpack.packb({key: fields[key] for key in sorted(fields, reverse=True)})
+    assert reordered != signed
+    return {
+        "two transactions": signed + fake_signer.signed_bytes(other),
+        "trailing bytes": signed + b"\x00",
+        "reordered": reordered,
+        "unknown field": msgpack.packb({**fields, "zz": 1}),
+    }
+
+
+@pytest.mark.parametrize(
+    "case", ["two transactions", "trailing bytes", "reordered", "unknown field"]
+)
+def test_caller_bytes_must_be_one_canonical_signed_transaction(case):
+    """Every caller-supplied signed transaction is checked as exactly one
+    canonical signed transaction before anything is posted: the submit call's
+    entries, a passthrough and a pre-signed slot."""
+    txn = fake_signer.payment(41, 42, 1)
+    other = fake_signer.payment(41, 45, 2)
+    bad = _not_one_canonical_signed_transaction(txn, other)[case]
+    client = make_client()
+    algod_client = MagicMock()
+    with patch.object(client, "_discover_approval_wait"), \
+         patch.object(client.session, "post") as mock_post:
+        with pytest.raises(SignerError, match="verify signed group: signed group position 1: "):
+            client.submit_signed_group(algod_client, [bad])
+        with pytest.raises(ValueError, match=r"invalid passthrough\[1\]: "):
+            client.sign_transactions([txn, None], [txn.sender, None], passthrough={1: bad})
+        slot = PreparedGroup(
+            [
+                PreparedTransaction(transaction=txn, auth_address=txn.sender),
+                PreparedTransaction(signed_transaction=bad),
+            ]
+        )
+        with pytest.raises(SignerError, match="transaction 2: passthrough transaction: "):
+            client.sign_requests(slot.to_sign_requests())
+    mock_post.assert_not_called()
+    assert algod_client.mock_calls == []
 
 
 def test_request_bytes_must_be_canonical():
@@ -600,11 +645,12 @@ def test_max_fee_increase(limit, fee_raise, count, refused):
     }
     calls = [
         ("response", lambda: client.sign_transactions(txns)),
-        ("response", lambda: client.sign_transactions_list(txns)),
         ("response", lambda: client.sign_requests(fake_signer.sign_entries(*txns))),
         ("plan", lambda: client.plan_group(txns)),
         ("response", lambda: client.simulate_prepared_group(algod_client, prepared)),
     ]
+    if count == 1:
+        calls.append(("response", lambda: client.sign_transaction(txns[0])))
     with (
         patch.object(client, "_discover_approval_wait"),
         patch.object(
@@ -635,7 +681,7 @@ def test_max_fee_increase_ignores_zero_fee_dummies():
         patch.object(client, "_discover_approval_wait"),
         patch.object(client.session, "post", side_effect=post),
     ):
-        assert len(client.sign_transactions_list([fake_signer.payment()])) == 3
+        assert len(client.sign_transaction(fake_signer.payment())) == 3
 
 
 class _Integral:

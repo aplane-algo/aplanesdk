@@ -1027,7 +1027,7 @@ class TestAnswersReadByShape:
              patch.object(client.session, "post", side_effect=fake_signer.signer_post()) as mock_post:
             signed = client.sign_transaction(txn)
 
-        assert base64.b64decode(signed) == bytes.fromhex(fake_signer.signed_hex(txn))
+        assert signed == [fake_signer.signed_bytes(txn)]
         assert mock_post.call_args.args[0] == "http://localhost:11270/sign"
 
 
@@ -1806,7 +1806,7 @@ class TestSignPreparedCosignedGroup:
                 held(PreparedTransaction(transaction=txn, auth_address=bounded, ), key)
             ]),
         )
-        assert result.signed_group == [signed_txn_hex(txn)]
+        assert result.signed_group == [bytes.fromhex(signed_txn_hex(txn))]
         assert result.cosigner_component_responses == []
         cosigner.request_components.assert_not_called()
 
@@ -2077,7 +2077,7 @@ class TestSignPreparedCosignedGroup:
             prepared_group=prepared_group,
         )
 
-        assert result.signed_group == [signed_txn_hex(txn)]
+        assert result.signed_group == [bytes.fromhex(signed_txn_hex(txn))]
         assert result.bounded_component_response is not None
         assert result.bounded_assembly_response is not None
         cosigner_req = cosigner.request_components.call_args.args[0]
@@ -2476,7 +2476,7 @@ class TestClientSideSignedSimulation:
         assert algo_encoding.msgpack_encode(
             simulate_request.txn_groups[0].txns[0]
         ) == signed_b64
-        assert result.signed_group == [signed_hex]
+        assert result.signed_group == [bytes.fromhex(signed_hex)]
         assert result.tx_ids == [txn.get_txid()]
         # The report as read: every field it declares, the ones the signer
         # left out at their zero values.
@@ -2534,7 +2534,7 @@ class TestClientSideSignedSimulation:
         assert not result.failed
         assert isinstance(simulated, transaction.PQSignedTransaction)
         assert algo_encoding.msgpack_encode(simulated) == signed_b64
-        assert result.signed_group == [signed_hex]
+        assert result.signed_group == [bytes.fromhex(signed_hex)]
 
     def test_a_null_count_in_the_mutation_report_reads_as_zero(self):
         # A null foreign_count is zero foreign positions, as the Go SDK reads
@@ -2557,7 +2557,7 @@ class TestClientSideSignedSimulation:
             )
 
         assert result.mutations["foreign_count"] == 0
-        assert result.signed_group == [fake_signer.signed_hex(txn)]
+        assert result.signed_group == [fake_signer.signed_bytes(txn)]
 
     def test_requires_algod_before_contacting_signer(self):
         client = make_client()
@@ -2696,7 +2696,7 @@ class TestSigningErrors:
              patch.object(client.session, "post", side_effect=fake_signer.signer_post()):
             signed = client.sign_transaction(txn)
 
-        assert base64.b64decode(signed) == bytes.fromhex(fake_signer.signed_hex(txn))
+        assert signed == [fake_signer.signed_bytes(txn)]
 
     def test_timeout(self):
         import requests
@@ -2877,16 +2877,6 @@ class TestSignTransactionsForeign:
                 )
         mock_post.assert_not_called()
 
-    def test_sign_transactions_list_rejects_foreign(self):
-        client = make_client()
-        with patch.object(client.session, "post") as mock_post:
-            with pytest.raises(SignerError, match="foreign entries are only supported on /plan"):
-                client.sign_transactions_list(
-                [self._make_mock_txn(), self._make_mock_txn()],
-                auth_addresses=[fake_signer.account(41), None],
-            )
-        mock_post.assert_not_called()
-
 
 # ---------------------------------------------------------------------------
 # request building
@@ -2958,8 +2948,6 @@ class TestBuildSignRequests:
             with pytest.raises(ValueError, match=error):
                 client.sign_transactions([txn], lsig_args_map=stray)
             with pytest.raises(ValueError, match=error):
-                client.sign_transactions_list([txn], lsig_args_map=stray)
-            with pytest.raises(ValueError, match=error):
                 client.plan_group([txn], lsig_args_map=stray)
         mock_post.assert_not_called()
 
@@ -2983,9 +2971,7 @@ class TestBuildSignRequests:
         assert body[0]["lsig_args"] == {"preimage": b"one".hex()}
         assert "lsig_args" not in body[1]
 
-        signed_second = base64.b64encode(
-            bytes.fromhex(fake_signer.signed_hex(grouped[1]))
-        ).decode()
+        signed_second = fake_signer.signed_bytes(grouped[1])
         cases = {
             "auth address given": (grouped, [first, second]),
             "sender of the slot": (grouped, [first, None]),
@@ -3000,7 +2986,7 @@ class TestBuildSignRequests:
 
         with patch.object(client, "_discover_approval_wait"), \
              patch.object(client.session, "post", side_effect=fake_signer.signer_post()):
-            signed = client.sign_transactions_list(
+            signed = client.sign_transactions(
                 grouped, lsig_args_map=args, passthrough={1: signed_second}
             )
         assert signed[1] == signed_second
@@ -3022,9 +3008,7 @@ class TestBuildSignRequests:
         # under S would rightly match it.)
         presigned = fake_signer.authorize(grouped[0], passthrough_key)
         assert presigned.authorizing_address == passthrough_key
-        passthrough = {
-            0: base64.b64encode(bytes.fromhex(fake_signer.encode_signed(presigned))).decode()
-        }
+        passthrough = {0: bytes.fromhex(fake_signer.encode_signed(presigned))}
         auths = [None, lsig]
         args = {"preimage": b"secret"}
         error = "no transaction in the request has auth address"
@@ -3056,7 +3040,7 @@ class TestBuildSignRequests:
         body = client._build_sign_requests(
             [None],
             [None],
-            passthrough={0: base64.b64encode(bytes.fromhex(presigned)).decode()},
+            passthrough={0: bytes.fromhex(presigned)},
             lsig_resources={
                 0: LogicSigResourceUsage(1612, 1423, 20000),
             },
@@ -3136,7 +3120,7 @@ class TestPreparedGroup:
     def test_to_sign_requests_passthrough_mode(self):
         prepared = PreparedGroup([
             PreparedTransaction(
-                signed_transaction_base64=base64.b64encode(b"signed-txn").decode(),
+                signed_transaction=b"signed-txn",
                 lsig_resources=LogicSigResourceUsage(1612, 1423, 20000),
             )
         ])
@@ -3171,7 +3155,7 @@ class TestPreparedGroup:
             ),
             (
                 PreparedTransaction(
-                    signed_transaction_base64=base64.b64encode(b"signed-txn").decode(),
+                    signed_transaction=b"signed-txn",
                     pq_scheme="f1",
                 ),
                 "pq_scheme is allowed only for foreign transactions",
@@ -3932,31 +3916,77 @@ class TestSignReturnFormat:
     def _make_mock_txn(self, sender=None):
         return fake_signer.payment(sender=sender)
 
-    def test_sign_transactions_list_returns_individual_base64(self):
-        client = make_client()
-        txns = [fake_signer.payment(41, 42), fake_signer.payment(43, 44)]
-        with patch.object(client, "_discover_approval_wait"), \
-             patch.object(client.session, "post", side_effect=fake_signer.signer_post()):
-            result = client.sign_transactions_list(txns)
-
-        assert len(result) == 2
-        # Each slot signs its own transaction, changed only by the group ID
-        # the signer assigned.
-        for item, txn in zip(result, txns):
-            signed = algo_encoding.msgpack_decode(item)
-            assert signed.transaction.group is not None
-            signed.transaction.group = None
-            assert signed.transaction == txn
-
-    def test_sign_transactions_returns_concatenated_base64(self):
+    def test_sign_transactions_returns_one_raw_entry_per_transaction(self):
         client = make_client()
         txns = [fake_signer.payment(41, 42), fake_signer.payment(43, 44)]
         with patch.object(client, "_discover_approval_wait"), \
              patch.object(client.session, "post", side_effect=fake_signer.signer_post()):
             result = client.sign_transactions(txns)
-            individual = client.sign_transactions_list(txns)
 
-        assert base64.b64decode(result) == b"".join(base64.b64decode(item) for item in individual)
+        assert isinstance(result, list) and len(result) == 2
+        # Each entry is the raw bytes of its own signed transaction, changed
+        # only by the group ID the signer assigned.
+        for item, txn in zip(result, txns):
+            assert type(item) is bytes
+            signed = algo_encoding.msgpack_decode(base64.b64encode(item).decode())
+            assert signed.transaction.group is not None
+            signed.transaction.group = None
+            assert signed.transaction == txn
+
+    def test_sign_transactions_returns_the_dummies_the_signer_appended(self):
+        client = make_client()
+        txn = fake_signer.payment(41, 42)
+        with patch.object(client, "_discover_approval_wait"), \
+             patch.object(client.session, "post", side_effect=fake_signer.signer_post(dummies=1)):
+            result = client.sign_transactions([txn])
+
+        assert len(result) == 2 and all(type(item) is bytes for item in result)
+        dummy = algo_encoding.msgpack_decode(base64.b64encode(result[1]).decode())
+        assert isinstance(dummy, transaction.LogicSigTransaction)
+
+    def test_sign_transaction_returns_a_list_of_one_signed_transaction(self):
+        client = make_client()
+        txn = fake_signer.payment(41, 42)
+        with patch.object(client, "_discover_approval_wait"), \
+             patch.object(client.session, "post", side_effect=fake_signer.signer_post()):
+            signed = client.sign_transaction(txn)
+
+        assert signed == [fake_signer.signed_bytes(txn)] and type(signed[0]) is bytes
+
+    def test_sign_transaction_returns_the_dummies_the_signer_appended(self):
+        # The first entry is the transaction given; the dummy after it must be
+        # submitted with it.
+        client = make_client()
+        txn = fake_signer.payment(41, 42)
+        with patch.object(client, "_discover_approval_wait"), \
+             patch.object(client.session, "post", side_effect=fake_signer.signer_post(dummies=1)):
+            signed = client.sign_transaction(txn)
+
+        assert len(signed) == 2 and all(type(item) is bytes for item in signed)
+        first = algo_encoding.msgpack_decode(base64.b64encode(signed[0]).decode())
+        assert first.transaction.sender == txn.sender and first.transaction.group is not None
+        dummy = algo_encoding.msgpack_decode(base64.b64encode(signed[1]).decode())
+        assert isinstance(dummy, transaction.LogicSigTransaction)
+
+    def test_the_signed_group_goes_to_algosdk_as_the_docs_show(self):
+        # py-algorand-sdk's send_raw_transaction takes base64 text and posts
+        # the bytes it decodes to: the group, concatenated, exactly.
+        from algosdk.v2client import algod
+
+        client = make_client()
+        txns = [fake_signer.payment(41, 42), fake_signer.payment(43, 44)]
+        with patch.object(client, "_discover_approval_wait"), \
+             patch.object(client.session, "post", side_effect=fake_signer.signer_post()):
+            group = client.sign_transactions(txns)
+
+        algod_client = algod.AlgodClient("", "http://localhost:4001")
+        with patch.object(
+            algod_client, "algod_request", return_value={"txId": "TXID"}
+        ) as request:
+            algod_client.send_raw_transaction(base64.b64encode(b"".join(group)).decode())
+
+        assert request.call_args.args[:2] == ("POST", "/transactions")
+        assert request.call_args.kwargs["data"] == b"".join(group)
 
     def test_sign_transactions_rejects_empty_slot(self):
         client = make_client()
@@ -3968,19 +3998,6 @@ class TestSignReturnFormat:
              patch.object(client.session, "post", side_effect=fake_signer.signer_post(tamper=blank)):
             with pytest.raises(SignerError, match="no signature for position 2"):
                 client.sign_transactions([fake_signer.payment(41, 42), fake_signer.payment(43, 44)])
-
-    def test_sign_transactions_list_rejects_empty_slot(self):
-        client = make_client()
-
-        def blank(body):
-            body["signed"][1] = ""
-
-        with patch.object(client, "_discover_approval_wait"), \
-             patch.object(client.session, "post", side_effect=fake_signer.signer_post(tamper=blank)):
-            with pytest.raises(SignerError, match="no signature for position 2"):
-                client.sign_transactions_list(
-                    [fake_signer.payment(41, 42), fake_signer.payment(43, 44)]
-                )
 
 
 class TestRequestEnrollmentFromEnv:
@@ -4052,25 +4069,6 @@ class TestEncoding:
         assert bytes().hex() == ""
         assert bytes.fromhex("") == b""
 
-    def test_base64_round_trip(self):
-        """hex -> base64 (like signed txn conversion)."""
-        hex_str = "deadbeef"
-        decoded = bytes.fromhex(hex_str)
-        b64 = base64.b64encode(decoded).decode()
-        assert base64.b64decode(b64) == decoded
-
-    def test_concatenate_signed_txns(self):
-        """Concatenate hex strings to base64 (like signTransaction does)."""
-        hexes = ["0102", "0304"]
-        all_bytes = b"".join(bytes.fromhex(h) for h in hexes)
-        result = base64.b64encode(all_bytes).decode()
-        assert result == "AQIDBA=="
-
-    def test_concatenate_single(self):
-        hexes = ["deadbeef"]
-        all_bytes = b"".join(bytes.fromhex(h) for h in hexes)
-        result = base64.b64encode(all_bytes).decode()
-        assert result == "3q2+7w=="
 
 
 # ---------------------------------------------------------------------------

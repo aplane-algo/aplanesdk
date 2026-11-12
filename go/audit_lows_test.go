@@ -597,31 +597,17 @@ var strictBase64Cases = struct{ accepted, refused []string }{
 	},
 }
 
-// Base64ToBytes is the one decoder, used at every site that takes a caller's
-// base64: a passthrough entry and a prepared signed transaction.
-func TestBase64IsStrictAtEverySite(t *testing.T) {
+// Base64ToBytes is the SDK's one base64 decoder, and it is strict.
+func TestBase64ToBytesIsStrict(t *testing.T) {
 	for _, good := range strictBase64Cases.accepted {
 		decoded, err := Base64ToBytes(good)
 		if err != nil || BytesToBase64(decoded) != good {
 			t.Fatalf("Base64ToBytes(%q) = %x, %v", good, decoded, err)
 		}
 	}
-	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
-		t.Errorf("unexpected request %s: bad base64 must be refused before the signer is asked", r.URL.Path)
-	})
-	defer server.Close()
-	txn := verifyTestPayment(t, 41, 42, 1)
 	for _, bad := range strictBase64Cases.refused {
 		if decoded, err := Base64ToBytes(bad); err == nil || !strings.Contains(err.Error(), "not valid base64") {
 			t.Fatalf("Base64ToBytes(%q) = %x, %v, want a refusal", bad, decoded, err)
-		}
-		_, err := PreparedTransaction{SignedTransactionBase64: bad}.SignRequest()
-		if err == nil || !strings.Contains(err.Error(), "not valid base64") {
-			t.Fatalf("SignRequest() with %q: error = %v, want a refusal", bad, err)
-		}
-		_, err = client.SignTransactionsWithOptions([]types.Transaction{txn}, []string{""}, nil, &SignOptions{Passthrough: map[int]string{0: bad}})
-		if err == nil || !strings.Contains(err.Error(), "invalid passthrough transaction 1: invalid base64: not valid base64") {
-			t.Fatalf("passthrough %q: error = %v, want a refusal", bad, err)
 		}
 	}
 }

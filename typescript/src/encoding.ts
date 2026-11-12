@@ -72,31 +72,37 @@ export function encodeLsigArgs(
   return encoded;
 }
 
+/** What a value that is not bytes is, for an error message. */
+function bytesKind(value: unknown): string {
+  if (value === null || value === undefined) return String(value);
+  if (Array.isArray(value)) return "an array";
+  return typeof value === "object" ? "an object" : `a ${typeof value}`;
+}
+
 /**
- * Concatenate signed transactions and convert to base64 for submission.
- *
- * @param signedHexes - Array of hex-encoded signed transactions
- * @returns Base64-encoded concatenated transactions ready for algod
+ * A copy of one signed transaction a caller supplied, as a plain Uint8Array.
+ * Anything else, such as a hex or base64 string, is refused, and label names
+ * its position in the error.
  */
-export function concatenateSignedTxns(signedHexes: string[]): string {
-  // Calculate total length
-  let totalLength = 0;
-  const byteArrays: Uint8Array[] = [];
-  for (const hex of signedHexes) {
-    const bytes = hexToBytes(hex);
-    byteArrays.push(bytes);
-    totalLength += bytes.length;
+export function signedTransactionCopy(value: unknown, label: string): Uint8Array {
+  if (!(value instanceof Uint8Array)) {
+    throw new SignerError(`${label} must be signed transaction bytes (a Uint8Array), not ${bytesKind(value)}`);
   }
+  return new Uint8Array(value);
+}
 
-  // Concatenate all bytes
-  const combined = new Uint8Array(totalLength);
-  let offset = 0;
-  for (const bytes of byteArrays) {
-    combined.set(bytes, offset);
-    offset += bytes.length;
-  }
-
-  return bytesToBase64(combined);
+/**
+ * The signer's hex entries of a signed group as bytes, one per transaction,
+ * in order. An empty entry stays empty.
+ */
+export function signedGroupFromHex(signed: string[]): Uint8Array[] {
+  return signed.map((entry, index) => {
+    try {
+      return hexToBytes(entry);
+    } catch (error) {
+      throw new SignerError(`signed transaction ${index + 1} is invalid hex: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  });
 }
 
 const STRICT_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;

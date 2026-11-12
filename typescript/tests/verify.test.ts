@@ -417,7 +417,6 @@ describe("public sign, plan and simulate calls", () => {
 
     await assert.rejects(client.signTransaction(txn), error);
     await assert.rejects(client.signTransactions([txn]), error);
-    await assert.rejects(client.signTransactionsList([txn]), error);
     await assert.rejects(client.signRequests(signEntries(txn)), error);
     await assert.rejects(client.planGroup([txn]), error);
     await assert.rejects(
@@ -434,9 +433,9 @@ describe("public sign, plan and simulate calls", () => {
     stubSigner({ feeRaise: { 0: 2000 }, dummies: 1 });
     const client = new SignerClient("http://localhost:11270");
 
-    const signed = await client.signTransactionsList([txn]);
+    const signed = await client.signTransactions([txn]);
     assert.equal(signed.length, 2);
-    const first = algosdk.decodeSignedTransaction(Buffer.from(signed[0], "base64"));
+    const first = algosdk.decodeSignedTransaction(signed[0]);
     assert.equal(first.txn.fee, txn.fee + 2000n);
 
     const plan = await client.planGroup([txn]);
@@ -557,7 +556,6 @@ describe("maxFeeIncrease", () => {
       };
       const calls: Array<[string, () => Promise<unknown>]> = [
         ["response", () => client.signTransactions(txns)],
-        ["response", () => client.signTransactionsList(txns)],
         ["response", () => client.signRequests(signEntries(...txns))],
         ["plan", () => client.planGroup(txns)],
         ["response", () => client.simulatePreparedGroup(algod, prepared)],
@@ -583,7 +581,7 @@ describe("maxFeeIncrease", () => {
     const client = new SignerClient("http://localhost:11270", undefined, null, {
       maxFeeIncrease: 2000,
     });
-    assert.equal((await client.signTransactionsList([fakePayment()])).length, 3);
+    assert.equal((await client.signTransactions([fakePayment()])).length, 3);
   });
 
   it("has no default, and can be set, changed and removed", async () => {

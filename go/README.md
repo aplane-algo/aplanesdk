@@ -19,6 +19,7 @@ go get github.com/aplane-algo/aplanesdk/go
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log"
@@ -58,15 +59,16 @@ func main() {
 		nil, "", params,
 	)
 
-	// Sign via apsigner (waits for operator approval)
+	// Sign via apsigner (waits for operator approval). The result is the
+	// signed group: this transaction first, then any resource dummies the
+	// signer appended.
 	signed, err := client.SignTransaction(txn, "", nil)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// Submit using standard go-algorand-sdk (signed is base64)
-	signedBytes, _ := aplane.Base64ToBytes(signed)
-	txid, _ := algodClient.SendRawTransaction(signedBytes).Do(context.Background())
+	// Submit the whole group using standard go-algorand-sdk
+	txid, _ := algodClient.SendRawTransaction(bytes.Join(signed, nil)).Do(context.Background())
 	fmt.Printf("Submitted: %s\n", txid)
 }
 ```
@@ -248,9 +250,12 @@ for _, key := range keys {
 }
 ```
 
-#### `SignTransaction(txn, authAddress, lsigArgs) (string, error)`
+#### `SignTransaction(txn, authAddress, lsigArgs) ([][]byte, error)`
 
-Sign a single transaction. Returns base64-encoded signed transaction.
+Sign a single transaction. Returns the signed group, as `SignTransactions`
+does: the first entry is your transaction, and any further entries are
+resource dummies the signer appended. The whole list is what must be
+submitted, as `SendRawTransaction(bytes.Join(signed, nil))`.
 
 ```go
 // Basic signing
@@ -267,9 +272,12 @@ signed, err := client.SignTransaction(
 )
 ```
 
-#### `SignTransactions(txns, authAddresses, lsigArgsMap) (string, error)`
+#### `SignTransactions(txns, authAddresses, lsigArgsMap) ([][]byte, error)`
 
-Sign multiple transactions as a group. Returns concatenated base64.
+Sign multiple transactions as a group. Returns the signed group: one
+canonical msgpack-encoded signed transaction per entry, in group order, the
+resource dummies the signer appended included. These are the bytes
+go-algorand-sdk's own signers return.
 
 **Important**: Do NOT pre-assign group IDs. The server computes the group ID.
 
@@ -279,7 +287,14 @@ signed, err := client.SignTransactions(
 	[]string{authAddr1, authAddr2},
 	nil,
 )
+if err != nil {
+	log.Fatal(err)
+}
+txid, err := algodClient.SendRawTransaction(bytes.Join(signed, nil)).Do(ctx)
 ```
+
+`SignTransactionsWithOptions` returns the same, with passthrough positions
+from `SignOptions.Passthrough` (signed transaction bytes) included.
 
 #### `GetKeysResponseWithContext(ctx) (*KeysResult, error)`
 
@@ -366,9 +381,11 @@ fmt.Println(result.TxIDs[0], result.Outcome, result.ConfirmedRound)
 ```
 
 `SendPayment(ctx, algodClient, params, opts)` does both steps for an ALGO
-payment.
+payment. `SendTransactions`, below, sends transactions you built with
+go-algorand-sdk.
 
-- **Result.** `SignedGroup` is the group as submitted; the first
+- **Result.** `SignedGroup` is the group as submitted, one canonical
+  msgpack-encoded signed transaction per entry; the first
   `OriginalCount` entries are yours and the rest are resource dummies the
   signer appended. `TxIDs`, `Fees` and `GroupID` are computed from the signed
   bytes. A signer may raise a fee or assign a group, so `TxIDs` can differ from
@@ -440,8 +457,7 @@ its `transaction.WaitForConfirmation` on `TxIDs[0]`, both given your context.
 It does not read the node's answers itself: a failure of either call comes
 back as `*SubmissionError` with go-algorand-sdk's error unchanged.
 
-The existing `Sign*` and `Simulate*` calls are unchanged. A `Simulate*`
-result is `Failed` unless the node returned exactly one group result, that
+A `Simulate*` result is `Failed` unless the node returned exactly one group result, that
 result reports no failure (no `failure-message` and no `failed-at`), and it
 holds one transaction result per transaction simulated: an answer without
 exactly one result, or with the wrong count of transaction results, checked
@@ -624,6 +640,41 @@ on the chain first, so an ordinary key is never asked to sign for an account
 that is still rotating. Recovery of an unknown stage is an
 operator action (`rotate recover` in apshell).
 
+#### `SendTransactions(ctx, algodClient, txns, opts) (*SendResult, error)`
+
+Sign and send transactions built with go-algorand-sdk, such as those its
+`transaction.Make*` constructors return. It takes the same options as
+`SendPrepared` and returns the same result and errors.
+
+```go
+params, err := algodClient.SuggestedParams().Do(ctx)
+if err != nil {
+	log.Fatal(err)
+}
+payment, err := transaction.MakePaymentTxn(sender, receiver, 1_000_000, nil, "", params)
+if err != nil {
+	log.Fatal(err)
+}
+result, err := client.SendTransactions(ctx, algodClient, []types.Transaction{payment}, nil)
+```
+
+For each transaction it reads the sender's account from the node and resolves
+the signing address as the `Prepare*` helpers do: the sender, or its on-chain
+auth address when the account is rekeyed. It names that address in a prepared
+slot, sets nothing else, and calls `SendPrepared` with the slots in the order
+given. It runs none of the `Prepare*` preflight checks, such as balances and
+opt-ins.
+
+The call does not modify the transaction objects you pass in. It validates
+and submits the signer's returned group using the existing prepared-send
+flow. Use the transaction IDs in the result (`SendResult.TxIDs`). That flow
+is described under `SendPrepared`, above.
+
+An empty list is refused. A failed account lookup is a plain error, and
+nothing is signed. A sender whose key the signer does not hold is refused with
+`ErrKeyNotFound` before anything is signed, as the `Prepare*` helpers refuse
+it.
+
 ### Config Helpers
 
 #### `LoadConfig(dataDir) (*Config, error)`
@@ -696,7 +747,11 @@ result, err := aplane.SignPreparedCosignedGroup(aplane.PreparedCosignedGroupOpti
 	UserClient:    userClient, // from FromEnv: the cosigner is found in endpoints.yaml
 	PreparedGroup: preparedGroup,
 })
-signedGroup := result.SignedGroup
+if err != nil {
+	log.Fatal(err)
+}
+// One signed transaction's msgpack bytes per entry, in group order.
+txid, err := algodClient.SendRawTransaction(bytes.Join(result.SignedGroup, nil)).Do(ctx)
 ```
 
 The SDK first freezes the complete canonical group through `/plan`; the user
@@ -800,8 +855,8 @@ membership, and the group ID before signing:
 
 ```go
 signed, err := client.SignTransaction(txn, "", nil)
-signedBytes, _ := aplane.Base64ToBytes(signed)
-txid, _ := algodClient.SendRawTransaction(signedBytes).Do(ctx)
+// A LogicSig account's signed group holds its dummies too: submit all of it.
+txid, _ := algodClient.SendRawTransaction(bytes.Join(signed, nil)).Do(ctx)
 ```
 
 ### Fee Impact

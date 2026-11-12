@@ -15,8 +15,8 @@ Usage:
     from aplanesdk import SignerClient
 
     client = SignerClient.from_env()
-    signed_txn = client.sign_transaction(txn)
-    txid = algod_client.send_raw_transaction(signed_txn)
+    signed = client.sign_transaction(txn)  # the signed group: raw bytes per transaction
+    txid = algod_client.send_raw_transaction(base64.b64encode(b"".join(signed)).decode())
     client.close()
 """
 from ._version import __version__

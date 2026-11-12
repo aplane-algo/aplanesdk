@@ -41,7 +41,7 @@ def build_groups(addresses: dict) -> dict[str, PreparedGroup]:
     rekey_to = addresses["rekey_to"]
     foreign = addresses["foreign"]
     app_account = addresses["app_account"]
-    passthrough = base64.b64encode(bytes.fromhex("82a3736967c440")).decode()
+    passthrough = bytes.fromhex("82a3736967c440")
 
     payment = transaction.PaymentTxn(sender, suggested_params(), receiver, 12345, note=b"pay")
     asa = transaction.AssetTransferTxn(sender, suggested_params(), receiver, 5, 1001, note=b"asa")
@@ -147,7 +147,7 @@ def build_groups(addresses: dict) -> dict[str, PreparedGroup]:
             lsig_resources=LogicSigResourceUsage(1612, 1423, 20000),
         )
 
-    passthrough_slot = PreparedTransaction(signed_transaction_base64=passthrough)
+    passthrough_slot = PreparedTransaction(signed_transaction=passthrough)
 
     return {
         "payment_sign_mode_lsig_args": PreparedGroup(
@@ -250,6 +250,6 @@ def test_prepared_foreign_rejects_invalid_lsig_resources():
 def test_prepared_passthrough_rejects_invalid_lsig_resources():
     with pytest.raises(ValueError, match="LogicSig resources are invalid"):
         PreparedTransaction(
-            signed_transaction_base64=base64.b64encode(b"signed-txn").decode(),
+            signed_transaction=b"signed-txn",
             lsig_resources=LogicSigResourceUsage(0, 0, 0),
         ).to_sign_request()

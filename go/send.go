@@ -4,9 +4,9 @@
 package aplane
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -76,10 +76,11 @@ type SendResult struct {
 	// Flow is the signing flow the group took: empty for the ordinary /sign
 	// flow, SigningFlowCosigned1 or SigningFlowRotating1.
 	Flow string
-	// SignedGroup is the exact group submitted, hex msgpack, in order. The
-	// first OriginalCount entries are the caller's transactions, in the order
+	// SignedGroup is the exact group submitted, one canonical
+	// msgpack-encoded signed transaction per entry, in order. The first
+	// OriginalCount entries are the caller's transactions, in the order
 	// given; the rest are resource dummies the signer appended.
-	SignedGroup   []string
+	SignedGroup   [][]byte
 	OriginalCount int
 	// TxIDs are the IDs of the signed transactions, in SignedGroup order. A
 	// signer may raise a fee or assign a group, so these can differ from the
@@ -209,8 +210,9 @@ func (e *SignOutcomeUnknownError) Unwrap() error {
 // proves the group never confirmed: check an indexer before building a
 // replacement.
 type SubmissionError struct {
-	// SignedGroup is the signed group, hex msgpack, in order.
-	SignedGroup []string
+	// SignedGroup is the signed group, one canonical msgpack-encoded signed
+	// transaction per entry, in order: what SubmitSignedGroup takes.
+	SignedGroup [][]byte
 	// TxIDs are the IDs of the signed transactions, in SignedGroup order.
 	TxIDs []string
 	// LastValid is the earliest last valid round in SignedGroup: after it,
@@ -273,7 +275,8 @@ func (c *SignerClient) SendPayment(ctx context.Context, algodClient *algod.Clien
 // before anything is signed.
 //
 // Every position must be one whose key this signer holds, and must name it in
-// AuthAddress, as the Prepare* helpers do.
+// AuthAddress, as the Prepare* helpers do. SendTransactions does that for
+// transactions built with go-algorand-sdk.
 //
 // A refusal by the signer, and an answer of the signer's that the SDK
 // refuses, come back as the signing call's own error; nothing was submitted.
@@ -346,7 +349,8 @@ func (c *SignerClient) sendPrepared(ctx context.Context, algodClient *algod.Clie
 			}
 			return nil, err
 		}
-		result.SignedGroup = signed.SignedGroup
+		// The result and its Cosigned details each hold their own copy.
+		result.SignedGroup = cloneSignedGroup(signed.SignedGroup)
 		result.Mutations = signed.PlanMutations
 		result.Cosigned = signed
 	default:
@@ -354,15 +358,16 @@ func (c *SignerClient) sendPrepared(ctx context.Context, algodClient *algod.Clie
 		if err != nil {
 			return nil, err
 		}
-		result.SignedGroup = response.Signed
+		if result.SignedGroup, err = signedGroupFromHex(response.Signed); err != nil {
+			return nil, fmt.Errorf("verify signed group: %w", err)
+		}
 		result.Mutations = response.Mutations
 	}
 
-	raw, err := describeSignedGroup(result)
-	if err != nil {
+	if err := describeSignedGroup(result); err != nil {
 		return nil, fmt.Errorf("verify signed group: %w", err)
 	}
-	if err := submitAndTrack(ctx, algodClient, raw, result, opts); err != nil {
+	if err := submitAndTrack(ctx, algodClient, result, opts); err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -401,7 +406,7 @@ func (c *SignerClient) classifySend(ctx context.Context, group PreparedGroup) (f
 		return "", nil, fmt.Errorf("resolve signer keys: %w", err)
 	}
 	for i, item := range group.Transactions {
-		if item.SignedTransactionBase64 != "" {
+		if len(item.SignedTransaction) != 0 {
 			return "", nil, fmt.Errorf("prepared transaction %d: %w: it is already signed; use the lower-level signing calls for a pre-signed position", i, ErrUnsupportedGroup)
 		}
 		if item.Transaction == nil {
@@ -494,29 +499,26 @@ func (c *SignerClient) signForSend(ctx context.Context, group PreparedGroup) (*G
 }
 
 // describeSignedGroup fills the result's IDs, fees and group ID from its
-// signed bytes and returns those bytes decoded. Each entry must be one
-// canonically encoded signed transaction, and a group of several must carry
-// the group ID computed over itself.
-func describeSignedGroup(result *SendResult) ([][]byte, error) {
+// signed bytes. Each entry must be one canonically encoded signed
+// transaction, and a group of several must carry the group ID computed over
+// itself.
+func describeSignedGroup(result *SendResult) error {
 	decoded, txIDs, _, err := decodeExecutableSignedGroup(result.SignedGroup)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if len(decoded) < result.OriginalCount {
-		return nil, fmt.Errorf("signed group has %d transaction(s), fewer than the %d prepared", len(decoded), result.OriginalCount)
+		return fmt.Errorf("signed group has %d transaction(s), fewer than the %d prepared", len(decoded), result.OriginalCount)
 	}
 	txns := make([]types.Transaction, len(decoded))
-	raw := make([][]byte, len(decoded))
 	result.Fees = make([]uint64, len(decoded))
 	for i := range decoded {
 		txns[i] = decoded[i].Txn
 		result.Fees[i] = uint64(decoded[i].Txn.Fee)
-		// decodeExecutableSignedGroup has checked this decodes.
-		raw[i], _ = hex.DecodeString(result.SignedGroup[i])
 	}
 	groupID, err := validateCanonicalGroupID(txns)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if len(txns) == 1 {
 		groupID = txns[0].Group
@@ -526,7 +528,7 @@ func describeSignedGroup(result *SendResult) ([][]byte, error) {
 	}
 	result.TxIDs = txIDs
 	result.lastValid = earliestLastValid(txns)
-	return raw, nil
+	return nil
 }
 
 // earliestLastValid is the earliest last valid round among txns. A group is
@@ -555,22 +557,19 @@ func (g PreparedGroup) earliestLastValid() uint64 {
 }
 
 // submitAndTrack is the one submission path of every send. It posts the
-// signed bytes exactly as given with go-algorand-sdk's SendRawTransaction
-// and, unless told not to, waits with its transaction.WaitForConfirmation on
-// the first transaction ID. It reports their errors unchanged in a
-// *SubmissionError and never signs or rebuilds anything.
-func submitAndTrack(ctx context.Context, algodClient *algod.Client, raw [][]byte, result *SendResult, opts *SendOptions) error {
+// result's signed bytes, checked by describeSignedGroup, exactly as they are
+// with go-algorand-sdk's SendRawTransaction and, unless told not to, waits
+// with its transaction.WaitForConfirmation on the first transaction ID. It
+// reports their errors unchanged in a *SubmissionError and never signs or
+// rebuilds anything.
+func submitAndTrack(ctx context.Context, algodClient *algod.Client, result *SendResult, opts *SendOptions) error {
 	fail := func(submitted bool, err error) error {
-		return &SubmissionError{SignedGroup: result.SignedGroup, TxIDs: result.TxIDs, LastValid: result.lastValid, Submitted: submitted, Err: err}
+		return &SubmissionError{SignedGroup: cloneSignedGroup(result.SignedGroup), TxIDs: result.TxIDs, LastValid: result.lastValid, Submitted: submitted, Err: err}
 	}
 	if err := ctx.Err(); err != nil {
 		return fail(false, err)
 	}
-	var blob []byte
-	for _, entry := range raw {
-		blob = append(blob, entry...)
-	}
-	if _, err := algodClient.SendRawTransaction(blob).Do(ctx); err != nil {
+	if _, err := algodClient.SendRawTransaction(bytes.Join(result.SignedGroup, nil)).Do(ctx); err != nil {
 		return fail(false, err)
 	}
 	result.Outcome = SendOutcomeSubmitted
@@ -599,22 +598,68 @@ func submitAndTrack(ctx context.Context, algodClient *algod.Client, raw [][]byte
 // from SignPreparedRotating, or to submit again the SignedGroup a
 // *SubmissionError kept: the same bytes can execute only once.
 //
-// Each entry must be one canonically encoded signed transaction, hex msgpack,
-// and a group of several must carry the group ID computed over itself.
-func (c *SignerClient) SubmitSignedGroup(ctx context.Context, algodClient *algod.Client, signedGroup []string, opts *SendOptions) (*SendResult, error) {
+// Each entry must be one canonical msgpack-encoded signed transaction, the
+// form SignedGroup holds, and a group of several must carry the group ID
+// computed over itself. The group is copied, so changing signedGroup later
+// changes nothing the result holds.
+func (c *SignerClient) SubmitSignedGroup(ctx context.Context, algodClient *algod.Client, signedGroup [][]byte, opts *SendOptions) (*SendResult, error) {
 	if algodClient == nil {
 		return nil, fmt.Errorf("algod client is required")
 	}
 	if opts == nil {
 		opts = &SendOptions{}
 	}
-	result := &SendResult{SignedGroup: append([]string(nil), signedGroup...), OriginalCount: len(signedGroup)}
-	raw, err := describeSignedGroup(result)
-	if err != nil {
+	result := &SendResult{SignedGroup: cloneSignedGroup(signedGroup), OriginalCount: len(signedGroup)}
+	if err := describeSignedGroup(result); err != nil {
 		return nil, fmt.Errorf("verify signed group: %w", err)
 	}
-	if err := submitAndTrack(ctx, algodClient, raw, result, opts); err != nil {
+	if err := submitAndTrack(ctx, algodClient, result, opts); err != nil {
 		return nil, err
 	}
 	return result, nil
+}
+
+// SendTransactions signs and sends transactions built with go-algorand-sdk,
+// such as those its transaction.Make* constructors return. It takes the same
+// options as SendPrepared and returns the same result and errors.
+//
+// For each transaction it reads the sender's account from the node and
+// resolves the signing address as the Prepare* helpers do: the sender, or its
+// on-chain auth address when the account is rekeyed, through
+// ResolveAuthAddress. It wraps each transaction in a PreparedTransaction that
+// names that address and sets nothing else, and calls SendPrepared with them
+// in the order given. It runs none of the Prepare* preflight checks, such as
+// balances and opt-ins.
+//
+// The call does not modify the transaction objects you pass in. It validates
+// and submits the signer's returned group using the existing prepared-send
+// flow. Use the transaction IDs in the result (SendResult.TxIDs). SendPrepared
+// describes that flow.
+//
+// An empty list is refused. A failed account lookup is returned as a plain
+// error, and nothing is signed.
+func (c *SignerClient) SendTransactions(ctx context.Context, algodClient *algod.Client, txns []types.Transaction, opts *SendOptions) (*SendResult, error) {
+	if algodClient == nil {
+		return nil, fmt.Errorf("algod client is required")
+	}
+	if len(txns) == 0 {
+		return nil, fmt.Errorf("transaction list is empty")
+	}
+	group := PreparedGroup{Transactions: make([]PreparedTransaction, len(txns))}
+	for i := range txns {
+		txn := txns[i]
+		sender := txn.Sender.String()
+		account, err := algodClient.AccountInformation(sender).Do(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("transaction %d: failed to get sender account info: %w", i, err)
+		}
+		resolved, err := c.ResolveAuthAddress(ctx, sender, func(context.Context, string) (string, error) {
+			return account.AuthAddr, nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("transaction %d: %w", i, err)
+		}
+		group.Transactions[i] = PreparedTransaction{Transaction: &txn, AuthAddress: resolved.AuthAddress}
+	}
+	return c.SendPrepared(ctx, algodClient, group, opts)
 }

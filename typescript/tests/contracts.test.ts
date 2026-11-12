@@ -184,7 +184,7 @@ describe("signer API contract fixtures", () => {
           recipient: new Uint8Array([0xaa, 0xbb, 0xcc, 0xdd]),
         },
       },
-      { 1: Buffer.from(presigned, "hex").toString("base64") },
+      { 1: Buffer.from(presigned, "hex") },
       { 2: { programBytes: 1600, argumentBytes: 1423, maxOpcodeCost: 20000 } },
     );
 

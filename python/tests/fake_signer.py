@@ -129,8 +129,14 @@ def sign_entries(*txns):
 
 
 def signed_hex(txn) -> str:
-    """A transaction signed by its sender."""
+    """A transaction signed by its sender, hex, as the signer's wire answer
+    holds it."""
     return encode_signed(authorize(txn, txn.sender))
+
+
+def signed_bytes(txn) -> bytes:
+    """A transaction signed by its sender, raw, as the SDK returns it."""
+    return bytes.fromhex(signed_hex(txn))
 
 
 def decode_signed(signed_hex_value: str):

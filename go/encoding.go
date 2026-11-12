@@ -27,17 +27,31 @@ func encodeTxn(txn types.Transaction) []byte {
 	return result
 }
 
-// hexArrayToBase64 concatenates hex strings and returns base64.
-func hexArrayToBase64(hexStrings []string) (string, error) {
-	var combined []byte
-	for _, h := range hexStrings {
-		decoded, err := hex.DecodeString(h)
+// signedGroupFromHex decodes the signer's hex entries into raw bytes, one per
+// transaction, in order. An empty entry stays empty.
+func signedGroupFromHex(signed []string) ([][]byte, error) {
+	group := make([][]byte, len(signed))
+	for i, entry := range signed {
+		raw, err := hex.DecodeString(entry)
 		if err != nil {
-			return "", err
+			return nil, fmt.Errorf("signed transaction %d is invalid hex: %w", i+1, err)
 		}
-		combined = append(combined, decoded...)
+		group[i] = raw
 	}
-	return base64.StdEncoding.EncodeToString(combined), nil
+	return group, nil
+}
+
+// cloneSignedGroup copies every entry, so the copy shares no bytes with
+// group.
+func cloneSignedGroup(group [][]byte) [][]byte {
+	if group == nil {
+		return nil
+	}
+	cloned := make([][]byte, len(group))
+	for i, entry := range group {
+		cloned[i] = append([]byte(nil), entry...)
+	}
+	return cloned
 }
 
 // HexToBytes converts a hex string to bytes.

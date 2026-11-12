@@ -233,13 +233,14 @@ function firstOrEmpty(values: string[]): string {
  * A send signed a group, and algosdk's submit call or its confirmation wait
  * then failed. It says which step failed and nothing about what the node did.
  *
- * `signedGroup` is the signed group, hex msgpack, and `txIds` its transaction
- * IDs. `lastValid` is the earliest last valid round of the group. `submitted`
- * is true when algosdk's sendRawTransaction returned success and the failure
- * came later, and false when it did not return success. False does not mean
- * the node lacks the group: the answer may have been lost. `cause` is
- * algosdk's error, unchanged (the signal's reason when the call's signal was
- * aborted); read it as in any algosdk program.
+ * `signedGroup` is the signed group, one canonical msgpack-encoded signed
+ * transaction per entry, in order; each read returns a copy. `txIds` are its
+ * transaction IDs. `lastValid` is the earliest last valid round of the
+ * group. `submitted` is true when algosdk's sendRawTransaction returned
+ * success and the failure came later, and false when it did not return
+ * success. False does not mean the node lacks the group: the answer may have
+ * been lost. `cause` is algosdk's error, unchanged (the signal's reason when
+ * the call's signal was aborted); read it as in any algosdk program.
  *
  * When `submitted` is true, follow the group with algosdk's
  * waitForConfirmation on the first of `txIds` for `lastValid` minus the
@@ -258,20 +259,21 @@ function firstOrEmpty(values: string[]): string {
  * work. Anything else (no answer, a lost connection, a 5xx, the signal)
  * leaves open whether the node has the group: follow the first of `txIds`
  * with algosdk's wait for a few rounds, and if it does not confirm, submit
- * the same `signedGroup` again with SignerClient.submitSignedGroup. The same
- * signed group cannot pay twice. After `lastValid` neither a refusal nor a
+ * the same `signedGroup` again with SignerClient.submitSignedGroup, or with
+ * algosdk's sendRawTransaction, which takes it as it is. The same signed
+ * group cannot pay twice. After `lastValid` neither a refusal nor a
  * node's "not found" proves anything; check an indexer. The SDK itself reads
  * neither the status nor the text.
  */
 export class SubmissionError extends SignerError {
-  readonly signedGroup: string[];
+  readonly #signedGroup: Uint8Array[];
   readonly txIds: string[];
   readonly lastValid: bigint;
   readonly submitted: boolean;
   readonly cause: unknown;
 
   constructor(options: {
-    signedGroup: string[];
+    signedGroup: Uint8Array[];
     txIds: string[];
     lastValid: bigint;
     submitted: boolean;
@@ -280,11 +282,16 @@ export class SubmissionError extends SignerError {
     const step = options.submitted ? "wait for confirmation of" : "submit";
     super(`${step} transaction ${firstOrEmpty(options.txIds)}: ${errorText(options.cause)}`);
     this.name = "SubmissionError";
-    this.signedGroup = [...options.signedGroup];
+    this.#signedGroup = options.signedGroup.map((entry) => new Uint8Array(entry));
     this.txIds = [...options.txIds];
     this.lastValid = options.lastValid;
     this.submitted = options.submitted;
     this.cause = options.cause;
+  }
+
+  /** The signed group, a fresh copy on every read. */
+  get signedGroup(): Uint8Array[] {
+    return this.#signedGroup.map((entry) => new Uint8Array(entry));
   }
 }
 

@@ -26,7 +26,7 @@
  */
 
 import algosdk from "algosdk";
-import { SignOutcomeUnknownError, SignerClient, SubmissionError } from "aplanesdk";
+import { SignOutcomeUnknownError, SignerClient, SubmissionError, bytesToHex } from "aplanesdk";
 
 // The hashlock address (must exist in apsigner keystore)
 const HASHLOCK_ADDRESS = "HASHLOCKEXAMPLE7777777777777777777777777777777777777777";
@@ -122,9 +122,12 @@ async function waitForGroup(algodClient: algosdk.Algodv2, error: SubmissionError
 function printSignedGroup(error: SubmissionError): void {
   console.error(`Transaction IDs: ${error.txIds.join(", ")}`);
   console.error(`Last valid round: ${error.lastValid}`);
-  console.error("Signed group, hex msgpack, one entry per transaction (submitSignedGroup takes this list):");
+  // The entries are bytes; this prints each one as hex, one line per
+  // transaction. hexToBytes turns each line back into the bytes
+  // submitSignedGroup takes.
+  console.error("Signed group, each entry printed as hex msgpack, one per transaction:");
   for (const entry of error.signedGroup) {
-    console.error(`  ${entry}`);
+    console.error(`  ${bytesToHex(entry)}`);
   }
 }
 

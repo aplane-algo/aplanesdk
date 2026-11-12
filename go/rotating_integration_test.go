@@ -330,7 +330,7 @@ func captureRotatingVector(t *testing.T, name string, prepared *PreparedRotating
 			RekeyTo: prepared.RekeyTo(), Transactions: prepared.Transactions(), Mutations: prepared.Mutations(),
 		},
 		Sign: RotatingSignResponse{
-			Signed: signed.SignedGroup, Stage: signed.Stage, Target: signed.Target,
+			Signed: hexEntries(signed.SignedGroup), Stage: signed.Stage, Target: signed.Target,
 			TxID: signed.TxID, GroupID: signed.GroupID,
 		},
 	}

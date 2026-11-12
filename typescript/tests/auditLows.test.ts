@@ -603,18 +603,24 @@ describe("strict base64", () => {
   for (const [name, value] of lenient) {
     it(`refuses ${name}`, async () => {
       assert.throws(() => base64ToBytes(value, "input"), /input is not valid base64/);
-      // The same strings Buffer.from would have taken, at each caller-facing site.
-      assert.throws(
-        () => preparedGroupToSignRequests({ transactions: [{ signedTransactionBase64: value }] }),
-        /signedTransactionBase64 is not valid base64/,
-      );
-      const client = new SignerClient("http://localhost:11270");
-      assert.throws(
-        () => (client as any).buildSignRequestBody([null], [null], undefined, { 0: value }),
-        /passthrough\[0\] is not valid base64/,
-      );
     });
   }
+
+  // The caller-facing sites take the signed bytes themselves, so no string,
+  // valid base64 or not, is decoded there.
+  it("is not applied to a signed transaction a caller supplies, which must be bytes", () => {
+    const client = new SignerClient("http://localhost:11270");
+    for (const value of [good, ...lenient.map(([, text]) => text)]) {
+      assert.throws(
+        () => preparedGroupToSignRequests({ transactions: [{ signedTransaction: value as any }] }),
+        { message: "prepared transaction 0: signedTransaction must be signed transaction bytes (a Uint8Array), not a string" },
+      );
+      assert.throws(
+        () => (client as any).buildSignRequestBody([null], [null], undefined, { 0: value }),
+        { message: "passthrough[0] must be signed transaction bytes (a Uint8Array), not a string" },
+      );
+    }
+  });
 });
 
 describe("networks_allowed", () => {

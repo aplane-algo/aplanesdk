@@ -4,7 +4,6 @@
 """Signer API contract fixture tests for the Python SDK."""
 
 import json
-import base64
 import hashlib
 import aplanesdk
 from dataclasses import asdict
@@ -179,7 +178,7 @@ def test_encodes_mixed_group_sign_request_wire_fields():
         [sign_txn, None, foreign_txn],
         [sign_txn.sender, None, None],
         {sign_txn.sender: lsig_args},
-        {1: base64.b64encode(bytes.fromhex(presigned)).decode()},
+        {1: bytes.fromhex(presigned)},
         {2: LogicSigResourceUsage(1600, 1423, 20000)},
     )
 

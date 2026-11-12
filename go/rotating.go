@@ -148,8 +148,9 @@ type RotatingSignOptions struct {
 // prepared one. Submit it promptly: the stage's one-time keys are revealed
 // until this transaction or a later rotation confirms.
 type RotatingSignResult struct {
-	// SignedGroup is the signed group, hex msgpack, in prepared order.
-	SignedGroup []string
+	// SignedGroup is the signed group, one canonical msgpack-encoded signed
+	// transaction per entry, in prepared order: what SubmitSignedGroup takes.
+	SignedGroup [][]byte
 	Stage       uint64
 	Target      uint64
 	// TxID and GroupID are computed from the prepared bytes; the signer's
@@ -459,11 +460,13 @@ func (p *PreparedRotating) verifySigned(response *RotatingSignResponse) (*Rotati
 		return nil, fmt.Errorf("signer reports stage %d to %d, prepared %d to %d", response.Stage, response.Target, p.stage, p.target)
 	}
 	spend := txns[0]
+	signedGroup := make([][]byte, len(response.Signed))
 	for i, signedHex := range response.Signed {
 		raw, err := hex.DecodeString(signedHex)
 		if err != nil {
 			return nil, fmt.Errorf("signed transaction %d: invalid hex: %w", i+1, err)
 		}
+		signedGroup[i] = raw
 		stxn, err := decodeCanonicalSignedTxn(raw)
 		if err != nil {
 			return nil, fmt.Errorf("signed transaction %d: %w", i+1, err)
@@ -511,7 +514,7 @@ func (p *PreparedRotating) verifySigned(response *RotatingSignResponse) (*Rotati
 		return nil, fmt.Errorf("signer reports group ID %q, the spend's is %q", response.GroupID, groupID)
 	}
 	return &RotatingSignResult{
-		SignedGroup: append([]string(nil), response.Signed...),
+		SignedGroup: signedGroup,
 		Stage:       p.stage,
 		Target:      p.target,
 		TxID:        txID,
@@ -663,11 +666,10 @@ func (c *SignerClient) sendRotating(ctx context.Context, algodClient *algod.Clie
 				RequestID:   signed.RequestID,
 			},
 		}
-		raw, err := describeSignedGroup(result)
-		if err != nil {
+		if err := describeSignedGroup(result); err != nil {
 			return nil, fmt.Errorf("verify signed group: %w", err)
 		}
-		if err := submitAndTrack(ctx, algodClient, raw, result, opts); err != nil {
+		if err := submitAndTrack(ctx, algodClient, result, opts); err != nil {
 			return nil, err
 		}
 		return result, nil

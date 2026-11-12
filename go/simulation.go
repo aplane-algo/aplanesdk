@@ -23,9 +23,12 @@ import (
 // checked less than the group. FailureMessage says why, and is empty when
 // Failed is false: the node's own failure-message, or which of those it was.
 type SimulationResult struct {
-	TxIDs          []string
-	Transactions   []string
-	SignedGroup    []string
+	TxIDs        []string
+	Transactions []string
+	// SignedGroup is the signed group that was simulated, one canonical
+	// msgpack-encoded signed transaction per entry, in order. A simulation of
+	// an unsigned group, such as SimulatePreparedRotating, leaves it nil.
+	SignedGroup    [][]byte
 	Mutations      *MutationReport
 	Response       *models.SimulateResponse
 	Failed         bool
@@ -111,7 +114,11 @@ func (c *SignerClient) simulateRequestsWithContext(
 	if response.Mutations != nil && response.Mutations.ForeignCount > 0 {
 		return nil, fmt.Errorf("signed simulation requires a complete group; signer returned %d foreign transaction(s)", response.Mutations.ForeignCount)
 	}
-	return simulateSignedGroupWithContext(ctx, algodClient, response.Signed, response.Mutations)
+	signed, err := signedGroupFromHex(response.Signed)
+	if err != nil {
+		return nil, err
+	}
+	return simulateSignedGroupWithContext(ctx, algodClient, signed, response.Mutations)
 }
 
 // SimulatePreparedCosignedGroup signs and simulates a prepared cosigned group.
@@ -146,7 +153,7 @@ func SimulatePreparedCosignedGroupWithContext(
 func simulateSignedGroupWithContext(
 	ctx context.Context,
 	algodClient *algod.Client,
-	signedGroup []string,
+	signedGroup [][]byte,
 	mutations *MutationReport,
 ) (*SimulationResult, error) {
 	if algodClient == nil {
@@ -166,7 +173,7 @@ func simulateSignedGroupWithContext(
 	return &SimulationResult{
 		TxIDs:          txIDs,
 		Transactions:   transactions,
-		SignedGroup:    append([]string(nil), signedGroup...),
+		SignedGroup:    cloneSignedGroup(signedGroup),
 		Mutations:      mutations,
 		Response:       response,
 		Failed:         failure != "",
@@ -204,23 +211,20 @@ func simulationFailure(response *models.SimulateResponse, submitted int) string 
 	return ""
 }
 
-func decodeExecutableSignedGroup(signedGroup []string) ([]types.SignedTxn, []string, []string, error) {
+func decodeExecutableSignedGroup(signedGroup [][]byte) ([]types.SignedTxn, []string, []string, error) {
 	if len(signedGroup) == 0 {
 		return nil, nil, nil, fmt.Errorf("signed group is empty")
 	}
 	decoded := make([]types.SignedTxn, len(signedGroup))
 	txIDs := make([]string, len(signedGroup))
 	transactions := make([]string, len(signedGroup))
-	for i, signedHex := range signedGroup {
-		if signedHex == "" {
+	for i, raw := range signedGroup {
+		if len(raw) == 0 {
 			return nil, nil, nil, fmt.Errorf("signed group position %d is empty", i+1)
 		}
-		raw, err := hex.DecodeString(signedHex)
-		if err != nil {
-			return nil, nil, nil, fmt.Errorf("signed group position %d is invalid hex: %w", i+1, err)
-		}
-		// The raw hex is what gets submitted and the decoded value is what
+		// The raw bytes are what gets submitted and the decoded value is what
 		// gets simulated, so the two must be the same transaction exactly.
+		var err error
 		decoded[i], err = decodeCanonicalSignedTxn(raw)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("signed group position %d: %w", i+1, err)

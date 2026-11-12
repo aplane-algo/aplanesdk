@@ -919,8 +919,12 @@ export interface PreparedTransaction {
   pqScheme?: string;
   /** Optional app-call approval metadata. */
   appCallInfo?: AppCallInfo;
-  /** Base64-encoded signed transaction for passthrough mode. */
-  signedTransactionBase64?: string;
+  /**
+   * A signed transaction for passthrough mode: one canonical msgpack-encoded
+   * signed transaction, the bytes algosdk's signers return, sent to the
+   * signer as it is. Unset or empty, the slot is not pre-signed.
+   */
+  signedTransaction?: Uint8Array;
   /** SDK-side preflight checks for this slot. */
   checks?: PreparedCheck[];
 }
@@ -1184,7 +1188,12 @@ export interface GroupSignResponse {
 export interface SimulationResult {
   txIds: string[];
   transactions: string[];
-  signedGroup: string[];
+  /**
+   * The signed group that was simulated, one canonical msgpack-encoded
+   * signed transaction per entry, in order. Empty for an unsigned
+   * simulation.
+   */
+  signedGroup: Uint8Array[];
   mutations?: MutationReport;
   response: modelsv2.SimulateResponse;
   /**

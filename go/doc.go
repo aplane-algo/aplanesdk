@@ -7,6 +7,8 @@ Package aplane provides a Go client for signing Algorand transactions via apsign
 # Quick Start
 
 	import (
+		"bytes"
+
 		"github.com/aplane-algo/aplanesdk/go"
 		"github.com/algorand/go-algorand-sdk/v2/client/v2/algod"
 		"github.com/algorand/go-algorand-sdk/v2/transaction"
@@ -25,15 +27,16 @@ Package aplane provides a Go client for signing Algorand transactions via apsign
 
 	txn, _ := transaction.MakePaymentTxn(sender, receiver, 1000000, nil, "", params)
 
-	// Sign via apsigner (waits for operator approval)
+	// Sign via apsigner (waits for operator approval). The result is the
+	// signed group: this transaction first, then any resource dummies the
+	// signer appended, one signed transaction's msgpack bytes per entry.
 	signed, err := client.SignTransaction(txn, "", nil)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// Submit using standard go-algorand-sdk
-	signedBytes, _ := aplane.Base64ToBytes(signed)
-	txid, _ := algodClient.SendRawTransaction(signedBytes).Do(context.Background())
+	// Submit the whole group using standard go-algorand-sdk
+	txid, _ := algodClient.SendRawTransaction(bytes.Join(signed, nil)).Do(context.Background())
 
 # Connection Methods
 
@@ -83,6 +86,11 @@ Transaction group (do NOT pre-assign group IDs):
 		[]string{authAddr1, authAddr2},
 		nil,
 	)
+
+The result is one signed transaction's msgpack bytes per entry, in group
+order, dummies included. Submit it with go-algorand-sdk:
+
+	txid, err := algodClient.SendRawTransaction(bytes.Join(signed, nil)).Do(ctx)
 
 With LogicSig runtime arguments:
 

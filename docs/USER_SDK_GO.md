@@ -290,9 +290,10 @@ Every position must name, in `AuthAddress`, a key this signer holds, as the
 
 `SendResult` carries:
 
-- `SignedGroup`: the group as submitted, hex msgpack. The first
-  `OriginalCount` entries are your transactions, in order; the rest are
-  resource dummies the signer appended.
+- `SignedGroup`: the group as submitted, `[][]byte`, one canonical
+  msgpack-encoded signed transaction per entry, the bytes go-algorand-sdk's
+  own signers return. The first `OriginalCount` entries are your
+  transactions, in order; the rest are resource dummies the signer appended.
 - `TxIDs`, `Fees` (microAlgos) and `GroupID`, computed from the signed bytes.
   The signer may raise a fee or assign a group ID, so `TxIDs` can differ from
   the IDs of the transactions you prepared.
@@ -348,6 +349,48 @@ callers who want signed bytes without the SDK submitting them: to submit
 through their own node or pipeline, to hold a signed group, or to sign a
 group the send does not take, such as a multi-party group with passthrough
 positions. They do not submit and do not wait.
+
+### Send Transactions Built With go-algorand-sdk
+
+`SendTransactions` sends transactions you built with go-algorand-sdk, such as
+those its `transaction.Make*` constructors return. It takes the same
+`SendOptions` as `SendPrepared` and returns the same `SendResult` and errors:
+
+```go
+params, err := algodClient.SuggestedParams().Do(ctx)
+if err != nil {
+	return err
+}
+payment, err := transaction.MakePaymentTxn(sender, receiver, 1_000_000, nil, "", params)
+if err != nil {
+	return err
+}
+result, err := client.SendTransactions(ctx, algodClient, []types.Transaction{payment}, nil)
+if err != nil {
+	return err // see Send Failures below
+}
+fmt.Println(result.TxIDs[0], result.Outcome, result.ConfirmedRound)
+```
+
+For each transaction it reads the sender's account from the node and resolves
+the signing address as the `Prepare*` helpers do: the sender, or its on-chain
+auth address when the account is rekeyed. It wraps each transaction in a `PreparedTransaction` that names that
+address and sets nothing else, and calls `SendPrepared` with them in the order
+given. It runs none of the `Prepare*` preflight checks, such as balances and
+opt-ins.
+
+The call does not modify the transaction objects you pass in. It validates
+and submits the signer's returned group using the existing prepared-send
+flow. Use the transaction IDs in the result (`SendResult.TxIDs`).
+[Send A Payment Or A Prepared Group](#send-a-payment-or-a-prepared-group)
+describes that flow.
+
+An empty list is refused. A failed account lookup is returned as a plain
+error, and nothing is signed. A sender whose key the signer does not hold,
+and a rekeyed sender whose auth address it does not hold, are refused with
+`ErrKeyNotFound` before anything is signed. The example
+`go/examples/send_built` builds a payment with `transaction.MakePaymentTxn`
+and sends it this way.
 
 ### Rotating Accounts
 
@@ -694,7 +737,8 @@ if err := client.DeleteKey(generated.Address); err != nil {
 
 The `Sign*` calls in this and the following sections return signed bytes and
 submit nothing. Use them when you want the signed transactions yourself; to
-send, use `SendPayment` or `SendPrepared` (see
+send, use `SendPayment`, `SendPrepared`, or `SendTransactions` for
+transactions you built with go-algorand-sdk (see
 [Sending Transactions](#sending-transactions)).
 
 ```go
@@ -720,13 +764,14 @@ if err != nil {
 	return err
 }
 
-signedBytes, err := aplane.Base64ToBytes(signed)
-if err != nil {
-	return err
-}
-
-txid, err := algodClient.SendRawTransaction(signedBytes).Do(ctx)
+txid, err := algodClient.SendRawTransaction(bytes.Join(signed, nil)).Do(ctx)
 ```
+
+`SignTransaction` returns the signed group, `[][]byte`, one canonical
+msgpack-encoded signed transaction per entry: the first entry is your
+transaction, and any further entries are resource dummies the signer
+appended, as it does for a LogicSig account. The whole list is what must be
+submitted.
 
 For a rekeyed account, these calls take the signing key explicitly. (The
 `Prepare*` helpers read it from the chain for you, so `SendPayment` and
@@ -768,13 +813,20 @@ signed, err := client.SignTransactions(
 	[]string{authAddr1, authAddr2},
 	nil,
 )
+if err != nil {
+	return err
+}
+
+txid, err := algodClient.SendRawTransaction(bytes.Join(signed, nil)).Do(ctx)
 ```
 
 Important:
 
 - do not pre-assign a group ID
 - the signer computes the group after dummy insertion and fee pooling
-- the returned base64 string is ready for algod submission after decoding
+- the result is `[][]byte`, one canonical msgpack-encoded signed transaction
+  per entry in group order, dummies included: the bytes go-algorand-sdk's own
+  signers return, ready for `SendRawTransaction` once joined
 
 ### Plan Without Signing
 
@@ -805,8 +857,8 @@ The Go SDK exposes passthrough and foreign-slot support through
 
 ```go
 opts := &aplane.SignOptions{
-	Passthrough: map[int]string{
-		1: otherSignerBase64,
+	Passthrough: map[int][]byte{
+		1: otherSignerSigned,
 	},
 	LsigResources: map[int]aplane.LogicSigResourceUsage{
 		2: {ProgramBytes: 1612, ArgumentBytes: 1423, MaxOpcodeCost: 20000},
@@ -816,13 +868,13 @@ opts := &aplane.SignOptions{
 plan, err := client.PlanGroup(txns, authAddresses, lsigArgsMap, opts)
 ```
 
-`SignOptions.Passthrough` values are base64-encoded signed transaction msgpack
-from another signer and must already carry the intended group ID. The SDK
-decodes them and sends them as passthrough slots. They must be standard base64
-with padding: a string that is not (a line break or other whitespace, URL-safe
-characters, missing padding, data after the padding) is refused, as the Python
-and TypeScript SDKs refuse it. `Base64ToBytes(...)` is that decoder and
-refuses the same strings. `SignOptions.LsigResources`
+`SignOptions.Passthrough` values are signed transactions from another signer,
+one canonical msgpack-encoded signed transaction each, as go-algorand-sdk's
+own signers return them, and must already carry the intended group ID. The
+SDK copies them and sends them as passthrough slots; an empty entry, or bytes
+that are not one signed transaction, are refused before anything is posted.
+`PreparedTransaction.SignedTransaction` takes the same bytes.
+`SignOptions.LsigResources`
 describes unsigned foreign slots for `/plan` and must also accompany a final
 passthrough LogicSig slot on `/sign`. Reuse the same selected
 authorization-path values; the signer verifies the declared program and
@@ -839,10 +891,8 @@ the address-keyed `PlanGroup(...)` convenience form when two transactions use
 the same authorization address with different LogicSig arguments or app-call
 metadata.
 
-For actual signing with passthrough slots, use:
-
-- `SignTransactionsWithOptions(...)`
-- `SignTransactionsListWithOptions(...)`
+For actual signing with passthrough slots, use
+`SignTransactionsWithOptions(...)`.
 
 Foreign slots are only supported on `/plan`; they must be resubmitted as
 passthrough for final signing.
@@ -866,18 +916,13 @@ these calls and you submit it:
 
 ```go
 signed, err := client.SignTransactionsWithOptions(plannedTxns, authAddresses, nil, &aplane.SignOptions{
-	Passthrough: map[int]string{1: otherPartySignedBase64},
+	Passthrough: map[int][]byte{1: otherPartySigned},
 })
 if err != nil {
 	return err
 }
 
-signedBytes, err := aplane.Base64ToBytes(signed)
-if err != nil {
-	return err
-}
-
-txid, err := algodClient.SendRawTransaction(signedBytes).Do(ctx)
+txid, err := algodClient.SendRawTransaction(bytes.Join(signed, nil)).Do(ctx)
 ```
 
 ### Cosigned Accounts
@@ -1012,7 +1057,8 @@ result, err := aplane.SignPreparedCosignedGroup(aplane.PreparedCosignedGroupOpti
 if err != nil {
 	return err
 }
-signedGroup := result.SignedGroup
+// One signed transaction's msgpack bytes per entry, in group order.
+txid, err := algodClient.SendRawTransaction(bytes.Join(result.SignedGroup, nil)).Do(ctx)
 ```
 
 Set `CosignerClient` and `CosignerComponentKey`, or `CosignerResolver`, in
@@ -1059,8 +1105,9 @@ if simulation.Failed {
 cosigned, err := aplane.SimulatePreparedCosignedGroup(algodClient, cosignedOptions)
 ```
 
-`SimulationResult.SignedGroup` contains fully executable signed transactions
-that remain submittable until expiry. Keep them confidential. The helper sends
+`SimulationResult.SignedGroup` contains fully executable signed transactions,
+one canonical msgpack-encoded signed transaction per entry, that remain
+submittable until expiry. Keep them confidential. The helper sends
 the exact signed group to the supplied algod with empty-signature overrides
 disabled. A missing algod client fails before any signing request. A
 simulation is `Failed` unless the node returned exactly one group result,
@@ -1071,11 +1118,11 @@ return an error and never trigger another signing request automatically.
 
 ## Transaction Semantics
 
-- `SignTransaction(...)` returns one base64 string containing the full signed
-  output, including any dummies the server added.
-- `SignTransactions(...)` returns one concatenated base64 string for the full
-  signed group.
-- `SignTransactionsList(...)` returns per-slot base64 strings.
+- `SignTransaction(...)`, `SignTransactions(...)` and
+  `SignTransactionsWithOptions(...)` return the signed group as `[][]byte`, one
+  canonical msgpack-encoded signed transaction per entry in group order, any
+  dummies the server added included. For `SignTransaction(...)` the first
+  entry is your transaction.
 - These simple sign calls return only the signed transactions. To read what
   the signer changed (the fee it added, the group ID, appended dummies), call
   `SignRequestsWithContext(...)`, whose `GroupSignResponse.Mutations` is the
@@ -1098,19 +1145,26 @@ return an error and never trigger another signing request automatically.
   mutation report.
 - `SimulateGroup(...)` and `SimulatePreparedGroup(...)` perform ordinary
   signing, then use the caller-provided algod simulation endpoint.
-- passthrough entries are supplied through `SignOptions.Passthrough`
+- passthrough entries are supplied through `SignOptions.Passthrough`, as
+  signed transaction bytes
 - foreign planning uses empty auth-address slots plus optional
   `SignOptions.LsigResources`
-- `SendPrepared(...)` and `SendPayment(...)` sign, submit and wait; their
-  `SendResult.SignedGroup` is hex msgpack, one entry per transaction.
-- `SubmitSignedGroup(...)` submits a signed hex group exactly as given (a
-  rotating group from `SignPreparedRotating`, or the `SignedGroup` a
-  `*SubmissionError` kept) and waits for confirmation. It signs
-  nothing.
+- `SendPrepared(...)`, `SendPayment(...)` and `SendTransactions(...)` sign,
+  submit and wait; their `SendResult.SignedGroup` is `[][]byte`, one signed
+  transaction per entry.
+- `SubmitSignedGroup(...)` submits a signed group exactly as given, in the
+  same `[][]byte` form (a rotating group from `SignPreparedRotating`, or the
+  `SignedGroup` a `*SubmissionError` kept), and waits for confirmation. It
+  signs nothing.
+- Wire-shaped types and calls keep the signer's hex: `GroupSignResponse.Signed`
+  from `SignRequestsWithContext(...)`/`SignGroupWithContext(...)`,
+  `SignRequest.SignedTxnHex`, `AssemblyResponse.SignedGroup` and the plan's
+  `Transactions`.
 
-`SendPrepared` and `SendPayment` submit for you. There is no
-`SendRawTransaction(...)` helper for the base64 the `Sign*` calls return:
-decode it and submit it with the standard Algorand Go SDK.
+`SendPrepared`, `SendPayment` and `SendTransactions` submit for you. To
+submit what a `Sign*` call returned yourself, join the entries and pass them
+to the standard Algorand Go SDK:
+`algodClient.SendRawTransaction(bytes.Join(signed, nil)).Do(ctx)`.
 
 ### What The SDK Checks Before Returning
 

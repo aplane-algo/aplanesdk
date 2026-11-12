@@ -6,7 +6,6 @@ package aplane
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -16,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -223,14 +223,14 @@ func TestBuildSignRequests_WithLsigArgs(t *testing.T) {
 	}
 }
 
-func TestSignTransactionsList_ReturnsIndividualBase64(t *testing.T) {
+func TestSignTransactions_ReturnsRawEntries(t *testing.T) {
 	client, server := newTestClient(fakeSignHandler(t, fakeSigner{}))
 	defer server.Close()
 
 	txn1 := verifyTestPayment(t, 41, 42, 1)
 	txn2 := verifyTestPayment(t, 43, 44, 2)
 
-	result, err := client.SignTransactionsList(
+	result, err := client.SignTransactions(
 		[]types.Transaction{txn1, txn2},
 		nil, nil,
 	)
@@ -242,14 +242,10 @@ func TestSignTransactionsList_ReturnsIndividualBase64(t *testing.T) {
 		t.Fatalf("expected 2 results, got %d", len(result))
 	}
 
-	// Each slot is individually base64-encoded and signs its own transaction,
-	// changed only by the group ID the signer assigned.
+	// Each entry is one signed transaction's msgpack bytes and signs its own
+	// transaction, changed only by the group ID the signer assigned.
 	for i, want := range []types.Transaction{txn1, txn2} {
-		decoded, err := base64.StdEncoding.DecodeString(result[i])
-		if err != nil {
-			t.Fatalf("result[%d] is not valid base64: %v", i, err)
-		}
-		stxn, err := decodeCanonicalSignedTxn(decoded)
+		stxn, err := decodeCanonicalSignedTxn(result[i])
 		if err != nil {
 			t.Fatalf("result[%d]: %v", i, err)
 		}
@@ -263,11 +259,11 @@ func TestSignTransactionsList_ReturnsIndividualBase64(t *testing.T) {
 	}
 }
 
-// TestSignTransactionsList_RejectsTruncatedResponse pins that the legacy sign
-// path (sign/signList via signResponse) validates the signer reply: a response
-// with fewer signed slots than requests, or an empty non-foreign slot, is
-// rejected rather than silently yielding a partial group.
-func TestSignTransactionsList_RejectsTruncatedResponse(t *testing.T) {
+// TestSignTransactions_RejectsTruncatedResponse pins that the high-level sign
+// path (sign via signResponse) validates the signer reply: a response with
+// fewer signed slots than requests, or an empty non-foreign slot, is rejected
+// rather than silently yielding a partial group.
+func TestSignTransactions_RejectsTruncatedResponse(t *testing.T) {
 	cases := map[string]func(resp *GroupSignResponse){
 		"too few slots":     func(resp *GroupSignResponse) { resp.Signed = resp.Signed[:1] },
 		"empty signed slot": func(resp *GroupSignResponse) { resp.Signed[1] = "" },
@@ -290,45 +286,55 @@ func TestSignTransactionsList_RejectsTruncatedResponse(t *testing.T) {
 			defer server.Close()
 
 			client := &SignerClient{baseURL: server.URL, client: http.DefaultClient}
-			_, err := client.SignTransactionsList(
+			_, err := client.SignTransactions(
 				[]types.Transaction{verifyTestPayment(t, 41, 42, 1), verifyTestPayment(t, 43, 44, 2)},
 				nil, nil,
 			)
 			if err == nil {
-				t.Fatal("SignTransactionsList() error = nil, want truncated-response rejection")
+				t.Fatal("SignTransactions() error = nil, want truncated-response rejection")
 			}
 		})
 	}
 }
 
-func TestSignTransactions_ReturnsConcatenatedBase64(t *testing.T) {
-	client, server := newTestClient(fakeSignHandler(t, fakeSigner{}))
+// SignTransaction returns the whole signed group: the caller's transaction
+// first, then the resource dummies the signer appended.
+func TestSignTransaction_ReturnsTheWholeGroup(t *testing.T) {
+	client, server := newTestClient(fakeSignHandler(t, fakeSigner{dummies: 2}))
 	defer server.Close()
 
-	txns := []types.Transaction{verifyTestPayment(t, 41, 42, 1), verifyTestPayment(t, 43, 44, 2)}
-	result, err := client.SignTransactions(txns, nil, nil)
+	txn := verifyTestPayment(t, 41, 42, 1)
+	single, err := client.SignTransaction(txn, "", nil)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("SignTransaction() error = %v", err)
 	}
-	list, err := client.SignTransactionsList(txns, nil, nil)
+	if len(single) != 3 {
+		t.Fatalf("SignTransaction() returned %d entries, want the transaction and 2 dummies", len(single))
+	}
+	first, err := decodeCanonicalSignedTxn(single[0])
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatal(err)
 	}
-
-	decoded, err := base64.StdEncoding.DecodeString(result)
-	if err != nil {
-		t.Fatalf("result is not valid base64: %v", err)
+	want := txn
+	want.Group = first.Txn.Group
+	if want.Group == (types.Digest{}) || !bytes.Equal(encodeTxn(first.Txn), encodeTxn(want)) {
+		t.Fatal("the first entry is not the caller's transaction in the signer's group")
 	}
-	var expected []byte
-	for _, item := range list {
-		raw, err := base64.StdEncoding.DecodeString(item)
+	for i, entry := range single[1:] {
+		dummy, err := decodeCanonicalSignedTxn(entry)
 		if err != nil {
 			t.Fatal(err)
 		}
-		expected = append(expected, raw...)
+		if !bytes.Equal(dummy.Lsig.Logic, cosignedDummyProgram) {
+			t.Fatalf("entry %d is not a resource dummy", i+1)
+		}
 	}
-	if !bytes.Equal(decoded, expected) {
-		t.Fatal("concatenated result is not the signed slots in order")
+	group, err := client.SignTransactions([]types.Transaction{txn}, nil, nil)
+	if err != nil {
+		t.Fatalf("SignTransactions() error = %v", err)
+	}
+	if !reflect.DeepEqual(single, group) {
+		t.Fatal("SignTransaction() and SignTransactions() of one transaction differ")
 	}
 }
 
@@ -336,15 +342,6 @@ func TestSignTransactions_RejectsEmptySlice(t *testing.T) {
 	client := &SignerClient{baseURL: "http://example.invalid", client: http.DefaultClient}
 
 	_, err := client.SignTransactions(nil, nil, nil)
-	if err == nil || !strings.Contains(err.Error(), "requests array is empty") {
-		t.Fatalf("expected empty transaction error, got %v", err)
-	}
-}
-
-func TestSignTransactionsList_RejectsEmptySlice(t *testing.T) {
-	client := &SignerClient{baseURL: "http://example.invalid", client: http.DefaultClient}
-
-	_, err := client.SignTransactionsList(nil, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "requests array is empty") {
 		t.Fatalf("expected empty transaction error, got %v", err)
 	}
@@ -1565,18 +1562,18 @@ func TestSign_ResponseError(t *testing.T) {
 
 func TestBuildSignRequestsWithOptions_Passthrough(t *testing.T) {
 	txn := types.Transaction{Type: types.PaymentTx}
-	presigned, err := hex.DecodeString(fakeSignedTxnHex(verifyTestPayment(t, 43, 44, 2)))
+	presignedHex := fakeSignedTxnHex(verifyTestPayment(t, 43, 44, 2))
+	presigned, err := hex.DecodeString(presignedHex)
 	if err != nil {
 		t.Fatal(err)
 	}
-	signed := base64.StdEncoding.EncodeToString(presigned)
 
 	requests, err := buildSignRequestsWithOptions(
 		[]types.Transaction{txn, txn},
 		[]string{sdkTestAddress(0xA3), sdkTestAddress(0xA5)},
 		nil,
 		&SignOptions{
-			Passthrough: map[int]string{1: signed},
+			Passthrough: map[int][]byte{1: presigned},
 			LsigResources: map[int]LogicSigResourceUsage{
 				1: {ProgramBytes: 3577, ArgumentBytes: 1423, MaxOpcodeCost: 20000},
 			},
@@ -1592,8 +1589,13 @@ func TestBuildSignRequestsWithOptions_Passthrough(t *testing.T) {
 	if requests[0].AuthAddress != sdkTestAddress(0xA3) {
 		t.Fatal("first request should be normal sign")
 	}
-	if requests[1].SignedTxnHex == "" {
-		t.Fatal("second request should be passthrough")
+	if requests[1].SignedTxnHex != presignedHex {
+		t.Fatal("second request should be the passthrough bytes, unchanged")
+	}
+	// The request holds its own copy of the caller's bytes.
+	presigned[0] ^= 0xff
+	if requests[1].SignedTxnHex != presignedHex {
+		t.Fatal("changing the caller's bytes changed the request")
 	}
 	if requests[1].AuthAddress != "" {
 		t.Fatal("passthrough should not have auth address")
@@ -1667,17 +1669,27 @@ func TestBuildSignRequestsWithOptionsRejectsIndexedResourcesForSignMode(t *testi
 	}
 }
 
-func TestBuildSignRequestsWithOptions_InvalidPassthroughBase64(t *testing.T) {
+func TestBuildSignRequestsWithOptions_RefusesBadPassthrough(t *testing.T) {
 	txn := types.Transaction{Type: types.PaymentTx}
-
-	_, err := buildSignRequestsWithOptions(
-		[]types.Transaction{txn},
-		[]string{sdkTestAddress(0xA3)},
-		nil,
-		&SignOptions{Passthrough: map[int]string{0: "not-base64!!!"}},
-	)
-	if err == nil || !strings.Contains(err.Error(), "invalid base64") {
-		t.Fatalf("expected invalid base64 error, got: %v", err)
+	tests := map[string]struct {
+		entry []byte
+		want  string
+	}{
+		"empty":                    {entry: nil, want: "invalid passthrough transaction 1"},
+		"not a signed transaction": {entry: []byte("not msgpack"), want: "invalid passthrough transaction 1"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := buildSignRequestsWithOptions(
+				[]types.Transaction{txn},
+				[]string{sdkTestAddress(0xA3)},
+				nil,
+				&SignOptions{Passthrough: map[int][]byte{0: tt.entry}},
+			)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected %q error, got: %v", tt.want, err)
+			}
+		})
 	}
 }
 
@@ -1686,21 +1698,6 @@ func TestSignTransactionsWithOptions_RejectsForeignEntries(t *testing.T) {
 	txn := types.Transaction{Type: types.PaymentTx}
 
 	_, err := client.SignTransactionsWithOptions(
-		[]types.Transaction{txn, txn},
-		[]string{sdkTestAddress(0xA4), ""},
-		nil,
-		&SignOptions{LsigResources: map[int]LogicSigResourceUsage{1: {ProgramBytes: 3577, ArgumentBytes: 1423, MaxOpcodeCost: 20000}}},
-	)
-	if err == nil || !strings.Contains(err.Error(), "foreign entries are only supported on /plan") {
-		t.Fatalf("expected foreign /plan-only error, got %v", err)
-	}
-}
-
-func TestSignTransactionsListWithOptions_RejectsForeignEntries(t *testing.T) {
-	client := &SignerClient{baseURL: "http://example.invalid", client: http.DefaultClient}
-	txn := types.Transaction{Type: types.PaymentTx}
-
-	_, err := client.SignTransactionsListWithOptions(
 		[]types.Transaction{txn, txn},
 		[]string{sdkTestAddress(0xA4), ""},
 		nil,
@@ -1806,29 +1803,28 @@ func TestBase64RoundTrip_Empty(t *testing.T) {
 	}
 }
 
-func TestHexArrayToBase64(t *testing.T) {
-	h1 := hex.EncodeToString([]byte("AB"))
-	h2 := hex.EncodeToString([]byte("CD"))
-	result, err := hexArrayToBase64([]string{h1, h2})
+func TestSignedGroupFromHex(t *testing.T) {
+	group, err := signedGroupFromHex([]string{hex.EncodeToString([]byte("AB")), "", hex.EncodeToString([]byte{0xde, 0xad})})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	decoded, _ := base64.StdEncoding.DecodeString(result)
-	if string(decoded) != "ABCD" {
-		t.Fatalf("expected ABCD, got %q", decoded)
+	if len(group) != 3 || string(group[0]) != "AB" || len(group[1]) != 0 || !bytes.Equal(group[2], []byte{0xde, 0xad}) {
+		t.Fatalf("signedGroupFromHex() = %x", group)
+	}
+	if _, err := signedGroupFromHex([]string{"00", "zz"}); err == nil || !strings.Contains(err.Error(), "signed transaction 2 is invalid hex") {
+		t.Fatalf("expected invalid hex error, got %v", err)
 	}
 }
 
-func TestHexArrayToBase64_Single(t *testing.T) {
-	h := hex.EncodeToString([]byte{0xde, 0xad, 0xbe, 0xef})
-	result, err := hexArrayToBase64([]string{h})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestCloneSignedGroupSharesNoBytes(t *testing.T) {
+	group := [][]byte{[]byte("AB"), []byte("CD")}
+	cloned := cloneSignedGroup(group)
+	group[0][0] = 'X'
+	if string(cloned[0]) != "AB" || string(cloned[1]) != "CD" {
+		t.Fatalf("cloneSignedGroup() = %q, changed with the original", cloned)
 	}
-	decoded, _ := base64.StdEncoding.DecodeString(result)
-	expected := []byte{0xde, 0xad, 0xbe, 0xef}
-	if string(decoded) != string(expected) {
-		t.Fatalf("expected %x, got %x", expected, decoded)
+	if cloneSignedGroup(nil) != nil {
+		t.Fatal("cloneSignedGroup(nil) is not nil")
 	}
 }
 

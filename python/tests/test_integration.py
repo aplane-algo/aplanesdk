@@ -98,7 +98,7 @@ def test_live_signer_ed25519_workflow():
         assert any(key.address == address for key in keys)
 
         signed = client.sign_transaction(_self_payment_txn(address), auth_address=address)
-        assert base64.b64decode(signed)
+        assert signed and all(type(entry) is bytes and entry for entry in signed)
 
         client.delete_key(address)
         cleanup = False
@@ -136,7 +136,7 @@ def test_live_signer_native_falcon_signing():
             client, before.keyset_revision, "native Falcon generate"
         )
         signed = client.sign_transaction(_self_payment_txn(address), auth_address=address)
-        _assert_native_falcon_envelope(base64.b64decode(signed))
+        _assert_native_falcon_envelope(signed[0])
 
         client.delete_key(address)
         cleanup = False
@@ -169,12 +169,12 @@ def test_live_signer_logicsig_account_signing():
         assert address
         _wait_for_keyset_revision(client, before.keyset_revision, "LogicSig generate")
 
-        single = client.sign_transactions_list([_self_payment_txn(address)], [address])
+        single = client.sign_transaction(_self_payment_txn(address), auth_address=address)
         assert len(single) > 1, "a Falcon LogicSig account needs resource dummies"
-        first = _decode_signed_blob(base64.b64decode(single[0]))
+        first = _decode_signed_blob(single[0])
         assert first.get("lsig", {}).get("l"), "the position is not signed by a LogicSig"
 
-        pair = client.sign_transactions_list(
+        pair = client.sign_transactions(
             [_self_payment_txn(address), _self_payment_txn(address, note=b"second")],
             [address, address],
         )
@@ -215,8 +215,7 @@ def test_live_native_falcon_signature_verifies_on_localnet():
         assert not result.failed, _simulation_failure(result.response)
         assert len(result.signed_group) == 1
 
-        signed_hex = result.signed_group[0]
-        signed_bytes = bytes.fromhex(signed_hex)
+        signed_bytes = result.signed_group[0]
         _assert_native_falcon_envelope(signed_bytes)
 
         # The check the cosigned flow runs on every assembled transaction,
@@ -225,7 +224,7 @@ def test_live_native_falcon_signature_verifies_on_localnet():
         envelope = _decode_signed_blob(signed_bytes)
         canonical = b"TX" + encoding.msgpack.packb(envelope["txn"], use_bin_type=True)
         _verify_signed_transaction_matches_canonical(
-            "native Falcon transaction", 0, signed_hex, canonical.hex()
+            "native Falcon transaction", 0, signed_bytes.hex(), canonical.hex()
         )
         assert result.transactions[0] == canonical.hex()
 
@@ -348,6 +347,44 @@ def test_live_rotating_send_on_localnet(key_type, limit):
         if account:
             try:
                 client.delete_key(account)
+            except Exception:
+                pass
+        client.close()
+
+
+@pytest.mark.skipif(not _integration_enabled(), reason="set APLANE_SDK_INTEGRATION=1")
+def test_live_send_transactions_on_localnet():
+    """A payment built with algosdk's own constructor goes out through
+    send_transactions and confirms, and the object passed is not changed."""
+    if not _localnet_available():
+        pytest.skip("needs a LocalNet algod and KMD (ALGOD_URL, APLANE_LOCALNET_KMD_URL)")
+    algod_client = algod.AlgodClient(
+        os.environ.get("ALGOD_TOKEN", ""), os.environ["ALGOD_URL"].strip()
+    )
+    client = _live_signer_client()
+    address = ""
+    try:
+        before = client.get_status()
+        address = client.generate_key("ed25519", {}).address
+        assert address
+        _wait_for_keyset_revision(client, before.keyset_revision, "ed25519 generate")
+        _fund_from_localnet_kmd(algod_client, address, 500_000)
+
+        payment = transaction.PaymentTxn(
+            sender=address, sp=algod_client.suggested_params(), receiver=address, amt=0
+        )
+        encoded = encoding.msgpack_encode(payment)
+        result = client.send_transactions(algod_client, [payment])
+
+        assert result.outcome == "confirmed" and result.confirmed_round > 0, result
+        assert all(type(entry) is bytes for entry in result.signed_group)
+        assert encoding.msgpack_encode(payment) == encoded
+        info = algod_client.pending_transaction_info(result.tx_ids[0])
+        assert info.get("confirmed-round") == result.confirmed_round
+    finally:
+        if address:
+            try:
+                client.delete_key(address)
             except Exception:
                 pass
         client.close()

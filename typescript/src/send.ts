@@ -11,7 +11,7 @@ import algosdk, { type Transaction } from "algosdk";
 import type { MutationReport } from "./types.js";
 import type { CosignedCosignerResolver, CosignedSignResult, SignerClient } from "./client.js";
 import { SignerError, SubmissionError, errorText } from "./errors.js";
-import { bytesToBase64, encodeTransaction, hexToBytes } from "./encoding.js";
+import { bytesToBase64, encodeTransaction, signedTransactionCopy } from "./encoding.js";
 import {
   decodeCanonicalSignedTransaction,
   groupIDBytes,
@@ -35,8 +35,9 @@ export const SEND_OUTCOME_SUBMITTED = "submitted";
 export const SEND_OUTCOME_CONFIRMED = "confirmed";
 
 /**
- * Options for sendPrepared, sendPayment and submitSignedGroup. With none
- * set, a send signs, submits and waits for confirmation.
+ * Options for sendPrepared, sendTransactions, sendPayment and
+ * submitSignedGroup. With none set, a send signs, submits and waits for
+ * confirmation.
  */
 export interface SendOptions {
   /**
@@ -115,11 +116,12 @@ export interface SendResult {
    */
   flow: string;
   /**
-   * The exact group submitted, hex msgpack, in order. The first
-   * originalCount entries are the caller's transactions, in the order given;
-   * the rest are resource dummies the signer appended.
+   * The exact group submitted, one canonical msgpack-encoded signed
+   * transaction per entry, in order: algosdk's sendRawTransaction takes it as
+   * it is. The first originalCount entries are the caller's transactions, in
+   * the order given; the rest are resource dummies the signer appended.
    */
-  signedGroup: string[];
+  signedGroup: Uint8Array[];
   originalCount: number;
   /**
    * The IDs of the signed transactions, in signedGroup order. A signer may
@@ -198,11 +200,11 @@ export function algodRound(value: unknown, label: string): bigint {
 
 /**
  * Decode a signed group for submission or simulation: each entry one
- * canonically encoded signed transaction, hex msgpack. The raw hex is what
+ * canonically encoded signed transaction, as bytes. The raw bytes are what
  * gets submitted and the decoded value what gets simulated, so the two must
- * be the same transaction exactly.
+ * be the same transaction exactly. raw holds copies of the entries.
  */
-export function decodeExecutableSignedGroup(signedGroup: string[]): {
+export function decodeExecutableSignedGroup(signedGroup: Uint8Array[]): {
   decoded: algosdk.SignedTransaction[];
   raw: Uint8Array[];
 } {
@@ -210,12 +212,12 @@ export function decodeExecutableSignedGroup(signedGroup: string[]): {
     throw new SignerError("signed group is empty");
   }
   const raw: Uint8Array[] = [];
-  const decoded = signedGroup.map((signedHex, index) => {
-    if (!signedHex) {
+  const decoded = signedGroup.map((entry, index) => {
+    const bytes = signedTransactionCopy(entry, `signed group position ${index + 1}`);
+    if (bytes.length === 0) {
       throw new SignerError(`signed group position ${index + 1} is empty`);
     }
     try {
-      const bytes = hexToBytes(signedHex);
       raw.push(bytes);
       return decodeCanonicalSignedTransaction(bytes);
     } catch (error) {
@@ -304,7 +306,7 @@ export function simulationFailure(response: any, transactionCount: number): stri
  * beside the result, so a SubmissionError never decodes anything.
  */
 export interface DescribedGroup {
-  /** The signed transactions decoded from hex, in order. */
+  /** The signed transactions to submit, in order. */
   raw: Uint8Array[];
   /** The earliest last valid round of the signed group. */
   lastValid: bigint;
@@ -312,7 +314,7 @@ export interface DescribedGroup {
 
 /**
  * Fill the result's IDs, fees and group ID from its signed bytes, and return
- * those bytes decoded from hex with the group's earliest last valid round.
+ * a copy of those bytes with the group's earliest last valid round.
  * Each entry must be one canonically encoded signed transaction, and a group
  * of several must carry the group ID computed over itself.
  */

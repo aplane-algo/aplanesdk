@@ -311,6 +311,21 @@ export function blobHex(blob: Uint8Array): string {
   return bytesToHex(blob);
 }
 
+/** A signed group of bytes as hex, one entry per transaction, for comparing with hex fixtures. */
+export function groupHex(group: Uint8Array[]): string[] {
+  return group.map((entry) => bytesToHex(entry));
+}
+
+/** The hex of a signed group of bytes, joined, for comparing with a submission. */
+export function joinedHex(group: Uint8Array[]): string {
+  return groupHex(group).join("");
+}
+
+/** Signed transactions in hex as the bytes a caller passes. */
+export function hexGroup(...entries: string[]): Uint8Array[] {
+  return entries.map((entry) => hexToBytes(entry));
+}
+
 export function transactionHex(txn: Transaction): string {
   return bytesToHex(txn.toByte());
 }

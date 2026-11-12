@@ -30,6 +30,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -101,11 +102,12 @@ func main() {
 }
 
 // printSignedGroup prints what acting on a *aplane.SubmissionError needs:
-// each signed transaction as hex msgpack, the form SubmitSignedGroup takes,
-// with its ID, and the group's last valid round.
+// each signed transaction's msgpack bytes as hex, with its ID, and the
+// group's last valid round. hex.DecodeString turns each line back into the
+// entry SubmitSignedGroup takes.
 func printSignedGroup(failure *aplane.SubmissionError) {
 	for i, entry := range failure.SignedGroup {
-		fmt.Printf("Signed transaction %d, ID %s:\n%s\n", i, failure.TxIDs[i], entry)
+		fmt.Printf("Signed transaction %d, ID %s, hex:\n%s\n", i, failure.TxIDs[i], hex.EncodeToString(entry))
 	}
 	fmt.Printf("Last valid round: %d\n", failure.LastValid)
 }

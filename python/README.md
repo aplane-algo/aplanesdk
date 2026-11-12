@@ -28,6 +28,8 @@ pip install -e .
 ## Quick Start
 
 ```python
+import base64
+
 from aplanesdk import SignerClient
 from algosdk import transaction
 from algosdk.v2client import algod
@@ -46,12 +48,21 @@ txn = transaction.PaymentTxn(
     amt=1000000  # 1 ALGO
 )
 
-# Sign via apsigner (waits for operator approval)
+# Sign via apsigner (waits for operator approval). signed is the signed
+# group: a list of bytes, one signed transaction per entry, yours first.
 signed = client.sign_transaction(txn)
 
-# Submit to network with algosdk (signed is ready to use, no processing needed)
-txid = algod_client.send_raw_transaction(signed)
+# Submit the whole list with algosdk, which takes the group as base64 text
+txid = algod_client.send_raw_transaction(base64.b64encode(b"".join(signed)).decode())
 print(f"Submitted: {txid}")
+```
+
+To sign, submit and wait for confirmation in one call, pass the same
+transaction to `send_transactions` (see below):
+
+```python
+result = client.send_transactions(algod_client, [txn])
+print(result.tx_ids[0], result.confirmed_round)
 ```
 
 ## Connection Methods
@@ -222,13 +233,17 @@ if key_info.signing_args:
         print(f"{arg.name}: {arg.arg_type} - {arg.description}")
 ```
 
-#### `sign_transaction(txn, auth_address=None, lsig_args=None) -> str`
+#### `sign_transaction(txn, auth_address=None, lsig_args=None) -> List[bytes]`
 
-Sign a single transaction. Returns a base64-encoded string ready for submission.
-
-The server automatically handles fee pooling for large LogicSigs (e.g., Falcon-1024) by adding dummy transactions as needed.
+Sign a single transaction. Returns the signed group: a list with one entry
+per transaction, each the raw msgpack bytes of one signed transaction. The
+first entry is your transaction. The server pools the fees of large LogicSigs
+(e.g., Falcon-1024) and adds dummy transactions as needed; they follow your
+transaction in the list, and the whole list is what must be submitted.
 
 ```python
+import base64
+
 # Basic signing (uses txn.sender as auth_address)
 signed = client.sign_transaction(txn)
 
@@ -242,13 +257,16 @@ signed = client.sign_transaction(
     lsig_args={"preimage": b"secret_value"}
 )
 
-# Submit directly with algosdk (no processing needed)
-txid = algod_client.send_raw_transaction(signed)
+# Submit with algosdk: join the entries; send_raw_transaction takes base64 text
+txid = algod_client.send_raw_transaction(base64.b64encode(b"".join(signed)).decode())
 ```
 
-#### `sign_transactions(txns, auth_addresses=None, lsig_args_map=None) -> str`
+#### `sign_transactions(txns, auth_addresses=None, lsig_args_map=None, passthrough=None, ...) -> List[bytes]`
 
-Sign multiple transactions as a group. Returns a base64-encoded string of concatenated signed transactions, ready for submission.
+Sign multiple transactions as a group. Returns the signed group, one entry per
+transaction in group order: the transactions given, then any dummies the
+server appended. Each entry is the raw msgpack bytes of one signed
+transaction.
 
 **Important**: Do NOT pre-assign group IDs. The server computes the group ID after adding any required dummy transactions for large LogicSigs.
 
@@ -260,23 +278,26 @@ txn2 = transaction.PaymentTxn(sender=addr2, sp=params, receiver=addr1, amt=10000
 # Sign group (server handles grouping and dummies)
 signed = client.sign_transactions([txn1, txn2])
 
-# Submit directly (no processing needed)
-txid = algod_client.send_raw_transaction(signed)
+# Submit with algosdk
+txid = algod_client.send_raw_transaction(base64.b64encode(b"".join(signed)).decode())
+
+# Or keep each entry as text, as hex, and read it back with bytes.fromhex
+for entry in signed:
+    print(entry.hex())
 ```
 
-#### `sign_transactions_list(txns, auth_addresses=None, lsig_args_map=None) -> List[str]`
-
-Like `sign_transactions()` but returns individual base64-encoded transactions instead of concatenated. Useful when you need to inspect transactions individually.
-
-```python
-signed_list = client.sign_transactions_list([txn1, txn2])
-# signed_list is List[str], each element is a base64-encoded signed transaction
-```
+`passthrough` maps a group index to a transaction someone else already
+signed, as its raw msgpack bytes (a `bytearray` or `memoryview` is copied).
+A value that is not bytes, such as a base64 or hex string, is refused with a
+`ValueError` naming the position before anything is sent, and so is one that
+is not exactly one canonically encoded signed transaction.
 
 #### `sign_requests(sign_entries, request_id=None) -> GroupSignResponse`
 
 Send one or more raw `/sign` request entries. Use this when an integration
-already owns transaction encoding and wants APlane's native response shape.
+already owns transaction encoding and wants APlane's native response shape:
+the answer's `signed` list is the signer's wire answer, hex, as the signer
+sends it.
 
 ```python
 response = client.sign_requests(
@@ -338,11 +359,13 @@ print(result.tx_ids[0], result.outcome, result.confirmed_round)
 
 `group` is a `PreparedGroup`, or one `PreparedTransaction`.
 `send_payment(algod_client, sender=..., receiver=..., amount=...)` does both
-steps for an ALGO payment.
+steps for an ALGO payment, and `send_transactions` (below) sends transactions
+you built with algosdk.
 
-- **Result.** `signed_group` is the group as submitted; the first
-  `original_count` entries are yours and the rest are resource dummies the
-  signer appended. `tx_ids`, `fees` and `group_id` are computed from the
+- **Result.** `signed_group` is the group as submitted, a list with one
+  entry per transaction, each the raw msgpack bytes of one signed
+  transaction; the first `original_count` entries are yours and the rest are
+  resource dummies the signer appended. `tx_ids`, `fees` and `group_id` are computed from the
   signed bytes. A signer may raise a fee or assign a group, so `tx_ids` can
   differ from the IDs of the transactions you prepared. Once confirmed,
   `confirmation` holds what algosdk's wait returned for the first
@@ -385,7 +408,7 @@ Failures:
 |---|---|---|
 | The signing call's own `SignerError` | The signer refused (policy, operator, locked), or the SDK refused the signer's answer (`verify signer response: ...`, `MaxFeeIncreaseError`). Nothing was submitted. | Read the reason. If the SDK refused a sign answer, the signer did sign and the SDK discarded the result. |
 | `SignOutcomeUnknownError` | A signing exchange ended with no usable answer: none arrived, the signer's 200 answer could not be read (not exactly one JSON object of the expected shape: empty, cut off, `null`, not an object, text after it, or a field of the wrong type or out of range), or checking, decoding or describing it raised an exception that is not one of the SDK's own refusals (a fault in the SDK's checks, not a verdict on the answer). A signature may have been released; nothing was submitted. | Do not send again; see "After an unknown outcome" below. The error's `request_id` names the request whose answer was lost: the `/sign` of the ordinary flow (which also carries `requests`), the `/sign/component`, `/sign/assemble` or primary `/sign` of the cosigned sequence (for a fault between its requests, the last of them that answered), or the rotating sign request, whose error carries the prepared group in `rotating` (see below). |
-| `SubmissionError` | The group was signed, and algosdk's submit call or its confirmation wait failed. `submitted` is `True` when the submit call returned success and the failure came later, and `False` when it did not return success. `error`, also the `__cause__`, is algosdk's error, unchanged. The message says which step failed and quotes it. | Read `error` as you would in any algosdk program. With `submitted` `False`, an algod HTTP 400 means the node answered: read its reason; anything else leaves it open whether the node has the group. The signed bytes, IDs and last valid round are in `signed_group`, `tx_ids` and `last_valid`; see "After an unknown outcome" below. Do not sign a replacement until the outcome is known: both could execute. |
+| `SubmissionError` | The group was signed, and algosdk's submit call or its confirmation wait failed. `submitted` is `True` when the submit call returned success and the failure came later, and `False` when it did not return success. `error`, also the `__cause__`, is algosdk's error, unchanged. The message says which step failed and quotes it. | Read `error` as you would in any algosdk program. With `submitted` `False`, an algod HTTP 400 means the node answered: read its reason; anything else leaves it open whether the node has the group. The signed group (a list of bytes, one signed transaction per entry), the IDs and the last valid round are in `signed_group`, `tx_ids` and `last_valid`; see "After an unknown outcome" below. Do not sign a replacement until the outcome is known: both could execute. |
 
 By default the call has no deadline of its own. Each signer request keeps
 its usual timeout, and a request that times out or disconnects while
@@ -393,7 +416,7 @@ approval is pending is canceled with a best-effort `/sign/cancel`, as for the
 other signing calls; such an ending is a `SignOutcomeUnknownError`.
 
 `timeout=` (seconds) sets one, on `send_prepared`, `send_payment`,
-`prepare_rotating` and `sign_prepared_rotating`. It covers signing and
+`send_transactions`, `prepare_rotating` and `sign_prepared_rotating`. It covers signing and
 submission. Every HTTP request to a signer, a cosigner or the node up to the
 submission is held to what remains, and the steps check it in between; it
 does not interrupt a call already blocked outside HTTP. It does not cover the
@@ -432,9 +455,9 @@ says what was in flight (on Python 3.11 and later it also gets a note):
   until the first attempt's outcome is known, because that prepares a new
   spend from the same stage.
 - **While the signed group was submitted or its confirmation awaited**, the
-  group may have reached the node: the exception carries the signed bytes as
-  `aplane_signed_group` and their IDs as `aplane_tx_ids`. Treat it like a
-  `SubmissionError`.
+  group may have reached the node: the exception carries the signed group as
+  `aplane_signed_group` (a list of bytes, one signed transaction per entry)
+  and their IDs as `aplane_tx_ids`. Treat it like a `SubmissionError`.
 
 ```python
 try:
@@ -447,8 +470,11 @@ except KeyboardInterrupt as e:
     raise
 ```
 
-The existing `sign_*` and `simulate_*` calls are unchanged. A `simulate_*`
-result is `failed` unless the node returned exactly one group result, that
+The `sign_*` and `simulate_*` calls do not submit. A `simulate_*` result's
+`signed_group` is the signed group that was simulated, a list of bytes with
+one signed transaction per entry (empty for an unsigned rotating simulation),
+and its `transactions` are the simulated transactions unsigned, as hex. A
+`simulate_*` result is `failed` unless the node returned exactly one group result, that
 result reports no failure (no `failure-message` and no `failed-at`), and it
 holds one transaction result per transaction simulated: an answer without
 exactly one result, or with the wrong count of transaction results, checked
@@ -459,6 +485,34 @@ the group is not an object", "the node reported a failure without a message"
 or "the node returned M transaction results for N transactions". Each field
 is chosen by presence: `txn-groups` is read when present, even empty, and
 `txn_groups` only when it is not, and so for the failure message.
+
+#### `send_transactions(algod_client, txns, *, no_wait=False, wait_rounds=0, ...) -> SendResult`
+
+Send transactions you built with algosdk's own constructors. For each one, in
+the order given, the SDK reads the sender's account from the node and finds
+the signing address as the `prepare_*` helpers do (`resolve_auth_address`:
+the sender, or the address the chain says it is rekeyed to), wraps it in a
+`PreparedTransaction` naming that address, and sends the group with
+`send_prepared`. It runs none of the `prepare_*` preflight checks, such as
+balances and opt-ins.
+
+```python
+payment = transaction.PaymentTxn(
+    sender=sender, sp=algod_client.suggested_params(), receiver=receiver, amt=1_000_000
+)
+result = client.send_transactions(algod_client, [payment])
+print(result.tx_ids[0], result.outcome, result.confirmed_round)
+```
+
+The call does not modify the transaction objects you pass in. It validates
+and submits the signer's returned group using the existing prepared-send
+flow. Use the transaction IDs in the result.
+
+The options, the result and the failures are those of `send_prepared`,
+described above. An empty list is refused with a `ValueError`. A failed
+account lookup is a plain `SignerError` naming the transaction's position
+(`SendTimeoutError` when the call's `timeout` ended it), raised before
+anything is signed. `examples/send_built.py` is a complete program.
 
 #### After an unknown outcome
 
@@ -652,7 +706,13 @@ except SignOutcomeUnknownError as e:
 ```
 
 `submit_signed_group` also submits again the `signed_group` kept by a
-`SubmissionError`; the same bytes can execute only once.
+`SubmissionError`; the same bytes can execute only once. It takes the signed
+group as a list with one entry per transaction, in group order, each the raw
+msgpack bytes of exactly one canonically encoded signed transaction (a
+`bytearray` or `memoryview` is copied to bytes when the call starts). An
+entry that is not bytes, such as a hex or base64 string, is refused with a
+`ValueError` naming its position, and one that is not exactly one canonical
+signed transaction with a `SignerError`, both before anything is posted.
 
 A rotating account that was rekeyed to an ordinary key the signer holds has
 left rotation. The `prepare_*` helpers name that key as its `auth_address`,
@@ -689,7 +749,7 @@ it; until then generation fails with "key type ... is not enabled on this
 node". Enablement gates only creating keys: existing keys of a disabled type
 keep signing.
 
-The server assembles the complete signed transaction - the SDK returns a base64 string ready for submission.
+The server assembles the complete signed transaction; the SDK returns the signed group as a list of bytes, one signed transaction per entry, ready for submission.
 
 ## Cosigner And Cosigned Accounts
 
@@ -717,7 +777,7 @@ result = sign_prepared_cosigned_group(
     cosigner_resolver=cosigner_resolver,
     prepared_group=prepared_group,
 )
-signed_group = result.signed_group
+signed_group = result.signed_group  # a list of bytes, one signed transaction per entry
 ```
 
 The SDK first freezes the complete canonical group through `/plan`; the user
@@ -895,6 +955,8 @@ reaches:
 
 ```python
 #!/usr/bin/env python3
+import base64
+
 from aplanesdk import SignerClient, SignerError
 from algosdk import transaction
 from algosdk.v2client import algod
@@ -928,8 +990,10 @@ def main():
             signed = client.sign_transaction(txn)
             print("Signed!")
 
-            # Submit directly with algosdk (no processing needed)
-            txid = algod_client.send_raw_transaction(signed)
+            # Submit with algosdk: the whole signed group, joined, as base64
+            txid = algod_client.send_raw_transaction(
+                base64.b64encode(b"".join(signed)).decode()
+            )
             print(f"TxID: {txid}")
 
             # Wait for confirmation
@@ -965,9 +1029,9 @@ requires them.
 params = algod_client.suggested_params()
 txn = transaction.PaymentTxn(sender=falcon_addr, sp=params, receiver=receiver, amt=1000000)
 
-# Server automatically adds dummies - just sign and submit
+# The server adds the dummies; they follow the payment in the signed group
 signed = client.sign_transaction(txn)
-txid = algod_client.send_raw_transaction(signed)
+txid = algod_client.send_raw_transaction(base64.b64encode(b"".join(signed)).decode())
 ```
 
 ### Fee Impact

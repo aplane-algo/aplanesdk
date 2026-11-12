@@ -814,20 +814,70 @@ def test_strict_base64_accepts_standard_padded_base64(good):
 
 
 @pytest.mark.parametrize("bad", BASE64_REFUSED + [None, b"QUJD", 5])
-def test_strict_base64_is_refused_at_every_site(bad):
-    """One decoder at every site that takes a caller's base64, before any request."""
+def test_strict_base64_refuses_anything_but_standard_padded_base64(bad):
     with pytest.raises(ValueError, match="input is not valid base64"):
         _strict_base64(bad, "input")
-    if not isinstance(bad, str):
-        return
-    with pytest.raises(ValueError, match="signed_transaction_base64 is not valid base64"):
-        PreparedTransaction(signed_transaction_base64=bad).to_sign_request()
+
+
+# A signed transaction as text: base64, hex, a string that is both, and an
+# empty string.
+SIGNED_AS_TEXT = [
+    base64.b64encode(fake_signer.signed_bytes(fake_signer.payment())).decode(),
+    fake_signer.signed_hex(fake_signer.payment()),
+    "QUJD",
+    "",
+]
+
+
+@pytest.mark.parametrize("text", SIGNED_AS_TEXT)
+def test_a_signed_transaction_given_as_text_is_refused_at_every_site(text):
+    """Every site that takes a caller's signed transaction takes bytes, and
+    refuses anything else with a plain ValueError naming the position, before
+    any request."""
+    if text:
+        with pytest.raises(ValueError, match="signed_transaction is a str, not bytes"):
+            PreparedTransaction(signed_transaction=text).to_sign_request()
+        with pytest.raises(ValueError, match="prepared transaction 1: signed_transaction is a str"):
+            PreparedGroup(
+                [PreparedTransaction(transaction=fake_signer.payment(), auth_address="A"),
+                 PreparedTransaction(signed_transaction=text)]
+            ).to_sign_requests()
 
     client = make_client()
     client.session = MagicMock()
-    with pytest.raises(ValueError, match=r"passthrough\[0\] is not valid base64"):
-        client.sign_transactions([fake_signer.payment()], passthrough={0: bad})
+    with pytest.raises(ValueError, match=r"passthrough\[0\] is a str, not bytes"):
+        client.sign_transactions([fake_signer.payment()], passthrough={0: text})
+    with pytest.raises(ValueError, match=r"passthrough\[0\] is a str, not bytes"):
+        client.plan_group([fake_signer.payment()], passthrough={0: text})
+
+    algod_client = MagicMock()
+    good = fake_signer.signed_bytes(fake_signer.payment())
+    with pytest.raises(ValueError, match="signed group position 2 is a str, not bytes"):
+        client.submit_signed_group(algod_client, [good, text])
+    with pytest.raises(ValueError, match="signed_group must be a list"):
+        client.submit_signed_group(algod_client, good)
     client.session.post.assert_not_called()
+    assert algod_client.mock_calls == []
+
+
+def test_an_empty_signed_transaction_is_refused_where_it_was_before():
+    client = make_client()
+    client.session = MagicMock()
+    # An empty passthrough is not a canonical signed transaction.
+    with pytest.raises(ValueError, match=r"invalid passthrough\[0\]: empty signed transaction"):
+        client.sign_transactions([fake_signer.payment()], passthrough={0: b""})
+    algod_client = MagicMock()
+    with pytest.raises(SignerError, match="signed group position 1 is empty"):
+        client.submit_signed_group(algod_client, [b""])
+    with pytest.raises(SignerError, match="signed group is empty"):
+        client.submit_signed_group(algod_client, [])
+    client.session.post.assert_not_called()
+    assert algod_client.mock_calls == []
+    # An empty pre-signed slot is no pre-signed slot: the slot is signed.
+    request = PreparedTransaction(
+        transaction=fake_signer.payment(), auth_address=fake_signer.account(41)
+    ).to_sign_request()
+    assert "signed_txn_hex" not in request and request["txn_bytes_hex"]
 
 
 # Whole config files the Go and TypeScript suites load too. A YAML alias is

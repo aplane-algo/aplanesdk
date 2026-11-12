@@ -161,11 +161,7 @@ func TestIntegrationLiveSignerEd25519Workflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sign transaction: %v", err)
 	}
-	signedBytes, err := base64.StdEncoding.DecodeString(signed)
-	if err != nil {
-		t.Fatalf("signed transaction is not base64: %v", err)
-	}
-	if len(signedBytes) == 0 {
+	if len(signed) == 0 || len(signed[0]) == 0 {
 		t.Fatal("signed transaction is empty")
 	}
 
@@ -228,11 +224,12 @@ func TestIntegrationNativeFalconSigning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sign native Falcon transaction: %v", err)
 	}
-	signedBytes, err := base64.StdEncoding.DecodeString(signed)
-	if err != nil {
-		t.Fatalf("native Falcon signed transaction is not base64: %v", err)
+	// A native Falcon account needs no resource dummies, so the signed group
+	// is the transaction alone.
+	if len(signed) != 1 {
+		t.Fatalf("signer returned %d transaction(s) for a native Falcon spend, want 1", len(signed))
 	}
-	assertNativeFalconEnvelope(t, signedBytes)
+	assertNativeFalconEnvelope(t, signed[0])
 
 	if err := client.DeleteKey(address); err != nil {
 		t.Fatalf("delete native Falcon key: %v", err)
@@ -277,19 +274,15 @@ func TestIntegrationLogicSigAccountSigning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build self-payment: %v", err)
 	}
-	single, err := client.SignTransactionsList([]types.Transaction{txn}, []string{address}, nil)
+	single, err := client.SignTransactions([]types.Transaction{txn}, []string{address}, nil)
 	if err != nil {
 		t.Fatalf("sign one LogicSig transaction: %v", err)
 	}
 	if len(single) < 2 {
 		t.Fatalf("signer returned %d transaction(s); a Falcon LogicSig account needs resource dummies", len(single))
 	}
-	firstBytes, err := base64.StdEncoding.DecodeString(single[0])
-	if err != nil {
-		t.Fatalf("signed transaction is not base64: %v", err)
-	}
 	var first types.SignedTxn
-	if err := msgpack.Decode(firstBytes, &first); err != nil {
+	if err := msgpack.Decode(single[0], &first); err != nil {
 		t.Fatalf("decode signed transaction: %v", err)
 	}
 	if len(first.Lsig.Logic) == 0 {
@@ -298,7 +291,7 @@ func TestIntegrationLogicSigAccountSigning(t *testing.T) {
 
 	second := txn
 	second.Note = []byte("second")
-	pair, err := client.SignTransactionsList([]types.Transaction{txn, second}, []string{address, address}, nil)
+	pair, err := client.SignTransactions([]types.Transaction{txn, second}, []string{address, address}, nil)
 	if err != nil {
 		t.Fatalf("sign two LogicSig transactions: %v", err)
 	}
