@@ -123,24 +123,6 @@ func (e *APIError) Unwrap() error {
 	return nil
 }
 
-// TransactionError wraps a transaction rejection with details.
-type TransactionError struct {
-	TxID   string
-	Reason string
-	Err    error
-}
-
-func (e *TransactionError) Error() string {
-	if e.TxID != "" {
-		return e.Err.Error() + ": " + e.Reason + " (txid: " + e.TxID + ")"
-	}
-	return e.Err.Error() + ": " + e.Reason
-}
-
-func (e *TransactionError) Unwrap() error {
-	return e.Err
-}
-
 // MaxFeeIncreaseError reports a call refused because the signer raised fees
 // by more than the ceiling set with SetMaxFeeIncrease. It matches
 // ErrMaxFeeIncreaseExceeded.

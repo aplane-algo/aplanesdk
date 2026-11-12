@@ -313,7 +313,8 @@ Every position must name, in `AuthAddress`, a key this signer holds, as the
 - `NoWait`: return once go-algorand-sdk's submit call returns success, with
   outcome `submitted`.
 - `WaitRounds`: the round count given to go-algorand-sdk's
-  `transaction.WaitForConfirmation`; zero means 10.
+  `transaction.WaitForConfirmation`; zero means 10, and a value above
+  `1<<62` is given as `1<<62`.
 - `RefreshValidity`: let a rotating account's send rebuild the transaction's
   validity rounds; see [Rotating Accounts](#rotating-accounts).
 - `CosignerClient` with `CosignerComponentKey`, or `CosignerResolver`: a
@@ -329,9 +330,9 @@ each of rounds L+2 to L+N. It then waits for the block after round L+N
 without looking and times out, so a wait of 1 can miss a confirmation in the
 next round. A pool error or a failed status read ends the wait at once; a
 failed lookup does not. Your context is passed to every request, so ending
-it ends the wait. A `WaitRounds` near the largest `uint64` overflows inside
-go-algorand-sdk (L plus `WaitRounds` wraps around) and the wait times out at
-once. An algod client built by this SDK's `Config.NewAlgodClient` gives each request 30 seconds for the node to start answering; a wait-for-block request held longer than that fails and ends the wait.
+it ends the wait. An algod client built by this SDK's `Config.NewAlgodClient`
+gives each request 30 seconds for the node to start answering; a
+wait-for-block request held longer than that fails and ends the wait.
 
 Refused before anything is signed:
 
@@ -427,7 +428,7 @@ confirms the rekey.
 | Error | What it means | What to do |
 |---|---|---|
 | `*SignOutcomeUnknownError` | A signing request ended with no answer, or with a 200 answer that could not be read. A signature may have been released. Nothing was submitted. | Do not send again. See [After An Unknown Outcome](#after-an-unknown-outcome), or check `RequestID` with the operator or the signer's audit log. |
-| `*SubmissionError` | The group was signed, and go-algorand-sdk's submit or confirmation wait returned an error, or your context ended before one of them. `Err` is that error, unchanged. `Submitted` is true when the submit call returned success and the failure came later. When it is false, a cause that is go-algorand-sdk's `common.BadRequest` is algod's HTTP 400: the node refused the group. Any other cause leaves it open whether the node has the group, because the answer may have been lost. `SignedGroup`, `TxIDs` and `LastValid` are kept. | Do not sign a replacement. See [After An Unknown Outcome](#after-an-unknown-outcome). |
+| `*SubmissionError` | The group was signed, and go-algorand-sdk's submit or confirmation wait returned an error, or your context ended before one of them. `Err` is that error, unchanged. `Submitted` is true when the submit call returned success and the failure came later. When it is false, a cause that is go-algorand-sdk's `common.BadRequest` is algod's HTTP 400: the node answered, and its reason decides what to do. Any other cause leaves it open whether the node has the group, because the answer may have been lost. `SignedGroup`, `TxIDs` and `LastValid` are kept. | Do not sign a replacement. See [After An Unknown Outcome](#after-an-unknown-outcome). |
 | `*RotatingPreflightError` | A rotating spend failed its unsigned simulation. Nothing was signed. | Read `Message`. |
 | `ErrUnsupportedSigningFlow`, `ErrUnsupportedGroup`, `ErrKeyNotFound`, `ErrCosignerDiscovery` | Refused before anything that can execute was signed. | Read the reason. |
 | Any other error | The signer refused (policy, operator, locked), or the SDK refused its answer (`verify signer response: ...`, `*MaxFeeIncreaseError`). Nothing was submitted. | Read the reason. When the SDK refused a sign answer, the signer did sign and the SDK discarded the result. |
@@ -459,13 +460,21 @@ error:
   `errors.Unwrap`). Read the cause as you would in any go-algorand-sdk
   program.
   - `Submitted` true: follow the group with `transaction.WaitForConfirmation`
-    on `TxIDs[0]` (a group confirms as a whole), waiting `LastValid` minus
-    the current round, at least 1. A timeout from the wait means only that
+    on `TxIDs[0]` (a group confirms as a whole). You may wait up to the last
+    valid round: `LastValid` minus the current round, at least 1. The
+    examples wait at most 10 rounds. A timeout from the wait means only that
     the wait ended.
   - `Submitted` false, and the cause is algod's HTTP 400, which
     go-algorand-sdk returns as a `common.BadRequest` (package
-    `client/v2/common`): the node answered and refused the group. Read the
-    reason; submitting the same bytes again gets the same answer.
+    `client/v2/common`): the node answered. Read its reason, as in any
+    go-algorand-sdk program; the reason decides what to do. If the node says
+    the transaction is already in the ledger or in its pool, it has the
+    group: follow `TxIDs[0]`. A refusal such as an overspend or a failed
+    signature or program is one the same bytes will always get; after
+    `LastValid`, "dead" is such an answer too, and it proves nothing about
+    whether the group confirmed earlier. A refusal that depends on the
+    moment, such as a fee below what the pool currently asks or a node that
+    is behind, may not come back: submitting the same group later may work.
   - `Submitted` false with any other cause (no answer, a lost connection, a
     5xx, your context ended): the node may or may not have the group. First
     follow `TxIDs[0]` with `transaction.WaitForConfirmation` for a few
@@ -493,9 +502,9 @@ error:
 result, err := client.SendPayment(ctx, algodClient, params, nil)
 var failure *aplane.SubmissionError
 if errors.As(err, &failure) {
-	var refused common.BadRequest
-	if !failure.Submitted && errors.As(err, &refused) {
-		// algod answered 400 and refused the group: read the reason.
+	var answered common.BadRequest
+	if !failure.Submitted && errors.As(err, &answered) {
+		// The node answered with a 400: read the reason.
 		return err
 	}
 	if !failure.Submitted {

@@ -442,7 +442,7 @@ Failures:
 |---|---|---|
 | The signing call's own error | The signer refused (policy, operator, locked), or the SDK refused the signer's answer (`verify signer response: ...`, `MaxFeeIncreaseError`). Nothing was submitted. | Read the reason. If the SDK refused a sign answer, the signer did sign and the SDK discarded the result. |
 | `SignOutcomeUnknownError` | A signing exchange ended with no answer, or with a 200 answer that could not be read (not one JSON object of the expected shape), or the SDK failed while checking or describing a 200 answer (a fault in the SDK: anything thrown that is not a `SignerError`). A signature may have been released; nothing was submitted. | See [After an unknown outcome](#after-an-unknown-outcome): do not build a replacement with different transaction IDs until `lastValid` has passed, or check with the operator or the audit log. `requestId` names the request whose answer was lost: the `/sign` request of the ordinary flow, the rotating sign request, or the cosigned sequence's `/sign/component`, `/sign/assemble` or `/sign` request. `lastValid` is the earliest last valid round of the transactions sent to be signed. For the ordinary flow the error also carries `requests`; for a rotating account it carries the prepared group in `rotating` (see below). |
-| `SubmissionError` | The group was signed, and algosdk's submit call or its confirmation wait then failed. The error carries the signed group (`signedGroup`), its IDs (`txIds`), its earliest last valid round (`lastValid`) and algosdk's error as `cause`, unchanged. `submitted` is true when the submit call returned success and the failure came later, and false when it did not return success; false does not mean the node lacks the group, because the answer may have been lost. The message says which step failed and quotes the cause. | Read `cause` as you would in any algosdk program. With `submitted` false, a `cause` that is algod's own HTTP 400 (`cause.response.status` is 400) is the node's refusal, and anything else leaves open whether the node has the group. Do not sign a replacement while the group may confirm: both could execute. See [After an unknown outcome](#after-an-unknown-outcome). |
+| `SubmissionError` | The group was signed, and algosdk's submit call or its confirmation wait then failed. The error carries the signed group (`signedGroup`), its IDs (`txIds`), its earliest last valid round (`lastValid`) and algosdk's error as `cause`, unchanged. `submitted` is true when the submit call returned success and the failure came later, and false when it did not return success; false does not mean the node lacks the group, because the answer may have been lost. The message says which step failed and quotes the cause. | Read `cause` as you would in any algosdk program. With `submitted` false, a `cause` that is algod's own HTTP 400 (`cause.response.status` is 400) is the node's answer, and its reason decides what to do; anything else leaves open whether the node has the group. Do not sign a replacement while the group may confirm: both could execute. See [After an unknown outcome](#after-an-unknown-outcome). |
 | `CosignerDiscoveryError` | The SDK could not route a cosigned account's witness key to exactly one cosigner endpoint of `endpoints.yaml`. Nothing was signed that needed the cosigner. | Read the reason: it names every cosigner endpoint and its state. |
 
 Every 200 answer from the signer is read as the Go SDK reads it, against the
@@ -507,17 +507,26 @@ in any algosdk program.
 
 - `submitted` true: algosdk's submit call returned success. Follow the group
   with algosdk's own wait: `waitForConfirmation` on the first transaction ID
-  (a group confirms as a whole), waiting `lastValid` minus the current round,
-  at least 1. Given 0 rounds, algosdk's wait throws without looking the
+  (a group confirms as a whole). You may wait up to the last valid round,
+  `lastValid` minus the current round, at least 1; the examples wait at most
+  10 more rounds. Given 0 rounds, algosdk's wait throws without looking the
   transaction up. A timeout from the wait means only that the wait ended.
-- `submitted` false, and `cause` is algod's own HTTP 400: the node answered
-  and refused. Read the reason, as in any algosdk program; the same bytes
-  submitted again get the same answer. algosdk's error carries the answer in
-  `response`:
+- `submitted` false, and `cause` is algod's own HTTP 400: the node answered.
+  Read its reason, as in any algosdk program; the reason decides what to do.
+  algosdk's error carries the answer in `response`:
 
   ```typescript
-  const refused = (error.cause as algosdk.BaseHTTPClientError | undefined)?.response?.status === 400;
+  // The node answered with a 400: read the reason.
+  const answered400 = (error.cause as algosdk.BaseHTTPClientError | undefined)?.response?.status === 400;
   ```
+
+  A node that says the transaction is already in the ledger or the pool has
+  the group: follow the first transaction ID. A refusal the same bytes
+  always get, such as an overspend or a failed signature or program, stands;
+  after the last valid round "dead" is such an answer too, and proves nothing
+  about whether the group confirmed earlier. A refusal that depends on the
+  moment, such as a fee below what the pool asks now or a node that is
+  behind, may not recur: submitting the same group later may work.
 
 - `submitted` false, and anything else (no answer, a lost connection, a 5xx,
   your signal): the node may or may not have the group. First follow the
@@ -536,8 +545,8 @@ from its current round): check an indexer before building a replacement.
 
 ```typescript
 if (error instanceof SubmissionError) {
-  // Not submitted: a 400 is the node's refusal; anything else may have
-  // reached the node (see the two cases above).
+  // Not submitted: a 400 is the node's answer, so read the reason; anything
+  // else may have reached the node (see the two cases above).
   if (!error.submitted) throw error;
   try {
     const { lastRound } = await algodClient.status().do();
@@ -564,10 +573,11 @@ the prepared group). Sign the same prepared group again with
 so it cannot pay twice.
 
 The examples do this: after a `SubmissionError` they follow the group with
-`waitForConfirmation` when `submitted` is true, and when it is false they
-print the two cases above. When `submitted` is false, or the follow-up wait
-fails, they print every entry of `signedGroup` (the form `submitSignedGroup`
-takes), the transaction IDs and the last valid round. After a
+`waitForConfirmation` for at most 10 more rounds when `submitted` is true,
+and when it is false they print the two cases above. When `submitted` is
+false, or the follow-up wait fails, they print every entry of `signedGroup`
+(the form `submitSignedGroup` takes), the transaction IDs and the last valid
+round. After a
 `SignOutcomeUnknownError` they print the round to wait for. They throw the
 original error when the group was not seen confirmed.
 

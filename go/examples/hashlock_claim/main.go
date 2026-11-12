@@ -100,12 +100,12 @@ func main() {
 		if errors.As(err, &failure) {
 			if !failure.Submitted {
 				printSignedGroup(failure)
-				log.Fatalf("%v. If the cause is algod's HTTP 400, the node refused the group: read the reason. Otherwise the node may or may not have it: follow the first ID for a few rounds and, if it does not confirm, submit the signed group above again with SubmitSignedGroup.", err)
+				log.Fatalf("%v. If the cause is algod's HTTP 400, the node answered: read its reason. Otherwise the node may or may not have the group: follow the first ID for a few rounds and, if it does not confirm, submit the signed group above again with SubmitSignedGroup.", err)
 			}
 			round, waitErr := waitForGroup(ctx, algodClient, failure)
 			if waitErr != nil {
 				printSignedGroup(failure)
-				log.Fatalf("%v (wait: %v). After round %d, check an indexer before building a replacement.", err, waitErr, failure.LastValid)
+				log.Fatalf("%v (wait: %v). You may follow the first ID until round %d; after it, check an indexer before building a replacement.", err, waitErr, failure.LastValid)
 			}
 			fmt.Printf("Confirmed %s in round %d\n", failure.TxIDs[0], round)
 			return
@@ -130,9 +130,10 @@ func printSignedGroup(failure *aplane.SubmissionError) {
 	fmt.Printf("Last valid round: %d\n", failure.LastValid)
 }
 
-// waitForGroup follows a submitted group with go-algorand-sdk until its last
-// valid round. A group confirms as a whole, so its first ID is enough. A
-// timeout means only that the wait ended.
+// waitForGroup follows a submitted group with go-algorand-sdk for 10 more
+// rounds, or until its last valid round if that comes first, so the example
+// does not block for most of the validity window. A group confirms as a
+// whole, so its first ID is enough. A timeout means only that the wait ended.
 func waitForGroup(ctx context.Context, algodClient *algod.Client, failure *aplane.SubmissionError) (uint64, error) {
 	status, err := algodClient.Status().Do(ctx)
 	if err != nil {
@@ -140,7 +141,7 @@ func waitForGroup(ctx context.Context, algodClient *algod.Client, failure *aplan
 	}
 	rounds := uint64(1)
 	if failure.LastValid > status.LastRound {
-		rounds = failure.LastValid - status.LastRound
+		rounds = min(failure.LastValid-status.LastRound, 10)
 	}
 	info, err := transaction.WaitForConfirmation(algodClient, failure.TxIDs[0], rounds, ctx)
 	return info.ConfirmedRound, err

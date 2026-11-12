@@ -21,6 +21,11 @@ import (
 // to confirm when SendOptions.WaitRounds is zero.
 const defaultSendWaitRounds = 10
 
+// maxSendWaitRounds is the largest round count a send gives go-algorand-sdk's
+// wait. That wait adds the count to the current round, so a count near the
+// largest uint64 would wrap around there and time out at once.
+const maxSendWaitRounds = 1 << 62
+
 // SendOutcome says how far a send got.
 type SendOutcome string
 
@@ -42,9 +47,8 @@ type SendOptions struct {
 	NoWait bool
 	// WaitRounds is the round count given to go-algorand-sdk's
 	// transaction.WaitForConfirmation for the group's first transaction.
-	// Zero means 10. That wait looks the transaction up WaitRounds times; a
-	// value near the largest uint64 overflows inside go-algorand-sdk and the
-	// wait times out at once.
+	// Zero means 10, and a value above 1<<62 is given as 1<<62. That wait
+	// looks the transaction up WaitRounds times.
 	WaitRounds uint64
 
 	// RefreshValidity lets a send rebuild the validity rounds of a rotating
@@ -189,15 +193,21 @@ func (e *SignOutcomeUnknownError) Unwrap() error {
 // When Submitted is true, follow the group with
 // transaction.WaitForConfirmation on TxIDs[0]. When it is false, the cause
 // tells two cases apart. A go-algorand-sdk common.BadRequest is algod's HTTP
-// 400: the node answered and refused the group, and the same bytes get the
-// same answer, so read the reason. Any other cause (no answer, a lost
-// connection, a 5xx, the context ended) leaves it open whether the node has
-// the group: follow TxIDs[0] for a few rounds and, if it does not confirm,
-// submit the same SignedGroup again with SubmitSignedGroup. A 400 to that
-// resubmission whose text says the transaction is already in the ledger means
-// the node has it: follow the ID. The same signed bytes execute at most once.
-// After LastValid, neither a node's "not found" nor a refusal proves the
-// group never confirmed: check an indexer before building a replacement.
+// 400: the node answered, so read its reason, which decides what to do.
+// Already in the ledger or the pool means the node has the group. A refusal
+// such as an overspend or a failed signature or program comes back the same
+// for the same bytes; after LastValid "dead" is one too, and it proves
+// nothing about an earlier confirmation. A refusal that depends on the
+// moment, such as a fee below what the pool asks or a node that is behind,
+// may pass if the same group is submitted later. Any other cause (no
+// answer, a lost connection, a 5xx, the context ended) leaves it open whether
+// the node has the group: follow TxIDs[0] for a few rounds and, if it does
+// not confirm, submit the same SignedGroup again with SubmitSignedGroup. A
+// 400 to that resubmission whose text says the transaction is already in the
+// ledger means the node has it: follow the ID. The same signed bytes execute
+// at most once. After LastValid, neither a node's "not found" nor a refusal
+// proves the group never confirmed: check an indexer before building a
+// replacement.
 type SubmissionError struct {
 	// SignedGroup is the signed group, hex msgpack, in order.
 	SignedGroup []string
@@ -570,7 +580,7 @@ func submitAndTrack(ctx context.Context, algodClient *algod.Client, raw [][]byte
 	if err := ctx.Err(); err != nil {
 		return fail(true, err)
 	}
-	waitRounds := opts.WaitRounds
+	waitRounds := min(opts.WaitRounds, maxSendWaitRounds)
 	if waitRounds == 0 {
 		waitRounds = defaultSendWaitRounds
 	}

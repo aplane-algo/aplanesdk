@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -737,7 +738,7 @@ func sendWaitRounds(opts *SendOptions) uint64 {
 	if opts == nil || opts.WaitRounds == 0 {
 		return defaultSendWaitRounds
 	}
-	return opts.WaitRounds
+	return min(opts.WaitRounds, maxSendWaitRounds)
 }
 
 func TestSendPaymentPreparesThenSends(t *testing.T) {
@@ -829,6 +830,26 @@ func TestSendPreparedConfirmationWait(t *testing.T) {
 			if want := sendWaitRounds(opts); uint64(node.lookups) != want {
 				t.Fatalf("a wait of %d rounds made %d lookups, want %d", want, node.lookups, want)
 			}
+		}
+	})
+
+	// go-algorand-sdk adds the count to the current round, so the largest
+	// count would wrap around there and time out before the first lookup.
+	t.Run("the largest WaitRounds still waits", func(t *testing.T) {
+		signer := &sendSigner{keys: []KeyInfo{ordinaryKey(txn)}}
+		node := &sendAlgod{}
+		lookups := 0
+		node.pending = func() models.PendingTransactionInfoResponse {
+			lookups++
+			if lookups < 4 {
+				return models.PendingTransactionInfoResponse{}
+			}
+			return models.PendingTransactionInfoResponse{ConfirmedRound: 13}
+		}
+		client, algodClient := newSendFixture(t, signer, node)
+		result, err := client.SendPrepared(context.Background(), algodClient, preparedFor(txn), &SendOptions{WaitRounds: math.MaxUint64})
+		if err != nil || result.ConfirmedRound != 13 || lookups != 4 {
+			t.Fatalf("SendPrepared() = %+v, %v after %d lookups; want confirmed in round 13 after 4", result, err, lookups)
 		}
 	})
 

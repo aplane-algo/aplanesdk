@@ -141,6 +141,7 @@ import {
   simulationFailure,
   submitAndTrack,
   type CheckedSendOptions,
+  type DescribedGroup,
   type SendOptions,
   type SendResult,
 } from "./send.js";
@@ -4844,9 +4845,9 @@ export class SignerClient {
       released = { requestId, requests };
     }
 
-    let raw: Uint8Array[];
+    let described: DescribedGroup;
     try {
-      raw = describeSignedGroup(result);
+      described = describeSignedGroup(result);
     } catch (error) {
       // A fault in describing a signed group is not a refusal of it: the
       // signature is out.
@@ -4855,7 +4856,7 @@ export class SignerClient {
       }
       throw new SignerError(`verify signed group: ${errorText(error)}`);
     }
-    await submitAndTrack(algodClient, raw, result, checked);
+    await submitAndTrack(algodClient, described, result, checked);
     return result;
   }
 
@@ -4993,13 +4994,13 @@ export class SignerClient {
     }
     const result = emptySendResult("", signedGroup.length);
     result.signedGroup = [...signedGroup];
-    let raw: Uint8Array[];
+    let described: DescribedGroup;
     try {
-      raw = describeSignedGroup(result);
+      described = describeSignedGroup(result);
     } catch (error) {
       throw new SignerError(`verify signed group: ${errorText(error)}`);
     }
-    await submitAndTrack(algodClient, raw, result, checked);
+    await submitAndTrack(algodClient, described, result, checked);
     return result;
   }
 
@@ -5268,7 +5269,7 @@ export class SignerClient {
       }
 
       const result = emptySendResult(SIGNING_FLOW_ROTATING1, 1);
-      let raw: Uint8Array[];
+      let described: DescribedGroup;
       try {
         result.signedGroup = [...signed.signedGroup];
         result.mutations = prepared.mutations();
@@ -5280,7 +5281,7 @@ export class SignerClient {
           transaction: cloneTransaction(txn),
           requestId: signed.requestId,
         };
-        raw = describeSignedGroup(result);
+        described = describeSignedGroup(result);
       } catch (error) {
         // A fault in describing the signed group is not a refusal of it.
         if (!(error instanceof SignerError)) {
@@ -5293,7 +5294,7 @@ export class SignerClient {
         }
         throw new SignerError(`verify signed group: ${errorText(error)}`);
       }
-      await submitAndTrack(algodClient, raw, result, checked);
+      await submitAndTrack(algodClient, described, result, checked);
       return result;
     }
   }

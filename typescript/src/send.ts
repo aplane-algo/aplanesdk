@@ -299,12 +299,24 @@ export function simulationFailure(response: any, transactionCount: number): stri
 }
 
 /**
- * Fill the result's IDs, fees and group ID from its signed bytes and return
- * those bytes decoded from hex. Each entry must be one canonically encoded
- * signed transaction, and a group of several must carry the group ID
- * computed over itself.
+ * A signed group as describeSignedGroup checked it: the bytes to submit and
+ * the round after which the group cannot execute. It goes to submitAndTrack
+ * beside the result, so a SubmissionError never decodes anything.
  */
-export function describeSignedGroup(result: SendResult): Uint8Array[] {
+export interface DescribedGroup {
+  /** The signed transactions decoded from hex, in order. */
+  raw: Uint8Array[];
+  /** The earliest last valid round of the signed group. */
+  lastValid: bigint;
+}
+
+/**
+ * Fill the result's IDs, fees and group ID from its signed bytes, and return
+ * those bytes decoded from hex with the group's earliest last valid round.
+ * Each entry must be one canonically encoded signed transaction, and a group
+ * of several must carry the group ID computed over itself.
+ */
+export function describeSignedGroup(result: SendResult): DescribedGroup {
   const { decoded, raw } = decodeExecutableSignedGroup(result.signedGroup);
   if (decoded.length < result.originalCount) {
     throw new SignerError(
@@ -319,19 +331,23 @@ export function describeSignedGroup(result: SendResult): Uint8Array[] {
   result.fees = txns.map((txn) => txn.fee);
   result.groupId = groupID === undefined ? "" : bytesToBase64(groupID);
   result.txIds = txns.map((txn) => txn.txID());
-  return raw;
+  return { raw, lastValid: earliestLastValid(txns) };
 }
 
 /**
- * The earliest last valid round among txns, or 0n for none. A group cannot
- * execute after it: one of its transactions no longer can.
+ * The earliest last valid round among txns. A group cannot execute after it:
+ * one of its transactions no longer can. Every caller passes a group it has
+ * already checked is not empty, so an empty one is a fault in the SDK.
  */
 export function earliestLastValid(txns: Transaction[]): bigint {
-  let earliest: bigint | undefined;
-  for (const txn of txns) {
-    if (earliest === undefined || txn.lastValid < earliest) earliest = txn.lastValid;
+  if (txns.length === 0) {
+    throw new TypeError("earliestLastValid: no transactions");
   }
-  return earliest ?? 0n;
+  let earliest = txns[0].lastValid;
+  for (const txn of txns) {
+    if (txn.lastValid < earliest) earliest = txn.lastValid;
+  }
+  return earliest;
 }
 
 /**
@@ -347,21 +363,14 @@ export function earliestLastValid(txns: Transaction[]): bigint {
  */
 export async function submitAndTrack(
   algodClient: any,
-  raw: Uint8Array[],
+  group: DescribedGroup,
   result: SendResult,
   options: CheckedSendOptions,
 ): Promise<void> {
+  const { raw, lastValid } = group;
   const signal = options.signal;
-  // The bytes were checked when the result was described. Their rounds say
-  // until when the group can execute; they are read only for an error.
   const failed = (submitted: boolean, cause: unknown) =>
-    new SubmissionError({
-      signedGroup: result.signedGroup,
-      txIds: result.txIds,
-      lastValid: earliestLastValid(raw.map((entry) => algosdk.decodeSignedTransaction(entry).txn)),
-      submitted,
-      cause,
-    });
+    new SubmissionError({ signedGroup: result.signedGroup, txIds: result.txIds, lastValid, submitted, cause });
 
   if (signal?.aborted) {
     throw failed(false, signal.reason);

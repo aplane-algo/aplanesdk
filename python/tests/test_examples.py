@@ -2,7 +2,8 @@
 what can be checked without one: each compiles, every name it imports from
 aplanesdk exists, every method it calls on the signer client exists, and an
 unknown outcome is handled as the SDK docs say: a submitted group is waited
-for with algosdk until its last valid round, a group whose submit call did not
+for with algosdk for at most 10 rounds and not past its last valid round, a
+group whose submit call did not
 return success is left to the caller to submit again, an unknown sign outcome
 asks the node nothing, and an outcome the wait does not settle is raised as it
 was."""
@@ -122,16 +123,21 @@ def test_a_submission_the_wait_cannot_settle_raises_the_original_error(path, mon
 
 @pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
 @pytest.mark.parametrize(
-    "current,waited",
-    [(5, [6, 7, 8, 9, 10]), (10, [11]), (20, [21])],
-    ids=["until last valid", "at last valid", "past last valid"],
+    "last_valid,current,waited",
+    [
+        (10, 5, [6, 7, 8, 9, 10]),
+        (1000, 5, list(range(6, 16))),
+        (10, 10, [11]),
+        (10, 20, [21]),
+    ],
+    ids=["until last valid", "at most 10 rounds", "at last valid", "past last valid"],
 )
-def test_a_submitted_group_is_waited_for_until_its_last_valid_round(
-    path, current, waited, monkeypatch, capsys
+def test_a_submitted_group_is_waited_for_at_most_10_rounds(
+    path, last_valid, current, waited, monkeypatch, capsys
 ):
     # The wait follows the first transaction for last valid - current rounds,
-    # at least one, then gives up without claiming anything.
-    error = _submission_error(last_valid=10)
+    # at most 10 and at least one, then gives up without claiming anything.
+    error = _submission_error(last_valid=last_valid)
     signer = mock.MagicMock()
     algod_client = mock.MagicMock()
     algod_client.status.return_value = {"last-round": current}
@@ -146,8 +152,8 @@ def test_a_submitted_group_is_waited_for_until_its_last_valid_round(
     assert {c.args[0] for c in algod_client.pending_transaction_info.call_args_list} == {"TXONE"}
     assert [c.args[0] for c in algod_client.status_after_block.call_args_list] == waited
     out = capsys.readouterr().out
-    assert "after round 10, check an indexer before building a replacement" in out
-    _assert_prints_what_acting_needs(out)
+    assert f"after round {last_valid}, check an indexer before building a replacement" in out
+    _assert_prints_what_acting_needs(out, last_valid)
 
 
 @pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
@@ -180,7 +186,8 @@ def test_a_group_whose_submit_did_not_succeed_is_not_resubmitted_and_raises(
     signer.submit_signed_group.assert_not_called()
     assert algod_client.mock_calls == []
     out = capsys.readouterr().out
-    assert "algod's HTTP 400, the node refused the group" in out
+    assert "algod's HTTP 400, the node answered: read its reason" in out
+    assert "refused" not in out
     assert "may or may not have the group" in out
     assert "submit the same signed_group again with submit_signed_group" in out
     _assert_prints_what_acting_needs(out)

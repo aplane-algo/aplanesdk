@@ -75,9 +75,9 @@ async function main() {
       if (!error.submitted) {
         console.error(
           "The submit call did not return success. If the cause is algod's own HTTP 400, the node " +
-            "refused the group. Otherwise the node may or may not have it: follow the first ID with " +
-            "algosdk's wait, and if it does not confirm, submit the same signed group again with " +
-            "submitSignedGroup.",
+            "answered: read its reason, which decides what to do. Otherwise the node may or may not " +
+            "have the group: follow the first ID with algosdk's wait, and if it does not confirm, " +
+            "submit the same signed group again with submitSignedGroup.",
         );
         printSignedGroup(error);
       } else if (await waitForGroup(algodClient, error)) {
@@ -94,22 +94,24 @@ async function main() {
 }
 
 /**
- * Follow a submitted group with algosdk until its last valid round, and for
- * at least 1 round: given 0, algosdk's wait throws without looking. A group
- * confirms as a whole, so its first ID is enough. A timeout means only that
- * the wait ended.
+ * Follow a submitted group with algosdk for at most 10 more rounds, never
+ * past its last valid round, and for at least 1 round: given 0, algosdk's
+ * wait throws without looking. A group confirms as a whole, so its first ID
+ * is enough. A timeout means only that the wait ended.
  */
 async function waitForGroup(algodClient: algosdk.Algodv2, error: SubmissionError): Promise<boolean> {
   try {
     const { lastRound } = await algodClient.status().do();
-    const rounds = error.lastValid > lastRound ? error.lastValid - lastRound : 1n;
+    const left = error.lastValid > lastRound ? error.lastValid - lastRound : 1n;
+    const rounds = left < 10n ? left : 10n;
     const info = await algosdk.waitForConfirmation(algodClient, error.txIds[0], Number(rounds));
     console.log(`Confirmed ${error.txIds[0]} in round ${info.confirmedRound}`);
     return true;
   } catch (waitError) {
     const reason = waitError instanceof Error ? waitError.message : String(waitError);
     console.error(
-      `Not seen confirmed (${reason}). After round ${error.lastValid}, check an indexer before building a replacement.`,
+      `Not seen confirmed (${reason}). It may still confirm until round ${error.lastValid}; ` +
+        "after that round, check an indexer before building a replacement.",
     );
     printSignedGroup(error);
     return false;

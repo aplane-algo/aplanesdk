@@ -465,7 +465,7 @@ chain confirms the rekey.
 | Exception | What it means | What to do |
 |---|---|---|
 | `SignOutcomeUnknownError` | A signing request ended with no answer, or with a 200 answer that could not be read, or the SDK failed while checking one. A signature may have been released. Nothing was submitted. | Do not send again. See [After An Unknown Outcome](#after-an-unknown-outcome). `request_id` names the request in the signer's audit log. |
-| `SubmissionError` | The group was signed, and algosdk's submit call or its confirmation wait failed. `submitted` is `True` when the submit call returned success and the failure came later, and `False` when it did not return success. `error`, also the `__cause__`, is algosdk's error, unchanged. | Read `error` as you would in any algosdk program. With `submitted` `False`, algod's HTTP 400 is a refusal; anything else leaves it open whether the node has the group. Do not sign a replacement. See [After An Unknown Outcome](#after-an-unknown-outcome). |
+| `SubmissionError` | The group was signed, and algosdk's submit call or its confirmation wait failed. `submitted` is `True` when the submit call returned success and the failure came later, and `False` when it did not return success. `error`, also the `__cause__`, is algosdk's error, unchanged. | Read `error` as you would in any algosdk program. With `submitted` `False`, an algod HTTP 400 means the node answered: read its reason; anything else leaves it open whether the node has the group. Do not sign a replacement. See [After An Unknown Outcome](#after-an-unknown-outcome). |
 | `RotatingPreflightError` | A rotating spend failed its unsigned simulation. Nothing was signed. | Read `message`. |
 | `UnsupportedSigningFlowError`, `UnsupportedGroupError`, `KeyNotFoundError`, `CosignerDiscoveryError`, `SendTimeoutError` | Refused, or out of time, before anything that can execute was signed. | Read the reason. |
 | Any other `SignerError` | The signer refused (policy, operator, locked), or the SDK refused its answer (`verify signer response: ...`, `MaxFeeIncreaseError`). Nothing was submitted. | Read the reason. When the SDK refused a sign answer, the signer did sign and the SDK discarded the result. |
@@ -497,30 +497,37 @@ program.
 
 - `submitted` is `True`: algosdk's submit call returned success. Follow the
   group with algosdk's `transaction.wait_for_confirmation()` on `tx_ids[0]`
-  (a group confirms as a whole) for `last_valid` minus the current round, at
-  least 1 (algosdk reads 0 as 1000 rounds). A timeout from the wait
-  (`ConfirmationTimeoutError`) means only that the wait ended.
+  (a group confirms as a whole) for up to `last_valid` minus the current
+  round, at least 1 (algosdk reads 0 as 1000 rounds). The examples wait at
+  most 10 more rounds. A timeout from the wait (`ConfirmationTimeoutError`)
+  means only that the wait ended.
 - `submitted` is `False`: the submit call did not return success. There
   are two cases.
-  - The cause is algod's own HTTP 400: the node answered and refused the
-    group. Read the reason, as in any algosdk program; submitting the same
-    bytes again gets the same answer. algosdk raises it as an
-    `AlgodHTTPError` whose `code` is the HTTP status:
+  - The cause is algod's own HTTP 400: the node answered. Read its reason,
+    as in any algosdk program; the reason decides what to do. algosdk
+    raises it as an `AlgodHTTPError` whose `code` is the HTTP status:
 
     ```python
     from algosdk.error import AlgodHTTPError
 
-    refused = isinstance(error.error, AlgodHTTPError) and error.error.code == 400
+    # The node answered with a 400: read the reason in str(error.error).
+    answered_400 = isinstance(error.error, AlgodHTTPError) and error.error.code == 400
     ```
 
-    The SDK itself does not look.
+    The reason is one of three kinds. The node says the transaction is
+    already in the ledger or its pool: it has the group, so follow
+    `tx_ids[0]`. A refusal the same bytes will always get, such as an
+    overspend or a failed signature or program; after the last valid round,
+    "dead" is such an answer too, and it proves nothing about whether the
+    group confirmed earlier. A refusal that depends on the moment, such as a
+    fee below what the pool currently asks or a node that is behind:
+    submitting the same group later may work. The SDK itself does not look.
   - Anything else (no answer, a lost connection, a 5xx, the call's
     `timeout`): the node may or may not have the group. First look
     `tx_ids[0]` up with algosdk's wait for a few rounds. If it does not
     confirm, submit the same `signed_group` again with
-    `submit_signed_group()`. If that comes back as a 400 saying the
-    transaction is already in the ledger, the node has it: follow
-    `tx_ids[0]`.
+    `submit_signed_group()`. If that comes back as a 400 saying the transaction is
+    already in the ledger, the node has it: follow `tx_ids[0]`.
 - Submitting the same signed group again cannot pay twice. A 400 saying the
   transaction is already in the ledger is good news, not a refusal. After
   the last valid round the node refuses the group as dead whether or not it
@@ -538,9 +545,9 @@ try:
     result = client.send_prepared(algod_client, prepared)
 except SubmissionError as error:
     if not error.submitted:
-        # The two cases above: algod's 400 is a refusal; otherwise look
-        # tx_ids[0] up, then submit the same signed_group again with
-        # submit_signed_group.
+        # The two cases above: with algod's 400 the node answered, so read
+        # the reason; otherwise look tx_ids[0] up, then submit the same
+        # signed_group again with submit_signed_group.
         raise
     try:
         current = algod_client.status()["last-round"]

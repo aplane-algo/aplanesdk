@@ -147,17 +147,39 @@ def test_send_prepared_no_wait_returns_submitted(fakes):
     assert len(node.submissions()) == 1 and node.lookups == 0 and node.waits == []
 
 
-def test_a_confirmed_send_decodes_the_signed_group_once(fakes, monkeypatch):
-    # The last valid round is read from the signed group only for an error.
+@pytest.mark.parametrize(
+    "node_options", [{}, {"submit": lambda _blob: reply(500, {"message": "boom"})}]
+)
+def test_the_signed_group_is_decoded_only_in_the_describe_step(fakes, monkeypatch, node_options):
+    # The describe step computes the last valid round when it decodes the
+    # group; neither the success path nor building a SubmissionError decodes
+    # it again.
     txn = fake_signer.payment(41, 42)
-    signer, node, client = make(fakes, SendSigner([ordinary_key(txn)]))
+    signer, node, client = make(fakes, SendSigner([ordinary_key(txn)]), FakeNode(**node_options))
+    real_describe = signer_module._describe_signed_group
+    real_decode = signer_module._decode_executable_signed_group
+    described = []
 
-    def decode_again(signed_group):
-        raise AssertionError("the success path decoded the signed group again")
+    def describe(result):
+        raw = real_describe(result)
+        described.append(result._last_valid)
+        return raw
 
-    monkeypatch.setattr(signer_module, "_signed_group_last_valid", decode_again)
-    result = client.send_prepared(node.client, prepared_for(txn))
-    assert result.outcome == SEND_OUTCOME_CONFIRMED
+    def decode(signed_group):
+        assert not described, "the signed group was decoded again after the describe step"
+        return real_decode(signed_group)
+
+    monkeypatch.setattr(signer_module, "_describe_signed_group", describe)
+    monkeypatch.setattr(signer_module, "_decode_executable_signed_group", decode)
+    if not node_options:
+        assert client.send_prepared(node.client, prepared_for(txn)).outcome == (
+            SEND_OUTCOME_CONFIRMED
+        )
+    else:
+        with pytest.raises(SubmissionError) as excinfo:
+            client.send_prepared(node.client, prepared_for(txn))
+        assert excinfo.value.last_valid == txn.last_valid_round
+    assert described == [txn.last_valid_round]
 
 
 @pytest.mark.parametrize("call", ["send_prepared", "submit_signed_group"])
@@ -1954,3 +1976,93 @@ class TestLastValidInEveryFlow:
                 wait_rounds=1,
             )
         assert excinfo.value.submitted is submitted and excinfo.value.last_valid == 1400
+
+
+# -----------------------------------------------------------------------------
+# The last valid round is admitted before anything is asked to sign
+# -----------------------------------------------------------------------------
+
+APPROVAL_OR_PLAN_PATHS = ("/plan", "/sign", "/sign/component", "/sign/assemble")
+
+
+@pytest.mark.parametrize("bad", [1000.5, "1000", None, True, -1, 1 << 64])
+def test_a_last_valid_round_that_is_not_an_unsigned_integer_is_refused_before_signing(fakes, bad):
+    first = fake_signer.payment(41, 42)
+    second = _payment_valid_to(43, 44, bad)
+    signer, node, client = make(fakes, SendSigner([key(first.sender), key(second.sender)]))
+    group = PreparedGroup(
+        [
+            PreparedTransaction(transaction=first, auth_address=first.sender),
+            PreparedTransaction(transaction=second, auth_address=second.sender),
+        ]
+    )
+
+    with pytest.raises(ValueError, match=r"^prepared transaction 1: last_valid_round must "):
+        client.send_prepared(node.client, group)
+
+    # Only the key list was read; nothing was asked to sign or sent to the node.
+    assert not any(path in APPROVAL_OR_PLAN_PATHS for path in signer.paths)
+    assert node.submissions() == [] and node.lookups == 0
+
+
+def test_a_cosigned_send_refuses_a_bad_last_valid_round_before_the_plan(fakes):
+    fixture = CosignedFixture(fakes)
+    fixture.txn.last_valid_round = 100.0
+
+    with pytest.raises(ValueError, match=r"^prepared transaction 0: last_valid_round must "):
+        fixture.send(
+            cosigner_client=fixture.cosigner_client, cosigner_component_key="COSIGNER_COMPONENT"
+        )
+
+    assert not any(path in APPROVAL_OR_PLAN_PATHS for path in fixture.user.paths)
+    assert fixture.cosigner_calls == 0 and fixture.node.submissions() == []
+
+
+class TestTheAdmittedLastValidRound:
+    """Each unknown outcome of the ordinary and cosigned flows carries the
+    round computed before signing: a change to the caller's transaction
+    while the request is out does not reach the error."""
+
+    def test_an_ordinary_lost_answer(self, fakes):
+        txn = _payment_valid_to(41, 42, 1500)
+
+        def lose(_request):
+            txn.last_valid_round = None
+            return DROP
+
+        signer, node, client = make(fakes, SendSigner([key(txn.sender)], sign=lose))
+        with pytest.raises(SignOutcomeUnknownError) as excinfo:
+            client.send_prepared(
+                node.client, PreparedTransaction(transaction=txn, auth_address=txn.sender)
+            )
+        assert excinfo.value.last_valid == 1500
+
+    def test_a_fault_describing_the_signed_group(self, fakes, monkeypatch):
+        txn = _payment_valid_to(41, 42, 1600)
+        signer, node, client = make(fakes, SendSigner([key(txn.sender)]))
+
+        def fault(result):
+            txn.last_valid_round = None
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(signer_module, "_describe_signed_group", fault)
+        with pytest.raises(SignOutcomeUnknownError) as excinfo:
+            client.send_prepared(
+                node.client, PreparedTransaction(transaction=txn, auth_address=txn.sender)
+            )
+        assert excinfo.value.last_valid == 1600
+
+    def test_a_cosigned_lost_answer(self, fakes):
+        class Changing(CosignedFixture):
+            def user_app(self, method, path, body):
+                if path == "/sign/component":
+                    self.txn.last_valid_round = None
+                return super().user_app(method, path, body)
+
+        fixture = Changing(fakes, fault="/sign/component drop")
+        with pytest.raises(SignOutcomeUnknownError) as excinfo:
+            fixture.send(
+                cosigner_client=fixture.cosigner_client,
+                cosigner_component_key="COSIGNER_COMPONENT",
+            )
+        assert excinfo.value.last_valid == 100

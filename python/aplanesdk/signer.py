@@ -440,16 +440,22 @@ class SubmissionError(SignerError):
     ``submitted`` is True when algosdk's submit call returned success and
     the failure came later. Follow the group with algosdk's
     ``transaction.wait_for_confirmation`` on ``tx_ids[0]`` (a group confirms
-    as a whole) for ``last_valid`` minus the current round, at least 1
+    as a whole) for up to ``last_valid`` minus the current round, at least 1
     (algosdk reads 0 as 1000).
 
     ``submitted`` is False when the submit call did not return success, in
     one of two cases. When ``error`` is algod's own HTTP 400 (an
     ``algosdk.error.AlgodHTTPError`` whose ``code`` is 400), the node
-    answered and refused the group: read the reason, as in any algosdk
-    program; submitting the same bytes again gets the same answer. Anything
-    else (no answer, a lost connection, a 5xx, the call's time limit) leaves
-    it open whether the node has the group. First look ``tx_ids[0]`` up with
+    answered: read its reason, as in any algosdk program. The reason decides
+    what to do. If the node says the transaction is already in the ledger or
+    its pool, it has the group: follow ``tx_ids[0]``. Some refusals the same
+    bytes will always get, such as an overspend or a failed signature or
+    program; after ``last_valid``, "dead" is such an answer too and proves
+    nothing about whether the group confirmed earlier. Others depend on the
+    moment, such as a fee below what the pool currently asks or a node that
+    is behind: submitting the same group later may work. Anything else (no
+    answer, a lost connection, a 5xx, the call's time limit) leaves it open
+    whether the node has the group. First look ``tx_ids[0]`` up with
     algosdk's wait for a few rounds; if it does not confirm, submit the same
     ``signed_group`` again with submit_signed_group. If that comes back as a
     400 saying the transaction is already in the ledger, the node has it:
@@ -1890,6 +1896,9 @@ class SendResult:
     cosigned: Optional[CosignedSignResult] = None
     # The rotation a rotating account's send performed.
     rotating: Optional[RotatingSendDetails] = None
+    # The earliest last valid round of signed_group, set where the group is
+    # decoded and checked, for a SubmissionError.
+    _last_valid: int = field(default=0, init=False, repr=False, compare=False)
 
 
 @dataclass
@@ -1907,6 +1916,9 @@ class RotatingSignResult:
     txid: str
     group_id: str
     request_id: str = ""
+    # The earliest last valid round of the prepared group, from its check,
+    # for a SignOutcomeUnknownError after signing.
+    _last_valid: int = field(default=0, init=False, repr=False, compare=False)
 
 
 @dataclass
@@ -7493,6 +7505,18 @@ class SignerClient:
                 intent_built or options.refresh_validity,
             )
 
+        # An unknown outcome from here on names the group's last valid round.
+        # It is computed once, here, before anything is asked to sign, and a
+        # position whose round is not an unsigned integer is refused. The
+        # signer never changes a validity round (it may raise fees, append
+        # dummies on the first transaction's window, and set the group ID),
+        # so it is the signed group's round too.
+        last_valid = _earliest_last_valid(
+            [cast(transaction.Transaction, item.transaction) for item in group.transactions],
+            "prepared transaction",
+            start=0,
+            error=ValueError,
+        )
         result = SendResult(flow=flow, original_count=len(group.transactions))
         if flow == SIGNING_FLOW_COSIGNED1:
             try:
@@ -7514,7 +7538,7 @@ class SignerClient:
                     raise SignOutcomeUnknownError(
                         cause,
                         request_id=getattr(lost, "request_id", ""),
-                        last_valid=_group_last_valid(group),
+                        last_valid=last_valid,
                     ) from cause
                 raise
             result.signed_group = list(signed.signed_group)
@@ -7527,7 +7551,7 @@ class SignerClient:
             )
             sign_entries: Optional[List[Dict[str, Any]]] = None
         else:
-            response, released_by, sign_entries = self._sign_for_send(group)
+            response, released_by, sign_entries = self._sign_for_send(group, last_valid)
             result.signed_group = list(response.signed)
             result.mutations = copy.deepcopy(response.mutations)
 
@@ -7543,7 +7567,7 @@ class SignerClient:
                 _verification_error("verify signed group: ", e),
                 request_id=released_by,
                 requests=sign_entries,
-                last_valid=_group_last_valid(group),
+                last_valid=last_valid,
             ) from e
         _submit_and_track(algod_client, raw, result, options)
         return result
@@ -7630,12 +7654,13 @@ class SignerClient:
         return flow, left_rotation
 
     def _sign_for_send(
-        self, group: PreparedGroup
+        self, group: PreparedGroup, last_valid: int
     ) -> tuple[GroupSignResponse, str, List[Dict[str, Any]]]:
         """The ordinary /sign flow for a send: sign_requests, with an exchange
         that ended with no usable answer, or whose answer the checks faulted
         on, told apart from a refusal. Returns the response, the request ID
-        and the entries sent."""
+        and the entries sent. ``last_valid`` is the group's earliest last
+        valid round, computed before anything was asked to sign."""
         sign_entries = group.to_sign_requests()
         request_id = _new_sign_request_id()
         try:
@@ -7651,7 +7676,7 @@ class SignerClient:
                     cause,
                     request_id=request_id,
                     requests=sign_entries,
-                    last_valid=_group_last_valid(group),
+                    last_valid=last_valid,
                 ) from cause
             raise
 
@@ -7803,7 +7828,7 @@ class SignerClient:
             raise ValueError("prepared rotating group is required")
         # The binding is checked again at the signing boundary.
         try:
-            prepared._verify()
+            last_valid = prepared._verify()
         except SignerError as e:
             raise _verification_error("verify prepared rotating group: ", e) from e
         if not request_id:
@@ -7831,7 +7856,7 @@ class SignerClient:
                 cause,
                 request_id=request_id,
                 rotating=prepared,
-                last_valid=_prepared_last_valid(prepared),
+                last_valid=last_valid,
             ) from cause
         except BaseException as e:
             # An interrupt while approval was pending leaves the same unknown
@@ -7850,9 +7875,10 @@ class SignerClient:
                 _verification_error("verify signer response: ", e),
                 request_id=request_id,
                 rotating=prepared,
-                last_valid=_prepared_last_valid(prepared),
+                last_valid=last_valid,
             ) from e
         result.request_id = request_id
+        result._last_valid = last_valid
         return result
 
     def _send_rotating(
@@ -8008,7 +8034,7 @@ class SignerClient:
                 _verification_error("verify signed group: ", e),
                 request_id=signed.request_id,
                 rotating=prepared,
-                last_valid=_prepared_last_valid(prepared),
+                last_valid=signed._last_valid,
             ) from e
         _submit_and_track(algod_client, raw, result, options)
         return result
@@ -9331,8 +9357,9 @@ class PreparedRotating:
                 raise SignerError(f"prepared transaction {index}: {e}") from e
         return txns
 
-    def _verify(self) -> None:
-        """Check the prepared group against the transaction the caller sent.
+    def _verify(self) -> int:
+        """Check the prepared group against the transaction the caller sent,
+        and return the group's earliest last valid round.
 
         It is the client's authority boundary for a rotating spend: the signer
         may set rekey_to to the address it reports, raise the spend's fee,
@@ -9379,6 +9406,7 @@ class PreparedRotating:
             raise SignerError(str(e)) from e
         returned: List[Optional[transaction.Transaction]] = list(txns)
         _validate_group_mutations([slot], returned, self._mutations, self._max_fee_increase)
+        return _earliest_last_valid(txns, "prepared transaction")
 
     def _verify_signed(self, response: Any) -> RotatingSignResult:
         """Check that the signer signed exactly the prepared bytes: one
@@ -9621,8 +9649,8 @@ def _last_round(status: Any) -> int:
 
 
 def _describe_signed_group(result: SendResult) -> List[bytes]:
-    """Fill the result's IDs, fees and group ID from its signed bytes, and
-    return those bytes decoded. Each entry must be one canonically encoded
+    """Fill the result's IDs, fees, group ID and last valid round from its
+    signed bytes, and return those bytes decoded. Each entry must be one canonically encoded
     signed transaction, and a group of several must carry the group ID
     computed over itself."""
     try:
@@ -9636,44 +9664,27 @@ def _describe_signed_group(result: SendResult) -> List[bytes]:
         group_id = _validate_canonical_group_id(txns)
         if len(txns) == 1:
             group_id = _group_id_bytes(txns[0])
+        last_valid = _earliest_last_valid(txns, "signed group position")
     except SignerError as e:
         raise _verification_error("verify signed group: ", e) from e
+    result._last_valid = last_valid
     result.fees = [int(txn.fee) for txn in txns]
     result.group_id = base64.b64encode(group_id).decode() if group_id else ""
     result.tx_ids = [signed.get_txid() for signed in decoded]
     return [bytes.fromhex(entry) for entry in result.signed_group]
 
 
-def _earliest_last_valid(txns: List[Any]) -> int:
-    """The earliest last valid round of the transactions, 0 for none."""
-    rounds = [txn.last_valid_round for txn in txns if txn is not None]
-    rounds = [value for value in rounds if isinstance(value, int) and not isinstance(value, bool)]
-    return min(rounds) if rounds else 0
-
-
-def _group_last_valid(group: PreparedGroup) -> int:
-    """The earliest last valid round of a prepared group's transactions: what
-    was sent to be signed. The signer never changes a validity round (it may
-    raise fees, append dummies on the first transaction's window, and set the
-    group ID), so it is the signed group's too."""
-    return _earliest_last_valid([item.transaction for item in group.transactions])
-
-
-def _prepared_last_valid(prepared: "PreparedRotating") -> int:
-    """The earliest last valid round of a prepared rotating group."""
-    try:
-        return _earliest_last_valid(prepared._decoded())
-    except Exception:
-        return 0
-
-
-def _signed_group_last_valid(signed_group: List[str]) -> int:
-    """The earliest last valid round of a signed group, hex msgpack."""
-    try:
-        decoded = _decode_executable_signed_group(signed_group)
-    except Exception:
-        return 0
-    return _earliest_last_valid([signed.transaction for signed in decoded])
+def _earliest_last_valid(
+    txns: List[transaction.Transaction], what: str, *, start: int = 1, error: type = SignerError
+) -> int:
+    """The earliest last valid round of a non-empty group. Every position's
+    round must be an unsigned integer; one that is not is refused with
+    ``error``, naming the position ``what`` and its number (counted from
+    ``start``)."""
+    return min(
+        _require_uint(txn.last_valid_round, f"{what} {index}: last_valid_round", error=error)
+        for index, txn in enumerate(txns, start=start)
+    )
 
 
 def _submit_and_track(
@@ -9710,10 +9721,11 @@ def _submit_and_wait(
     algod_client: Any, raw: List[bytes], result: SendResult, options: _SendOptions
 ) -> None:
     def failure(submitted: bool, error: BaseException) -> SubmissionError:
-        # The last valid round is read from the signed group only when it is
-        # needed: the success path does not decode the group again.
-        last_valid = _signed_group_last_valid(result.signed_group)
-        return SubmissionError(result.signed_group, result.tx_ids, last_valid, submitted, error)
+        # The describe step computed the last valid round when it decoded the
+        # group, so building the error decodes nothing.
+        return SubmissionError(
+            result.signed_group, result.tx_ids, result._last_valid, submitted, error
+        )
 
     # The group is signed. A time limit that passed before the submission
     # leaves it with the caller, and nothing is posted.

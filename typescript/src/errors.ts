@@ -207,7 +207,7 @@ export class SignOutcomeUnknownError extends SignerError {
     requestId?: string;
     requests?: SignRequest[];
     rotating?: PreparedRotating;
-    lastValid?: bigint;
+    lastValid: bigint;
     cause: unknown;
   }) {
     const requestId = options.requestId ?? "";
@@ -220,7 +220,7 @@ export class SignOutcomeUnknownError extends SignerError {
     this.requestId = requestId;
     this.requests = options.requests;
     this.rotating = options.rotating;
-    this.lastValid = options.lastValid ?? 0n;
+    this.lastValid = options.lastValid;
     this.cause = options.cause;
   }
 }
@@ -247,16 +247,21 @@ function firstOrEmpty(values: string[]): string {
  *
  * When it is false, there are two cases. If `cause` is algod's own HTTP 400
  * (algosdk's error then carries the answer, and `cause.response.status` is
- * 400), the node answered and refused: read the reason; the same bytes
- * submitted again get the same answer. Anything else (no answer, a lost
- * connection, a 5xx, the signal) leaves open whether the node has the group:
- * follow the first of `txIds` with algosdk's wait for a few rounds, and if it
- * does not confirm, submit the same `signedGroup` again with
- * SignerClient.submitSignedGroup. A 400 to that resubmit saying the
- * transaction is already in the ledger means the node has it: follow the ID.
- * The same signed group cannot pay twice. After `lastValid` a refusal proves
- * nothing; check an indexer. The SDK itself reads neither the status nor the
- * text.
+ * 400), the node answered: read its reason, as in any algosdk program. The
+ * reason decides what to do. A node that says the transaction is already in
+ * the ledger or the pool has the group: follow the first of `txIds`. A
+ * refusal the same bytes always get, such as an overspend or a failed
+ * signature or program, stands; after `lastValid`, "dead" is such an answer
+ * and proves nothing about whether the group confirmed earlier. A refusal
+ * that depends on the moment, such as a fee below what the pool asks now or
+ * a node that is behind, may not recur: submitting the same group later may
+ * work. Anything else (no answer, a lost connection, a 5xx, the signal)
+ * leaves open whether the node has the group: follow the first of `txIds`
+ * with algosdk's wait for a few rounds, and if it does not confirm, submit
+ * the same `signedGroup` again with SignerClient.submitSignedGroup. The same
+ * signed group cannot pay twice. After `lastValid` neither a refusal nor a
+ * node's "not found" proves anything; check an indexer. The SDK itself reads
+ * neither the status nor the text.
  */
 export class SubmissionError extends SignerError {
   readonly signedGroup: string[];

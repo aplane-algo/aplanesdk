@@ -27,7 +27,13 @@ import {
   type ComponentRequest,
   type PreparedGroup,
 } from "../src/types.js";
-import { describeSignedGroup, submitAndTrack, type SendResult } from "../src/send.js";
+import {
+  describeSignedGroup,
+  earliestLastValid,
+  submitAndTrack,
+  type DescribedGroup,
+  type SendResult,
+} from "../src/send.js";
 import { SignerError, isLostAnswer, lostAnswerRequestId, markLostAnswer } from "../src/errors.js";
 import { bytesToBase64, encodeTransaction, hexToBytes } from "../src/encoding.js";
 import { readAnswer, type AnswerShape } from "../src/answers.js";
@@ -743,7 +749,7 @@ describe("sendPrepared", () => {
   describe("the signal", () => {
     const txn = fakePayment(41, 42, 1);
 
-    function signedResult(): { result: SendResult; raw: Uint8Array[] } {
+    function signedResult(): { result: SendResult; described: DescribedGroup } {
       const result: SendResult = {
         flow: "",
         signedGroup: [signedHex(txn)],
@@ -754,16 +760,16 @@ describe("sendPrepared", () => {
         outcome: "submitted",
         confirmedRound: 0n,
       };
-      return { result, raw: describeSignedGroup(result) };
+      return { result, described: describeSignedGroup(result) };
     }
 
     it("aborted before submission posts nothing", async () => {
       const node = new FakeAlgod();
-      const { result, raw } = signedResult();
+      const { result, described } = signedResult();
       const controller = new AbortController();
       controller.abort();
       await assert.rejects(
-        submitAndTrack(node, raw, result, { noWait: false, waitRounds: 10n, signal: controller.signal }),
+        submitAndTrack(node, described, result, { noWait: false, waitRounds: 10n, signal: controller.signal }),
         (error: unknown) => {
           assert.ok(error instanceof SubmissionError, String(error));
           assert.equal(error.submitted, false);
@@ -860,6 +866,57 @@ describe("sendPrepared", () => {
       confirmedRound: 0n,
     };
     assert.throws(() => describeSignedGroup(result), /signed group has 1 transaction\(s\), fewer than the 2 prepared/);
+  });
+
+  describe("the last valid round", () => {
+    function resultFor(signedGroup: string[]): SendResult {
+      return {
+        flow: "",
+        signedGroup,
+        originalCount: signedGroup.length,
+        txIds: [],
+        groupId: "",
+        fees: [],
+        outcome: "submitted",
+        confirmedRound: 0n,
+      };
+    }
+
+    it("is computed once, when the signed group is described, as the group's earliest", () => {
+      const first = fakePayment(41, 42, 1);
+      const second = fakePayment(43, 44, 2);
+      second.lastValid = 700n;
+      const group = regroup([first, second]);
+      const described = describeSignedGroup(resultFor(group.map((txn) => signedHex(txn))));
+      assert.equal(described.lastValid, 700n);
+      assert.equal(described.raw.length, 2);
+    });
+
+    it("is the SubmissionError's, with nothing decoded when the error is built", async () => {
+      const txn = fakePayment(41, 42, 1);
+      const result = resultFor([signedHex(txn)]);
+      describeSignedGroup(result);
+      const node = new FakeAlgod();
+      const thrown = new TypeError("fetch failed");
+      node.submit = () => {
+        throw thrown;
+      };
+      // Bytes that do not decode: building the error must not read them.
+      const described: DescribedGroup = { raw: [new Uint8Array([0xff])], lastValid: 77n };
+      await assert.rejects(
+        submitAndTrack(node, described, result, { noWait: false, waitRounds: 10n }),
+        (error: unknown) => {
+          assert.ok(error instanceof SubmissionError, String(error));
+          assert.equal(error.cause, thrown);
+          assert.equal(error.lastValid, 77n);
+          return true;
+        },
+      );
+    });
+
+    it("of no transactions is a fault, never 0", () => {
+      assert.throws(() => earliestLastValid([]), TypeError);
+    });
   });
 
   it("submitSignedGroup submits a signed group as given", async () => {
