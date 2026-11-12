@@ -15,6 +15,7 @@
     "rotating_signing_required",
     "rotating_stage_unproven",
     "rotating_stage_changed",
-    "rotating_window_not_current"
+    "rotating_window_not_current",
+    "rekey_target_not_valid"
   ]
 }

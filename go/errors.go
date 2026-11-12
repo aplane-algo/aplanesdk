@@ -86,6 +86,10 @@ const (
 	// round is too far ahead, or too few rounds remain. This attempt released
 	// no signature; rebuild the validity rounds and prepare again.
 	ErrCodeRotatingWindowNotCurrent = "rotating_window_not_current"
+	// ErrCodeRekeyTargetNotValid (403): a transaction rekeys an account, its
+	// own address included, to an aplane key this signer holds that is not a
+	// valid rekey target (KeyInfo.ValidRekeyTarget false). Nothing was signed.
+	ErrCodeRekeyTargetNotValid = "rekey_target_not_valid"
 )
 
 // APIError preserves the HTTP status, stable wire error code, and message of

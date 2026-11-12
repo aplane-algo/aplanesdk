@@ -729,9 +729,9 @@ for (const key of keys) {
 - `signingArgs`
 - `templateProvenanceStatus`
 - `templateProvenanceNote`
-- `validRekeyTarget`: whether an account of another key type may be rekeyed to
-  an account of this type; the signer refuses a rekey to a held aplane key
-  whose type is not one.
+- `validRekeyTarget`: whether an aplane key of this type may be the signing
+  authority an account is rekeyed to, its own account included. On a key
+  record it is the value the key recorded when it was created.
 
 `logicSigResources` publishes independent program-byte, argument-byte, and
 maximum-opcode-cost demand by authorization path. Non-bounded LogicSig keys
@@ -781,9 +781,9 @@ This is the easiest way to discover:
 - per-key types through `perKeyContract`, and whether one takes a boundary file
   through `boundarySchema`: `aplane.boundary.v1` on the general bounded type,
   absent on a plain host, whose parameters are given directly
-- through `validRekeyTarget`, whether an account of another key type may be
-  rekeyed to an account of this type; the signer refuses a rekey to a held
-  aplane key whose type is not one
+- through `validRekeyTarget`, whether an aplane key of this type may be the
+  signing authority an account is rekeyed to, its own account included; on a
+  key type it is the type's declaration
 
 ### Generate And Delete A Key
 
@@ -1377,6 +1377,10 @@ Main SDK error classes:
   `endpoints.yaml`
 - `SignOutcomeUnknownError`, `SubmissionError` and `RotatingPreflightError`:
   see [Send Failures](#send-failures)
+
+`ErrorCodes.RekeyTargetNotValid` (`rekey_target_not_valid`, HTTP 403, a plain
+`SignerError`) means the rekey target is an aplane key this signer holds that
+is not a valid rekey target.
 
 Example:
 

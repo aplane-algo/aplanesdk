@@ -2661,6 +2661,24 @@ class TestSigningErrors:
         assert type(exc_info.value) is SignerError
         assert exc_info.value.code == ""
 
+    def test_rekey_target_not_valid_is_a_coded_generic_error(self):
+        # Like every 403 code but locked and forbidden, it is a plain
+        # SignerError that keeps the code; it is not an operator rejection.
+        message = (
+            "transaction 0: rekey_target_not_valid: cannot rekey to ADDR: this signer "
+            "holds its aplane key (aplane.htlc.v1), which is not a valid rekey target "
+            "(valid_rekey_target: false)"
+        )
+        assert aplanesdk.ERR_CODE_REKEY_TARGET_NOT_VALID == "rekey_target_not_valid"
+        client = make_client()
+        resp = mock_response(403, {"error": message, "code": aplanesdk.ERR_CODE_REKEY_TARGET_NOT_VALID})
+        with patch.object(client.session, "post", return_value=resp):
+            with pytest.raises(SignerError) as exc_info:
+                client.sign_transaction(self._make_mock_txn())
+        assert type(exc_info.value) is SignerError
+        assert exc_info.value.code == aplanesdk.ERR_CODE_REKEY_TARGET_NOT_VALID
+        assert str(exc_info.value) == message
+
     def test_signer_unavailable(self):
         client = make_client()
         resp = mock_response(503, {"error": "Signer locked"})

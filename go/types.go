@@ -692,9 +692,9 @@ type KeyTypeInfo struct {
 	// a plain host.
 	BoundarySchema       string                    `json:"boundary_schema,omitempty"`
 	BoundedAuthorization *BoundedAuthorizationInfo `json:"bounded_authorization,omitempty"`
-	// ValidRekeyTarget says whether an account of another key type may be
-	// rekeyed to an account of this type. The signer refuses a rekey to a held
-	// aplane key whose type is not one. False when the signer does not report it.
+	// ValidRekeyTarget is the type's declaration of whether an aplane key of
+	// this type may be the signing authority an account is rekeyed to, its own
+	// account included. False when the signer does not report it.
 	ValidRekeyTarget bool            `json:"valid_rekey_target"`
 	CreationParams   []CreationParam `json:"creation_params"`
 	RuntimeArgs      []RuntimeArg    `json:"runtime_args"`
@@ -797,9 +797,10 @@ type KeyInfo struct {
 	Parameters               map[string]string         `json:"parameters,omitempty"`
 	TemplateProvenanceStatus string                    `json:"template_provenance_status,omitempty"`
 	TemplateProvenanceNote   string                    `json:"template_provenance_note,omitempty"`
-	// ValidRekeyTarget is the key's key type's ValidRekeyTarget: whether an
-	// account of another key type may be rekeyed to this account. False when
-	// the signer does not report it.
+	// ValidRekeyTarget is the value this aplane key recorded when it was
+	// created: whether it may be the signing authority an account is rekeyed
+	// to, its own account included. A rekey to it when it is false is refused
+	// with ErrCodeRekeyTargetNotValid. False when the signer does not report it.
 	ValidRekeyTarget bool `json:"valid_rekey_target"`
 }
 

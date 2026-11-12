@@ -672,9 +672,9 @@ for _, key := range keys {
 - `SigningArgs`
 - `TemplateProvenanceStatus`
 - `TemplateProvenanceNote`
-- `ValidRekeyTarget`: whether an account of another key type may be rekeyed to
-  an account of this type; the signer refuses a rekey to a held aplane key
-  whose type is not one.
+- `ValidRekeyTarget`: whether an aplane key of this type may be the signing
+  authority an account is rekeyed to, its own account included. On a key
+  record it is the value the key recorded when it was created.
 
 `LogicSigResources` publishes independent program-byte, argument-byte, and
 maximum-opcode-cost demand by authorization path. Non-bounded LogicSig keys
@@ -735,9 +735,9 @@ This is the easiest way to discover:
 - per-key types through `PerKeyContract`, and whether one takes a boundary file
   through `BoundarySchema`: `aplane.boundary.v1` on the general bounded type,
   empty on a plain host, whose parameters are given directly
-- through `ValidRekeyTarget`, whether an account of another key type may be
-  rekeyed to an account of this type; the signer refuses a rekey to a held
-  aplane key whose type is not one
+- through `ValidRekeyTarget`, whether an aplane key of this type may be the
+  signing authority an account is rekeyed to, its own account included; on a
+  key type it is the type's declaration
 
 ### Generate And Delete A Key
 
@@ -1361,6 +1361,10 @@ Typed errors, matched with `errors.As`:
 - `*aplane.APIError`: any other signer refusal, with its HTTP `StatusCode`,
   its stable `Code` (such as `aplane.ErrCodeRotatingStageChanged`) and its
   `Message`
+
+`aplane.ErrCodeRekeyTargetNotValid` (`rekey_target_not_valid`, HTTP 403, an
+`*aplane.APIError`) means the rekey target is an aplane key this signer holds
+that is not a valid rekey target.
 
 Example:
 

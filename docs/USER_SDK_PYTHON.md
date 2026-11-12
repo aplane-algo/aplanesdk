@@ -734,9 +734,9 @@ Useful `KeyInfo` fields include:
 - `signing_args`
 - `template_provenance_status`
 - `template_provenance_note`
-- `valid_rekey_target`: whether an account of another key type may be rekeyed
-  to an account of this type; the signer refuses a rekey to a held aplane key
-  whose type is not one.
+- `valid_rekey_target`: whether an aplane key of this type may be the signing
+  authority an account is rekeyed to, its own account included. On a key
+  record it is the value the key recorded when it was created.
 
 `logic_sig_resources` publishes independent program-byte, argument-byte, and
 maximum-opcode-cost demand by authorization path. Non-bounded LogicSig keys
@@ -791,9 +791,9 @@ Creation and runtime metadata are surfaced through `creation_params` and
 type whose accounts each select their contract at generation, and
 `boundary_schema` says whether its requests take a boundary file:
 `aplane.boundary.v1` on the general bounded type, empty on a plain host, whose
-parameters are given directly. `valid_rekey_target` says whether an account of
-another key type may be rekeyed to an account of this type; the signer refuses
-a rekey to a held aplane key whose type is not one.
+parameters are given directly. `valid_rekey_target` says whether an aplane key
+of this type may be the signing authority an account is rekeyed to, its own
+account included; on a key type it is the type's declaration.
 
 ### Generate A Key
 
@@ -1420,6 +1420,10 @@ The SDK raises typed exceptions for the common signer-side failure cases:
 - `SendTimeoutError`: a call's `timeout` passed
 - `SignOutcomeUnknownError`, `SubmissionError` and `RotatingPreflightError`:
   see [Send Failures](#send-failures)
+
+`ERR_CODE_REKEY_TARGET_NOT_VALID` (`rekey_target_not_valid`, HTTP 403, a plain
+`SignerError`) means the rekey target is an aplane key this signer holds that
+is not a valid rekey target.
 
 A submission you make yourself with algosdk raises algosdk's own errors.
 

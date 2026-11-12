@@ -13,6 +13,7 @@ import {
 } from "../src/client.js";
 import { DUMMY_OPCODE_COST, DUMMY_PROGRAM } from "../src/verify.js";
 import {
+  ErrorCodes,
   KEY_TYPE_WITNESS_FALCON1024,
   SIGNING_FLOW_COSIGNED1,
   type BoundedAuthorizationInfo,
@@ -3493,6 +3494,29 @@ describe("SignerClient", () => {
       const mockTxn = createMockTxn() as Parameters<typeof client.signTransaction>[0];
 
       await assert.rejects(client.signTransaction(mockTxn), SigningRejectedError);
+    });
+
+    it("keeps rekey_target_not_valid on a plain SignerError, not a rejection", async () => {
+      const message = "transaction 0: rekey_target_not_valid: cannot rekey to ADDR: this signer holds its aplane key (aplane.htlc.v1), which is not a valid rekey target (valid_rekey_target: false)";
+      queueStatusResponse();
+      mockFetch.mockResolvedValueOnce({
+        status: 403,
+        ok: false,
+        json: async () => ({ error: message, code: ErrorCodes.RekeyTargetNotValid }),
+      });
+
+      const client = new SignerClient("http://localhost:11270");
+      const mockTxn = createMockTxn() as Parameters<typeof client.signTransaction>[0];
+
+      assert.equal(ErrorCodes.RekeyTargetNotValid, "rekey_target_not_valid");
+      await assert.rejects(client.signTransaction(mockTxn), (error: unknown) => {
+        assert.ok(error instanceof SignerError);
+        assert.ok(!(error instanceof SigningRejectedError));
+        assert.ok(!(error instanceof SignerUnavailableError));
+        assert.equal(error.code, ErrorCodes.RekeyTargetNotValid);
+        assert.equal(error.message, message);
+        return true;
+      });
     });
 
     it("throws SignerUnavailableError on 503", async () => {

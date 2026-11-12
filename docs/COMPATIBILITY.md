@@ -89,11 +89,17 @@ signer does not report it.
 
 Each key record in `/keys` and each key type in `/keytypes` carries
 `valid_rekey_target` (`ValidRekeyTarget` in Go, `validRekeyTarget` in
-TypeScript, `valid_rekey_target` in Python): whether an account of another key
-type may be rekeyed to an account of this type; the signer refuses a rekey to a
-held aplane key whose type is not one. Reading it needs a signer with the
-aplane change that adds `valid_rekey_target`. An older signer does not report
-it, and the SDKs then read it as false. No SDK behaviour depends on it.
+TypeScript, `valid_rekey_target` in Python): whether an aplane key of this type
+may be the signing authority an account is rekeyed to, its own account
+included. On a key record it is the value the key recorded when it was
+created, and on a key type it is the type's declaration. The same change adds
+the error code `rekey_target_not_valid` (HTTP 403; `ErrCodeRekeyTargetNotValid`,
+`ErrorCodes.RekeyTargetNotValid`, `ERR_CODE_REKEY_TARGET_NOT_VALID`): the
+rekey target is an aplane key this signer holds that is not a valid rekey
+target. It surfaces as the generic signer API error with that code, not as a
+signing rejection. Both need a signer with the aplane change that adds
+`valid_rekey_target`. An older signer does not report the field, and the SDKs
+then read it as false. No SDK behaviour depends on either.
 
 Runtime floors follow the upstream Algorand SDKs, as of November 2026:
 
