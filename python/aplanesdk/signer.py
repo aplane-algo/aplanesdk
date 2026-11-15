@@ -9471,6 +9471,34 @@ def simulate_prepared_cosigned_group(
 # -----------------------------------------------------------------------------
 
 
+# Every stage program of every rotating key type opens with the same prefix,
+# which names its stage (aplane's internal/rotatingstage):
+#
+#   #pragma version 13      0d
+#   pushbytes 0x<stage>     80 08 <stage, 8 bytes big-endian>
+#   pop                     48
+_ROTATING_STAGE_OFFSET = 3
+_ROTATING_STAGE_SIZE = 8
+_ROTATING_STAGE_PREFIX_SIZE = _ROTATING_STAGE_OFFSET + _ROTATING_STAGE_SIZE + 1
+
+
+def _rotating_program_stage(program: bytes) -> Optional[int]:
+    """The stage number a stage program's prefix holds, or None when the
+    program does not open with the prefix. It reads the prefix only: the
+    client cannot derive stage programs, so whether the program holds the
+    account's keys for that stage is the ledger's to check."""
+    if (
+        len(program) < _ROTATING_STAGE_PREFIX_SIZE
+        or program[0] != 0x0D
+        or program[1] != 0x80
+        or program[2] != _ROTATING_STAGE_SIZE
+        or program[_ROTATING_STAGE_PREFIX_SIZE - 1] != 0x48
+    ):
+        return None
+    end = _ROTATING_STAGE_OFFSET + _ROTATING_STAGE_SIZE
+    return int.from_bytes(program[_ROTATING_STAGE_OFFSET:end], "big")
+
+
 class PreparedRotating:
     """A rotating account's spend as the signer prepared it: the exact
     unsigned group it will sign, checked against the transaction the caller
@@ -9643,7 +9671,8 @@ class PreparedRotating:
         """Check that the signer signed exactly the prepared bytes: one
         canonically encoded signed transaction per prepared transaction, in
         order, the spend authorized by a stage program consistent with the
-        reported stage, and every dummy by the dummy program."""
+        reported stage that names the prepared stage in its prefix, and every
+        dummy by the dummy program."""
         txns = self._decoded()
         if not isinstance(response, dict):
             raise SignerError("signer returned a malformed sign response")
@@ -9701,6 +9730,17 @@ class PreparedRotating:
                 )
             if stage_address == spend.rekey_to:
                 raise SignerError("spend is authorized by the next stage's program")
+            # The program names its stage, which must be the stage that signs.
+            embedded = _rotating_program_stage(bytes(stxn.lsig.logic))
+            if embedded is None:
+                raise SignerError(
+                    "spend's program carries no stage number, so it is not a stage program"
+                )
+            if embedded != self._stage:
+                raise SignerError(
+                    f"spend's stage program is stage {embedded}'s, not the prepared stage "
+                    f"{self._stage}"
+                )
 
         txid = spend.get_txid()
         if response.get("txid") != txid:

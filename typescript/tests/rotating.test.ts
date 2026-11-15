@@ -34,6 +34,7 @@ import {
   ROTATING_MAX_VALIDITY_WINDOW,
   ROTATING_MIN_REMAINING,
   checkRotatingWindow,
+  rotatingProgramStage,
   rotatingTiming,
   rotatingWindowCurrent,
 } from "../src/rotating.js";
@@ -62,8 +63,15 @@ afterEach(() => {
   restore = undefined;
 });
 
-// A stage program for tests. Its address stands for a stage's.
-const rotatingTestProgram = new Uint8Array([0x0a, 0x81, 0x01]);
+/**
+ * A stage program for tests: the stage prefix naming stage, then pushint 1.
+ * Its address stands for that stage's.
+ */
+function rotatingTestProgram(stage: number): Uint8Array {
+  const program = new Uint8Array([0x0d, 0x80, 0x08, 0, 0, 0, 0, 0, 0, 0, 0, 0x48, 0x81, 0x01]);
+  new DataView(program.buffer).setBigUint64(3, BigInt(stage));
+  return program;
+}
 // A program other than the stage that signs.
 const rotatingNextProgram = new Uint8Array([0x0a, 0x81, 0x02]);
 // An address no fixture uses.
@@ -265,7 +273,7 @@ function rotatingFixture(options: { account?: string; stage?: number; dummies?: 
   const signer = new RotatingSigner({
     account: options.account ?? fakeAccount(41),
     stage: options.stage ?? 3,
-    program: rotatingTestProgram,
+    program: rotatingTestProgram(options.stage ?? 3),
     dummies: options.dummies ?? 1,
     charge: options.charge ?? 1000n,
   });
@@ -344,7 +352,7 @@ describe("sendPrepared with a rotating account", () => {
     const spend = algosdk.decodeSignedTransaction(result.signedGroup[0]);
     assert.equal(spend.txn.rekeyTo?.toString(), signer.nextTarget().toString());
     assert.equal(spend.txn.fee, 2000n);
-    assert.equal(spend.sgnr?.toString(), stageAddress(rotatingTestProgram).toString());
+    assert.equal(spend.sgnr?.toString(), stageAddress(signer.program).toString());
     // The ID is the signed spend's, not the draft's.
     assert.equal(result.txIds[0], spend.txn.txID());
     assert.notEqual(result.txIds[0], txn.txID());
@@ -360,7 +368,7 @@ describe("sendPrepared with a rotating account", () => {
   });
 
   it("sends a stage 0 spend with no dummies", async () => {
-    const account = stageAddress(rotatingTestProgram).toString();
+    const account = stageAddress(rotatingTestProgram(0)).toString();
     const { node, algod, client } = rotatingFixture({ account, stage: 0, dummies: 0, charge: 0n });
     const result = await client.sendPrepared(algod, rotatingGroup(rotatingPayment(account, 10, 110)));
     const spend = algosdk.decodeSignedTransaction(node.submitted[0]);
@@ -439,7 +447,7 @@ describe("sendPrepared with a rotating account", () => {
     const { signer, node, algod, client, txn } = rotatingFixture();
     // After rotations the chain names the live stage's address, which the
     // signer does not list.
-    node.authAddrs[signer.account] = stageAddress(rotatingTestProgram).toString();
+    node.authAddrs[signer.account] = stageAddress(signer.program).toString();
     const before = bytesToHex(txn.toByte());
     const result = await client.sendTransactions(algod, [txn]);
     // The object passed in encodes as it did before the send.
@@ -570,6 +578,22 @@ describe("prepareRotating holds the fee ceiling", () => {
   });
 });
 
+/** program, a copy, with its stage prefix naming stage. */
+function withStage(program: Uint8Array, stage: bigint): Uint8Array {
+  const copy = new Uint8Array(program);
+  new DataView(copy.buffer).setBigUint64(3, stage);
+  return copy;
+}
+
+/** signed with its LogicSig program replaced, naming the program's address as its signer. */
+function signedByProgram(signed: algosdk.SignedTransaction, program: Uint8Array): algosdk.SignedTransaction {
+  return new algosdk.SignedTransaction({
+    txn: signed.txn,
+    lsig: new algosdk.LogicSig(program, signed.lsig!.args),
+    sgnr: stageAddress(program),
+  });
+}
+
 /** encodeMsgpack refuses a signed transaction with two authorizations, so build one by hand. */
 function withSecondAuthorization(signed: algosdk.SignedTransaction): string {
   const object = algosdk.decodeObj(algosdk.encodeMsgpack(signed)) as Record<string, unknown>;
@@ -649,6 +673,29 @@ const signTampers: Array<{ name: string; alter: (response: any, signed: algosdk.
     },
     text: "not the requested auth address",
   },
+  // The next two change the spend's program, and so its address, and name
+  // that address as the signer. After stage 0 only the stage number the
+  // program carries tells them apart; at stage 0 the program no longer fits
+  // the account, which is refused first.
+  {
+    name: "spend signed by another stage's program, named as its signer",
+    alter: (r, s) => {
+      s[0] = signedByProgram(s[0], withStage(s[0].lsig!.logic, BigInt(r.stage + 1)));
+      setSigned(r, s);
+    },
+    text: "spend's stage program is stage 4's, not the prepared stage 3",
+  },
+  {
+    name: "spend signed by a program without the stage prefix, named as its signer",
+    alter: (r, s) => {
+      // The same program without its stage: the version byte, then what
+      // follows the prefix.
+      const logic = s[0].lsig!.logic;
+      s[0] = signedByProgram(s[0], new Uint8Array([logic[0], ...logic.slice(12)]));
+      setSigned(r, s);
+    },
+    text: "spend's program carries no stage number, so it is not a stage program",
+  },
   {
     name: "dummy not signed",
     alter: (r, s) => { s[1] = new algosdk.SignedTransaction({ txn: s[1].txn }); setSigned(r, s); },
@@ -681,6 +728,60 @@ describe("signPreparedRotating refuses an altered response", () => {
   }
 });
 
+describe("rotatingProgramStage", () => {
+  const stage3 = rotatingTestProgram(3);
+  const withByte = (index: number, value: number) => {
+    const program = new Uint8Array(stage3);
+    program[index] = value;
+    return program;
+  };
+  const cases: Array<[string, Uint8Array, bigint | undefined]> = [
+    ["stage 3", stage3, 3n],
+    ["stage 0", rotatingTestProgram(0), 0n],
+    ["the largest stage", withStage(stage3, (1n << 64n) - 1n), 18446744073709551615n],
+    ["a stage beyond Number.MAX_SAFE_INTEGER", withStage(stage3, 9007199254740993n), 9007199254740993n],
+    ["big-endian", new Uint8Array([0x0d, 0x80, 0x08, 0, 0, 0, 0, 0, 0, 0x01, 0x02, 0x48]), 0x0102n],
+    ["the prefix alone", stage3.slice(0, 12), 3n],
+    ["one byte short of the prefix", stage3.slice(0, 11), undefined],
+    ["empty", new Uint8Array(), undefined],
+    ["another version", withByte(0, 0x0c), undefined],
+    ["not pushbytes", withByte(1, 0x81), undefined],
+    ["pushbytes of another width", withByte(2, 0x07), undefined],
+    ["no pop after the stage", withByte(11, 0x49), undefined],
+    ["a program from before stage numbers", new Uint8Array([0x0d, 0x81, 0x01]), undefined],
+  ];
+  for (const [name, program, want] of cases) {
+    it(name, () => {
+      assert.equal(rotatingProgramStage(program), want);
+    });
+  }
+
+  it("reads a program that is a view into a larger buffer", () => {
+    const backing = new Uint8Array(20);
+    backing.set(stage3, 5);
+    assert.equal(rotatingProgramStage(backing.subarray(5, 5 + stage3.length)), 3n);
+  });
+
+  it("refuses a spend whose program names a stage beyond Number.MAX_SAFE_INTEGER, with its exact number", async () => {
+    // Read as a number, 2^53 + 1 would round to 2^53; it is compared and
+    // reported exactly.
+    const { signer, node, algod, client, txn } = rotatingFixture();
+    signer.alterSign = (r, s) => {
+      s[0] = signedByProgram(s[0], withStage(s[0].lsig!.logic, 9007199254740993n));
+      setSigned(r, s);
+    };
+    await assert.rejects(
+      client.sendPrepared(algod, rotatingGroup(txn)),
+      (error: unknown) => {
+        assert.ok(error instanceof SignerError && !(error instanceof SignOutcomeUnknownError), String(error));
+        assert.match(errorText(error), /spend's stage program is stage 9007199254740993's, not the prepared stage 3$/);
+        return true;
+      },
+    );
+    assert.equal(node.submitted.length, 0);
+  });
+});
+
 describe("the stage program must fit the stage", () => {
   it("stage 0 signs as the account itself", async () => {
     // The signer claims stage 0, but the program is not the account's.
@@ -690,7 +791,7 @@ describe("the stage program must fit the stage", () => {
   });
 
   it("a later stage does not sign as the account", async () => {
-    const account = stageAddress(rotatingTestProgram).toString();
+    const account = stageAddress(rotatingTestProgram(2)).toString();
     const { algod, client } = rotatingFixture({ account, stage: 2, dummies: 0, charge: 0n });
     await assert.rejects(
       client.sendPrepared(algod, rotatingGroup(rotatingPayment(account, 10, 110))),
@@ -705,7 +806,7 @@ describe("the stage program must fit the stage", () => {
     const { signer, node, algod, client, txn } = rotatingFixture();
     signer.alterPrepare = (response, txns) => {
       // The reported target is the address of the program that signs.
-      const target = stageAddress(rotatingTestProgram);
+      const target = stageAddress(signer.program);
       response.rekey_to = target.toString();
       writable(txns[0]).rekeyTo = target;
       regroup(txns);
@@ -1067,7 +1168,7 @@ describe("the prepare answer is read with its types", () => {
   }
 
   it("reads null mutations as none", async () => {
-    const account = stageAddress(rotatingTestProgram).toString();
+    const account = stageAddress(rotatingTestProgram(0)).toString();
     const { signer, client } = rotatingFixture({ account, stage: 0, dummies: 0, charge: 0n });
     signer.alterPrepare = (response) => {
       response.mutations = null;
@@ -1134,7 +1235,7 @@ describe("prepared group checks the vectors cannot reach", () => {
 
 describe("prepare helpers and rotating accounts", () => {
   it("build a rotating window", async () => {
-    const stage = stageAddress(rotatingTestProgram).toString();
+    const stage = stageAddress(rotatingTestProgram(3)).toString();
     const rotating = fakeAccount(41);
     const ordinary = fakeAccount(43);
     const keys: WireKey[] = [
@@ -1315,7 +1416,7 @@ describe("sendPayment and a rotating account", () => {
   it("may rebuild the window of the transaction it built", async () => {
     const { signer, node, algod, client } = rotatingFixture();
     signer.signErrors = [refusal(ErrorCodes.RotatingWindowNotCurrent, "too few rounds remain")];
-    node.authAddrs[signer.account] = stageAddress(rotatingTestProgram).toString();
+    node.authAddrs[signer.account] = stageAddress(signer.program).toString();
     // sendPayment built the transaction, so it may rebuild its rounds with no
     // option set; and the helper gave a rotated account a window it can use.
     const result = await client.sendPayment(algod, { sender: signer.account, receiver: fakeAddress(42), amount: 5000 });
@@ -1521,7 +1622,7 @@ describe("signPreparedRotating answer classification", () => {
 
   it("a lone spend's answer may leave out group_id, and a stage 0 answer its stage", async () => {
     // Left out, each takes its zero value, as the Go SDK reads the answer.
-    const account = stageAddress(rotatingTestProgram).toString();
+    const account = stageAddress(rotatingTestProgram(0)).toString();
     const { signer, node, algod, client } = rotatingFixture({ account, stage: 0, dummies: 0, charge: 0n });
     signer.alterSign = (response) => {
       delete response.group_id;
@@ -1785,7 +1886,7 @@ describe("alternate spellings of an address", () => {
 
     it("resolveAuthAddress never resolves a misspelled rotating account to an ordinary key", async () => {
       const { client } = setup();
-      const stage = stageAddress(rotatingTestProgram).toString();
+      const stage = stageAddress(rotatingTestProgram(3)).toString();
       for (const spelling of alternateSpellings(rotating)) {
         // Looked up as given, as the Go SDK does: the spelling names no key.
         for (const chainAuth of ["", stage]) {

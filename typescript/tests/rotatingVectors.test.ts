@@ -12,10 +12,11 @@ import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
 import type { RotatingPrepareResponse, RotatingSignResponse } from "../src/types.js";
-import { newPreparedRotating } from "../src/rotating.js";
+import { newPreparedRotating, rotatingProgramStage } from "../src/rotating.js";
 import { SignOutcomeUnknownError, SignerError, errorText } from "../src/errors.js";
 import { SignerClient } from "../src/client.js";
 import algosdk from "algosdk";
+import { bytesToHex, hexToBytes } from "../src/encoding.js";
 import { alternateSpellings, groupHex, installSigners, statusBody } from "./fakeNetwork.js";
 
 interface RotatingVectorCase {
@@ -197,6 +198,41 @@ describe("rotating vectors", () => {
       `raw sign answers: ${bodies.length} bodies; accepted ${counts.accepted}, refused ${counts.refused}, unknown ${counts.unknown}`,
     );
     assert.deepEqual(mismatches, []);
+  });
+
+  it("reads the stage each captured program carries, and refuses another stage's or none at that check", () => {
+    // After stage 0 the changed program is named as the spend's signer, so
+    // only the stage number check can refuse it: the client cannot derive
+    // stage addresses.
+    let later = 0;
+    for (const [name, c] of Object.entries(vectors.cases)) {
+      const spend = algosdk.decodeSignedTransaction(hexToBytes(c.sign.signed[0]));
+      const logic = spend.lsig!.logic;
+      assert.equal(rotatingProgramStage(logic), BigInt(c.prepare.stage), name);
+      if (c.prepare.stage === 0) continue;
+      later++;
+      const prepared = preparedFrom(c, c.prepare);
+      const another = new Uint8Array(logic);
+      new DataView(another.buffer).setBigUint64(3, BigInt(c.prepare.stage + 1));
+      const unnumbered = new Uint8Array([logic[0], ...logic.slice(12)]);
+      for (const [program, text] of [
+        [another, `spend's stage program is stage ${c.prepare.stage + 1}'s, not the prepared stage ${c.prepare.stage}`],
+        [unnumbered, "spend's program carries no stage number, so it is not a stage program"],
+      ] as const) {
+        const lsig = new algosdk.LogicSig(program, spend.lsig!.args);
+        const altered = new algosdk.SignedTransaction({ txn: spend.txn, lsig, sgnr: lsig.address() });
+        const signed = [bytesToHex(algosdk.encodeMsgpack(altered)), ...c.sign.signed.slice(1)];
+        assert.throws(
+          () => prepared.verifySigned({ ...c.sign, signed }),
+          (error: unknown) => {
+            assert.ok(error instanceof SignerError, String(error));
+            assert.equal(errorText(error), text, name);
+            return true;
+          },
+        );
+      }
+    }
+    assert.ok(later > 0, "no captured case after stage 0");
   });
 
   it("covers every captured case with alterations", () => {

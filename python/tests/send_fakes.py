@@ -287,8 +287,13 @@ def signer_client(url: str) -> SignerClient:
 # Rotating accounts
 # -----------------------------------------------------------------------------
 
-# A stage program for tests. Its address stands for a stage's.
-ROTATING_TEST_PROGRAM = bytes([0x0A, 0x81, 0x01])
+
+def rotating_test_program(stage: int) -> bytes:
+    """A stage program for tests: the stage prefix naming stage, then
+    pushint 1. Its address stands for that stage's."""
+    return bytes([0x0D, 0x80, 0x08]) + stage.to_bytes(8, "big") + bytes([0x48, 0x81, 0x01])
+
+
 # A program other than the stage that signs.
 ROTATING_NEXT_PROGRAM = bytes([0x0A, 0x81, 0x02])
 # An address no fixture uses.
@@ -363,13 +368,14 @@ class RotatingSigner:
         self,
         account: str,
         stage: int = 3,
-        program: bytes = ROTATING_TEST_PROGRAM,
+        program: Optional[bytes] = None,
         dummies: int = 1,
         charge: int = 1000,
     ):
         self.account = account
         self.stage = stage
-        self.program = program
+        # The current stage's program.
+        self.program = rotating_test_program(stage) if program is None else program
         self.dummies = dummies
         self.charge = charge
         self.alter_prepare: Optional[Callable[[Dict[str, Any], List[Any]], None]] = None

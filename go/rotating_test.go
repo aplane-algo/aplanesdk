@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -26,8 +27,13 @@ import (
 	"github.com/algorand/go-algorand-sdk/v2/types"
 )
 
-// A stage program for tests. Its address stands for a stage's.
-var rotatingTestProgram = []byte{0x0a, 0x81, 0x01}
+// rotatingTestProgram is a stage program for tests: the stage prefix naming
+// stage, then pushint 1. Its address stands for that stage's.
+func rotatingTestProgram(stage uint64) []byte {
+	program := []byte{0x0d, 0x80, 0x08, 0, 0, 0, 0, 0, 0, 0, 0, 0x48, 0x81, 0x01}
+	binary.BigEndian.PutUint64(program[rotatingStageOffset:], stage)
+	return program
+}
 
 func rotatingStageAddress(program []byte) types.Address {
 	return crypto.LogicSigAddress(types.LogicSig{Logic: program})
@@ -281,7 +287,7 @@ func rotatingPayment(t *testing.T, sender string, first, last uint64) types.Tran
 // dummy and a 1,000 microAlgo charge, and a node at round 10.
 func newRotatingFixture(t *testing.T) (*rotatingSigner, *sendAlgod, *SignerClient, *algod.Client, types.Transaction) {
 	t.Helper()
-	signer := &rotatingSigner{t: t, account: fakeAccount(41), stage: 3, program: rotatingTestProgram, dummies: 1, charge: 1000}
+	signer := &rotatingSigner{t: t, account: fakeAccount(41), stage: 3, program: rotatingTestProgram(3), dummies: 1, charge: 1000}
 	node := &sendAlgod{t: t}
 	client, signerServer := newTestClient(signer.handle)
 	t.Cleanup(signerServer.Close)
@@ -336,7 +342,7 @@ func TestSendPreparedRotatingPreparesSimulatesSignsSubmits(t *testing.T) {
 	if err := msgpack.Decode(submitted[0], &spend); err != nil {
 		t.Fatal(err)
 	}
-	if spend.Txn.RekeyTo != signer.nextTarget() || spend.Txn.Fee != 2000 || spend.AuthAddr != rotatingStageAddress(rotatingTestProgram) {
+	if spend.Txn.RekeyTo != signer.nextTarget() || spend.Txn.Fee != 2000 || spend.AuthAddr != rotatingStageAddress(rotatingTestProgram(3)) {
 		t.Fatalf("submitted spend = %+v auth %s", spend.Txn, spend.AuthAddr)
 	}
 	// The ID is the signed spend's, not the draft's.
@@ -356,8 +362,8 @@ func TestSendPreparedRotatingPreparesSimulatesSignsSubmits(t *testing.T) {
 }
 
 func TestSendPreparedRotatingStageZeroWithoutDummies(t *testing.T) {
-	account := rotatingStageAddress(rotatingTestProgram).String()
-	signer := &rotatingSigner{t: t, account: account, stage: 0, program: rotatingTestProgram}
+	account := rotatingStageAddress(rotatingTestProgram(0)).String()
+	signer := &rotatingSigner{t: t, account: account, stage: 0, program: rotatingTestProgram(0)}
 	node := &sendAlgod{t: t}
 	client, signerServer := newTestClient(signer.handle)
 	defer signerServer.Close()
@@ -605,6 +611,26 @@ var rotatingSignTampers = []struct {
 		signed[0].AuthAddr = rotatingStageAddress(rotatingNextProgram)
 		setSignedTransactions(r, signed)
 	}, "not the requested auth address"},
+	// The next two change the spend's program, and so its address, and name
+	// that address as the signer. After stage 0 only the stage number the
+	// program carries tells them apart; at stage 0 the program no longer
+	// fits the account, which is refused first.
+	{"spend signed by another stage's program, named as its signer", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
+		program := append([]byte(nil), signed[0].Lsig.Logic...)
+		binary.BigEndian.PutUint64(program[rotatingStageOffset:], r.Stage+1)
+		signed[0].Lsig.Logic = program
+		signed[0].AuthAddr = rotatingStageAddress(program)
+		setSignedTransactions(r, signed)
+	}, "spend's stage program is stage 4's, not the prepared stage 3"},
+	{"spend signed by a program without the stage prefix, named as its signer", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
+		// The same program without its stage: the version byte, then what
+		// follows the prefix.
+		logic := signed[0].Lsig.Logic
+		program := append([]byte{logic[0]}, logic[rotatingStagePrefixSize:]...)
+		signed[0].Lsig.Logic = program
+		signed[0].AuthAddr = rotatingStageAddress(program)
+		setSignedTransactions(r, signed)
+	}, "spend's program carries no stage number, so it is not a stage program"},
 	{"dummy not signed", func(t *testing.T, s *rotatingSigner, r *RotatingSignResponse, signed []types.SignedTxn) {
 		signed[1].Lsig = types.LogicSig{}
 		setSignedTransactions(r, signed)
@@ -664,8 +690,8 @@ func TestSignPreparedRotatingStageProgramMustFitTheStage(t *testing.T) {
 		}
 	})
 	t.Run("a later stage does not sign as the account", func(t *testing.T) {
-		account := rotatingStageAddress(rotatingTestProgram).String()
-		signer := &rotatingSigner{t: t, account: account, stage: 2, program: rotatingTestProgram}
+		account := rotatingStageAddress(rotatingTestProgram(2)).String()
+		signer := &rotatingSigner{t: t, account: account, stage: 2, program: rotatingTestProgram(2)}
 		node := &sendAlgod{t: t}
 		client, signerServer := newTestClient(signer.handle)
 		defer signerServer.Close()
@@ -680,7 +706,7 @@ func TestSignPreparedRotatingStageProgramMustFitTheStage(t *testing.T) {
 		signer, node, client, algodClient, txn := newRotatingFixture(t)
 		signer.alterPrepare = func(response *RotatingPrepareResponse, txns []types.Transaction) {
 			// The reported target is the address of the program that signs.
-			target := rotatingStageAddress(rotatingTestProgram)
+			target := rotatingStageAddress(signer.program)
 			response.RekeyTo = target.String()
 			txns[0].RekeyTo = target
 			regroup(t, txns)
@@ -694,6 +720,42 @@ func TestSignPreparedRotatingStageProgramMustFitTheStage(t *testing.T) {
 			t.Fatalf("submitted a spend signed by its own rekey target")
 		}
 	})
+}
+
+func TestRotatingProgramStage(t *testing.T) {
+	stage3 := rotatingTestProgram(3)
+	with := func(index int, value byte) []byte {
+		program := append([]byte(nil), stage3...)
+		program[index] = value
+		return program
+	}
+	tests := []struct {
+		name    string
+		program []byte
+		stage   uint64
+		ok      bool
+	}{
+		{"stage 3", stage3, 3, true},
+		{"stage 0", rotatingTestProgram(0), 0, true},
+		{"the largest stage", rotatingTestProgram(^uint64(0)), ^uint64(0), true},
+		{"big-endian", []byte{0x0d, 0x80, 0x08, 0, 0, 0, 0, 0, 0, 0x01, 0x02, 0x48}, 0x0102, true},
+		{"the prefix alone", stage3[:rotatingStagePrefixSize], 3, true},
+		{"one byte short of the prefix", stage3[:rotatingStagePrefixSize-1], 0, false},
+		{"empty", nil, 0, false},
+		{"another version", with(0, 0x0c), 0, false},
+		{"not pushbytes", with(1, 0x81), 0, false},
+		{"pushbytes of another width", with(2, 0x07), 0, false},
+		{"no pop after the stage", with(rotatingStagePrefixSize-1, 0x49), 0, false},
+		{"a program from before stage numbers", []byte{0x0d, 0x81, 0x01}, 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stage, ok := rotatingProgramStage(tt.program)
+			if stage != tt.stage || ok != tt.ok {
+				t.Fatalf("rotatingProgramStage() = %d, %v; want %d, %v", stage, ok, tt.stage, tt.ok)
+			}
+		})
+	}
 }
 
 func TestSendPreparedRotatingFailedPreflightSignsNothing(t *testing.T) {
@@ -993,7 +1055,7 @@ func TestPreparedRotatingCannotBeChangedByItsHolder(t *testing.T) {
 }
 
 func TestPrepareHelpersBuildARotatingWindow(t *testing.T) {
-	stage := rotatingStageAddress(rotatingTestProgram).String()
+	stage := rotatingStageAddress(rotatingTestProgram(3)).String()
 	rotating := fakeAccount(41)
 	ordinary := fakeAccount(43)
 	keys := []KeyInfo{
@@ -1152,7 +1214,7 @@ func TestSendPaymentMayRebuildARotatingWindow(t *testing.T) {
 	signer.signErrors = []*ErrorResponse{rotatingRefusal(ErrCodeRotatingWindowNotCurrent, "too few rounds remain")}
 	algodClient, closeAlgod := makeSimulationAlgodClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v2/accounts/"+signer.account {
-			json.NewEncoder(w).Encode(map[string]any{"address": signer.account, "amount": 5_000_000, "min-balance": 100_000, "auth-addr": rotatingStageAddress(rotatingTestProgram).String()})
+			json.NewEncoder(w).Encode(map[string]any{"address": signer.account, "amount": 5_000_000, "min-balance": 100_000, "auth-addr": rotatingStageAddress(signer.program).String()})
 			return
 		}
 		node.handle(w, r)
