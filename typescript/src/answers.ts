@@ -240,6 +240,19 @@ export const GENERATE_ANSWER: AnswerShape = {
   },
 };
 
+// The stage and round come from the signer's Indexer, which the signer does
+// not trust, and the SDK only reports them: read as roundedUint, a value
+// above 2^53 cannot make /status, which a send reads, unreadable.
+const ROTATING_STAGE_LOOKUP_STATUS: AnswerShape = {
+  fields: {
+    outcome: "string",
+    stage: { optional: "roundedUint" },
+    probe: "string",
+    tx_id: "string",
+    round: "roundedUint",
+  },
+};
+
 const ROTATING_RECOVERY_STATUS: AnswerShape = {
   fields: {
     active: "bool",
@@ -257,6 +270,7 @@ const ROTATING_RECOVERY_STATUS: AnswerShape = {
     allowance_spent: "uint",
     allowance_max: "uint",
     suppressed_authorizer: "string",
+    lookup: ROTATING_STAGE_LOOKUP_STATUS,
   },
 };
 

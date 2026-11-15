@@ -176,6 +176,7 @@ export type {
   RotatingSignResponse,
   RotatingAccountStatus,
   RotatingRecoveryStatus,
+  RotatingStageLookupStatus,
   RotatingRecoverRequest,
   RotatingRecoverResponse,
   ComponentTargetKind,

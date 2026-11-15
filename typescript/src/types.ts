@@ -499,6 +499,40 @@ export interface RotatingRecoveryStatus {
   allowance_spent: number;
   allowance_max: number;
   suppressed_authorizer?: string;
+  /**
+   * The chain lookup the search began with, if one ran: the active grant's
+   * while active, else the last stopped grant's.
+   */
+  lookup?: RotatingStageLookupStatus;
+}
+
+/**
+ * The chain lookup a recovery search began with: the stage the account's
+ * last confirmed rekey read, through the signer's Indexer, and whether the
+ * address derived for it was the authorizer. It records what the search
+ * tried first, never a stage the signer accepted on the Indexer's word.
+ * Wire shape only.
+ */
+export interface RotatingStageLookupStatus {
+  /**
+   * "candidate", "unavailable", "no_outgoing_rekey", "not_current",
+   * "not_a_stage_program" or "wrong_network".
+   */
+  outcome: string;
+  /**
+   * The candidate, when outcome is "candidate". It and round come from the
+   * signer's Indexer and are only reported, so a value above 2^53 is read
+   * rounded, as JSON.parse gives it, rather than making /status unreadable.
+   */
+  stage?: number;
+  /**
+   * "matched", "missed" or "already_cached" when outcome is "candidate", and
+   * empty when the probe was cut short.
+   */
+  probe?: string;
+  /** The spend that was read, when one was. */
+  tx_id?: string;
+  round?: number;
 }
 
 /**

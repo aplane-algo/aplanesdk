@@ -1043,6 +1043,13 @@ _ASSEMBLY_RESPONSE_SHAPE: Dict[str, Any] = {
 # structs declare them (go/types.go). Each answer is read whole against its
 # shape: a field of another type makes it unreadable, a plain SignerError.
 _PROTOCOL_VERSION_SHAPE: Dict[str, Any] = {"major": "int", "minor": "int"}
+_ROTATING_STAGE_LOOKUP_STATUS_SHAPE: Dict[str, Any] = {
+    "outcome": "str",
+    "stage": ("ptr", "uint64"),
+    "probe": "str",
+    "tx_id": "str",
+    "round": "uint64",
+}
 _ROTATING_RECOVERY_STATUS_SHAPE: Dict[str, Any] = {
     "active": "bool",
     "kind": "str",
@@ -1059,6 +1066,7 @@ _ROTATING_RECOVERY_STATUS_SHAPE: Dict[str, Any] = {
     "allowance_spent": "uint64",
     "allowance_max": "uint64",
     "suppressed_authorizer": "str",
+    "lookup": _ROTATING_STAGE_LOOKUP_STATUS_SHAPE,
 }
 _ROTATING_ACCOUNT_STATUS_SHAPE: Dict[str, Any] = {
     "account": "str",
@@ -1560,6 +1568,27 @@ class ProtocolVersion:
 
 
 @dataclass
+class RotatingStageLookupStatus:
+    """The chain lookup a recovery search began with: the stage the
+    account's last confirmed rekey read, through the signer's Indexer, and
+    whether the address derived for it was the authorizer. It records what
+    the search tried first, never a stage the signer accepted on the
+    Indexer's word. Wire shape only."""
+
+    # "candidate", "unavailable", "no_outgoing_rekey", "not_current",
+    # "not_a_stage_program" or "wrong_network".
+    outcome: str = ""
+    # The candidate, when outcome is "candidate".
+    stage: Optional[int] = None
+    # "matched", "missed" or "already_cached" when outcome is "candidate",
+    # and empty when the probe was cut short.
+    probe: str = ""
+    # The spend that was read, when one was.
+    tx_id: str = ""
+    round: int = 0
+
+
+@dataclass
 class RotatingRecoveryStatus:
     """A rotating account's stage recovery: the active grant, why the last
     one stopped, and the per-unlock automatic allowance. Wire shape only;
@@ -1580,6 +1609,15 @@ class RotatingRecoveryStatus:
     allowance_spent: int = 0
     allowance_max: int = 0
     suppressed_authorizer: str = ""
+    # The chain lookup the search began with, if one ran: the active grant's
+    # while active, else the last stopped grant's.
+    lookup: Optional[RotatingStageLookupStatus] = None
+
+    def __post_init__(self) -> None:
+        if isinstance(self.lookup, dict):
+            self.lookup = RotatingStageLookupStatus(
+                **_declared_fields(RotatingStageLookupStatus, self.lookup)
+            )
 
 
 @dataclass
