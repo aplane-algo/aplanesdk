@@ -590,7 +590,8 @@ and `SendPayment` run the whole sequence:
    simulation that cannot be run returns a plain error. Either way no
    one-time key has been used.
 4. **Sign,** with operator approval, then check the signed group is exactly
-   the prepared one.
+   the prepared one, and that the spend's program names the stage that
+   signs.
 5. **Submit at once** and wait for confirmation. `SendResult.Rotating` reports
    the stage that signed and the stage that now controls the account.
 
@@ -623,6 +624,10 @@ What to know:
 - **The SDK cannot derive stage addresses.** It binds the next stage's
   address the signer reports to the prepared transaction; the signer derives
   it again from the seed before it signs.
+- **The spend's program names its stage.** Every stage program begins with
+  its stage number. The SDK refuses a signed spend whose program carries
+  none, or names a stage other than the one that signs. It reads only the
+  number; the network checks the program's keys.
 - **Unsigned simulation checks effects, not signatures.** The node runs the
   stage program only on the signed group.
 - **Two sends in a row** work once the first has confirmed, which the default

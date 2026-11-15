@@ -37,10 +37,20 @@ and refuse every altered one.
     spend names no signer.
   - `wotsc_stage2`: a spend after two rotations. The signed spend names the
     stage's address as its signer.
+
+  Each spend's program is 2,497 bytes and opens with the stage prefix every
+  stage program carries: `0d 80 08`, the stage as 8 bytes big-endian, then
+  `48` (`#pragma version 13`, `pushbytes`, `pop`). The prepared stage, the
+  stage that signs, is the one it names.
 - `prepare_tampered`: entries of `name`, `case` and an altered `prepare`.
   Checked against the case's `original_txn_hex`, each must be refused.
 - `sign_tampered`: entries of `name`, `case` and an altered `sign`. Checked
   against the case's own, unaltered `prepare`, each must be refused.
+  Two of them replace the spend's program, and so its address, and name the
+  new address as the signer: one names another stage in the prefix, one has
+  no prefix. In `wotsc_stage2` only the stage number check refuses them,
+  since the client cannot derive stage addresses. In `wotsc_stage0` the
+  program no longer has the account's address, which is refused first.
 
 - `sign_answer_bodies`: entries of `name`, `case`, `body` and `expect`. `body`
   is a raw 200 body for `/sign/rotating/sign`, answered to a sign request for

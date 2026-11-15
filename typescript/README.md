@@ -679,7 +679,8 @@ and `sendPayment` run the whole sequence:
    A simulation that cannot be run throws a plain error. Either way no
    one-time key has been used.
 4. **Sign,** with operator approval, then check the signed group is exactly
-   the prepared one.
+   the prepared one, and that the spend's program names the stage that
+   signs.
 5. **Submit at once** and wait for confirmation. `result.rotating` reports the
    stage that signed and the stage that now controls the account.
 
@@ -712,6 +713,10 @@ What to know:
 - **The SDK cannot derive stage addresses.** It binds the next stage's
   address the signer reports to the prepared transaction; the signer derives
   it again from the seed before it signs.
+- **The spend's program names its stage.** Every stage program begins with
+  its stage number. The SDK refuses a signed spend whose program carries
+  none, or names a stage other than the one that signs. It reads only the
+  number; the network checks the program's keys.
 - **Unsigned simulation checks effects, not signatures.** The node runs the
   stage program only on the signed group.
 - **Two sends in a row** work once the first has confirmed, which the default
@@ -719,7 +724,9 @@ What to know:
   SDK does not serialize other clients or processes.
 - **Stage numbers** are safe integers, never rounded. A sign answer with a
   stage beyond `Number.MAX_SAFE_INTEGER` cannot be read, so it is a
-  `SignOutcomeUnknownError`; a prepare answer with one is a plain error.
+  `SignOutcomeUnknownError`; a prepare answer with one is a plain error. The
+  stage number in a spend's program is 64 bits wide and is compared as a
+  bigint, so one beyond `Number.MAX_SAFE_INTEGER` is refused, never rounded.
 
 The steps are also available one at a time. None of them submits:
 
