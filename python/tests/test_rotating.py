@@ -44,6 +44,7 @@ from aplanesdk import (
 from aplanesdk.signer import (
     _canonical_dummy_txn,
     _check_rotating_window,
+    _rotating_program_stage,
     _rotating_window_current,
 )
 from tests import fake_signer
@@ -52,7 +53,6 @@ from tests.send_fakes import (
     ELSEWHERE,
     ROTATING_KEY_TYPE,
     ROTATING_NEXT_PROGRAM,
-    ROTATING_TEST_PROGRAM,
     FakeNode,
     HTTPFake,
     RotatingSigner,
@@ -65,6 +65,7 @@ from tests.send_fakes import (
     regroup,
     reply,
     rotating_payment,
+    rotating_test_program,
     set_prepared,
     set_signed,
     signer_client,
@@ -151,7 +152,7 @@ def test_send_prepared_rotating_prepares_simulates_signs_submits(fakes):
     spend = decode_signed(f.node.submissions()[0])
     assert spend.transaction.rekey_to == f.signer.next_target()
     assert spend.transaction.fee == 2000
-    assert spend.auth_addr == program_address(ROTATING_TEST_PROGRAM)
+    assert spend.auth_addr == program_address(f.signer.program)
     # The ID is the signed spend's, not the draft's.
     assert result.tx_ids[0] == spend.transaction.get_txid() != f.txn.get_txid()
     assert result.fees == [2000, 0]
@@ -163,7 +164,7 @@ def test_send_prepared_rotating_prepares_simulates_signs_submits(fakes):
 
 
 def test_send_prepared_rotating_stage_zero_without_dummies(fakes):
-    account = program_address(ROTATING_TEST_PROGRAM)
+    account = program_address(rotating_test_program(0))
     f = Fixture(fakes, RotatingSigner(account, stage=0, dummies=0, charge=0))
 
     result = f.send(rotating_payment(account, 10, 110))
@@ -449,7 +450,7 @@ def test_an_unreadable_prepare_answer_is_a_plain_failure(fakes, body):
 
 def test_a_prepare_answer_field_left_out_takes_its_zero_value(fakes):
     # As in Go's typed decoding: a stage left out is stage 0.
-    account = program_address(ROTATING_TEST_PROGRAM)
+    account = program_address(rotating_test_program(0))
     f = Fixture(fakes, RotatingSigner(account, stage=0, dummies=0, charge=0))
 
     def alter(response, txns):
@@ -528,6 +529,31 @@ _SIGNATURE = bytes([1]) + bytes(63)
 def _plain_key(signed):
     signed[0].pop("lsig")
     signed[0]["sig"] = _SIGNATURE
+
+
+def _with_stage(program, stage):
+    """program, with its stage prefix naming stage."""
+    return program[:3] + stage.to_bytes(8, "big") + program[11:]
+
+
+def _signed_by_program(signed, program):
+    """The spend signed by program instead, naming its address as the
+    signer."""
+    signed[0]["lsig"]["l"] = program
+    signed[0]["sgnr"] = encoding.decode_address(program_address(program))
+
+
+def _another_stages_program(signer, response, signed):
+    _signed_by_program(signed, _with_stage(signed[0]["lsig"]["l"], response["stage"] + 1))
+    set_signed(response, signed)
+
+
+def _program_without_the_stage_prefix(signer, response, signed):
+    # The same program without its stage: the version byte, then what
+    # follows the prefix.
+    logic = signed[0]["lsig"]["l"]
+    _signed_by_program(signed, logic[:1] + logic[12:])
+    set_signed(response, signed)
 
 
 def _field_of_answer(name, value):
@@ -619,6 +645,20 @@ SIGN_TAMPERS = [
             _set_in(0, "sgnr", encoding.decode_address(program_address(ROTATING_NEXT_PROGRAM)))
         ),
         "not the requested auth address",
+    ),
+    # The next two change the spend's program, and so its address, and name
+    # that address as the signer. After stage 0 only the stage number the
+    # program carries tells them apart; at stage 0 the program no longer
+    # fits the account, which is refused first.
+    (
+        "spend signed by another stage's program, named as its signer",
+        _another_stages_program,
+        "spend's stage program is stage 4's, not the prepared stage 3",
+    ),
+    (
+        "spend signed by a program without the stage prefix, named as its signer",
+        _program_without_the_stage_prefix,
+        "spend's program carries no stage number, so it is not a stage program",
     ),
     # Go: "not the canonical signed resource dummy".
     (
@@ -734,6 +774,50 @@ def test_a_sign_answer_that_is_not_an_object_is_an_unknown_outcome(fakes, body):
     assert excinfo.value.rotating is prepared
 
 
+_STAGE_3 = rotating_test_program(3)
+
+
+def _with_byte(index, value):
+    program = bytearray(_STAGE_3)
+    program[index] = value
+    return bytes(program)
+
+
+@pytest.mark.parametrize(
+    "program,want",
+    [
+        (_STAGE_3, 3),
+        (rotating_test_program(0), 0),
+        (rotating_test_program((1 << 64) - 1), (1 << 64) - 1),
+        (bytes([0x0D, 0x80, 0x08, 0, 0, 0, 0, 0, 0, 0x01, 0x02, 0x48]), 0x0102),
+        (_STAGE_3[:12], 3),
+        (_STAGE_3[:11], None),
+        (b"", None),
+        (_with_byte(0, 0x0C), None),
+        (_with_byte(1, 0x81), None),
+        (_with_byte(2, 0x07), None),
+        (_with_byte(11, 0x49), None),
+        (bytes([0x0D, 0x81, 0x01]), None),
+    ],
+    ids=[
+        "stage 3",
+        "stage 0",
+        "the largest stage",
+        "big-endian",
+        "the prefix alone",
+        "one byte short of the prefix",
+        "empty",
+        "another version",
+        "not pushbytes",
+        "pushbytes of another width",
+        "no pop after the stage",
+        "a program from before stage numbers",
+    ],
+)
+def test_rotating_program_stage(program, want):
+    assert _rotating_program_stage(program) == want
+
+
 class TestStageProgramMustFitTheStage:
     def test_stage_0_signs_as_the_account_itself(self, fakes):
         # The signer claims stage 0, but the program is not the account's.
@@ -744,7 +828,7 @@ class TestStageProgramMustFitTheStage:
         assert f.node.submissions() == []
 
     def test_a_later_stage_does_not_sign_as_the_account(self, fakes):
-        account = program_address(ROTATING_TEST_PROGRAM)
+        account = program_address(rotating_test_program(2))
         f = Fixture(fakes, RotatingSigner(account, stage=2, dummies=0, charge=0))
         with pytest.raises(SignerError, match="does not fit stage 2"):
             f.send(rotating_payment(account, 10, 110))
@@ -754,7 +838,7 @@ class TestStageProgramMustFitTheStage:
 
         def alter(response, txns):
             # The reported target is the address of the program that signs.
-            target = program_address(ROTATING_TEST_PROGRAM)
+            target = program_address(f.signer.program)
             response["rekey_to"] = target
             txns[0].rekey_to = target
             regroup(txns)
@@ -1364,7 +1448,7 @@ class _Fake:
 # -----------------------------------------------------------------------------
 
 
-STAGE = program_address(ROTATING_TEST_PROGRAM)
+STAGE = program_address(rotating_test_program(3))
 
 
 def _helper_cases(sender, other):

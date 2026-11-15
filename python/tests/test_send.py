@@ -40,7 +40,6 @@ from aplanesdk.signer import COSIGNED_DUMMY_PROGRAM, _UINT64_MAX
 from tests import fake_signer
 from tests.send_fakes import (
     DROP,
-    ROTATING_TEST_PROGRAM,
     FakeNode,
     HTTPFake,
     RotatingSigner,
@@ -2135,7 +2134,7 @@ def test_send_transactions_sends_a_rotating_sender_through_the_rotating_flow(fak
     # After rotations the chain names a stage address, which the signer does
     # not list; the account itself is the auth address, as for prepare_*.
     rotating = RotatingSigner(fake_signer.account(41))
-    stage_address = program_address(ROTATING_TEST_PROGRAM)
+    stage_address = program_address(rotating.program)
     node = FakeNode(auth_addrs={rotating.account: stage_address})
     signer, node, client = make(fakes, rotating, node)
     txn = rotating_payment(rotating.account, 10, 110)

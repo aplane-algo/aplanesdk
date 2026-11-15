@@ -278,19 +278,57 @@ describe("signer API contract fixtures", () => {
     const client = new SignerClient("http://localhost:11270");
     const status = await client.getStatus();
 
-    assert.equal(status.rotating?.length, 2);
+    assert.equal(status.rotating?.length, 3);
     assert.equal(status.rotating?.[0].classification, "unknown");
     assert.equal(status.rotating?.[0].cached_entries, 5120);
     assert.equal(status.rotating?.[0].preparation, "unresolved");
     assert.equal(status.rotating?.[1].preparation, "ready");
     assert.equal(status.rotating?.[0].recovery?.stopped, "allowance exhausted");
     assert.equal(status.rotating?.[1].stage, 0);
+    assert.deepEqual(status.rotating?.[0].recovery?.lookup, {
+      outcome: "candidate",
+      stage: 418,
+      probe: "missed",
+      tx_id: "SPENDTXID0000000000000000000000000000000000000000000",
+      round: 123400,
+    });
+    assert.equal(status.rotating?.[1].recovery, undefined);
+    assert.equal(status.rotating?.[2].preparation, "locating");
+    assert.equal(status.rotating?.[2].recovery?.active, true);
+    // Fields left out read as their zero values; the stage, a pointer in Go,
+    // is left out.
+    assert.deepEqual(status.rotating?.[2].recovery?.lookup, { outcome: "unavailable", probe: "", tx_id: "", round: 0 });
     const recoverReq = fixture("rotating_recover_request.json") as RotatingRecoverRequest;
     assert.equal(recoverReq.action, "start");
     assert.equal(recoverReq.stage, 10000);
     const recoverResp = fixture("rotating_recover_response.json") as RotatingRecoverResponse;
     assert.equal(recoverResp.grant_id, 3);
     assert.equal(recoverResp.recovery.active, true);
+    const cancelResp = fixture("rotating_recover_response_lookup.json") as RotatingRecoverResponse;
+    assert.equal(cancelResp.action, "cancel");
+    assert.equal(cancelResp.recovery.active, false);
+    assert.equal(cancelResp.recovery.lookup?.outcome, "candidate");
+    assert.equal(cancelResp.recovery.lookup?.stage, 418);
+    assert.equal(cancelResp.recovery.lookup?.probe, "already_cached");
+  });
+
+  it("reads a lookup stage or round beyond 2^53 from /status rather than refusing the answer", async () => {
+    // Both come from the signer's Indexer and are only reported, so they
+    // cannot make /status, which a send reads, unreadable.
+    const body = fixture("status_response_rotating.json");
+    body.rotating[0].recovery.lookup.stage = 2 ** 63;
+    body.rotating[0].recovery.lookup.round = 2 ** 60;
+    mockFetch.mockResolvedValueOnce({ status: 200, ok: true, json: async () => body });
+    const status = await new SignerClient("http://localhost:11270").getStatus();
+    assert.equal(status.rotating?.[0].recovery?.lookup?.stage, 2 ** 63);
+    assert.equal(status.rotating?.[0].recovery?.lookup?.round, 2 ** 60);
+  });
+
+  it("refuses a /status answer whose lookup is of the wrong type", async () => {
+    const body = fixture("status_response_rotating.json");
+    body.rotating[0].recovery.lookup.outcome = 5;
+    mockFetch.mockResolvedValueOnce({ status: 200, ok: true, json: async () => body });
+    await assert.rejects(new SignerClient("http://localhost:11270").getStatus(), /lookup\.outcome is not a string/);
   });
 
   it("maps /status wire fields to public StatusResponse fields", async () => {

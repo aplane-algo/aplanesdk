@@ -27,6 +27,7 @@ from aplanesdk import (
 from aplanesdk.signer import (
     _AnswerUnreadError,
     _new_prepared_rotating,
+    _rotating_program_stage,
     _rotating_sign_answer,
     _sign_canonical_dummy,
     encode_transaction,
@@ -208,6 +209,39 @@ def test_a_sign_answer_with_a_non_finite_number_is_unreadable(raw_signer, consta
     raw_signer.body = body.encode()
     with pytest.raises(SignOutcomeUnknownError):
         signer_client(raw_signer.http.url).sign_prepared_rotating(prepared)
+
+
+@pytest.mark.parametrize("name", sorted(CASES))
+def test_every_captured_program_carries_its_stage(name):
+    case = CASES[name]
+    logic = decode_map(bytes.fromhex(case["sign"]["signed"][0]))["lsig"]["l"]
+    assert _rotating_program_stage(logic) == case["prepare"]["stage"]
+
+
+@pytest.mark.parametrize("name", sorted(n for n in CASES if CASES[n]["prepare"]["stage"] > 0))
+def test_another_stages_program_or_none_is_refused_by_the_stage_number_check(name):
+    # After stage 0 the changed program is named as the spend's signer, so
+    # only the stage number check can refuse it: the client cannot derive
+    # stage addresses.
+    case = CASES[name]
+    stage = case["prepare"]["stage"]
+    prepared = prepared_from(case, case["prepare"])
+    logic = decode_map(bytes.fromhex(case["sign"]["signed"][0]))["lsig"]["l"]
+    another = logic[:3] + (stage + 1).to_bytes(8, "big") + logic[11:]
+    unnumbered = logic[:1] + logic[12:]
+    for program, text in [
+        (another, f"spend's stage program is stage {stage + 1}'s, not the prepared stage {stage}"),
+        (unnumbered, "spend's program carries no stage number, so it is not a stage program"),
+    ]:
+        sign = copy.deepcopy(case["sign"])
+        spend = decode_map(bytes.fromhex(sign["signed"][0]))
+        spend["lsig"]["l"] = program
+        spend["sgnr"] = encoding.decode_address(program_address(program))
+        sign["signed"][0] = encode_map(spend).hex()
+        with pytest.raises(SignerError) as excinfo:
+            verify_signed(prepared, sign)
+        assert str(excinfo.value) == text
+        assert_verifier_refusal(excinfo.value)
 
 
 # The two rules the vectors cannot carry, because they depend on the client's

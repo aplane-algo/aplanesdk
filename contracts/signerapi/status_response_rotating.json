@@ -28,7 +28,14 @@
         "stopped_grant_id": 1,
         "allowance_spent": 1024,
         "allowance_max": 1024,
-        "suppressed_authorizer": "STAGEADDR00000000000000000000000000000000000000000000000000"
+        "suppressed_authorizer": "STAGEADDR00000000000000000000000000000000000000000000000000",
+        "lookup": {
+          "outcome": "candidate",
+          "stage": 418,
+          "probe": "missed",
+          "tx_id": "SPENDTXID0000000000000000000000000000000000000000000",
+          "round": 123400
+        }
       },
       "preparation": "unresolved"
     },
@@ -40,6 +47,27 @@
       "stage": 0,
       "cached_entries": 4097,
       "preparation": "ready"
+    },
+    {
+      "account": "ROTATINGADDR222222222222222222222222222222222222222222222",
+      "authorizer": "STAGEADDR22222222222222222222222222222222222222222222222222",
+      "round": 123456,
+      "classification": "unknown",
+      "cached_entries": 4096,
+      "recovery": {
+        "active": true,
+        "kind": "automatic",
+        "grant_id": 5,
+        "stages_charged": 12,
+        "max_stages": 1024,
+        "active_seconds": 3,
+        "allowance_spent": 12,
+        "allowance_max": 1024,
+        "lookup": {
+          "outcome": "unavailable"
+        }
+      },
+      "preparation": "locating"
     }
   ]
 }

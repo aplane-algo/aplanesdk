@@ -101,6 +101,28 @@ signing rejection. Both need a signer with the aplane change that adds
 `valid_rekey_target`. An older signer does not report the field, and the SDKs
 then read it as false. No SDK behaviour depends on either.
 
+Rotating accounts need a signer whose stage programs carry their stage
+number, added in aplane PR #285. After its version byte, every stage program
+now pushes its stage as 8 bytes and pops it again. That makes each program 11
+bytes longer and changes every stage address, and no earlier stage program is
+read. The SDKs refuse a signed rotating spend whose program does not open
+this way, or names a stage other than the prepared stage, the stage that
+signs. The refusal is the plain error of the other signed-group checks. It
+comes after the signer has signed, and the group is not submitted. An older
+signer's spends are all refused this way, so upgrade the signer first; an
+older SDK accepts the new programs. The rotating key records of `/keys`
+report the longer programs: XMSS 2,675 bytes with a worst opcode cost of
+95,859, and WOTS+C 2,497 bytes and 15,723.
+
+The rotating recovery status in `/status` and in the
+`/admin/rotating/recover` answer may carry `lookup`
+(`RotatingStageLookupStatus` in all three SDKs): the chain lookup a recovery
+search began with, through the signer's Indexer. It needs the signer change
+in aplane PR #286. A signer without it does not report the field, and the
+SDKs then read none. TypeScript reads the lookup's `stage` and `round` as
+reported numbers, rounded above 2^53, so a value the Indexer gave cannot make
+`/status` unreadable. No SDK behaviour depends on the field.
+
 Runtime floors follow the upstream Algorand SDKs, as of November 2026:
 
 | SDK | Requires | Algorand SDK | Its own floor |

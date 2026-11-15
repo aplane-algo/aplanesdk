@@ -54,6 +54,40 @@ export const rotatingTiming = { unprovenBackoffMs: 2000 };
 
 const UINT64_MAX = (1n << 64n) - 1n;
 
+// Every stage program of every rotating key type opens with the same prefix,
+// which names its stage (aplane's internal/rotatingstage):
+//
+//   #pragma version 13      0d
+//   pushbytes 0x<stage>     80 08 <stage, 8 bytes big-endian>
+//   pop                     48
+const STAGE_OFFSET = 3;
+const STAGE_SIZE = 8;
+const STAGE_PREFIX_SIZE = STAGE_OFFSET + STAGE_SIZE + 1;
+
+/**
+ * The stage number a stage program's prefix holds, or undefined when the
+ * program does not open with the prefix. The number is 64 bits wide, so it is
+ * a bigint. It reads the prefix only: the client cannot derive stage
+ * programs, so whether the program holds the account's keys for that stage
+ * is the ledger's to check. Not part of the package's exports.
+ */
+export function rotatingProgramStage(program: Uint8Array): bigint | undefined {
+  if (
+    program.length < STAGE_PREFIX_SIZE ||
+    program[0] !== 0x0d ||
+    program[1] !== 0x80 ||
+    program[2] !== STAGE_SIZE ||
+    program[STAGE_PREFIX_SIZE - 1] !== 0x48
+  ) {
+    return undefined;
+  }
+  let stage = 0n;
+  for (let index = STAGE_OFFSET; index < STAGE_OFFSET + STAGE_SIZE; index++) {
+    stage = (stage << 8n) | BigInt(program[index]);
+  }
+  return stage;
+}
+
 /** Options for prepareRotating. */
 export interface RotatingPrepareOptions {
   /**
@@ -343,8 +377,9 @@ export class PreparedRotating {
   /**
    * Check that the signer signed exactly the prepared bytes: one canonically
    * encoded signed transaction per prepared transaction, in order, the spend
-   * authorized by a stage program consistent with the reported stage, and
-   * every dummy by the dummy program.
+   * authorized by a stage program consistent with the reported stage that
+   * names the prepared stage in its prefix, and every dummy by the dummy
+   * program.
    */
   verifySigned(response: RotatingSignResponse): RotatingSignResult {
     const txns = this.decoded();
@@ -416,6 +451,19 @@ export class PreparedRotating {
       }
       if (spend.rekeyTo !== undefined && stageAddress === spend.rekeyTo.toString()) {
         throw new SignerError("spend is authorized by the next stage's program");
+      }
+      // The program names its stage, which must be the stage that signs. The
+      // prepared stage is a safe integer, so the two are compared as bigints:
+      // a stage number beyond Number.MAX_SAFE_INTEGER is refused, never
+      // rounded.
+      const embedded = rotatingProgramStage(stxn.lsig.logic);
+      if (embedded === undefined) {
+        throw new SignerError("spend's program carries no stage number, so it is not a stage program");
+      }
+      if (embedded !== BigInt(this.#stage)) {
+        throw new SignerError(
+          `spend's stage program is stage ${embedded}'s, not the prepared stage ${this.#stage}`,
+        );
       }
     });
 

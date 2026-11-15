@@ -6,9 +6,11 @@ package aplane
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -178,8 +180,9 @@ func tamperedRotatingVectors(t *testing.T, cases map[string]rotatingVectorCase) 
 		}
 		// At stage 0 the account signs as itself, so a spend signed by any
 		// other program is refused even when it names that program as its
-		// signer. At a later stage the SDK cannot tell one stage's program
-		// from another's; the signer and the network do.
+		// signer. At a later stage the SDK reads only the stage number a
+		// program carries; whether it holds the account's keys for that
+		// stage, the signer and the network check.
 		if c.Sign.Stage == 0 {
 			response := cloneJSON(t, c.Sign)
 			raw, err := hex.DecodeString(response.Signed[0])
@@ -197,6 +200,62 @@ func tamperedRotatingVectors(t *testing.T, cases map[string]rotatingVectorCase) 
 		}
 	}
 	return prepares, signs
+}
+
+// TestRotatingVectorsStageNumber reads the stage number each captured spend's
+// program carries, then changes it in each capture after stage 0, naming the
+// changed program as the spend's signer. There only the stage number check
+// can refuse it: the client cannot derive stage addresses.
+func TestRotatingVectorsStageNumber(t *testing.T) {
+	vectors := loadRotatingVectors(t)
+	later := 0
+	for name, c := range vectors.Cases {
+		spendOf := func(sign RotatingSignResponse) types.SignedTxn {
+			raw, err := hex.DecodeString(sign.Signed[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			spend, err := decodeCanonicalSignedTxn(raw)
+			if err != nil {
+				t.Fatalf("case %s: %v", name, err)
+			}
+			return spend
+		}
+		spend := spendOf(c.Sign)
+		if stage, ok := rotatingProgramStage(spend.Lsig.Logic); !ok || stage != c.Prepare.Stage {
+			t.Fatalf("case %s: the spend's program reads as stage %d (%v), prepared %d", name, stage, ok, c.Prepare.Stage)
+		}
+		if c.Prepare.Stage == 0 {
+			continue
+		}
+		later++
+		prepared, err := preparedFromVector(c, c.Prepare)
+		if err != nil {
+			t.Fatalf("case %s: %v", name, err)
+		}
+		another := append([]byte(nil), spend.Lsig.Logic...)
+		binary.BigEndian.PutUint64(another[rotatingStageOffset:], c.Prepare.Stage+1)
+		unnumbered := append([]byte{spend.Lsig.Logic[0]}, spend.Lsig.Logic[rotatingStagePrefixSize:]...)
+		for _, tt := range []struct {
+			program []byte
+			text    string
+		}{
+			{another, fmt.Sprintf("spend's stage program is stage %d's, not the prepared stage %d", c.Prepare.Stage+1, c.Prepare.Stage)},
+			{unnumbered, "spend's program carries no stage number, so it is not a stage program"},
+		} {
+			altered := spendOf(c.Sign)
+			altered.Lsig.Logic = tt.program
+			altered.AuthAddr = rotatingStageAddress(tt.program)
+			sign := cloneJSON(t, c.Sign)
+			sign.Signed[0] = hex.EncodeToString(msgpack.Encode(altered))
+			if _, err := prepared.verifySigned(&sign); err == nil || err.Error() != tt.text {
+				t.Errorf("case %s: error = %v, want %q", name, err, tt.text)
+			}
+		}
+	}
+	if later == 0 {
+		t.Fatal("no captured case after stage 0")
+	}
 }
 
 // rotatingAnswerBodies builds raw sign answers from each captured one: how a

@@ -1547,7 +1547,7 @@ func TestSendTransactionsSendsARotatingSender(t *testing.T) {
 	signer, node, client, algodClient, txn := newRotatingFixture(t)
 	// After a rotation the chain names a stage address, which the signer does
 	// not list; the account signs as itself.
-	node.authAddrs = map[string]string{signer.account: rotatingStageAddress(rotatingTestProgram).String()}
+	node.authAddrs = map[string]string{signer.account: rotatingStageAddress(signer.program).String()}
 
 	result, err := client.SendTransactions(context.Background(), algodClient, []types.Transaction{txn}, nil)
 	if err != nil {

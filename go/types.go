@@ -286,6 +286,28 @@ type RotatingRecoveryStatus struct {
 	AllowanceSpent       uint64  `json:"allowance_spent"`
 	AllowanceMax         uint64  `json:"allowance_max"`
 	SuppressedAuthorizer string  `json:"suppressed_authorizer,omitempty"`
+	// Lookup is the chain lookup the search began with, if one ran: the
+	// active grant's while Active, else the last stopped grant's.
+	Lookup *RotatingStageLookupStatus `json:"lookup,omitempty"`
+}
+
+// RotatingStageLookupStatus reports the chain lookup a recovery search began
+// with: the stage the account's last confirmed rekey read, through the
+// signer's Indexer, and whether the address derived for it was the
+// authorizer. It records what the search tried first, never a stage the
+// signer accepted on the Indexer's word.
+type RotatingStageLookupStatus struct {
+	// Outcome is "candidate", "unavailable", "no_outgoing_rekey",
+	// "not_current", "not_a_stage_program" or "wrong_network".
+	Outcome string `json:"outcome"`
+	// Stage is the candidate, when Outcome is "candidate".
+	Stage *uint64 `json:"stage,omitempty"`
+	// Probe is "matched", "missed" or "already_cached" when Outcome is
+	// "candidate", and empty when the probe was cut short.
+	Probe string `json:"probe,omitempty"`
+	// TxID and Round identify the spend that was read, when one was.
+	TxID  string `json:"tx_id,omitempty"`
+	Round uint64 `json:"round,omitempty"`
 }
 
 // RotatingRecoverRequest is the request payload for

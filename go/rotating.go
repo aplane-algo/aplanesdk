@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -38,6 +39,30 @@ const (
 	// rotating spend.
 	rotatingSendAttempts = 3
 )
+
+// Every stage program of every rotating key type opens with the same prefix,
+// which names its stage (aplane's internal/rotatingstage):
+//
+//	#pragma version 13      0d
+//	pushbytes 0x<stage>     80 08 <stage, 8 bytes big-endian>
+//	pop                     48
+const (
+	rotatingStageOffset     = 3
+	rotatingStageSize       = 8
+	rotatingStagePrefixSize = rotatingStageOffset + rotatingStageSize + 1
+)
+
+// rotatingProgramStage returns the stage number a stage program's prefix
+// holds, and false when the program does not open with the prefix. It reads
+// the prefix only. The client cannot derive stage programs, so whether the
+// program holds the account's keys for that stage is the ledger's to check.
+func rotatingProgramStage(program []byte) (uint64, bool) {
+	if len(program) < rotatingStagePrefixSize || program[0] != 0x0d || program[1] != 0x80 ||
+		program[2] != rotatingStageSize || program[rotatingStagePrefixSize-1] != 0x48 {
+		return 0, false
+	}
+	return binary.BigEndian.Uint64(program[rotatingStageOffset:]), true
+}
 
 // rotatingUnprovenBackoff is the wait before preparing again after the signer
 // reports it has not found the account's live stage yet. It grows with each
@@ -446,8 +471,9 @@ func (c *SignerClient) SignPreparedRotating(ctx context.Context, prepared *Prepa
 
 // verifySigned checks that the signer signed exactly the prepared bytes: one
 // canonically encoded signed transaction per prepared transaction, in order,
-// the spend authorized by a stage program consistent with the reported stage,
-// and every dummy by the dummy program.
+// the spend authorized by a stage program consistent with the reported stage
+// that names the prepared stage in its prefix, and every dummy by the dummy
+// program.
 func (p *PreparedRotating) verifySigned(response *RotatingSignResponse) (*RotatingSignResult, error) {
 	txns, err := p.decoded()
 	if err != nil {
@@ -499,6 +525,14 @@ func (p *PreparedRotating) verifySigned(response *RotatingSignResponse) (*Rotati
 		}
 		if stageAddr == spend.RekeyTo {
 			return nil, fmt.Errorf("spend is authorized by the next stage's program")
+		}
+		// The program names its stage, which must be the stage that signs.
+		embedded, ok := rotatingProgramStage(stxn.Lsig.Logic)
+		if !ok {
+			return nil, fmt.Errorf("spend's program carries no stage number, so it is not a stage program")
+		}
+		if embedded != p.stage {
+			return nil, fmt.Errorf("spend's stage program is stage %d's, not the prepared stage %d", embedded, p.stage)
 		}
 	}
 

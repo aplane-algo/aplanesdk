@@ -1043,6 +1043,13 @@ _ASSEMBLY_RESPONSE_SHAPE: Dict[str, Any] = {
 # structs declare them (go/types.go). Each answer is read whole against its
 # shape: a field of another type makes it unreadable, a plain SignerError.
 _PROTOCOL_VERSION_SHAPE: Dict[str, Any] = {"major": "int", "minor": "int"}
+_ROTATING_STAGE_LOOKUP_STATUS_SHAPE: Dict[str, Any] = {
+    "outcome": "str",
+    "stage": ("ptr", "uint64"),
+    "probe": "str",
+    "tx_id": "str",
+    "round": "uint64",
+}
 _ROTATING_RECOVERY_STATUS_SHAPE: Dict[str, Any] = {
     "active": "bool",
     "kind": "str",
@@ -1059,6 +1066,7 @@ _ROTATING_RECOVERY_STATUS_SHAPE: Dict[str, Any] = {
     "allowance_spent": "uint64",
     "allowance_max": "uint64",
     "suppressed_authorizer": "str",
+    "lookup": _ROTATING_STAGE_LOOKUP_STATUS_SHAPE,
 }
 _ROTATING_ACCOUNT_STATUS_SHAPE: Dict[str, Any] = {
     "account": "str",
@@ -1560,6 +1568,27 @@ class ProtocolVersion:
 
 
 @dataclass
+class RotatingStageLookupStatus:
+    """The chain lookup a recovery search began with: the stage the
+    account's last confirmed rekey read, through the signer's Indexer, and
+    whether the address derived for it was the authorizer. It records what
+    the search tried first, never a stage the signer accepted on the
+    Indexer's word. Wire shape only."""
+
+    # "candidate", "unavailable", "no_outgoing_rekey", "not_current",
+    # "not_a_stage_program" or "wrong_network".
+    outcome: str = ""
+    # The candidate, when outcome is "candidate".
+    stage: Optional[int] = None
+    # "matched", "missed" or "already_cached" when outcome is "candidate",
+    # and empty when the probe was cut short.
+    probe: str = ""
+    # The spend that was read, when one was.
+    tx_id: str = ""
+    round: int = 0
+
+
+@dataclass
 class RotatingRecoveryStatus:
     """A rotating account's stage recovery: the active grant, why the last
     one stopped, and the per-unlock automatic allowance. Wire shape only;
@@ -1580,6 +1609,15 @@ class RotatingRecoveryStatus:
     allowance_spent: int = 0
     allowance_max: int = 0
     suppressed_authorizer: str = ""
+    # The chain lookup the search began with, if one ran: the active grant's
+    # while active, else the last stopped grant's.
+    lookup: Optional[RotatingStageLookupStatus] = None
+
+    def __post_init__(self) -> None:
+        if isinstance(self.lookup, dict):
+            self.lookup = RotatingStageLookupStatus(
+                **_declared_fields(RotatingStageLookupStatus, self.lookup)
+            )
 
 
 @dataclass
@@ -9471,6 +9509,34 @@ def simulate_prepared_cosigned_group(
 # -----------------------------------------------------------------------------
 
 
+# Every stage program of every rotating key type opens with the same prefix,
+# which names its stage (aplane's internal/rotatingstage):
+#
+#   #pragma version 13      0d
+#   pushbytes 0x<stage>     80 08 <stage, 8 bytes big-endian>
+#   pop                     48
+_ROTATING_STAGE_OFFSET = 3
+_ROTATING_STAGE_SIZE = 8
+_ROTATING_STAGE_PREFIX_SIZE = _ROTATING_STAGE_OFFSET + _ROTATING_STAGE_SIZE + 1
+
+
+def _rotating_program_stage(program: bytes) -> Optional[int]:
+    """The stage number a stage program's prefix holds, or None when the
+    program does not open with the prefix. It reads the prefix only: the
+    client cannot derive stage programs, so whether the program holds the
+    account's keys for that stage is the ledger's to check."""
+    if (
+        len(program) < _ROTATING_STAGE_PREFIX_SIZE
+        or program[0] != 0x0D
+        or program[1] != 0x80
+        or program[2] != _ROTATING_STAGE_SIZE
+        or program[_ROTATING_STAGE_PREFIX_SIZE - 1] != 0x48
+    ):
+        return None
+    end = _ROTATING_STAGE_OFFSET + _ROTATING_STAGE_SIZE
+    return int.from_bytes(program[_ROTATING_STAGE_OFFSET:end], "big")
+
+
 class PreparedRotating:
     """A rotating account's spend as the signer prepared it: the exact
     unsigned group it will sign, checked against the transaction the caller
@@ -9643,7 +9709,8 @@ class PreparedRotating:
         """Check that the signer signed exactly the prepared bytes: one
         canonically encoded signed transaction per prepared transaction, in
         order, the spend authorized by a stage program consistent with the
-        reported stage, and every dummy by the dummy program."""
+        reported stage that names the prepared stage in its prefix, and every
+        dummy by the dummy program."""
         txns = self._decoded()
         if not isinstance(response, dict):
             raise SignerError("signer returned a malformed sign response")
@@ -9701,6 +9768,17 @@ class PreparedRotating:
                 )
             if stage_address == spend.rekey_to:
                 raise SignerError("spend is authorized by the next stage's program")
+            # The program names its stage, which must be the stage that signs.
+            embedded = _rotating_program_stage(bytes(stxn.lsig.logic))
+            if embedded is None:
+                raise SignerError(
+                    "spend's program carries no stage number, so it is not a stage program"
+                )
+            if embedded != self._stage:
+                raise SignerError(
+                    f"spend's stage program is stage {embedded}'s, not the prepared stage "
+                    f"{self._stage}"
+                )
 
         txid = spend.get_txid()
         if response.get("txid") != txid:

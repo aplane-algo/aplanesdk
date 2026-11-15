@@ -1,0 +1,20 @@
+{
+  "account": "ROTATINGADDR000000000000000000000000000000000000000000000",
+  "action": "cancel",
+  "grant_id": 4,
+  "recovery": {
+    "active": false,
+    "stopped": "cancelled",
+    "stopped_kind": "operator",
+    "stopped_grant_id": 4,
+    "allowance_spent": 0,
+    "allowance_max": 1024,
+    "lookup": {
+      "outcome": "candidate",
+      "stage": 418,
+      "probe": "already_cached",
+      "tx_id": "SPENDTXID0000000000000000000000000000000000000000000",
+      "round": 123400
+    }
+  }
+}

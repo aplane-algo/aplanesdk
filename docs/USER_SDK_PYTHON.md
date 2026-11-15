@@ -455,7 +455,8 @@ transaction. Inside `send_prepared()` and `send_payment()` the SDK:
    `RotatingPreflightError`, whose `message` says why, before any one-time
    key is used;
 4. asks the signer to sign, with operator approval, and checks that the
-   signed group is exactly the prepared one;
+   signed group is exactly the prepared one and that the spend's program
+   names the stage that signs;
 5. submits at once and waits for confirmation. `result.rotating` reports the
    stage that signed (`stage`), the stage that now controls the account
    (`target`), its address (`rekey_to`) and how many times the spend was
@@ -484,6 +485,12 @@ Limits:
   again. A window refusal is retried only when the rounds may be rebuilt,
   with the longest window. This needs a signer that reports
   `rotating_window_not_current`; see the
+  [compatibility note](COMPATIBILITY.md).
+- **The spend's program names its stage.** Every stage program begins with
+  its stage number. The SDK refuses a signed spend whose program carries
+  none, or names a stage other than `stage`, the stage that signs. It reads
+  only the number; the network checks the program's keys. This needs a
+  signer with stage-numbered programs; see the
   [compatibility note](COMPATIBILITY.md).
 - **App calls carry the rekey**, so a contract that requires a zero
   `rekey_to` fails the simulation.
@@ -711,8 +718,9 @@ to 6 minutes.
 `warnings` and `notes` are operator-facing lines. `rotating` lists each
 rotating account's view from the signer's last background pass
 (`RotatingAccountStatus`: observed authorizer, classification, cached stages
-and `RotatingRecoveryStatus`); it is empty while locked or without rotating
-accounts. Stage recovery itself (`/admin/rotating/recover`) is an operator
+and `RotatingRecoveryStatus`, whose `lookup`, a `RotatingStageLookupStatus`,
+is the chain lookup a recovery search began with); it is empty while locked
+or without rotating accounts. Stage recovery itself (`/admin/rotating/recover`) is an operator
 action run from apshell, so the SDK carries only its wire shapes
 (`RotatingRecoverRequest`, `RotatingRecoverResponse`).
 

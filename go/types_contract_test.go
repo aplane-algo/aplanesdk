@@ -179,12 +179,43 @@ func TestGoSDKContractFixturesRoundTrip(t *testing.T) {
 		{"status_response_rotating.json", assertSDKContractRoundTrip[StatusResponse]},
 		{"rotating_recover_request.json", assertSDKContractRoundTrip[RotatingRecoverRequest]},
 		{"rotating_recover_response.json", assertSDKContractRoundTrip[RotatingRecoverResponse]},
+		{"rotating_recover_response_lookup.json", assertSDKContractRoundTrip[RotatingRecoverResponse]},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tt.run(t, tt.name)
 		})
+	}
+}
+
+func TestGoSDKContractRotatingStageLookup(t *testing.T) {
+	var status StatusResponse
+	readContractMetadata(t, "status_response_rotating.json", &status)
+	if len(status.Rotating) != 3 {
+		t.Fatalf("rotating entries = %d, want 3", len(status.Rotating))
+	}
+	stopped := status.Rotating[0].Recovery
+	if stopped == nil || stopped.Lookup == nil || stopped.Lookup.Outcome != "candidate" ||
+		stopped.Lookup.Stage == nil || *stopped.Lookup.Stage != 418 || stopped.Lookup.Probe != "missed" ||
+		stopped.Lookup.TxID == "" || stopped.Lookup.Round != 123400 {
+		t.Fatalf("stopped grant's lookup = %+v", stopped)
+	}
+	if status.Rotating[1].Recovery != nil {
+		t.Fatalf("a live stage reports recovery %+v", status.Rotating[1].Recovery)
+	}
+	active := status.Rotating[2].Recovery
+	if active == nil || !active.Active || active.Lookup == nil || active.Lookup.Outcome != "unavailable" ||
+		active.Lookup.Stage != nil || active.Lookup.Probe != "" || active.Lookup.TxID != "" || active.Lookup.Round != 0 {
+		t.Fatalf("active grant's lookup = %+v", active)
+	}
+
+	var cancelled RotatingRecoverResponse
+	readContractMetadata(t, "rotating_recover_response_lookup.json", &cancelled)
+	if cancelled.Action != "cancel" || cancelled.Recovery.Lookup == nil ||
+		cancelled.Recovery.Lookup.Probe != "already_cached" || cancelled.Recovery.Lookup.Stage == nil ||
+		*cancelled.Recovery.Lookup.Stage != 418 {
+		t.Fatalf("cancelled grant = %+v", cancelled)
 	}
 }
 

@@ -11,6 +11,8 @@ from pathlib import Path
 from tests import fake_signer
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from aplanesdk.signer import (
     AUTHORIZATION_KIND_ED25519,
     AUTHORIZATION_KIND_LOGIC_SIG,
@@ -44,7 +46,9 @@ from aplanesdk.signer import (
     RotatingSignResponse,
     RotatingRecoverRequest,
     RotatingRecoverResponse,
+    RotatingStageLookupStatus,
     SignerClient,
+    SignerError,
     StatusResponse,
     _validate_component_request,
 )
@@ -289,8 +293,8 @@ def test_list_key_types_maps_creation_and_runtime_metadata():
 def test_status_rotating_fixture_round_trips():
     data = fixture("status_response_rotating.json")
     status = StatusResponse(**data)
-    assert len(status.rotating) == 2
-    unresolved, live = status.rotating
+    assert len(status.rotating) == 3
+    unresolved, live, locating = status.rotating
     assert unresolved.classification == "unknown"
     assert unresolved.cached_entries == 5120
     assert unresolved.preparation == "unresolved"
@@ -301,6 +305,16 @@ def test_status_rotating_fixture_round_trips():
     assert live.classification == "stage"
     assert live.stage == 0
     assert live.recovery is None
+    assert unresolved.recovery.lookup == RotatingStageLookupStatus(
+        outcome="candidate",
+        stage=418,
+        probe="missed",
+        tx_id="SPENDTXID0000000000000000000000000000000000000000000",
+        round=123400,
+    )
+    assert locating.preparation == "locating"
+    assert locating.recovery is not None and locating.recovery.active is True
+    assert locating.recovery.lookup == RotatingStageLookupStatus(outcome="unavailable")
 
     recover_req = RotatingRecoverRequest(**fixture("rotating_recover_request.json"))
     assert asdict(recover_req) == fixture("rotating_recover_request.json")
@@ -308,6 +322,43 @@ def test_status_rotating_fixture_round_trips():
     assert recover_resp.grant_id == 3
     assert recover_resp.recovery.active is True
     assert recover_resp.recovery.hint == 10000
+    assert recover_resp.recovery.lookup is None
+
+    data = fixture("rotating_recover_response_lookup.json")
+    cancel_resp = RotatingRecoverResponse(**data)
+    assert cancel_resp.action == "cancel" and cancel_resp.grant_id == 4
+    assert cancel_resp.recovery.active is False
+    assert cancel_resp.recovery.lookup == RotatingStageLookupStatus(
+        outcome="candidate",
+        stage=418,
+        probe="already_cached",
+        tx_id="SPENDTXID0000000000000000000000000000000000000000000",
+        round=123400,
+    )
+    # Every field the fixture holds is read back.
+    assert asdict(cancel_resp.recovery.lookup) == data["recovery"]["lookup"]
+
+
+def test_get_status_reads_the_rotating_lookup():
+    client = make_client()
+    with patch.object(
+        client.session,
+        "get",
+        return_value=mock_response(200, fixture("status_response_rotating.json")),
+    ):
+        status = client.get_status()
+    assert status.rotating[0].recovery.lookup.stage == 418
+    assert status.rotating[0].recovery.lookup.probe == "missed"
+    assert status.rotating[1].recovery is None
+    assert status.rotating[2].recovery.lookup == RotatingStageLookupStatus(outcome="unavailable")
+
+    body = fixture("status_response_rotating.json")
+    body["rotating"][0]["recovery"]["lookup"]["stage"] = "418"
+    with patch.object(client.session, "get", return_value=mock_response(200, body)):
+        with pytest.raises(
+            SignerError, match="lookup field stage is not an unsigned 64-bit integer"
+        ):
+            client.get_status()
 
 
 def test_status_fixture_maps_metadata():
