@@ -24,12 +24,17 @@ export function witnessRecord(publicKeyHex: string, keyType = KEY_TYPE_WITNESS_F
   };
 }
 
-/** A fake cosigner endpoint: what its /keys lists, and its component signatures. */
+/**
+ * A fake cosigner endpoint: what its /keys lists, and its component
+ * signatures, each in the scheme of the listed witness key it was asked under.
+ */
 export class CosignerEndpoint {
   alias: string;
   keys: WireKey[];
   /** Answers /keys in place of the listing. */
   keysReply?: () => FakeReply;
+  /** The signature scheme every component names, in place of the witness key's type. */
+  signatureScheme?: string;
   paths: string[] = [];
   componentRequests: any[] = [];
 
@@ -57,7 +62,7 @@ export class CosignerEndpoint {
               kind: "cosigner",
               target_index: target.target_index,
               signature: `cosigner-sig-${this.alias}`,
-              signature_scheme: KEY_TYPE_WITNESS_FALCON1024,
+              signature_scheme: this.signatureScheme ?? this.schemeOf(target.component_key),
             })),
           },
         };
@@ -65,22 +70,32 @@ export class CosignerEndpoint {
         throw new Error(`unexpected cosigner path ${path}`);
     }
   };
+
+  /** The key type of the listed witness key whose Witness Key ID is componentKey. */
+  private schemeOf(componentKey: string): string {
+    return this.keys.find((key) => key.address === componentKey)?.key_type ?? KEY_TYPE_WITNESS_FALCON1024;
+  }
 }
 
-/** A cosigned account's /keys record, whose cosigner holds witnessHex. */
-export function cosignedKey(address: string, witnessHex: string, rekeyList = false): WireKey {
+/** A cosigned account's /keys record, whose cosigner holds witnessHex, a key of cosignerKeyType. */
+export function cosignedKey(
+  address: string,
+  witnessHex: string,
+  rekeyList = false,
+  cosignerKeyType = KEY_TYPE_WITNESS_FALCON1024,
+): WireKey {
   const usage = { program_bytes: 5308, argument_bytes: 3358, max_opcode_cost: 20000 };
   const key: any = {
     address,
     key_type: "aplane.falcon1024.v1",
     signing_flow: SIGNING_FLOW_COSIGNED1,
     logic_sig_resources: { spend: usage, spending_rekey: usage, listed_rekey: usage },
-    cosigner_component_key_type: KEY_TYPE_WITNESS_FALCON1024,
+    cosigner_component_key_type: cosignerKeyType,
     bounded_authorization: {
       contract: "bounded2",
       max_fee: 1000,
       rekey: "spending_key",
-      cosigner: { component_key_type: KEY_TYPE_WITNESS_FALCON1024, public_key_hex: witnessHex },
+      cosigner: { component_key_type: cosignerKeyType, public_key_hex: witnessHex },
     },
   };
   if (rekeyList) {

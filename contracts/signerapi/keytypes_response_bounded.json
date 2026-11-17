@@ -67,7 +67,9 @@
       "mnemonic_import": false,
       "mnemonic_scheme": "",
       "signing_flow": "cosigned1",
-      "cosigner_component_key_type": "aplane.witness-falcon1024.v1",
+      "cosigner_component_key_types": [
+        "aplane.witness-falcon1024.v1"
+      ],
       "bounded_authorization": {
         "contract": "bounded2",
         "base_signature_arg_layout": {

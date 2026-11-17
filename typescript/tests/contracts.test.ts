@@ -629,7 +629,7 @@ describe("signer API contract fixtures", () => {
     const corridorType = keyTypes[1];
     assert.equal(corridorType.signingFlow, "cosigned1");
     assert.equal(corridorType.perKeyContract, undefined);
-    assert.equal(corridorType.cosignerComponentKeyType, "aplane.witness-falcon1024.v1");
+    assert.deepEqual(corridorType.cosignerComponentKeyTypes, ["aplane.witness-falcon1024.v1"]);
     assert.deepEqual(corridorType.boundedAuthorization?.cosigner?.requiredOn, ["spend"]);
     assert.equal(corridorType.boundedAuthorization?.rekey, "refused");
 
@@ -642,7 +642,10 @@ describe("signer API contract fixtures", () => {
     assert.equal(perKeyType.perKeyContract, true);
     assert.equal(perKeyType.signingFlow, undefined);
     assert.equal(perKeyType.boundedAuthorization, undefined);
-    assert.equal(perKeyType.cosignerComponentKeyType, "aplane.witness-falcon1024.v1");
+    assert.deepEqual(perKeyType.cosignerComponentKeyTypes, [
+      "aplane.witness-falcon1024.v1",
+      "aplane.witness-ed25519.v1",
+    ]);
   });
 
 });

@@ -33,10 +33,10 @@ import {
 } from "../src/errors.js";
 import { markSshSetupFailure, type SshSetupFailure } from "../src/ssh.js";
 import {
-  KEY_TYPE_WITNESS_FALCON1024,
   type ClientEndpointConfig,
   type ClientEndpointRegistry,
 } from "../src/types.js";
+import { KEY_TYPE_WITNESS_ED25519, KEY_TYPE_WITNESS_FALCON1024 } from "../src/index.js";
 import { hexToBytes } from "../src/encoding.js";
 import { fakeAddress } from "./fakeSigner.js";
 import {
@@ -1158,27 +1158,73 @@ describe("the cosigned sequence's cosigner resolution", () => {
     await endpoints.close();
   });
 
-  it("sends with an EndpointCosignerResolver, each target routed to its endpoint", async () => {
-    const net = new Network();
-    const first = fakeAddress(25);
-    const second = fakeAddress(26);
-    const alpha = net.add("alpha", [witnessRecord(WITNESS_A)]);
-    const beta = net.add("beta", [witnessRecord(WITNESS_B)]);
-    const user = new CosignedUser([cosignedKey(first, WITNESS_A), cosignedKey(second, WITNESS_B)]);
-    net.install(user.handle);
-    const resolver = new EndpointCosignerResolver(registry("alpha", "beta"));
-    const result = await new SignerClient(SIGNER).sendPrepared(
-      new FakeAlgod() as any,
-      group(cosignedPayment(first), cosignedPayment(second)),
-      { cosignerResolver: resolver },
-    );
-    assert.equal(result.outcome, "confirmed", "the group was not sent");
-    assert.equal(alpha.componentRequests.length, 1, "alpha was not asked once");
-    assert.equal(beta.componentRequests.length, 1, "beta was not asked once");
-    assert.deepEqual(alpha.componentRequests[0].targets.map((item: any) => [item.target_index, item.component_key]), [[0, id(WITNESS_A)]], "alpha's targets");
-    assert.deepEqual(beta.componentRequests[0].targets.map((item: any) => [item.target_index, item.component_key]), [[1, id(WITNESS_B)]], "beta's targets");
-    await resolver.close();
-  });
+  // The second account's cosigner key is another Falcon key, or an Ed25519
+  // key with the first one's public key: either way it is routed to the
+  // endpoint that lists it under its own key type, and its signature is taken
+  // in that key type's scheme.
+  for (const [name, secondHex, secondType] of [
+    ["two Falcon cosigner keys", WITNESS_B, KEY_TYPE_WITNESS_FALCON1024],
+    ["a Falcon and an Ed25519 cosigner key with one public key", WITNESS_A, KEY_TYPE_WITNESS_ED25519],
+  ] as const) {
+    it(`sends with an EndpointCosignerResolver, each target routed to its endpoint: ${name}`, async () => {
+      const net = new Network();
+      const first = fakeAddress(25);
+      const second = fakeAddress(26);
+      const alpha = net.add("alpha", [witnessRecord(WITNESS_A)]);
+      const beta = net.add("beta", [witnessRecord(secondHex, secondType)]);
+      const user = new CosignedUser([
+        cosignedKey(first, WITNESS_A),
+        cosignedKey(second, secondHex, false, secondType),
+      ]);
+      net.install(user.handle);
+      const resolver = new EndpointCosignerResolver(registry("alpha", "beta"));
+      const result = await new SignerClient(SIGNER).sendPrepared(
+        new FakeAlgod() as any,
+        group(cosignedPayment(first), cosignedPayment(second)),
+        { cosignerResolver: resolver },
+      );
+      assert.equal(result.outcome, "confirmed", "the group was not sent");
+      assert.equal(alpha.componentRequests.length, 1, "alpha was not asked once");
+      assert.equal(beta.componentRequests.length, 1, "beta was not asked once");
+      assert.deepEqual(alpha.componentRequests[0].targets.map((item: any) => [item.target_index, item.component_key]), [[0, id(WITNESS_A)]], "alpha's targets");
+      assert.deepEqual(beta.componentRequests[0].targets.map((item: any) => [item.target_index, item.component_key]), [[1, id(secondHex, secondType)]], "beta's targets");
+      await resolver.close();
+    });
+  }
+
+  // A cosigner signature is taken only in the scheme of the account's
+  // cosigner key type; in the other one's it is refused before assembly.
+  for (const keyType of [KEY_TYPE_WITNESS_FALCON1024, KEY_TYPE_WITNESS_ED25519]) {
+    for (const scheme of [KEY_TYPE_WITNESS_FALCON1024, KEY_TYPE_WITNESS_ED25519]) {
+      const verdict = scheme === keyType ? "takes" : "refuses";
+      it(`${verdict} a cosigner signature in scheme ${scheme} for an account whose cosigner key is ${keyType}`, async () => {
+        const net = new Network();
+        const account = fakeAddress(27);
+        const endpoint = net.add("alpha", [witnessRecord(WITNESS_A, keyType)]);
+        endpoint.signatureScheme = scheme;
+        const user = new CosignedUser([cosignedKey(account, WITNESS_A, false, keyType)]);
+        net.install(user.handle);
+        const node = new FakeAlgod();
+        const resolver = new EndpointCosignerResolver(registry("alpha"));
+        const send = new SignerClient(SIGNER).sendPrepared(node as any, group(cosignedPayment(account)), {
+          cosignerResolver: resolver,
+        });
+        if (scheme === keyType) {
+          assert.equal((await send).outcome, "confirmed", "the group was not sent");
+        } else {
+          const want = `cosigner signature for target 0 used scheme "${scheme}", want "${keyType}"`;
+          await assert.rejects(send, (error: unknown) => {
+            assert.ok(errorText(error).includes(want), `error is ${errorText(error)}`);
+            return true;
+          });
+          assert.ok(!user.paths.includes("/sign/assemble"), `assembled: ${user.paths.join(", ")}`);
+          assert.equal(node.submitted.length, 0, "something was submitted");
+        }
+        assert.deepEqual(endpoint.componentRequests[0].targets.map((item: any) => item.component_key), [id(WITNESS_A, keyType)], "component key");
+        await resolver.close();
+      });
+    }
+  }
 });
 
 describe("the default cosigner resolver of a client created from a data directory", () => {

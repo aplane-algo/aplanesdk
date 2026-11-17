@@ -17,6 +17,7 @@ const (
 	AuthorizationKindLogicSig = "logic_sig"
 
 	KeyTypeWitnessFalcon1024 = "aplane.witness-falcon1024.v1"
+	KeyTypeWitnessEd25519    = "aplane.witness-ed25519.v1"
 )
 
 // LogicSigResourceUsage is one selected authorization path's independent
@@ -695,17 +696,21 @@ type CreationParam struct {
 
 // KeyTypeInfo describes an available key type on the signer.
 type KeyTypeInfo struct {
-	KeyType                  string `json:"key_type"`
-	Family                   string `json:"family"`
-	DisplayName              string `json:"display_name"`
-	Description              string `json:"description"`
-	AuthorizationKind        string `json:"authorization_kind,omitempty"`
-	RequiresLogicSig         bool   `json:"requires_logicsig"`
-	MnemonicWordCount        int    `json:"mnemonic_word_count"`
-	MnemonicImport           bool   `json:"mnemonic_import"`
-	MnemonicScheme           string `json:"mnemonic_scheme"`
-	SigningFlow              string `json:"signing_flow,omitempty"`
-	CosignerComponentKeyType string `json:"cosigner_component_key_type,omitempty"`
+	KeyType           string `json:"key_type"`
+	Family            string `json:"family"`
+	DisplayName       string `json:"display_name"`
+	Description       string `json:"description"`
+	AuthorizationKind string `json:"authorization_kind,omitempty"`
+	RequiresLogicSig  bool   `json:"requires_logicsig"`
+	MnemonicWordCount int    `json:"mnemonic_word_count"`
+	MnemonicImport    bool   `json:"mnemonic_import"`
+	MnemonicScheme    string `json:"mnemonic_scheme"`
+	SigningFlow       string `json:"signing_flow,omitempty"`
+	// CosignerComponentKeyTypes lists the cosigner key types an account of this
+	// type can take: one for a fixed bounded type, every supported cosigner key
+	// type for a per-key-contract type. Each account names its own on GetKeys
+	// (KeyInfo.CosignerComponentKeyType).
+	CosignerComponentKeyTypes []string `json:"cosigner_component_key_types,omitempty"`
 	// PerKeyContract means each account selects its own contract at generation, so
 	// this type has no fixed signing flow or bounded profile. Route by GetKeys.
 	PerKeyContract bool `json:"per_key_contract,omitempty"`

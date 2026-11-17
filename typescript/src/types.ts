@@ -33,6 +33,7 @@ export const BOUNDED_CONTRACT_PLAIN1 = "plain1";
 export const SIGNING_FLOW_ROTATING1 = "rotating1";
 
 export const KEY_TYPE_WITNESS_FALCON1024 = "aplane.witness-falcon1024.v1";
+export const KEY_TYPE_WITNESS_ED25519 = "aplane.witness-ed25519.v1";
 export const PQ_SCHEME_FALCON1024 = "f1";
 
 export const AUTHORIZATION_KIND_ED25519 = "ed25519";
@@ -399,8 +400,12 @@ export interface KeyTypeInfo {
   mnemonicScheme?: string;
   /** Signing choreography label (e.g. "cosigned1"); empty/absent = plain /sign path */
   signingFlow?: string;
-  /** Cosigner component key type for signing flow "cosigned1" */
-  cosignerComponentKeyType?: string;
+  /**
+   * The cosigner key types an account of this type can take: one for a fixed
+   * bounded type, every supported one for a per-key-contract type. Each
+   * account names its own on /keys (KeyInfo.cosignerComponentKeyType).
+   */
+  cosignerComponentKeyTypes?: string[];
   /** Each account selects its own contract; route by /keys, not this type */
   perKeyContract?: boolean;
   /**

@@ -984,6 +984,10 @@ type cosignedSend struct {
 	// componentKey is the Witness Key ID the cosigner expects to be asked
 	// under; empty means COSIGNER_COMPONENT.
 	componentKey string
+	// cosignerKeyType is the key type of the account's cosigner key, which
+	// the cosigner lists its witness key under. cosignerScheme is the
+	// signature scheme the cosigner signs in; empty means cosignerKeyType.
+	cosignerKeyType, cosignerScheme string
 }
 
 // cosignerPublicKeyHex is the cosigned account's cosigner public key in the
@@ -1055,17 +1059,24 @@ func failAs(t *testing.T, w http.ResponseWriter, fault, name string) bool {
 
 func cosignedSendFixture(t *testing.T, fault string, primary bool) *cosignedSend {
 	t.Helper()
-	f := &cosignedSend{requestIDs: map[string]string{}}
+	return cosignedSendFixtureFor(t, fault, primary, KeyTypeWitnessFalcon1024)
+}
+
+// cosignedSendFixtureFor is cosignedSendFixture for an account whose cosigner
+// key is of cosignerKeyType.
+func cosignedSendFixtureFor(t *testing.T, fault string, primary bool, cosignerKeyType string) *cosignedSend {
+	t.Helper()
+	f := &cosignedSend{requestIDs: map[string]string{}, cosignerKeyType: cosignerKeyType}
 	bounded := sdkTestAddress(21)
 	key := KeyInfo{
 		Address: bounded, KeyType: "aplane.falcon1024.v1", SigningFlow: SigningFlowCosigned1,
 		LogicSigResources: &LogicSigResourceProfile{
 			Spend: &LogicSigResourceUsage{ProgramBytes: 5308, ArgumentBytes: 3358, MaxOpcodeCost: 20000},
 		},
-		CosignerComponentKeyType: KeyTypeWitnessFalcon1024,
+		CosignerComponentKeyType: cosignerKeyType,
 		BoundedAuthorization: &BoundedAuthorizationInfo{
 			Contract: BoundedContractBounded2, MaxFee: new(uint64(1000)),
-			Cosigner: &BoundedCosignerAuthorizationInfo{ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: cosignerPublicKeyHex},
+			Cosigner: &BoundedCosignerAuthorizationInfo{ComponentKeyType: cosignerKeyType, PublicKeyHex: cosignerPublicKeyHex},
 		},
 	}
 	keys := []KeyInfo{key}
@@ -1146,7 +1157,7 @@ func cosignedSendFixture(t *testing.T, fault string, primary bool) *cosignedSend
 		if r.URL.Path == "/keys" {
 			// What discovery reads: the cosigner's witness key.
 			publicKey, _ := hex.DecodeString(cosignerPublicKeyHex)
-			json.NewEncoder(w).Encode(KeysResponse{Count: 1, Keys: []KeyInfo{witnessRecord(KeyTypeWitnessFalcon1024, publicKey)}})
+			json.NewEncoder(w).Encode(KeysResponse{Count: 1, Keys: []KeyInfo{witnessRecord(cosignerKeyType, publicKey)}})
 			return
 		}
 		f.mu.Lock()
@@ -1161,17 +1172,20 @@ func cosignedSendFixture(t *testing.T, fault string, primary bool) *cosignedSend
 			t.Errorf("decode cosigner request: %v", err)
 			return
 		}
-		want := "COSIGNER_COMPONENT"
+		want, scheme := "COSIGNER_COMPONENT", cosignerKeyType
 		f.mu.Lock()
 		if f.componentKey != "" {
 			want = f.componentKey
+		}
+		if f.cosignerScheme != "" {
+			scheme = f.cosignerScheme
 		}
 		f.mu.Unlock()
 		if req.ComponentKey != want {
 			t.Errorf("cosigner component key = %q, want %q", req.ComponentKey, want)
 		}
 		json.NewEncoder(w).Encode(ComponentResponse{RequestID: req.RequestID, Components: []Component{{
-			Kind: ComponentTargetKindCosigner, TargetIndex: 0, Signature: "cosigner-sig", SignatureScheme: KeyTypeWitnessFalcon1024,
+			Kind: ComponentTargetKindCosigner, TargetIndex: 0, Signature: "cosigner-sig", SignatureScheme: scheme,
 		}}})
 	})
 	t.Cleanup(cosignerServer.Close)
@@ -1212,6 +1226,34 @@ func TestSendPreparedCosignedGroup(t *testing.T) {
 				t.Fatalf("txids %v fees %v", result.TxIDs, result.Fees)
 			}
 		})
+	}
+}
+
+// A cosigner signature is taken only in the scheme of the account's cosigner
+// key type: a Falcon cosigner's in Falcon and an Ed25519 cosigner's in
+// Ed25519. Either in the other's scheme is refused before assembly.
+func TestSendPreparedCosignedChecksTheCosignerSignatureScheme(t *testing.T) {
+	for _, keyType := range []string{KeyTypeWitnessFalcon1024, KeyTypeWitnessEd25519} {
+		for _, scheme := range []string{KeyTypeWitnessFalcon1024, KeyTypeWitnessEd25519} {
+			t.Run(fmt.Sprintf("%s account, %s signature", keyType, scheme), func(t *testing.T) {
+				f := cosignedSendFixtureFor(t, "", false, keyType)
+				f.cosignerScheme = scheme
+				result, err := f.send()
+				if scheme == keyType {
+					if err != nil || result.Outcome != SendOutcomeConfirmed || f.cosignerCalls != 1 {
+						t.Fatalf("SendPrepared() = %+v, %v; cosigner calls %d", result, err, f.cosignerCalls)
+					}
+					return
+				}
+				want := fmt.Sprintf("cosigner signature for target 0 used scheme %q, want %q", scheme, keyType)
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Fatalf("SendPrepared() error = %v, want %q", err, want)
+				}
+				if posted := f.posted("/sign/assemble"); len(posted) != 0 || len(f.node.submissions()) != 0 {
+					t.Fatalf("posted %v, submitted %d; want nothing assembled or submitted", posted, len(f.node.submissions()))
+				}
+			})
+		}
 	}
 }
 

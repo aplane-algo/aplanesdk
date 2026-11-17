@@ -175,6 +175,7 @@ SEND_OUTCOME_SUBMITTED = "submitted"
 SEND_OUTCOME_CONFIRMED = "confirmed"
 
 KEY_TYPE_WITNESS_FALCON1024 = "aplane.witness-falcon1024.v1"
+KEY_TYPE_WITNESS_ED25519 = "aplane.witness-ed25519.v1"
 
 
 def _resolve_data_dir(data_dir: Optional[str]) -> str:
@@ -1206,7 +1207,7 @@ _KEY_TYPES_RESPONSE_SHAPE: Dict[str, Any] = {
             "mnemonic_import": "bool",
             "mnemonic_scheme": "str",
             "signing_flow": "str",
-            "cosigner_component_key_type": "str",
+            "cosigner_component_key_types": "strs",
             "per_key_contract": "bool",
             "boundary_schema": "str",
             "bounded_authorization": _BOUNDED_AUTHORIZATION_SHAPE,
@@ -1538,7 +1539,10 @@ class KeyTypeInfo:
     mnemonic_import: bool = False
     mnemonic_scheme: str = ""
     signing_flow: str = ""  # Signing choreography label (e.g. "cosigned1"); empty = plain /sign
-    cosigner_component_key_type: str = ""  # Cosigner component key type for signing flow "cosigned1"
+    # The cosigner key types an account of this type can take: one for a fixed
+    # bounded type, every supported one for a per-key-contract type. Each account
+    # names its own on /keys (KeyInfo.cosigner_component_key_type).
+    cosigner_component_key_types: List[str] = field(default_factory=list)
     per_key_contract: bool = False  # Each account selects its own contract; route by /keys
     # The boundary file grammar a per-key type's requests take ("aplane.boundary.v1"),
     # or "" for one that takes none, such as a plain host.
@@ -6361,7 +6365,7 @@ class SignerClient:
                     mnemonic_import=kt.get("mnemonic_import", False),
                     mnemonic_scheme=kt.get("mnemonic_scheme", ""),
                     signing_flow=kt.get("signing_flow", ""),
-                    cosigner_component_key_type=kt.get("cosigner_component_key_type", ""),
+                    cosigner_component_key_types=list(kt.get("cosigner_component_key_types") or []),
                     per_key_contract=kt.get("per_key_contract", False),
                     boundary_schema=kt.get("boundary_schema", ""),
                     bounded_authorization=_parse_bounded_authorization(

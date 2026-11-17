@@ -15,6 +15,7 @@ import time
 import pytest
 
 from aplanesdk import (
+    KEY_TYPE_WITNESS_ED25519,
     KEY_TYPE_WITNESS_FALCON1024,
     AuthenticationError,
     ClientEndpointConfig,
@@ -86,6 +87,9 @@ class Endpoint:
 
             request = json.loads(body)
             self.components.append(request)
+            # Each signature is in the scheme of the listed witness key it
+            # was asked under.
+            schemes = {key.get("address"): key.get("key_type") for key in self.keys}
             return reply(
                 200,
                 {
@@ -95,7 +99,7 @@ class Endpoint:
                             "kind": "cosigner",
                             "target_index": target["target_index"],
                             "signature": "cosigner-sig",
-                            "signature_scheme": WITNESS,
+                            "signature_scheme": schemes.get(target["component_key"], WITNESS),
                         }
                         for target in request["targets"]
                     ],
@@ -751,20 +755,34 @@ def _from_data_directory(client, registry, **connection):
     return client
 
 
-def _fixture_cosigner(**options):
-    return Endpoint([witness_record(FIXTURE_PUBLIC)], **options)
+def _fixture_cosigner(key_type=WITNESS, **options):
+    return Endpoint([witness_record(FIXTURE_PUBLIC, key_type=key_type)], **options)
 
 
 class TestCosignedFlow:
-    def test_a_client_from_a_data_directory_finds_its_cosigner(self, fakes, network):
-        fixture = CosignedFixture(fakes)
-        cosigner = _fixture_cosigner()
-        net = network({"cosign": cosigner, "other": Endpoint([witness_record(PUBLIC_A)])})
+    @pytest.mark.parametrize(
+        "key_type, other_type",
+        [
+            (KEY_TYPE_WITNESS_FALCON1024, KEY_TYPE_WITNESS_ED25519),
+            (KEY_TYPE_WITNESS_ED25519, KEY_TYPE_WITNESS_FALCON1024),
+        ],
+    )
+    def test_a_client_from_a_data_directory_finds_its_cosigner(
+        self, fakes, network, key_type, other_type
+    ):
+        # The cosigner is the endpoint that lists the account's cosigner
+        # public key under the account's cosigner key type, not the one that
+        # lists the same public key under the other key type.
+        fixture = CosignedFixture(fakes, cosigner_key_type=key_type)
+        cosigner = _fixture_cosigner(key_type)
+        other = _fixture_cosigner(other_type)
+        net = network({"cosign": cosigner, "other": other})
         _from_data_directory(fixture.user_client, net.registry)
         result = fixture.send()
         assert result.signed_group
         (request,) = cosigner.components
-        assert request["targets"][0]["component_key"] == witness_key_id(WITNESS, FIXTURE_PUBLIC)
+        assert request["targets"][0]["component_key"] == witness_key_id(key_type, FIXTURE_PUBLIC)
+        assert other.components == []
         # It connects as the signer client was created.
         options = net.connects[0][3]
         assert options["timeout"] == 7

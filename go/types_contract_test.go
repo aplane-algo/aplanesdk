@@ -300,9 +300,28 @@ func TestBoundedInventoryUsesStructuredResources(t *testing.T) {
 	}
 	corridorType := keyTypes.KeyTypes[1]
 	if corridorType.SigningFlow != SigningFlowCosigned1 ||
-		corridorType.CosignerComponentKeyType != KeyTypeWitnessFalcon1024 ||
+		!reflect.DeepEqual(corridorType.CosignerComponentKeyTypes, []string{KeyTypeWitnessFalcon1024}) ||
 		corridorType.BoundedAuthorization == nil || corridorType.BoundedAuthorization.Cosigner == nil {
 		t.Fatalf("Corridor key type routing = %+v, want bounded cosigner metadata", corridorType)
+	}
+
+	raw, err = os.ReadFile(sdkContractFixturePath(t, "keytypes_response_per_key.json"))
+	if err != nil {
+		t.Fatalf("read per-key keytypes fixture: %v", err)
+	}
+	var perKeyTypes KeyTypesResponse
+	if err := json.Unmarshal(raw, &perKeyTypes); err != nil {
+		t.Fatalf("decode per-key keytypes fixture: %v", err)
+	}
+	if len(perKeyTypes.KeyTypes) == 0 {
+		t.Fatal("per-key keytypes fixture is empty")
+	}
+	perKeyType := perKeyTypes.KeyTypes[0]
+	if !perKeyType.PerKeyContract || perKeyType.SigningFlow != "" || perKeyType.BoundedAuthorization != nil {
+		t.Fatalf("per-key key type = %+v, want per-key contract with no fixed flow or profile", perKeyType)
+	}
+	if want := []string{KeyTypeWitnessFalcon1024, KeyTypeWitnessEd25519}; !reflect.DeepEqual(perKeyType.CosignerComponentKeyTypes, want) {
+		t.Fatalf("per-key cosigner component key types = %#v, want %#v", perKeyType.CosignerComponentKeyTypes, want)
 	}
 }
 

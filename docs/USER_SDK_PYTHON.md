@@ -802,6 +802,10 @@ type whose accounts each select their contract at generation, and
 parameters are given directly. `valid_rekey_target` says whether an aplane key
 of this type may be the signing authority an account is rekeyed to, its own
 account included; on a key type it is the type's declaration.
+`cosigner_component_key_types` lists the cosigner key types an account of the
+type can take: one on a fixed bounded type such as Corridor, and
+`aplane.witness-falcon1024.v1` and `aplane.witness-ed25519.v1` on a plain
+host. Each account names its own in `KeyInfo.cosigner_component_key_type`.
 
 ### Generate A Key
 
@@ -1265,8 +1269,10 @@ The key in `identity_file` must be enrolled at the cosigner too
   each with its own `identity_file` and `known_hosts_path` and with the
   client's `timeout`, `trust_on_first_use` and `ssh_setup_timeout`, and reads
   its `/keys`;
-- signs with the one endpoint that lists the account's witness key, under its
-  Witness Key ID;
+- signs with the one endpoint that lists the account's witness key, of the
+  key type the account names in `cosigner_component_key_type` and with its
+  public key, under its Witness Key ID, and takes the signature only in that
+  key type's scheme;
 - keeps those connections, and closes them when you `close()` the client.
 
 An explicit `cosigner_client` (with `cosigner_component_key`) or

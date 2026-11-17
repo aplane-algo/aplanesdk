@@ -441,7 +441,7 @@ export const KEYTYPES_ANSWER: AnswerShape = {
           mnemonic_import: "bool",
           mnemonic_scheme: "string",
           signing_flow: "string",
-          cosigner_component_key_type: "string",
+          cosigner_component_key_types: { list: "string" },
           per_key_contract: "bool",
           boundary_schema: "string",
           bounded_authorization: BOUNDED_AUTHORIZATION,

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	algocrypto "github.com/algorand/go-algorand-sdk/v2/crypto"
@@ -20,30 +21,51 @@ import (
 )
 
 // A cosigned send with no cosigner given, by a client created from a data
-// directory, finds the cosigner in endpoints.yaml.
+// directory, finds the cosigner in endpoints.yaml: the endpoint that lists
+// the account's cosigner public key under the account's cosigner key type,
+// not one that lists the same public key under the other key type.
 func TestSendPreparedCosignedFindsTheCosignerByDefault(t *testing.T) {
-	f := cosignedSendFixture(t, "", false)
-	publicKey, _ := hex.DecodeString(cosignerPublicKeyHex)
-	f.componentKey = WitnessKeyID(KeyTypeWitnessFalcon1024, publicKey)
-	resolver := NewEndpointCosignerResolverFromRegistry(&ClientEndpointRegistry{Endpoints: map[string]ClientEndpointConfig{
-		"cos": {Role: ClientEndpointRoleCosigner, URL: "ssh://cos"},
-	}}, nil)
-	connects := 0
-	resolver.connect = func(context.Context, ClientEndpointConfig, EndpointCosignerResolverOptions) (*SignerClient, error) {
-		connects++
-		return f.cosigner, nil
-	}
-	f.user.endpoints = resolver.registry
-	f.user.cosignerResolver = resolver
-	result, err := f.user.SendPrepared(context.Background(), f.algod, f.group, nil)
-	if err != nil || result.Outcome != SendOutcomeConfirmed || f.cosignerCalls != 1 || connects != 1 {
-		t.Fatalf("SendPrepared() = %+v, %v; cosigner calls %d, connects %d", result, err, f.cosignerCalls, connects)
-	}
+	for _, tc := range []struct{ keyType, other string }{
+		{KeyTypeWitnessFalcon1024, KeyTypeWitnessEd25519},
+		{KeyTypeWitnessEd25519, KeyTypeWitnessFalcon1024},
+	} {
+		t.Run(tc.keyType, func(t *testing.T) {
+			f := cosignedSendFixtureFor(t, "", false, tc.keyType)
+			publicKey, _ := hex.DecodeString(cosignerPublicKeyHex)
+			f.componentKey = WitnessKeyID(tc.keyType, publicKey)
+			other, otherServer := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/keys" {
+					t.Errorf("the endpoint of the other key type was asked for %s", r.URL.Path)
+					return
+				}
+				json.NewEncoder(w).Encode(KeysResponse{Count: 1, Keys: []KeyInfo{witnessRecord(tc.other, publicKey)}})
+			})
+			defer otherServer.Close()
+			resolver := NewEndpointCosignerResolverFromRegistry(&ClientEndpointRegistry{Endpoints: map[string]ClientEndpointConfig{
+				"cos":   {Role: ClientEndpointRoleCosigner, URL: "ssh://cos"},
+				"other": {Role: ClientEndpointRoleCosigner, URL: "ssh://other"},
+			}}, nil)
+			var connects atomic.Int32
+			resolver.connect = func(_ context.Context, endpoint ClientEndpointConfig, _ EndpointCosignerResolverOptions) (*SignerClient, error) {
+				connects.Add(1)
+				if endpoint.URL == "ssh://other" {
+					return other, nil
+				}
+				return f.cosigner, nil
+			}
+			f.user.endpoints = resolver.registry
+			f.user.cosignerResolver = resolver
+			result, err := f.user.SendPrepared(context.Background(), f.algod, f.group, nil)
+			if err != nil || result.Outcome != SendOutcomeConfirmed || f.cosignerCalls != 1 || connects.Load() != 2 {
+				t.Fatalf("SendPrepared() = %+v, %v; cosigner calls %d, connects %d", result, err, f.cosignerCalls, connects.Load())
+			}
 
-	// An explicit cosigner wins over the default.
-	f.componentKey = "COSIGNER_COMPONENT"
-	if _, err := f.user.SendPrepared(context.Background(), f.algod, f.group, &SendOptions{CosignerClient: f.cosigner, CosignerComponentKey: "COSIGNER_COMPONENT"}); err != nil || connects != 1 {
-		t.Fatalf("SendPrepared(explicit) error = %v, connects %d", err, connects)
+			// An explicit cosigner wins over the default.
+			f.componentKey = "COSIGNER_COMPONENT"
+			if _, err := f.user.SendPrepared(context.Background(), f.algod, f.group, &SendOptions{CosignerClient: f.cosigner, CosignerComponentKey: "COSIGNER_COMPONENT"}); err != nil || connects.Load() != 2 {
+				t.Fatalf("SendPrepared(explicit) error = %v, connects %d", err, connects.Load())
+			}
+		})
 	}
 }
 
