@@ -4047,7 +4047,7 @@ export class SignerClient {
         mnemonicImport: kt.mnemonic_import,
         mnemonicScheme: kt.mnemonic_scheme,
         signingFlow: kt.signing_flow || undefined,
-        cosignerComponentKeyType: kt.cosigner_component_key_type || undefined,
+        cosignerComponentKeyTypes: kt.cosigner_component_key_types?.length ? kt.cosigner_component_key_types : undefined,
         perKeyContract: kt.per_key_contract || undefined,
         boundarySchema: kt.boundary_schema || undefined,
         boundedAuthorization: mapBoundedAuthorization(kt.bounded_authorization),

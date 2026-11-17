@@ -19,6 +19,7 @@ from algosdk import error as algosdk_error
 
 from aplanesdk import (
     DEFAULT_SEND_WAIT_ROUNDS,
+    KEY_TYPE_WITNESS_ED25519,
     KEY_TYPE_WITNESS_FALCON1024,
     SEND_OUTCOME_CONFIRMED,
     SEND_OUTCOME_SUBMITTED,
@@ -729,14 +730,24 @@ class CosignedFixture:
     closes the connection with no answer, "<path> truncate" answers 200 with
     a body cut short."""
 
-    def __init__(self, fakes, fault="", cosigner_fault="", rekey_path=""):
+    def __init__(
+        self,
+        fakes,
+        fault="",
+        cosigner_fault="",
+        rekey_path="",
+        cosigner_key_type=KEY_TYPE_WITNESS_FALCON1024,
+    ):
         """``rekey_path``, when set, makes the transaction a rekey of an
         account with a rekey list, which the signer's base component answers
-        with that path ("spending_rekey" or "listed_rekey")."""
+        with that path ("spending_rekey" or "listed_rekey").
+        ``cosigner_key_type`` is the key type of the account's cosigner key;
+        the cosigner signs in ``cosigner_scheme``, which starts as that."""
         self.bounded = fake_signer.test_address(21)
         self.fault = fault
         self.cosigner_fault = cosigner_fault
         self.cosigner_calls = 0
+        self.cosigner_scheme = cosigner_key_type
         self.path = rekey_path or "spend"
         usage = {"program_bytes": 5308, "argument_bytes": 3358, "max_opcode_cost": 20000}
         authorization = {
@@ -744,7 +755,7 @@ class CosignedFixture:
             "max_fee": 1000,
             "rekey": "refused",
             "cosigner": {
-                "component_key_type": KEY_TYPE_WITNESS_FALCON1024,
+                "component_key_type": cosigner_key_type,
                 "public_key_hex": "aabb",
             },
         }
@@ -756,7 +767,7 @@ class CosignedFixture:
             SIGNING_FLOW_COSIGNED1,
             key_type="aplane.falcon1024.v1",
             logic_sig_resources={"spend": usage, "spending_rekey": usage, "listed_rekey": usage},
-            cosigner_component_key_type=KEY_TYPE_WITNESS_FALCON1024,
+            cosigner_component_key_type=cosigner_key_type,
             bounded_authorization=authorization,
         )
         self.keys = [bounded_key]
@@ -838,7 +849,7 @@ class CosignedFixture:
                         "kind": "cosigner",
                         "target_index": 0,
                         "signature": "cosigner-sig",
-                        "signature_scheme": KEY_TYPE_WITNESS_FALCON1024,
+                        "signature_scheme": self.cosigner_scheme,
                     }
                 ],
             },
@@ -883,6 +894,31 @@ def test_send_prepared_cosigned_group(fakes):
     assert fixture.node.submissions() == [b"".join(result.signed_group)]
     assert result.outcome == SEND_OUTCOME_CONFIRMED
     assert result.tx_ids[0] == fixture.txn.get_txid() and result.fees[0] == 1000
+
+
+@pytest.mark.parametrize("scheme", [KEY_TYPE_WITNESS_FALCON1024, KEY_TYPE_WITNESS_ED25519])
+@pytest.mark.parametrize("key_type", [KEY_TYPE_WITNESS_FALCON1024, KEY_TYPE_WITNESS_ED25519])
+def test_send_prepared_cosigned_checks_the_cosigner_signature_scheme(fakes, key_type, scheme):
+    """A cosigner signature is taken only in the scheme of the account's
+    cosigner key type; in the other one's it is refused before assembly."""
+    fixture = CosignedFixture(fakes, cosigner_key_type=key_type)
+    fixture.cosigner_scheme = scheme
+
+    def send():
+        return fixture.send(
+            cosigner_client=fixture.cosigner_client, cosigner_component_key="COSIGNER_COMPONENT"
+        )
+
+    if scheme == key_type:
+        assert send().outcome == SEND_OUTCOME_CONFIRMED
+        assert fixture.cosigner_calls == 1
+        return
+    want = f"cosigner signature for target 0 used scheme {scheme!r}, want {key_type!r}"
+    with pytest.raises(SignerError) as excinfo:
+        send()
+    assert want in str(excinfo.value)
+    assert "/sign/assemble" not in fixture.user.paths
+    assert fixture.node.submissions() == []
 
 
 def test_send_prepared_cosigned_without_a_cosigner_is_refused(fakes):

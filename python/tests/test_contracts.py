@@ -604,7 +604,7 @@ def test_bounded_inventory_projects_layer3_policy():
     assert key_type.bounded_authorization.rekey == "refused"
     corridor_type = key_types[1]
     assert corridor_type.signing_flow == "cosigned1"
-    assert corridor_type.cosigner_component_key_type == "aplane.witness-falcon1024.v1"
+    assert corridor_type.cosigner_component_key_types == ["aplane.witness-falcon1024.v1"]
     assert corridor_type.bounded_authorization.cosigner.required_on == ["spend"]
     assert corridor_type.bounded_authorization.rekey == "refused"
 
@@ -617,7 +617,10 @@ def test_bounded_inventory_projects_layer3_policy():
     assert per_key_type.per_key_contract is True
     assert per_key_type.signing_flow == ""
     assert per_key_type.bounded_authorization is None
-    assert per_key_type.cosigner_component_key_type == "aplane.witness-falcon1024.v1"
+    assert per_key_type.cosigner_component_key_types == [
+        "aplane.witness-falcon1024.v1",
+        "aplane.witness-ed25519.v1",
+    ]
 
 
 def test_status_tolerates_fields_from_a_newer_signer():

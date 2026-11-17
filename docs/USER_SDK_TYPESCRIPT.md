@@ -794,6 +794,10 @@ This is the easiest way to discover:
 - through `validRekeyTarget`, whether an aplane key of this type may be the
   signing authority an account is rekeyed to, its own account included; on a
   key type it is the type's declaration
+- through `cosignerComponentKeyTypes`, the cosigner key types an account of
+  this type can take: one on a fixed bounded type such as Corridor, and
+  `aplane.witness-falcon1024.v1` and `aplane.witness-ed25519.v1` on a plain
+  host. Each account names its own in `KeyInfo.cosignerComponentKeyType`
 
 ### Generate And Delete A Key
 
@@ -1013,8 +1017,10 @@ The key in `identity_file` must be enrolled at the cosigner too
 - connects, on first use, to every `role: cosigner` endpoint (at most 12),
   each with its own identity file and known_hosts path and with the client's
   `trustOnFirstUse`, `sshSetupTimeout` and `timeout`, and reads its `/keys`;
-- signs with the one endpoint that lists the account's witness key, under its
-  Witness Key ID;
+- signs with the one endpoint that lists the account's witness key, of the
+  key type the account names in `cosignerComponentKeyType` and with its
+  public key, under its Witness Key ID, and takes the signature only in that
+  key type's scheme;
 - keeps those connections, and closes them when you `close()` the client.
 
 An explicit `cosignerClient` (with `cosignerComponentKey`) or
