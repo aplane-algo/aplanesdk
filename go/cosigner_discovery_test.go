@@ -17,20 +17,25 @@ import (
 )
 
 func TestWitnessKeyIDVectors(t *testing.T) {
-	zeros := make([]byte, 1793)
-	counting := make([]byte, 1793)
-	for i := range counting {
-		counting[i] = byte(i % 251)
+	counting := func(size int) []byte {
+		key := make([]byte, size)
+		for i := range key {
+			key[i] = byte(i % 251)
+		}
+		return key
 	}
 	for name, tc := range map[string]struct {
-		key  []byte
-		want string
+		keyType string
+		key     []byte
+		want    string
 	}{
-		"all zero":  {zeros, "ROGAFDACF7ASC3EMZRWNKVM73NXHO4P6O4EB7ZXWER37SM63BMFQ"},
-		"i mod 251": {counting, "HJPRU4QEGLKF7RD6FYHQSG4SFAADHULJYVCVFPSCMIYZLAYW5MNA"},
+		"all zero":          {KeyTypeWitnessFalcon1024, make([]byte, 1793), "ROGAFDACF7ASC3EMZRWNKVM73NXHO4P6O4EB7ZXWER37SM63BMFQ"},
+		"i mod 251":         {KeyTypeWitnessFalcon1024, counting(1793), "HJPRU4QEGLKF7RD6FYHQSG4SFAADHULJYVCVFPSCMIYZLAYW5MNA"},
+		"Ed25519 all zero":  {KeyTypeWitnessEd25519, make([]byte, 32), "MMN7TOWCUUIJP2VKT5JJW7RC5J6S5LZEHPDNAKEW4G4KYV6XCJJQ"},
+		"Ed25519 i mod 251": {KeyTypeWitnessEd25519, counting(32), "G6RCBPAWGJ7FHBXANDLJ2JYG2THQUKREIUCIRKAVDWEKAOBOJTVQ"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if got := WitnessKeyID(KeyTypeWitnessFalcon1024, tc.key); got != tc.want || len(got) != 52 {
+			if got := WitnessKeyID(tc.keyType, tc.key); got != tc.want || len(got) != 52 {
 				t.Fatalf("WitnessKeyID() = %s, want %s", got, tc.want)
 			}
 		})

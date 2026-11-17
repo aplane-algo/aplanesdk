@@ -58,6 +58,14 @@ def testwitness_key_id_vectors():
         witness_key_id(WITNESS, bytes(i % 251 for i in range(1793)))
         == "HJPRU4QEGLKF7RD6FYHQSG4SFAADHULJYVCVFPSCMIYZLAYW5MNA"
     )
+    assert (
+        witness_key_id("aplane.witness-ed25519.v1", bytes(32))
+        == "MMN7TOWCUUIJP2VKT5JJW7RC5J6S5LZEHPDNAKEW4G4KYV6XCJJQ"
+    )
+    assert (
+        witness_key_id("aplane.witness-ed25519.v1", bytes(i % 251 for i in range(32)))
+        == "G6RCBPAWGJ7FHBXANDLJ2JYG2THQUKREIUCIRKAVDWEKAOBOJTVQ"
+    )
     assert len(witness_key_id(WITNESS, b"\x01")) == 52
 
 

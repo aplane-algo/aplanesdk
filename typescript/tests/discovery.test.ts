@@ -193,6 +193,16 @@ describe("Witness Key ID", () => {
       "HJPRU4QEGLKF7RD6FYHQSG4SFAADHULJYVCVFPSCMIYZLAYW5MNA",
       "counting public key",
     );
+    assert.equal(
+      witnessKeyId("aplane.witness-ed25519.v1", new Uint8Array(32)),
+      "MMN7TOWCUUIJP2VKT5JJW7RC5J6S5LZEHPDNAKEW4G4KYV6XCJJQ",
+      "all-zero Ed25519 public key",
+    );
+    assert.equal(
+      witnessKeyId("aplane.witness-ed25519.v1", new Uint8Array(32).map((_, index) => index % 251)),
+      "G6RCBPAWGJ7FHBXANDLJ2JYG2THQUKREIUCIRKAVDWEKAOBOJTVQ",
+      "counting Ed25519 public key",
+    );
   });
 
   it("is 52 uppercase base32 characters, for any key type and length", () => {
