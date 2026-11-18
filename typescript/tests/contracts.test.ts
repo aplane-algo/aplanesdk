@@ -588,11 +588,32 @@ describe("signer API contract fixtures", () => {
       { position: 1, count: 0 },
       { position: 1, count: 100001 },
       { position: 1.5, count: 2 },
+      { position: 1, count: 2, total: 2 },
+      [1, 2],
+      "1 of 2",
     ]) {
-      const request = { ...(fixture("component_request.json") as ComponentRequest), batch };
+      const request = { ...(fixture("component_request.json") as ComponentRequest), batch } as ComponentRequest;
       await assert.rejects(client.requestComponents(request), /batch/);
     }
     assert.equal(mockFetch.mock.calls.length, 0);
+  });
+
+  it("takes a component request whose batch label is null as one without a label", async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: async () => fixture("status_response_ready.json"),
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: async () => fixture("component_response.json"),
+      });
+    const client = new SignerClient("http://localhost:11270");
+    const request = { ...(fixture("component_request.json") as ComponentRequest), batch: null } as unknown as ComponentRequest;
+    const response = await client.requestComponents(request);
+    assert.equal(response.components[0].kind, "bounded-base");
   });
 
   it("projects bounded inventory layer3 policy", async () => {

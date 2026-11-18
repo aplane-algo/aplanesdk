@@ -550,7 +550,9 @@ def test_cosigner_dtos_round_trip_fixtures():
     assert unified_component_req.batch == {"position": 1, "count": 2}
     for batch in ({"position": 0, "count": 2}, {"position": 3, "count": 2},
                   {"position": 1, "count": 0}, {"position": 1, "count": 100001},
-                  {"position": True, "count": 2}):
+                  {"position": True, "count": 2}, [1, 2], (1, 2),
+                  {"position": 1, "count": 2, "total": 2},
+                  {"position": 1, "count": 2, 3: 4, "total": 2}):
         bad = fixture("component_request.json")
         bad["batch"] = batch
         with pytest.raises(ValueError, match="batch"):
