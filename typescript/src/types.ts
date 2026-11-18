@@ -610,6 +610,7 @@ export interface RotatingSignRequest {
   account: string;
   transactions: string[];
   app_call_info?: AppCallInfo;
+  batch?: SignBatch;
 }
 
 /** Response payload for /sign/rotating/sign. */
@@ -688,6 +689,7 @@ export interface ComponentRequest {
   targets: ComponentTarget[];
   contextual_positions?: ComponentContextPosition[];
   dummy_positions?: ComponentDummyPosition[];
+  batch?: SignBatch;
 }
 
 export interface ComponentTarget {
@@ -848,6 +850,8 @@ export interface GroupSignRequest {
   request_id?: string;
   /** Transaction slots to sign or pass through. */
   requests: SignRequest[];
+  /** Optional approval label: this request's place among several sent one at a time. */
+  batch?: SignBatch;
 }
 
 export type SignRequestMode = "sign" | "passthrough" | "foreign";
@@ -937,6 +941,17 @@ export interface AppCallInfo {
   mode?: string;
   /** ABI method signature when available */
   method?: string;
+}
+
+/**
+ * Optional approval label: a request is one of several the caller sends one
+ * at a time, each for its own approval, the `position`-th of `count`, with
+ * `1 <= position <= count <= 100000`. The signer cannot check it, shows it as
+ * the client's, and it decides nothing.
+ */
+export interface SignBatch {
+  position: number;
+  count: number;
 }
 
 /**

@@ -69,6 +69,33 @@ type AppCallInfo struct {
 type GroupSignRequest struct {
 	RequestID string        `json:"request_id,omitempty"`
 	Requests  []SignRequest `json:"requests"`
+	Batch     *SignBatch    `json:"batch,omitempty"`
+}
+
+// maxSignBatchCount bounds a batch label's count, which is only shown.
+const maxSignBatchCount = 100000
+
+// SignBatch says that a request is one of several the caller sends one at a
+// time, each for its own approval: the Position-th of Count. It is a label
+// for the approval prompt, like AppCallInfo. The signer cannot check it,
+// shows it as the client's, and it decides nothing.
+type SignBatch struct {
+	Position int `json:"position"`
+	Count    int `json:"count"`
+}
+
+// validate refuses a label that names no place in a batch.
+func (b *SignBatch) validate() error {
+	if b == nil {
+		return nil
+	}
+	if b.Count < 1 || b.Count > maxSignBatchCount {
+		return fmt.Errorf("batch count must be between 1 and %d", maxSignBatchCount)
+	}
+	if b.Position < 1 || b.Position > b.Count {
+		return fmt.Errorf("batch position must be between 1 and the count")
+	}
+	return nil
 }
 
 type ComponentTargetKind string
@@ -84,6 +111,7 @@ type ComponentRequest struct {
 	Targets             []ComponentTarget          `json:"targets"`
 	ContextualPositions []ComponentContextPosition `json:"contextual_positions,omitempty"`
 	DummyPositions      []ComponentDummyPosition   `json:"dummy_positions,omitempty"`
+	Batch               *SignBatch                 `json:"batch,omitempty"`
 }
 
 type ComponentTarget struct {
@@ -242,6 +270,7 @@ type RotatingSignRequest struct {
 	Account      string       `json:"account"`
 	Transactions []string     `json:"transactions"`
 	AppCallInfo  *AppCallInfo `json:"app_call_info,omitempty"`
+	Batch        *SignBatch   `json:"batch,omitempty"`
 }
 
 // RotatingSignResponse is the response payload for /sign/rotating/sign.
@@ -412,6 +441,9 @@ func (r LogicSigResourceUsage) validate() error {
 // Validate checks that all contained requests use a supported request mode.
 func (r GroupSignRequest) Validate() error {
 	if err := validateSignRequestID(r.RequestID); err != nil {
+		return err
+	}
+	if err := r.Batch.validate(); err != nil {
 		return err
 	}
 	if len(r.Requests) == 0 {
