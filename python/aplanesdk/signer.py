@@ -3756,7 +3756,7 @@ def _validate_sign_batch(batch: Optional[Dict[str, Any]]) -> None:
     if not isinstance(batch, dict):
         raise ValueError("batch must be a mapping with position and count")
     # The signer refuses a field it does not know, so refuse it here first.
-    unknown = sorted(set(batch) - {"position", "count"})
+    unknown = sorted(str(key) for key in set(batch) - {"position", "count"})
     if unknown:
         raise ValueError(f"batch has unknown field {unknown[0]!r}")
     position, count = batch.get("position"), batch.get("count")
