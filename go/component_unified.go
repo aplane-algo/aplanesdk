@@ -9,6 +9,9 @@ func (r ComponentRequest) Validate() error {
 	if err := validateSignRequestID(r.RequestID); err != nil {
 		return err
 	}
+	if err := r.Batch.validate(); err != nil {
+		return err
+	}
 	if err := validateComponentGroupBytes(r.GroupBytesHex); err != nil {
 		return err
 	}

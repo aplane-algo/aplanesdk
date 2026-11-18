@@ -56,6 +56,7 @@ import type {
   LogicSigResourceUsage,
   LogicSigResourceProfile,
   AppCallInfo,
+  SignBatch,
   RotatingPrepareRequest,
   RotatingSignResponse,
   ClientEndpointRegistry,
@@ -921,7 +922,22 @@ function validateComponentGroupBytes(items: string[]): void {
   });
 }
 
+const MAX_SIGN_BATCH_COUNT = 100000;
+
+/** Refuses a batch label that names no place in a batch. */
+function validateSignBatch(batch: SignBatch | undefined): void {
+  if (batch === undefined) return;
+  const { position, count } = batch;
+  if (!Number.isInteger(count) || count < 1 || count > MAX_SIGN_BATCH_COUNT) {
+    throw new SignerError(`batch count must be between 1 and ${MAX_SIGN_BATCH_COUNT}`);
+  }
+  if (!Number.isInteger(position) || position < 1 || position > count) {
+    throw new SignerError("batch position must be between 1 and the count");
+  }
+}
+
 function validateComponentRequest(request: ComponentRequest): void {
+  validateSignBatch(request.batch);
   const targets = request.targets || [];
   if (targets.length === 0) throw new SignerError("targets are required");
   const kind = targets[0].kind;

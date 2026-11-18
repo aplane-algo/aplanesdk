@@ -190,6 +190,7 @@ def test_encodes_mixed_group_sign_request_wire_fields():
 
     expected = fixture("group_sign_request_mixed.json")
     del expected["requests"][0]["app_call_info"]
+    del expected["batch"]
     assert set(expected) == {"requests"}
     assert [set(request) for request in body] == [
         set(request) for request in expected["requests"]
@@ -535,7 +536,9 @@ def test_rotating_dtos_round_trip_fixtures():
     assert asdict(sign_req) == fixture("rotating_sign_request.json")
     assert sign_req.transactions == prepare_resp.transactions
     assert sign_req.app_call_info == {"mode": "abi", "method": "withdraw(uint64)void"}
+    assert sign_req.batch == {"position": 3, "count": 3}
     assert RotatingSignRequest(account="A", transactions=[]).app_call_info is None
+    assert RotatingSignRequest(account="A", transactions=[]).batch is None
     sign_resp = RotatingSignResponse(**fixture("rotating_sign_response.json"))
     assert asdict(sign_resp) == fixture("rotating_sign_response.json")
     assert sign_resp.target == sign_resp.stage + 1
@@ -544,6 +547,14 @@ def test_rotating_dtos_round_trip_fixtures():
 def test_cosigner_dtos_round_trip_fixtures():
     unified_component_req = ComponentRequest(**fixture("component_request.json"))
     _validate_component_request(asdict(unified_component_req))
+    assert unified_component_req.batch == {"position": 1, "count": 2}
+    for batch in ({"position": 0, "count": 2}, {"position": 3, "count": 2},
+                  {"position": 1, "count": 0}, {"position": 1, "count": 100001},
+                  {"position": True, "count": 2}):
+        bad = fixture("component_request.json")
+        bad["batch"] = batch
+        with pytest.raises(ValueError, match="batch"):
+            _validate_component_request(bad)
     assert unified_component_req.targets[0]["kind"] == "bounded-base"
     unified_component_resp = ComponentResponse(**fixture("component_response.json"))
     assert unified_component_resp.components[0]["assembly_receipt"]

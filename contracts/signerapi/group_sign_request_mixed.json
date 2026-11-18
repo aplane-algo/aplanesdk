@@ -24,5 +24,6 @@
         "max_opcode_cost": 20000
       }
     }
-  ]
+  ],
+  "batch": {"position": 2, "count": 3}
 }

@@ -1781,6 +1781,8 @@ class ComponentRequest:
     request_id: str = ""
     contextual_positions: Optional[List[Dict[str, Any]]] = None
     dummy_positions: Optional[List[Dict[str, int]]] = None
+    # Optional approval label, as on /sign: {"position": n, "count": m}.
+    batch: Optional[Dict[str, int]] = None
 
 
 @dataclass
@@ -1859,13 +1861,15 @@ class RotatingSignRequest:
 
     ``app_call_info`` is optional app-call metadata for the approval prompt,
     as on /sign. The signer checks it against the spend's bytes when
-    rendering the prompt and does not sign it.
+    rendering the prompt and does not sign it. ``batch`` is an optional
+    approval label, as on /sign: ``{"position": n, "count": m}``.
     """
 
     account: str
     transactions: List[str]
     request_id: str = ""
     app_call_info: Optional[Dict[str, str]] = None
+    batch: Optional[Dict[str, int]] = None
 
 
 @dataclass
@@ -3737,8 +3741,28 @@ def _validate_bounded_component_request(data: Dict[str, Any]) -> None:
             raise ValueError(f"dummy position {offset + 1} is not in the contiguous suffix")
 
 
+MAX_SIGN_BATCH_COUNT = 100000
+
+
+def _validate_sign_batch(batch: Optional[Dict[str, Any]]) -> None:
+    """Refuse a batch label that names no place in a batch.
+
+    A request may say it is the ``position``-th of ``count`` the caller sends
+    one at a time, each for its own approval. The signer cannot check the
+    label, shows it as the client's, and it decides nothing.
+    """
+    if batch is None:
+        return
+    position, count = batch.get("position"), batch.get("count")
+    if not isinstance(count, int) or isinstance(count, bool) or not 1 <= count <= MAX_SIGN_BATCH_COUNT:
+        raise ValueError(f"batch count must be between 1 and {MAX_SIGN_BATCH_COUNT}")
+    if not isinstance(position, int) or isinstance(position, bool) or not 1 <= position <= count:
+        raise ValueError("batch position must be between 1 and the count")
+
+
 def _validate_component_request(data: Dict[str, Any]) -> None:
     _validate_sign_request_id(str(data.get("request_id", "")))
+    _validate_sign_batch(data.get("batch"))
     group = data.get("group_bytes_hex") or []
     targets = data.get("targets") or []
     context = data.get("contextual_positions") or []

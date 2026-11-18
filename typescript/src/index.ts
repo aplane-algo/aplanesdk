@@ -152,6 +152,7 @@ export type {
   SignOptions,
   SignRequest,
   GroupSignRequest,
+  SignBatch,
   GroupSignResponse,
   SimulationResult,
   PreparedCheck,
