@@ -3753,6 +3753,12 @@ def _validate_sign_batch(batch: Optional[Dict[str, Any]]) -> None:
     """
     if batch is None:
         return
+    if not isinstance(batch, dict):
+        raise ValueError("batch must be a mapping with position and count")
+    # The signer refuses a field it does not know, so refuse it here first.
+    unknown = sorted(set(batch) - {"position", "count"})
+    if unknown:
+        raise ValueError(f"batch has unknown field {unknown[0]!r}")
     position, count = batch.get("position"), batch.get("count")
     if not isinstance(count, int) or isinstance(count, bool) or not 1 <= count <= MAX_SIGN_BATCH_COUNT:
         raise ValueError(f"batch count must be between 1 and {MAX_SIGN_BATCH_COUNT}")

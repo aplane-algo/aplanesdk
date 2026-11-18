@@ -925,8 +925,14 @@ function validateComponentGroupBytes(items: string[]): void {
 const MAX_SIGN_BATCH_COUNT = 100000;
 
 /** Refuses a batch label that names no place in a batch. */
-function validateSignBatch(batch: SignBatch | undefined): void {
-  if (batch === undefined) return;
+function validateSignBatch(batch: SignBatch | null | undefined): void {
+  if (batch == null) return;
+  if (typeof batch !== "object" || Array.isArray(batch)) {
+    throw new SignerError("batch must be an object with position and count");
+  }
+  // The signer refuses a field it does not know, so refuse it here first.
+  const unknown = Object.keys(batch).find((key) => key !== "position" && key !== "count");
+  if (unknown !== undefined) throw new SignerError(`batch has unknown field ${JSON.stringify(unknown)}`);
   const { position, count } = batch;
   if (!Number.isInteger(count) || count < 1 || count > MAX_SIGN_BATCH_COUNT) {
     throw new SignerError(`batch count must be between 1 and ${MAX_SIGN_BATCH_COUNT}`);
