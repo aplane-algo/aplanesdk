@@ -207,8 +207,10 @@ This path:
 - validates `config.yaml` contains no obsolete routing,
 - loads and selects an endpoint from `endpoints.yaml`,
 - resolves SSH paths relative to the client data dir,
-- establishes the SSH tunnel automatically,
-- verifies that the signer answers on the forwarded REST port.
+- opens the authenticated SSH connection automatically, with no local
+  listener: each HTTP connection to the signer is an SSH channel of its own,
+  opened in process,
+- verifies that the signer answers `/health` over it.
 
 `SignerClient.from_env()` requires:
 
@@ -235,6 +237,17 @@ defaults to 60 seconds. The deadline is cleared after authentication, so it
 does not shorten the established tunnel or an operator approval wait.
 Enrollment exposes the same setup-only control as `setup_timeout`.
 
+`connect_ssh` takes no local port, and nothing listens on the client machine:
+each HTTP connection to the signer is a `direct-tcpip` channel opened in
+process on the authenticated SSH connection, and requests name the placeholder
+host `signer.aplane.invalid`, which is never looked up. No other process can
+send requests through the client's connection, and proxy environment variables
+do not apply to it. A session assigned to `client.session` gets the same
+channel transport, and tunnel requests follow no redirect. A process that can
+read the identity file can still open a connection of its own, so keep the key
+file private. Idle connections are reused for up to 90 seconds, under the
+signer's 120-second idle limit.
+
 This is useful when:
 
 - you do not want to depend on `APCLIENT_DATA`
@@ -248,11 +261,15 @@ known_hosts_path=..., label=...)`.
 
 ### Advanced: Caller-Managed Tunnel
 
-The low-level constructor `SignerClient(base_url, timeout=...)` exists and can
-be used if you already own the SSH tunnel to the signer; the signer attributes
-the requests to the key that opened it, and a signer's loopback REST port
-answers only `/health`. The normal product
-and convenience flow remains the SSH-backed path shown above. An explicit
+The low-level constructor `SignerClient(base_url, timeout=...)` sends plain
+HTTP to `base_url` and opens no SSH connection of its own. It is for a caller
+that already owns a connection to the signer's SSH server; the signer
+attributes the requests to the key that opened that connection, and a signer's
+loopback REST port answers only `/health`. A local port forward (such as
+`ssh -L`) listens on a port that any process on the machine can connect to,
+and the signer attributes whatever arrives there to the forwarding key, so
+prefer the SSH-backed path shown above, which opens no local port; it remains
+the normal product and convenience flow. An explicit
 timeout shorter than the signer approval wait will cancel queued/pending manual
 approval; SDK `/sign` calls include a `request_id` and send a best-effort
 `/sign/cancel` when the HTTP request times out or disconnects.

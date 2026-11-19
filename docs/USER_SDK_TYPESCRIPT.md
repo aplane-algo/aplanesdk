@@ -214,8 +214,8 @@ This path:
 - validates `config.yaml` contains no obsolete routing
 - loads and selects an endpoint from `endpoints.yaml`
 - resolves SSH paths relative to the client data dir
-- establishes the SSH tunnel automatically
-- verifies that the signer answers on the forwarded REST port
+- opens the SSH connection automatically, without opening a local port
+- verifies that the signer answers over it
 
 `SignerClient.fromEnv()` requires:
 
@@ -251,6 +251,12 @@ after authentication and do not shorten the established tunnel or operator
 approval waits. Enrollment exposes equivalent `setupTimeout` and `signal`
 options.
 
+The client opens no local port: each HTTP connection to the signer is an SSH
+channel the client opens itself on that connection, so no other process on the
+machine can send requests under the client's key. There is no port option,
+local or remote; an idle connection closes after 90 seconds, and `close()`
+ends the SSH connection and its channels.
+
 The SSH username is the fixed non-secret value `aplane`, and public-key
 authentication with the enrolled key is the only credential. The explicit form
 of enrollment is `requestEnrollment(host, sshKeyPath, { knownHostsPath, label })`.
@@ -265,7 +271,9 @@ Prefer the SSH-backed paths above. For advanced integrations that already own
 the SSH tunnel to the signer, the public `SignerClient(baseUrl, timeout)`
 constructor can be used directly; the signer attributes the requests to the
 key that opened the tunnel, and a signer's loopback REST port answers only
-`/health`. An explicit timeout shorter than the signer
+`/health`. A tunnel that listens on a local port lets any process on the
+machine send requests under that key; `connectSsh` and `fromEnv` open none.
+An explicit timeout shorter than the signer
 approval wait will cancel queued/pending manual approval; SDK `/sign` calls
 include a `request_id` and send a best-effort `/sign/cancel` when the HTTP
 request times out or disconnects.

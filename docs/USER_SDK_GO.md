@@ -204,6 +204,10 @@ shortening approval-bearing HTTP requests. Use `ConnectSSHWithContext` or
 `FromEnvWithContext` when the caller must cancel setup; a successful connection
 detaches from the setup context and remains active until `Close`.
 
+The client opens no local port: each HTTP connection to the signer is an SSH
+channel the client opens itself on that connection, so no other process on the
+machine can send requests under the client's key.
+
 The SSH username is the fixed non-secret value `aplane`, and public-key
 authentication with the enrolled key is the only credential. The explicit form
 of enrollment is `aplane.RequestEnrollment(host, keyPath, label,
@@ -232,6 +236,11 @@ Use this when:
 - your process already created the SSH tunnel
 - you proxy signer traffic through another transport
 - you need custom HTTP behavior such as retry or tracing middleware
+
+On a client from `ConnectSSH` or `FromEnv`, `SetHTTPClient` keeps the tunnel's
+own transport and takes only the rest of your client (its `Timeout`,
+`CheckRedirect` and `Jar`): a `Transport` you set there is ignored, so
+transport middleware needs a caller-owned connection.
 
 ## Sending Transactions
 

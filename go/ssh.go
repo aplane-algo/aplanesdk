@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -68,12 +67,11 @@ func sshSetupKindOf(err error) sshSetupKind {
 	return 0
 }
 
-// sshTunnel manages an SSH tunnel to the signer.
+// sshTunnel manages an SSH connection to the signer. Every HTTP connection
+// to the signer is an SSH channel this process opens (dialAPI); nothing
+// listens on the local machine, so no other process can use the connection.
 type sshTunnel struct {
 	client          *ssh.Client
-	listener        net.Listener
-	done            chan struct{}
-	wg              sync.WaitGroup
 	knownHostsPath  string
 	trustOnFirstUse bool
 	closeOnce       sync.Once
@@ -86,32 +84,36 @@ type sshTunnel struct {
 // closed and its SSH connection has not ended. It asks the server nothing.
 func (t *sshTunnel) open() bool { return !t.down.Load() }
 
-// connect establishes an SSH tunnel to the signer. The client's enrolled
+// signerAPIDestination is the destination every channel names. The signer's
+// SSH server checks only that it is loopback and forwards the channel to its
+// own REST listener, so the port is nominal.
+const signerAPIDestination = "127.0.0.1:11270"
+
+// connect establishes an SSH connection to the signer. The client's enrolled
 // SSH key is its only credential; the server verifies it at the handshake
-// and hands every forwarded channel to its REST listener with that identity.
-// Returns the local port that forwards to the signer.
+// and hands every channel to its REST listener with that identity.
 func (t *sshTunnel) connect(
 	ctx context.Context,
 	host string,
-	sshPort, localPort int,
+	sshPort int,
 	sshKeyPath string,
 	setupTimeout time.Duration,
-) (int, error) {
+) error {
 	// Load SSH private key
 	keyData, err := os.ReadFile(sshKeyPath)
 	if err != nil {
-		return 0, &sshSetupError{kind: sshSetupConfig, err: fmt.Errorf("failed to read SSH key: %w", err)}
+		return &sshSetupError{kind: sshSetupConfig, err: fmt.Errorf("failed to read SSH key: %w", err)}
 	}
 
 	signer, err := ssh.ParsePrivateKey(keyData)
 	if err != nil {
-		return 0, &sshSetupError{kind: sshSetupConfig, err: fmt.Errorf("failed to parse SSH key: %w", err)}
+		return &sshSetupError{kind: sshSetupConfig, err: fmt.Errorf("failed to parse SSH key: %w", err)}
 	}
 
 	// Build host key callback (TOFU)
 	hostKeyCallback, err := t.buildHostKeyCallback()
 	if err != nil {
-		return 0, &sshSetupError{kind: sshSetupConfig, err: fmt.Errorf("failed to set up host key verification: %w", err)}
+		return &sshSetupError{kind: sshSetupConfig, err: fmt.Errorf("failed to set up host key verification: %w", err)}
 	}
 
 	config := &ssh.ClientConfig{
@@ -126,7 +128,7 @@ func (t *sshTunnel) connect(
 	addr := fmt.Sprintf("%s:%d", host, sshPort)
 	client, err := dialSSHHandshake(ctx, "tcp", addr, config, setupTimeout)
 	if err != nil {
-		return 0, fmt.Errorf("failed to connect to SSH server: %w", err)
+		return fmt.Errorf("failed to connect to SSH server: %w", err)
 	}
 	t.client = client
 	// The server or the network can end the SSH connection on its own; from
@@ -136,53 +138,15 @@ func (t *sshTunnel) connect(
 		t.down.Store(true)
 	}()
 
-	// Create local listener on random port
-	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", localPort))
-	if err != nil {
-		client.Close()
-		return 0, fmt.Errorf("failed to create local listener: %w", err)
+	return nil
+}
+
+// dialAPI opens one SSH channel to the signer's REST API, bounded by ctx.
+func (t *sshTunnel) dialAPI(ctx context.Context) (net.Conn, error) {
+	if t.client == nil || !t.open() {
+		return nil, fmt.Errorf("SSH tunnel is closed")
 	}
-	t.listener = listener
-	t.done = make(chan struct{})
-
-	boundPort := listener.Addr().(*net.TCPAddr).Port
-	// The server checks only that the channel destination is loopback and
-	// forwards to its own REST listener, so the port named here is nominal.
-	remoteAddr := "127.0.0.1:11270"
-
-	// Start accepting connections
-	t.wg.Add(1)
-	go func() {
-		defer t.wg.Done()
-		for {
-			localConn, err := listener.Accept()
-			if err != nil {
-				select {
-				case <-t.done:
-					return
-				default:
-					continue
-				}
-			}
-
-			// Forward to remote
-			remoteConn, err := client.Dial("tcp", remoteAddr)
-			if err != nil {
-				localConn.Close()
-				continue
-			}
-
-			// Bidirectional copy
-			go func() {
-				defer localConn.Close()
-				defer remoteConn.Close()
-				go io.Copy(remoteConn, localConn)
-				io.Copy(localConn, remoteConn)
-			}()
-		}
-	}()
-
-	return boundPort, nil
+	return t.client.DialContext(ctx, "tcp", signerAPIDestination)
 }
 
 func dialSSHHandshake(
@@ -234,16 +198,9 @@ func dialSSHHandshake(
 func (t *sshTunnel) close() {
 	t.closeOnce.Do(func() {
 		t.down.Store(true)
-		if t.done != nil {
-			close(t.done)
-		}
-		if t.listener != nil {
-			t.listener.Close()
-		}
 		if t.client != nil {
 			t.client.Close()
 		}
-		t.wg.Wait()
 	})
 }
 

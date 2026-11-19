@@ -16,11 +16,10 @@ import { SignerError } from "./errors.js";
 export const DEFAULT_SSH_PORT = 1127;
 /**
  * Endpoint keys earlier builds wrote and nothing reads: the node's SSH server
- * forwards every channel to its own REST listener, the local tunnel port is
- * chosen at connect time, and the client's enrolled SSH key is its only
- * credential, so there is no token file. They are accepted and ignored, as
- * APlane ignores them, so a registry written before they were retired keeps
- * working.
+ * forwards every channel to its own REST listener, the client opens no local
+ * port, and the client's enrolled SSH key is its only credential, so there is
+ * no token file. They are accepted and ignored, as APlane ignores them, so a
+ * registry written before they were retired keeps working.
  */
 const RETIRED_ENDPOINT_FIELDS = ["signer_port", "local_port", "token_file"] as const;
 export const CLIENT_ENDPOINTS_FILE = "endpoints.yaml";

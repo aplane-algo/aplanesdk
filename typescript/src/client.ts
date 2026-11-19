@@ -3,7 +3,6 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import * as net from "net";
 import { randomBytes } from "crypto";
 import algosdk, { type Algodv2, type Transaction } from "algosdk";
 import type { Client as SSHClient, ClientChannel, ConnectConfig } from "ssh2";
@@ -190,6 +189,7 @@ import {
   sshConnectionFailedMessage,
   type SshSetupFailure,
 } from "./ssh.js";
+import { ChannelAgent, SSH_SIGNER_BASE_URL, agentFetch, type ChannelRequestInit } from "./sshhttp.js";
 import { EndpointCosignerResolver, type EndpointCosignerResolverOptions } from "./discovery.js";
 import {
   loadConfig,
@@ -1331,26 +1331,6 @@ function validateAssemblyResponse(response: AssemblyResponse): void {
 }
 
 /**
- * Find an available local port.
- */
-async function findFreePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.unref();
-    server.on("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const addr = server.address();
-      if (addr && typeof addr === "object") {
-        const port = addr.port;
-        server.close(() => resolve(port));
-      } else {
-        reject(new Error("Could not get server address"));
-      }
-    });
-  });
-}
-
-/**
  * Parse the key type string from an SSH public key in wire format.
  * Wire format: [4-byte big-endian length][key-type-string][...rest]
  */
@@ -1402,21 +1382,30 @@ function saveHostKey(knownHostsPath: string, host: string, port: number, key: Bu
 }
 
 /**
- * SSH tunnel wrapper that forwards a local port to a remote port.
+ * The destination every channel to the signer's REST API names. The signer's
+ * SSH server checks only that it is loopback and always forwards to its own
+ * REST listener, so the port is nominal: a client never chooses it.
+ */
+const SIGNER_CHANNEL_HOST = "127.0.0.1";
+const SIGNER_CHANNEL_PORT = 11270;
+
+/**
+ * An SSH connection to the signer, authenticated by the client's enrolled
+ * key, that carries the client's HTTP requests. Each HTTP connection is a
+ * direct-tcpip channel the client opens itself on that connection; nothing
+ * listens on this machine, so no other process can send a request under the
+ * client's key.
  */
 class SSHTunnel {
   private sshClient: SSHClient | null = null;
   private sshClosed = true;
-  private server: net.Server | null = null;
-  localPort: number = 0;
+  private closed = false;
+  private readonly agent = new ChannelAgent(() => this.openChannel());
 
   async connect(options: {
     host: string;
     sshPort: number;
     privateKeyPath: string;
-    remoteHost: string;
-    remotePort: number;
-    localPort: number;
     knownHostsPath: string;
     trustOnFirstUse: boolean;
     setupTimeout: number;
@@ -1460,7 +1449,6 @@ class SSHTunnel {
         "identity",
       );
     }
-    this.localPort = options.localPort || await findFreePort();
 
     // Track host key error for meaningful rejection messages, and its kind
     let hostKeyError = "";
@@ -1491,7 +1479,6 @@ class SSHTunnel {
         if (settled) return;
         settled = true;
         cleanupSetup();
-        this.server?.close();
         this.sshClosed = true;
         this.sshClient?.destroy();
         reject(error);
@@ -1506,36 +1493,10 @@ class SSHTunnel {
       options.signal?.addEventListener("abort", abortSetup, { once: true });
 
       this.sshClient.on("ready", () => {
-        // Create local server that forwards to remote via SSH
-        this.server = net.createServer((localSocket) => {
-          this.sshClient!.forwardOut(
-            "127.0.0.1",
-            this.localPort,
-            options.remoteHost,
-            options.remotePort,
-            (err: Error | undefined, channel: ClientChannel) => {
-              if (err) {
-                localSocket.destroy();
-                return;
-              }
-              localSocket.pipe(channel).pipe(localSocket);
-            }
-          );
-        });
-
-        this.server.listen(this.localPort, "127.0.0.1", () => {
-          if (settled) {
-            this.server?.close();
-            return;
-          }
-          settled = true;
-          cleanupSetup();
-          resolve();
-        });
-
-        this.server.on("error", (err) => {
-          failSetup(new SignerUnavailableError(`SSH tunnel server error: ${err.message}`));
-        });
+        if (settled) return;
+        settled = true;
+        cleanupSetup();
+        resolve();
       });
 
       this.sshClient.on("error", (err: Error) => {
@@ -1624,26 +1585,54 @@ class SSHTunnel {
     return this.sshClient !== null && !this.sshClosed;
   }
 
+  /**
+   * Send one HTTP request to the signer on a channel of this connection, as
+   * fetch would send it. url names the placeholder host SSH_SIGNER_BASE_URL.
+   */
+  request(url: string, init: ChannelRequestInit): Promise<Response> {
+    if (this.closed) {
+      return Promise.reject(new Error("the SSH connection to the signer is closed"));
+    }
+    return agentFetch(this.agent, url, init);
+  }
+
+  /** Open a channel to the signer's REST API on this connection. */
+  private openChannel(): Promise<ClientChannel> {
+    return new Promise((resolve, reject) => {
+      const sshClient = this.sshClient;
+      if (sshClient === null || this.sshClosed) {
+        reject(new Error("the SSH connection to the signer is closed"));
+        return;
+      }
+      try {
+        sshClient.forwardOut(
+          SIGNER_CHANNEL_HOST, 0, SIGNER_CHANNEL_HOST, SIGNER_CHANNEL_PORT,
+          (err: Error | undefined, channel: ClientChannel) => {
+            if (err) reject(err);
+            else resolve(channel);
+          },
+        );
+      } catch (error) {
+        // ssh2 throws when the connection's socket is no longer writable.
+        reject(error);
+      }
+    });
+  }
+
   async close(): Promise<void> {
-    const server = this.server;
+    this.closed = true;
+    // Destroying the agent closes every channel it holds, idle or in use.
+    this.agent.destroy();
     const sshClient = this.sshClient;
     const sshClosed = this.sshClosed;
-    this.server = null;
     this.sshClient = null;
 
-    const closeServer = server
-      ? new Promise<void>((resolve) => {
-          server.close(() => resolve());
-        })
-      : Promise.resolve();
-    const closeSSH = sshClient && !sshClosed
-      ? new Promise<void>((resolve) => {
-          sshClient.once("close", () => resolve());
-          sshClient.end();
-        })
-      : Promise.resolve();
-
-    await Promise.all([closeServer, closeSSH]);
+    if (sshClient && !sshClosed) {
+      await new Promise<void>((resolve) => {
+        sshClient.once("close", () => resolve());
+        sshClient.end();
+      });
+    }
   }
 }
 
@@ -2733,11 +2722,12 @@ export class SignerClient {
   /**
    * Create a SignerClient instance.
    *
-   * baseUrl is an internal HTTP endpoint: the local end of an SSH tunnel to
-   * the signer, which authenticates the tunnel by the client's enrolled key.
-   * The client itself carries no credential. Prefer static methods
-   * (connectSsh, fromEnv) so connection details come from explicit SSH
-   * parameters or APCLIENT_DATA-derived config.
+   * baseUrl is an internal HTTP endpoint: the local end of a caller-owned
+   * SSH tunnel to the signer, which authenticates the tunnel by the client's
+   * enrolled key. The client itself carries no credential. Prefer static
+   * methods (connectSsh, fromEnv): they open no local port, so no other
+   * process on the machine can use the client's key, and connection details
+   * come from explicit SSH parameters or APCLIENT_DATA-derived config.
    */
   constructor(
     baseUrl: string,
@@ -2784,10 +2774,11 @@ export class SignerClient {
   /**
    * Connect to remote apsigner via SSH tunnel.
    *
-   * Establishes an SSH tunnel to the remote host and forwards the signer's
-   * REST listener to a local port. The enrolled client key is the only
-   * credential; a key the signer has not enrolled fails the handshake
-   * (enroll it with requestEnrollment first).
+   * Opens an SSH connection to the remote host and sends each request on a
+   * channel of that connection to the signer's REST API; no local port is
+   * opened. The enrolled client key is the only credential; a key the signer
+   * has not enrolled fails the handshake (enroll it with requestEnrollment
+   * first).
    *
    * @param host - Remote host running apsigner
    * @param sshKeyPath - Path to SSH private key (e.g., ~/aplane/apclient/.ssh/id_ed25519)
@@ -2816,7 +2807,6 @@ export class SignerClient {
   ): Promise<SignerClient> {
     const maxFeeIncrease = checkMaxFeeIncrease(options.maxFeeIncrease);
     const sshPort = options.sshPort ?? DEFAULT_SSH_PORT;
-    const localPort = options.localPort ?? 0;
     const timeout = options.timeout;
     const sshSetupTimeout = normalizeSSHSetupTimeout(options.sshSetupTimeout);
     const knownHostsPath = options.knownHostsPath
@@ -2840,11 +2830,6 @@ export class SignerClient {
         host,
         sshPort,
         privateKeyPath: expandedKeyPath,
-        // The server checks only that the destination is loopback and
-        // forwards to its own REST listener, so the port is nominal.
-        remoteHost: "127.0.0.1",
-        remotePort: 11270,
-        localPort,
         knownHostsPath,
         trustOnFirstUse,
         setupTimeout: sshSetupTimeout,
@@ -2860,9 +2845,9 @@ export class SignerClient {
       );
     }
 
-    // Connect through tunnel
-    const baseUrl = `http://127.0.0.1:${tunnel.localPort}`;
-    const client = new SignerClient(baseUrl, timeout, tunnel, { maxFeeIncrease });
+    // Every request goes on a channel of the SSH connection, so the base URL
+    // names a placeholder host rather than anything dialed.
+    const client = new SignerClient(SSH_SIGNER_BASE_URL, timeout, tunnel, { maxFeeIncrease });
 
     // Verify connection
     const healthy = await client.health();
@@ -2941,9 +2926,10 @@ export class SignerClient {
     const origin = dataDirOrigins.get(this);
     dataDirOrigins.delete(this);
     const resolver = origin?.resolver;
+    // The tunnel stays: a request after close fails on the closed SSH
+    // connection rather than going anywhere else.
     if (this.tunnel) {
       await this.tunnel.close();
-      this.tunnel = null;
     }
     if (resolver) {
       await resolver.close();
@@ -5743,12 +5729,17 @@ export class SignerClient {
         headers["Content-Type"] = "application/json";
       }
 
-      const response = await fetch(url, {
+      const init = {
         method: options.method,
         headers,
         body: options.body,
         signal: controller.signal,
-      });
+      };
+      // A client on an SSH connection sends its requests on channels of that
+      // connection and nowhere else.
+      const response = this.tunnel
+        ? await this.tunnel.request(url, init)
+        : await fetch(url, init);
 
       return response;
     } catch (error) {

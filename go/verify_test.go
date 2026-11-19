@@ -1080,7 +1080,7 @@ func TestMaxFeeIncreaseIsSnapshottedWhenTheCallStarts(t *testing.T) {
 func TestConnectionOptionsSetMaxFeeIncrease(t *testing.T) {
 	limit := uint64(250_000)
 
-	client := newTunnelClient(1234, nil, DefaultTimeout, &SSHConnectOptions{MaxFeeIncrease: &limit})
+	client := newTunnelClient(nil, DefaultTimeout, &SSHConnectOptions{MaxFeeIncrease: &limit})
 	if got, set := client.MaxFeeIncrease(); !set || got != limit {
 		t.Fatalf("client built from SSHConnectOptions: MaxFeeIncrease() = %d, %v, want %d, true", got, set, limit)
 	}
@@ -1090,7 +1090,7 @@ func TestConnectionOptionsSetMaxFeeIncrease(t *testing.T) {
 		t.Fatalf("MaxFeeIncrease() = %d after the caller changed its variable, want 250000", got)
 	}
 	for name, opts := range map[string]*SSHConnectOptions{"nil options": nil, "unset": {}} {
-		if _, set := newTunnelClient(1234, nil, DefaultTimeout, opts).MaxFeeIncrease(); set {
+		if _, set := newTunnelClient(nil, DefaultTimeout, opts).MaxFeeIncrease(); set {
 			t.Fatalf("%s: client has a max fee increase; there must be no default", name)
 		}
 	}
@@ -1107,7 +1107,7 @@ func TestConnectionOptionsSetMaxFeeIncrease(t *testing.T) {
 		t.Fatalf("fromEnvSSHOptions(nil) = %+v", got)
 	}
 	zero := uint64(0)
-	if got, set := newTunnelClient(1, nil, DefaultTimeout, fromEnvSSHOptions(&FromEnvOptions{MaxFeeIncrease: &zero}, 1, "")).MaxFeeIncrease(); !set || got != 0 {
+	if got, set := newTunnelClient(nil, DefaultTimeout, fromEnvSSHOptions(&FromEnvOptions{MaxFeeIncrease: &zero}, 1, "")).MaxFeeIncrease(); !set || got != 0 {
 		t.Fatalf("a zero ceiling from FromEnvOptions: MaxFeeIncrease() = %d, %v, want 0, true", got, set)
 	}
 }

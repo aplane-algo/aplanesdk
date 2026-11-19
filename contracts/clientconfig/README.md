@@ -22,7 +22,8 @@ server, which authenticates the client's enrolled SSH key (`identity_file`)
 and hands the API channel to the node's REST listener with that identity;
 there is no token. A record names no port beyond the one in its URL: the
 node's SSH server forwards every channel to its own REST listener, and the
-local tunnel port is chosen at connect time. The retired `signer_port`,
+client opens no local port: each HTTP connection is an SSH channel it opens
+itself. The retired `signer_port`,
 `local_port`, and `token_file` keys are accepted and ignored, as APlane
 ignores them (`valid_retired_port_fields.yaml`). The 12- and 13-cosigner
 fixtures use distinct URLs for readability; URL uniqueness is not a loader

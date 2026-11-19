@@ -117,6 +117,10 @@ SSH setup uses its own 60-second deadline, independent of HTTP request and
 operator approval timeouts. Pass `signal` to cancel setup. Enrollment offers
 the same controls as `setupTimeout` and `signal`.
 
+The client opens no local port: each HTTP connection to the signer is an SSH
+channel the client opens itself on that connection, so no other process on the
+machine can send requests under the client's key.
+
 **Note**: SSH uses the fixed non-secret username `aplane` and public-key
 authentication only; the enrolled key is the client's only credential. A key
 the signer has not enrolled fails the handshake. A key file that cannot be

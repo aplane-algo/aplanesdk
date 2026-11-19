@@ -62,11 +62,12 @@ endpoint record names no port beyond the one in its URL. The former
 `signer_port` (the node's REST port behind SSH), `local_port`, and
 `token_file` keys are accepted and ignored, as APlane ignores them: the node's
 SSH server forwards every channel to its own REST listener, so the client never
-chose the remote port, the local tunnel port is chosen at connect time, and
-the key is the credential. Existing files keep working; the keys can be
-removed at leisure, and new files should omit them. The explicit SSH
-connection APIs keep their local-port option and no longer take a signer-port
-or token argument; `DefaultSignerPort` / `DEFAULT_SIGNER_PORT`,
+chose the remote port, the SDKs open no local port at all (each HTTP connection
+is an SSH channel the client opens itself), and the key is the credential.
+Existing files keep working; the keys can be removed at leisure, and new files
+should omit them. The explicit SSH connection APIs take no local-port option
+(Go `SSHConnectOptions.LocalPort`, TypeScript `localPort`, Python `local_port`
+are removed) and no signer-port or token argument; `DefaultSignerPort` / `DEFAULT_SIGNER_PORT`,
 `LoadToken`/`loadToken`/`load_token`, and `NewSignerClientWithToken` (now
 `NewSignerClient(baseURL)`) are gone.
 

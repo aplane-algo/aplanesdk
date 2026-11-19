@@ -270,14 +270,12 @@ export interface SignerClientOptions {
  * Options for SignerClient.connectSsh()
  */
 export interface ConnectSshOptions extends SignerClientOptions {
-  /** SSH port on remote (default: 1127) */
-  sshPort?: number;
   /**
-   * Local tunnel port (default: choose automatically). There is no remote
-   * REST port option: the signer's SSH server forwards every channel to its
-   * own REST listener.
+   * SSH port on remote (default: 1127). There is no REST port option, remote
+   * or local: the client opens no local port, and the signer's SSH server
+   * forwards every channel to its own REST listener.
    */
-  localPort?: number;
+  sshPort?: number;
   /** Optional explicit shorter request timeout in milliseconds */
   timeout?: number;
   /** TCP connection and SSH authentication timeout in milliseconds (default: 60000) */

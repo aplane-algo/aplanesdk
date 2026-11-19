@@ -941,12 +941,11 @@ type Config struct {
 
 // SSHConnectOptions contains options for SSH tunnel connections. There is no
 // remote REST port option: the signer's SSH server forwards every channel to
-// its own REST listener. LocalPort pins the local listener; 0 picks a free
-// port.
+// its own REST listener. There is no local port either: every HTTP connection
+// is an SSH channel the client opens itself, and nothing listens locally.
 type SSHConnectOptions struct {
-	SSHPort   int
-	LocalPort int
-	Timeout   int
+	SSHPort int
+	Timeout int
 	// SSHSetupTimeout bounds TCP dialing and SSH authentication. It is
 	// independent of Timeout, which bounds HTTP requests after setup.
 	SSHSetupTimeout time.Duration

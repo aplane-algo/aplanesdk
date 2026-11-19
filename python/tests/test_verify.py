@@ -764,7 +764,6 @@ def test_connection_helpers_forward_max_fee_increase(tmp_path):
     assert connect.call_args.kwargs["max_fee_increase"] == 250_000
 
     tunnel = MagicMock()
-    tunnel.local_bind_port = 12345
     with (
         patch("aplanesdk.signer._SSHTunnel", return_value=tunnel),
         patch.object(SignerClient, "health", return_value=True),
@@ -1031,7 +1030,6 @@ def test_max_fee_increase_refusal_is_typed():
 
 def test_connect_ssh_refuses_a_bad_ceiling_before_connecting_and_applies_a_good_one():
     tunnel = MagicMock()
-    tunnel.local_bind_port = 12345
     with (
         patch("aplanesdk.signer._SSHTunnel", return_value=tunnel) as open_tunnel,
         patch.object(SignerClient, "health", return_value=True),

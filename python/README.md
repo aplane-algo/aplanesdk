@@ -75,8 +75,11 @@ print(result.tx_ids[0], result.confirmed_round)
 
 ## Connection Methods
 
-Data-directory connections use `endpoints.yaml`. SSH endpoints create a
-managed tunnel; HTTPS and loopback HTTP endpoints connect directly.
+Data-directory connections use `endpoints.yaml`, whose endpoints are all
+`ssh://`. The SDK opens an authenticated SSH connection to the endpoint and
+carries each HTTP connection to the signer over a `direct-tcpip` channel of
+its own, opened in process: nothing listens on a local port, so no other
+process on the machine can send requests through the client's connection.
 Managed SSH keys and host trust live under the APlane client data directory;
 the SDK does not use the operating-system user's personal SSH directory.
 
@@ -141,7 +144,14 @@ setup-only deadline as `setup_timeout`.
 authentication only; the enrolled key is the client's only credential. Keys
 are enrolled via the `enroll` operator-approved flow.
 
-The SSH tunnel is established automatically. Remember to close when done:
+There is no local port option: each HTTP connection to the signer is an SSH
+channel opened in process, and requests name the placeholder host
+`signer.aplane.invalid`, which is never looked up. Proxy environment variables
+do not apply to these requests. A process that can read the identity file can
+still open a connection of its own, so keep the key file private.
+
+The SSH connection is established automatically. Closing the client closes
+every channel and the SSH connection. Remember to close when done:
 
 ```python
 client.close()
@@ -781,7 +791,7 @@ unknown stage is an operator action (`rotate recover` in apshell).
 
 #### `close()`
 
-Close the client and SSH tunnel (if any).
+Close the client, and its SSH channels and SSH connection (if any).
 
 ```python
 client.close()
