@@ -616,3 +616,10 @@ def test_a_channel_socket_closes_its_channel_once_its_files_are_closed():
     assert channel.closed
     with pytest.raises(ValueError):
         sock.makefile("wb")
+
+
+def test_a_tunnel_client_keeps_at_most_two_idle_channels(ssh_signer):
+    with ssh_signer.connect() as client:
+        adapter = client.session.get_adapter(f"{client.base_url}/health")
+        assert isinstance(adapter, signer_module._ChannelAdapter)
+        assert adapter._pool_maxsize == 2

@@ -5090,13 +5090,16 @@ class _ChannelConnectionPool(urllib3.connectionpool.HTTPConnectionPool):
 class _ChannelAdapter(requests.adapters.HTTPAdapter):
     """Carries the requests of a client made by connect_ssh to the signer,
     each connection an SSH channel opened in process. Mounted for the
-    tunnel's placeholder base URL only, with the default adapter's pool
-    sizes and retries; a proxy is never used."""
+    tunnel's placeholder base URL only, with the default adapter's retries
+    and two idle connections; a proxy is never used."""
 
     def __init__(self, open_signer_channel: Callable[[Optional[float]], Any]):
         # Set first: the base constructor makes the pool manager.
         self._open_signer_channel = open_signer_channel
-        super().__init__()
+        # An idle connection holds one of the node's API connection slots,
+        # which every client shares: keep as few as Go's transport does.
+        # More may be open at once; the extra ones close after use.
+        super().__init__(pool_maxsize=2)
 
     def init_poolmanager(
         self,
