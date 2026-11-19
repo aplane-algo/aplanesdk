@@ -40,7 +40,9 @@ export class ChannelAgent extends http.Agent {
   private readonly idleTimers = new Map<Duplex, ReturnType<typeof setTimeout>>();
 
   constructor(openChannel: ChannelOpener) {
-    super({ keepAlive: true });
+    // An idle connection holds one of the node's API connection slots, which
+    // every client shares; keep as few as Go's transport does.
+    super({ keepAlive: true, maxFreeSockets: 2 });
     this.openChannel = openChannel;
   }
 
@@ -110,9 +112,17 @@ export class ChannelAgent extends http.Agent {
  * hold the process open; the SSH connection does.
  */
 function asConnection(channel: Duplex): Duplex {
+  // Destroying a channel only ends it and asks the node to close it, and a
+  // channel emits close only after its end, which one nobody has read never
+  // reaches. Reading it out lets it close and leave the agent's pool.
+  const destroy = channel.destroy.bind(channel);
   return Object.assign(channel, {
     ref: () => channel,
     unref: () => channel,
+    destroy: (error?: Error) => {
+      channel.resume();
+      return destroy(error);
+    },
   });
 }
 
@@ -157,6 +167,8 @@ export function agentFetch(agent: http.Agent, url: string, init: ChannelRequestI
     let done = false;
     let fail: (error: unknown) => void = reject;
     let closedEarly = "the connection closed before the signer answered";
+    // The answer, once its headers arrive.
+    let answer: http.IncomingMessage | undefined;
     const end = (error?: unknown): void => {
       if (done) return;
       done = true;
@@ -173,6 +185,7 @@ export function agentFetch(agent: http.Agent, url: string, init: ChannelRequestI
         incoming.destroy();
         return;
       }
+      answer = incoming;
       closedEarly = "the connection closed before the answer was complete";
       const status = incoming.statusCode ?? 0;
       const responseHeaders = new Headers();
@@ -225,7 +238,13 @@ export function agentFetch(agent: http.Agent, url: string, init: ChannelRequestI
 
     signal?.addEventListener("abort", onAbort, { once: true });
     request.on("error", (error) => end(error));
-    request.on("close", () => end(new Error(closedEarly)));
+    request.on("close", () => {
+      // The node may close the channel right behind a complete answer (it
+      // does after every answer marked Connection: close), and the request's
+      // close can come before the answer's end; that answer is not cut short.
+      if (answer?.complete) return;
+      end(new Error(closedEarly));
+    });
     request.end(payload);
   });
 }

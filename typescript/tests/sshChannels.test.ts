@@ -11,6 +11,7 @@ import * as fs from "fs";
 import * as net from "net";
 import * as os from "os";
 import * as path from "path";
+import { Duplex } from "stream";
 import { SignerClient } from "../src/client.js";
 import { SignerUnavailableError } from "../src/errors.js";
 import { ChannelAgent, SSH_SIGNER_HOST, agentFetch, sshHttpTiming } from "../src/sshhttp.js";
@@ -166,7 +167,78 @@ describe("a client connected over SSH", () => {
   });
 });
 
+/**
+ * A channel that answers the first request it reads with answer, then ends
+ * and closes at once, as one TCP read can deliver an answer and the node's
+ * close of the channel together.
+ */
+class ClosingAnswerChannel extends Duplex {
+  private request = "";
+  constructor(private readonly answer: string) {
+    super();
+  }
+  override _read(): void {}
+  override _write(chunk: Buffer, _encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
+    this.request += chunk.toString("latin1");
+    callback();
+    if (this.request.includes("\r\n\r\n")) {
+      this.push(this.answer);
+      this.push(null);
+      this.destroy();
+    }
+  }
+}
+
+/**
+ * A channel that behaves as ssh2's does when destroyed: destroy only ends
+ * it, the node's close arrives as the end of its readable side, and close is
+ * emitted only once that end has been read.
+ */
+class Ssh2LikeChannel extends Duplex {
+  override _read(): void {}
+  override _write(_chunk: Buffer, _encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
+    callback();
+  }
+  override destroy(): this {
+    this.end();
+    this.once("end", () => this.emit("close"));
+    setImmediate(() => this.push(null));
+    return this;
+  }
+}
+
 describe("the SSH channel agent", () => {
+  it("reads a complete answer whose channel closes right behind it", async () => {
+    const body = JSON.stringify({ error: "Forbidden", code: "forbidden" });
+    const answer = `HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n${body}`;
+    const agent = new ChannelAgent(async () => new ClosingAnswerChannel(answer));
+    cleanups.push(() => agent.destroy());
+    for (let i = 0; i < 5; i++) {
+      const response = await agentFetch(agent, `http://${SSH_SIGNER_HOST}/status`, { method: "GET", headers: {} });
+      assert.equal(response.status, 403);
+      assert.deepEqual(await response.json(), { error: "Forbidden", code: "forbidden" });
+    }
+  });
+
+  it("keeps at most two idle channels", () => {
+    const agent = new ChannelAgent(async () => new Ssh2LikeChannel());
+    cleanups.push(() => agent.destroy());
+    assert.equal(agent.maxFreeSockets, 2);
+  });
+
+  it("lets a channel that opened after its request was aborted leave the pool", async () => {
+    let release: (channel: Duplex) => void = () => {};
+    const agent = new ChannelAgent(() => new Promise<Duplex>((resolve) => { release = resolve; }));
+    cleanups.push(() => agent.destroy());
+    const controller = new AbortController();
+    const aborted = agentFetch(agent, `http://${SSH_SIGNER_HOST}/status`, { method: "GET", headers: {}, signal: controller.signal });
+    controller.abort();
+    await assert.rejects(aborted, (error: unknown) => error instanceof Error && error.name === "AbortError");
+    const channel = new Ssh2LikeChannel();
+    release(channel);
+    await waitFor(() => Object.keys(agent.sockets).length === 0, "the late channel to leave the agent's pool");
+  });
+
   it("refuses a request for any host but the placeholder, without opening a channel", async () => {
     let opened = 0;
     const agent = new ChannelAgent(async () => {
