@@ -623,3 +623,35 @@ def test_a_tunnel_client_keeps_at_most_two_idle_channels(ssh_signer):
         adapter = client.session.get_adapter(f"{client.base_url}/health")
         assert isinstance(adapter, signer_module._ChannelAdapter)
         assert adapter._pool_maxsize == 2
+
+
+def test_patching_the_session_puts_the_original_back(ssh_signer):
+    from unittest import mock
+
+    with ssh_signer.connect() as client:
+        original = client.session
+        with mock.patch.object(client, "session") as patched:
+            assert client.session is patched
+        assert client.session is original
+        assert client.health()
+
+
+def test_a_redirect_says_the_signer_redirected(ssh_signer):
+    with ssh_signer.connect() as client:
+        with pytest.raises(requests.TooManyRedirects) as caught:
+            client.session.get(f"{client.base_url}/redirect", timeout=5)
+        error = signer_module._connection_error(caught.value)
+        assert isinstance(error, signer_module.SignerUnavailableError)
+        assert "answered with a redirect" in str(error)
+
+
+def test_a_full_pool_closes_an_extra_channel_without_a_warning(ssh_signer, caplog):
+    with ssh_signer.connect() as client:
+        url = f"{client.base_url}/health"
+        pool = client.session.get_adapter(url).poolmanager.connection_from_url(url)
+        assert isinstance(pool, signer_module._ChannelConnectionPool)
+        conns = [pool._get_conn() for _ in range(3)]
+        with caplog.at_level("WARNING", logger="urllib3.connectionpool"):
+            for conn in conns:
+                pool._put_conn(conn)
+        assert not [r for r in caplog.records if "pool is full" in r.getMessage()]

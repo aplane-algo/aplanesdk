@@ -210,7 +210,9 @@ defer client.Close()
 This mode is intended for advanced callers that already control the connection
 path to `apsigner`. If you set `http.Client.Timeout`, it is a hard cap on
 every request, including approval-backed signing; the SDK cannot extend a
-caller-owned transport timeout.
+caller-owned transport timeout. On a `ConnectSSH` or `FromEnv` client,
+`SetHTTPClient` keeps the tunnel's transport and ignores your client's
+`Transport`.
 
 ## API Reference
 

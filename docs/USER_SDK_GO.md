@@ -237,6 +237,11 @@ Use this when:
 - you proxy signer traffic through another transport
 - you need custom HTTP behavior such as retry or tracing middleware
 
+On a client from `ConnectSSH` or `FromEnv`, `SetHTTPClient` keeps the tunnel's
+own transport and takes only the rest of your client (its `Timeout`,
+`CheckRedirect` and `Jar`): a `Transport` you set there is ignored, so
+transport middleware needs a caller-owned connection.
+
 ## Sending Transactions
 
 ### Send A Payment Or A Prepared Group

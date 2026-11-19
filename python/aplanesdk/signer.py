@@ -824,6 +824,10 @@ def _connection_error(error: BaseException) -> SignerError:
     timeout = _timed_out("waiting for the signer's answer", error)
     if timeout is not None:
         return timeout
+    if isinstance(error, requests.TooManyRedirects):
+        return SignerUnavailableError(
+            "the signer answered with a redirect, which a client connected over SSH does not follow"
+        )
     return SignerUnavailableError(f"Failed to connect: {error}")
 
 
@@ -4845,12 +4849,16 @@ class _SSHTunnel:
         state_lock = threading.Lock()
         state: Dict[str, Any] = {"channel": None, "error": None, "abandoned": False}
 
+        # The open thread outlives a caller that stops waiting, but not for
+        # long: a node that has not answered in this time never will.
+        open_limit = max(60.0, 2 * timeout) if timeout is not None else None
+
         def open_api_channel() -> None:
             try:
                 opened_channel = transport.open_channel(
-                    "direct-tcpip", _FORWARDED_API_ADDRESS, ("127.0.0.1", 0)
+                    "direct-tcpip", _FORWARDED_API_ADDRESS, ("127.0.0.1", 0), timeout=open_limit
                 )
-            except (paramiko.ssh_exception.SSHException, EOFError, OSError) as e:
+            except Exception as e:  # every failure must reach the caller
                 with state_lock:
                     state["error"] = e
                 opened.set()
@@ -5083,6 +5091,12 @@ class _ChannelConnectionPool(urllib3.connectionpool.HTTPConnectionPool):
 
     def _put_conn(self, conn: Any) -> None:
         if conn is not None:
+            # Concurrent requests open more channels than the pool keeps;
+            # an extra one is closed on return, without urllib3's "pool is
+            # full" warning, which is expected here.
+            if self.pool is not None and self.pool.full():
+                conn.close()
+                return
             conn.idle_since = time.monotonic()
         super()._put_conn(conn)
 
@@ -5251,7 +5265,15 @@ class SignerClient:
             # A redirect would be followed through requests' default
             # adapter, off the tunnel; the signer never sends one.
             session.max_redirects = 0
+        if not hasattr(self, "_default_session"):
+            self._default_session = session
         self._session = session
+
+    @session.deleter
+    def session(self) -> None:
+        # Puts back the session the client was made with, as
+        # mock.patch.object(client, "session") expects on exit.
+        self._session = self._default_session
 
     @property
     def max_fee_increase(self) -> Optional[int]:
