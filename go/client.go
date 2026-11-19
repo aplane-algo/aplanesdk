@@ -28,9 +28,12 @@ import (
 
 // SignerClient is the client for connecting to apsigner.
 type SignerClient struct {
-	baseURL               string
-	client                *http.Client
-	sshTunnel             *sshTunnel
+	baseURL   string
+	client    *http.Client
+	sshTunnel *sshTunnel
+	// tunnelTransport carries every connection of an SSH-connected client
+	// over its tunnel; nil for a client built from a base URL.
+	tunnelTransport       *http.Transport
 	keyMu                 sync.RWMutex
 	keyCache              map[string]*KeyInfo
 	keyCacheRevision      uint64
@@ -127,11 +130,20 @@ func (c *SignerClient) feeCeiling() feeCeiling {
 	return feeCeiling{limit: *limit, set: true}
 }
 
-// SetHTTPClient overrides the HTTP client used for requests.
+// SetHTTPClient overrides the HTTP client used for requests. On a client
+// connected with ConnectSSH or FromEnv the transport stays the tunnel's, so
+// requests never leave it: only the rest of client (its Timeout,
+// CheckRedirect and Jar) is taken, and its Transport is ignored.
 func (c *SignerClient) SetHTTPClient(client *http.Client) {
-	if client != nil {
-		c.client = client
+	if client == nil {
+		return
 	}
+	if c.tunnelTransport != nil {
+		kept := *client
+		kept.Transport = c.tunnelTransport
+		client = &kept
+	}
+	c.client = client
 }
 
 func readErrorBody(resp *http.Response) string {
@@ -285,10 +297,11 @@ const tunnelAuthority = "signer.aplane.invalid"
 // connection the server is closing; a POST is not retried.
 const tunnelIdleTimeout = 90 * time.Second
 
-// newTunnelHTTPClient carries every connection to tunnelAuthority over an
-// SSH channel to the signer's REST API, and refuses any other destination.
-func newTunnelHTTPClient(tunnel *sshTunnel) *http.Client {
-	return &http.Client{Transport: &http.Transport{
+// newTunnelTransport carries every connection to tunnelAuthority over an SSH
+// channel to the signer's REST API, and refuses any other destination. It
+// sets no Proxy: a proxy would take the requests off the tunnel.
+func newTunnelTransport(tunnel *sshTunnel) *http.Transport {
+	return &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			if network != "tcp" || addr != tunnelAuthority+":80" {
 				return nil, fmt.Errorf("unexpected signer dial target %s %s", network, addr)
@@ -299,16 +312,18 @@ func newTunnelHTTPClient(tunnel *sshTunnel) *http.Client {
 			return tunnel.dialAPI(ctx)
 		},
 		IdleConnTimeout: tunnelIdleTimeout,
-	}}
+	}
 }
 
 // newTunnelClient builds the client for an established tunnel. Everything the
 // options set on a client is applied here, before the client is returned, so
 // it is never usable without them.
 func newTunnelClient(tunnel *sshTunnel, timeout int, opts *SSHConnectOptions) *SignerClient {
+	transport := newTunnelTransport(tunnel)
 	client := &SignerClient{
 		baseURL:           "http://" + tunnelAuthority,
-		client:            newTunnelHTTPClient(tunnel),
+		client:            &http.Client{Transport: transport},
+		tunnelTransport:   transport,
 		sshTunnel:         tunnel,
 		requestTimeout:    time.Duration(timeout) * time.Second,
 		requestTimeoutSet: opts != nil && opts.Timeout > 0,
@@ -417,8 +432,10 @@ func (c *SignerClient) Close() {
 	if resolver != nil {
 		resolver.Close()
 	}
+	if c.tunnelTransport != nil {
+		c.tunnelTransport.CloseIdleConnections()
+	}
 	if c.sshTunnel != nil {
-		c.client.CloseIdleConnections()
 		c.sshTunnel.close()
 	}
 }
