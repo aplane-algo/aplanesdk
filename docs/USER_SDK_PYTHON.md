@@ -242,9 +242,11 @@ each HTTP connection to the signer is a `direct-tcpip` channel opened in
 process on the authenticated SSH connection, and requests name the placeholder
 host `signer.aplane.invalid`, which is never looked up. No other process can
 send requests through the client's connection, and proxy environment variables
-do not apply to it. A process that can read the identity file can still open
-a connection of its own, so keep the key file private. Idle connections are
-reused for up to 90 seconds, under the signer's 120-second idle limit.
+do not apply to it. A session assigned to `client.session` gets the same
+channel transport, and tunnel requests follow no redirect. A process that can
+read the identity file can still open a connection of its own, so keep the key
+file private. Idle connections are reused for up to 90 seconds, under the
+signer's 120-second idle limit.
 
 This is useful when:
 

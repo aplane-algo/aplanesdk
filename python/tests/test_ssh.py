@@ -5,6 +5,7 @@
 
 import http.server
 import inspect
+import json
 import socket
 import threading
 import time
@@ -229,6 +230,16 @@ class _ChannelHTTPHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        if self.path == "/redirect":
+            self._record()
+            self.send_response(302)
+            self.send_header("Location", "http://elsewhere.invalid/health")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if self.path == "/proxy-auth":
+            self._answer(json.dumps({"proxy_auth": self.headers.get("Proxy-Authorization")}).encode())
+            return
         if self.path == "/close":
             # The server closes the connection after this response, and its
             # body arrives after its head.
@@ -483,6 +494,52 @@ def test_a_channel_not_open_within_the_connect_timeout_is_a_connect_timeout(ssh_
     finally:
         ssh_signer.release_channels.set()
         client.close()
+
+
+def test_a_channel_that_opens_after_its_connect_timeout_is_closed(ssh_signer):
+    client = ssh_signer.connect()
+    try:
+        client.session.close()
+        before = len(ssh_signer.channels)
+        ssh_signer.release_channels.clear()
+        with pytest.raises(requests.ConnectTimeout):
+            client.session.get(f"{client.base_url}/health", timeout=(0.2, 5))
+        # The node opens the channel only now, after the client gave up on it.
+        ssh_signer.release_channels.set()
+        assert _wait_for(lambda: len(ssh_signer.channels) > before)
+        late = ssh_signer.channels[before]
+        assert _wait_for(lambda: late.closed or late.eof_received)
+    finally:
+        ssh_signer.release_channels.set()
+        client.close()
+
+
+def test_a_replaced_session_still_carries_requests_over_the_tunnel(ssh_signer, monkeypatch):
+    for name in ("HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.setenv(name, "http://127.0.0.1:9")
+    for name in ("NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    with ssh_signer.connect() as client:
+        client.session = requests.Session()
+        assert client.health()
+    assert [request[1] for request in ssh_signer.requests][-1] == "/health"
+
+
+def test_tunnel_requests_follow_no_redirect(ssh_signer):
+    with ssh_signer.connect() as client:
+        with pytest.raises(requests.TooManyRedirects):
+            client.session.get(f"{client.base_url}/redirect", timeout=5)
+    assert [request[1] for request in ssh_signer.requests][-1] == "/redirect"
+
+
+def test_tunnel_requests_carry_no_proxy_credential(ssh_signer):
+    with ssh_signer.connect() as client:
+        answer = client.session.get(
+            f"{client.base_url}/proxy-auth",
+            headers={"Proxy-Authorization": "Basic dXNlcjpwdw=="},
+            timeout=5,
+        )
+        assert answer.json() == {"proxy_auth": None}
 
 
 def test_a_channel_connection_refuses_another_host():

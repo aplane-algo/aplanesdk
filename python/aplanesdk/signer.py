@@ -4837,17 +4837,43 @@ class _SSHTunnel:
             transport = self._transport
             if not self._running or transport is None:
                 raise ConnectionError("the SSH tunnel is closed")
-        started = time.monotonic()
-        try:
-            channel = transport.open_channel(
-                "direct-tcpip", _FORWARDED_API_ADDRESS, ("127.0.0.1", 0), timeout=timeout
-            )
-        except (paramiko.ssh_exception.SSHException, EOFError, OSError) as e:
-            if timeout is not None and time.monotonic() - started >= timeout:
-                raise TimeoutError(
-                    f"no SSH channel to the signer within {timeout:g} seconds"
-                ) from e
-            raise ConnectionError(f"cannot open an SSH channel to the signer: {e}") from e
+        # paramiko's own open timeout gives up on the channel without
+        # cancelling it, so one the node opens later stays open there. The
+        # open runs on its own thread instead: a caller that stops waiting
+        # marks it abandoned, and a channel that opens after that is closed.
+        opened = threading.Event()
+        state_lock = threading.Lock()
+        state: Dict[str, Any] = {"channel": None, "error": None, "abandoned": False}
+
+        def open_api_channel() -> None:
+            try:
+                opened_channel = transport.open_channel(
+                    "direct-tcpip", _FORWARDED_API_ADDRESS, ("127.0.0.1", 0)
+                )
+            except (paramiko.ssh_exception.SSHException, EOFError, OSError) as e:
+                with state_lock:
+                    state["error"] = e
+                opened.set()
+                return
+            with state_lock:
+                if state["abandoned"]:
+                    opened_channel.close()
+                    return
+                state["channel"] = opened_channel
+            opened.set()
+
+        threading.Thread(
+            target=open_api_channel, name="aplanesdk-ssh-channel-open", daemon=True
+        ).start()
+        opened.wait(timeout)
+        with state_lock:
+            channel, error = state["channel"], state["error"]
+            if channel is None and error is None:
+                state["abandoned"] = True
+        if channel is None and error is None:
+            raise TimeoutError(f"no SSH channel to the signer within {timeout:g} seconds")
+        if error is not None:
+            raise ConnectionError(f"cannot open an SSH channel to the signer: {error}") from error
         with self._lock:
             if self._running:
                 self._channels.add(channel)
@@ -5100,7 +5126,9 @@ class _ChannelAdapter(requests.adapters.HTTPAdapter):
         proxies: Optional[Mapping[str, str]] = None,
     ) -> requests.Response:
         # The request goes over the SSH connection: an environment proxy
-        # setting would send it elsewhere.
+        # setting would send it elsewhere, and a proxy credential requests
+        # adds on a redirect is not the signer's.
+        request.headers.pop("Proxy-Authorization", None)
         return super().send(
             request, stream=stream, timeout=timeout, verify=verify, cert=cert, proxies=None
         )
@@ -5187,10 +5215,8 @@ class SignerClient:
         self.max_fee_increase = max_fee_increase
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout if timeout and timeout > 0 else None
-        self.session = requests.Session()
-        if tunnel is not None:
-            self.session.mount(f"{_TUNNEL_BASE_URL}/", _ChannelAdapter(tunnel.open_channel))
         self._tunnel = tunnel
+        self.session = requests.Session()
         # Set by close().
         self._closed = False
         self._key_cache: Dict[str, KeyInfo] = {}  # Cache key info by address
@@ -5205,6 +5231,24 @@ class SignerClient:
         self._cosigner_connection: Dict[str, Any] = {}
         self._cosigner_resolver: Optional[EndpointCosignerResolver] = None
         self._cosigner_resolver_lock = threading.Lock()
+
+    @property
+    def session(self) -> requests.Session:
+        """The requests session every signer call goes through. On a client
+        connected with connect_ssh or from_env, a session set here gets the
+        tunnel's channel adapter mounted and redirects refused, so its
+        requests never leave the SSH connection."""
+        return self._session
+
+    @session.setter
+    def session(self, session: requests.Session) -> None:
+        tunnel = getattr(self, "_tunnel", None)
+        if tunnel is not None:
+            session.mount(f"{_TUNNEL_BASE_URL}/", _ChannelAdapter(tunnel.open_channel))
+            # A redirect would be followed through requests' default
+            # adapter, off the tunnel; the signer never sends one.
+            session.max_redirects = 0
+        self._session = session
 
     @property
     def max_fee_increase(self) -> Optional[int]:
