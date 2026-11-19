@@ -42,17 +42,21 @@ import concurrent.futures
 import contextlib
 import contextvars
 import copy
+import functools
 import hashlib
+import io
 import json
 import math
 import operator
 import os
 import re
 import requests
+import requests.adapters
 import secrets
 import socket
 import threading
 import time
+import weakref
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from typing import Optional, Dict, List, Any, Callable, Mapping, cast
 from urllib.parse import urlparse
@@ -64,6 +68,9 @@ from nacl.signing import VerifyKey
 from algosdk.v2client import models
 
 import paramiko
+import urllib3.connection
+import urllib3.connectionpool
+import urllib3.exceptions
 
 # -----------------------------------------------------------------------------
 # Constants
@@ -81,11 +88,11 @@ SSH_ENROLLMENT_USERNAME = "enroll"
 SSH_ENROLLMENT_COMMAND = "enroll"
 MAX_ENROLLMENT_LABEL_BYTES = 64
 # Endpoint keys earlier builds wrote and nothing reads: the node's SSH server
-# forwards every channel to its own REST listener, the local tunnel port is
-# chosen at connect time, and the client's enrolled SSH key is its only
-# credential, so there is no token file. They are accepted and ignored, as
-# APlane ignores them, so a registry written before they were retired keeps
-# working.
+# forwards every channel to its own REST listener, the client listens on no
+# local port (each HTTP connection is an SSH channel of its own), and the
+# client's enrolled SSH key is its only credential, so there is no token file.
+# They are accepted and ignored, as APlane ignores them, so a registry written
+# before they were retired keeps working.
 _RETIRED_ENDPOINT_FIELDS = ("signer_port", "local_port", "token_file")
 DEFAULT_SSH_SETUP_TIMEOUT = 60.0
 CLIENT_ENDPOINTS_FILE = "endpoints.yaml"
@@ -4613,19 +4620,30 @@ class _SSHHostKeyMismatchError(SignerError):
     known_hosts."""
 
 
-def _find_free_port() -> int:
-    """Find an available local port."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+# The host every request of a client made by connect_ssh names. It is never
+# looked up or dialed: each HTTP connection of such a client is an SSH channel
+# on its authenticated SSH connection (_ChannelHTTPConnection).
+_TUNNEL_HOST = "signer.aplane.invalid"
+_TUNNEL_BASE_URL = f"http://{_TUNNEL_HOST}"
+# The destination every direct-tcpip channel names. The node's SSH server
+# checks only that it is loopback and always forwards the channel to its own
+# REST listener, so the port is nominal: a client never chooses it.
+_FORWARDED_API_ADDRESS = ("127.0.0.1", 11270)
+# How long a tunnelled HTTP connection may sit idle in its pool and still be
+# reused. The node's HTTP server closes an idle connection after 120 seconds;
+# a request sent on a connection the server is closing fails, and a POST is
+# not retried, so the client gives up on it first.
+_TUNNEL_IDLE_TIMEOUT = 90.0
 
 
 class _SSHTunnel:
     """
-    Lightweight SSH local port forward using paramiko directly.
+    An authenticated SSH connection to a node, over which each HTTP
+    connection to the node's REST API is a direct-tcpip channel of its own.
 
-    Replaces sshtunnel dependency. Forwards local_port on 127.0.0.1 to
-    remote_host:remote_port through the SSH connection.
+    Nothing listens locally: a channel is opened in process for each
+    connection (open_channel), so no other process on the machine can send
+    requests under the client's key through it.
     """
 
     def __init__(
@@ -4633,25 +4651,21 @@ class _SSHTunnel:
         ssh_host: str,
         ssh_port: int,
         ssh_pkey_path: str,
-        remote_host: str,
-        remote_port: int,
-        local_port: int,
         known_hosts_path: str = "",
         trust_on_first_use: bool = False,
         setup_timeout: float = DEFAULT_SSH_SETUP_TIMEOUT,
     ):
         self._transport: Optional[paramiko.Transport] = None
-        self._ssh_client: Optional[paramiko.SSHClient] = None
-        self._server_socket: Optional[socket.socket] = None
-        self._threads: list = []
         self._running = False
+        # Guards _running, _transport and _channels between open_channel and
+        # stop.
+        self._lock = threading.Lock()
+        # The channels opened and not yet collected; stop closes them all.
+        self._channels: "weakref.WeakSet[Any]" = weakref.WeakSet()
 
         self._ssh_host = ssh_host
         self._ssh_port = ssh_port
         self._ssh_pkey_path = ssh_pkey_path
-        self._remote_host = remote_host
-        self._remote_port = remote_port
-        self.local_bind_port = local_port
         self._known_hosts_path = known_hosts_path
         self._trust_on_first_use = trust_on_first_use
         if (
@@ -4663,9 +4677,8 @@ class _SSHTunnel:
         self._setup_timeout = float(setup_timeout)
 
     def start(self):
-        """Establish SSH connection and start local port forward listener."""
-        import threading
-
+        """Connect and authenticate to the node's SSH server. Nothing is
+        opened locally: open_channel opens each connection to the REST API."""
         if not self._known_hosts_path:
             raise _SSHConfigError("known_hosts path is required for SSH host key verification")
 
@@ -4763,19 +4776,9 @@ class _SSHTunnel:
             if timeout_timer is not None:
                 timeout_timer.cancel()
 
-        self._transport = transport
-
-        # Start local listener
-        self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._server_socket.bind(("127.0.0.1", self.local_bind_port))
-        self._server_socket.listen(5)
-        self._server_socket.settimeout(1.0)
-        self._running = True
-
-        accept_thread = threading.Thread(target=self._accept_loop, daemon=True)
-        accept_thread.start()
-        self._threads.append(accept_thread)
+        with self._lock:
+            self._transport = transport
+            self._running = True
 
     def _verify_host_key(self, server_key: paramiko.PKey) -> None:
         """Verify or persist the negotiated key before authentication."""
@@ -4823,59 +4826,35 @@ class _SSHTunnel:
                 f"cannot save the host key to {self._known_hosts_path}: {e}"
             ) from e
 
-    def _accept_loop(self):
-        """Accept local connections and forward through SSH channel."""
-        import threading
-
-        while self._running:
-            try:
-                client_sock, _ = self._server_socket.accept()
-            except socket.timeout:
-                continue
-            except OSError:
-                break
-
-            try:
-                channel = self._transport.open_channel(
-                    "direct-tcpip",
-                    (self._remote_host, self._remote_port),
-                    client_sock.getpeername(),
-                )
-            except Exception:
-                client_sock.close()
-                continue
-
-            if channel is None:
-                client_sock.close()
-                continue
-
-            # Shuttle data in both directions
-            t1 = threading.Thread(target=self._forward, args=(client_sock, channel), daemon=True)
-            t2 = threading.Thread(target=self._forward, args=(channel, client_sock), daemon=True)
-            t1.start()
-            t2.start()
-            self._threads.extend([t1, t2])
-
-    @staticmethod
-    def _forward(src, dst):
-        """Copy data from src to dst until EOF or error."""
+    def open_channel(self, timeout: Optional[float] = None) -> Any:
+        """Open one direct-tcpip channel to the node's REST API on the
+        authenticated SSH connection, for one HTTP connection; the caller
+        owns it, and stop closes it too. Raises TimeoutError when it is not
+        open within timeout seconds (None waits as long as paramiko does),
+        and ConnectionError when the tunnel is stopped or down, or the node
+        refuses the channel."""
+        with self._lock:
+            transport = self._transport
+            if not self._running or transport is None:
+                raise ConnectionError("the SSH tunnel is closed")
+        started = time.monotonic()
         try:
-            while True:
-                data = src.recv(65536)
-                if not data:
-                    break
-                dst.sendall(data)
-        except Exception:
-            pass
-        finally:
-            try:
-                dst.close()
-            except Exception:
-                pass
-            try:
-                src.close()
-            except Exception:
-                pass
+            channel = transport.open_channel(
+                "direct-tcpip", _FORWARDED_API_ADDRESS, ("127.0.0.1", 0), timeout=timeout
+            )
+        except (paramiko.ssh_exception.SSHException, EOFError, OSError) as e:
+            if timeout is not None and time.monotonic() - started >= timeout:
+                raise TimeoutError(
+                    f"no SSH channel to the signer within {timeout:g} seconds"
+                ) from e
+            raise ConnectionError(f"cannot open an SSH channel to the signer: {e}") from e
+        with self._lock:
+            if self._running:
+                self._channels.add(channel)
+                return channel
+        # Stopped while the channel opened.
+        channel.close()
+        raise ConnectionError("the SSH tunnel is closed")
 
     @property
     def active(self) -> bool:
@@ -4885,27 +4864,246 @@ class _SSHTunnel:
         return self._running and transport is not None and transport.is_active()
 
     def stop(self):
-        """Tear down the tunnel."""
-        self._running = False
-        if self._server_socket:
+        """Tear down the tunnel: close every channel it opened, then the SSH
+        transport. No channel is opened after."""
+        with self._lock:
+            self._running = False
+            channels = list(self._channels)
+            self._channels = weakref.WeakSet()
+            transport, self._transport = self._transport, None
+        for channel in channels:
             try:
-                self._server_socket.close()
+                channel.close()
             except Exception:
                 pass
-            self._server_socket = None
-        if self._ssh_client:
+        if transport is not None:
             try:
-                self._ssh_client.close()
+                transport.close()
             except Exception:
                 pass
-            self._ssh_client = None
-            self._transport = None  # Transport is owned by SSHClient
-        elif self._transport:
-            try:
-                self._transport.close()
-            except Exception:
-                pass
-            self._transport = None
+
+
+# What a paramiko Channel raises, besides socket errors, when its SSH
+# connection fails under it.
+_SSH_CHANNEL_ERRORS = (EOFError, paramiko.ssh_exception.SSHException)
+
+
+class _ChannelSocket:
+    """An SSH channel as the socket of an HTTP connection.
+
+    It behaves as http.client expects of a socket where a paramiko Channel
+    alone does not: a file made from it keeps the channel open after close()
+    until the file is closed too (http.client hands a connection the server
+    will close to its response that way), and an SSH-level failure is a
+    ConnectionResetError, as a dropped TCP connection's would be, so it
+    reaches the caller as requests.ConnectionError."""
+
+    def __init__(self, channel: Any):
+        self._channel = channel
+        self._lock = threading.Lock()
+        self._files = 0
+        self._closed = False
+
+    def fileno(self) -> int:
+        return cast(int, self._channel.fileno())
+
+    def settimeout(self, timeout: Optional[float]) -> None:
+        self._channel.settimeout(timeout)
+
+    def gettimeout(self) -> Optional[float]:
+        return cast(Optional[float], self._channel.gettimeout())
+
+    def sendall(self, data: bytes) -> None:
+        try:
+            self._channel.sendall(data)
+        except _SSH_CHANNEL_ERRORS as e:
+            raise ConnectionResetError(f"SSH channel to the signer failed: {e!r}") from e
+
+    def recv(self, size: int) -> bytes:
+        try:
+            return cast(bytes, self._channel.recv(size))
+        except _SSH_CHANNEL_ERRORS as e:
+            raise ConnectionResetError(f"SSH channel to the signer failed: {e!r}") from e
+
+    def shutdown(self, how: int) -> None:
+        try:
+            self._channel.shutdown(how)
+        except _SSH_CHANNEL_ERRORS as e:
+            raise ConnectionResetError(f"SSH channel to the signer failed: {e!r}") from e
+
+    def makefile(self, mode: str = "rb", buffering: Optional[int] = None) -> io.BufferedReader:
+        # http.client reads responses through a file and writes with sendall.
+        if mode != "rb":
+            raise ValueError(f"an SSH channel file is read-only binary, not {mode!r}")
+        with self._lock:
+            self._files += 1
+        size = buffering if buffering is not None and buffering > 0 else io.DEFAULT_BUFFER_SIZE
+        return io.BufferedReader(_ChannelReader(self), size)
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            close_now = self._files == 0
+        if close_now:
+            self._close_channel()
+
+    def _file_closed(self) -> None:
+        with self._lock:
+            self._files -= 1
+            close_now = self._closed and self._files == 0
+        if close_now:
+            self._close_channel()
+
+    def _close_channel(self) -> None:
+        try:
+            self._channel.close()
+        except Exception:
+            pass
+
+
+class _ChannelReader(io.RawIOBase):
+    """The raw reader under a file made by _ChannelSocket.makefile."""
+
+    def __init__(self, sock: _ChannelSocket):
+        super().__init__()
+        self._sock: Optional[_ChannelSocket] = sock
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: Any) -> int:
+        if self._sock is None:
+            raise ValueError("I/O operation on closed file")
+        data = self._sock.recv(len(buffer))
+        buffer[: len(data)] = data
+        return len(data)
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        super().close()
+        sock, self._sock = self._sock, None
+        if sock is not None:
+            sock._file_closed()
+
+
+class _ChannelHTTPConnection(urllib3.connection.HTTPConnection):
+    """An HTTP connection to the signer whose socket is an SSH channel of
+    its own on the client's authenticated SSH connection (_ChannelSocket).
+    Nothing is dialed or looked up, and a host other than the tunnel's
+    placeholder is refused."""
+
+    def __init__(
+        self, *args: Any, open_signer_channel: Callable[[Optional[float]], Any], **kwargs: Any
+    ):
+        super().__init__(*args, **kwargs)
+        self._open_signer_channel = open_signer_channel
+        # When the connection was last put back in its pool; None while in use.
+        self.idle_since: Optional[float] = None
+
+    def connect(self) -> None:
+        if self.host != _TUNNEL_HOST:
+            raise urllib3.exceptions.NewConnectionError(
+                self, f"refusing to open an SSH channel for host {self.host!r}"
+            )
+        # The connect timeout bounds the channel's opening, as it bounds a
+        # dial; the channel is then left with it, as a dialed socket is.
+        timeout = self.timeout if isinstance(self.timeout, (int, float)) else None
+        try:
+            channel = self._open_signer_channel(timeout)
+        except TimeoutError as e:
+            raise urllib3.exceptions.ConnectTimeoutError(
+                self, f"SSH channel to the signer timed out. (connect timeout={timeout})"
+            ) from e
+        except OSError as e:
+            raise urllib3.exceptions.NewConnectionError(
+                self, f"Failed to establish a new connection: {e}"
+            ) from e
+        sock = _ChannelSocket(channel)
+        sock.settimeout(timeout)
+        self.sock = cast(Any, sock)
+
+
+class _ChannelConnectionPool(urllib3.connectionpool.HTTPConnectionPool):
+    """The connections of a client made by connect_ssh, each an SSH channel
+    (_ChannelHTTPConnection). A connection idle in the pool for
+    _TUNNEL_IDLE_TIMEOUT or longer is closed rather than reused, so no
+    request is sent on a connection the node's HTTP server is closing."""
+
+    ConnectionCls = _ChannelHTTPConnection
+
+    def __init__(
+        self,
+        host: str,
+        port: Optional[int] = None,
+        *,
+        open_signer_channel: Callable[[Optional[float]], Any],
+        **kwargs: Any,
+    ):
+        super().__init__(host, port, **kwargs)
+        self.conn_kw["open_signer_channel"] = open_signer_channel
+
+    def _get_conn(self, timeout: Optional[float] = None) -> Any:
+        conn = cast(_ChannelHTTPConnection, super()._get_conn(timeout))
+        idle_since = conn.idle_since
+        conn.idle_since = None
+        if (
+            conn.sock is not None
+            and idle_since is not None
+            and time.monotonic() - idle_since >= _TUNNEL_IDLE_TIMEOUT
+        ):
+            conn.close()
+        return conn
+
+    def _put_conn(self, conn: Any) -> None:
+        if conn is not None:
+            conn.idle_since = time.monotonic()
+        super()._put_conn(conn)
+
+
+class _ChannelAdapter(requests.adapters.HTTPAdapter):
+    """Carries the requests of a client made by connect_ssh to the signer,
+    each connection an SSH channel opened in process. Mounted for the
+    tunnel's placeholder base URL only, with the default adapter's pool
+    sizes and retries; a proxy is never used."""
+
+    def __init__(self, open_signer_channel: Callable[[Optional[float]], Any]):
+        # Set first: the base constructor makes the pool manager.
+        self._open_signer_channel = open_signer_channel
+        super().__init__()
+
+    def init_poolmanager(
+        self,
+        connections: int,
+        maxsize: int,
+        block: bool = requests.adapters.DEFAULT_POOLBLOCK,
+        **pool_kwargs: Any,
+    ) -> None:
+        super().init_poolmanager(connections, maxsize, block, **pool_kwargs)
+        # Only http: the placeholder base URL is the only one mounted here.
+        self.poolmanager.pool_classes_by_scheme = {
+            "http": cast(
+                Any,
+                functools.partial(
+                    _ChannelConnectionPool, open_signer_channel=self._open_signer_channel
+                ),
+            )
+        }
+
+    def send(
+        self,
+        request: requests.PreparedRequest,
+        stream: bool = False,
+        timeout: Any = None,
+        verify: Any = True,
+        cert: Any = None,
+        proxies: Optional[Mapping[str, str]] = None,
+    ) -> requests.Response:
+        # The request goes over the SSH connection: an environment proxy
+        # setting would send it elsewhere.
+        return super().send(
+            request, stream=stream, timeout=timeout, verify=verify, cert=cert, proxies=None
+        )
 
 
 @dataclass
@@ -4959,15 +5157,20 @@ class SignerClient:
         """
         Initialize signer client (use class methods instead).
 
-        base_url is the local end of an SSH tunnel to the signer, which
-        authenticates the tunnel by the client's enrolled key; the client
-        itself carries no credential.
+        A client made by connect_ssh or from_env is given an SSH tunnel,
+        which the signer authenticated by the client's enrolled key, and a
+        placeholder base_url: each of its HTTP connections is an SSH channel
+        on that tunnel, and nothing listens locally. The client itself
+        carries no credential. A client made directly with no tunnel sends
+        plain HTTP to base_url, which must then be the end of a connection
+        to the signer that the caller owns.
 
         Args:
-            base_url: Internal HTTP endpoint (set automatically by class methods)
+            base_url: HTTP endpoint (set automatically by class methods)
             timeout: Optional explicit request timeout in seconds. If omitted,
                 endpoint-specific defaults are used.
-            tunnel: SSH tunnel instance (managed internally)
+            tunnel: SSH tunnel instance (managed internally); with one, the
+                requests to the placeholder base URL go over its channels
             max_fee_increase: Optional ceiling, in microAlgos, on the total fee
                 the signer may add to a request. Every sign, plan and simulate
                 call through this client fails and returns nothing when the
@@ -4985,6 +5188,8 @@ class SignerClient:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout if timeout and timeout > 0 else None
         self.session = requests.Session()
+        if tunnel is not None:
+            self.session.mount(f"{_TUNNEL_BASE_URL}/", _ChannelAdapter(tunnel.open_channel))
         self._tunnel = tunnel
         # Set by close().
         self._closed = False
@@ -5019,17 +5224,22 @@ class SignerClient:
         timeout: Optional[int] = None,
         known_hosts_path: str = "",
         trust_on_first_use: bool = False,
-        local_port: int = 0,
         ssh_setup_timeout: float = DEFAULT_SSH_SETUP_TIMEOUT,
         max_fee_increase: Optional[int] = None,
     ) -> "SignerClient":
         """
         Connect to remote apsigner via SSH tunnel.
 
-        Establishes an SSH tunnel to the remote host and forwards the
-        signer's REST listener to a local port. The enrolled client key is the
-        only credential; a key the signer has not enrolled fails the handshake
-        with AuthenticationError (enroll it with request_enrollment first).
+        Opens an authenticated SSH connection to the remote host and carries
+        each HTTP connection to the signer's REST API over an SSH channel of
+        its own on it, opened in process. Nothing listens on a local port, so
+        no other process on the machine can send requests through the
+        client's connection. The enrolled client key is the only credential;
+        a key the signer has not enrolled fails the handshake with
+        AuthenticationError (enroll it with request_enrollment first).
+
+        There is no port argument for the REST API: the signer's SSH server
+        forwards every channel to its own REST listener.
 
         Args:
             host: Remote host running apsigner
@@ -5038,9 +5248,6 @@ class SignerClient:
             timeout: Optional explicit request timeout in seconds
             known_hosts_path: Path to known_hosts file for host key verification (required)
             trust_on_first_use: If true, auto-trust unknown host keys (default: false)
-            local_port: Local tunnel port (default: choose a free one). There is no
-                remote REST port argument: the signer's SSH server forwards every
-                channel to its own REST listener.
             ssh_setup_timeout: Maximum seconds for TCP connection and SSH authentication
             max_fee_increase: Optional ceiling, in microAlgos, on the total fee
                 the signer may add to a request (see SignerClient). No default.
@@ -5060,8 +5267,6 @@ class SignerClient:
         ssh_key_path = os.path.expanduser(ssh_key_path)
         known_hosts_path = os.path.expanduser(known_hosts_path)
 
-        # Find a free local port unless the endpoint pins one.
-        local_port = local_port or _find_free_port()
         # The call's time limit, when there is one, bounds the setup too.
         remaining = _time_remaining()
         if remaining is not None:
@@ -5077,11 +5282,6 @@ class SignerClient:
                 ssh_host=host,
                 ssh_port=ssh_port,
                 ssh_pkey_path=ssh_key_path,
-                # The server checks only that the destination is loopback and
-                # forwards to its own REST listener, so the port is nominal.
-                remote_host="127.0.0.1",
-                remote_port=11270,
-                local_port=local_port,
                 known_hosts_path=known_hosts_path,
                 trust_on_first_use=trust_on_first_use,
                 setup_timeout=ssh_setup_timeout,
@@ -5092,9 +5292,9 @@ class SignerClient:
         except Exception as e:
             raise SignerUnavailableError(f"SSH tunnel failed: {e}")
 
-        # Connect through tunnel
-        base_url = f"http://127.0.0.1:{tunnel.local_bind_port}"
-        client = cls(base_url, timeout, tunnel=tunnel, max_fee_increase=fee_ceiling)
+        # Requests name a placeholder host; each connection is a channel on
+        # the tunnel.
+        client = cls(_TUNNEL_BASE_URL, timeout, tunnel=tunnel, max_fee_increase=fee_ceiling)
 
         # Verify connection
         if not client.health():
@@ -5198,6 +5398,12 @@ class SignerClient:
             resolver, self._cosigner_resolver = self._cosigner_resolver, None
         if resolver is not None:
             resolver.close()
+        # The pooled connections first, then the tunnel, which closes any
+        # channel still open and the SSH transport.
+        try:
+            self.session.close()
+        except Exception:
+            pass
         if self._tunnel:
             try:
                 self._tunnel.stop()

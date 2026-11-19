@@ -487,7 +487,7 @@ class _Tunnel:
 
 
 def test_a_tunnel_is_active_while_its_ssh_transport_is():
-    tunnel = signer_module._SSHTunnel("h", 22, "/k", "127.0.0.1", 1, 0)
+    tunnel = signer_module._SSHTunnel("h", 22, "/k")
     assert tunnel.active is False
 
     class Transport:
