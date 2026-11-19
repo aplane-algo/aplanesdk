@@ -126,7 +126,7 @@ func (f *fakeCosigners) connect(ctx context.Context, endpoint ClientEndpointConf
 	})
 	f.t.Cleanup(server.Close)
 	// A tunnel whose closing can be seen.
-	tunnel := &sshTunnel{done: make(chan struct{})}
+	tunnel := &sshTunnel{}
 	client.sshTunnel = tunnel
 	f.mu.Lock()
 	f.tunnels = append(f.tunnels, tunnel)
@@ -140,9 +140,7 @@ func (f *fakeCosigners) open() int {
 	defer f.mu.Unlock()
 	open := 0
 	for _, tunnel := range f.tunnels {
-		select {
-		case <-tunnel.done:
-		default:
+		if tunnel.open() {
 			open++
 		}
 	}

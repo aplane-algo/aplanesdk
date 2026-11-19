@@ -204,6 +204,10 @@ shortening approval-bearing HTTP requests. Use `ConnectSSHWithContext` or
 `FromEnvWithContext` when the caller must cancel setup; a successful connection
 detaches from the setup context and remains active until `Close`.
 
+The client opens no local port: each HTTP connection to the signer is an SSH
+channel the client opens itself on that connection, so no other process on the
+machine can send requests under the client's key.
+
 The SSH username is the fixed non-secret value `aplane`, and public-key
 authentication with the enrolled key is the only credential. The explicit form
 of enrollment is `aplane.RequestEnrollment(host, keyPath, label,

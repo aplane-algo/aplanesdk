@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -246,7 +247,6 @@ func ConnectSSHWithContext(ctx context.Context, host, sshKeyPath string, opts *S
 	sshPort := DefaultSSHPort
 	timeout := DefaultTimeout
 	sshSetupTimeout := defaultSSHSetupTimeout
-	localPort := 0
 
 	var knownHostsPath string
 
@@ -260,9 +260,6 @@ func ConnectSSHWithContext(ctx context.Context, host, sshKeyPath string, opts *S
 		if opts.SSHSetupTimeout > 0 {
 			sshSetupTimeout = opts.SSHSetupTimeout
 		}
-		if opts.LocalPort > 0 {
-			localPort = opts.LocalPort
-		}
 		if opts.KnownHostsPath != "" {
 			knownHostsPath = opts.KnownHostsPath
 		}
@@ -271,21 +268,47 @@ func ConnectSSHWithContext(ctx context.Context, host, sshKeyPath string, opts *S
 	trustOnFirstUse := opts != nil && opts.TrustOnFirstUse
 	knownHostsPath = ExpandPath(knownHostsPath)
 	tunnel := &sshTunnel{knownHostsPath: knownHostsPath, trustOnFirstUse: trustOnFirstUse}
-	resolvedLocalPort, err := tunnel.connect(ctx, host, sshPort, localPort, ExpandPath(sshKeyPath), sshSetupTimeout)
-	if err != nil {
+	if err := tunnel.connect(ctx, host, sshPort, ExpandPath(sshKeyPath), sshSetupTimeout); err != nil {
 		return nil, fmt.Errorf("failed to establish SSH tunnel: %w", err)
 	}
 
-	return newTunnelClient(resolvedLocalPort, tunnel, timeout, opts), nil
+	return newTunnelClient(tunnel, timeout, opts), nil
+}
+
+// tunnelAuthority is the host the requests of a tunnel client name. They
+// never leave the process by it: the client's transport carries each
+// connection over an SSH channel.
+const tunnelAuthority = "signer.aplane.invalid"
+
+// tunnelIdleTimeout closes an idle connection before the signer's HTTP server
+// does (its IdleTimeout is 120 seconds), so a POST is never sent on a
+// connection the server is closing; a POST is not retried.
+const tunnelIdleTimeout = 90 * time.Second
+
+// newTunnelHTTPClient carries every connection to tunnelAuthority over an
+// SSH channel to the signer's REST API, and refuses any other destination.
+func newTunnelHTTPClient(tunnel *sshTunnel) *http.Client {
+	return &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if network != "tcp" || addr != tunnelAuthority+":80" {
+				return nil, fmt.Errorf("unexpected signer dial target %s %s", network, addr)
+			}
+			if tunnel == nil {
+				return nil, fmt.Errorf("SSH tunnel is not connected")
+			}
+			return tunnel.dialAPI(ctx)
+		},
+		IdleConnTimeout: tunnelIdleTimeout,
+	}}
 }
 
 // newTunnelClient builds the client for an established tunnel. Everything the
 // options set on a client is applied here, before the client is returned, so
 // it is never usable without them.
-func newTunnelClient(localPort int, tunnel *sshTunnel, timeout int, opts *SSHConnectOptions) *SignerClient {
+func newTunnelClient(tunnel *sshTunnel, timeout int, opts *SSHConnectOptions) *SignerClient {
 	client := &SignerClient{
-		baseURL:           fmt.Sprintf("http://localhost:%d", localPort),
-		client:            &http.Client{},
+		baseURL:           "http://" + tunnelAuthority,
+		client:            newTunnelHTTPClient(tunnel),
 		sshTunnel:         tunnel,
 		requestTimeout:    time.Duration(timeout) * time.Second,
 		requestTimeoutSet: opts != nil && opts.Timeout > 0,
@@ -395,6 +418,7 @@ func (c *SignerClient) Close() {
 		resolver.Close()
 	}
 	if c.sshTunnel != nil {
+		c.client.CloseIdleConnections()
 		c.sshTunnel.close()
 	}
 }
