@@ -179,7 +179,7 @@ export function validateAuthorization(signed: algosdk.SignedTransaction, auth: s
     );
   }
   if (signed.sig !== undefined) {
-    const message = hexToBytes(encodeTransaction(signed.txn)[0]);
+    const message = hexToBytes(encodeTransaction(signed.txn));
     if (!ed25519Verifies(algosdk.decodeAddress(auth).publicKey, message, signed.sig)) {
       throw new SignerError(
         `signature does not verify under the requested auth address ${auth}`,
@@ -775,7 +775,7 @@ export function signedTransactionMatchesCanonical(
     if (!(error instanceof SignerError)) throw error;
     throw new SignerError(`${label} ${index}: ${errorText(error)}`);
   }
-  if (encodeTransaction(signed.txn)[0] !== canonicalHex.toLowerCase()) {
+  if (encodeTransaction(signed.txn) !== canonicalHex.toLowerCase()) {
     throw new SignerError(
       `${label} ${index} does not match the submitted canonical bytes`,
     );

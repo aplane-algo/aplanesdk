@@ -6,7 +6,6 @@
       "display_name": "Falcon-1024",
       "description": "Falcon-1024 signature scheme",
       "authorization_kind": "logic_sig",
-      "requires_logicsig": true,
       "mnemonic_word_count": 0,
       "mnemonic_import": false,
       "mnemonic_scheme": "",

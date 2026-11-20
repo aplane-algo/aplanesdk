@@ -140,7 +140,6 @@ Example `endpoints.yaml`:
 
 ```yaml
 schema_version: 2
-default: primary
 endpoints:
   primary:
     role: signer
@@ -211,7 +210,12 @@ This path:
   network IDs written as text (a malformed list is an error, never an empty
   one; a bare number, `true`/`false` or an empty entry is refused, so quote a
   name such as `"1"`). Quote a network name that YAML could read as a boolean, such as `"on"`, `"yes"` or `"no"`. The `network` value follows the same rule: it must be text and a network ID, and a bare number or `true`/`false` is refused.
-- validates `config.yaml` contains no obsolete routing
+- accepts exactly apshell's `config.yaml` field names, at every depth, and
+  refuses any other with apshell's words: the retired `endpoint`, `ssh` and
+  `signer_port` routing among them. It validates only the values it reads
+  (`network`, `networks_allowed` and `theme`), so some files apshell refuses
+  still load here: an empty file, `schema_version: 2`, a bad
+  `signer_status_poll_interval`, or a bad network name under `networks`
 - loads and selects an endpoint from `endpoints.yaml`
 - resolves SSH paths relative to the client data dir
 - opens the SSH connection automatically, without opening a local port
@@ -758,7 +762,7 @@ and `spendingRekey`, which may differ: a rekey selects `spendingRekey` and
 every other transaction selects `spend`.
 
 `KeyTypeInfo.authorizationKind` distinguishes `ed25519`, `native_pq`, and
-`logic_sig`. `requiresLogicsig === false` alone does not imply Ed25519.
+`logic_sig`.
 
 `KeyInfo.authorizationKind` reports the same closed values for a key instance
 and is authoritative for choosing its transaction authorization envelope. It
@@ -1003,7 +1007,6 @@ with role `cosigner`:
 
 ```yaml
 schema_version: 2
-default: primary
 endpoints:
   primary:
     role: signer
@@ -1365,8 +1368,8 @@ locally.
 Every 200 answer from the signer is read strictly, as the Go SDK reads it: it
 must be exactly one JSON object of the answer's declared shape, a field left
 out or `null` takes its zero value, and a field of the wrong type, a `null`
-body or anything after the object makes the answer unreadable. An answer
-whose `error` field is set is a refusal; an unreadable answer is a plain
+body or anything after the object makes the answer unreadable. The signer
+refuses only with a non-2xx answer; an unreadable answer is a plain
 `SignerError` at a request that releases no signature, and at an
 approval-bearing request a lost answer, which a send reports as
 `SignOutcomeUnknownError`. The full rule and the reader's known limits are in
@@ -1451,8 +1454,8 @@ try {
   connection and enrollment paths will fail at runtime until `ssh2` is
   installed.
 - The SDK exports both runtime helpers and lower-level utilities such as
-  `loadConfig`, `resolveDataDir`, `encodeTransaction`, and
-  `encodeLsigArgs`.
+  `loadConfig`, `resolveDataDir`, `encodeTransaction` (a transaction's
+  `TX`-prefixed hex), and `encodeLsigArgs`.
 
 ## Compatibility Notes
 

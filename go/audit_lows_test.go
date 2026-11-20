@@ -270,7 +270,6 @@ func (k *keysetSigner) client(t *testing.T) (*SignerClient, func()) {
 func TestCosignedGroupTakesTheSpendableKeyFromTheSigner(t *testing.T) {
 	txn := verifyTestPayment(t, 41, 42, 1)
 	sender := txn.Sender.String()
-	notSpending := false
 	attempt := func(client *SignerClient) error {
 		_, err := SignPreparedCosignedGroup(PreparedCosignedGroupOptions{
 			UserClient:    client,
@@ -279,15 +278,15 @@ func TestCosignedGroupTakesTheSpendableKeyFromTheSigner(t *testing.T) {
 		return err
 	}
 
-	// Two rows for one address, the non-spending one last. The spendable row
+	// Two rows for one address, the witness one last. The spendable row
 	// decides the flow, on the fresh read and again from the cache.
 	// A second spendable row follows as well: the first one is the one
 	// chosen, from the fresh list and from the cache alike.
 	signer := &keysetSigner{revision: 1, keys: []KeyInfo{
-		{Address: sender, KeyType: KeyTypeWitnessFalcon1024, IsSpendingAccount: &notSpending, SigningFlow: "witness8"},
+		{Address: sender, KeyType: KeyTypeWitnessFalcon1024, IsWitnessKey: true, SigningFlow: "witness8"},
 		{Address: sender, KeyType: "ed25519", SigningFlow: "cosigner9"},
 		{Address: sender, KeyType: "ed25519", SigningFlow: "cosigner11"},
-		{Address: sender, KeyType: KeyTypeWitnessFalcon1024, IsSpendingAccount: &notSpending, SigningFlow: "witness9"},
+		{Address: sender, KeyType: KeyTypeWitnessFalcon1024, IsWitnessKey: true, SigningFlow: "witness9"},
 	}}
 	client, closeServer := signer.client(t)
 	defer closeServer()
@@ -320,9 +319,9 @@ func TestCosignedGroupTakesTheSpendableKeyFromTheSigner(t *testing.T) {
 		t.Fatalf("/keys was fetched %d times after one keyset change, want 2", signer.fetches)
 	}
 
-	// Only a non-spending row for the address: there is no key to sign with.
+	// Only a witness row for the address: there is no key to sign with.
 	signer.revision = 3
-	signer.keys = []KeyInfo{{Address: sender, KeyType: KeyTypeWitnessFalcon1024, IsSpendingAccount: &notSpending}}
+	signer.keys = []KeyInfo{{Address: sender, KeyType: KeyTypeWitnessFalcon1024, IsWitnessKey: true}}
 	if err := attempt(client); !errors.Is(err, ErrKeyNotFound) {
 		t.Fatalf("a witness-only address: error = %v, want ErrKeyNotFound", err)
 	}
@@ -590,9 +589,8 @@ func TestLoadConfigNetworkAliasesAndTextNetwork(t *testing.T) {
 		network string
 		allowed []string
 	}{
-		{"nets: &nets [testnet]\nnetworks_allowed: *nets\n", "testnet", []string{"testnet"}},
-		{"name: &name testnet\nnetworks_allowed: [*name, mainnet]\n", "testnet", []string{"testnet", "mainnet"}},
-		{"name: &name mainnet\nnetwork: *name\n", "mainnet", []string{}},
+		{"network: &name testnet\nnetworks_allowed: [*name, mainnet]\n", "testnet", []string{"testnet", "mainnet"}},
+		{"networks_allowed: [&name mainnet]\nnetwork: *name\n", "mainnet", []string{"mainnet"}},
 		{"network: ~\n", "testnet", []string{}},
 		{"network: \"1\"\n", "1", []string{}},
 		{"network: \"1\"\nnetworks_allowed: [\"1\"]\n", "1", []string{"1"}},
@@ -606,15 +604,15 @@ func TestLoadConfigNetworkAliasesAndTextNetwork(t *testing.T) {
 		}
 	}
 	for _, tc := range []struct{ content, want string }{
-		{"n: &n 1\nnetworks_allowed: [*n]\n", "networks_allowed"},
-		{"n: &n {a: b}\nnetworks_allowed: *n\n", "networks_allowed"},
+		{"theme: &n 1\nnetworks_allowed: [*n]\n", "networks_allowed"},
+		{"networks: &n {}\nnetworks_allowed: *n\n", "networks_allowed"},
 		{"network: 1\n", "invalid network in config.yaml"},
 		{"network: 1\nnetworks_allowed: [testnet]\n", "invalid network in config.yaml"},
 		{"network: true\n", "invalid network in config.yaml"},
 		{"network: 1.5\n", "invalid network in config.yaml"},
 		{"network: [a]\n", "invalid network in config.yaml"},
 		{"network: Mainnet\n", "invalid network in config.yaml"},
-		{"n: &n 1\nnetwork: *n\n", "invalid network in config.yaml"},
+		{"theme: &n 1\nnetwork: *n\n", "invalid network in config.yaml"},
 	} {
 		if _, err := load(tc.content); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Fatalf("%q: error = %v, want a refusal naming %q", tc.content, err, tc.want)

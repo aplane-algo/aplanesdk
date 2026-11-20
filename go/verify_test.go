@@ -239,7 +239,6 @@ func signRequestsFor(txns ...types.Transaction) []SignRequest {
 	for i, txn := range txns {
 		requests[i] = SignRequest{
 			AuthAddress: txn.Sender.String(),
-			TxnSender:   txn.Sender.String(),
 			TxnBytesHex: hex.EncodeToString(encodeTxn(txn)),
 		}
 	}
@@ -1137,7 +1136,7 @@ func TestValidateSignResponseChecksTheAuthorization(t *testing.T) {
 		return txn
 	}
 	check := func(txn types.Transaction, auth string, stxn types.SignedTxn) error {
-		request := SignRequest{AuthAddress: auth, TxnSender: txn.Sender.String(), TxnBytesHex: hex.EncodeToString(encodeTxn(txn))}
+		request := SignRequest{AuthAddress: auth, TxnBytesHex: hex.EncodeToString(encodeTxn(txn))}
 		return validateSignResponse(mustDecodeSlots(t, []SignRequest{request}), []string{hex.EncodeToString(msgpack.Encode(stxn))}, nil, feeCeiling{})
 	}
 

@@ -165,7 +165,7 @@ class Network:
                 known_hosts_path=f"/known/{alias}",
             )
         configs.update(extra or {})
-        self.registry = ClientEndpointRegistry(default="primary", endpoints=configs)
+        self.registry = ClientEndpointRegistry(endpoints=configs)
 
     def close(self):
         for endpoint in self.endpoints.values():

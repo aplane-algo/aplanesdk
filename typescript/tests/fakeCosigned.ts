@@ -20,7 +20,6 @@ export function witnessRecord(publicKeyHex: string, keyType = KEY_TYPE_WITNESS_F
     public_key_hex: publicKeyHex,
     key_type: keyType,
     is_witness_key: true,
-    is_spending_account: false,
   };
 }
 

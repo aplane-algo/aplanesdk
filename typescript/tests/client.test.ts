@@ -1440,14 +1440,14 @@ describe("SignerClient", () => {
             family: "ed25519",
             display_name: "Ed25519",
             description: "Standard Ed25519 key",
-            requires_logicsig: false,
+            authorization_kind: "ed25519",
             mnemonic_import: true,
           },
           {
             key_type: "aplane.falcon1024.v1",
             family: "falcon",
             display_name: "Falcon-1024",
-            requires_logicsig: true,
+            authorization_kind: "logic_sig",
             mnemonic_import: true,
             creation_params: [
               { name: "network", label: "Network", type: "string", required: true },
@@ -1474,7 +1474,7 @@ describe("SignerClient", () => {
       assert.equal(types.length, 2);
       assert.equal(types[0].keyType, "ed25519");
       assert.equal(types[0].family, "ed25519");
-      assert.equal(types[0].requiresLogicsig, false);
+      assert.equal(types[0].authorizationKind, "ed25519");
       assert.equal(types[0].mnemonicImport, true);
       assert.equal(types[1].keyType, "aplane.falcon1024.v1");
       assert.equal(types[1].mnemonicImport, true);
@@ -1617,7 +1617,7 @@ describe("SignerClient", () => {
       mockFetch.mockResolvedValueOnce({
         status: 200,
         ok: true,
-        json: async () => ({ success: true }),
+        json: async () => ({}),
       });
 
       const client = new SignerClient("http://localhost:11270");
@@ -1909,7 +1909,7 @@ describe("SignerClient", () => {
       mockFetch.mockResolvedValueOnce({
         status: 200,
         ok: true,
-        json: async () => ({ success: true, state: "canceled" }),
+        json: async () => ({ state: "canceled" }),
       });
 
       const client = new SignerClient("http://localhost:11270");
@@ -2500,8 +2500,8 @@ describe("SignerClient", () => {
       fabricatedFirst.group = new Uint8Array(32).fill(0x44);
       fabricatedSecond.group = new Uint8Array(32).fill(0x44);
       plannedTransactions = [
-        encodeTransaction(fabricatedFirst)[0],
-        encodeTransaction(fabricatedSecond)[0],
+        encodeTransaction(fabricatedFirst),
+        encodeTransaction(fabricatedSecond),
       ];
       plannedMutations = {
         dummies_added: 1,
@@ -2530,7 +2530,7 @@ describe("SignerClient", () => {
           flatFee: true,
         },
       });
-      plannedTransactions = [encodeTransaction(changedPlanTxn)[0]];
+      plannedTransactions = [encodeTransaction(changedPlanTxn)];
       plannedMutations = undefined;
       await assert.rejects(
         signCosignedWithHeldKeys(options),
@@ -2551,7 +2551,7 @@ describe("SignerClient", () => {
           flatFee: true,
         },
       });
-      plannedTransactions = [encodeTransaction(inflatedFeeTxn)[0]];
+      plannedTransactions = [encodeTransaction(inflatedFeeTxn)];
       plannedMutations = {
         dummies_added: 0,
         group_id_changed: false,
@@ -2587,7 +2587,7 @@ describe("SignerClient", () => {
         badDummy,
       ];
       algosdk.assignGroupID(badDummyGroup);
-      plannedTransactions = badDummyGroup.map((item) => encodeTransaction(item)[0]);
+      plannedTransactions = badDummyGroup.map((item) => encodeTransaction(item));
       plannedMutations = {
         dummies_added: 1,
         group_id_changed: true,
@@ -2868,7 +2868,7 @@ describe("SignerClient", () => {
         algosdk.assignGroupID(planned);
         plannedGroup = planned;
         return {
-          transactions: planned.map((item: algosdk.Transaction) => encodeTransaction(item)[0]),
+          transactions: planned.map((item: algosdk.Transaction) => encodeTransaction(item)),
           mutations: {
             dummiesAdded: 0,
             groupIdChanged: true,
@@ -3020,7 +3020,7 @@ describe("SignerClient", () => {
         algosdk.assignGroupID(planned);
         plannedGroup = planned;
         return {
-          transactions: planned.map((item: algosdk.Transaction) => encodeTransaction(item)[0]),
+          transactions: planned.map((item: algosdk.Transaction) => encodeTransaction(item)),
           mutations: {
             dummiesAdded: 0,
             groupIdChanged: true,
@@ -3035,7 +3035,7 @@ describe("SignerClient", () => {
         events.push("base");
         assert.deepEqual(
           request.group_bytes_hex,
-          plannedGroup.map((item) => encodeTransaction(item)[0]),
+          plannedGroup.map((item) => encodeTransaction(item)),
         );
         assert.equal(request.targets.length, 1);
         assert.equal(request.contextual_positions.length, 1);
@@ -3217,7 +3217,7 @@ describe("SignerClient", () => {
       const other = fakePayment(41, 45, 100_000_000);
       mockFetch.mockImplementationOnce(signerFetch({
         tamper: (body) => {
-          body.transactions = [encodeTransaction(other)[0]];
+          body.transactions = [encodeTransaction(other)];
         },
       }));
 
@@ -3594,7 +3594,7 @@ describe("SignerClient", () => {
       mockFetch.mockResolvedValueOnce({
         status: 200,
         ok: true,
-        json: async () => ({ success: true, state: "canceled" }),
+        json: async () => ({ state: "canceled" }),
       });
 
       const client = new SignerClient("http://localhost:11270", 100);
@@ -3618,7 +3618,7 @@ describe("SignerClient", () => {
       mockFetch.mockResolvedValueOnce({
         status: 200,
         ok: true,
-        json: async () => ({ success: true, state: "canceled" }),
+        json: async () => ({ state: "canceled" }),
       });
 
       const client = new SignerClient("http://localhost:11270", 100);
@@ -3670,7 +3670,7 @@ describe("SignerClient", () => {
         return {
           status: 200,
           ok: true,
-          json: async () => ({ success: true, state: "canceled" }),
+          json: async () => ({ state: "canceled" }),
         } as Response;
       }) as typeof fetch;
 
@@ -3755,15 +3755,13 @@ describe("SignerClient", () => {
 
       const txn = fakePayment();
       const entry = {
-        txn_bytes_hex: encodeTransaction(txn)[0],
+        txn_bytes_hex: encodeTransaction(txn),
         auth_address: txn.sender.toString(),
-        txn_sender: "SENDER",
       };
       const client = new SignerClient("http://localhost:11270");
       const result = await client.signRequests([{ ...entry }], { requestId: "raw-requests-id" });
 
-      // A field left out reads as its zero value, as the Go SDK reads it.
-      assert.deepEqual(result, { signed: [signedHex(txn)], error: "" });
+      assert.deepEqual(result, { signed: [signedHex(txn)] });
       assert.equal(mockFetch.mock.calls[1][0], "http://localhost:11270/sign");
       assert.deepEqual(JSON.parse(mockFetch.mock.calls[1][1].body), {
         request_id: "raw-requests-id",
@@ -3773,7 +3771,7 @@ describe("SignerClient", () => {
 
     it("rejects non-canonical transaction bytes before fetch", async () => {
       const client = new SignerClient("http://localhost:11270");
-      const canonical = encodeTransaction(fakePayment())[0];
+      const canonical = encodeTransaction(fakePayment());
       const callsBefore = mockFetch.mock.calls.length;
       await assert.rejects(
         client.signRequests([{ txn_bytes_hex: canonical.slice(4), auth_address: "AUTH" }]),
@@ -4069,13 +4067,12 @@ describe("SignerClient", () => {
       mockFetch.mockResolvedValueOnce({
         status: 200,
         ok: true,
-        json: async () => ({ success: true, state: "not_found" }),
+        json: async () => ({ state: "not_found" }),
       });
 
       const client = new SignerClient("http://localhost:11270");
       const result = await client.cancelSignRequest("sdk-test");
 
-      assert.equal(result.success, true);
       assert.equal(result.state, "not_found");
       assert.equal(mockFetch.mock.calls[0][0], "http://localhost:11270/sign/cancel");
       assert.deepEqual(JSON.parse(mockFetch.mock.calls[0][1].body), { request_id: "sdk-test" });
@@ -4111,29 +4108,29 @@ describe("SignerClient", () => {
         '{"keyset_revision":-1}', '{"warnings":["a",7]}', '{"rotating":[{"account":5}]}', '{"protocol_version":2}',
       ]],
       ["/keys", () => client().listKeys(true), [
-        "", "null", '{"keys":"x"}', '{"keys":[{"address":42}]}', '{"keys":[{"is_spending_account":"no"}]}',
+        "", "null", '{"keys":"x"}', '{"keys":[{"address":42}]}', '{"keys":[{"is_witness_key":"no"}]}',
         '{"count":"1"}', '{"keys":[{"bounded_authorization":{"max_fee":"1000"}}]}',
         '{"keys":[{"valid_rekey_target":"true"}]}', '{"keys":[{"valid_rekey_target":1}]}',
       ]],
       ["/keytypes", () => client().listKeyTypes(), [
         "", "null", '{"key_types":"x"}', '{"key_types":[{"creation_params":[{"min":-1}]}]}',
-        '{"key_types":[{"requires_logicsig":"yes"}]}',
+        '{"key_types":[{"mnemonic_import":"yes"}]}',
         '{"key_types":[{"valid_rekey_target":"true"}]}', '{"key_types":[{"valid_rekey_target":1}]}',
         '{"key_types":[{"creation_params":[{"max":-1}]}]}', '{"key_types":[{"creation_params":[{"max":1.5}]}]}',
         '{"key_types":[{"creation_params":[{"min":0.5}]}]}', '{"key_types":[{"creation_params":[{"max":"5"}]}]}',
         '{"key_types":[{"creation_params":[{"max":1e400}]}]}', '{"key_types":[{"creation_params":[{"max":1e30}]}]}',
       ]],
       ["/admin/generate", () => client().generateKey("ed25519"), [
-        "", "null", '{"address":5}', '{"is_witness_key":"true"}', '{"error":7}',
+        "", "null", '{"address":5}', '{"is_witness_key":"true"}',
       ]],
       ["DELETE /admin/keys", () => client().deleteKey(fakeAddress(9)), [
-        "", "null", '{"success":"yes"}', '{"error":5}',
+        "", "null", "[]", '"done"',
       ]],
       ["/sign/cancel", () => client().cancelSignRequest("sdk-test"), [
-        "", "null", '{"success":1}', '{"state":5}',
+        "", "null", "[]", '{"state":5}',
       ]],
       ["/plan", () => client().planGroup([txn]), [
-        "", "null", '{"transactions":"x"}', '{"mutations":{"fees_modified":"x"}}', '{"error":false}',
+        "", "null", '{"transactions":"x"}', '{"mutations":{"fees_modified":"x"}}',
       ]],
     ];
     for (const [path, call, bodies] of cases) {
@@ -4189,10 +4186,10 @@ describe("SignerClient", () => {
       const mutations: Array<[string, (signer: SignerClient) => Promise<unknown>, string]> = [
         ["/admin/generate", (signer) => signer.generateKey("ed25519"), ""],
         ["/admin/generate", (signer) => signer.generateKey("ed25519"), '{"address":5}'],
-        ["/admin/generate", (signer) => signer.generateKey("ed25519"), '{"error":"refused"}'],
+        ["/admin/generate", (signer) => signer.generateKey("ed25519"), "{}"],
         ["DELETE /admin/keys", (signer) => signer.deleteKey(fakeAddress(9)), ""],
-        ["DELETE /admin/keys", (signer) => signer.deleteKey(fakeAddress(9)), '{"success":"yes"}'],
-        ["DELETE /admin/keys", (signer) => signer.deleteKey(fakeAddress(9)), '{"error":"refused"}'],
+        ["DELETE /admin/keys", (signer) => signer.deleteKey(fakeAddress(9)), "[]"],
+        ["DELETE /admin/keys", (signer) => signer.deleteKey(fakeAddress(9)), "null"],
       ];
       for (const [path, mutate, body] of mutations) {
         const signer = client();
@@ -4218,19 +4215,13 @@ describe("SignerClient", () => {
           return true;
         });
       }
-      answerRaw('{"error":"no such key type","address":""}');
-      await assert.rejects(client().generateKey("x"), { message: "no such key type" });
     });
 
-    it("DELETE /admin/keys takes the signer's success answer and refuses its error", async () => {
-      answerRaw('{"success":true}');
+    it("DELETE /admin/keys takes the signer's empty answer, and reads none of its fields", async () => {
+      answerRaw("{}");
       assert.equal(await client().deleteKey(fakeAddress(9)), undefined);
-      answerRaw('{"success":false,"error":"key is in use"}');
-      await assert.rejects(client().deleteKey(fakeAddress(9)), (error: unknown) => {
-        assert.ok(error instanceof SignerError, String(error));
-        assert.equal((error as Error).message, "key is in use");
-        return true;
-      });
+      answerRaw('{"extra":1}');
+      assert.equal(await client().deleteKey(fakeAddress(9)), undefined);
     });
 
     it("/plan reads only the snake_case keys of the report", async () => {
@@ -4358,28 +4349,36 @@ describe("loadConfig", () => {
     }
   });
 
-  it("rejects obsolete endpoint routing", () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-test-"));
-    try {
-      fs.writeFileSync(
-        path.join(tmpDir, "config.yaml"),
-        "endpoint:\n" +
-        "  signer_port: 12345\n" +
-        "  ssh:\n" +
-        "    host: signer.example.com\n" +
-        "    port: 2222\n" +
-        "    identity_file: .ssh/mykey\n" +
-        "    known_hosts_path: .ssh/hosts\n" +
-        "    trust_on_first_use: true\n"
-      );
-      assert.throws(
-        () => loadConfig(tmpDir),
-        /remove "endpoint" and configure endpoints.yaml/,
-      );
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true });
-    }
-  });
+  // config.yaml is read as apshell reads it: every field apshell knows is
+  // accepted, and any other, the retired signer routing included, is refused
+  // as an unknown field with apshell's words.
+  for (const [name, body, unknown] of [
+    ["apshell's fields", "schema_version: 1\nnetwork: testnet\nnetworks_allowed: [testnet]\ntheme: dark\nsigner_status_poll_interval: 10s\nnetworks:\n  testnet:\n    algod:\n      server: http://localhost:4001\n      token: t\n", ""],
+    ["endpoint routing", "endpoint:\n  ssh:\n    host: signer.example.com\n", "endpoint"],
+    ["ssh routing", "ssh:\n  host: signer.example.com\n", "ssh"],
+    ["signer_port routing", "network: testnet\nsigner_port: 11270\n", "signer_port"],
+    ["top-level algod", "algod:\n  testnet:\n    server: http://localhost:4001\n", "algod"],
+    ["another unknown field", "network: testnet\nfoo: 1\n", "foo"],
+    ["an unknown network setting", "networks:\n  testnet:\n    indexer:\n      server: http://localhost:8980\n", "indexer"],
+    ["an unknown algod setting", "networks:\n  testnet:\n    algod:\n      server: http://localhost:4001\n      headers: {}\n", "headers"],
+  ] as const) {
+    it(`reads config.yaml as apshell does: ${name}`, () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-test-"));
+      try {
+        fs.writeFileSync(path.join(tmpDir, "config.yaml"), body);
+        if (!unknown) {
+          assert.equal(loadConfig(tmpDir).theme, "dark");
+          return;
+        }
+        assert.throws(
+          () => loadConfig(tmpDir),
+          { message: `config field "${unknown}" is unknown or no longer supported; remove it from the file` },
+        );
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true });
+      }
+    });
+  }
 
   it("rejects malformed YAML", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-test-"));
@@ -4409,7 +4408,7 @@ describe("loadClientEndpointRegistry", () => {
     const tmpDir = fixtureDir("valid.yaml");
     try {
       const registry = loadClientEndpointRegistry(tmpDir);
-      assert.equal(registry.default, "primary");
+      assert.equal(resolveClientEndpoint(registry).alias, "primary");
       assert.equal(registry.endpoints.primary.url, "ssh://signer.example.com:2222");
       assert.equal(
         registry.endpoints.primary.identityFile,
@@ -4430,7 +4429,7 @@ describe("loadClientEndpointRegistry", () => {
   });
 
   for (const fixture of [
-    "invalid_default_type.yaml",
+    "invalid_default_field.yaml",
     "invalid_identity_file_type.yaml",
     "invalid_multiple_signers.yaml",
     "invalid_remote_http.yaml",
@@ -4440,6 +4439,7 @@ describe("loadClientEndpointRegistry", () => {
     "invalid_ssh_port_zero.yaml",
     "invalid_unknown_field.yaml",
     "invalid_unknown_tag.yaml",
+    "invalid_retired_port_fields.yaml",
   ]) {
     it(`rejects ${fixture}`, () => {
       const tmpDir = fixtureDir(fixture);
@@ -4456,6 +4456,7 @@ describe("loadClientEndpointRegistry", () => {
     ["invalid_self_cosigner.yaml", 'endpoint "cosigner": url "self" is not supported'],
     ["invalid_13_cosigner_endpoints.yaml", "configures 13 cosigner endpoints; maximum is 12"],
     ["invalid_v2_published_cosigners.yaml", "published_cosigners"],
+    ["invalid_default_field.yaml", 'endpoints.yaml contains unknown field "default"'],
   ]) {
     it(`rejects ${fixture} for the expected reason`, () => {
       const tmpDir = fixtureDir(fixture);
@@ -4471,7 +4472,6 @@ describe("loadClientEndpointRegistry", () => {
 
   for (const fixture of [
     "valid_12_cosigner_endpoints.yaml",
-    "valid_retired_port_fields.yaml",
   ]) {
     it(`accepts ${fixture}`, () => {
       const tmpDir = fixtureDir(fixture);
@@ -4480,14 +4480,6 @@ describe("loadClientEndpointRegistry", () => {
         assert.equal(registry.schemaVersion, 2);
         if (fixture === "valid_12_cosigner_endpoints.yaml") {
           assert.equal(Object.keys(registry.endpoints).length, 12);
-        }
-        if (fixture === "valid_retired_port_fields.yaml") {
-          assert.equal(registry.endpoints.primary.url, "ssh://signer.example.com:2222");
-          assert.equal(
-            registry.endpoints.primary.identityFile,
-            path.join(tmpDir, ".ssh", "id_ed25519"),
-          );
-          assert.ok(registry.endpoints.cosigner);
         }
       } finally {
         fs.rmSync(tmpDir, { recursive: true });
@@ -4525,7 +4517,6 @@ describe("loadClientEndpointRegistry", () => {
         "  qa:\n    role: cosigner\n    url: ssh://127.0.0.1:2222\n",
       );
       const registry = loadClientEndpointRegistry(tmpDir);
-      assert.equal(registry.default, "main");
       for (const alias of ["main", "qa"]) {
         assert.equal(
           registry.endpoints[alias].identityFile,
@@ -4852,7 +4843,6 @@ describe("preparedGroupToSignRequests", () => {
       transactions: [{
         transaction: createMockTxn() as any,
         authAddress: "AUTH_ADDR",
-        txnSender: "DISPLAY_SENDER",
         lsigArgs: {
           preimage: new Uint8Array([0x73, 0x65, 0x63, 0x72, 0x65, 0x74]),
         },
@@ -4866,7 +4856,6 @@ describe("preparedGroupToSignRequests", () => {
     assert.equal(requests.length, 1);
     assert.equal(requests[0].txn_bytes_hex, "5458010203");
     assert.equal(requests[0].auth_address, "AUTH_ADDR");
-    assert.equal(requests[0].txn_sender, "DISPLAY_SENDER");
     assert.equal(requests[0].lsig_args?.preimage, "736563726574");
     assert.equal(requests[0].app_call_info?.method, "do(uint64)void");
   });

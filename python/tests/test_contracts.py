@@ -196,7 +196,7 @@ def test_encodes_mixed_group_sign_request_wire_fields():
         set(request) for request in expected["requests"]
     ]
     sign, passthrough, foreign = body
-    assert sign["auth_address"] == sign["txn_sender"] == sign_txn.sender
+    assert sign["auth_address"] == sign_txn.sender
     assert sign["txn_bytes_hex"].startswith("5458")
     assert sign["lsig_args"] == expected["requests"][0]["lsig_args"]
     assert passthrough == {"signed_txn_hex": presigned}
@@ -262,12 +262,10 @@ def test_list_key_types_maps_creation_and_runtime_metadata():
     native_falcon = key_types[1]
     assert native_falcon.key_type == "falcon1024"
     assert native_falcon.authorization_kind == "native_pq"
-    assert native_falcon.requires_logicsig is False
 
     generic_policy = key_types[2]
     assert generic_policy.key_type == "example.generic-policy.v1"
     assert generic_policy.display_name == "Generic Policy"
-    assert generic_policy.requires_logicsig is True
     assert generic_policy.authorization_kind == "logic_sig"
     assert generic_policy.mnemonic_import is False
     assert [key_type.valid_rekey_target for key_type in key_types] == [True, True, False]
@@ -386,7 +384,6 @@ def test_cancel_response_fixture_maps_state():
     data = fixture("cancel_sign_response_success.json")
     result = CancelSignResponse(**data)
 
-    assert result.success is True
     assert result.state == "canceled"
 
 
@@ -451,7 +448,6 @@ def test_list_keys_maps_component_and_cosigned_metadata():
         component = client.list_keys(refresh=True)[0]
     assert component.key_type == "aplane.witness-falcon1024.v1"
     assert component.is_witness_key is True
-    assert component.is_spending_account is False
 
     with patch.object(
         client.session,
@@ -521,7 +517,6 @@ def test_generate_key_maps_component_response():
     assert set(generated.public_key_hex) == {"0"}
     assert generated.key_type == "aplane.witness-falcon1024.v1"
     assert generated.is_witness_key is True
-    assert generated.is_spending_account is False
 
 
 def test_rotating_dtos_round_trip_fixtures():

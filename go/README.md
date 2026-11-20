@@ -176,7 +176,6 @@ Data directory structure (installer default: `~/aplane/apclient`):
 Example `endpoints.yaml`:
 ```yaml
 schema_version: 2
-default: primary
 endpoints:
   primary:
     role: signer
@@ -358,7 +357,7 @@ Post raw `/sign` requests directly and receive the server-shaped response.
 
 ```go
 signResp, err := client.SignRequestsWithContext(ctx, []aplane.SignRequest{
-	{AuthAddress: authAddr, TxnSender: sender, TxnBytesHex: txnHex},
+	{AuthAddress: authAddr, TxnBytesHex: txnHex},
 })
 ```
 
@@ -453,9 +452,10 @@ Failures:
 Every 200 answer from the signer, the key list included, is read as exactly
 one non-null JSON value: a `null` body or anything after the value is an
 error, never an empty answer. A field left out or `null`, at any depth, reads
-as its zero value. An answer whose `error` field is set (component, assembly,
-key generation and key deletion answers as well as `/sign` and `/plan`) is a
-refusal; a key generation answer that names no address is refused too.
+as its zero value; an unknown field is ignored. A refusal is always a
+non-2xx answer, so an `error` field in a 200 answer is ignored like any other
+unknown field. A key generation answer that names no address is refused, and
+`DeleteKey` reads the signer's `{}` answer.
 
 The three SDKs' JSON readers differ in known ways that a real signer never
 reaches:

@@ -27,10 +27,10 @@ const (
 	MaxClientCosignerEndpoints  = 12
 )
 
-// ClientEndpointRegistry stores client-local endpoint profiles.
+// ClientEndpointRegistry stores client-local endpoint profiles. It holds at
+// most one signer endpoint, the one used when no alias is named.
 type ClientEndpointRegistry struct {
 	SchemaVersion int                             `yaml:"schema_version"`
-	Default       string                          `yaml:"default,omitempty"`
 	Endpoints     map[string]ClientEndpointConfig `yaml:"endpoints,omitempty"`
 }
 
@@ -57,7 +57,6 @@ func LoadClientEndpointRegistry(dataDir string) (*ClientEndpointRegistry, error)
 		}
 		return nil, fmt.Errorf("failed to read %s: %w", endpointsPath, err)
 	}
-	data = stripRetiredClientEndpointFields(data)
 	if err := validateClientEndpointRegistryScalarTypes(data); err != nil {
 		return nil, fmt.Errorf("failed to parse %s: %w", endpointsPath, err)
 	}
@@ -113,9 +112,6 @@ func validateClientEndpointRegistryScalarTypes(data []byte) error {
 	}
 
 	if err := requireYAMLScalarType(yamlMappingValue(root, "schema_version"), "schema_version", "!!int"); err != nil {
-		return err
-	}
-	if err := requireYAMLScalarType(yamlMappingValue(root, "default"), "default", "!!str", "!!null"); err != nil {
 		return err
 	}
 	endpoints := yamlMappingValue(root, "endpoints")
@@ -243,12 +239,6 @@ func validateClientEndpointURL(alias string, endpoint ClientEndpointConfig) erro
 }
 
 func normalizeClientEndpointRoles(registry *ClientEndpointRegistry) error {
-	registry.Default = strings.TrimSpace(registry.Default)
-	if registry.Default != "" {
-		if err := validateClientEndpointAlias(registry.Default); err != nil {
-			return fmt.Errorf("%s default: %w", ClientEndpointsFile, err)
-		}
-	}
 	signerAlias := ""
 	cosignerCount := 0
 	for alias, endpoint := range registry.Endpoints {
@@ -266,29 +256,26 @@ func normalizeClientEndpointRoles(registry *ClientEndpointRegistry) error {
 	if cosignerCount > MaxClientCosignerEndpoints {
 		return fmt.Errorf("%s configures %d cosigner endpoints; maximum is %d; remove or consolidate endpoint profiles", ClientEndpointsFile, cosignerCount, MaxClientCosignerEndpoints)
 	}
-	if signerAlias == "" {
-		if registry.Default != "" {
-			return fmt.Errorf("%s default endpoint %q is set but no %q endpoint is configured", ClientEndpointsFile, registry.Default, ClientEndpointRoleSigner)
-		}
-		return nil
-	}
-	if registry.Default != "" && registry.Default != signerAlias {
-		return fmt.Errorf("%s default endpoint %q must be the %q endpoint %q", ClientEndpointsFile, registry.Default, ClientEndpointRoleSigner, signerAlias)
-	}
-	registry.Default = signerAlias
 	return nil
 }
 
-// ResolveClientEndpoint selects an explicit alias or the default signer.
+// ResolveClientEndpoint selects an explicit alias or, with none, the
+// registry's signer endpoint. A registry built by hand with two signers is
+// refused, as a loaded one is, rather than resolved to either.
 func ResolveClientEndpoint(registry *ClientEndpointRegistry, alias string) (string, ClientEndpointConfig, error) {
 	if registry == nil {
 		return "", ClientEndpointConfig{}, fmt.Errorf("%s registry is required", ClientEndpointsFile)
 	}
 	if alias == "" {
-		alias = registry.Default
-		if alias == "" {
-			return "", ClientEndpointConfig{}, fmt.Errorf("%s has no default signer endpoint", ClientEndpointsFile)
+		if err := normalizeClientEndpointRoles(registry); err != nil {
+			return "", ClientEndpointConfig{}, err
 		}
+		for candidate, endpoint := range registry.Endpoints {
+			if endpoint.Role == ClientEndpointRoleSigner {
+				return candidate, endpoint, nil
+			}
+		}
+		return "", ClientEndpointConfig{}, fmt.Errorf("%s has no default signer endpoint", ClientEndpointsFile)
 	}
 	endpoint, ok := registry.Endpoints[alias]
 	if !ok {
@@ -314,61 +301,4 @@ func ClientEndpointSSHHostPort(endpoint ClientEndpointConfig) (string, int, erro
 		}
 	}
 	return parsed.Hostname(), port, nil
-}
-
-// retiredClientEndpointFields are endpoint keys earlier builds wrote and
-// nothing reads: the node's SSH server forwards every channel to its own REST
-// listener, the local tunnel port is chosen at connect time, and the client's
-// enrolled SSH key is its only credential, so there is no token file. They
-// are ignored on load, as APlane ignores them, so a registry written before
-// they were retired keeps working.
-var retiredClientEndpointFields = []string{"signer_port", "local_port", "token_file"}
-
-// stripRetiredClientEndpointFields removes retiredClientEndpointFields from
-// every endpoint entry on the YAML node tree, so every other value is
-// re-emitted exactly as written. Anything it cannot parse, and a document
-// with nothing to remove, is returned unchanged for the strict decoder.
-func stripRetiredClientEndpointFields(data []byte) []byte {
-	var document yaml.Node
-	if err := yaml.Unmarshal(data, &document); err != nil || len(document.Content) == 0 {
-		return data
-	}
-	endpoints := yamlMappingValue(document.Content[0], "endpoints")
-	if endpoints == nil || endpoints.Kind != yaml.MappingNode {
-		return data
-	}
-	changed := false
-	for i := 1; i < len(endpoints.Content); i += 2 {
-		entry := endpoints.Content[i]
-		if entry.Kind != yaml.MappingNode {
-			continue
-		}
-		kept := entry.Content[:0]
-		for j := 0; j+1 < len(entry.Content); j += 2 {
-			key, value := entry.Content[j], entry.Content[j+1]
-			if key.Kind == yaml.ScalarNode && isRetiredClientEndpointField(key.Value) {
-				changed = true
-				continue
-			}
-			kept = append(kept, key, value)
-		}
-		entry.Content = kept
-	}
-	if !changed {
-		return data
-	}
-	stripped, err := yaml.Marshal(&document)
-	if err != nil {
-		return data
-	}
-	return stripped
-}
-
-func isRetiredClientEndpointField(name string) bool {
-	for _, field := range retiredClientEndpointFields {
-		if name == field {
-			return true
-		}
-	}
-	return false
 }

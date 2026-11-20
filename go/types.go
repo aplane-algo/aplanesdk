@@ -50,7 +50,6 @@ type LogicSigResourceProfile struct {
 //   - Foreign mode: txn_bytes_hex without auth_address
 type SignRequest struct {
 	AuthAddress   string                 `json:"auth_address,omitempty"`
-	TxnSender     string                 `json:"txn_sender,omitempty"` // Advisory display hint; signer authority comes from txn bytes
 	TxnBytesHex   string                 `json:"txn_bytes_hex,omitempty"`
 	LsigArgs      map[string]string      `json:"lsig_args,omitempty"`
 	LsigResources *LogicSigResourceUsage `json:"lsig_resources,omitempty"`
@@ -173,9 +172,6 @@ func (c Component) NeedsCosigner() bool {
 type ComponentResponse struct {
 	RequestID  string      `json:"request_id"`
 	Components []Component `json:"components"`
-	// Error, when set, is a refusal carried in a 200 answer. The current
-	// signer never sets it; RequestComponents refuses an answer that does.
-	Error string `json:"error,omitempty"`
 }
 
 type AssemblyTargetKind string
@@ -217,9 +213,6 @@ type AssemblyPassthroughItem struct {
 type AssemblyResponse struct {
 	RequestID   string   `json:"request_id"`
 	SignedGroup []string `json:"signed_group"`
-	// Error, when set, is a refusal carried in a 200 answer. The current
-	// signer never sets it; RequestAssemble refuses an answer that does.
-	Error string `json:"error,omitempty"`
 }
 
 // CosignedPassthroughAuthorization declares the authorization shape used to
@@ -237,9 +230,7 @@ type CancelSignRequest struct {
 
 // CancelSignResponse is the response payload for /sign/cancel.
 type CancelSignResponse struct {
-	Success bool            `json:"success"`
-	State   SignCancelState `json:"state,omitempty"`
-	Error   string          `json:"error,omitempty"`
+	State SignCancelState `json:"state,omitempty"`
 }
 
 // RotatingPrepareRequest is the request payload for /sign/rotating/prepare:
@@ -622,7 +613,6 @@ type MutationReport struct {
 type GroupSignResponse struct {
 	Signed    []string        `json:"signed,omitempty"`    // Array of signed transactions (hex-encoded msgpack)
 	Mutations *MutationReport `json:"mutations,omitempty"` // Modifications made by server (nil if none)
-	Error     string          `json:"error,omitempty"`
 }
 
 // ErrorResponse is the standard signer HTTP error body for non-2xx responses.
@@ -641,7 +631,6 @@ type ErrorResponse struct {
 type PlanGroupResponse struct {
 	Transactions []string        `json:"transactions,omitempty"` // TX-prefixed hex-encoded unsigned txns (final group)
 	Mutations    *MutationReport `json:"mutations,omitempty"`    // Modifications that would be made by server
-	Error        string          `json:"error,omitempty"`
 }
 
 // ProtocolVersion identifies a signer wire-protocol version.
@@ -733,7 +722,6 @@ type KeyTypeInfo struct {
 	DisplayName       string `json:"display_name"`
 	Description       string `json:"description"`
 	AuthorizationKind string `json:"authorization_kind,omitempty"`
-	RequiresLogicSig  bool   `json:"requires_logicsig"`
 	MnemonicWordCount int    `json:"mnemonic_word_count"`
 	MnemonicImport    bool   `json:"mnemonic_import"`
 	MnemonicScheme    string `json:"mnemonic_scheme"`
@@ -851,7 +839,6 @@ type KeyInfo struct {
 	IsGenericLsig            bool                      `json:"is_generic_lsig,omitempty"`
 	IsWitnessKey             bool                      `json:"is_witness_key,omitempty"`
 	BoundedAuthorization     *BoundedAuthorizationInfo `json:"bounded_authorization,omitempty"`
-	IsSpendingAccount        *bool                     `json:"is_spending_account,omitempty"`
 	SigningArgs              []SigningArg              `json:"signing_args,omitempty"`
 	Parameters               map[string]string         `json:"parameters,omitempty"`
 	TemplateProvenanceStatus string                    `json:"template_provenance_status,omitempty"`
@@ -883,13 +870,11 @@ type KeyTypesResponse struct {
 
 // GenerateResult is the response from key generation.
 type GenerateResult struct {
-	Address           string            `json:"address,omitempty"`
-	PublicKeyHex      string            `json:"public_key_hex,omitempty"`
-	KeyType           string            `json:"key_type,omitempty"`
-	IsWitnessKey      bool              `json:"is_witness_key,omitempty"`
-	IsSpendingAccount *bool             `json:"is_spending_account,omitempty"`
-	Parameters        map[string]string `json:"parameters,omitempty"`
-	Error             string            `json:"error,omitempty"`
+	Address      string            `json:"address,omitempty"`
+	PublicKeyHex string            `json:"public_key_hex,omitempty"`
+	KeyType      string            `json:"key_type,omitempty"`
+	IsWitnessKey bool              `json:"is_witness_key,omitempty"`
+	Parameters   map[string]string `json:"parameters,omitempty"`
 }
 
 // generateRequest is the request payload for key generation.
@@ -936,7 +921,9 @@ type Config struct {
 	NetworksAllowed []string       `yaml:"networks_allowed"`
 	Theme           string         `yaml:"theme"`
 	Networks        NetworkConfigs `yaml:"networks"`
-	Algod           AlgodConfig    `yaml:"algod"`
+	// Algod is the per-network algod index built from Networks; config.yaml
+	// has no algod key of its own.
+	Algod AlgodConfig `yaml:"-"`
 }
 
 // SSHConnectOptions contains options for SSH tunnel connections. There is no

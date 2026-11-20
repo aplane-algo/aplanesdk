@@ -156,7 +156,7 @@ class SendSigner:
         if path == "/keys":
             return reply(200, {"count": len(self.keys), "keys": self.keys})
         if path == "/sign/cancel":
-            return reply(200, {"success": True, "state": "canceled"})
+            return reply(200, {"state": "canceled"})
         if path == "/sign":
             request = json.loads(body)
             if self.sign is not None:
@@ -353,7 +353,7 @@ def regroup(txns: List[transaction.Transaction]) -> None:
 
 
 def set_prepared(response: Dict[str, Any], txns: List[transaction.Transaction]) -> None:
-    response["transactions"] = [encode_transaction(txn)[0] for txn in txns]
+    response["transactions"] = [encode_transaction(txn) for txn in txns]
 
 
 class RotatingSigner:
@@ -418,7 +418,7 @@ class RotatingSigner:
             keys = [key(self.account, "rotating1", key_type=ROTATING_KEY_TYPE)] + self.extra_keys
             return reply(200, {"count": len(keys), "keys": keys})
         if path == "/sign/cancel":
-            return reply(200, {"success": True, "state": "canceled"})
+            return reply(200, {"state": "canceled"})
         if path == "/sign/rotating/prepare":
             request = json.loads(body)
             raw = bytes.fromhex(request["txn_bytes_hex"])

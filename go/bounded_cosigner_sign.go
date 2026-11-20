@@ -112,7 +112,6 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 			primaryTargets = append(primaryTargets, cosignedPrimarySignTarget{
 				TargetIndex: i,
 				AuthAddress: item.AuthAddress,
-				TxnSender:   item.TxnSender,
 				LsigArgs:    encodeCosignedLsigArgs(item.LsigArgs),
 				AppCallInfo: item.AppCallInfo,
 			})
@@ -350,7 +349,6 @@ func requestBoundedPrimaryPassthrough(
 			}
 			requests[i] = SignRequest{
 				AuthAddress: target.AuthAddress,
-				TxnSender:   target.TxnSender,
 				TxnBytesHex: txnHex,
 				LsigArgs:    cloneStringMap(target.LsigArgs),
 				AppCallInfo: target.AppCallInfo,

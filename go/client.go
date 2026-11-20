@@ -701,7 +701,7 @@ func (c *SignerClient) GetKeysResponseWithContext(ctx context.Context) (*KeysRes
 		// the first spendable row is the one kept, the row findSpendableKey
 		// picks from the list itself, so a lookup answers the same from a
 		// fresh list and from the cache. A row is displaced only by the first
-		// spendable row after a non-spending one.
+		// spendable row after a witness one.
 		if kept, ok := cache[k.Address]; ok && (isSpendableKey(*kept) || !isSpendableKey(*k)) {
 			continue
 		}
@@ -820,9 +820,6 @@ func (c *SignerClient) GenerateKey(keyType string, parameters map[string]string)
 	if err := readAnswer(resp.Body, &result); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
-	if result.Error != "" {
-		return nil, fmt.Errorf("key generation failed: %s", result.Error)
-	}
 	if result.Address == "" {
 		return nil, fmt.Errorf("key generation failed: missing address")
 	}
@@ -836,12 +833,9 @@ func (c *SignerClient) invalidateKeyCache() {
 	c.keyMu.Unlock()
 }
 
-// deleteKeyResponse is the answer of DELETE /admin/keys. The signer answers
-// {"success":true}; an error, which it never sets today, is a refusal.
-type deleteKeyResponse struct {
-	Success bool   `json:"success"`
-	Error   string `json:"error,omitempty"`
-}
+// deleteKeyResponse is the answer of DELETE /admin/keys, the empty object {}.
+// It is read all the same: an answer that is not an object is unreadable.
+type deleteKeyResponse struct{}
 
 // DeleteKey deletes a key from the signer.
 func (c *SignerClient) DeleteKey(address string) error {
@@ -876,9 +870,6 @@ func (c *SignerClient) DeleteKey(address string) error {
 	var result deleteKeyResponse
 	if err := readAnswer(resp.Body, &result); err != nil {
 		return fmt.Errorf("failed to decode response: %w", err)
-	}
-	if result.Error != "" {
-		return fmt.Errorf("key deletion failed: %s", result.Error)
 	}
 	return nil
 }
@@ -947,9 +938,6 @@ func (c *SignerClient) RequestAssembleWithContext(ctx context.Context, reqBody A
 	if err := readAnswer(resp.Body, &assemblyResp); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", &lostAnswer{requestID: reqBody.RequestID, err: err})
 	}
-	if assemblyResp.Error != "" {
-		return nil, fmt.Errorf("assembly failed: %s", assemblyResp.Error)
-	}
 	if err := assemblyResp.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid assembly response: %w", err)
 	}
@@ -1013,10 +1001,6 @@ func (c *SignerClient) PlanRequestsWithContext(ctx context.Context, requests []S
 	var planResp PlanGroupResponse
 	if err := readAnswer(resp.Body, &planResp); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	if planResp.Error != "" {
-		return nil, fmt.Errorf("plan failed: %s", planResp.Error)
 	}
 
 	if err := validatePlanResponse(slots, planResp.Transactions, planResp.Mutations, ceiling); err != nil {
@@ -1154,7 +1138,6 @@ func buildRequests(txns []types.Transaction, authAddresses []string, lsigArgsMap
 		matchedArgs[authAddr] = true
 		requests[i] = SignRequest{
 			AuthAddress: authAddr,
-			TxnSender:   txn.Sender.String(),
 			TxnBytesHex: txnBytesHex,
 			LsigArgs:    encodeLsigArgs(lsigArgsMap, authAddr),
 		}
@@ -1255,14 +1238,11 @@ func (c *SignerClient) SignGroupWithContext(ctx context.Context, groupReq GroupS
 	resp, err := c.postSign(ctx, groupReq)
 	var transport *signTransportError
 	var unread *signUnreadError
-	var body *signBodyError
 	switch {
 	case errors.As(err, &transport):
 		return nil, fmt.Errorf("failed to make request to Signer: %w", &lostAnswer{requestID: groupReq.RequestID, err: transport.err})
 	case errors.As(err, &unread):
 		return nil, &lostAnswer{requestID: groupReq.RequestID, err: err}
-	case errors.As(err, &body):
-		return nil, fmt.Errorf("group signing failed: %s", body.message)
 	}
 	return resp, err
 }
@@ -1322,12 +1302,6 @@ type signUnreadError struct{ err error }
 func (e *signUnreadError) Error() string { return "failed to decode response: " + e.err.Error() }
 func (e *signUnreadError) Unwrap() error { return e.err }
 
-// signBodyError is postSign's report of an error carried in a 200 body, a
-// legacy field the current server never sets.
-type signBodyError struct{ message string }
-
-func (e *signBodyError) Error() string { return e.message }
-
 // postSign is the one /sign implementation. It decodes the slots a response
 // is checked against from the very entries it sends, posts them, cancels a
 // pending approval when the deadline or the caller's context ends first, and
@@ -1350,10 +1324,6 @@ func (c *SignerClient) postSign(ctx context.Context, groupReq GroupSignRequest) 
 	var groupResp GroupSignResponse
 	if err := c.postApproval(ctx, "/sign", groupReq.RequestID, jsonBody, &groupResp); err != nil {
 		return nil, err
-	}
-
-	if groupResp.Error != "" {
-		return nil, &signBodyError{message: groupResp.Error}
 	}
 
 	if err := validateSignResponse(slots, groupResp.Signed, groupResp.Mutations, ceiling); err != nil {
@@ -1485,9 +1455,6 @@ func (c *SignerClient) CancelSignRequestWithContext(ctx context.Context, request
 	if err := readAnswer(resp.Body, &cancelResp); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
-	if cancelResp.Error != "" {
-		return &cancelResp, fmt.Errorf("sign cancel failed: %s", cancelResp.Error)
-	}
 	return &cancelResp, nil
 }
 
@@ -1514,13 +1481,10 @@ func (c *SignerClient) signResponse(requests []SignRequest) (*GroupSignResponse,
 	}
 	resp, err := c.postSign(context.Background(), groupReq)
 	var transport *signTransportError
-	var body *signBodyError
 	var apiErr *APIError
 	switch {
 	case errors.As(err, &transport):
 		return nil, fmt.Errorf("failed to sign: %w", transport.err)
-	case errors.As(err, &body):
-		return nil, fmt.Errorf("signing failed: %s", body.message)
 	case errors.As(err, &apiErr):
 		switch apiErr.StatusCode {
 		case http.StatusUnauthorized:

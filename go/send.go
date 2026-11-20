@@ -476,15 +476,12 @@ func (c *SignerClient) signForSend(ctx context.Context, group PreparedGroup) (*G
 	}
 	var transport *signTransportError
 	var unread *signUnreadError
-	var body *signBodyError
 	var apiErr *APIError
 	switch {
 	case errors.As(err, &transport):
 		return nil, &SignOutcomeUnknownError{RequestID: requestID, Requests: requests, LastValid: group.earliestLastValid(), Err: transport.err}
 	case errors.As(err, &unread):
 		return nil, &SignOutcomeUnknownError{RequestID: requestID, Requests: requests, LastValid: group.earliestLastValid(), Err: err}
-	case errors.As(err, &body):
-		return nil, fmt.Errorf("signing failed: %s", body.message)
 	case errors.As(err, &apiErr):
 		switch apiErr.StatusCode {
 		case http.StatusUnauthorized:

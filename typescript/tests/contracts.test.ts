@@ -196,7 +196,6 @@ describe("signer API contract fixtures", () => {
     );
     const [sign, passthrough, foreign] = body.requests;
     assert.equal(sign.auth_address, auth);
-    assert.equal(sign.txn_sender, auth);
     assert.match(sign.txn_bytes_hex, /^5458/);
     assert.deepEqual(sign.lsig_args, expected.requests[0].lsig_args);
     assert.deepEqual(passthrough, { signed_txn_hex: presigned });
@@ -240,13 +239,11 @@ describe("signer API contract fixtures", () => {
     const nativeFalcon = keyTypes[1];
     assert.equal(nativeFalcon.keyType, "falcon1024");
     assert.equal(nativeFalcon.authorizationKind, "native_pq");
-    assert.equal(nativeFalcon.requiresLogicsig, false);
 
     const genericPolicy = keyTypes[2];
 
     assert.equal(genericPolicy.keyType, "example.generic-policy.v1");
     assert.equal(genericPolicy.displayName, "Generic Policy");
-    assert.equal(genericPolicy.requiresLogicsig, true);
     assert.equal(genericPolicy.authorizationKind, "logic_sig");
     assert.equal(genericPolicy.mnemonicWordCount, 0);
     assert.equal(genericPolicy.mnemonicImport, false);
@@ -358,7 +355,6 @@ describe("signer API contract fixtures", () => {
   it("maps /sign/cancel response state", () => {
     const result = fixture("cancel_sign_response_success.json") as CancelSignResponse;
 
-    assert.equal(result.success, true);
     assert.equal(result.state, "canceled");
   });
 
@@ -424,7 +420,6 @@ describe("signer API contract fixtures", () => {
     const component = (await client.listKeys(true))[0];
     assert.equal(component.keyType, "aplane.witness-falcon1024.v1");
     assert.equal(component.isWitnessKey, true);
-    assert.equal(component.isSpendingAccount, false);
     // Witness rows are not spending accounts, so the signer omits the field.
     assert.equal(component.authorizationKind, undefined);
 
@@ -526,7 +521,6 @@ describe("signer API contract fixtures", () => {
     assert.match(generated.publicKeyHex, /^0+$/);
     assert.equal(generated.keyType, "aplane.witness-falcon1024.v1");
     assert.equal(generated.isWitnessKey, true);
-    assert.equal(generated.isSpendingAccount, false);
   });
 
   it("round-trips cosigner component and assembly fixture DTOs", () => {

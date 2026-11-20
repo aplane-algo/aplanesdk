@@ -202,8 +202,6 @@ export interface KeyInfo {
   isGenericLsig: boolean;
   /** True when this is a witness key, not a spending account */
   isWitnessKey?: boolean;
-  /** False for witness keys; absent when the signer does not report it */
-  isSpendingAccount?: boolean;
   /** Transaction-authorization capability and instance metadata */
   boundedAuthorization?: BoundedAuthorizationInfo;
   /** Key-file-owned signing arguments for LogicSigs */
@@ -246,7 +244,7 @@ export interface ClientEndpointConfig {
 /** Normalized client-local endpoint registry. */
 export interface ClientEndpointRegistry {
   schemaVersion: 2;
-  default: string;
+  /** At most one endpoint has role "signer": the one used when no alias is named. */
   endpoints: Record<string, ClientEndpointConfig>;
 }
 
@@ -388,8 +386,6 @@ export interface KeyTypeInfo {
   description?: string;
   /** Consensus authorization envelope produced by this key type. */
   authorizationKind?: AuthorizationKind;
-  /** Whether this key type requires a LogicSig */
-  requiresLogicsig?: boolean;
   /** Number of words in the mnemonic */
   mnemonicWordCount?: number;
   /** Whether mnemonic import is supported for this key type */
@@ -632,8 +628,6 @@ export interface GenerateResult {
   keyType: string;
   /** True when generated key is a witness key */
   isWitnessKey?: boolean;
-  /** False for witness keys; absent when not reported */
-  isSpendingAccount?: boolean;
   /** Creation parameters used */
   parameters?: Record<string, string>;
 }
@@ -654,8 +648,6 @@ export interface PlanGroupResponse {
   transactions?: string[];
   /** Modifications made by server */
   mutations?: MutationReport;
-  /** Error message if planning failed */
-  error?: string;
 }
 
 /**
@@ -674,9 +666,7 @@ export interface CancelSignRequest {
  * Response from the /sign/cancel endpoint.
  */
 export interface CancelSignResponse {
-  success: boolean;
   state?: SignCancelState;
-  error?: string;
 }
 
 export type ComponentTargetKind = "cosigner" | "bounded-base";
@@ -820,8 +810,6 @@ export type LsigArgsMap = Record<string, LsigArgs>;
 export interface SignRequest {
   /** Auth address (which key to use for signing) */
   auth_address?: string;
-  /** Advisory display hint; signer authority comes from txn bytes */
-  txn_sender?: string;
   /** Transaction bytes (TX + msgpack) as hex */
   txn_bytes_hex?: string;
   /** Runtime args for generic LogicSigs (name -> hex value) */
@@ -974,8 +962,6 @@ export interface PreparedTransaction {
   transaction?: Transaction | null;
   /** Effective signer address. Empty/null means foreign context. */
   authAddress?: string | null;
-  /** Optional sender display override. Defaults to transaction sender. */
-  txnSender?: string;
   /** Optional LogicSig runtime arguments. */
   lsigArgs?: LsigArgs;
   /** Optional selected-path LogicSig resources for foreign planning. */
@@ -1245,8 +1231,6 @@ export interface GroupSignResponse {
   signed?: string[];
   /** Modifications made by server (undefined if none) */
   mutations?: MutationReport;
-  /** Error message if signing failed */
-  error?: string;
 }
 
 /** Result of ordinary executable signing followed by client-side algod simulation. */

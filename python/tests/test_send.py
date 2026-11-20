@@ -288,7 +288,7 @@ def _refusal_cases():
         ),
         (
             "witness record is not a spending key",
-            [key(sender, is_spending_account=False)],
+            [key(sender, is_witness_key=True)],
             prepared_for(txn),
             KeyNotFoundError,
             "not available for signing",
@@ -357,7 +357,7 @@ class _Recorder:
         self.paths.append(path)
         if path == "/status":
             return reply(200, status_body())
-        return reply(200, {"success": True, "state": "canceled"})
+        return reply(200, {"state": "canceled"})
 
 
 class TestABodyThatCannotBeEncoded:
@@ -432,7 +432,7 @@ class TestSendPreparedSignFailures:
 
     @pytest.mark.parametrize(
         "cancel_answer",
-        [truncated(b"not json"), truncated(b"null"), reply(200, {"success": "yes"}), DROP],
+        [truncated(b"not json"), truncated(b"null"), reply(200, {"state": 5}), DROP],
     )
     def test_a_failed_cancel_neither_fails_nor_masks_the_send(self, fakes, cancel_answer):
         # The cancel a lost answer sends is best effort: however it fails, the
@@ -797,7 +797,7 @@ class CosignedFixture:
         if path == "/keys":
             return reply(200, {"count": len(self.keys), "keys": self.keys})
         if path == "/sign/cancel":
-            return reply(200, {"success": True, "state": "canceled"})
+            return reply(200, {"state": "canceled"})
         request = json.loads(body)
         if path == "/plan":
             return reply(200, fake_signer.plan_response(request["requests"]))
@@ -1463,7 +1463,6 @@ class TestAddressSpellings:
                 witness_id,
                 key_type=KEY_TYPE_WITNESS_FALCON1024,
                 is_witness_key=True,
-                is_spending_account=False,
             ),
             key("PLACEHOLDER"),
             key(""),
@@ -1502,7 +1501,6 @@ class TestAddressSpellings:
         b'{"signed":[], "mutations":"x"}',
         b'{"signed":[], "mutations":{"dummies_added":"1"}}',
         b'{"signed":[], "mutations":{"fees_modified":[0.5]}}',
-        b'{"signed":[], "error":5}',
     ],
 )
 def test_a_sign_answer_of_the_wrong_shape_is_an_unknown_outcome(fakes, body):
@@ -1535,15 +1533,6 @@ def test_a_well_typed_answer_that_fails_its_checks_is_a_refusal(fakes):
         ("/sign/component", {"request_id": "x", "components": [{"target_index": "0"}]}, True),
         ("/sign/assemble", {"request_id": 5, "signed_group": []}, True),
         ("/sign/assemble", {"request_id": "x", "signed_group": [7]}, True),
-        # An error field that is not a string cannot be read either: it is
-        # not taken as a refusal.
-        ("/sign/component", {"request_id": "x", "components": [], "error": {"x": 1}}, True),
-        ("/sign/component", {"request_id": "x", "components": [], "error": 5}, True),
-        ("/sign/assemble", {"request_id": "x", "signed_group": [], "error": {"x": 1}}, True),
-        ("/sign/assemble", {"request_id": "x", "signed_group": [], "error": 5}, True),
-        # A string error is the signer's refusal.
-        ("/sign/component", {"error": "refused"}, False),
-        ("/sign/assemble", {"error": "refused"}, False),
         # Planning releases nothing: a malformed plan is a plain failure.
         ("/plan", {"transactions": "none"}, False),
     ],

@@ -400,5 +400,5 @@ export async function submitAndTrack(
 
 /** The TX-prefixed hex of the transactions in a signed group, for simulation results. */
 export function signedGroupTransactions(decoded: algosdk.SignedTransaction[]): string[] {
-  return decoded.map((signed) => encodeTransaction(signed.txn)[0]);
+  return decoded.map((signed) => encodeTransaction(signed.txn));
 }

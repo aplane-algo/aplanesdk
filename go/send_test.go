@@ -442,7 +442,7 @@ func TestSendPreparedRefusesBeforeSigning(t *testing.T) {
 		},
 		{
 			name:  "witness record is not a spending key",
-			keys:  []KeyInfo{{Address: sender, IsSpendingAccount: new(bool)}},
+			keys:  []KeyInfo{{Address: sender, IsWitnessKey: true}},
 			group: preparedFor(txn),
 			want:  ErrKeyNotFound,
 			text:  "not available for signing",
@@ -1034,9 +1034,8 @@ func (f *cosignedSend) record(t *testing.T, name string, r *http.Request) {
 }
 
 // failAs answers with fault when it names this request: "<name> drop" closes
-// the connection with no answer, "<name> truncate" answers 200 with a body
-// cut short, and "<name> error" answers 200 with a refusal in its error
-// field. name is the path, prefixed with "cosigner " on the cosigner.
+// the connection with no answer, and "<name> truncate" answers 200 with a
+// body cut short. name is the path, prefixed with "cosigner " on the cosigner.
 func failAs(t *testing.T, w http.ResponseWriter, fault, name string) bool {
 	switch fault {
 	case name + " drop":
@@ -1049,9 +1048,6 @@ func failAs(t *testing.T, w http.ResponseWriter, fault, name string) bool {
 		return true
 	case name + " truncate":
 		w.Write([]byte(`{"request_id": "x", "signed_gr`))
-		return true
-	case name + " error":
-		w.Write([]byte(`{"error": "refused by the test signer"}`))
 		return true
 	}
 	return false
@@ -1324,24 +1320,6 @@ func TestSendPreparedCosignedLostAnswers(t *testing.T) {
 	}
 }
 
-// A 200 answer that carries an error is the signer's refusal: it was read,
-// so the send fails plainly, and nothing is submitted.
-func TestSendPreparedCosignedAnswerWithAnErrorIsARefusal(t *testing.T) {
-	for _, fault := range []string{"/sign/component error", "/sign/assemble error", "cosigner /sign/component error"} {
-		t.Run(fault, func(t *testing.T) {
-			f := cosignedSendFixture(t, fault, false)
-			_, err := f.send()
-			var unknown *SignOutcomeUnknownError
-			if err == nil || errors.As(err, &unknown) || !strings.Contains(err.Error(), "refused by the test signer") {
-				t.Fatalf("error = %v, want a plain refusal carrying the signer's error", err)
-			}
-			if len(f.node.submissions()) != 0 {
-				t.Fatalf("submitted after a refusal")
-			}
-		})
-	}
-}
-
 // Rotating and cosigned sends submit through the same path, so a failure
 // after signing is the same *SubmissionError, and nothing is signed again.
 func TestRotatingAndCosignedSendsSubmitThroughTheSamePath(t *testing.T) {
@@ -1446,7 +1424,7 @@ func TestSendPreparedCancelFailureDoesNotMaskTheSend(t *testing.T) {
 	answers := map[string]func(http.ResponseWriter){
 		"unreadable": func(w http.ResponseWriter) { w.Write([]byte(`{"succ`)) },
 		"null":       func(w http.ResponseWriter) { w.Write([]byte(`null`)) },
-		"an error":   func(w http.ResponseWriter) { w.Write([]byte(`{"success":false,"error":"cancel broke"}`)) },
+		"an answer":  func(w http.ResponseWriter) { w.Write([]byte(`{"state":"not_found"}`)) },
 		"a 500": func(w http.ResponseWriter) {
 			writeCodedError(w, http.StatusInternalServerError, ErrCodeInternal, "cancel broke")
 		},
@@ -1540,7 +1518,7 @@ func TestSendTransactionsSendsAnOrdinarySender(t *testing.T) {
 		t.Fatalf("sign requests = %+v, want one with one entry", seen)
 	}
 	request := seen[0][0]
-	if request.AuthAddress != txn.Sender.String() || request.TxnSender != txn.Sender.String() || request.TxnBytesHex != hex.EncodeToString(before) {
+	if request.AuthAddress != txn.Sender.String() || request.TxnBytesHex != hex.EncodeToString(before) {
 		t.Fatalf("sign request = %+v, want the transaction as built, signed by its sender", request)
 	}
 	if request.LsigArgs != nil || request.AppCallInfo != nil || request.LsigResources != nil || request.PQScheme != "" {
@@ -1573,7 +1551,7 @@ func TestSendTransactionsUsesTheChainAuthAddressOfARekeyedSender(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendTransactions() error = %v", err)
 	}
-	if len(seen) != 1 || seen[0][0].AuthAddress != authorizer || seen[0][0].TxnSender != sender {
+	if len(seen) != 1 || seen[0][0].AuthAddress != authorizer {
 		t.Fatalf("sign requests = %+v, want the chain's auth address %s for sender %s", seen, authorizer, sender)
 	}
 	var signed types.SignedTxn

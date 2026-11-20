@@ -54,7 +54,7 @@ export function preparedTransactionToSignRequest(
     throw new SignerError("transaction is required");
   }
 
-  const [txnBytesHex, txnSender] = encodeTransaction(prepared.transaction);
+  const txnBytesHex = encodeTransaction(prepared.transaction);
   if (!prepared.authAddress) {
     const request: SignRequest = { txn_bytes_hex: txnBytesHex };
     if (prepared.lsigResources) {
@@ -87,7 +87,6 @@ export function preparedTransactionToSignRequest(
   const request: SignRequest = {
     txn_bytes_hex: txnBytesHex,
     auth_address: prepared.authAddress,
-    txn_sender: prepared.txnSender || txnSender,
   };
   const lsigArgs = encodeLsigArgsOrNone(prepared.lsigArgs);
   if (lsigArgs) {

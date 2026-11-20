@@ -501,8 +501,8 @@ describe("cosigned group key record", () => {
     const txn = fakePayment();
     const sender = txn.sender.toString();
     const userClient = new SignerClient("http://localhost:11270");
-    const witness = { address: sender, key_type: "aplane.witness-falcon1024.v1", is_spending_account: false };
-    // Two rows for one address, the non-spending one last. A second spendable
+    const witness = { address: sender, key_type: "aplane.witness-falcon1024.v1", is_witness_key: true };
+    // Two rows for one address, the witness one last. A second spendable
     // row follows as well: the first one is the one chosen, from the fresh
     // list and from the cache alike.
     const signer = {
@@ -552,7 +552,7 @@ describe("cosigned group key record", () => {
     await assert.rejects(attempt(), /signing flow "cosigner10"/);
     assert.equal(signer.fetches, 2);
 
-    // Only a non-spending row for the address: there is no key to sign with.
+    // Only a witness row for the address: there is no key to sign with.
     signer.revision = 3;
     signer.keys = [witness];
     await assert.rejects(attempt(), (err: unknown) => {
@@ -624,9 +624,8 @@ describe("networks_allowed", () => {
   // read as the value it stands for, and the default network must be text
   // like the allowlist's entries.
   const loadable: Array<[string, string, string[]]> = [
-    ["nets: &nets [testnet]\nnetworks_allowed: *nets\n", "testnet", ["testnet"]],
-    ["name: &name testnet\nnetworks_allowed: [*name, mainnet]\n", "testnet", ["testnet", "mainnet"]],
-    ["name: &name mainnet\nnetwork: *name\n", "mainnet", []],
+    ["network: &name testnet\nnetworks_allowed: [*name, mainnet]\n", "testnet", ["testnet", "mainnet"]],
+    ["networks_allowed: [&name mainnet]\nnetwork: *name\n", "mainnet", ["mainnet"]],
     ["network: ~\n", "testnet", []],
     ["network: \"1\"\n", "1", []],
     ["network: \"1\"\nnetworks_allowed: [\"1\"]\n", "1", ["1"]],
@@ -644,15 +643,15 @@ describe("networks_allowed", () => {
     });
   }
   const refusedFiles: Array<[string, RegExp]> = [
-    ["n: &n 1\nnetworks_allowed: [*n]\n", /networks_allowed/],
-    ["n: &n {a: b}\nnetworks_allowed: *n\n", /networks_allowed/],
+    ["theme: &n 1\nnetworks_allowed: [*n]\n", /networks_allowed/],
+    ["networks: &n {}\nnetworks_allowed: *n\n", /networks_allowed/],
     ["network: 1\n", /invalid network in config.yaml/],
     ["network: 1\nnetworks_allowed: [testnet]\n", /invalid network in config.yaml/],
     ["network: true\n", /invalid network in config.yaml/],
     ["network: 1.5\n", /invalid network in config.yaml/],
     ["network: [a]\n", /invalid network in config.yaml/],
     ["network: Mainnet\n", /invalid network in config.yaml/],
-    ["n: &n 1\nnetwork: *n\n", /invalid network in config.yaml/],
+    ["theme: &n 1\nnetwork: *n\n", /invalid network in config.yaml/],
   ];
   for (const [content, message] of refusedFiles) {
     it(`refuses ${JSON.stringify(content)}`, () => {

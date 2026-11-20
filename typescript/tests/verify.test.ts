@@ -301,7 +301,7 @@ describe("validatePlanResponse", () => {
       algosdk.decodeUnsignedTransaction(hexToBytes(item).slice(2)),
     );
     edit(txns);
-    body.transactions = regroup(txns).map((txn) => encodeTransaction(txn)[0]);
+    body.transactions = regroup(txns).map((txn) => encodeTransaction(txn));
   }
 
   it("accepts a reported fee raise, grouping and dummy with a foreign position", () => {
@@ -402,7 +402,7 @@ describe("public sign, plan and simulate calls", () => {
     stubSigner({
       tamper: (body) => {
         if (body.signed) body.signed = [signedHex(other)];
-        else body.transactions = [encodeTransaction(other)[0]];
+        else body.transactions = [encodeTransaction(other)];
       },
     });
     const client = new SignerClient("http://localhost:11270");
@@ -448,7 +448,7 @@ describe("signed transaction identity checks", () => {
   it("reject trailing bytes and non-canonical wrappers", () => {
     const txn = fakePayment(41, 42, 1);
     const other = fakePayment(41, 45, 2);
-    const canonicalHex = encodeTransaction(txn)[0];
+    const canonicalHex = encodeTransaction(txn);
     const signed = signedHex(txn);
 
     signedTransactionMatchesCanonical("slot", 0, signed, canonicalHex);
@@ -482,7 +482,7 @@ describe("signed transaction identity checks", () => {
 
   it("require canonical request bytes", () => {
     const txn = fakePayment(41, 42, 1);
-    const canonical = encodeTransaction(txn)[0];
+    const canonical = encodeTransaction(txn);
     const signed = signedHex(txn);
     const bad: SignRequest[] = [
       { auth_address: fakeAddress(41), txn_bytes_hex: canonical.slice(4) },
@@ -799,8 +799,7 @@ describe("authorization of a signed position", () => {
   const dummy = holdProgram(dummyProgram);
 
   function check(txn: Transaction, auth: string, signedHexValue: string): void {
-    const sender = txn.sender.toString();
-    const request = { auth_address: auth, txn_sender: sender, txn_bytes_hex: encodeTransaction(txn)[0] };
+    const request = { auth_address: auth, txn_bytes_hex: encodeTransaction(txn) };
     validateSignResponse(decodeRequestSlots([request]), [signedHexValue], undefined, undefined);
   }
 
@@ -928,7 +927,7 @@ describe("authorization of a signed position", () => {
   it("refuses a request whose auth address is not an address", async () => {
     const txn = fakePayment();
     assert.throws(
-      () => decodeRequestSlots([{ auth_address: "AUTH", txn_bytes_hex: encodeTransaction(txn)[0] }]),
+      () => decodeRequestSlots([{ auth_address: "AUTH", txn_bytes_hex: encodeTransaction(txn) }]),
       /auth_address "AUTH" is not a valid address/,
     );
     const client = new SignerClient("http://localhost:11270");
@@ -952,7 +951,7 @@ describe("authorization of a signed position", () => {
         assert.ok(algosdk.isValidAddress(spelling), `algosdk reads ${spelling} as an address`);
         const want = `auth_address ${spelling} is not the canonical spelling of ${sender}`;
         assert.throws(
-          () => decodeRequestSlots([{ auth_address: spelling, txn_bytes_hex: encodeTransaction(txn)[0] }]),
+          () => decodeRequestSlots([{ auth_address: spelling, txn_bytes_hex: encodeTransaction(txn) }]),
           (error: unknown) => error instanceof SignerError && error.message === `transaction 1: ${want}`,
         );
         const client = new SignerClient("http://localhost:11270");
@@ -962,7 +961,7 @@ describe("authorization of a signed position", () => {
           return true;
         });
         await assert.rejects(
-          client.signRequests([{ auth_address: spelling, txn_bytes_hex: encodeTransaction(txn)[0] }]),
+          client.signRequests([{ auth_address: spelling, txn_bytes_hex: encodeTransaction(txn) }]),
           (error: unknown) => error instanceof SignerError && (error as Error).message.includes(want),
         );
       }

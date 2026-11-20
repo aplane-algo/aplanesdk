@@ -155,7 +155,7 @@ def raw_signer():
             if path == "/status":
                 return reply(200, status_body())
             if path == "/sign/cancel":
-                return reply(200, {"success": True, "state": "canceled"})
+                return reply(200, {"state": "canceled"})
             if path == "/sign/rotating/sign":
                 return (200, self.body, "application/json")
             raise AssertionError(f"unexpected signer path {path}")
@@ -271,7 +271,7 @@ def _rekeyed_to(case, rekey_to):
     set_prepared(prepare, txns)
     prepare["rekey_to"] = rekey_to
     spend = decode_map(bytes.fromhex(sign["signed"][0]))
-    spend["txn"] = decode_map(bytes.fromhex(encode_transaction(txns[0])[0])[2:])
+    spend["txn"] = decode_map(bytes.fromhex(encode_transaction(txns[0]))[2:])
     sign["signed"] = [encode_map(spend).hex()] + [
         _sign_canonical_dummy(txn).hex() for txn in txns[1:]
     ]

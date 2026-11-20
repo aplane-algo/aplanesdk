@@ -245,7 +245,7 @@ class RotatingSigner {
 }
 
 function setPrepared(response: any, txns: Transaction[]): void {
-  response.transactions = txns.map((txn) => encodeTransaction(txn)[0]);
+  response.transactions = txns.map((txn) => encodeTransaction(txn));
 }
 
 function setSigned(response: any, signed: algosdk.SignedTransaction[]): void {
@@ -340,7 +340,7 @@ describe("sendPrepared with a rotating account", () => {
       assert.equal(entry.sig, undefined, `simulated transaction ${index} carries a signature`);
       assert.equal(entry.lsig, undefined, `simulated transaction ${index} carries a LogicSig`);
       assert.equal(entry.msig, undefined);
-      assert.equal(encodeTransaction(entry.txn)[0], prepared[index], `simulated transaction ${index} is not the prepared one`);
+      assert.equal(encodeTransaction(entry.txn), prepared[index], `simulated transaction ${index} is not the prepared one`);
     });
 
     assert.equal(result.flow, SIGNING_FLOW_ROTATING1);

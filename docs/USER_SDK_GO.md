@@ -94,7 +94,6 @@ Example `endpoints.yaml`:
 
 ```yaml
 schema_version: 2
-default: primary
 endpoints:
   primary:
     role: signer
@@ -158,7 +157,13 @@ healthy, _ := client.Health()
 This path:
 
 - resolves the client data dir
-- validates `config.yaml` contains no obsolete routing
+- accepts exactly apshell's `config.yaml` field names, at every depth, and
+  refuses any other with apshell's words: the retired `endpoint`, `ssh` and
+  `signer_port` routing among them, and a top-level `algod` (algod settings
+  go under `networks.<network>.algod`). It validates only the values it reads
+  (`network`, `networks_allowed`, `theme` and `networks`), so some files
+  apshell refuses still load here: an empty file, `schema_version: 2`, or a
+  bad `signer_status_poll_interval`
 - loads and selects an endpoint from `endpoints.yaml`
 - resolves SSH paths relative to the client data dir
 - establishes the SSH tunnel automatically
@@ -700,8 +705,7 @@ and `SpendingRekey`, which may differ: a rekey selects `SpendingRekey` and
 every other transaction selects `Spend`.
 
 `KeyTypeInfo.AuthorizationKind` distinguishes `ed25519`, `native_pq`, and
-`logic_sig`. Do not infer Ed25519 from `RequiresLogicSig == false`: native
-Falcon-1024 also has a false compatibility boolean.
+`logic_sig`.
 
 `KeyInfo.AuthorizationKind` reports the same closed values for a key instance
 and is authoritative for choosing its transaction authorization envelope. It
@@ -996,7 +1000,6 @@ cosigner node as an endpoint with role `cosigner`:
 
 ```yaml
 schema_version: 2
-default: primary
 endpoints:
   primary:
     role: signer
@@ -1350,8 +1353,8 @@ locally.
 Every 200 answer from the signer, the key list included, is read strictly:
 it must be exactly one JSON value, so a `null` body or anything after the
 value is an error, never an empty answer, and a field left out or `null`
-reads as its zero value. An answer whose `error` field is set is a refusal,
-and at an approval-bearing request an answer that cannot be read counts as a
+reads as its zero value. The signer refuses only with a non-2xx answer, and
+at an approval-bearing request an answer that cannot be read counts as a
 lost answer, which a send reports as `*SignOutcomeUnknownError`. The full
 rule, and how the three SDKs' readers differ, is in
 [`go/README.md`](../go/README.md) under `SendPrepared`.

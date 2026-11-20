@@ -87,13 +87,6 @@ SSH_ENROLLMENT_USERNAME = "enroll"
 # label the signer accepts with it.
 SSH_ENROLLMENT_COMMAND = "enroll"
 MAX_ENROLLMENT_LABEL_BYTES = 64
-# Endpoint keys earlier builds wrote and nothing reads: the node's SSH server
-# forwards every channel to its own REST listener, the client listens on no
-# local port (each HTTP connection is an SSH channel of its own), and the
-# client's enrolled SSH key is its only credential, so there is no token file.
-# They are accepted and ignored, as APlane ignores them, so a registry written
-# before they were retired keeps working.
-_RETIRED_ENDPOINT_FIELDS = ("signer_port", "local_port", "token_file")
 DEFAULT_SSH_SETUP_TIMEOUT = 60.0
 CLIENT_ENDPOINTS_FILE = "endpoints.yaml"
 CLIENT_ENDPOINT_SCHEMA_VERSION = 2
@@ -995,7 +988,7 @@ def _zero_object(shape: Dict[str, Any]) -> Dict[str, Any]:
 
 # The wire types of the approval-bearing answers (pkg/signerapi in aplane).
 # Each declares every field the SDK reads after the shape check: a field left
-# out would pass unchecked, so a wrongly typed error would read as a refusal.
+# out would pass unchecked.
 _MUTATION_REPORT_SHAPE: Dict[str, Any] = {
     "dummies_added": "int",
     "group_id_changed": "bool",
@@ -1010,7 +1003,6 @@ _MUTATION_REPORT_SHAPE: Dict[str, Any] = {
 _GROUP_SIGN_RESPONSE_SHAPE: Dict[str, Any] = {
     "signed": "strs",
     "mutations": _MUTATION_REPORT_SHAPE,
-    "error": "str",
 }
 _ROTATING_PREPARE_RESPONSE_SHAPE: Dict[str, Any] = {
     "account": "str",
@@ -1043,12 +1035,10 @@ _COMPONENT_RESPONSE_SHAPE: Dict[str, Any] = {
             "path": "str",
         },
     ),
-    "error": "str",
 }
 _ASSEMBLY_RESPONSE_SHAPE: Dict[str, Any] = {
     "request_id": "str",
     "signed_group": "strs",
-    "error": "str",
 }
 
 # The wire types of the answers that release no signature, as the Go SDK's
@@ -1167,7 +1157,6 @@ _KEY_INFO_SHAPE: Dict[str, Any] = {
     "is_generic_lsig": "bool",
     "is_witness_key": "bool",
     "bounded_authorization": _BOUNDED_AUTHORIZATION_SHAPE,
-    "is_spending_account": ("ptr", "bool"),
     "signing_args": ("list", _RUNTIME_ARG_SHAPE),
     "parameters": "str_map",
     "template_provenance_status": "str",
@@ -1213,7 +1202,6 @@ _KEY_TYPES_RESPONSE_SHAPE: Dict[str, Any] = {
             "display_name": "str",
             "description": "str",
             "authorization_kind": "str",
-            "requires_logicsig": "bool",
             "mnemonic_word_count": "int",
             "mnemonic_import": "bool",
             "mnemonic_scheme": "str",
@@ -1231,28 +1219,21 @@ _KEY_TYPES_RESPONSE_SHAPE: Dict[str, Any] = {
 _PLAN_RESPONSE_SHAPE: Dict[str, Any] = {
     "transactions": "strs",
     "mutations": _MUTATION_REPORT_SHAPE,
-    "error": "str",
 }
 _GENERATE_RESULT_SHAPE: Dict[str, Any] = {
     "address": "str",
     "public_key_hex": "str",
     "key_type": "str",
     "is_witness_key": "bool",
-    "is_spending_account": ("ptr", "bool"),
     "parameters": "str_map",
-    "error": "str",
 }
 _CANCEL_SIGN_RESPONSE_SHAPE: Dict[str, Any] = {
-    "success": "bool",
     "state": "str",
-    "error": "str",
 }
 # What DELETE /admin/keys answers with (AdminDeleteResponse in aplane's
-# pkg/signerapi); the signer always sends the object, never an empty body.
-_DELETE_KEY_RESPONSE_SHAPE: Dict[str, Any] = {
-    "success": "bool",
-    "error": "str",
-}
+# pkg/signerapi): the empty object, never an empty body. It is read all the
+# same, so a body that is not one JSON object is refused.
+_DELETE_KEY_RESPONSE_SHAPE: Dict[str, Any] = {}
 
 
 _JSON_HEADERS = {"Content-Type": "application/json"}
@@ -1444,7 +1425,6 @@ class KeyInfo:
     is_generic_lsig: bool = False
     is_witness_key: bool = False
     bounded_authorization: Optional[BoundedAuthorizationInfo] = None
-    is_spending_account: Optional[bool] = None
     signing_args: Optional[List[SigningArg]] = None  # Key-file args required for LogicSigs
     parameters: Optional[Dict[str, str]] = None
     template_provenance_status: str = ""
@@ -1497,10 +1477,10 @@ class EnrollmentResult:
 
 @dataclass
 class ClientEndpointRegistry:
-    """Normalized client-local endpoint registry."""
+    """Normalized client-local endpoint registry. At most one endpoint has
+    role "signer": the one used when no alias is named."""
 
     schema_version: int = CLIENT_ENDPOINT_SCHEMA_VERSION
-    default: str = ""
     endpoints: Dict[str, ClientEndpointConfig] = field(default_factory=dict)
 
 
@@ -1545,7 +1525,6 @@ class KeyTypeInfo:
     display_name: str = ""
     description: str = ""
     authorization_kind: str = ""
-    requires_logicsig: bool = False
     mnemonic_word_count: int = 0
     mnemonic_import: bool = False
     mnemonic_scheme: str = ""
@@ -1728,9 +1707,7 @@ class StatusResponse:
 class CancelSignResponse:
     """Response from /sign/cancel"""
 
-    success: bool
     state: str = ""
-    error: str = ""
 
 
 @dataclass
@@ -1739,7 +1716,6 @@ class GroupSignResponse:
 
     signed: List[str]
     mutations: Optional[Dict[str, Any]] = None
-    error: str = ""
 
 
 @dataclass
@@ -2041,7 +2017,6 @@ class PreparedTransaction:
 
     transaction: Optional[transaction.Transaction] = None
     auth_address: Optional[str] = None
-    txn_sender: str = ""
     lsig_args: Optional[Dict[str, bytes]] = None
     lsig_resources: Optional[LogicSigResourceUsage] = None
     pq_scheme: str = ""
@@ -2069,7 +2044,7 @@ class PreparedTransaction:
         if self.transaction is None:
             raise ValueError("transaction is required")
 
-        txn_bytes_hex, txn_sender = encode_transaction(self.transaction)
+        txn_bytes_hex = encode_transaction(self.transaction)
         if not self.auth_address:
             request: Dict[str, Any] = {"txn_bytes_hex": txn_bytes_hex}
             if self.lsig_resources is not None:
@@ -2094,7 +2069,6 @@ class PreparedTransaction:
         request = {
             "txn_bytes_hex": txn_bytes_hex,
             "auth_address": self.auth_address,
-            "txn_sender": self.txn_sender or txn_sender,
         }
         # Checked whatever it is: a falsy value of the wrong type is refused
         # too. No arguments are sent as no field.
@@ -2166,7 +2140,6 @@ class GenerateResult:
     key_type: str
     public_key_hex: str = ""
     is_witness_key: bool = False
-    is_spending_account: Optional[bool] = None
     parameters: Optional[Dict[str, str]] = None
 
 
@@ -2228,12 +2201,7 @@ def load_config(data_dir: str) -> ClientConfig:
 
     if not isinstance(data, dict):
         raise SignerError("config.yaml must be a mapping")
-    for field in ("endpoint", "ssh", "signer_port"):
-        if field in data:
-            raise SignerError(
-                f'unsupported client routing in config.yaml: remove "{field}" '
-                "and configure endpoints.yaml"
-            )
+    _require_apshell_config_fields(data)
     network = data.get("network")
     if network is not None:
         # The rule of the networks_allowed entries: text, and a network ID.
@@ -2257,6 +2225,48 @@ def load_config(data_dir: str) -> ClientConfig:
         )
 
     return config
+
+
+# The fields apshell reads from config.yaml. The SDK reads network,
+# networks_allowed and theme; schema_version, signer_status_poll_interval
+# and networks are apshell's own settings, which the SDK checks only for
+# apshell's field names, never for their values.
+_APSHELL_CONFIG_FIELDS = {
+    "schema_version",
+    "network",
+    "networks_allowed",
+    "theme",
+    "signer_status_poll_interval",
+    "networks",
+}
+
+
+def _require_apshell_config_fields(data: Dict[str, Any]) -> None:
+    """Refuse a config.yaml field apshell does not know, at any depth, the
+    retired endpoint, ssh and signer_port routing included, as apshell
+    refuses it."""
+
+    def known(value: Dict[str, Any], allowed: set[str]) -> None:
+        for field_name in value:
+            if field_name not in allowed:
+                raise SignerError(
+                    f'config field "{field_name}" is unknown or no longer supported; '
+                    "remove it from the file"
+                )
+
+    known(data, _APSHELL_CONFIG_FIELDS)
+    networks = data.get("networks")
+    if networks is None:
+        return
+    for network, settings in _require_mapping(networks, "networks in config.yaml").items():
+        if settings is None:
+            continue
+        settings = _require_mapping(settings, f"networks.{network} in config.yaml")
+        known(settings, {"algod"})
+        algod = settings.get("algod")
+        if algod is not None:
+            label = f"networks.{network}.algod in config.yaml"
+            known(_require_mapping(algod, label), {"server", "token"})
 
 
 def _require_mapping(value: Any, label: str) -> Dict[str, Any]:
@@ -2305,7 +2315,6 @@ def _normalize_client_endpoint(
             "url",
             "identity_file",
             "known_hosts_path",
-            *_RETIRED_ENDPOINT_FIELDS,
         },
         f'endpoint "{alias}"',
     )
@@ -2370,7 +2379,7 @@ def load_client_endpoint_registry(data_dir: str) -> ClientEndpointRegistry:
     except yaml.YAMLError as exc:
         raise SignerError(f"failed to parse {endpoints_path}: {exc}") from exc
     raw = _require_mapping(raw_value, CLIENT_ENDPOINTS_FILE)
-    _require_known_fields(raw, {"schema_version", "default", "endpoints"}, CLIENT_ENDPOINTS_FILE)
+    _require_known_fields(raw, {"schema_version", "endpoints"}, CLIENT_ENDPOINTS_FILE)
     schema_version = raw.get("schema_version", 0)
     if (
         isinstance(schema_version, bool)
@@ -2403,36 +2412,21 @@ def load_client_endpoint_registry(data_dir: str) -> ClientEndpointRegistry:
             "maximum is 12; remove or consolidate endpoint profiles"
         )
 
-    default = _optional_string(raw.get("default"), "default")
-    registry.default = default.strip()
-    if registry.default:
-        _validate_endpoint_alias(registry.default)
     signer_aliases = [
         alias for alias, endpoint in registry.endpoints.items() if endpoint.role == "signer"
     ]
     if len(signer_aliases) > 1:
         raise SignerError(f'{CLIENT_ENDPOINTS_FILE} may contain at most one "signer" endpoint')
-    if not signer_aliases:
-        if registry.default:
-            raise SignerError(
-                f'{CLIENT_ENDPOINTS_FILE} default endpoint "{registry.default}" '
-                'is set but no "signer" endpoint is configured'
-            )
-    elif registry.default and registry.default != signer_aliases[0]:
-        raise SignerError(
-            f'{CLIENT_ENDPOINTS_FILE} default endpoint "{registry.default}" must be '
-            f'the "signer" endpoint "{signer_aliases[0]}"'
-        )
-    else:
-        registry.default = signer_aliases[0]
     return registry
 
 
 def resolve_client_endpoint(
     registry: ClientEndpointRegistry, alias: Optional[str] = None
 ) -> tuple[str, ClientEndpointConfig]:
-    """Resolve an explicit endpoint alias or the registry's default signer."""
-    selected = alias or registry.default
+    """Resolve an explicit endpoint alias or, with none, the registry's signer endpoint."""
+    selected = alias or next(
+        (name for name, endpoint in registry.endpoints.items() if endpoint.role == "signer"), ""
+    )
     if not selected:
         raise SignerError(f"{CLIENT_ENDPOINTS_FILE} has no default signer endpoint")
     if selected not in registry.endpoints:
@@ -2455,20 +2449,13 @@ def client_endpoint_ssh_host_port(
 # -----------------------------------------------------------------------------
 
 
-def encode_transaction(txn: transaction.Transaction) -> tuple:
-    """
-    Encode transaction for signing.
-
-    Returns:
-        (txn_bytes_hex, txn_sender) where:
-        - txn_bytes_hex = hex(b"TX" + msgpack(txn))
-        - txn_sender = advisory display hint; signer authority comes from txn bytes
-    """
+def encode_transaction(txn: transaction.Transaction) -> str:
+    """Encode transaction for signing: hex(b"TX" + msgpack(txn))."""
     # Encode transaction to msgpack (algosdk returns base64 string)
     msgpack_b64 = encoding.msgpack_encode(txn)
     txn_bytes = b"TX" + base64.b64decode(msgpack_b64)
 
-    return txn_bytes.hex(), txn.sender
+    return txn_bytes.hex()
 
 
 def _simulate_signed_group(
@@ -2483,7 +2470,7 @@ def _simulate_signed_group(
     failure = _simulation_failure(response, len(signed_transactions))
     return SimulationResult(
         tx_ids=[signed.get_txid() for signed in signed_transactions],
-        transactions=[encode_transaction(signed.transaction)[0] for signed in signed_transactions],
+        transactions=[encode_transaction(signed.transaction) for signed in signed_transactions],
         signed_group=list(signed_group),
         mutations=mutations,
         response=response,
@@ -2693,7 +2680,7 @@ def _validate_authorization(signed: Any, auth: str) -> None:
         signature = base64.b64decode(signed.signature or "")
         if len(signature) != 64:
             raise SignerError(f"signature is {len(signature)} bytes, not 64")
-        message = bytes.fromhex(encode_transaction(txn)[0])
+        message = bytes.fromhex(encode_transaction(txn))
         try:
             VerifyKey(encoding.decode_address(auth)).verify(message, signature)
         except BadSignatureError as e:
@@ -2813,7 +2800,7 @@ def _decode_canonical_txn(raw: bytes) -> transaction.Transaction:
         raise SignerError(f"invalid msgpack: {e}") from e
     if not isinstance(decoded, transaction.Transaction):
         raise SignerError("did not decode as a transaction")
-    if raw.hex() != encode_transaction(decoded)[0]:
+    if raw.hex() != encode_transaction(decoded):
         raise SignerError("bytes are not canonical")
     return decoded
 
@@ -2953,7 +2940,7 @@ def _validate_canonical_dummies(
     """Require every appended transaction to be the canonical resource dummy."""
     for index, txn in enumerate(appended):
         want = _canonical_dummy_txn(first_original, group_id, index)
-        if encode_transaction(want)[0] != encode_transaction(txn)[0]:
+        if encode_transaction(want) != encode_transaction(txn):
             raise SignerError(
                 f"appended transaction {index + 1} is not the canonical resource dummy"
             )
@@ -3150,7 +3137,7 @@ def _validate_group_mutations(
             if total_fee_delta > _UINT64_MAX:
                 raise SignerError("observed fee delta overflows uint64")
             want.fee = got.fee
-        if encode_transaction(want)[0] != encode_transaction(got)[0]:
+        if encode_transaction(want) != encode_transaction(got):
             raise SignerError(f"signer changed unreported fields at original position {index + 1}")
         final.append(got)
     reported_delta = _mutation_int(report, "total_fees_delta")
@@ -3921,7 +3908,7 @@ def _find_spendable_key(keys: List[KeyInfo], address: str) -> Optional[KeyInfo]:
     otherwise, so only address is canonicalised here."""
     wanted = _address_key(address)
     for key in keys:
-        if key.address == wanted and key.is_spending_account is not False:
+        if key.address == wanted and not key.is_witness_key:
             return key
     return None
 
@@ -5646,7 +5633,6 @@ class SignerClient:
                 is_generic_lsig=k.get("is_generic_lsig", False),
                 is_witness_key=k.get("is_witness_key", False),
                 bounded_authorization=_parse_bounded_authorization(k.get("bounded_authorization")),
-                is_spending_account=k.get("is_spending_account"),
                 signing_args=_parse_runtime_args(k.get("signing_args")),
                 # Read by its shape, parameters left out is {}: none.
                 parameters=k.get("parameters") or None,
@@ -5665,9 +5651,7 @@ class SignerClient:
             # _find_spendable_key picks from the list itself, so a lookup
             # answers the same from a fresh list and from the cache.
             kept = self._key_cache.get(key_info.address)
-            if kept is not None and (
-                kept.is_spending_account is not False or key_info.is_spending_account is False
-            ):
+            if kept is not None and (not kept.is_witness_key or key_info.is_witness_key):
                 continue
             self._key_cache[key_info.address] = key_info
 
@@ -6665,7 +6649,6 @@ class SignerClient:
                     display_name=kt.get("display_name", ""),
                     description=kt.get("description", ""),
                     authorization_kind=kt.get("authorization_kind", ""),
-                    requires_logicsig=kt.get("requires_logicsig", False),
                     mnemonic_word_count=kt.get("mnemonic_word_count", 0),
                     mnemonic_import=kt.get("mnemonic_import", False),
                     mnemonic_scheme=kt.get("mnemonic_scheme", ""),
@@ -6728,8 +6711,6 @@ class SignerClient:
         self._key_cache_revision = None
 
         data = _read_answer(resp, _GENERATE_RESULT_SHAPE, "key generation")
-        if data["error"]:
-            raise SignerError(data["error"])
         # Only the address is required: the signer leaves key_type out when
         # it is empty (omitempty), and the other SDKs accept that.
         if not data["address"]:
@@ -6740,7 +6721,6 @@ class SignerClient:
             key_type=data["key_type"],
             public_key_hex=data["public_key_hex"],
             is_witness_key=data["is_witness_key"],
-            is_spending_account=data["is_spending_account"],
             parameters=data["parameters"] or None,
         )
 
@@ -6776,11 +6756,9 @@ class SignerClient:
         self._key_cache.clear()
         self._key_cache_revision = None
 
-        # The signer answers {"success": true}; an empty or unreadable body
-        # is not an answer it sends.
-        data = _read_answer(resp, _DELETE_KEY_RESPONSE_SHAPE, "key deletion")
-        if data["error"]:
-            raise SignerError(data["error"])
+        # The signer answers {}; an empty or unreadable body is not an answer
+        # it sends.
+        _read_answer(resp, _DELETE_KEY_RESPONSE_SHAPE, "key deletion")
 
     def _safe_json(self, resp: requests.Response) -> dict:
         """
@@ -6890,12 +6868,7 @@ class SignerClient:
             raise self._signer_http_error(resp, f"Sign cancel failed: HTTP {resp.status_code}")
 
         data = _read_answer(resp, _CANCEL_SIGN_RESPONSE_SHAPE, "sign cancel")
-        result = CancelSignResponse(
-            success=data["success"], state=data["state"], error=data["error"]
-        )
-        if result.error:
-            raise SignerError(result.error)
-        return result
+        return CancelSignResponse(state=data["state"])
 
     def request_components(self, request: Any) -> ComponentResponse:
         request_body = _compact_payload(request)
@@ -6960,8 +6933,6 @@ class SignerClient:
             _COMPONENT_RESPONSE_SHAPE,
             request_id=request_body["request_id"],
         )
-        if data.get("error"):
-            raise SignerError(data["error"])
         try:
             return _checked_component_response(data, request_body)
         except SignerError:
@@ -7043,8 +7014,6 @@ class SignerClient:
             _ASSEMBLY_RESPONSE_SHAPE,
             request_id=request_body["request_id"],
         )
-        if data.get("error"):
-            raise SignerError(data["error"])
         try:
             return _checked_assembly_response(data, request_body)
         except SignerError:
@@ -7225,7 +7194,7 @@ class SignerClient:
                     )
                 if txn is None:
                     raise ValueError(f"transaction is required for foreign-mode entry at index {i}")
-                txn_bytes_hex, _ = encode_transaction(txn)
+                txn_bytes_hex = encode_transaction(txn)
                 req: Dict[str, Any] = {"txn_bytes_hex": txn_bytes_hex}
                 if lsig_resources and i in lsig_resources:
                     req["lsig_resources"] = _wire_lsig_resources(lsig_resources[i])
@@ -7239,12 +7208,11 @@ class SignerClient:
             except ValueError as e:
                 raise ValueError(f"transaction {i + 1}: {e}") from e
 
-            txn_bytes_hex, txn_sender = encode_transaction(txn)
+            txn_bytes_hex = encode_transaction(txn)
 
             req = {
                 "txn_bytes_hex": txn_bytes_hex,
                 "auth_address": auth_addr,
-                "txn_sender": txn_sender,
             }
 
             # Add LogicSig args if provided
@@ -7397,9 +7365,6 @@ class SignerClient:
             request_id=request_id,
         )
 
-        if data.get("error"):
-            raise SignerError(data["error"])
-
         signed = data.get("signed") or []
         mutations = data.get("mutations")
         # Every sign path goes through here, so a truncated, altered or padded
@@ -7413,11 +7378,7 @@ class SignerClient:
             # and its group unchecked.
             raise _check_fault("verify signer response: ", e, request_id) from e
 
-        return GroupSignResponse(
-            signed=signed,
-            mutations=mutations,
-            error=data.get("error", ""),
-        )
+        return GroupSignResponse(signed=signed, mutations=mutations)
 
     def plan_group(
         self,
@@ -7508,8 +7469,6 @@ class SignerClient:
             raise self._signer_http_error(resp, f"Plan failed: HTTP {resp.status_code}")
 
         data = _read_answer(resp, _PLAN_RESPONSE_SHAPE, "plan")
-        if data["error"]:
-            raise SignerError(data["error"])
 
         try:
             _validate_plan_response(
@@ -8239,7 +8198,7 @@ class SignerClient:
         _require_canonical_address(txn.sender, "sender")
         _check_rotating_shape(txn)
         _check_rotating_window(txn)
-        original = bytes.fromhex(encode_transaction(txn)[0])
+        original = bytes.fromhex(encode_transaction(txn))
         # The prepared group is held to the ceiling in force now.
         max_fee_increase = self.max_fee_increase
         body = {"account": txn.sender, "txn_bytes_hex": original.hex()}
@@ -9353,7 +9312,7 @@ def _verify_signed_transaction_matches_canonical(
         decoded = _decode_canonical_signed_txn(signed_bytes)
     except SignerError as e:
         raise SignerError(f"{label} {index}: {e}") from e
-    encoded, _ = encode_transaction(decoded.transaction)
+    encoded = encode_transaction(decoded.transaction)
     if encoded != canonical_hex.lower():
         raise SignerError(f"{label} {index} does not match the submitted canonical bytes")
 
@@ -9418,7 +9377,7 @@ def _request_bounded_primary_passthrough(
                 "txn_bytes_hex": txn_hex,
                 "auth_address": target["auth_address"],
             }
-            for field in ("txn_sender", "lsig_args", "app_call_info"):
+            for field in ("lsig_args", "app_call_info"):
                 if target.get(field):
                     request[field] = target[field]
             requests_data.append(request)
@@ -9562,7 +9521,6 @@ def sign_prepared_cosigned_group(
             {
                 "target_index": index,
                 "auth_address": item.auth_address,
-                "txn_sender": item.txn_sender,
                 "lsig_args": _encode_lsig_args_or_none(item.lsig_args),
                 "app_call_info": item.app_call_info,
             }
@@ -10049,7 +10007,7 @@ class PreparedRotating:
                 stxn = _decode_canonical_signed_txn(raw)
             except SignerError as e:
                 raise SignerError(f"signed transaction {position}: {e}") from e
-            if encode_transaction(stxn.transaction)[0] != encode_transaction(txns[index])[0]:
+            if encode_transaction(stxn.transaction) != encode_transaction(txns[index]):
                 raise SignerError(
                     f"signed transaction {position} differs from the prepared transaction"
                 )

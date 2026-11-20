@@ -76,7 +76,7 @@ export interface WireKey {
   address: string;
   key_type?: string;
   signing_flow?: string;
-  is_spending_account?: boolean;
+  is_witness_key?: boolean;
   [field: string]: unknown;
 }
 

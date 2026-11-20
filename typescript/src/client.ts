@@ -499,7 +499,6 @@ async function requestBoundedPrimaryPassthrough(
     return {
       txn_bytes_hex: txnHex,
       auth_address: target.authAddress,
-      txn_sender: target.txnSender,
       lsig_args: target.lsigArgs,
       app_call_info: target.appCallInfo,
     };
@@ -646,7 +645,6 @@ export async function signPreparedCosignedGroup(
     primaryTargets.push({
       targetIndex: index,
       authAddress: item.authAddress,
-      txnSender: item.txnSender,
       lsigArgs: encodeLsigArgsOrNone(item.lsigArgs),
       appCallInfo: item.appCallInfo,
     });
@@ -1648,7 +1646,6 @@ export interface CosignedSignTarget {
 interface CosignedPrimarySignTarget {
   targetIndex: number;
   authAddress: string;
-  txnSender?: string;
   lsigArgs?: Record<string, string>;
   appCallInfo?: { mode?: string; method?: string };
 }
@@ -1814,7 +1811,7 @@ function extractAuthAddress(accountInfo: AccountInfoResult): string {
 
 function findSpendableKey(keys: KeyInfo[], address: string): KeyInfo | undefined {
   return keys.find((key) => (
-    key.address === address && key.isSpendingAccount !== false
+    key.address === address && !key.isWitnessKey
   ));
 }
 
@@ -3082,7 +3079,6 @@ export class SignerClient {
         logicSigResources: mapLogicSigResourceProfile(raw.logic_sig_resources),
         isGenericLsig: raw.is_generic_lsig,
         isWitnessKey: raw.is_witness_key,
-        isSpendingAccount: raw.is_spending_account,
         boundedAuthorization: mapBoundedAuthorization(raw.bounded_authorization),
         signingArgs: raw.signing_args ? raw.signing_args.map(mapRuntimeArg) : undefined,
         parameters: raw.parameters,
@@ -3096,7 +3092,7 @@ export class SignerClient {
       // from the list itself, so a lookup answers the same from a fresh list
       // and from the cache.
       const kept = this.keyCache.get(keyInfo.address);
-      if (kept && (kept.isSpendingAccount !== false || keyInfo.isSpendingAccount === false)) {
+      if (kept && (!kept.isWitnessKey || keyInfo.isWitnessKey)) {
         continue;
       }
       this.keyCache.set(keyInfo.address, keyInfo);
@@ -4050,7 +4046,6 @@ export class SignerClient {
         displayName: kt.display_name,
         description: kt.description,
         authorizationKind: kt.authorization_kind || undefined,
-        requiresLogicsig: kt.requires_logicsig,
         mnemonicWordCount: kt.mnemonic_word_count,
         mnemonicImport: kt.mnemonic_import,
         mnemonicScheme: kt.mnemonic_scheme,
@@ -4109,9 +4104,6 @@ export class SignerClient {
     this.keyCacheRevision = undefined;
 
     const data = await readSignerAnswer<Record<string, any>>(response, GENERATE_ANSWER);
-    if (data.error) {
-      throw new SignerError(data.error);
-    }
     if (data.address === "") {
       throw new SignerError("Key generation response missing address");
     }
@@ -4120,7 +4112,6 @@ export class SignerClient {
       publicKeyHex: data.public_key_hex || undefined,
       keyType: data.key_type,
       isWitnessKey: data.is_witness_key,
-      isSpendingAccount: data.is_spending_account,
       parameters: data.parameters,
     };
   }
@@ -4153,12 +4144,8 @@ export class SignerClient {
     this.keyCache.clear();
     this.keyCacheRevision = undefined;
 
-    // The signer answers {"success": true}: an empty or unreadable answer is
-    // not one.
-    const data = await readSignerAnswer<{ error: string }>(response, DELETE_KEY_ANSWER);
-    if (data.error) {
-      throw new SignerError(data.error);
-    }
+    // The signer answers {}: an empty or unreadable answer is not one.
+    await readSignerAnswer<Record<string, never>>(response, DELETE_KEY_ANSWER);
   }
 
   /**
@@ -4182,11 +4169,7 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Sign cancel failed: HTTP ${response.status}`);
     }
 
-    const data = await readSignerAnswer<CancelSignResponse>(response, CANCEL_ANSWER);
-    if (data.error) {
-      throw new SignerError(data.error);
-    }
-    return data;
+    return readSignerAnswer<CancelSignResponse>(response, CANCEL_ANSWER);
   }
 
   async requestComponents(
@@ -4238,12 +4221,11 @@ export class SignerClient {
     if (response.status === 503) throw new SignerUnavailableError(await this.errorMessage(response, "Signer unavailable"));
     if (response.status === 400) throw await this.badRequestError(response);
     if (response.status !== 200) throw await this.signerHTTPError(response, `Component signing failed: HTTP ${response.status}`);
-    const data = await readSignerAnswer<ComponentResponse & { error?: string }>(
+    const data = await readSignerAnswer<ComponentResponse>(
       response,
       COMPONENT_ANSWER,
       requestBody.request_id || "",
     );
-    if (data.error) throw new SignerError(data.error);
     const requestId = requestBody.request_id || "";
     try {
       validateComponentResponse(data, requestBody);
@@ -4319,15 +4301,11 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Assembly failed: HTTP ${response.status}`);
     }
 
-    const data = await readSignerAnswer<AssemblyResponse & { error?: string }>(
+    const data = await readSignerAnswer<AssemblyResponse>(
       response,
       ASSEMBLY_ANSWER,
       requestBody.request_id || "",
     );
-
-    if (data.error) {
-      throw new SignerError(data.error);
-    }
 
     try {
       validateAssemblyResponse(data);
@@ -4428,10 +4406,6 @@ export class SignerClient {
     }
 
     let data = await readSignerAnswer<PlanGroupResponse>(response, PLAN_ANSWER);
-
-    if (data.error) {
-      throw new SignerError(data.error);
-    }
 
     // The wire report is snake_case, and only its snake_case keys are read,
     // as the Go SDK reads them; callers read the typed camelCase fields.
@@ -4597,10 +4571,6 @@ export class SignerClient {
         return this.signerHTTPError(response, `Signing failed: HTTP ${response.status}`);
       },
     );
-
-    if (data.error) {
-      throw new SignerError(data.error);
-    }
 
     // The wire report is snake_case; callers read the typed camelCase fields.
     const result: GroupSignResponse = data.mutations
@@ -5137,7 +5107,7 @@ export class SignerClient {
     }
     checkRotatingShape(txn);
     checkRotatingWindow(txn);
-    const [originalHex] = encodeTransaction(txn);
+    const originalHex = encodeTransaction(txn);
     const request: RotatingPrepareRequest = {
       account: txn.sender.toString(),
       txn_bytes_hex: originalHex,
@@ -5518,7 +5488,7 @@ export class SignerClient {
         if (!txn) {
           throw new SignerError(`transaction is required for foreign-mode entry at index ${i}`);
         }
-        const [txnBytesHex] = encodeTransaction(txn);
+        const txnBytesHex = encodeTransaction(txn);
         const req: SignRequest = { txn_bytes_hex: txnBytesHex };
         const resources = lsigResourcesByIndex.get(i);
         if (resources) {
@@ -5537,12 +5507,11 @@ export class SignerClient {
         throw new SignerError(`transaction ${i + 1}: ${errorText(error)}`);
       }
 
-      const [txnBytesHex, txnSender] = encodeTransaction(txn);
+      const txnBytesHex = encodeTransaction(txn);
 
       const req: SignRequest = {
         txn_bytes_hex: txnBytesHex,
         auth_address: authAddr,
-        txn_sender: txnSender,
       };
 
       // Add LogicSig args if provided

@@ -574,13 +574,13 @@ class TestListKeyTypes:
                     "key_type": "ed25519",
                     "family": "ed25519",
                     "display_name": "Ed25519",
-                    "requires_logicsig": False,
+                    "authorization_kind": "ed25519",
                     "mnemonic_import": True,
                 },
                 {
                     "key_type": "aplane.falcon1024.v1",
                     "family": "falcon",
-                    "requires_logicsig": True,
+                    "authorization_kind": "logic_sig",
                     "mnemonic_import": True,
                     "creation_params": [
                         {"name": "network", "label": "Network", "type": "string", "required": True},
@@ -783,13 +783,10 @@ class TestDeleteKey:
         assert mock_delete.call_args.kwargs["timeout"] == 10
 
     def test_reads_the_answer_the_signer_sends(self):
-        # The signer answers {"success": true}; an error in it is a refusal.
+        # The signer answers {}; a field in it is read by nothing.
         client = make_client()
-        with patch.object(client.session, "delete", return_value=raw_response(200, b'{"success":true}\n')):
-            client.delete_key("ADDR")
-        refused = raw_response(200, b'{"success":false,"error":"key is in use"}')
-        with patch.object(client.session, "delete", return_value=refused):
-            with pytest.raises(SignerError, match="key is in use"):
+        for body in (b"{}\n", b'{"extra":1}'):
+            with patch.object(client.session, "delete", return_value=raw_response(200, body)):
                 client.delete_key("ADDR")
 
     def test_an_empty_answer_is_unreadable(self):
@@ -825,12 +822,11 @@ _UNSIGNED_ANSWER_CALLS = {
 # For each, an answer with one field of the wrong type.
 _WRONG_TYPED_ANSWERS = {
     "status": b'{"state":"unlocked","keyset_revision":"4"}',
-    "keys": b'{"count":1,"keys":[{"address":"ADDR1","key_type":"ed25519","is_spending_account":"no"}]}',
+    "keys": b'{"count":1,"keys":[{"address":"ADDR1","key_type":"ed25519","is_witness_key":"no"}]}',
     "key types": b'{"key_types":[{"key_type":"ed25519","creation_params":[{"name":"n","min":-1}]}]}',
     "plan": b'{"transactions":"5458aa"}',
     "key generation": b'{"address":"NEWADDR","key_type":"ed25519","parameters":{"a":1}}',
-    "sign cancel": b'{"success":"true","state":"canceled"}',
-    "key deletion": b'{"success":true,"error":1}',
+    "sign cancel": b'{"state":5}',
 }
 
 
@@ -853,7 +849,8 @@ class TestAnswersReadByShape:
         assert type(excinfo.value) is SignerError
         assert str(excinfo.value).startswith(f"failed to decode {what} response")
 
-    @pytest.mark.parametrize("what", list(_UNSIGNED_ANSWER_CALLS))
+    # A key deletion's answer has no field to be of the wrong type.
+    @pytest.mark.parametrize("what", list(_WRONG_TYPED_ANSWERS))
     def test_a_field_of_the_wrong_type_is_a_plain_error(self, what):
         method, call = _UNSIGNED_ANSWER_CALLS[what]
         client = make_client()
@@ -948,7 +945,6 @@ class TestAnswersReadByShape:
         data = _approval_answer(answer, "x", _GROUP_SIGN_RESPONSE_SHAPE)
         assert data == {
             "signed": ["aa"],
-            "error": "",
             "mutations": dict(self._ZERO_MUTATIONS, original_count=1, final_count=1),
         }
 
@@ -1013,7 +1009,7 @@ class TestAnswersReadByShape:
             },
         ]
         assert bounded["max_fee"] is None and bounded["spend_effects"] == []
-        assert record["is_spending_account"] is None and record["parameters"] == {}
+        assert record["is_witness_key"] is False and record["parameters"] == {}
 
     def test_parsed_records_keep_their_defaults_for_fields_left_out(self):
         # Fields left out now read as zero values; the records built from them
@@ -1395,7 +1391,7 @@ class TestSpecializedLowLevelEndpoints:
 
         client = make_client()
         cancel_response = mock_response(
-            200, {"success": True, "state": "canceled"}
+            200, {"state": "canceled"}
         )
         with patch.object(
             client.session,
@@ -1432,33 +1428,6 @@ class TestSpecializedLowLevelEndpoints:
                     targets=[{"target_index": 0, "kind": COMPONENT_TARGET_KIND_BOUNDED_BASE, "auth_address": "BOUNDED"}],
                 ))
 
-    def test_bounded_endpoints_surface_200_error_bodies(self):
-        client = make_client()
-        error_response = mock_response(200, {"error": "bounded failed"})
-        with patch.object(
-            client.session, "post", return_value=error_response
-        ), patch.object(client, "_discover_approval_wait"):
-            with pytest.raises(SignerError, match="bounded failed"):
-                client.request_components(ComponentRequest(
-                    request_id="bounded-base-id",
-                    group_bytes_hex=["5458aa"],
-                    targets=[{"target_index": 0, "kind": COMPONENT_TARGET_KIND_BOUNDED_BASE, "auth_address": "BOUNDED"}],
-                ))
-
-        with patch.object(client.session, "post", return_value=error_response):
-            with pytest.raises(SignerError, match="bounded failed"):
-                client.request_assemble({
-                    "request_id": "bounded-assembly-id",
-                    "group_bytes_hex": ["5458aa"],
-                    "targets": [{
-                        "target_index": 0,
-                        "kind": ASSEMBLY_TARGET_KIND_BOUNDED_COSIGNER,
-                        "auth_address": "BOUNDED",
-                        "base_signatures": ["base-sig"],
-                        "assembly_receipt": "receipt",
-                        "cosigner_signature": "cosigner-sig",
-                    }],
-                })
 
 def record_call_order(events, **mocks):
     """Wrap MagicMocks so each call appends its name to events, in call order."""
@@ -1740,7 +1709,7 @@ class TestSignPreparedCosignedGroup:
         )
         txn = transaction.PaymentTxn(sender, params, receiver, 1000)
         other = transaction.PaymentTxn(sender, params, receiver, 2000)
-        canonical, _ = encode_transaction(txn)
+        canonical = encode_transaction(txn)
         logic_sig = transaction.LogicSigAccount(bytes.fromhex("033120320312"))
 
         def signed_hex(value):
@@ -2174,8 +2143,8 @@ class TestSignPreparedCosignedGroup:
         planned_bounded.group = planned_native.group = None
         transaction.assign_group_id([planned_bounded, planned_native])
         planned_hex = [
-            encode_transaction(planned_bounded)[0],
-            encode_transaction(planned_native)[0],
+            encode_transaction(planned_bounded),
+            encode_transaction(planned_native),
         ]
 
         def bounded_component(req):
@@ -2554,7 +2523,7 @@ class TestClientSideSignedSimulation:
         signed_b64 = algo_encoding.msgpack_encode(signed)
         signed_hex = base64.b64decode(signed_b64).hex()
 
-        canonical_hex, _ = encode_transaction(txn)
+        canonical_hex = encode_transaction(txn)
         _verify_signed_transaction_matches_canonical("assembled transaction", 0, signed_hex, canonical_hex)
 
         client = make_client()
@@ -2769,7 +2738,7 @@ class TestSigningErrors:
     def test_timeout_sends_best_effort_cancel(self):
         import requests
         client = make_client()
-        cancel_resp = mock_response(200, {"success": True, "state": "canceled"})
+        cancel_resp = mock_response(200, {"state": "canceled"})
         with patch.object(client.session, "post", side_effect=[
             requests.Timeout("timed out"),
             cancel_resp,
@@ -2800,12 +2769,11 @@ class TestSigningErrors:
 class TestCancelSignRequest:
     def test_cancel_sign_request_returns_state(self):
         client = make_client()
-        resp = mock_response(200, {"success": True, "state": "not_found"})
+        resp = mock_response(200, {"state": "not_found"})
 
         with patch.object(client.session, "post", return_value=resp) as mock_post:
             result = client.cancel_sign_request("sdk-test")
 
-        assert result.success is True
         assert result.state == "not_found"
         assert mock_post.call_args.args[0] == "http://localhost:11270/sign/cancel"
         assert mock_post.call_args.kwargs["json"] == {"request_id": "sdk-test"}
@@ -2824,9 +2792,8 @@ class TestSignRequests:
         client = make_client()
         txn = fake_signer.payment()
         entry = {
-            "txn_bytes_hex": encode_transaction(txn)[0],
+            "txn_bytes_hex": encode_transaction(txn),
             "auth_address": txn.sender,
-            "txn_sender": "SENDER",
         }
 
         with patch.object(client, "_discover_approval_wait"), \
@@ -2842,7 +2809,7 @@ class TestSignRequests:
 
     def test_sign_requests_rejects_noncanonical_transaction_bytes_before_http(self):
         client = make_client()
-        canonical = encode_transaction(fake_signer.payment())[0]
+        canonical = encode_transaction(fake_signer.payment())
         with patch.object(client.session, "post") as mock_post:
             with pytest.raises(SignerError, match="invalid sign request: transaction 1: txn_bytes_hex: missing TX prefix"):
                 client.sign_requests([{"txn_bytes_hex": canonical[4:], "auth_address": "AUTH"}])
@@ -2959,7 +2926,7 @@ class TestBuildSignRequests:
         assert body["request_id"]
         assert len(body["requests"]) == 1
         assert body["requests"][0]["auth_address"] == fake_signer.account(50)
-        assert body["requests"][0]["txn_bytes_hex"] == encode_transaction(txn)[0]
+        assert body["requests"][0]["txn_bytes_hex"] == encode_transaction(txn)
 
     def test_defaults_auth_address_to_sender(self):
         client = make_client()
@@ -3118,7 +3085,7 @@ class TestBuildSignRequests:
 
     def test_rejects_indexed_lsig_resources_on_sign_mode(self):
         client = make_client()
-        with patch("aplanesdk.signer.encode_transaction", return_value=("deadbeef", "SENDER")):
+        with patch("aplanesdk.signer.encode_transaction", return_value="deadbeef"):
             with pytest.raises(ValueError, match="allowed only for foreign or passthrough"):
                 client._build_sign_requests(
                     [self._make_mock_txn()],
@@ -3141,19 +3108,17 @@ class TestPreparedGroup:
             PreparedTransaction(
                 transaction=self._make_mock_txn(),
                 auth_address="AUTH_ADDR",
-                txn_sender="DISPLAY_SENDER",
                 lsig_args={"preimage": b"secret"},
                 app_call_info={"mode": "abi", "method": "do(uint64)void"},
             )
         ])
 
-        with patch("aplanesdk.signer.encode_transaction", return_value=("deadbeef", "SENDER_ADDR")):
+        with patch("aplanesdk.signer.encode_transaction", return_value="deadbeef"):
             requests = prepared.to_sign_requests()
 
         assert requests == [{
             "txn_bytes_hex": "deadbeef",
             "auth_address": "AUTH_ADDR",
-            "txn_sender": "DISPLAY_SENDER",
             "lsig_args": {"preimage": "736563726574"},
             "app_call_info": {"mode": "abi", "method": "do(uint64)void"},
         }]
@@ -3166,7 +3131,7 @@ class TestPreparedGroup:
             )
         ])
 
-        with patch("aplanesdk.signer.encode_transaction", return_value=("deadbeef", "SENDER_ADDR")):
+        with patch("aplanesdk.signer.encode_transaction", return_value="deadbeef"):
             requests = prepared.to_sign_requests()
 
         assert requests == [{
@@ -3224,7 +3189,7 @@ class TestPreparedGroup:
         ],
     )
     def test_rejects_authorization_hints_outside_foreign_mode(self, prepared, message):
-        with patch("aplanesdk.signer.encode_transaction", return_value=("deadbeef", "SENDER_ADDR")):
+        with patch("aplanesdk.signer.encode_transaction", return_value="deadbeef"):
             with pytest.raises(ValueError, match=message):
                 PreparedGroup([prepared]).to_sign_requests()
 
@@ -4135,7 +4100,7 @@ class TestRequestEnrollmentFromEnv:
 
 class TestEncoding:
     def test_encode_transaction(self):
-        """encode_transaction returns (hex, sender)."""
+        """encode_transaction returns the TX-prefixed hex."""
         from aplanesdk.signer import encode_transaction
         txn = MagicMock()
         txn.sender = "SENDER_ADDR"
@@ -4145,10 +4110,7 @@ class TestEncoding:
         with patch("aplanesdk.signer.encoding.msgpack_encode", return_value="gqNzbmTEIAAA"):
             result = encode_transaction(txn)
 
-        assert isinstance(result, tuple)
-        assert len(result) == 2
-        assert isinstance(result[0], str)  # hex string
-        assert result[1] == "SENDER_ADDR"  # sender
+        assert result == "5458" + base64.b64decode("gqNzbmTEIAAA").hex()
 
     def test_hex_round_trip(self):
         """bytes -> hex -> bytes round-trip."""
@@ -4174,19 +4136,38 @@ class TestLoadConfig:
         assert config.networks_allowed == []
         assert config.theme == "auto"
 
-    def test_rejects_obsolete_endpoint_routing(self, tmp_path):
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text(
-            "endpoint:\n"
-            "  signer_port: 12345\n"
-            "  ssh:\n"
-            "    host: signer.example.com\n"
-            "    port: 2222\n"
-            "    identity_file: .ssh/mykey\n"
-            "    known_hosts_path: .ssh/hosts\n"
-            "    trust_on_first_use: true\n"
-        )
-        with pytest.raises(SignerError, match="configure endpoints.yaml"):
+    # config.yaml is read as apshell reads it: every field apshell knows is
+    # accepted, and any other, the retired signer routing included, is
+    # refused as an unknown field with apshell's words.
+    @pytest.mark.parametrize(
+        "body,unknown",
+        [
+            (
+                "schema_version: 1\nnetwork: testnet\nnetworks_allowed: [testnet]\ntheme: dark\n"
+                "signer_status_poll_interval: 10s\nnetworks:\n  testnet:\n    algod:\n"
+                "      server: http://localhost:4001\n      token: t\n",
+                "",
+            ),
+            ("endpoint:\n  ssh:\n    host: signer.example.com\n", "endpoint"),
+            ("ssh:\n  host: signer.example.com\n", "ssh"),
+            ("network: testnet\nsigner_port: 11270\n", "signer_port"),
+            ("algod:\n  testnet:\n    server: http://localhost:4001\n", "algod"),
+            ("network: testnet\nfoo: 1\n", "foo"),
+            ("networks:\n  testnet:\n    indexer:\n      server: http://localhost:8980\n", "indexer"),
+            (
+                "networks:\n  testnet:\n    algod:\n      server: http://localhost:4001\n      headers: {}\n",
+                "headers",
+            ),
+        ],
+        ids=["apshell fields", "endpoint", "ssh", "signer_port", "top-level algod", "foo", "indexer", "headers"],
+    )
+    def test_reads_the_fields_apshell_knows(self, tmp_path, body, unknown):
+        (tmp_path / "config.yaml").write_text(body)
+        if not unknown:
+            assert load_config(str(tmp_path)).theme == "dark"
+            return
+        want = f'config field "{unknown}" is unknown or no longer supported; remove it from the file'
+        with pytest.raises(SignerError, match=re.escape(want)):
             load_config(str(tmp_path))
 
     def test_rejects_malformed_yaml(self, tmp_path):
@@ -4205,7 +4186,7 @@ class TestLoadClientEndpointRegistry:
     def test_loads_shared_valid_fixture(self, tmp_path):
         self._fixture(tmp_path, "valid.yaml")
         registry = load_client_endpoint_registry(str(tmp_path))
-        assert registry.default == "primary"
+        assert resolve_client_endpoint(registry)[0] == "primary"
         assert registry.endpoints is not None
         primary = registry.endpoints["primary"]
         assert primary.url == "ssh://signer.example.com:2222"
@@ -4218,7 +4199,7 @@ class TestLoadClientEndpointRegistry:
     @pytest.mark.parametrize(
         "name",
         [
-            "invalid_default_type.yaml",
+            "invalid_default_field.yaml",
             "invalid_identity_file_type.yaml",
             "invalid_multiple_signers.yaml",
             "invalid_remote_http.yaml",
@@ -4228,6 +4209,7 @@ class TestLoadClientEndpointRegistry:
             "invalid_ssh_port_zero.yaml",
             "invalid_unknown_field.yaml",
             "invalid_unknown_tag.yaml",
+            "invalid_retired_port_fields.yaml",
         ],
     )
     def test_rejects_shared_invalid_fixtures(self, tmp_path, name):
@@ -4242,6 +4224,7 @@ class TestLoadClientEndpointRegistry:
             ("invalid_self_cosigner.yaml", 'endpoint "cosigner": url "self" is not supported'),
             ("invalid_13_cosigner_endpoints.yaml", "configures 13 cosigner endpoints; maximum is 12"),
             ("invalid_v2_published_cosigners.yaml", "published_cosigners"),
+            ("invalid_default_field.yaml", 'endpoints.yaml contains unknown field "default"'),
         ],
     )
     def test_rejects_shared_fixture_for_expected_reason(self, tmp_path, name, want):
@@ -4253,7 +4236,6 @@ class TestLoadClientEndpointRegistry:
         "name",
         [
             "valid_12_cosigner_endpoints.yaml",
-            "valid_retired_port_fields.yaml",
         ],
     )
     def test_accepts_shared_edge_fixtures(self, tmp_path, name):
@@ -4262,11 +4244,6 @@ class TestLoadClientEndpointRegistry:
         assert registry.schema_version == 2
         if name == "valid_12_cosigner_endpoints.yaml":
             assert len(registry.endpoints) == 12
-        if name == "valid_retired_port_fields.yaml":
-            primary = registry.endpoints["primary"]
-            assert primary.url == "ssh://signer.example.com:2222"
-            assert primary.identity_file == str(tmp_path / ".ssh" / "id_ed25519")
-            assert "cosigner" in registry.endpoints
 
     @pytest.mark.parametrize(
         "name,want",
@@ -4290,7 +4267,6 @@ class TestLoadClientEndpointRegistry:
             "  qa:\n    role: cosigner\n    url: ssh://127.0.0.1:2222\n"
         )
         registry = load_client_endpoint_registry(str(tmp_path))
-        assert registry.default == "main"
         assert registry.endpoints is not None
         for alias in ("main", "qa"):
             assert registry.endpoints[alias].identity_file == str(tmp_path / ".ssh" / "id_ed25519")

@@ -16,10 +16,11 @@ func TestLoadConfig_WithClientRuntimeFields(t *testing.T) {
 network: mainnet
 networks_allowed: [mainnet, testnet]
 theme: light
-algod:
+networks:
   mainnet:
-    server: https://mainnet-api.example.com
-    token: abc123
+    algod:
+      server: https://mainnet-api.example.com
+      token: abc123
 `), 0o600)
 	if err != nil {
 		t.Fatalf("write config: %v", err)
@@ -50,23 +51,6 @@ algod:
 	}
 }
 
-func TestLoadConfig_RejectsObsoleteEndpointRouting(t *testing.T) {
-	dir := t.TempDir()
-	err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`
-endpoint:
-  ssh:
-    host: signer.example.com
-`), 0o600)
-	if err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	_, err = LoadConfig(dir)
-	if err == nil || !strings.Contains(err.Error(), `configure endpoints.yaml`) {
-		t.Fatalf("expected endpoints.yaml migration error, got %v", err)
-	}
-}
-
 func TestLoadConfig_RejectsInvalidNetworks(t *testing.T) {
 	dir := t.TempDir()
 	err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`
@@ -87,10 +71,11 @@ func TestLoadConfig_AcceptsCustomNetworkToken(t *testing.T) {
 	err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`
 network: voi_mainnet
 networks_allowed: [voi_mainnet]
-algod:
+networks:
   voi_mainnet:
-    server: http://localhost:4001
-    token: token
+    algod:
+      server: http://localhost:4001
+      token: token
 `), 0o600)
 	if err != nil {
 		t.Fatalf("write config: %v", err)
@@ -155,17 +140,18 @@ networks_allowed: [testnet]
 func TestLoadConfig_RejectsInvalidAlgodKey(t *testing.T) {
 	dir := t.TempDir()
 	err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`
-algod:
+networks:
   invalid/net:
-    server: https://example.com
+    algod:
+      server: https://example.com
 `), 0o600)
 	if err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
 	_, err = LoadConfig(dir)
-	if err == nil || !strings.Contains(err.Error(), `invalid network in algod config`) {
-		t.Fatalf("expected invalid algod network error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), `invalid network in networks config`) {
+		t.Fatalf("expected invalid network error, got %v", err)
 	}
 }
 
@@ -230,5 +216,41 @@ func TestNewAlgodClient_SucceedsWithConfiguredNetwork(t *testing.T) {
 	}
 	if client == nil {
 		t.Fatal("expected non-nil algod client")
+	}
+}
+
+// config.yaml is read as apshell reads it: every field apshell knows is
+// accepted, and any other, the retired signer routing included, is refused
+// as an unknown field with apshell's words.
+func TestLoadConfigReadsTheFieldsApshellKnows(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, unknown string
+	}{
+		{"apshell's fields", "schema_version: 1\nnetwork: testnet\nnetworks_allowed: [testnet]\ntheme: dark\nsigner_status_poll_interval: 10s\nnetworks:\n  testnet:\n    algod:\n      server: http://localhost:4001\n      token: t\n", ""},
+		{"endpoint routing", "endpoint:\n  ssh:\n    host: signer.example.com\n", "endpoint"},
+		{"ssh routing", "ssh:\n  host: signer.example.com\n", "ssh"},
+		{"signer_port routing", "network: testnet\nsigner_port: 11270\n", "signer_port"},
+		{"top-level algod", "algod:\n  testnet:\n    server: http://localhost:4001\n", "algod"},
+		{"another unknown field", "network: testnet\nfoo: 1\n", "foo"},
+		{"an unknown network setting", "networks:\n  testnet:\n    indexer:\n      server: http://localhost:8980\n", "indexer"},
+		{"an unknown algod setting", "networks:\n  testnet:\n    algod:\n      server: http://localhost:4001\n      headers: {}\n", "headers"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := LoadConfig(dir)
+			if tc.unknown == "" {
+				if err != nil || cfg.Theme != "dark" || cfg.Algod["testnet"] == nil || cfg.Algod["testnet"].Server != "http://localhost:4001" {
+					t.Fatalf("LoadConfig() = %+v, %v; want apshell's fields read", cfg, err)
+				}
+				return
+			}
+			want := `config field "` + tc.unknown + `" is unknown or no longer supported; remove it from the file`
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("LoadConfig() error = %v, want %q", err, want)
+			}
+		})
 	}
 }

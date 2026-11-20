@@ -159,7 +159,7 @@ const MUTATION_REPORT: AnswerShape = {
 
 /** /sign */
 export const GROUP_SIGN_ANSWER: AnswerShape = {
-  fields: { signed: { list: "string" }, mutations: MUTATION_REPORT, error: "string" },
+  fields: { signed: { list: "string" }, mutations: MUTATION_REPORT },
 };
 
 /** /sign/rotating/prepare */
@@ -201,12 +201,12 @@ const COMPONENT: AnswerShape = {
 
 /** /sign/component */
 export const COMPONENT_ANSWER: AnswerShape = {
-  fields: { request_id: "string", components: { list: COMPONENT }, error: "string" },
+  fields: { request_id: "string", components: { list: COMPONENT } },
 };
 
 /** /sign/assemble */
 export const ASSEMBLY_ANSWER: AnswerShape = {
-  fields: { request_id: "string", signed_group: { list: "string" }, error: "string" },
+  fields: { request_id: "string", signed_group: { list: "string" } },
 };
 
 // The shapes below follow the Go SDK's types (go/types.go), field for field:
@@ -214,17 +214,17 @@ export const ASSEMBLY_ANSWER: AnswerShape = {
 
 /** /plan */
 export const PLAN_ANSWER: AnswerShape = {
-  fields: { transactions: { list: "string" }, mutations: MUTATION_REPORT, error: "string" },
+  fields: { transactions: { list: "string" }, mutations: MUTATION_REPORT },
 };
 
 /** /sign/cancel */
 export const CANCEL_ANSWER: AnswerShape = {
-  fields: { success: "bool", state: "string", error: "string" },
+  fields: { state: "string" },
 };
 
-/** DELETE /admin/keys */
+/** DELETE /admin/keys: the empty object, read all the same. */
 export const DELETE_KEY_ANSWER: AnswerShape = {
-  fields: { success: "bool", error: "string" },
+  fields: {},
 };
 
 /** /admin/generate */
@@ -234,9 +234,7 @@ export const GENERATE_ANSWER: AnswerShape = {
     public_key_hex: "string",
     key_type: "string",
     is_witness_key: "bool",
-    is_spending_account: { optional: "bool" },
     parameters: { map: "string" },
-    error: "string",
   },
 };
 
@@ -379,7 +377,6 @@ const KEY_INFO: AnswerShape = {
     is_generic_lsig: "bool",
     is_witness_key: "bool",
     bounded_authorization: BOUNDED_AUTHORIZATION,
-    is_spending_account: { optional: "bool" },
     signing_args: { list: RUNTIME_ARG },
     parameters: { map: "string" },
     template_provenance_status: "string",
@@ -436,7 +433,6 @@ export const KEYTYPES_ANSWER: AnswerShape = {
           display_name: "string",
           description: "string",
           authorization_kind: "string",
-          requires_logicsig: "bool",
           mnemonic_word_count: "int",
           mnemonic_import: "bool",
           mnemonic_scheme: "string",

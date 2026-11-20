@@ -243,7 +243,7 @@ describe("sendPrepared", () => {
       },
       {
         name: "witness record is not a spending key",
-        keys: [{ address: sender, is_spending_account: false }],
+        keys: [{ address: sender, is_witness_key: true }],
         group: preparedFor(txn),
         want: KeyNotFoundError,
         text: "not available for signing",
@@ -338,7 +338,7 @@ describe("sendPrepared", () => {
     // its place nor hides the lost answer.
     for (const [name, cancel] of [
       ["an unreadable cancel answer", { raw: "null" }],
-      ["a cancel answer of the wrong shape", { raw: '{"success":"yes"}' }],
+      ["a cancel answer of the wrong shape", { raw: '{"state":5}' }],
       ["a refused cancel", { status: 500, body: { error: "boom", code: "internal" } }],
       ["a dropped cancel", "drop"],
     ] as Array<[string, FakeReply]>) {
@@ -401,7 +401,7 @@ describe("sendPrepared", () => {
       assert.equal(node.submitted.length, 0);
     });
 
-    for (const body of ["123", '"ok"', "[]", "null", '{"signed":"x"}', '{"signed":[1]}', '{"mutations":"x"}', '{"error":5}']) {
+    for (const body of ["123", '"ok"', "[]", "null", '{"signed":"x"}', '{"signed":[1]}', '{"mutations":"x"}']) {
       it(`a 200 body ${body} is an unknown outcome`, async () => {
         const signer = new SendSigner([ordinaryKey(txn)], { sign: () => ({ raw: body }) });
         const { client, algod, node } = fixture(signer);
@@ -1268,9 +1268,8 @@ describe("sendTransactions", () => {
     assert.equal(requests.length, 1);
     // The slot names the resolved address and nothing else.
     assert.deepEqual(requests[0], [{
-      txn_bytes_hex: encodeTransaction(txn)[0],
+      txn_bytes_hex: encodeTransaction(txn),
       auth_address: sender,
-      txn_sender: sender,
     }]);
     assert.equal(node.submitted.length, 1);
   });
@@ -1286,7 +1285,6 @@ describe("sendTransactions", () => {
 
     const result = await client.sendTransactions(algod, [txn]);
     assert.equal(requests[0][0].auth_address, holder);
-    assert.equal(requests[0][0].txn_sender, sender);
     const sent = algosdk.decodeSignedTransaction(result.signedGroup[0]);
     assert.equal(sent.sgnr?.toString(), holder);
     assert.deepEqual(result.txIds, [txn.txID()]);
@@ -1305,7 +1303,7 @@ describe("sendTransactions", () => {
     assert.equal(signer.count("/sign"), 1);
     assert.deepEqual(
       requests[0].map((entry) => [entry.auth_address, entry.txn_bytes_hex]),
-      [[first.sender.toString(), encodeTransaction(first)[0]], [second.sender.toString(), encodeTransaction(second)[0]]],
+      [[first.sender.toString(), encodeTransaction(first)], [second.sender.toString(), encodeTransaction(second)]],
     );
     // The IDs to use are the result's.
     assert.equal(result.originalCount, 2);
@@ -1858,7 +1856,7 @@ describe("sendPrepared with a cosigned account", () => {
             signRequestId = body.request_id;
             return "drop";
           case "/sign/cancel":
-            return { body: { success: true, state: "canceled" } };
+            return { body: { state: "canceled" } };
           default:
             throw new Error(`unexpected user path ${path}`);
         }
@@ -2009,7 +2007,7 @@ describe("a fault after a signed answer", () => {
 // already ended or its body could not be encoded, is a plain error: nothing
 // was asked, so nothing is canceled and no outcome is unknown.
 describe("an approval request that is never posted", () => {
-  const groupHex = () => [encodeTransaction(fakePayment(41, 42, 1))[0]];
+  const groupHex = () => [encodeTransaction(fakePayment(41, 42, 1))];
   const baseRequest = (): ComponentRequest => ({
     group_bytes_hex: groupHex(),
     targets: [{ target_index: 0, kind: "bounded-base", auth_address: fakeAddress(21) }],
@@ -2038,7 +2036,7 @@ describe("an approval request that is never posted", () => {
           controller?.abort();
           return { body: statusBody() };
         }
-        if (path === "/sign/cancel") return { body: { success: true, state: "canceled" } };
+        if (path === "/sign/cancel") return { body: { state: "canceled" } };
         return "drop";
       },
     });

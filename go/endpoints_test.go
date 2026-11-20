@@ -29,8 +29,8 @@ func TestLoadClientEndpointRegistrySharedFixture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadClientEndpointRegistry: %v", err)
 	}
-	if registry.Default != "primary" {
-		t.Fatalf("Default = %q, want primary", registry.Default)
+	if alias, _, err := ResolveClientEndpoint(registry, ""); err != nil || alias != "primary" {
+		t.Fatalf("ResolveClientEndpoint(\"\") = %q, %v; want the signer endpoint primary", alias, err)
 	}
 	primary := registry.Endpoints["primary"]
 	if primary.URL != "ssh://signer.example.com:2222" {
@@ -53,7 +53,7 @@ func TestLoadClientEndpointRegistrySharedFixture(t *testing.T) {
 
 func TestLoadClientEndpointRegistryRejectsSharedInvalidFixtures(t *testing.T) {
 	for _, name := range []string{
-		"invalid_default_type.yaml",
+		"invalid_default_field.yaml",
 		"invalid_identity_file_type.yaml",
 		"invalid_multiple_signers.yaml",
 		"invalid_remote_http.yaml",
@@ -63,6 +63,7 @@ func TestLoadClientEndpointRegistryRejectsSharedInvalidFixtures(t *testing.T) {
 		"invalid_ssh_port_zero.yaml",
 		"invalid_unknown_field.yaml",
 		"invalid_unknown_tag.yaml",
+		"invalid_retired_port_fields.yaml",
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := LoadClientEndpointRegistry(copyEndpointFixture(t, name))
@@ -115,7 +116,6 @@ func TestLoadClientEndpointRegistryRejectsSpecificEndpointRules(t *testing.T) {
 func TestLoadClientEndpointRegistryAcceptsSharedEdgeFixtures(t *testing.T) {
 	for _, name := range []string{
 		"valid_12_cosigner_endpoints.yaml",
-		"valid_retired_port_fields.yaml",
 	} {
 		t.Run(name, func(t *testing.T) {
 			dataDir := copyEndpointFixture(t, name)
@@ -128,15 +128,6 @@ func TestLoadClientEndpointRegistryAcceptsSharedEdgeFixtures(t *testing.T) {
 			}
 			if name == "valid_12_cosigner_endpoints.yaml" && len(registry.Endpoints) != 12 {
 				t.Fatalf("endpoint count = %d, want 12", len(registry.Endpoints))
-			}
-			if name == "valid_retired_port_fields.yaml" {
-				primary := registry.Endpoints["primary"]
-				if primary.URL != "ssh://signer.example.com:2222" || primary.IdentityFile != filepath.Join(dataDir, ".ssh", "id_ed25519") {
-					t.Fatalf("primary = %#v, want the retired keys ignored and the other fields kept", primary)
-				}
-				if _, ok := registry.Endpoints["cosigner"]; !ok {
-					t.Fatal("cosigner endpoint with a retired key was dropped")
-				}
 			}
 		})
 	}
@@ -161,8 +152,8 @@ endpoints:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if registry.Default != "main" {
-		t.Fatalf("Default = %q, want main", registry.Default)
+	if alias, _, err := ResolveClientEndpoint(registry, ""); err != nil || alias != "main" {
+		t.Fatalf("ResolveClientEndpoint(\"\") = %q, %v; want the signer endpoint main", alias, err)
 	}
 	for _, alias := range []string{"main", "qa"} {
 		endpoint := registry.Endpoints[alias]
@@ -174,7 +165,6 @@ endpoints:
 
 func TestResolveClientEndpoint(t *testing.T) {
 	registry := &ClientEndpointRegistry{
-		Default: "primary",
 		Endpoints: map[string]ClientEndpointConfig{
 			"primary":  {Role: ClientEndpointRoleSigner},
 			"cosigner": {Role: ClientEndpointRoleCosigner},
@@ -191,5 +181,28 @@ func TestResolveClientEndpoint(t *testing.T) {
 	_, _, err = ResolveClientEndpoint(registry, "missing")
 	if err == nil || !strings.Contains(err.Error(), "not defined") {
 		t.Fatalf("expected unknown alias error, got %v", err)
+	}
+	cosignerOnly := &ClientEndpointRegistry{Endpoints: map[string]ClientEndpointConfig{"cosigner": {Role: ClientEndpointRoleCosigner}}}
+	if _, _, err := ResolveClientEndpoint(cosignerOnly, ""); err == nil || !strings.Contains(err.Error(), "has no default signer endpoint") {
+		t.Fatalf("a registry without a signer endpoint = %v, want no default signer endpoint", err)
+	}
+	twoSigners := &ClientEndpointRegistry{Endpoints: map[string]ClientEndpointConfig{
+		"primary":   {Role: ClientEndpointRoleSigner},
+		"secondary": {Role: ClientEndpointRoleSigner},
+	}}
+	if alias, _, err := ResolveClientEndpoint(twoSigners, ""); err == nil || !strings.Contains(err.Error(), "at most one") {
+		t.Fatalf("a registry with two signer endpoints resolved to %q, %v; want it refused", alias, err)
+	}
+	if alias, _, err := ResolveClientEndpoint(twoSigners, "secondary"); err != nil || alias != "secondary" {
+		t.Fatalf("explicit alias in a two-signer registry = %q, %v; want secondary", alias, err)
+	}
+}
+
+// A registry names its signer by role alone: a default key is an unknown
+// field, refused as APlane refuses it.
+func TestLoadClientEndpointRegistryRefusesADefaultKey(t *testing.T) {
+	_, err := LoadClientEndpointRegistry(copyEndpointFixture(t, "invalid_default_field.yaml"))
+	if err == nil || !strings.Contains(err.Error(), "field default not found") {
+		t.Fatalf("LoadClientEndpointRegistry error = %v, want default refused as an unknown field", err)
 	}
 }
