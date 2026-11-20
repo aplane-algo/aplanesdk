@@ -203,8 +203,12 @@ This path:
   network IDs written as text (a malformed list is an error, never an empty
   one; a bare number, `true`/`false` or an empty entry is refused, so quote a
   name such as `"1"`). Quote a network name that YAML could read as a boolean, such as `"on"`, `"yes"` or `"no"`. The `network` value follows the same rule: it must be text and a network ID, and a bare number or `true`/`false` is refused.
-- refuses a `config.yaml` field apshell does not know, as apshell does: the
-  retired `endpoint`, `ssh` and `signer_port` routing among them,
+- accepts exactly apshell's `config.yaml` field names, at every depth, and
+  refuses any other with apshell's words: the retired `endpoint`, `ssh` and
+  `signer_port` routing among them. It validates only the values it reads
+  (`network`, `networks_allowed` and `theme`), so some files apshell refuses
+  still load here: an empty file, `schema_version: 2`, a bad
+  `signer_status_poll_interval`, or a bad network name under `networks`,
 - loads and selects an endpoint from `endpoints.yaml`,
 - resolves SSH paths relative to the client data dir,
 - opens the authenticated SSH connection automatically, with no local
