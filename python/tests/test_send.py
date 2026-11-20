@@ -357,7 +357,7 @@ class _Recorder:
         self.paths.append(path)
         if path == "/status":
             return reply(200, status_body())
-        return reply(200, {"success": True, "state": "canceled"})
+        return reply(200, {"state": "canceled"})
 
 
 class TestABodyThatCannotBeEncoded:
@@ -432,7 +432,7 @@ class TestSendPreparedSignFailures:
 
     @pytest.mark.parametrize(
         "cancel_answer",
-        [truncated(b"not json"), truncated(b"null"), reply(200, {"success": "yes"}), DROP],
+        [truncated(b"not json"), truncated(b"null"), reply(200, {"state": 5}), DROP],
     )
     def test_a_failed_cancel_neither_fails_nor_masks_the_send(self, fakes, cancel_answer):
         # The cancel a lost answer sends is best effort: however it fails, the
@@ -797,7 +797,7 @@ class CosignedFixture:
         if path == "/keys":
             return reply(200, {"count": len(self.keys), "keys": self.keys})
         if path == "/sign/cancel":
-            return reply(200, {"success": True, "state": "canceled"})
+            return reply(200, {"state": "canceled"})
         request = json.loads(body)
         if path == "/plan":
             return reply(200, fake_signer.plan_response(request["requests"]))

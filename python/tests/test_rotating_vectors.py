@@ -155,7 +155,7 @@ def raw_signer():
             if path == "/status":
                 return reply(200, status_body())
             if path == "/sign/cancel":
-                return reply(200, {"success": True, "state": "canceled"})
+                return reply(200, {"state": "canceled"})
             if path == "/sign/rotating/sign":
                 return (200, self.body, "application/json")
             raise AssertionError(f"unexpected signer path {path}")

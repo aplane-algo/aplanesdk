@@ -1391,7 +1391,7 @@ class TestSpecializedLowLevelEndpoints:
 
         client = make_client()
         cancel_response = mock_response(
-            200, {"success": True, "state": "canceled"}
+            200, {"state": "canceled"}
         )
         with patch.object(
             client.session,
@@ -2738,7 +2738,7 @@ class TestSigningErrors:
     def test_timeout_sends_best_effort_cancel(self):
         import requests
         client = make_client()
-        cancel_resp = mock_response(200, {"success": True, "state": "canceled"})
+        cancel_resp = mock_response(200, {"state": "canceled"})
         with patch.object(client.session, "post", side_effect=[
             requests.Timeout("timed out"),
             cancel_resp,
