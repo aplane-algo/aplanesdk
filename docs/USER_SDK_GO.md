@@ -700,8 +700,7 @@ and `SpendingRekey`, which may differ: a rekey selects `SpendingRekey` and
 every other transaction selects `Spend`.
 
 `KeyTypeInfo.AuthorizationKind` distinguishes `ed25519`, `native_pq`, and
-`logic_sig`. Do not infer Ed25519 from `RequiresLogicSig == false`: native
-Falcon-1024 also has a false compatibility boolean.
+`logic_sig`.
 
 `KeyInfo.AuthorizationKind` reports the same closed values for a key instance
 and is authoritative for choosing its transaction authorization envelope. It

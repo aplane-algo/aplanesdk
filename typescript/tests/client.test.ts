@@ -1440,14 +1440,14 @@ describe("SignerClient", () => {
             family: "ed25519",
             display_name: "Ed25519",
             description: "Standard Ed25519 key",
-            requires_logicsig: false,
+            authorization_kind: "ed25519",
             mnemonic_import: true,
           },
           {
             key_type: "aplane.falcon1024.v1",
             family: "falcon",
             display_name: "Falcon-1024",
-            requires_logicsig: true,
+            authorization_kind: "logic_sig",
             mnemonic_import: true,
             creation_params: [
               { name: "network", label: "Network", type: "string", required: true },
@@ -1474,7 +1474,7 @@ describe("SignerClient", () => {
       assert.equal(types.length, 2);
       assert.equal(types[0].keyType, "ed25519");
       assert.equal(types[0].family, "ed25519");
-      assert.equal(types[0].requiresLogicsig, false);
+      assert.equal(types[0].authorizationKind, "ed25519");
       assert.equal(types[0].mnemonicImport, true);
       assert.equal(types[1].keyType, "aplane.falcon1024.v1");
       assert.equal(types[1].mnemonicImport, true);
@@ -4114,7 +4114,7 @@ describe("SignerClient", () => {
       ]],
       ["/keytypes", () => client().listKeyTypes(), [
         "", "null", '{"key_types":"x"}', '{"key_types":[{"creation_params":[{"min":-1}]}]}',
-        '{"key_types":[{"requires_logicsig":"yes"}]}',
+        '{"key_types":[{"mnemonic_import":"yes"}]}',
         '{"key_types":[{"valid_rekey_target":"true"}]}', '{"key_types":[{"valid_rekey_target":1}]}',
         '{"key_types":[{"creation_params":[{"max":-1}]}]}', '{"key_types":[{"creation_params":[{"max":1.5}]}]}',
         '{"key_types":[{"creation_params":[{"min":0.5}]}]}', '{"key_types":[{"creation_params":[{"max":"5"}]}]}',

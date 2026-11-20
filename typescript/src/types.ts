@@ -386,8 +386,6 @@ export interface KeyTypeInfo {
   description?: string;
   /** Consensus authorization envelope produced by this key type. */
   authorizationKind?: AuthorizationKind;
-  /** Whether this key type requires a LogicSig */
-  requiresLogicsig?: boolean;
   /** Number of words in the mnemonic */
   mnemonicWordCount?: number;
   /** Whether mnemonic import is supported for this key type */

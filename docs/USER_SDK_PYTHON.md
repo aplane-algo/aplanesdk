@@ -770,8 +770,7 @@ and `spending_rekey`, which may differ: a rekey selects `spending_rekey` and
 every other transaction selects `spend`.
 
 `KeyTypeInfo.authorization_kind` distinguishes `ed25519`, `native_pq`, and
-`logic_sig`. A false `requires_logicsig` value may mean either native Ed25519
-or native Falcon-1024.
+`logic_sig`.
 
 `KeyInfo.authorization_kind` reports the same closed values for a key instance
 and is authoritative for choosing its transaction authorization envelope. It
@@ -806,7 +805,7 @@ info = client.get_key_info("YOUR_ADDRESS")
 ```python
 key_types = client.list_key_types()
 for kt in key_types:
-    print(kt.key_type, kt.display_name, kt.requires_logicsig)
+    print(kt.key_type, kt.display_name, kt.authorization_kind)
 ```
 
 Use this to discover signer-supported key types rather than hard-coding them.

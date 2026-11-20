@@ -1209,7 +1209,6 @@ _KEY_TYPES_RESPONSE_SHAPE: Dict[str, Any] = {
             "display_name": "str",
             "description": "str",
             "authorization_kind": "str",
-            "requires_logicsig": "bool",
             "mnemonic_word_count": "int",
             "mnemonic_import": "bool",
             "mnemonic_scheme": "str",
@@ -1533,7 +1532,6 @@ class KeyTypeInfo:
     display_name: str = ""
     description: str = ""
     authorization_kind: str = ""
-    requires_logicsig: bool = False
     mnemonic_word_count: int = 0
     mnemonic_import: bool = False
     mnemonic_scheme: str = ""
@@ -6637,7 +6635,6 @@ class SignerClient:
                     display_name=kt.get("display_name", ""),
                     description=kt.get("description", ""),
                     authorization_kind=kt.get("authorization_kind", ""),
-                    requires_logicsig=kt.get("requires_logicsig", False),
                     mnemonic_word_count=kt.get("mnemonic_word_count", 0),
                     mnemonic_import=kt.get("mnemonic_import", False),
                     mnemonic_scheme=kt.get("mnemonic_scheme", ""),

@@ -574,13 +574,13 @@ class TestListKeyTypes:
                     "key_type": "ed25519",
                     "family": "ed25519",
                     "display_name": "Ed25519",
-                    "requires_logicsig": False,
+                    "authorization_kind": "ed25519",
                     "mnemonic_import": True,
                 },
                 {
                     "key_type": "aplane.falcon1024.v1",
                     "family": "falcon",
-                    "requires_logicsig": True,
+                    "authorization_kind": "logic_sig",
                     "mnemonic_import": True,
                     "creation_params": [
                         {"name": "network", "label": "Network", "type": "string", "required": True},

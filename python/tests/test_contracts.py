@@ -262,12 +262,10 @@ def test_list_key_types_maps_creation_and_runtime_metadata():
     native_falcon = key_types[1]
     assert native_falcon.key_type == "falcon1024"
     assert native_falcon.authorization_kind == "native_pq"
-    assert native_falcon.requires_logicsig is False
 
     generic_policy = key_types[2]
     assert generic_policy.key_type == "example.generic-policy.v1"
     assert generic_policy.display_name == "Generic Policy"
-    assert generic_policy.requires_logicsig is True
     assert generic_policy.authorization_kind == "logic_sig"
     assert generic_policy.mnemonic_import is False
     assert [key_type.valid_rekey_target for key_type in key_types] == [True, True, False]

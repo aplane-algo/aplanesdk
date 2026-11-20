@@ -758,7 +758,7 @@ and `spendingRekey`, which may differ: a rekey selects `spendingRekey` and
 every other transaction selects `spend`.
 
 `KeyTypeInfo.authorizationKind` distinguishes `ed25519`, `native_pq`, and
-`logic_sig`. `requiresLogicsig === false` alone does not imply Ed25519.
+`logic_sig`.
 
 `KeyInfo.authorizationKind` reports the same closed values for a key instance
 and is authoritative for choosing its transaction authorization envelope. It

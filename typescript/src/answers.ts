@@ -433,7 +433,6 @@ export const KEYTYPES_ANSWER: AnswerShape = {
           display_name: "string",
           description: "string",
           authorization_kind: "string",
-          requires_logicsig: "bool",
           mnemonic_word_count: "int",
           mnemonic_import: "bool",
           mnemonic_scheme: "string",

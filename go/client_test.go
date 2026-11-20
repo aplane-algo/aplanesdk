@@ -1001,7 +1001,7 @@ func TestListKeyTypes_Success(t *testing.T) {
 		json.NewEncoder(w).Encode(keyTypesResponse{
 			KeyTypes: []KeyTypeInfo{
 				{KeyType: "ed25519", DisplayName: "Ed25519", MnemonicWordCount: 25, MnemonicImport: true},
-				{KeyType: "aplane.falcon1024.v1", DisplayName: "Falcon-1024", RequiresLogicSig: true, MnemonicImport: true},
+				{KeyType: "aplane.falcon1024.v1", DisplayName: "Falcon-1024", AuthorizationKind: "logic_sig", MnemonicImport: true},
 			},
 		})
 	})
@@ -1017,8 +1017,8 @@ func TestListKeyTypes_Success(t *testing.T) {
 	if kts[0].KeyType != "ed25519" {
 		t.Fatalf("expected ed25519, got %s", kts[0].KeyType)
 	}
-	if !kts[1].RequiresLogicSig {
-		t.Fatal("expected falcon to require logicsig")
+	if kts[1].AuthorizationKind != "logic_sig" {
+		t.Fatalf("falcon authorization kind = %q, want logic_sig", kts[1].AuthorizationKind)
 	}
 	if !kts[1].MnemonicImport {
 		t.Fatal("expected falcon to allow mnemonic import")
