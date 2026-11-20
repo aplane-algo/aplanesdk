@@ -87,13 +87,6 @@ SSH_ENROLLMENT_USERNAME = "enroll"
 # label the signer accepts with it.
 SSH_ENROLLMENT_COMMAND = "enroll"
 MAX_ENROLLMENT_LABEL_BYTES = 64
-# Endpoint keys earlier builds wrote and nothing reads: the node's SSH server
-# forwards every channel to its own REST listener, the client listens on no
-# local port (each HTTP connection is an SSH channel of its own), and the
-# client's enrolled SSH key is its only credential, so there is no token file.
-# They are accepted and ignored, as APlane ignores them, so a registry written
-# before they were retired keeps working.
-_RETIRED_ENDPOINT_FIELDS = ("signer_port", "local_port", "token_file")
 DEFAULT_SSH_SETUP_TIMEOUT = 60.0
 CLIENT_ENDPOINTS_FILE = "endpoints.yaml"
 CLIENT_ENDPOINT_SCHEMA_VERSION = 2
@@ -2285,7 +2278,6 @@ def _normalize_client_endpoint(
             "url",
             "identity_file",
             "known_hosts_path",
-            *_RETIRED_ENDPOINT_FIELDS,
         },
         f'endpoint "{alias}"',
     )

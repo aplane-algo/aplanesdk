@@ -63,6 +63,7 @@ func TestLoadClientEndpointRegistryRejectsSharedInvalidFixtures(t *testing.T) {
 		"invalid_ssh_port_zero.yaml",
 		"invalid_unknown_field.yaml",
 		"invalid_unknown_tag.yaml",
+		"invalid_retired_port_fields.yaml",
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := LoadClientEndpointRegistry(copyEndpointFixture(t, name))
@@ -115,7 +116,6 @@ func TestLoadClientEndpointRegistryRejectsSpecificEndpointRules(t *testing.T) {
 func TestLoadClientEndpointRegistryAcceptsSharedEdgeFixtures(t *testing.T) {
 	for _, name := range []string{
 		"valid_12_cosigner_endpoints.yaml",
-		"valid_retired_port_fields.yaml",
 	} {
 		t.Run(name, func(t *testing.T) {
 			dataDir := copyEndpointFixture(t, name)
@@ -128,15 +128,6 @@ func TestLoadClientEndpointRegistryAcceptsSharedEdgeFixtures(t *testing.T) {
 			}
 			if name == "valid_12_cosigner_endpoints.yaml" && len(registry.Endpoints) != 12 {
 				t.Fatalf("endpoint count = %d, want 12", len(registry.Endpoints))
-			}
-			if name == "valid_retired_port_fields.yaml" {
-				primary := registry.Endpoints["primary"]
-				if primary.URL != "ssh://signer.example.com:2222" || primary.IdentityFile != filepath.Join(dataDir, ".ssh", "id_ed25519") {
-					t.Fatalf("primary = %#v, want the retired keys ignored and the other fields kept", primary)
-				}
-				if _, ok := registry.Endpoints["cosigner"]; !ok {
-					t.Fatal("cosigner endpoint with a retired key was dropped")
-				}
 			}
 		})
 	}

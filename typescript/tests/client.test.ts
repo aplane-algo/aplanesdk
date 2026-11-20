@@ -4431,6 +4431,7 @@ describe("loadClientEndpointRegistry", () => {
     "invalid_ssh_port_zero.yaml",
     "invalid_unknown_field.yaml",
     "invalid_unknown_tag.yaml",
+    "invalid_retired_port_fields.yaml",
   ]) {
     it(`rejects ${fixture}`, () => {
       const tmpDir = fixtureDir(fixture);
@@ -4463,7 +4464,6 @@ describe("loadClientEndpointRegistry", () => {
 
   for (const fixture of [
     "valid_12_cosigner_endpoints.yaml",
-    "valid_retired_port_fields.yaml",
   ]) {
     it(`accepts ${fixture}`, () => {
       const tmpDir = fixtureDir(fixture);
@@ -4472,14 +4472,6 @@ describe("loadClientEndpointRegistry", () => {
         assert.equal(registry.schemaVersion, 2);
         if (fixture === "valid_12_cosigner_endpoints.yaml") {
           assert.equal(Object.keys(registry.endpoints).length, 12);
-        }
-        if (fixture === "valid_retired_port_fields.yaml") {
-          assert.equal(registry.endpoints.primary.url, "ssh://signer.example.com:2222");
-          assert.equal(
-            registry.endpoints.primary.identityFile,
-            path.join(tmpDir, ".ssh", "id_ed25519"),
-          );
-          assert.ok(registry.endpoints.cosigner);
         }
       } finally {
         fs.rmSync(tmpDir, { recursive: true });

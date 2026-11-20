@@ -4190,6 +4190,7 @@ class TestLoadClientEndpointRegistry:
             "invalid_ssh_port_zero.yaml",
             "invalid_unknown_field.yaml",
             "invalid_unknown_tag.yaml",
+            "invalid_retired_port_fields.yaml",
         ],
     )
     def test_rejects_shared_invalid_fixtures(self, tmp_path, name):
@@ -4216,7 +4217,6 @@ class TestLoadClientEndpointRegistry:
         "name",
         [
             "valid_12_cosigner_endpoints.yaml",
-            "valid_retired_port_fields.yaml",
         ],
     )
     def test_accepts_shared_edge_fixtures(self, tmp_path, name):
@@ -4225,11 +4225,6 @@ class TestLoadClientEndpointRegistry:
         assert registry.schema_version == 2
         if name == "valid_12_cosigner_endpoints.yaml":
             assert len(registry.endpoints) == 12
-        if name == "valid_retired_port_fields.yaml":
-            primary = registry.endpoints["primary"]
-            assert primary.url == "ssh://signer.example.com:2222"
-            assert primary.identity_file == str(tmp_path / ".ssh" / "id_ed25519")
-            assert "cosigner" in registry.endpoints
 
     @pytest.mark.parametrize(
         "name,want",
