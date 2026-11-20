@@ -654,8 +654,6 @@ export interface PlanGroupResponse {
   transactions?: string[];
   /** Modifications made by server */
   mutations?: MutationReport;
-  /** Error message if planning failed */
-  error?: string;
 }
 
 /**
@@ -674,9 +672,7 @@ export interface CancelSignRequest {
  * Response from the /sign/cancel endpoint.
  */
 export interface CancelSignResponse {
-  success: boolean;
   state?: SignCancelState;
-  error?: string;
 }
 
 export type ComponentTargetKind = "cosigner" | "bounded-base";
@@ -1241,8 +1237,6 @@ export interface GroupSignResponse {
   signed?: string[];
   /** Modifications made by server (undefined if none) */
   mutations?: MutationReport;
-  /** Error message if signing failed */
-  error?: string;
 }
 
 /** Result of ordinary executable signing followed by client-side algod simulation. */

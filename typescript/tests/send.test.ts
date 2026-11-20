@@ -338,7 +338,7 @@ describe("sendPrepared", () => {
     // its place nor hides the lost answer.
     for (const [name, cancel] of [
       ["an unreadable cancel answer", { raw: "null" }],
-      ["a cancel answer of the wrong shape", { raw: '{"success":"yes"}' }],
+      ["a cancel answer of the wrong shape", { raw: '{"state":5}' }],
       ["a refused cancel", { status: 500, body: { error: "boom", code: "internal" } }],
       ["a dropped cancel", "drop"],
     ] as Array<[string, FakeReply]>) {
@@ -401,7 +401,7 @@ describe("sendPrepared", () => {
       assert.equal(node.submitted.length, 0);
     });
 
-    for (const body of ["123", '"ok"', "[]", "null", '{"signed":"x"}', '{"signed":[1]}', '{"mutations":"x"}', '{"error":5}']) {
+    for (const body of ["123", '"ok"', "[]", "null", '{"signed":"x"}', '{"signed":[1]}', '{"mutations":"x"}']) {
       it(`a 200 body ${body} is an unknown outcome`, async () => {
         const signer = new SendSigner([ordinaryKey(txn)], { sign: () => ({ raw: body }) });
         const { client, algod, node } = fixture(signer);
@@ -1856,7 +1856,7 @@ describe("sendPrepared with a cosigned account", () => {
             signRequestId = body.request_id;
             return "drop";
           case "/sign/cancel":
-            return { body: { success: true, state: "canceled" } };
+            return { body: { state: "canceled" } };
           default:
             throw new Error(`unexpected user path ${path}`);
         }
@@ -2036,7 +2036,7 @@ describe("an approval request that is never posted", () => {
           controller?.abort();
           return { body: statusBody() };
         }
-        if (path === "/sign/cancel") return { body: { success: true, state: "canceled" } };
+        if (path === "/sign/cancel") return { body: { state: "canceled" } };
         return "drop";
       },
     });

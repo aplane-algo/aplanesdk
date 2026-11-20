@@ -530,7 +530,7 @@ func TestCancelSignRequestWithContext(t *testing.T) {
 		if cancelReq.RequestID != "sdk-test" {
 			t.Fatalf("RequestID = %q, want sdk-test", cancelReq.RequestID)
 		}
-		json.NewEncoder(w).Encode(CancelSignResponse{Success: true, State: SignCancelStateCanceled})
+		json.NewEncoder(w).Encode(CancelSignResponse{State: SignCancelStateCanceled})
 	})
 	defer server.Close()
 
@@ -564,7 +564,7 @@ func TestSignRequestsCancelsApprovalWhenContextCanceled(t *testing.T) {
 				t.Fatalf("decode /sign/cancel request: %v", err)
 			}
 			cancelReceived <- cancelReq.RequestID
-			json.NewEncoder(w).Encode(CancelSignResponse{Success: true, State: SignCancelStateCanceled})
+			json.NewEncoder(w).Encode(CancelSignResponse{State: SignCancelStateCanceled})
 		default:
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
@@ -693,7 +693,7 @@ func TestApprovalRequestWithEndedContextSendsNothing(t *testing.T) {
 		for _, waitKnown := range []bool{true, false} {
 			t.Run(fmt.Sprintf("%s, approval wait known %v", name, waitKnown), func(t *testing.T) {
 				synctest.Test(t, func(t *testing.T) {
-					client, paths := recordingClient(`{"success":true,"state":"not_found"}`)
+					client, paths := recordingClient(`{"state":"not_found"}`)
 					if waitKnown {
 						client.cacheApprovalWait(60)
 					}
@@ -956,11 +956,11 @@ func TestSignerAnswersRefuseNullAndTrailingData(t *testing.T) {
 			_, err := c.PlanRequestsWithContext(context.Background(), requests)
 			return err
 		}},
-		{"/sign/cancel", `{"success":true,"state":"canceled"}`, func(c *SignerClient) error {
+		{"/sign/cancel", `{"state":"canceled"}`, func(c *SignerClient) error {
 			_, err := c.CancelSignRequestWithContext(context.Background(), "sdk-test")
 			return err
 		}},
-		{"/admin/keys", `{"success":true}`, func(c *SignerClient) error {
+		{"/admin/keys", `{}`, func(c *SignerClient) error {
 			return c.DeleteKey(sdkTestAddress(0xA3))
 		}},
 	}
@@ -1174,7 +1174,7 @@ func TestDeleteKey_Success(t *testing.T) {
 			t.Fatalf("expected address=TESTADDR, got %s", r.URL.Query().Get("address"))
 		}
 		// What the signer's handler writes.
-		w.Write([]byte("{\"success\":true}\n"))
+		w.Write([]byte("{}\n"))
 	})
 	defer server.Close()
 
@@ -1184,11 +1184,9 @@ func TestDeleteKey_Success(t *testing.T) {
 	}
 }
 
-// A generate answer is the new key: one that carries an error, or names no
-// address, is refused.
-func TestGenerateKeyRefusesAnErrorOrNoAddress(t *testing.T) {
+// A generate answer is the new key: one that names no address is refused.
+func TestGenerateKeyRefusesAnAnswerWithNoAddress(t *testing.T) {
 	for _, tc := range []struct{ body, want string }{
-		{`{"address":"` + sdkTestAddress(0xA3) + `","error":"denied"}`, "key generation failed: denied"},
 		{`{}`, "key generation failed: missing address"},
 		{`{"address":"","key_type":"ed25519"}`, "key generation failed: missing address"},
 		{`{"address":null}`, "key generation failed: missing address"},
@@ -1205,18 +1203,18 @@ func TestGenerateKeyRefusesAnErrorOrNoAddress(t *testing.T) {
 	}
 }
 
-// A delete answer is read as {success, error}: an error is a refusal, and a
-// body that is not one such object is no answer. The signer always sends one.
+// A delete answer is the empty object {}: a field in it is read by nothing,
+// and a body that is not one JSON object is no answer. The signer always
+// sends one.
 func TestDeleteKeyReadsItsAnswer(t *testing.T) {
 	for _, tc := range []struct{ body, want string }{
-		{`{"success":true}`, ""},
-		{`{"success":true,"extra":1}`, ""},
-		{`{"success":false,"error":"denied"}`, "key deletion failed: denied"},
+		{`{}`, ""},
+		{`{"extra":1}`, ""},
 		{``, "failed to decode response"},
 		{`null`, "failed to decode response"},
 		{`[]`, "failed to decode response"},
-		{`{"success":"yes"}`, "failed to decode response"},
-		{`{"success":true} x`, "failed to decode response"},
+		{`"done"`, "failed to decode response"},
+		{`{} x`, "failed to decode response"},
 	} {
 		t.Run(tc.body, func(t *testing.T) {
 			client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
@@ -1398,47 +1396,6 @@ func TestRequestAssemblePostsToAssembleEndpoint(t *testing.T) {
 	}
 }
 
-// An error in a 200 component or assembly answer is a refusal, whatever else
-// the answer holds, and never a lost answer.
-func TestComponentAndAssemblyAnswersWithAnErrorAreRefused(t *testing.T) {
-	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			RequestID string `json:"request_id"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatal(err)
-		}
-		switch r.URL.Path {
-		case "/sign/component":
-			json.NewEncoder(w).Encode(ComponentResponse{RequestID: req.RequestID, Error: "denied", Components: []Component{{
-				Kind: ComponentTargetKindCosigner, TargetIndex: 0, Signature: "aabb", SignatureScheme: KeyTypeWitnessFalcon1024,
-			}}})
-		case "/sign/assemble":
-			json.NewEncoder(w).Encode(AssemblyResponse{RequestID: req.RequestID, Error: "denied", SignedGroup: []string{"ccdd"}})
-		}
-	})
-	defer server.Close()
-
-	_, err := client.RequestComponents(ComponentRequest{
-		GroupBytesHex: []string{"5458aa"},
-		Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindCosigner, ComponentKey: "COMPONENT"}},
-	})
-	var lost *lostAnswer
-	if err == nil || err.Error() != "component signing failed: denied" || errors.As(err, &lost) {
-		t.Fatalf("RequestComponents() error = %v, want the refusal", err)
-	}
-	_, err = client.RequestAssemble(AssemblyRequest{
-		GroupBytesHex: []string{"5458aa"},
-		Targets: []AssemblyTarget{{
-			TargetIndex: 0, Kind: AssemblyTargetKindBoundedCosigner, AuthAddress: "BOUNDED",
-			BaseSignatures: []string{"aabb"}, AssemblyReceipt: "eeff", CosignerSignature: "bbcc",
-		}},
-	})
-	if err == nil || err.Error() != "assembly failed: denied" || errors.As(err, &lost) {
-		t.Fatalf("RequestAssemble() error = %v, want the refusal", err)
-	}
-}
-
 func TestRequestAssembleRejectsMissingCoverage(t *testing.T) {
 	client := &SignerClient{baseURL: "http://example.invalid", client: http.DefaultClient}
 	_, err := client.RequestAssemble(AssemblyRequest{
@@ -1520,19 +1477,6 @@ func TestPlanGroup_AuthError(t *testing.T) {
 	}
 }
 
-func TestPlanGroup_ServerError(t *testing.T) {
-	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(PlanGroupResponse{Error: "key not found"})
-	})
-	defer server.Close()
-
-	txn := types.Transaction{Type: types.PaymentTx}
-	_, err := client.PlanGroup([]types.Transaction{txn}, []string{sdkTestAddress(0xA0)}, nil, nil)
-	if err == nil || !strings.Contains(err.Error(), "key not found") {
-		t.Fatalf("expected key not found error, got: %v", err)
-	}
-}
-
 // --- Signing error tests ---
 
 func TestSign_AuthError(t *testing.T) {
@@ -1602,19 +1546,6 @@ func TestSign_ServerJSONError(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), `{"error"`) {
 		t.Fatalf("expected parsed JSON error message, got: %v", err)
-	}
-}
-
-func TestSign_ResponseError(t *testing.T) {
-	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(GroupSignResponse{Error: "key not found"})
-	})
-	defer server.Close()
-
-	txn := types.Transaction{Type: types.PaymentTx}
-	_, err := client.SignTransaction(txn, sdkTestAddress(0xA0), nil)
-	if err == nil || !strings.Contains(err.Error(), "key not found") {
-		t.Fatalf("expected key not found error, got: %v", err)
 	}
 }
 

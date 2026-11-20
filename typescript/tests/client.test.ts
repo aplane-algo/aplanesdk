@@ -1617,7 +1617,7 @@ describe("SignerClient", () => {
       mockFetch.mockResolvedValueOnce({
         status: 200,
         ok: true,
-        json: async () => ({ success: true }),
+        json: async () => ({}),
       });
 
       const client = new SignerClient("http://localhost:11270");
@@ -1909,7 +1909,7 @@ describe("SignerClient", () => {
       mockFetch.mockResolvedValueOnce({
         status: 200,
         ok: true,
-        json: async () => ({ success: true, state: "canceled" }),
+        json: async () => ({ state: "canceled" }),
       });
 
       const client = new SignerClient("http://localhost:11270");
@@ -3594,7 +3594,7 @@ describe("SignerClient", () => {
       mockFetch.mockResolvedValueOnce({
         status: 200,
         ok: true,
-        json: async () => ({ success: true, state: "canceled" }),
+        json: async () => ({ state: "canceled" }),
       });
 
       const client = new SignerClient("http://localhost:11270", 100);
@@ -3618,7 +3618,7 @@ describe("SignerClient", () => {
       mockFetch.mockResolvedValueOnce({
         status: 200,
         ok: true,
-        json: async () => ({ success: true, state: "canceled" }),
+        json: async () => ({ state: "canceled" }),
       });
 
       const client = new SignerClient("http://localhost:11270", 100);
@@ -3670,7 +3670,7 @@ describe("SignerClient", () => {
         return {
           status: 200,
           ok: true,
-          json: async () => ({ success: true, state: "canceled" }),
+          json: async () => ({ state: "canceled" }),
         } as Response;
       }) as typeof fetch;
 
@@ -3761,8 +3761,7 @@ describe("SignerClient", () => {
       const client = new SignerClient("http://localhost:11270");
       const result = await client.signRequests([{ ...entry }], { requestId: "raw-requests-id" });
 
-      // A field left out reads as its zero value, as the Go SDK reads it.
-      assert.deepEqual(result, { signed: [signedHex(txn)], error: "" });
+      assert.deepEqual(result, { signed: [signedHex(txn)] });
       assert.equal(mockFetch.mock.calls[1][0], "http://localhost:11270/sign");
       assert.deepEqual(JSON.parse(mockFetch.mock.calls[1][1].body), {
         request_id: "raw-requests-id",
@@ -4068,13 +4067,12 @@ describe("SignerClient", () => {
       mockFetch.mockResolvedValueOnce({
         status: 200,
         ok: true,
-        json: async () => ({ success: true, state: "not_found" }),
+        json: async () => ({ state: "not_found" }),
       });
 
       const client = new SignerClient("http://localhost:11270");
       const result = await client.cancelSignRequest("sdk-test");
 
-      assert.equal(result.success, true);
       assert.equal(result.state, "not_found");
       assert.equal(mockFetch.mock.calls[0][0], "http://localhost:11270/sign/cancel");
       assert.deepEqual(JSON.parse(mockFetch.mock.calls[0][1].body), { request_id: "sdk-test" });
@@ -4123,16 +4121,16 @@ describe("SignerClient", () => {
         '{"key_types":[{"creation_params":[{"max":1e400}]}]}', '{"key_types":[{"creation_params":[{"max":1e30}]}]}',
       ]],
       ["/admin/generate", () => client().generateKey("ed25519"), [
-        "", "null", '{"address":5}', '{"is_witness_key":"true"}', '{"error":7}',
+        "", "null", '{"address":5}', '{"is_witness_key":"true"}',
       ]],
       ["DELETE /admin/keys", () => client().deleteKey(fakeAddress(9)), [
-        "", "null", '{"success":"yes"}', '{"error":5}',
+        "", "null", "[]", '"done"',
       ]],
       ["/sign/cancel", () => client().cancelSignRequest("sdk-test"), [
-        "", "null", '{"success":1}', '{"state":5}',
+        "", "null", "[]", '{"state":5}',
       ]],
       ["/plan", () => client().planGroup([txn]), [
-        "", "null", '{"transactions":"x"}', '{"mutations":{"fees_modified":"x"}}', '{"error":false}',
+        "", "null", '{"transactions":"x"}', '{"mutations":{"fees_modified":"x"}}',
       ]],
     ];
     for (const [path, call, bodies] of cases) {
@@ -4188,10 +4186,10 @@ describe("SignerClient", () => {
       const mutations: Array<[string, (signer: SignerClient) => Promise<unknown>, string]> = [
         ["/admin/generate", (signer) => signer.generateKey("ed25519"), ""],
         ["/admin/generate", (signer) => signer.generateKey("ed25519"), '{"address":5}'],
-        ["/admin/generate", (signer) => signer.generateKey("ed25519"), '{"error":"refused"}'],
+        ["/admin/generate", (signer) => signer.generateKey("ed25519"), "{}"],
         ["DELETE /admin/keys", (signer) => signer.deleteKey(fakeAddress(9)), ""],
-        ["DELETE /admin/keys", (signer) => signer.deleteKey(fakeAddress(9)), '{"success":"yes"}'],
-        ["DELETE /admin/keys", (signer) => signer.deleteKey(fakeAddress(9)), '{"error":"refused"}'],
+        ["DELETE /admin/keys", (signer) => signer.deleteKey(fakeAddress(9)), "[]"],
+        ["DELETE /admin/keys", (signer) => signer.deleteKey(fakeAddress(9)), "null"],
       ];
       for (const [path, mutate, body] of mutations) {
         const signer = client();
@@ -4217,19 +4215,13 @@ describe("SignerClient", () => {
           return true;
         });
       }
-      answerRaw('{"error":"no such key type","address":""}');
-      await assert.rejects(client().generateKey("x"), { message: "no such key type" });
     });
 
-    it("DELETE /admin/keys takes the signer's success answer and refuses its error", async () => {
-      answerRaw('{"success":true}');
+    it("DELETE /admin/keys takes the signer's empty answer, and reads none of its fields", async () => {
+      answerRaw("{}");
       assert.equal(await client().deleteKey(fakeAddress(9)), undefined);
-      answerRaw('{"success":false,"error":"key is in use"}');
-      await assert.rejects(client().deleteKey(fakeAddress(9)), (error: unknown) => {
-        assert.ok(error instanceof SignerError, String(error));
-        assert.equal((error as Error).message, "key is in use");
-        return true;
-      });
+      answerRaw('{"extra":1}');
+      assert.equal(await client().deleteKey(fakeAddress(9)), undefined);
     });
 
     it("/plan reads only the snake_case keys of the report", async () => {

@@ -386,7 +386,6 @@ def test_cancel_response_fixture_maps_state():
     data = fixture("cancel_sign_response_success.json")
     result = CancelSignResponse(**data)
 
-    assert result.success is True
     assert result.state == "canceled"
 
 

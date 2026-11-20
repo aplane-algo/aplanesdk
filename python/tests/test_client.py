@@ -783,13 +783,10 @@ class TestDeleteKey:
         assert mock_delete.call_args.kwargs["timeout"] == 10
 
     def test_reads_the_answer_the_signer_sends(self):
-        # The signer answers {"success": true}; an error in it is a refusal.
+        # The signer answers {}; a field in it is read by nothing.
         client = make_client()
-        with patch.object(client.session, "delete", return_value=raw_response(200, b'{"success":true}\n')):
-            client.delete_key("ADDR")
-        refused = raw_response(200, b'{"success":false,"error":"key is in use"}')
-        with patch.object(client.session, "delete", return_value=refused):
-            with pytest.raises(SignerError, match="key is in use"):
+        for body in (b"{}\n", b'{"extra":1}'):
+            with patch.object(client.session, "delete", return_value=raw_response(200, body)):
                 client.delete_key("ADDR")
 
     def test_an_empty_answer_is_unreadable(self):
@@ -829,8 +826,7 @@ _WRONG_TYPED_ANSWERS = {
     "key types": b'{"key_types":[{"key_type":"ed25519","creation_params":[{"name":"n","min":-1}]}]}',
     "plan": b'{"transactions":"5458aa"}',
     "key generation": b'{"address":"NEWADDR","key_type":"ed25519","parameters":{"a":1}}',
-    "sign cancel": b'{"success":"true","state":"canceled"}',
-    "key deletion": b'{"success":true,"error":1}',
+    "sign cancel": b'{"state":5}',
 }
 
 
@@ -853,7 +849,8 @@ class TestAnswersReadByShape:
         assert type(excinfo.value) is SignerError
         assert str(excinfo.value).startswith(f"failed to decode {what} response")
 
-    @pytest.mark.parametrize("what", list(_UNSIGNED_ANSWER_CALLS))
+    # A key deletion's answer has no field to be of the wrong type.
+    @pytest.mark.parametrize("what", list(_WRONG_TYPED_ANSWERS))
     def test_a_field_of_the_wrong_type_is_a_plain_error(self, what):
         method, call = _UNSIGNED_ANSWER_CALLS[what]
         client = make_client()
@@ -948,7 +945,6 @@ class TestAnswersReadByShape:
         data = _approval_answer(answer, "x", _GROUP_SIGN_RESPONSE_SHAPE)
         assert data == {
             "signed": ["aa"],
-            "error": "",
             "mutations": dict(self._ZERO_MUTATIONS, original_count=1, final_count=1),
         }
 
@@ -1432,33 +1428,6 @@ class TestSpecializedLowLevelEndpoints:
                     targets=[{"target_index": 0, "kind": COMPONENT_TARGET_KIND_BOUNDED_BASE, "auth_address": "BOUNDED"}],
                 ))
 
-    def test_bounded_endpoints_surface_200_error_bodies(self):
-        client = make_client()
-        error_response = mock_response(200, {"error": "bounded failed"})
-        with patch.object(
-            client.session, "post", return_value=error_response
-        ), patch.object(client, "_discover_approval_wait"):
-            with pytest.raises(SignerError, match="bounded failed"):
-                client.request_components(ComponentRequest(
-                    request_id="bounded-base-id",
-                    group_bytes_hex=["5458aa"],
-                    targets=[{"target_index": 0, "kind": COMPONENT_TARGET_KIND_BOUNDED_BASE, "auth_address": "BOUNDED"}],
-                ))
-
-        with patch.object(client.session, "post", return_value=error_response):
-            with pytest.raises(SignerError, match="bounded failed"):
-                client.request_assemble({
-                    "request_id": "bounded-assembly-id",
-                    "group_bytes_hex": ["5458aa"],
-                    "targets": [{
-                        "target_index": 0,
-                        "kind": ASSEMBLY_TARGET_KIND_BOUNDED_COSIGNER,
-                        "auth_address": "BOUNDED",
-                        "base_signatures": ["base-sig"],
-                        "assembly_receipt": "receipt",
-                        "cosigner_signature": "cosigner-sig",
-                    }],
-                })
 
 def record_call_order(events, **mocks):
     """Wrap MagicMocks so each call appends its name to events, in call order."""
@@ -2800,12 +2769,11 @@ class TestSigningErrors:
 class TestCancelSignRequest:
     def test_cancel_sign_request_returns_state(self):
         client = make_client()
-        resp = mock_response(200, {"success": True, "state": "not_found"})
+        resp = mock_response(200, {"state": "not_found"})
 
         with patch.object(client.session, "post", return_value=resp) as mock_post:
             result = client.cancel_sign_request("sdk-test")
 
-        assert result.success is True
         assert result.state == "not_found"
         assert mock_post.call_args.args[0] == "http://localhost:11270/sign/cancel"
         assert mock_post.call_args.kwargs["json"] == {"request_id": "sdk-test"}

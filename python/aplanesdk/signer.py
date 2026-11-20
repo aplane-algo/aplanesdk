@@ -995,7 +995,7 @@ def _zero_object(shape: Dict[str, Any]) -> Dict[str, Any]:
 
 # The wire types of the approval-bearing answers (pkg/signerapi in aplane).
 # Each declares every field the SDK reads after the shape check: a field left
-# out would pass unchecked, so a wrongly typed error would read as a refusal.
+# out would pass unchecked.
 _MUTATION_REPORT_SHAPE: Dict[str, Any] = {
     "dummies_added": "int",
     "group_id_changed": "bool",
@@ -1010,7 +1010,6 @@ _MUTATION_REPORT_SHAPE: Dict[str, Any] = {
 _GROUP_SIGN_RESPONSE_SHAPE: Dict[str, Any] = {
     "signed": "strs",
     "mutations": _MUTATION_REPORT_SHAPE,
-    "error": "str",
 }
 _ROTATING_PREPARE_RESPONSE_SHAPE: Dict[str, Any] = {
     "account": "str",
@@ -1043,12 +1042,10 @@ _COMPONENT_RESPONSE_SHAPE: Dict[str, Any] = {
             "path": "str",
         },
     ),
-    "error": "str",
 }
 _ASSEMBLY_RESPONSE_SHAPE: Dict[str, Any] = {
     "request_id": "str",
     "signed_group": "strs",
-    "error": "str",
 }
 
 # The wire types of the answers that release no signature, as the Go SDK's
@@ -1231,7 +1228,6 @@ _KEY_TYPES_RESPONSE_SHAPE: Dict[str, Any] = {
 _PLAN_RESPONSE_SHAPE: Dict[str, Any] = {
     "transactions": "strs",
     "mutations": _MUTATION_REPORT_SHAPE,
-    "error": "str",
 }
 _GENERATE_RESULT_SHAPE: Dict[str, Any] = {
     "address": "str",
@@ -1240,19 +1236,14 @@ _GENERATE_RESULT_SHAPE: Dict[str, Any] = {
     "is_witness_key": "bool",
     "is_spending_account": ("ptr", "bool"),
     "parameters": "str_map",
-    "error": "str",
 }
 _CANCEL_SIGN_RESPONSE_SHAPE: Dict[str, Any] = {
-    "success": "bool",
     "state": "str",
-    "error": "str",
 }
 # What DELETE /admin/keys answers with (AdminDeleteResponse in aplane's
-# pkg/signerapi); the signer always sends the object, never an empty body.
-_DELETE_KEY_RESPONSE_SHAPE: Dict[str, Any] = {
-    "success": "bool",
-    "error": "str",
-}
+# pkg/signerapi): the empty object, never an empty body. It is read all the
+# same, so a body that is not one JSON object is refused.
+_DELETE_KEY_RESPONSE_SHAPE: Dict[str, Any] = {}
 
 
 _JSON_HEADERS = {"Content-Type": "application/json"}
@@ -1728,9 +1719,7 @@ class StatusResponse:
 class CancelSignResponse:
     """Response from /sign/cancel"""
 
-    success: bool
     state: str = ""
-    error: str = ""
 
 
 @dataclass
@@ -1739,7 +1728,6 @@ class GroupSignResponse:
 
     signed: List[str]
     mutations: Optional[Dict[str, Any]] = None
-    error: str = ""
 
 
 @dataclass
@@ -6719,8 +6707,6 @@ class SignerClient:
         self._key_cache_revision = None
 
         data = _read_answer(resp, _GENERATE_RESULT_SHAPE, "key generation")
-        if data["error"]:
-            raise SignerError(data["error"])
         # Only the address is required: the signer leaves key_type out when
         # it is empty (omitempty), and the other SDKs accept that.
         if not data["address"]:
@@ -6767,11 +6753,9 @@ class SignerClient:
         self._key_cache.clear()
         self._key_cache_revision = None
 
-        # The signer answers {"success": true}; an empty or unreadable body
-        # is not an answer it sends.
-        data = _read_answer(resp, _DELETE_KEY_RESPONSE_SHAPE, "key deletion")
-        if data["error"]:
-            raise SignerError(data["error"])
+        # The signer answers {}; an empty or unreadable body is not an answer
+        # it sends.
+        _read_answer(resp, _DELETE_KEY_RESPONSE_SHAPE, "key deletion")
 
     def _safe_json(self, resp: requests.Response) -> dict:
         """
@@ -6881,12 +6865,7 @@ class SignerClient:
             raise self._signer_http_error(resp, f"Sign cancel failed: HTTP {resp.status_code}")
 
         data = _read_answer(resp, _CANCEL_SIGN_RESPONSE_SHAPE, "sign cancel")
-        result = CancelSignResponse(
-            success=data["success"], state=data["state"], error=data["error"]
-        )
-        if result.error:
-            raise SignerError(result.error)
-        return result
+        return CancelSignResponse(state=data["state"])
 
     def request_components(self, request: Any) -> ComponentResponse:
         request_body = _compact_payload(request)
@@ -6951,8 +6930,6 @@ class SignerClient:
             _COMPONENT_RESPONSE_SHAPE,
             request_id=request_body["request_id"],
         )
-        if data.get("error"):
-            raise SignerError(data["error"])
         try:
             return _checked_component_response(data, request_body)
         except SignerError:
@@ -7034,8 +7011,6 @@ class SignerClient:
             _ASSEMBLY_RESPONSE_SHAPE,
             request_id=request_body["request_id"],
         )
-        if data.get("error"):
-            raise SignerError(data["error"])
         try:
             return _checked_assembly_response(data, request_body)
         except SignerError:
@@ -7387,9 +7362,6 @@ class SignerClient:
             request_id=request_id,
         )
 
-        if data.get("error"):
-            raise SignerError(data["error"])
-
         signed = data.get("signed") or []
         mutations = data.get("mutations")
         # Every sign path goes through here, so a truncated, altered or padded
@@ -7403,11 +7375,7 @@ class SignerClient:
             # and its group unchecked.
             raise _check_fault("verify signer response: ", e, request_id) from e
 
-        return GroupSignResponse(
-            signed=signed,
-            mutations=mutations,
-            error=data.get("error", ""),
-        )
+        return GroupSignResponse(signed=signed, mutations=mutations)
 
     def plan_group(
         self,
@@ -7498,8 +7466,6 @@ class SignerClient:
             raise self._signer_http_error(resp, f"Plan failed: HTTP {resp.status_code}")
 
         data = _read_answer(resp, _PLAN_RESPONSE_SHAPE, "plan")
-        if data["error"]:
-            raise SignerError(data["error"])
 
         try:
             _validate_plan_response(

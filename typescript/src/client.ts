@@ -4106,9 +4106,6 @@ export class SignerClient {
     this.keyCacheRevision = undefined;
 
     const data = await readSignerAnswer<Record<string, any>>(response, GENERATE_ANSWER);
-    if (data.error) {
-      throw new SignerError(data.error);
-    }
     if (data.address === "") {
       throw new SignerError("Key generation response missing address");
     }
@@ -4150,12 +4147,8 @@ export class SignerClient {
     this.keyCache.clear();
     this.keyCacheRevision = undefined;
 
-    // The signer answers {"success": true}: an empty or unreadable answer is
-    // not one.
-    const data = await readSignerAnswer<{ error: string }>(response, DELETE_KEY_ANSWER);
-    if (data.error) {
-      throw new SignerError(data.error);
-    }
+    // The signer answers {}: an empty or unreadable answer is not one.
+    await readSignerAnswer<Record<string, never>>(response, DELETE_KEY_ANSWER);
   }
 
   /**
@@ -4179,11 +4172,7 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Sign cancel failed: HTTP ${response.status}`);
     }
 
-    const data = await readSignerAnswer<CancelSignResponse>(response, CANCEL_ANSWER);
-    if (data.error) {
-      throw new SignerError(data.error);
-    }
-    return data;
+    return readSignerAnswer<CancelSignResponse>(response, CANCEL_ANSWER);
   }
 
   async requestComponents(
@@ -4235,12 +4224,11 @@ export class SignerClient {
     if (response.status === 503) throw new SignerUnavailableError(await this.errorMessage(response, "Signer unavailable"));
     if (response.status === 400) throw await this.badRequestError(response);
     if (response.status !== 200) throw await this.signerHTTPError(response, `Component signing failed: HTTP ${response.status}`);
-    const data = await readSignerAnswer<ComponentResponse & { error?: string }>(
+    const data = await readSignerAnswer<ComponentResponse>(
       response,
       COMPONENT_ANSWER,
       requestBody.request_id || "",
     );
-    if (data.error) throw new SignerError(data.error);
     const requestId = requestBody.request_id || "";
     try {
       validateComponentResponse(data, requestBody);
@@ -4316,15 +4304,11 @@ export class SignerClient {
       throw await this.signerHTTPError(response, `Assembly failed: HTTP ${response.status}`);
     }
 
-    const data = await readSignerAnswer<AssemblyResponse & { error?: string }>(
+    const data = await readSignerAnswer<AssemblyResponse>(
       response,
       ASSEMBLY_ANSWER,
       requestBody.request_id || "",
     );
-
-    if (data.error) {
-      throw new SignerError(data.error);
-    }
 
     try {
       validateAssemblyResponse(data);
@@ -4425,10 +4409,6 @@ export class SignerClient {
     }
 
     let data = await readSignerAnswer<PlanGroupResponse>(response, PLAN_ANSWER);
-
-    if (data.error) {
-      throw new SignerError(data.error);
-    }
 
     // The wire report is snake_case, and only its snake_case keys are read,
     // as the Go SDK reads them; callers read the typed camelCase fields.
@@ -4594,10 +4574,6 @@ export class SignerClient {
         return this.signerHTTPError(response, `Signing failed: HTTP ${response.status}`);
       },
     );
-
-    if (data.error) {
-      throw new SignerError(data.error);
-    }
 
     // The wire report is snake_case; callers read the typed camelCase fields.
     const result: GroupSignResponse = data.mutations

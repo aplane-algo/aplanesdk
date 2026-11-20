@@ -357,7 +357,6 @@ describe("signer API contract fixtures", () => {
   it("maps /sign/cancel response state", () => {
     const result = fixture("cancel_sign_response_success.json") as CancelSignResponse;
 
-    assert.equal(result.success, true);
     assert.equal(result.state, "canceled");
   });
 

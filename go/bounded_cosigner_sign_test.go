@@ -609,9 +609,7 @@ func TestRequestBoundedKindCancelsApprovalWhenContextCanceled(t *testing.T) {
 				t.Fatalf("decode cancel request: %v", err)
 			}
 			cancelReceived <- req.RequestID
-			json.NewEncoder(w).Encode(CancelSignResponse{
-				Success: true, State: SignCancelStateCanceled,
-			})
+			json.NewEncoder(w).Encode(CancelSignResponse{State: SignCancelStateCanceled})
 		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}

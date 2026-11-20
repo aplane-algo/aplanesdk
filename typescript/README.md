@@ -490,8 +490,8 @@ releases no signature an unreadable answer is a plain `SignerError`, never a
 arrives whole, because the connection fails while it is read, is a failed
 exchange instead, a `SignerUnavailableError`; at an approval-bearing request
 either one is an unknown outcome. `generateKey` refuses
-an answer without an address; `deleteKey` reads the signer's
-`{"success": true}` answer and refuses an empty one or one with an `error`.
+an answer without an address; `deleteKey` reads the signer's `{}` answer
+and refuses an empty body or one that is not a JSON object.
 A `/keys` answer listing an address in an alternate spelling (an Algorand
 address algosdk reads, but not its canonical form) is refused as a whole; any
 other address string, such as a witness key's Witness Key ID, is kept exactly

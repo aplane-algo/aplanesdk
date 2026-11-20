@@ -172,9 +172,6 @@ func (c Component) NeedsCosigner() bool {
 type ComponentResponse struct {
 	RequestID  string      `json:"request_id"`
 	Components []Component `json:"components"`
-	// Error, when set, is a refusal carried in a 200 answer. The current
-	// signer never sets it; RequestComponents refuses an answer that does.
-	Error string `json:"error,omitempty"`
 }
 
 type AssemblyTargetKind string
@@ -216,9 +213,6 @@ type AssemblyPassthroughItem struct {
 type AssemblyResponse struct {
 	RequestID   string   `json:"request_id"`
 	SignedGroup []string `json:"signed_group"`
-	// Error, when set, is a refusal carried in a 200 answer. The current
-	// signer never sets it; RequestAssemble refuses an answer that does.
-	Error string `json:"error,omitempty"`
 }
 
 // CosignedPassthroughAuthorization declares the authorization shape used to
@@ -236,9 +230,7 @@ type CancelSignRequest struct {
 
 // CancelSignResponse is the response payload for /sign/cancel.
 type CancelSignResponse struct {
-	Success bool            `json:"success"`
-	State   SignCancelState `json:"state,omitempty"`
-	Error   string          `json:"error,omitempty"`
+	State SignCancelState `json:"state,omitempty"`
 }
 
 // RotatingPrepareRequest is the request payload for /sign/rotating/prepare:
@@ -621,7 +613,6 @@ type MutationReport struct {
 type GroupSignResponse struct {
 	Signed    []string        `json:"signed,omitempty"`    // Array of signed transactions (hex-encoded msgpack)
 	Mutations *MutationReport `json:"mutations,omitempty"` // Modifications made by server (nil if none)
-	Error     string          `json:"error,omitempty"`
 }
 
 // ErrorResponse is the standard signer HTTP error body for non-2xx responses.
@@ -640,7 +631,6 @@ type ErrorResponse struct {
 type PlanGroupResponse struct {
 	Transactions []string        `json:"transactions,omitempty"` // TX-prefixed hex-encoded unsigned txns (final group)
 	Mutations    *MutationReport `json:"mutations,omitempty"`    // Modifications that would be made by server
-	Error        string          `json:"error,omitempty"`
 }
 
 // ProtocolVersion identifies a signer wire-protocol version.
@@ -888,7 +878,6 @@ type GenerateResult struct {
 	IsWitnessKey      bool              `json:"is_witness_key,omitempty"`
 	IsSpendingAccount *bool             `json:"is_spending_account,omitempty"`
 	Parameters        map[string]string `json:"parameters,omitempty"`
-	Error             string            `json:"error,omitempty"`
 }
 
 // generateRequest is the request payload for key generation.
