@@ -1740,7 +1740,7 @@ class TestSignPreparedCosignedGroup:
         )
         txn = transaction.PaymentTxn(sender, params, receiver, 1000)
         other = transaction.PaymentTxn(sender, params, receiver, 2000)
-        canonical, _ = encode_transaction(txn)
+        canonical = encode_transaction(txn)
         logic_sig = transaction.LogicSigAccount(bytes.fromhex("033120320312"))
 
         def signed_hex(value):
@@ -2174,8 +2174,8 @@ class TestSignPreparedCosignedGroup:
         planned_bounded.group = planned_native.group = None
         transaction.assign_group_id([planned_bounded, planned_native])
         planned_hex = [
-            encode_transaction(planned_bounded)[0],
-            encode_transaction(planned_native)[0],
+            encode_transaction(planned_bounded),
+            encode_transaction(planned_native),
         ]
 
         def bounded_component(req):
@@ -2554,7 +2554,7 @@ class TestClientSideSignedSimulation:
         signed_b64 = algo_encoding.msgpack_encode(signed)
         signed_hex = base64.b64decode(signed_b64).hex()
 
-        canonical_hex, _ = encode_transaction(txn)
+        canonical_hex = encode_transaction(txn)
         _verify_signed_transaction_matches_canonical("assembled transaction", 0, signed_hex, canonical_hex)
 
         client = make_client()
@@ -2824,7 +2824,7 @@ class TestSignRequests:
         client = make_client()
         txn = fake_signer.payment()
         entry = {
-            "txn_bytes_hex": encode_transaction(txn)[0],
+            "txn_bytes_hex": encode_transaction(txn),
             "auth_address": txn.sender,
         }
 
@@ -2841,7 +2841,7 @@ class TestSignRequests:
 
     def test_sign_requests_rejects_noncanonical_transaction_bytes_before_http(self):
         client = make_client()
-        canonical = encode_transaction(fake_signer.payment())[0]
+        canonical = encode_transaction(fake_signer.payment())
         with patch.object(client.session, "post") as mock_post:
             with pytest.raises(SignerError, match="invalid sign request: transaction 1: txn_bytes_hex: missing TX prefix"):
                 client.sign_requests([{"txn_bytes_hex": canonical[4:], "auth_address": "AUTH"}])
@@ -2958,7 +2958,7 @@ class TestBuildSignRequests:
         assert body["request_id"]
         assert len(body["requests"]) == 1
         assert body["requests"][0]["auth_address"] == fake_signer.account(50)
-        assert body["requests"][0]["txn_bytes_hex"] == encode_transaction(txn)[0]
+        assert body["requests"][0]["txn_bytes_hex"] == encode_transaction(txn)
 
     def test_defaults_auth_address_to_sender(self):
         client = make_client()
@@ -3117,7 +3117,7 @@ class TestBuildSignRequests:
 
     def test_rejects_indexed_lsig_resources_on_sign_mode(self):
         client = make_client()
-        with patch("aplanesdk.signer.encode_transaction", return_value=("deadbeef", "SENDER")):
+        with patch("aplanesdk.signer.encode_transaction", return_value="deadbeef"):
             with pytest.raises(ValueError, match="allowed only for foreign or passthrough"):
                 client._build_sign_requests(
                     [self._make_mock_txn()],
@@ -3145,7 +3145,7 @@ class TestPreparedGroup:
             )
         ])
 
-        with patch("aplanesdk.signer.encode_transaction", return_value=("deadbeef", "SENDER_ADDR")):
+        with patch("aplanesdk.signer.encode_transaction", return_value="deadbeef"):
             requests = prepared.to_sign_requests()
 
         assert requests == [{
@@ -3163,7 +3163,7 @@ class TestPreparedGroup:
             )
         ])
 
-        with patch("aplanesdk.signer.encode_transaction", return_value=("deadbeef", "SENDER_ADDR")):
+        with patch("aplanesdk.signer.encode_transaction", return_value="deadbeef"):
             requests = prepared.to_sign_requests()
 
         assert requests == [{
@@ -3221,7 +3221,7 @@ class TestPreparedGroup:
         ],
     )
     def test_rejects_authorization_hints_outside_foreign_mode(self, prepared, message):
-        with patch("aplanesdk.signer.encode_transaction", return_value=("deadbeef", "SENDER_ADDR")):
+        with patch("aplanesdk.signer.encode_transaction", return_value="deadbeef"):
             with pytest.raises(ValueError, match=message):
                 PreparedGroup([prepared]).to_sign_requests()
 
@@ -4132,7 +4132,7 @@ class TestRequestEnrollmentFromEnv:
 
 class TestEncoding:
     def test_encode_transaction(self):
-        """encode_transaction returns (hex, sender)."""
+        """encode_transaction returns the TX-prefixed hex."""
         from aplanesdk.signer import encode_transaction
         txn = MagicMock()
         txn.sender = "SENDER_ADDR"
@@ -4142,10 +4142,7 @@ class TestEncoding:
         with patch("aplanesdk.signer.encoding.msgpack_encode", return_value="gqNzbmTEIAAA"):
             result = encode_transaction(txn)
 
-        assert isinstance(result, tuple)
-        assert len(result) == 2
-        assert isinstance(result[0], str)  # hex string
-        assert result[1] == "SENDER_ADDR"  # sender
+        assert result == "5458" + base64.b64decode("gqNzbmTEIAAA").hex()
 
     def test_hex_round_trip(self):
         """bytes -> hex -> bytes round-trip."""

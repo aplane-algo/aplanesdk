@@ -2068,7 +2068,7 @@ class PreparedTransaction:
         if self.transaction is None:
             raise ValueError("transaction is required")
 
-        txn_bytes_hex, _ = encode_transaction(self.transaction)
+        txn_bytes_hex = encode_transaction(self.transaction)
         if not self.auth_address:
             request: Dict[str, Any] = {"txn_bytes_hex": txn_bytes_hex}
             if self.lsig_resources is not None:
@@ -2453,20 +2453,13 @@ def client_endpoint_ssh_host_port(
 # -----------------------------------------------------------------------------
 
 
-def encode_transaction(txn: transaction.Transaction) -> tuple:
-    """
-    Encode transaction for signing.
-
-    Returns:
-        (txn_bytes_hex, sender) where:
-        - txn_bytes_hex = hex(b"TX" + msgpack(txn))
-        - sender = the transaction's sender address
-    """
+def encode_transaction(txn: transaction.Transaction) -> str:
+    """Encode transaction for signing: hex(b"TX" + msgpack(txn))."""
     # Encode transaction to msgpack (algosdk returns base64 string)
     msgpack_b64 = encoding.msgpack_encode(txn)
     txn_bytes = b"TX" + base64.b64decode(msgpack_b64)
 
-    return txn_bytes.hex(), txn.sender
+    return txn_bytes.hex()
 
 
 def _simulate_signed_group(
@@ -2481,7 +2474,7 @@ def _simulate_signed_group(
     failure = _simulation_failure(response, len(signed_transactions))
     return SimulationResult(
         tx_ids=[signed.get_txid() for signed in signed_transactions],
-        transactions=[encode_transaction(signed.transaction)[0] for signed in signed_transactions],
+        transactions=[encode_transaction(signed.transaction) for signed in signed_transactions],
         signed_group=list(signed_group),
         mutations=mutations,
         response=response,
@@ -2691,7 +2684,7 @@ def _validate_authorization(signed: Any, auth: str) -> None:
         signature = base64.b64decode(signed.signature or "")
         if len(signature) != 64:
             raise SignerError(f"signature is {len(signature)} bytes, not 64")
-        message = bytes.fromhex(encode_transaction(txn)[0])
+        message = bytes.fromhex(encode_transaction(txn))
         try:
             VerifyKey(encoding.decode_address(auth)).verify(message, signature)
         except BadSignatureError as e:
@@ -2811,7 +2804,7 @@ def _decode_canonical_txn(raw: bytes) -> transaction.Transaction:
         raise SignerError(f"invalid msgpack: {e}") from e
     if not isinstance(decoded, transaction.Transaction):
         raise SignerError("did not decode as a transaction")
-    if raw.hex() != encode_transaction(decoded)[0]:
+    if raw.hex() != encode_transaction(decoded):
         raise SignerError("bytes are not canonical")
     return decoded
 
@@ -2951,7 +2944,7 @@ def _validate_canonical_dummies(
     """Require every appended transaction to be the canonical resource dummy."""
     for index, txn in enumerate(appended):
         want = _canonical_dummy_txn(first_original, group_id, index)
-        if encode_transaction(want)[0] != encode_transaction(txn)[0]:
+        if encode_transaction(want) != encode_transaction(txn):
             raise SignerError(
                 f"appended transaction {index + 1} is not the canonical resource dummy"
             )
@@ -3148,7 +3141,7 @@ def _validate_group_mutations(
             if total_fee_delta > _UINT64_MAX:
                 raise SignerError("observed fee delta overflows uint64")
             want.fee = got.fee
-        if encode_transaction(want)[0] != encode_transaction(got)[0]:
+        if encode_transaction(want) != encode_transaction(got):
             raise SignerError(f"signer changed unreported fields at original position {index + 1}")
         final.append(got)
     reported_delta = _mutation_int(report, "total_fees_delta")
@@ -7223,7 +7216,7 @@ class SignerClient:
                     )
                 if txn is None:
                     raise ValueError(f"transaction is required for foreign-mode entry at index {i}")
-                txn_bytes_hex, _ = encode_transaction(txn)
+                txn_bytes_hex = encode_transaction(txn)
                 req: Dict[str, Any] = {"txn_bytes_hex": txn_bytes_hex}
                 if lsig_resources and i in lsig_resources:
                     req["lsig_resources"] = _wire_lsig_resources(lsig_resources[i])
@@ -7237,7 +7230,7 @@ class SignerClient:
             except ValueError as e:
                 raise ValueError(f"transaction {i + 1}: {e}") from e
 
-            txn_bytes_hex, _ = encode_transaction(txn)
+            txn_bytes_hex = encode_transaction(txn)
 
             req = {
                 "txn_bytes_hex": txn_bytes_hex,
@@ -8236,7 +8229,7 @@ class SignerClient:
         _require_canonical_address(txn.sender, "sender")
         _check_rotating_shape(txn)
         _check_rotating_window(txn)
-        original = bytes.fromhex(encode_transaction(txn)[0])
+        original = bytes.fromhex(encode_transaction(txn))
         # The prepared group is held to the ceiling in force now.
         max_fee_increase = self.max_fee_increase
         body = {"account": txn.sender, "txn_bytes_hex": original.hex()}
@@ -9350,7 +9343,7 @@ def _verify_signed_transaction_matches_canonical(
         decoded = _decode_canonical_signed_txn(signed_bytes)
     except SignerError as e:
         raise SignerError(f"{label} {index}: {e}") from e
-    encoded, _ = encode_transaction(decoded.transaction)
+    encoded = encode_transaction(decoded.transaction)
     if encoded != canonical_hex.lower():
         raise SignerError(f"{label} {index} does not match the submitted canonical bytes")
 
@@ -10045,7 +10038,7 @@ class PreparedRotating:
                 stxn = _decode_canonical_signed_txn(raw)
             except SignerError as e:
                 raise SignerError(f"signed transaction {position}: {e}") from e
-            if encode_transaction(stxn.transaction)[0] != encode_transaction(txns[index])[0]:
+            if encode_transaction(stxn.transaction) != encode_transaction(txns[index]):
                 raise SignerError(
                     f"signed transaction {position} differs from the prepared transaction"
                 )

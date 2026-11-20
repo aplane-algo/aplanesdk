@@ -5134,7 +5134,7 @@ export class SignerClient {
     }
     checkRotatingShape(txn);
     checkRotatingWindow(txn);
-    const [originalHex] = encodeTransaction(txn);
+    const originalHex = encodeTransaction(txn);
     const request: RotatingPrepareRequest = {
       account: txn.sender.toString(),
       txn_bytes_hex: originalHex,
@@ -5515,7 +5515,7 @@ export class SignerClient {
         if (!txn) {
           throw new SignerError(`transaction is required for foreign-mode entry at index ${i}`);
         }
-        const [txnBytesHex] = encodeTransaction(txn);
+        const txnBytesHex = encodeTransaction(txn);
         const req: SignRequest = { txn_bytes_hex: txnBytesHex };
         const resources = lsigResourcesByIndex.get(i);
         if (resources) {
@@ -5534,7 +5534,7 @@ export class SignerClient {
         throw new SignerError(`transaction ${i + 1}: ${errorText(error)}`);
       }
 
-      const [txnBytesHex] = encodeTransaction(txn);
+      const txnBytesHex = encodeTransaction(txn);
 
       const req: SignRequest = {
         txn_bytes_hex: txnBytesHex,

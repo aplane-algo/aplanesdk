@@ -390,7 +390,7 @@ def test_plan_response_checks_foreign_positions_and_dummies():
             txn.group = None
         edit(txns)
         transaction.assign_group_id(txns)
-        body["transactions"] = [encode_transaction(txn)[0] for txn in txns]
+        body["transactions"] = [encode_transaction(txn) for txn in txns]
 
     body = fake_signer.plan_response(requests, **signer)
     assert len(body["transactions"]) == 3
@@ -427,7 +427,7 @@ def test_public_calls_reject_a_substituted_transaction():
         if "signed" in body:
             body["signed"] = [fake_signer.signed_hex(other)]
         else:
-            body["transactions"] = [encode_transaction(other)[0]]
+            body["transactions"] = [encode_transaction(other)]
 
     error = "unreported fields at original position 1"
     algod_client = MagicMock()
@@ -474,7 +474,7 @@ def test_sign_transaction_accepts_a_raised_fee_and_dummies():
 def test_signed_transaction_identity_checks_reject_noncanonical_bytes():
     txn = fake_signer.payment(41, 42, 1)
     other = fake_signer.payment(41, 45, 2)
-    canonical_hex = encode_transaction(txn)[0]
+    canonical_hex = encode_transaction(txn)
     signed_hex = fake_signer.signed_hex(txn)
 
     _verify_signed_transaction_matches_canonical("slot", 0, signed_hex, canonical_hex)
@@ -553,7 +553,7 @@ def test_caller_bytes_must_be_one_canonical_signed_transaction(case):
 
 def test_request_bytes_must_be_canonical():
     txn = fake_signer.payment(41, 42, 1)
-    canonical = encode_transaction(txn)[0]
+    canonical = encode_transaction(txn)
     signed = fake_signer.signed_hex(txn)
     for entry in (
         {"auth_address": "A", "txn_bytes_hex": canonical[4:]},
@@ -789,7 +789,7 @@ DUMMY = fake_signer.hold_program(bytes.fromhex("033120320312"))
 def _check_authorization(txn, auth, signed_hex):
     entry = {
         "auth_address": auth,
-        "txn_bytes_hex": encode_transaction(txn)[0],
+        "txn_bytes_hex": encode_transaction(txn),
     }
     _validate_sign_response(_decode_request_slots([entry]), [signed_hex], None, None)
 
@@ -981,7 +981,7 @@ def test_authorization_refused(sender, auth, tamper, error):
 
 def test_request_auth_address_must_be_an_address():
     txn = fake_signer.payment()
-    entry = {"auth_address": "AUTH", "txn_bytes_hex": encode_transaction(txn)[0]}
+    entry = {"auth_address": "AUTH", "txn_bytes_hex": encode_transaction(txn)}
     with pytest.raises(SignerError, match="auth_address 'AUTH' is not a valid address"):
         _decode_request_slots([entry])
     client = make_client()
@@ -1305,7 +1305,7 @@ def test_sign_and_plan_requests_keep_their_public_signatures():
 def test_malformed_request_bytes_are_a_signer_error():
     """An adapter catching SignerError sees a bad request as it did when the signer refused it."""
     client = make_client()
-    canonical = encode_transaction(fake_signer.payment())[0]
+    canonical = encode_transaction(fake_signer.payment())
     bad = [{"txn_bytes_hex": canonical + "00", "auth_address": fake_signer.account(41)}]
     with patch.object(client.session, "post") as post:
         with pytest.raises(SignerError, match="invalid sign request: transaction 1: txn_bytes_hex"):

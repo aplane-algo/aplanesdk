@@ -271,7 +271,7 @@ def _rekeyed_to(case, rekey_to):
     set_prepared(prepare, txns)
     prepare["rekey_to"] = rekey_to
     spend = decode_map(bytes.fromhex(sign["signed"][0]))
-    spend["txn"] = decode_map(bytes.fromhex(encode_transaction(txns[0])[0])[2:])
+    spend["txn"] = decode_map(bytes.fromhex(encode_transaction(txns[0]))[2:])
     sign["signed"] = [encode_map(spend).hex()] + [
         _sign_canonical_dummy(txn).hex() for txn in txns[1:]
     ]

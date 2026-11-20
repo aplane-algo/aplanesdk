@@ -1268,7 +1268,7 @@ describe("sendTransactions", () => {
     assert.equal(requests.length, 1);
     // The slot names the resolved address and nothing else.
     assert.deepEqual(requests[0], [{
-      txn_bytes_hex: encodeTransaction(txn)[0],
+      txn_bytes_hex: encodeTransaction(txn),
       auth_address: sender,
     }]);
     assert.equal(node.submitted.length, 1);
@@ -1303,7 +1303,7 @@ describe("sendTransactions", () => {
     assert.equal(signer.count("/sign"), 1);
     assert.deepEqual(
       requests[0].map((entry) => [entry.auth_address, entry.txn_bytes_hex]),
-      [[first.sender.toString(), encodeTransaction(first)[0]], [second.sender.toString(), encodeTransaction(second)[0]]],
+      [[first.sender.toString(), encodeTransaction(first)], [second.sender.toString(), encodeTransaction(second)]],
     );
     // The IDs to use are the result's.
     assert.equal(result.originalCount, 2);
@@ -2007,7 +2007,7 @@ describe("a fault after a signed answer", () => {
 // already ended or its body could not be encoded, is a plain error: nothing
 // was asked, so nothing is canceled and no outcome is unknown.
 describe("an approval request that is never posted", () => {
-  const groupHex = () => [encodeTransaction(fakePayment(41, 42, 1))[0]];
+  const groupHex = () => [encodeTransaction(fakePayment(41, 42, 1))];
   const baseRequest = (): ComponentRequest => ({
     group_bytes_hex: groupHex(),
     targets: [{ target_index: 0, kind: "bounded-base", auth_address: fakeAddress(21) }],

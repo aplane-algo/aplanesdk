@@ -2500,8 +2500,8 @@ describe("SignerClient", () => {
       fabricatedFirst.group = new Uint8Array(32).fill(0x44);
       fabricatedSecond.group = new Uint8Array(32).fill(0x44);
       plannedTransactions = [
-        encodeTransaction(fabricatedFirst)[0],
-        encodeTransaction(fabricatedSecond)[0],
+        encodeTransaction(fabricatedFirst),
+        encodeTransaction(fabricatedSecond),
       ];
       plannedMutations = {
         dummies_added: 1,
@@ -2530,7 +2530,7 @@ describe("SignerClient", () => {
           flatFee: true,
         },
       });
-      plannedTransactions = [encodeTransaction(changedPlanTxn)[0]];
+      plannedTransactions = [encodeTransaction(changedPlanTxn)];
       plannedMutations = undefined;
       await assert.rejects(
         signCosignedWithHeldKeys(options),
@@ -2551,7 +2551,7 @@ describe("SignerClient", () => {
           flatFee: true,
         },
       });
-      plannedTransactions = [encodeTransaction(inflatedFeeTxn)[0]];
+      plannedTransactions = [encodeTransaction(inflatedFeeTxn)];
       plannedMutations = {
         dummies_added: 0,
         group_id_changed: false,
@@ -2587,7 +2587,7 @@ describe("SignerClient", () => {
         badDummy,
       ];
       algosdk.assignGroupID(badDummyGroup);
-      plannedTransactions = badDummyGroup.map((item) => encodeTransaction(item)[0]);
+      plannedTransactions = badDummyGroup.map((item) => encodeTransaction(item));
       plannedMutations = {
         dummies_added: 1,
         group_id_changed: true,
@@ -2868,7 +2868,7 @@ describe("SignerClient", () => {
         algosdk.assignGroupID(planned);
         plannedGroup = planned;
         return {
-          transactions: planned.map((item: algosdk.Transaction) => encodeTransaction(item)[0]),
+          transactions: planned.map((item: algosdk.Transaction) => encodeTransaction(item)),
           mutations: {
             dummiesAdded: 0,
             groupIdChanged: true,
@@ -3020,7 +3020,7 @@ describe("SignerClient", () => {
         algosdk.assignGroupID(planned);
         plannedGroup = planned;
         return {
-          transactions: planned.map((item: algosdk.Transaction) => encodeTransaction(item)[0]),
+          transactions: planned.map((item: algosdk.Transaction) => encodeTransaction(item)),
           mutations: {
             dummiesAdded: 0,
             groupIdChanged: true,
@@ -3035,7 +3035,7 @@ describe("SignerClient", () => {
         events.push("base");
         assert.deepEqual(
           request.group_bytes_hex,
-          plannedGroup.map((item) => encodeTransaction(item)[0]),
+          plannedGroup.map((item) => encodeTransaction(item)),
         );
         assert.equal(request.targets.length, 1);
         assert.equal(request.contextual_positions.length, 1);
@@ -3217,7 +3217,7 @@ describe("SignerClient", () => {
       const other = fakePayment(41, 45, 100_000_000);
       mockFetch.mockImplementationOnce(signerFetch({
         tamper: (body) => {
-          body.transactions = [encodeTransaction(other)[0]];
+          body.transactions = [encodeTransaction(other)];
         },
       }));
 
@@ -3755,7 +3755,7 @@ describe("SignerClient", () => {
 
       const txn = fakePayment();
       const entry = {
-        txn_bytes_hex: encodeTransaction(txn)[0],
+        txn_bytes_hex: encodeTransaction(txn),
         auth_address: txn.sender.toString(),
       };
       const client = new SignerClient("http://localhost:11270");
@@ -3772,7 +3772,7 @@ describe("SignerClient", () => {
 
     it("rejects non-canonical transaction bytes before fetch", async () => {
       const client = new SignerClient("http://localhost:11270");
-      const canonical = encodeTransaction(fakePayment())[0];
+      const canonical = encodeTransaction(fakePayment());
       const callsBefore = mockFetch.mock.calls.length;
       await assert.rejects(
         client.signRequests([{ txn_bytes_hex: canonical.slice(4), auth_address: "AUTH" }]),

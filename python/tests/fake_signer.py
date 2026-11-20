@@ -84,7 +84,7 @@ def authorize(txn, auth_address: str):
     """
     rekeyed = auth_address if auth_address != txn.sender else None
     if auth_address in _KEYS:
-        message = bytes.fromhex(encode_transaction(txn)[0])
+        message = bytes.fromhex(encode_transaction(txn))
         signature = _KEYS[auth_address].sign(message).signature
         return transaction.SignedTransaction(txn, base64.b64encode(signature).decode(), rekeyed)
     if auth_address in _PROGRAMS:
@@ -121,7 +121,7 @@ def sign_entries(*txns):
     return [
         {
             "auth_address": txn.sender,
-            "txn_bytes_hex": encode_transaction(txn)[0],
+            "txn_bytes_hex": encode_transaction(txn),
         }
         for txn in txns
     ]
@@ -201,7 +201,7 @@ def sign_response(entries, fee_raise=None, dummies=0) -> dict:
 def plan_response(entries, fee_raise=None, dummies=0) -> dict:
     """The /plan response body a real signer would return for these entries."""
     _, final, report = _finalize(entries, fee_raise, dummies)
-    body = {"transactions": [encode_transaction(txn)[0] for txn in final]}
+    body = {"transactions": [encode_transaction(txn) for txn in final]}
     if report is not None:
         body["mutations"] = report
     return body

@@ -34,11 +34,9 @@ export function hexToBytes(hex: string): Uint8Array {
  * Encode a transaction for signing.
  *
  * @param txn - algosdk Transaction object
- * @returns Tuple of [txnBytesHex, sender] where:
- *   - txnBytesHex = hex(b"TX" + msgpack(txn))
- *   - sender = sender address string
+ * @returns hex(b"TX" + msgpack(txn))
  */
-export function encodeTransaction(txn: Transaction): [string, string] {
+export function encodeTransaction(txn: Transaction): string {
   // algosdk v3 uses toByte() to get the unsigned transaction bytes
   // This returns the raw msgpack without the "TX" prefix
   const msgpackBytes = txn.toByte();
@@ -49,10 +47,7 @@ export function encodeTransaction(txn: Transaction): [string, string] {
   txnBytes.set(txPrefix);
   txnBytes.set(msgpackBytes, txPrefix.length);
 
-  // Get sender address
-  const sender = txn.sender.toString();
-
-  return [bytesToHex(txnBytes), sender];
+  return bytesToHex(txnBytes);
 }
 
 /**

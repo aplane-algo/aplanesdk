@@ -1232,7 +1232,7 @@ def test_sign_prepared_rotating_checks_the_binding_again(fakes):
     # changed all the same, neither simulation nor signing may use it.
     altered = copy.deepcopy(f.txn)
     altered.amt = 999999
-    prepared._original = bytes.fromhex(signer_module.encode_transaction(altered)[0])
+    prepared._original = bytes.fromhex(signer_module.encode_transaction(altered))
 
     with pytest.raises(SignerError, match="verify prepared rotating group"):
         f.client.sign_prepared_rotating(prepared)

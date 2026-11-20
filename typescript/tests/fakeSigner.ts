@@ -134,8 +134,7 @@ export function fakePayment(
 
 export function signEntries(...txns: Transaction[]): SignRequest[] {
   return txns.map((txn) => {
-    const [txnBytesHex, sender] = encodeTransaction(txn);
-    return { auth_address: sender, txn_bytes_hex: txnBytesHex };
+    return { auth_address: txn.sender.toString(), txn_bytes_hex: encodeTransaction(txn) };
   });
 }
 
@@ -226,7 +225,7 @@ export function signResponse(requests: SignRequest[], options: FakeSignerOptions
 /** The /plan response body a real signer would return for these requests. */
 export function planResponse(requests: SignRequest[], options: FakeSignerOptions = {}): any {
   const { final, report } = finalize(requests, options);
-  const body: any = { transactions: final.map((txn) => encodeTransaction(txn)[0]) };
+  const body: any = { transactions: final.map((txn) => encodeTransaction(txn)) };
   if (report) body.mutations = report;
   options.tamper?.(body);
   return body;

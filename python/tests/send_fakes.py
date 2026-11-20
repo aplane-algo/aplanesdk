@@ -353,7 +353,7 @@ def regroup(txns: List[transaction.Transaction]) -> None:
 
 
 def set_prepared(response: Dict[str, Any], txns: List[transaction.Transaction]) -> None:
-    response["transactions"] = [encode_transaction(txn)[0] for txn in txns]
+    response["transactions"] = [encode_transaction(txn) for txn in txns]
 
 
 class RotatingSigner:

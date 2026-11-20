@@ -1451,8 +1451,8 @@ try {
   connection and enrollment paths will fail at runtime until `ssh2` is
   installed.
 - The SDK exports both runtime helpers and lower-level utilities such as
-  `loadConfig`, `resolveDataDir`, `encodeTransaction`, and
-  `encodeLsigArgs`.
+  `loadConfig`, `resolveDataDir`, `encodeTransaction` (a transaction's
+  `TX`-prefixed hex), and `encodeLsigArgs`.
 
 ## Compatibility Notes
 
