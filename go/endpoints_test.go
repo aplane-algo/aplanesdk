@@ -186,6 +186,16 @@ func TestResolveClientEndpoint(t *testing.T) {
 	if _, _, err := ResolveClientEndpoint(cosignerOnly, ""); err == nil || !strings.Contains(err.Error(), "has no default signer endpoint") {
 		t.Fatalf("a registry without a signer endpoint = %v, want no default signer endpoint", err)
 	}
+	twoSigners := &ClientEndpointRegistry{Endpoints: map[string]ClientEndpointConfig{
+		"primary":   {Role: ClientEndpointRoleSigner},
+		"secondary": {Role: ClientEndpointRoleSigner},
+	}}
+	if alias, _, err := ResolveClientEndpoint(twoSigners, ""); err == nil || !strings.Contains(err.Error(), "at most one") {
+		t.Fatalf("a registry with two signer endpoints resolved to %q, %v; want it refused", alias, err)
+	}
+	if alias, _, err := ResolveClientEndpoint(twoSigners, "secondary"); err != nil || alias != "secondary" {
+		t.Fatalf("explicit alias in a two-signer registry = %q, %v; want secondary", alias, err)
+	}
 }
 
 // A registry names its signer by role alone: a default key is an unknown

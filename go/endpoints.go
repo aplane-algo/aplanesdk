@@ -260,12 +260,16 @@ func normalizeClientEndpointRoles(registry *ClientEndpointRegistry) error {
 }
 
 // ResolveClientEndpoint selects an explicit alias or, with none, the
-// registry's signer endpoint.
+// registry's signer endpoint. A registry built by hand with two signers is
+// refused, as a loaded one is, rather than resolved to either.
 func ResolveClientEndpoint(registry *ClientEndpointRegistry, alias string) (string, ClientEndpointConfig, error) {
 	if registry == nil {
 		return "", ClientEndpointConfig{}, fmt.Errorf("%s registry is required", ClientEndpointsFile)
 	}
 	if alias == "" {
+		if err := normalizeClientEndpointRoles(registry); err != nil {
+			return "", ClientEndpointConfig{}, err
+		}
 		for candidate, endpoint := range registry.Endpoints {
 			if endpoint.Role == ClientEndpointRoleSigner {
 				return candidate, endpoint, nil
