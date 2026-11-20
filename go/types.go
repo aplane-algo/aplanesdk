@@ -50,7 +50,6 @@ type LogicSigResourceProfile struct {
 //   - Foreign mode: txn_bytes_hex without auth_address
 type SignRequest struct {
 	AuthAddress   string                 `json:"auth_address,omitempty"`
-	TxnSender     string                 `json:"txn_sender,omitempty"` // Advisory display hint; signer authority comes from txn bytes
 	TxnBytesHex   string                 `json:"txn_bytes_hex,omitempty"`
 	LsigArgs      map[string]string      `json:"lsig_args,omitempty"`
 	LsigResources *LogicSigResourceUsage `json:"lsig_resources,omitempty"`

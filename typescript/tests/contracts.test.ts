@@ -196,7 +196,6 @@ describe("signer API contract fixtures", () => {
     );
     const [sign, passthrough, foreign] = body.requests;
     assert.equal(sign.auth_address, auth);
-    assert.equal(sign.txn_sender, auth);
     assert.match(sign.txn_bytes_hex, /^5458/);
     assert.deepEqual(sign.lsig_args, expected.requests[0].lsig_args);
     assert.deepEqual(passthrough, { signed_txn_hex: presigned });

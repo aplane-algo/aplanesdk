@@ -3757,7 +3757,6 @@ describe("SignerClient", () => {
       const entry = {
         txn_bytes_hex: encodeTransaction(txn)[0],
         auth_address: txn.sender.toString(),
-        txn_sender: "SENDER",
       };
       const client = new SignerClient("http://localhost:11270");
       const result = await client.signRequests([{ ...entry }], { requestId: "raw-requests-id" });
@@ -4852,7 +4851,6 @@ describe("preparedGroupToSignRequests", () => {
       transactions: [{
         transaction: createMockTxn() as any,
         authAddress: "AUTH_ADDR",
-        txnSender: "DISPLAY_SENDER",
         lsigArgs: {
           preimage: new Uint8Array([0x73, 0x65, 0x63, 0x72, 0x65, 0x74]),
         },
@@ -4866,7 +4864,6 @@ describe("preparedGroupToSignRequests", () => {
     assert.equal(requests.length, 1);
     assert.equal(requests[0].txn_bytes_hex, "5458010203");
     assert.equal(requests[0].auth_address, "AUTH_ADDR");
-    assert.equal(requests[0].txn_sender, "DISPLAY_SENDER");
     assert.equal(requests[0].lsig_args?.preimage, "736563726574");
     assert.equal(requests[0].app_call_info?.method, "do(uint64)void");
   });

@@ -799,8 +799,7 @@ describe("authorization of a signed position", () => {
   const dummy = holdProgram(dummyProgram);
 
   function check(txn: Transaction, auth: string, signedHexValue: string): void {
-    const sender = txn.sender.toString();
-    const request = { auth_address: auth, txn_sender: sender, txn_bytes_hex: encodeTransaction(txn)[0] };
+    const request = { auth_address: auth, txn_bytes_hex: encodeTransaction(txn)[0] };
     validateSignResponse(decodeRequestSlots([request]), [signedHexValue], undefined, undefined);
   }
 

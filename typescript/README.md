@@ -331,7 +331,6 @@ const response = await client.signRequests(
   [{
     txn_bytes_hex: "5458...",
     auth_address: "SIGNER_KEY_ADDRESS",
-    txn_sender: "SENDER_ADDRESS", // advisory display hint only
   }],
   { requestId: "app-owned-request-id" },
 );

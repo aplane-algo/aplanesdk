@@ -2041,7 +2041,6 @@ class PreparedTransaction:
 
     transaction: Optional[transaction.Transaction] = None
     auth_address: Optional[str] = None
-    txn_sender: str = ""
     lsig_args: Optional[Dict[str, bytes]] = None
     lsig_resources: Optional[LogicSigResourceUsage] = None
     pq_scheme: str = ""
@@ -2069,7 +2068,7 @@ class PreparedTransaction:
         if self.transaction is None:
             raise ValueError("transaction is required")
 
-        txn_bytes_hex, txn_sender = encode_transaction(self.transaction)
+        txn_bytes_hex, _ = encode_transaction(self.transaction)
         if not self.auth_address:
             request: Dict[str, Any] = {"txn_bytes_hex": txn_bytes_hex}
             if self.lsig_resources is not None:
@@ -2094,7 +2093,6 @@ class PreparedTransaction:
         request = {
             "txn_bytes_hex": txn_bytes_hex,
             "auth_address": self.auth_address,
-            "txn_sender": self.txn_sender or txn_sender,
         }
         # Checked whatever it is: a falsy value of the wrong type is refused
         # too. No arguments are sent as no field.
@@ -2460,9 +2458,9 @@ def encode_transaction(txn: transaction.Transaction) -> tuple:
     Encode transaction for signing.
 
     Returns:
-        (txn_bytes_hex, txn_sender) where:
+        (txn_bytes_hex, sender) where:
         - txn_bytes_hex = hex(b"TX" + msgpack(txn))
-        - txn_sender = advisory display hint; signer authority comes from txn bytes
+        - sender = the transaction's sender address
     """
     # Encode transaction to msgpack (algosdk returns base64 string)
     msgpack_b64 = encoding.msgpack_encode(txn)
@@ -7239,12 +7237,11 @@ class SignerClient:
             except ValueError as e:
                 raise ValueError(f"transaction {i + 1}: {e}") from e
 
-            txn_bytes_hex, txn_sender = encode_transaction(txn)
+            txn_bytes_hex, _ = encode_transaction(txn)
 
             req = {
                 "txn_bytes_hex": txn_bytes_hex,
                 "auth_address": auth_addr,
-                "txn_sender": txn_sender,
             }
 
             # Add LogicSig args if provided
@@ -9418,7 +9415,7 @@ def _request_bounded_primary_passthrough(
                 "txn_bytes_hex": txn_hex,
                 "auth_address": target["auth_address"],
             }
-            for field in ("txn_sender", "lsig_args", "app_call_info"):
+            for field in ("lsig_args", "app_call_info"):
                 if target.get(field):
                     request[field] = target[field]
             requests_data.append(request)
@@ -9562,7 +9559,6 @@ def sign_prepared_cosigned_group(
             {
                 "target_index": index,
                 "auth_address": item.auth_address,
-                "txn_sender": item.txn_sender,
                 "lsig_args": _encode_lsig_args_or_none(item.lsig_args),
                 "app_call_info": item.app_call_info,
             }

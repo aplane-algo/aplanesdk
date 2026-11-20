@@ -1540,7 +1540,7 @@ func TestSendTransactionsSendsAnOrdinarySender(t *testing.T) {
 		t.Fatalf("sign requests = %+v, want one with one entry", seen)
 	}
 	request := seen[0][0]
-	if request.AuthAddress != txn.Sender.String() || request.TxnSender != txn.Sender.String() || request.TxnBytesHex != hex.EncodeToString(before) {
+	if request.AuthAddress != txn.Sender.String() || request.TxnBytesHex != hex.EncodeToString(before) {
 		t.Fatalf("sign request = %+v, want the transaction as built, signed by its sender", request)
 	}
 	if request.LsigArgs != nil || request.AppCallInfo != nil || request.LsigResources != nil || request.PQScheme != "" {
@@ -1573,7 +1573,7 @@ func TestSendTransactionsUsesTheChainAuthAddressOfARekeyedSender(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendTransactions() error = %v", err)
 	}
-	if len(seen) != 1 || seen[0][0].AuthAddress != authorizer || seen[0][0].TxnSender != sender {
+	if len(seen) != 1 || seen[0][0].AuthAddress != authorizer {
 		t.Fatalf("sign requests = %+v, want the chain's auth address %s for sender %s", seen, authorizer, sender)
 	}
 	var signed types.SignedTxn

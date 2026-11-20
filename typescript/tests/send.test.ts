@@ -1270,7 +1270,6 @@ describe("sendTransactions", () => {
     assert.deepEqual(requests[0], [{
       txn_bytes_hex: encodeTransaction(txn)[0],
       auth_address: sender,
-      txn_sender: sender,
     }]);
     assert.equal(node.submitted.length, 1);
   });
@@ -1286,7 +1285,6 @@ describe("sendTransactions", () => {
 
     const result = await client.sendTransactions(algod, [txn]);
     assert.equal(requests[0][0].auth_address, holder);
-    assert.equal(requests[0][0].txn_sender, sender);
     const sent = algosdk.decodeSignedTransaction(result.signedGroup[0]);
     assert.equal(sent.sgnr?.toString(), holder);
     assert.deepEqual(result.txIds, [txn.txID()]);

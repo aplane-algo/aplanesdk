@@ -34,9 +34,9 @@ export function hexToBytes(hex: string): Uint8Array {
  * Encode a transaction for signing.
  *
  * @param txn - algosdk Transaction object
- * @returns Tuple of [txnBytesHex, txnSender] where:
+ * @returns Tuple of [txnBytesHex, sender] where:
  *   - txnBytesHex = hex(b"TX" + msgpack(txn))
- *   - txnSender = sender address string
+ *   - sender = sender address string
  */
 export function encodeTransaction(txn: Transaction): [string, string] {
   // algosdk v3 uses toByte() to get the unsigned transaction bytes

@@ -820,8 +820,6 @@ export type LsigArgsMap = Record<string, LsigArgs>;
 export interface SignRequest {
   /** Auth address (which key to use for signing) */
   auth_address?: string;
-  /** Advisory display hint; signer authority comes from txn bytes */
-  txn_sender?: string;
   /** Transaction bytes (TX + msgpack) as hex */
   txn_bytes_hex?: string;
   /** Runtime args for generic LogicSigs (name -> hex value) */
@@ -974,8 +972,6 @@ export interface PreparedTransaction {
   transaction?: Transaction | null;
   /** Effective signer address. Empty/null means foreign context. */
   authAddress?: string | null;
-  /** Optional sender display override. Defaults to transaction sender. */
-  txnSender?: string;
   /** Optional LogicSig runtime arguments. */
   lsigArgs?: LsigArgs;
   /** Optional selected-path LogicSig resources for foreign planning. */

@@ -2,7 +2,6 @@
   "requests": [
     {
       "auth_address": "AUTHADDR00000000000000000000000000000000000000000000000",
-      "txn_sender": "SENDERADDR0000000000000000000000000000000000000000000",
       "txn_bytes_hex": "545801",
       "lsig_args": {
         "preimage": "736563726574",

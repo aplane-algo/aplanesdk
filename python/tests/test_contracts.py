@@ -196,7 +196,7 @@ def test_encodes_mixed_group_sign_request_wire_fields():
         set(request) for request in expected["requests"]
     ]
     sign, passthrough, foreign = body
-    assert sign["auth_address"] == sign["txn_sender"] == sign_txn.sender
+    assert sign["auth_address"] == sign_txn.sender
     assert sign["txn_bytes_hex"].startswith("5458")
     assert sign["lsig_args"] == expected["requests"][0]["lsig_args"]
     assert passthrough == {"signed_txn_hex": presigned}

@@ -789,7 +789,6 @@ DUMMY = fake_signer.hold_program(bytes.fromhex("033120320312"))
 def _check_authorization(txn, auth, signed_hex):
     entry = {
         "auth_address": auth,
-        "txn_sender": txn.sender,
         "txn_bytes_hex": encode_transaction(txn)[0],
     }
     _validate_sign_response(_decode_request_slots([entry]), [signed_hex], None, None)

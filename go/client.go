@@ -1154,7 +1154,6 @@ func buildRequests(txns []types.Transaction, authAddresses []string, lsigArgsMap
 		matchedArgs[authAddr] = true
 		requests[i] = SignRequest{
 			AuthAddress: authAddr,
-			TxnSender:   txn.Sender.String(),
 			TxnBytesHex: txnBytesHex,
 			LsigArgs:    encodeLsigArgs(lsigArgsMap, authAddr),
 		}

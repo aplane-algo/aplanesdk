@@ -71,7 +71,6 @@ type cosignedSignTarget struct {
 type cosignedPrimarySignTarget struct {
 	TargetIndex int
 	AuthAddress string
-	TxnSender   string
 	LsigArgs    map[string]string
 	AppCallInfo *AppCallInfo
 }

@@ -2826,7 +2826,6 @@ class TestSignRequests:
         entry = {
             "txn_bytes_hex": encode_transaction(txn)[0],
             "auth_address": txn.sender,
-            "txn_sender": "SENDER",
         }
 
         with patch.object(client, "_discover_approval_wait"), \
@@ -3141,7 +3140,6 @@ class TestPreparedGroup:
             PreparedTransaction(
                 transaction=self._make_mock_txn(),
                 auth_address="AUTH_ADDR",
-                txn_sender="DISPLAY_SENDER",
                 lsig_args={"preimage": b"secret"},
                 app_call_info={"mode": "abi", "method": "do(uint64)void"},
             )
@@ -3153,7 +3151,6 @@ class TestPreparedGroup:
         assert requests == [{
             "txn_bytes_hex": "deadbeef",
             "auth_address": "AUTH_ADDR",
-            "txn_sender": "DISPLAY_SENDER",
             "lsig_args": {"preimage": "736563726574"},
             "app_call_info": {"mode": "abi", "method": "do(uint64)void"},
         }]

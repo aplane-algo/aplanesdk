@@ -16,7 +16,6 @@ func TestPreparedGroupSignRequestsSignMode(t *testing.T) {
 	group := NewPreparedGroup(PreparedTransaction{
 		Transaction: &txn,
 		AuthAddress: "AUTH_ADDR",
-		TxnSender:   "SENDER_ADDR",
 		LsigArgs: LsigArgs{
 			"preimage": []byte("secret"),
 		},
@@ -36,9 +35,6 @@ func TestPreparedGroupSignRequestsSignMode(t *testing.T) {
 	req := requests[0]
 	if req.AuthAddress != "AUTH_ADDR" {
 		t.Fatalf("auth address = %q, want AUTH_ADDR", req.AuthAddress)
-	}
-	if req.TxnSender != "SENDER_ADDR" {
-		t.Fatalf("txn sender = %q, want SENDER_ADDR", req.TxnSender)
 	}
 	if req.TxnBytesHex == "" {
 		t.Fatal("txn bytes hex is empty")

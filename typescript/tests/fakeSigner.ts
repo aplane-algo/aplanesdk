@@ -135,7 +135,7 @@ export function fakePayment(
 export function signEntries(...txns: Transaction[]): SignRequest[] {
   return txns.map((txn) => {
     const [txnBytesHex, sender] = encodeTransaction(txn);
-    return { auth_address: sender, txn_sender: sender, txn_bytes_hex: txnBytesHex };
+    return { auth_address: sender, txn_bytes_hex: txnBytesHex };
   });
 }
 

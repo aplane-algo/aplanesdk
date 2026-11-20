@@ -358,7 +358,7 @@ Post raw `/sign` requests directly and receive the server-shaped response.
 
 ```go
 signResp, err := client.SignRequestsWithContext(ctx, []aplane.SignRequest{
-	{AuthAddress: authAddr, TxnSender: sender, TxnBytesHex: txnHex},
+	{AuthAddress: authAddr, TxnBytesHex: txnHex},
 })
 ```
 

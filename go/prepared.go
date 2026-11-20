@@ -24,7 +24,6 @@ type PreparedCheck struct {
 type PreparedTransaction struct {
 	Transaction   *types.Transaction
 	AuthAddress   string
-	TxnSender     string
 	LsigArgs      LsigArgs
 	LsigResources *LogicSigResourceUsage
 	PQScheme      string
@@ -79,13 +78,8 @@ func (p PreparedTransaction) SignRequest() (SignRequest, error) {
 		return SignRequest{}, fmt.Errorf("lsig_resources is allowed only for foreign or passthrough transactions")
 	}
 
-	txnSender := p.TxnSender
-	if txnSender == "" {
-		txnSender = p.Transaction.Sender.String()
-	}
 	req := SignRequest{
 		AuthAddress: p.AuthAddress,
-		TxnSender:   txnSender,
 		TxnBytesHex: txnBytesHex,
 		AppCallInfo: p.AppCallInfo,
 	}

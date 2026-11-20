@@ -499,7 +499,6 @@ async function requestBoundedPrimaryPassthrough(
     return {
       txn_bytes_hex: txnHex,
       auth_address: target.authAddress,
-      txn_sender: target.txnSender,
       lsig_args: target.lsigArgs,
       app_call_info: target.appCallInfo,
     };
@@ -646,7 +645,6 @@ export async function signPreparedCosignedGroup(
     primaryTargets.push({
       targetIndex: index,
       authAddress: item.authAddress,
-      txnSender: item.txnSender,
       lsigArgs: encodeLsigArgsOrNone(item.lsigArgs),
       appCallInfo: item.appCallInfo,
     });
@@ -1648,7 +1646,6 @@ export interface CosignedSignTarget {
 interface CosignedPrimarySignTarget {
   targetIndex: number;
   authAddress: string;
-  txnSender?: string;
   lsigArgs?: Record<string, string>;
   appCallInfo?: { mode?: string; method?: string };
 }
@@ -5537,12 +5534,11 @@ export class SignerClient {
         throw new SignerError(`transaction ${i + 1}: ${errorText(error)}`);
       }
 
-      const [txnBytesHex, txnSender] = encodeTransaction(txn);
+      const [txnBytesHex] = encodeTransaction(txn);
 
       const req: SignRequest = {
         txn_bytes_hex: txnBytesHex,
         auth_address: authAddr,
-        txn_sender: txnSender,
       };
 
       // Add LogicSig args if provided

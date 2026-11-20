@@ -121,7 +121,6 @@ def sign_entries(*txns):
     return [
         {
             "auth_address": txn.sender,
-            "txn_sender": txn.sender,
             "txn_bytes_hex": encode_transaction(txn)[0],
         }
         for txn in txns
