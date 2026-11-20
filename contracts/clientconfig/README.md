@@ -10,6 +10,10 @@ strictness remains aligned across the SDK languages. The SDK loaders
 deliberately reject ambiguous YAML scalar coercions, including forms that a
 plain `yaml.v3` decode may coerce, rather than repairing them to defaults.
 
+A registry has no `default` key: its one `signer` endpoint is the one used
+when no alias is named. A `default` key is refused as an unknown field
+(`invalid_default_field.yaml`), as APlane refuses it.
+
 Every loader requires `schema_version: 2` exactly. The
 `invalid_schema_version_*` and `invalid_v1_published_cosigners.yaml` fixtures
 pin the rejection of a missing, null, zero, float, or `1` version; there is no

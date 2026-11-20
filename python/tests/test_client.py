@@ -4167,7 +4167,7 @@ class TestLoadClientEndpointRegistry:
     def test_loads_shared_valid_fixture(self, tmp_path):
         self._fixture(tmp_path, "valid.yaml")
         registry = load_client_endpoint_registry(str(tmp_path))
-        assert registry.default == "primary"
+        assert resolve_client_endpoint(registry)[0] == "primary"
         assert registry.endpoints is not None
         primary = registry.endpoints["primary"]
         assert primary.url == "ssh://signer.example.com:2222"
@@ -4180,7 +4180,7 @@ class TestLoadClientEndpointRegistry:
     @pytest.mark.parametrize(
         "name",
         [
-            "invalid_default_type.yaml",
+            "invalid_default_field.yaml",
             "invalid_identity_file_type.yaml",
             "invalid_multiple_signers.yaml",
             "invalid_remote_http.yaml",
@@ -4204,6 +4204,7 @@ class TestLoadClientEndpointRegistry:
             ("invalid_self_cosigner.yaml", 'endpoint "cosigner": url "self" is not supported'),
             ("invalid_13_cosigner_endpoints.yaml", "configures 13 cosigner endpoints; maximum is 12"),
             ("invalid_v2_published_cosigners.yaml", "published_cosigners"),
+            ("invalid_default_field.yaml", 'endpoints.yaml contains unknown field "default"'),
         ],
     )
     def test_rejects_shared_fixture_for_expected_reason(self, tmp_path, name, want):
@@ -4252,7 +4253,6 @@ class TestLoadClientEndpointRegistry:
             "  qa:\n    role: cosigner\n    url: ssh://127.0.0.1:2222\n"
         )
         registry = load_client_endpoint_registry(str(tmp_path))
-        assert registry.default == "main"
         assert registry.endpoints is not None
         for alias in ("main", "qa"):
             assert registry.endpoints[alias].identity_file == str(tmp_path / ".ssh" / "id_ed25519")

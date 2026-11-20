@@ -140,7 +140,6 @@ Example `endpoints.yaml`:
 
 ```yaml
 schema_version: 2
-default: primary
 endpoints:
   primary:
     role: signer
@@ -1003,7 +1002,6 @@ with role `cosigner`:
 
 ```yaml
 schema_version: 2
-default: primary
 endpoints:
   primary:
     role: signer

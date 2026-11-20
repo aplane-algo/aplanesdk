@@ -17,7 +17,6 @@ Move that routing into an endpoint profile:
 
 ```yaml
 schema_version: 2
-default: primary
 endpoints:
   primary:
     role: signer

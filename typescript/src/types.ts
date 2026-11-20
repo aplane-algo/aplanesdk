@@ -244,7 +244,7 @@ export interface ClientEndpointConfig {
 /** Normalized client-local endpoint registry. */
 export interface ClientEndpointRegistry {
   schemaVersion: 2;
-  default: string;
+  /** At most one endpoint has role "signer": the one used when no alias is named. */
   endpoints: Record<string, ClientEndpointConfig>;
 }
 

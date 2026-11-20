@@ -1484,10 +1484,10 @@ class EnrollmentResult:
 
 @dataclass
 class ClientEndpointRegistry:
-    """Normalized client-local endpoint registry."""
+    """Normalized client-local endpoint registry. At most one endpoint has
+    role "signer": the one used when no alias is named."""
 
     schema_version: int = CLIENT_ENDPOINT_SCHEMA_VERSION
-    default: str = ""
     endpoints: Dict[str, ClientEndpointConfig] = field(default_factory=dict)
 
 
@@ -2350,7 +2350,7 @@ def load_client_endpoint_registry(data_dir: str) -> ClientEndpointRegistry:
     except yaml.YAMLError as exc:
         raise SignerError(f"failed to parse {endpoints_path}: {exc}") from exc
     raw = _require_mapping(raw_value, CLIENT_ENDPOINTS_FILE)
-    _require_known_fields(raw, {"schema_version", "default", "endpoints"}, CLIENT_ENDPOINTS_FILE)
+    _require_known_fields(raw, {"schema_version", "endpoints"}, CLIENT_ENDPOINTS_FILE)
     schema_version = raw.get("schema_version", 0)
     if (
         isinstance(schema_version, bool)
@@ -2383,36 +2383,21 @@ def load_client_endpoint_registry(data_dir: str) -> ClientEndpointRegistry:
             "maximum is 12; remove or consolidate endpoint profiles"
         )
 
-    default = _optional_string(raw.get("default"), "default")
-    registry.default = default.strip()
-    if registry.default:
-        _validate_endpoint_alias(registry.default)
     signer_aliases = [
         alias for alias, endpoint in registry.endpoints.items() if endpoint.role == "signer"
     ]
     if len(signer_aliases) > 1:
         raise SignerError(f'{CLIENT_ENDPOINTS_FILE} may contain at most one "signer" endpoint')
-    if not signer_aliases:
-        if registry.default:
-            raise SignerError(
-                f'{CLIENT_ENDPOINTS_FILE} default endpoint "{registry.default}" '
-                'is set but no "signer" endpoint is configured'
-            )
-    elif registry.default and registry.default != signer_aliases[0]:
-        raise SignerError(
-            f'{CLIENT_ENDPOINTS_FILE} default endpoint "{registry.default}" must be '
-            f'the "signer" endpoint "{signer_aliases[0]}"'
-        )
-    else:
-        registry.default = signer_aliases[0]
     return registry
 
 
 def resolve_client_endpoint(
     registry: ClientEndpointRegistry, alias: Optional[str] = None
 ) -> tuple[str, ClientEndpointConfig]:
-    """Resolve an explicit endpoint alias or the registry's default signer."""
-    selected = alias or registry.default
+    """Resolve an explicit endpoint alias or, with none, the registry's signer endpoint."""
+    selected = alias or next(
+        (name for name, endpoint in registry.endpoints.items() if endpoint.role == "signer"), ""
+    )
     if not selected:
         raise SignerError(f"{CLIENT_ENDPOINTS_FILE} has no default signer endpoint")
     if selected not in registry.endpoints:

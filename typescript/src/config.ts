@@ -250,7 +250,6 @@ function normalizeEndpoint(
 export function loadClientEndpointRegistry(dataDir: string): ClientEndpointRegistry {
   const registry: ClientEndpointRegistry = {
     schemaVersion: CLIENT_ENDPOINT_SCHEMA_VERSION,
-    default: "",
     endpoints: {},
   };
   const endpointsPath = path.join(dataDir, CLIENT_ENDPOINTS_FILE);
@@ -271,7 +270,7 @@ export function loadClientEndpointRegistry(dataDir: string): ClientEndpointRegis
     throw new SignerError(`failed to parse ${endpointsPath}: ${errorMessage(error)}`);
   }
   requireMapping(raw, CLIENT_ENDPOINTS_FILE);
-  requireKnownFields(raw, ["schema_version", "default", "endpoints"], CLIENT_ENDPOINTS_FILE);
+  requireKnownFields(raw, ["schema_version", "endpoints"], CLIENT_ENDPOINTS_FILE);
   const schemaVersion = raw.schema_version;
   if (
     schemaVersion !== CLIENT_ENDPOINT_SCHEMA_VERSION
@@ -289,8 +288,6 @@ export function loadClientEndpointRegistry(dataDir: string): ClientEndpointRegis
     registry.endpoints[alias] = normalizeEndpoint(dataDir, alias, endpointRaw);
   }
 
-  registry.default = optionalString(raw.default, "default").trim();
-  if (registry.default) validateAlias(registry.default);
   const signerAliases = Object.entries(registry.endpoints)
     .filter(([, endpoint]) => endpoint.role === "signer")
     .map(([alias]) => alias);
@@ -303,28 +300,16 @@ export function loadClientEndpointRegistry(dataDir: string): ClientEndpointRegis
       `${CLIENT_ENDPOINTS_FILE} may contain at most one "signer" endpoint`,
     );
   }
-  if (signerAliases.length === 0) {
-    if (registry.default) {
-      throw new SignerError(
-        `${CLIENT_ENDPOINTS_FILE} default endpoint "${registry.default}" is set but no "signer" endpoint is configured`,
-      );
-    }
-  } else if (registry.default && registry.default !== signerAliases[0]) {
-    throw new SignerError(
-      `${CLIENT_ENDPOINTS_FILE} default endpoint "${registry.default}" must be the "signer" endpoint "${signerAliases[0]}"`,
-    );
-  } else {
-    registry.default = signerAliases[0];
-  }
   return registry;
 }
 
-/** Resolve an explicit endpoint alias or the registry's default signer. */
+/** Resolve an explicit endpoint alias or, with none, the registry's signer endpoint. */
 export function resolveClientEndpoint(
   registry: ClientEndpointRegistry,
   alias?: string,
 ): { alias: string; endpoint: ClientEndpointConfig } {
-  const selected = alias || registry.default;
+  const selected = alias
+    || Object.entries(registry.endpoints).find(([, endpoint]) => endpoint.role === "signer")?.[0];
   if (!selected) {
     throw new SignerError(`${CLIENT_ENDPOINTS_FILE} has no default signer endpoint`);
   }

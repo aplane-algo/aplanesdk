@@ -141,7 +141,7 @@ function registry(...aliases: string[]): ClientEndpointRegistry {
     primary: { ...endpointConfig("primary"), role: "signer" },
   };
   for (const alias of aliases) endpoints[alias] = endpointConfig(alias);
-  return { schemaVersion: 2, default: "primary", endpoints };
+  return { schemaVersion: 2, endpoints };
 }
 
 function target(publicKeyHex: string, keyType = KEY_TYPE_WITNESS_FALCON1024, index = 0): CosignedSignTarget {

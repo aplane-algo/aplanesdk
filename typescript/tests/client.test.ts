@@ -4400,7 +4400,7 @@ describe("loadClientEndpointRegistry", () => {
     const tmpDir = fixtureDir("valid.yaml");
     try {
       const registry = loadClientEndpointRegistry(tmpDir);
-      assert.equal(registry.default, "primary");
+      assert.equal(resolveClientEndpoint(registry).alias, "primary");
       assert.equal(registry.endpoints.primary.url, "ssh://signer.example.com:2222");
       assert.equal(
         registry.endpoints.primary.identityFile,
@@ -4421,7 +4421,7 @@ describe("loadClientEndpointRegistry", () => {
   });
 
   for (const fixture of [
-    "invalid_default_type.yaml",
+    "invalid_default_field.yaml",
     "invalid_identity_file_type.yaml",
     "invalid_multiple_signers.yaml",
     "invalid_remote_http.yaml",
@@ -4447,6 +4447,7 @@ describe("loadClientEndpointRegistry", () => {
     ["invalid_self_cosigner.yaml", 'endpoint "cosigner": url "self" is not supported'],
     ["invalid_13_cosigner_endpoints.yaml", "configures 13 cosigner endpoints; maximum is 12"],
     ["invalid_v2_published_cosigners.yaml", "published_cosigners"],
+    ["invalid_default_field.yaml", 'endpoints.yaml contains unknown field "default"'],
   ]) {
     it(`rejects ${fixture} for the expected reason`, () => {
       const tmpDir = fixtureDir(fixture);
@@ -4516,7 +4517,6 @@ describe("loadClientEndpointRegistry", () => {
         "  qa:\n    role: cosigner\n    url: ssh://127.0.0.1:2222\n",
       );
       const registry = loadClientEndpointRegistry(tmpDir);
-      assert.equal(registry.default, "main");
       for (const alias of ["main", "qa"]) {
         assert.equal(
           registry.endpoints[alias].identityFile,

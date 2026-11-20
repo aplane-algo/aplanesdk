@@ -134,7 +134,6 @@ Example `endpoints.yaml`:
 
 ```yaml
 schema_version: 2
-default: primary
 endpoints:
   primary:
     role: signer
@@ -1262,7 +1261,6 @@ A client made with `SignerClient.from_env()` (or
 
 ```yaml
 schema_version: 2
-default: primary
 endpoints:
   primary:
     role: signer

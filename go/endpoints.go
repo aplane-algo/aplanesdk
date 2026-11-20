@@ -27,10 +27,10 @@ const (
 	MaxClientCosignerEndpoints  = 12
 )
 
-// ClientEndpointRegistry stores client-local endpoint profiles.
+// ClientEndpointRegistry stores client-local endpoint profiles. It holds at
+// most one signer endpoint, the one used when no alias is named.
 type ClientEndpointRegistry struct {
 	SchemaVersion int                             `yaml:"schema_version"`
-	Default       string                          `yaml:"default,omitempty"`
 	Endpoints     map[string]ClientEndpointConfig `yaml:"endpoints,omitempty"`
 }
 
@@ -113,9 +113,6 @@ func validateClientEndpointRegistryScalarTypes(data []byte) error {
 	}
 
 	if err := requireYAMLScalarType(yamlMappingValue(root, "schema_version"), "schema_version", "!!int"); err != nil {
-		return err
-	}
-	if err := requireYAMLScalarType(yamlMappingValue(root, "default"), "default", "!!str", "!!null"); err != nil {
 		return err
 	}
 	endpoints := yamlMappingValue(root, "endpoints")
@@ -243,12 +240,6 @@ func validateClientEndpointURL(alias string, endpoint ClientEndpointConfig) erro
 }
 
 func normalizeClientEndpointRoles(registry *ClientEndpointRegistry) error {
-	registry.Default = strings.TrimSpace(registry.Default)
-	if registry.Default != "" {
-		if err := validateClientEndpointAlias(registry.Default); err != nil {
-			return fmt.Errorf("%s default: %w", ClientEndpointsFile, err)
-		}
-	}
 	signerAlias := ""
 	cosignerCount := 0
 	for alias, endpoint := range registry.Endpoints {
@@ -266,29 +257,22 @@ func normalizeClientEndpointRoles(registry *ClientEndpointRegistry) error {
 	if cosignerCount > MaxClientCosignerEndpoints {
 		return fmt.Errorf("%s configures %d cosigner endpoints; maximum is %d; remove or consolidate endpoint profiles", ClientEndpointsFile, cosignerCount, MaxClientCosignerEndpoints)
 	}
-	if signerAlias == "" {
-		if registry.Default != "" {
-			return fmt.Errorf("%s default endpoint %q is set but no %q endpoint is configured", ClientEndpointsFile, registry.Default, ClientEndpointRoleSigner)
-		}
-		return nil
-	}
-	if registry.Default != "" && registry.Default != signerAlias {
-		return fmt.Errorf("%s default endpoint %q must be the %q endpoint %q", ClientEndpointsFile, registry.Default, ClientEndpointRoleSigner, signerAlias)
-	}
-	registry.Default = signerAlias
 	return nil
 }
 
-// ResolveClientEndpoint selects an explicit alias or the default signer.
+// ResolveClientEndpoint selects an explicit alias or, with none, the
+// registry's signer endpoint.
 func ResolveClientEndpoint(registry *ClientEndpointRegistry, alias string) (string, ClientEndpointConfig, error) {
 	if registry == nil {
 		return "", ClientEndpointConfig{}, fmt.Errorf("%s registry is required", ClientEndpointsFile)
 	}
 	if alias == "" {
-		alias = registry.Default
-		if alias == "" {
-			return "", ClientEndpointConfig{}, fmt.Errorf("%s has no default signer endpoint", ClientEndpointsFile)
+		for candidate, endpoint := range registry.Endpoints {
+			if endpoint.Role == ClientEndpointRoleSigner {
+				return candidate, endpoint, nil
+			}
 		}
+		return "", ClientEndpointConfig{}, fmt.Errorf("%s has no default signer endpoint", ClientEndpointsFile)
 	}
 	endpoint, ok := registry.Endpoints[alias]
 	if !ok {

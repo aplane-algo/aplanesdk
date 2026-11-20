@@ -94,7 +94,6 @@ Example `endpoints.yaml`:
 
 ```yaml
 schema_version: 2
-default: primary
 endpoints:
   primary:
     role: signer
@@ -995,7 +994,6 @@ cosigner node as an endpoint with role `cosigner`:
 
 ```yaml
 schema_version: 2
-default: primary
 endpoints:
   primary:
     role: signer
