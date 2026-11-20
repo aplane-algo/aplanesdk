@@ -3,7 +3,9 @@
 The SDK data-directory helpers now use the same routing registry as APlane:
 `$APCLIENT_DATA/endpoints.yaml`.
 
-The former SDK-only nested routing block is no longer accepted:
+The former SDK-only nested routing block is no longer accepted. Like any
+field apshell does not know, it is refused as unknown
+(`config field "endpoint" is unknown or no longer supported`):
 
 ```yaml
 # Removed from config.yaml

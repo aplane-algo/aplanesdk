@@ -4136,19 +4136,38 @@ class TestLoadConfig:
         assert config.networks_allowed == []
         assert config.theme == "auto"
 
-    def test_rejects_obsolete_endpoint_routing(self, tmp_path):
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text(
-            "endpoint:\n"
-            "  signer_port: 12345\n"
-            "  ssh:\n"
-            "    host: signer.example.com\n"
-            "    port: 2222\n"
-            "    identity_file: .ssh/mykey\n"
-            "    known_hosts_path: .ssh/hosts\n"
-            "    trust_on_first_use: true\n"
-        )
-        with pytest.raises(SignerError, match="configure endpoints.yaml"):
+    # config.yaml is read as apshell reads it: every field apshell knows is
+    # accepted, and any other, the retired signer routing included, is
+    # refused as an unknown field with apshell's words.
+    @pytest.mark.parametrize(
+        "body,unknown",
+        [
+            (
+                "schema_version: 1\nnetwork: testnet\nnetworks_allowed: [testnet]\ntheme: dark\n"
+                "signer_status_poll_interval: 10s\nnetworks:\n  testnet:\n    algod:\n"
+                "      server: http://localhost:4001\n      token: t\n",
+                "",
+            ),
+            ("endpoint:\n  ssh:\n    host: signer.example.com\n", "endpoint"),
+            ("ssh:\n  host: signer.example.com\n", "ssh"),
+            ("network: testnet\nsigner_port: 11270\n", "signer_port"),
+            ("algod:\n  testnet:\n    server: http://localhost:4001\n", "algod"),
+            ("network: testnet\nfoo: 1\n", "foo"),
+            ("networks:\n  testnet:\n    indexer:\n      server: http://localhost:8980\n", "indexer"),
+            (
+                "networks:\n  testnet:\n    algod:\n      server: http://localhost:4001\n      headers: {}\n",
+                "headers",
+            ),
+        ],
+        ids=["apshell fields", "endpoint", "ssh", "signer_port", "top-level algod", "foo", "indexer", "headers"],
+    )
+    def test_reads_the_fields_apshell_knows(self, tmp_path, body, unknown):
+        (tmp_path / "config.yaml").write_text(body)
+        if not unknown:
+            assert load_config(str(tmp_path)).theme == "dark"
+            return
+        want = f'config field "{unknown}" is unknown or no longer supported; remove it from the file'
+        with pytest.raises(SignerError, match=re.escape(want)):
             load_config(str(tmp_path))
 
     def test_rejects_malformed_yaml(self, tmp_path):

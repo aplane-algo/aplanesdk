@@ -4349,28 +4349,36 @@ describe("loadConfig", () => {
     }
   });
 
-  it("rejects obsolete endpoint routing", () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-test-"));
-    try {
-      fs.writeFileSync(
-        path.join(tmpDir, "config.yaml"),
-        "endpoint:\n" +
-        "  signer_port: 12345\n" +
-        "  ssh:\n" +
-        "    host: signer.example.com\n" +
-        "    port: 2222\n" +
-        "    identity_file: .ssh/mykey\n" +
-        "    known_hosts_path: .ssh/hosts\n" +
-        "    trust_on_first_use: true\n"
-      );
-      assert.throws(
-        () => loadConfig(tmpDir),
-        /remove "endpoint" and configure endpoints.yaml/,
-      );
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true });
-    }
-  });
+  // config.yaml is read as apshell reads it: every field apshell knows is
+  // accepted, and any other, the retired signer routing included, is refused
+  // as an unknown field with apshell's words.
+  for (const [name, body, unknown] of [
+    ["apshell's fields", "schema_version: 1\nnetwork: testnet\nnetworks_allowed: [testnet]\ntheme: dark\nsigner_status_poll_interval: 10s\nnetworks:\n  testnet:\n    algod:\n      server: http://localhost:4001\n      token: t\n", ""],
+    ["endpoint routing", "endpoint:\n  ssh:\n    host: signer.example.com\n", "endpoint"],
+    ["ssh routing", "ssh:\n  host: signer.example.com\n", "ssh"],
+    ["signer_port routing", "network: testnet\nsigner_port: 11270\n", "signer_port"],
+    ["top-level algod", "algod:\n  testnet:\n    server: http://localhost:4001\n", "algod"],
+    ["another unknown field", "network: testnet\nfoo: 1\n", "foo"],
+    ["an unknown network setting", "networks:\n  testnet:\n    indexer:\n      server: http://localhost:8980\n", "indexer"],
+    ["an unknown algod setting", "networks:\n  testnet:\n    algod:\n      server: http://localhost:4001\n      headers: {}\n", "headers"],
+  ] as const) {
+    it(`reads config.yaml as apshell does: ${name}`, () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-test-"));
+      try {
+        fs.writeFileSync(path.join(tmpDir, "config.yaml"), body);
+        if (!unknown) {
+          assert.equal(loadConfig(tmpDir).theme, "dark");
+          return;
+        }
+        assert.throws(
+          () => loadConfig(tmpDir),
+          { message: `config field "${unknown}" is unknown or no longer supported; remove it from the file` },
+        );
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true });
+      }
+    });
+  }
 
   it("rejects malformed YAML", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-test-"));

@@ -91,13 +91,7 @@ export function loadConfig(dataDir: string): ClientConfig {
     const content = fs.readFileSync(configPath, "utf-8");
     const data = parseYaml(content) || {};
     requireMapping(data, "config.yaml");
-    for (const field of ["endpoint", "ssh", "signer_port"]) {
-      if (Object.prototype.hasOwnProperty.call(data, field)) {
-        throw new SignerError(
-          `unsupported client routing in config.yaml: remove "${field}" and configure endpoints.yaml`,
-        );
-      }
-    }
+    requireApshellConfigFields(data);
     if (data.network !== undefined && data.network !== null) {
       // The rule of the networks_allowed entries: text, and a network ID.
       if (typeof data.network !== "string") {
@@ -125,6 +119,45 @@ export function loadConfig(dataDir: string): ClientConfig {
   }
 
   return config;
+}
+
+/**
+ * The fields apshell reads from config.yaml, at every depth. The SDK reads
+ * network, networks_allowed, theme and networks; schema_version and
+ * signer_status_poll_interval are apshell's own settings.
+ */
+const APSHELL_CONFIG_FIELDS = [
+  "schema_version",
+  "network",
+  "networks_allowed",
+  "theme",
+  "signer_status_poll_interval",
+  "networks",
+] as const;
+
+/**
+ * Refuse a config.yaml field apshell does not know, the retired endpoint,
+ * ssh and signer_port routing included, as apshell refuses it.
+ */
+function requireApshellConfigFields(data: Record<string, unknown>): void {
+  const known = (value: Record<string, unknown>, allowed: readonly string[]) => {
+    for (const field of Object.keys(value)) {
+      if (!allowed.includes(field)) {
+        throw new SignerError(`config field "${field}" is unknown or no longer supported; remove it from the file`);
+      }
+    }
+  };
+  known(data, APSHELL_CONFIG_FIELDS);
+  if (data.networks === undefined || data.networks === null) return;
+  requireMapping(data.networks, "networks in config.yaml");
+  for (const [network, settings] of Object.entries(data.networks)) {
+    if (settings === null) continue;
+    requireMapping(settings, `networks.${network} in config.yaml`);
+    known(settings, ["algod"]);
+    if (settings.algod === undefined || settings.algod === null) continue;
+    requireMapping(settings.algod, `networks.${network}.algod in config.yaml`);
+    known(settings.algod, ["server", "token"]);
+  }
 }
 
 function errorMessage(error: unknown): string {

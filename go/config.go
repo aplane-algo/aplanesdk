@@ -4,10 +4,14 @@
 package aplane
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -84,6 +88,32 @@ func resolveYAMLAlias(node *yaml.Node) *yaml.Node {
 	return node
 }
 
+// configFile is config.yaml as apshell reads it: every field apshell knows,
+// at every depth, and no other. The SDK reads network, networks_allowed,
+// theme and networks; schema_version and signer_status_poll_interval are
+// apshell's own settings. Any other field, the retired endpoint, ssh and
+// signer_port routing included, is refused as apshell refuses it.
+type configFile struct {
+	SchemaVersion            int            `yaml:"schema_version"`
+	Network                  string         `yaml:"network"`
+	NetworksAllowed          []string       `yaml:"networks_allowed"`
+	Theme                    string         `yaml:"theme"`
+	SignerStatusPollInterval string         `yaml:"signer_status_poll_interval"`
+	Networks                 NetworkConfigs `yaml:"networks"`
+}
+
+var unknownYAMLFieldPattern = regexp.MustCompile(`field ([^ ]+) not found`)
+
+// unknownConfigFieldError words a strict decode's unknown field as apshell
+// does.
+func unknownConfigFieldError(err error) error {
+	matches := unknownYAMLFieldPattern.FindStringSubmatch(err.Error())
+	if len(matches) != 2 {
+		return err
+	}
+	return fmt.Errorf("config field %q is unknown or no longer supported; remove it from the file: %w", matches[1], err)
+}
+
 // ExpandPath expands ~ to the user's home directory.
 func ExpandPath(path string) string {
 	if strings.HasPrefix(path, "~") {
@@ -116,11 +146,6 @@ func LoadConfig(dataDir string) (*Config, error) {
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("failed to parse config.yaml: %w", err)
 	}
-	for _, field := range []string{"endpoint", "ssh", "signer_port"} {
-		if _, ok := raw[field]; ok {
-			return nil, fmt.Errorf("unsupported client routing in config.yaml: remove %q and configure endpoints.yaml", field)
-		}
-	}
 	if node, ok := raw["network"]; ok {
 		if err := requireNetworkName(node); err != nil {
 			return nil, err
@@ -131,10 +156,14 @@ func LoadConfig(dataDir string) (*Config, error) {
 			return nil, err
 		}
 	}
-	if err := yaml.Unmarshal(data, config); err != nil {
-		return nil, fmt.Errorf("failed to parse config.yaml: %w", err)
+	file := configFile{Network: config.Network, Theme: config.Theme}
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&file); err != nil && !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("failed to parse config.yaml: %w", unknownConfigFieldError(err))
 	}
-	if config.Algod == nil && len(config.Networks) > 0 {
+	config.Network, config.NetworksAllowed, config.Theme, config.Networks = file.Network, file.NetworksAllowed, file.Theme, file.Networks
+	if len(config.Networks) > 0 {
 		config.Algod = make(AlgodConfig, len(config.Networks))
 	}
 	for network, networkConfig := range config.Networks {
@@ -157,11 +186,6 @@ func LoadConfig(dataDir string) (*Config, error) {
 	}
 	if len(config.NetworksAllowed) > 0 && !config.IsNetworkAllowed(config.Network) {
 		return nil, fmt.Errorf("network %q is not in networks_allowed %v", config.Network, config.NetworksAllowed)
-	}
-	for network := range config.Algod {
-		if err := validateNetworkID(network); err != nil {
-			return nil, fmt.Errorf("invalid network in algod config: %w", err)
-		}
 	}
 	if config.Theme == "" {
 		config.Theme = "auto"

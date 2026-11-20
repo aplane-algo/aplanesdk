@@ -855,13 +855,12 @@ def test_an_empty_signed_transaction_is_refused_where_it_was_before():
 @pytest.mark.parametrize(
     ("content", "network", "allowed"),
     [
-        ("nets: &nets [testnet]\nnetworks_allowed: *nets\n", "testnet", ["testnet"]),
         (
-            "name: &name testnet\nnetworks_allowed: [*name, mainnet]\n",
+            "network: &name testnet\nnetworks_allowed: [*name, mainnet]\n",
             "testnet",
             ["testnet", "mainnet"],
         ),
-        ("name: &name mainnet\nnetwork: *name\n", "mainnet", []),
+        ("networks_allowed: [&name mainnet]\nnetwork: *name\n", "mainnet", ["mainnet"]),
         ("network: ~\n", "testnet", []),
         ('network: "1"\n', "1", []),
         ('network: "1"\nnetworks_allowed: ["1"]\n', "1", ["1"]),
@@ -876,15 +875,15 @@ def test_config_reads_aliases_and_a_text_network(tmp_path, content, network, all
 @pytest.mark.parametrize(
     ("content", "message"),
     [
-        ("n: &n 1\nnetworks_allowed: [*n]\n", "networks_allowed"),
-        ("n: &n {a: b}\nnetworks_allowed: *n\n", "networks_allowed"),
+        ("theme: &n 1\nnetworks_allowed: [*n]\n", "networks_allowed"),
+        ("networks: &n {}\nnetworks_allowed: *n\n", "networks_allowed"),
         ("network: 1\n", "invalid network in config.yaml"),
         ("network: 1\nnetworks_allowed: [testnet]\n", "invalid network in config.yaml"),
         ("network: true\n", "invalid network in config.yaml"),
         ("network: 1.5\n", "invalid network in config.yaml"),
         ("network: [a]\n", "invalid network in config.yaml"),
         ("network: Mainnet\n", "invalid network in config.yaml"),
-        ("n: &n 1\nnetwork: *n\n", "invalid network in config.yaml"),
+        ("theme: &n 1\nnetwork: *n\n", "invalid network in config.yaml"),
     ],
 )
 def test_config_refuses_a_network_that_is_not_text(tmp_path, content, message):

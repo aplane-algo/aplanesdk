@@ -589,9 +589,8 @@ func TestLoadConfigNetworkAliasesAndTextNetwork(t *testing.T) {
 		network string
 		allowed []string
 	}{
-		{"nets: &nets [testnet]\nnetworks_allowed: *nets\n", "testnet", []string{"testnet"}},
-		{"name: &name testnet\nnetworks_allowed: [*name, mainnet]\n", "testnet", []string{"testnet", "mainnet"}},
-		{"name: &name mainnet\nnetwork: *name\n", "mainnet", []string{}},
+		{"network: &name testnet\nnetworks_allowed: [*name, mainnet]\n", "testnet", []string{"testnet", "mainnet"}},
+		{"networks_allowed: [&name mainnet]\nnetwork: *name\n", "mainnet", []string{"mainnet"}},
 		{"network: ~\n", "testnet", []string{}},
 		{"network: \"1\"\n", "1", []string{}},
 		{"network: \"1\"\nnetworks_allowed: [\"1\"]\n", "1", []string{"1"}},
@@ -605,15 +604,15 @@ func TestLoadConfigNetworkAliasesAndTextNetwork(t *testing.T) {
 		}
 	}
 	for _, tc := range []struct{ content, want string }{
-		{"n: &n 1\nnetworks_allowed: [*n]\n", "networks_allowed"},
-		{"n: &n {a: b}\nnetworks_allowed: *n\n", "networks_allowed"},
+		{"theme: &n 1\nnetworks_allowed: [*n]\n", "networks_allowed"},
+		{"networks: &n {}\nnetworks_allowed: *n\n", "networks_allowed"},
 		{"network: 1\n", "invalid network in config.yaml"},
 		{"network: 1\nnetworks_allowed: [testnet]\n", "invalid network in config.yaml"},
 		{"network: true\n", "invalid network in config.yaml"},
 		{"network: 1.5\n", "invalid network in config.yaml"},
 		{"network: [a]\n", "invalid network in config.yaml"},
 		{"network: Mainnet\n", "invalid network in config.yaml"},
-		{"n: &n 1\nnetwork: *n\n", "invalid network in config.yaml"},
+		{"theme: &n 1\nnetwork: *n\n", "invalid network in config.yaml"},
 	} {
 		if _, err := load(tc.content); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Fatalf("%q: error = %v, want a refusal naming %q", tc.content, err, tc.want)

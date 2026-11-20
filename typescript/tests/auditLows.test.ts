@@ -624,9 +624,8 @@ describe("networks_allowed", () => {
   // read as the value it stands for, and the default network must be text
   // like the allowlist's entries.
   const loadable: Array<[string, string, string[]]> = [
-    ["nets: &nets [testnet]\nnetworks_allowed: *nets\n", "testnet", ["testnet"]],
-    ["name: &name testnet\nnetworks_allowed: [*name, mainnet]\n", "testnet", ["testnet", "mainnet"]],
-    ["name: &name mainnet\nnetwork: *name\n", "mainnet", []],
+    ["network: &name testnet\nnetworks_allowed: [*name, mainnet]\n", "testnet", ["testnet", "mainnet"]],
+    ["networks_allowed: [&name mainnet]\nnetwork: *name\n", "mainnet", ["mainnet"]],
     ["network: ~\n", "testnet", []],
     ["network: \"1\"\n", "1", []],
     ["network: \"1\"\nnetworks_allowed: [\"1\"]\n", "1", ["1"]],
@@ -644,15 +643,15 @@ describe("networks_allowed", () => {
     });
   }
   const refusedFiles: Array<[string, RegExp]> = [
-    ["n: &n 1\nnetworks_allowed: [*n]\n", /networks_allowed/],
-    ["n: &n {a: b}\nnetworks_allowed: *n\n", /networks_allowed/],
+    ["theme: &n 1\nnetworks_allowed: [*n]\n", /networks_allowed/],
+    ["networks: &n {}\nnetworks_allowed: *n\n", /networks_allowed/],
     ["network: 1\n", /invalid network in config.yaml/],
     ["network: 1\nnetworks_allowed: [testnet]\n", /invalid network in config.yaml/],
     ["network: true\n", /invalid network in config.yaml/],
     ["network: 1.5\n", /invalid network in config.yaml/],
     ["network: [a]\n", /invalid network in config.yaml/],
     ["network: Mainnet\n", /invalid network in config.yaml/],
-    ["n: &n 1\nnetwork: *n\n", /invalid network in config.yaml/],
+    ["theme: &n 1\nnetwork: *n\n", /invalid network in config.yaml/],
   ];
   for (const [content, message] of refusedFiles) {
     it(`refuses ${JSON.stringify(content)}`, () => {

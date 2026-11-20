@@ -157,7 +157,9 @@ healthy, _ := client.Health()
 This path:
 
 - resolves the client data dir
-- validates `config.yaml` contains no obsolete routing
+- refuses a `config.yaml` field apshell does not know, as apshell does: the
+  retired `endpoint`, `ssh` and `signer_port` routing among them, and a
+  top-level `algod` (algod settings go under `networks.<network>.algod`)
 - loads and selects an endpoint from `endpoints.yaml`
 - resolves SSH paths relative to the client data dir
 - establishes the SSH tunnel automatically

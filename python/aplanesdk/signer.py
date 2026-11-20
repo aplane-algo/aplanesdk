@@ -2201,12 +2201,7 @@ def load_config(data_dir: str) -> ClientConfig:
 
     if not isinstance(data, dict):
         raise SignerError("config.yaml must be a mapping")
-    for field in ("endpoint", "ssh", "signer_port"):
-        if field in data:
-            raise SignerError(
-                f'unsupported client routing in config.yaml: remove "{field}" '
-                "and configure endpoints.yaml"
-            )
+    _require_apshell_config_fields(data)
     network = data.get("network")
     if network is not None:
         # The rule of the networks_allowed entries: text, and a network ID.
@@ -2230,6 +2225,47 @@ def load_config(data_dir: str) -> ClientConfig:
         )
 
     return config
+
+
+# The fields apshell reads from config.yaml. The SDK reads network,
+# networks_allowed, theme and networks; schema_version and
+# signer_status_poll_interval are apshell's own settings.
+_APSHELL_CONFIG_FIELDS = {
+    "schema_version",
+    "network",
+    "networks_allowed",
+    "theme",
+    "signer_status_poll_interval",
+    "networks",
+}
+
+
+def _require_apshell_config_fields(data: Dict[str, Any]) -> None:
+    """Refuse a config.yaml field apshell does not know, at any depth, the
+    retired endpoint, ssh and signer_port routing included, as apshell
+    refuses it."""
+
+    def known(value: Dict[str, Any], allowed: set[str]) -> None:
+        for field_name in value:
+            if field_name not in allowed:
+                raise SignerError(
+                    f'config field "{field_name}" is unknown or no longer supported; '
+                    "remove it from the file"
+                )
+
+    known(data, _APSHELL_CONFIG_FIELDS)
+    networks = data.get("networks")
+    if networks is None:
+        return
+    for network, settings in _require_mapping(networks, "networks in config.yaml").items():
+        if settings is None:
+            continue
+        settings = _require_mapping(settings, f"networks.{network} in config.yaml")
+        known(settings, {"algod"})
+        algod = settings.get("algod")
+        if algod is not None:
+            label = f"networks.{network}.algod in config.yaml"
+            known(_require_mapping(algod, label), {"server", "token"})
 
 
 def _require_mapping(value: Any, label: str) -> Dict[str, Any]:

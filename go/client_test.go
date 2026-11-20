@@ -1709,30 +1709,6 @@ func TestLoadConfig_Default(t *testing.T) {
 	}
 }
 
-func TestLoadConfig_RejectsNestedEndpoint(t *testing.T) {
-	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
-		"endpoint:\n  signer_port: 11271\n  ssh:\n    host: example.com\n    port: 1128\n    identity_file: .ssh/id\n    trust_on_first_use: true\n",
-	), 0600)
-
-	_, err := LoadConfig(dir)
-	if err == nil || !strings.Contains(err.Error(), "configure endpoints.yaml") {
-		t.Fatalf("expected endpoints.yaml migration error, got %v", err)
-	}
-}
-
-func TestLoadConfig_RejectsTopLevelSignerRouting(t *testing.T) {
-	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
-		"signer_port: 11270\n",
-	), 0600)
-
-	_, err := LoadConfig(dir)
-	if err == nil || !strings.Contains(err.Error(), "configure endpoints.yaml") {
-		t.Fatalf("expected endpoints.yaml migration error, got %v", err)
-	}
-}
-
 func TestLoadConfig_ParseError(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("ssh:\n  host: [\n"), 0600)

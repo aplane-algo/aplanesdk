@@ -921,7 +921,9 @@ type Config struct {
 	NetworksAllowed []string       `yaml:"networks_allowed"`
 	Theme           string         `yaml:"theme"`
 	Networks        NetworkConfigs `yaml:"networks"`
-	Algod           AlgodConfig    `yaml:"algod"`
+	// Algod is the per-network algod index built from Networks; config.yaml
+	// has no algod key of its own.
+	Algod AlgodConfig `yaml:"-"`
 }
 
 // SSHConnectOptions contains options for SSH tunnel connections. There is no
