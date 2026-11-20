@@ -1364,8 +1364,8 @@ locally.
 Every 200 answer from the signer is read strictly, as the Go SDK reads it: it
 must be exactly one JSON object of the answer's declared shape, a field left
 out or `null` takes its zero value, and a field of the wrong type, a `null`
-body or anything after the object makes the answer unreadable. An answer
-whose `error` field is set is a refusal; an unreadable answer is a plain
+body or anything after the object makes the answer unreadable. The signer
+refuses only with a non-2xx answer; an unreadable answer is a plain
 `SignerError` at a request that releases no signature, and at an
 approval-bearing request a lost answer, which a send reports as
 `SignOutcomeUnknownError`. The full rule and the reader's known limits are in

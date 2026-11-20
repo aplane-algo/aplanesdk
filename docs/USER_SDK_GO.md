@@ -1349,8 +1349,8 @@ locally.
 Every 200 answer from the signer, the key list included, is read strictly:
 it must be exactly one JSON value, so a `null` body or anything after the
 value is an error, never an empty answer, and a field left out or `null`
-reads as its zero value. An answer whose `error` field is set is a refusal,
-and at an approval-bearing request an answer that cannot be read counts as a
+reads as its zero value. The signer refuses only with a non-2xx answer, and
+at an approval-bearing request an answer that cannot be read counts as a
 lost answer, which a send reports as `*SignOutcomeUnknownError`. The full
 rule, and how the three SDKs' readers differ, is in
 [`go/README.md`](../go/README.md) under `SendPrepared`.

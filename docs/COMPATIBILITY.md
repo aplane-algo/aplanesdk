@@ -150,12 +150,12 @@ signer and what changed for callers of the existing calls:
   value (one object in TypeScript and Python), so a `null` body, an empty or
   cut-off body, or anything after the value is an error, never an empty
   answer. A field left out or `null`, at any depth, reads as its zero value;
-  a field of the wrong type or out of range makes the answer unreadable. An
-  answer whose `error` field is set is a refusal: component, assembly, key
-  generation and key deletion answers as well as `/sign` and `/plan`. A key
-  generation answer without an address is refused, and a key deletion answer
-  is read as `{success, error}`. A `/keys` answer that spells an Algorand
-  address non-canonically is refused whole. In TypeScript and Python an
+  a field of the wrong type or out of range makes the answer unreadable. A
+  refusal is always a non-2xx answer: an `error` field in a 200 answer is an
+  unknown field, and is ignored. A key generation answer without an address
+  is refused, and a key deletion answer is read as the empty object `{}`. A
+  `/keys` answer that spells an Algorand address non-canonically is refused
+  whole. In TypeScript and Python an
   unreadable answer to a request that releases no signature is a plain
   `SignerError`, never a raw parse, type or attribute error, and in Python an
   unreadable `/status` no longer stops a sign request: the default approval

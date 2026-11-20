@@ -996,8 +996,10 @@ the wrong type or out of range is an answer that could not be read:
   `/sign/assemble`, `/sign/rotating/sign`) a signature may be out, so a send
   reports it as `SignOutcomeUnknownError`.
 
-An answer whose `error` field is set is a refusal, and a key generation
-answer that names no address is refused too ("missing address"). A non-200
+A refusal is always a non-2xx answer, so an `error` field in a 200 answer is
+ignored like any other unknown field. A key generation answer that names no
+address is refused ("missing address"), and `delete_key` reads the signer's
+`{}` answer. A non-200
 body that is JSON but not an object carries no error code; its text is the
 message.
 
