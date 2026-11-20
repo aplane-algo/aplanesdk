@@ -442,7 +442,7 @@ func TestSendPreparedRefusesBeforeSigning(t *testing.T) {
 		},
 		{
 			name:  "witness record is not a spending key",
-			keys:  []KeyInfo{{Address: sender, IsSpendingAccount: new(bool)}},
+			keys:  []KeyInfo{{Address: sender, IsWitnessKey: true}},
 			group: preparedFor(txn),
 			want:  ErrKeyNotFound,
 			text:  "not available for signing",

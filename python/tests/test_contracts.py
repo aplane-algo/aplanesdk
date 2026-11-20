@@ -450,7 +450,6 @@ def test_list_keys_maps_component_and_cosigned_metadata():
         component = client.list_keys(refresh=True)[0]
     assert component.key_type == "aplane.witness-falcon1024.v1"
     assert component.is_witness_key is True
-    assert component.is_spending_account is False
 
     with patch.object(
         client.session,
@@ -520,7 +519,6 @@ def test_generate_key_maps_component_response():
     assert set(generated.public_key_hex) == {"0"}
     assert generated.key_type == "aplane.witness-falcon1024.v1"
     assert generated.is_witness_key is True
-    assert generated.is_spending_account is False
 
 
 def test_rotating_dtos_round_trip_fixtures():

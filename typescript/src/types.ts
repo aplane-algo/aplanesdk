@@ -202,8 +202,6 @@ export interface KeyInfo {
   isGenericLsig: boolean;
   /** True when this is a witness key, not a spending account */
   isWitnessKey?: boolean;
-  /** False for witness keys; absent when the signer does not report it */
-  isSpendingAccount?: boolean;
   /** Transaction-authorization capability and instance metadata */
   boundedAuthorization?: BoundedAuthorizationInfo;
   /** Key-file-owned signing arguments for LogicSigs */
@@ -632,8 +630,6 @@ export interface GenerateResult {
   keyType: string;
   /** True when generated key is a witness key */
   isWitnessKey?: boolean;
-  /** False for witness keys; absent when not reported */
-  isSpendingAccount?: boolean;
   /** Creation parameters used */
   parameters?: Record<string, string>;
 }

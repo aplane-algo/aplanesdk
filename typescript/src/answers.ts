@@ -234,7 +234,6 @@ export const GENERATE_ANSWER: AnswerShape = {
     public_key_hex: "string",
     key_type: "string",
     is_witness_key: "bool",
-    is_spending_account: { optional: "bool" },
     parameters: { map: "string" },
   },
 };
@@ -378,7 +377,6 @@ const KEY_INFO: AnswerShape = {
     is_generic_lsig: "bool",
     is_witness_key: "bool",
     bounded_authorization: BOUNDED_AUTHORIZATION,
-    is_spending_account: { optional: "bool" },
     signing_args: { list: RUNTIME_ARG },
     parameters: { map: "string" },
     template_provenance_status: "string",

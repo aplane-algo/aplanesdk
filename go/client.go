@@ -701,7 +701,7 @@ func (c *SignerClient) GetKeysResponseWithContext(ctx context.Context) (*KeysRes
 		// the first spendable row is the one kept, the row findSpendableKey
 		// picks from the list itself, so a lookup answers the same from a
 		// fresh list and from the cache. A row is displaced only by the first
-		// spendable row after a non-spending one.
+		// spendable row after a witness one.
 		if kept, ok := cache[k.Address]; ok && (isSpendableKey(*kept) || !isSpendableKey(*k)) {
 			continue
 		}

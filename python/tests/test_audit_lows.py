@@ -658,7 +658,7 @@ def test_cosigned_group_takes_the_spendable_key_from_the_signer():
     assert "signer_key" not in {field.name for field in dataclasses.fields(PreparedTransaction)}
     txn = fake_signer.payment()
     sender = txn.sender
-    # Two rows for one address, the non-spending one last. A second spendable
+    # Two rows for one address, the witness one last. A second spendable
     # row follows as well: the first one is the one chosen, from the fresh
     # list and from the cache alike.
     signer = _KeysetSigner(
@@ -667,7 +667,7 @@ def test_cosigned_group_takes_the_spendable_key_from_the_signer():
             {
                 "address": sender,
                 "key_type": "aplane.witness-falcon1024.v1",
-                "is_spending_account": False,
+                "is_witness_key": True,
                 "signing_flow": "witness8",
             },
             {"address": sender, "key_type": "ed25519", "signing_flow": "cosigner9"},
@@ -675,7 +675,7 @@ def test_cosigned_group_takes_the_spendable_key_from_the_signer():
             {
                 "address": sender,
                 "key_type": "aplane.witness-falcon1024.v1",
-                "is_spending_account": False,
+                "is_witness_key": True,
                 "signing_flow": "witness9",
             },
         ],
@@ -708,13 +708,13 @@ def test_cosigned_group_takes_the_spendable_key_from_the_signer():
         attempt()
     assert signer.fetches == 2
 
-    # Only a non-spending row for the address: there is no key to sign with.
+    # Only a witness row for the address: there is no key to sign with.
     signer.revision = 3
     signer.keys = [
         {
             "address": sender,
             "key_type": "aplane.witness-falcon1024.v1",
-            "is_spending_account": False,
+            "is_witness_key": True,
         }
     ]
     with pytest.raises(KeyNotFoundError, match="is not available for signing"):

@@ -469,9 +469,6 @@ func TestGoSDKContractCosignerKeyMetadata(t *testing.T) {
 	if !component.Keys[0].IsWitnessKey {
 		t.Fatal("witness key should be marked IsWitnessKey")
 	}
-	if component.Keys[0].IsSpendingAccount == nil || *component.Keys[0].IsSpendingAccount {
-		t.Fatalf("component IsSpendingAccount = %#v, want false", component.Keys[0].IsSpendingAccount)
-	}
 	if component.Keys[0].ValidRekeyTarget {
 		t.Fatal("witness key ValidRekeyTarget = true, want false")
 	}

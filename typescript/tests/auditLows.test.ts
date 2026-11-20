@@ -501,8 +501,8 @@ describe("cosigned group key record", () => {
     const txn = fakePayment();
     const sender = txn.sender.toString();
     const userClient = new SignerClient("http://localhost:11270");
-    const witness = { address: sender, key_type: "aplane.witness-falcon1024.v1", is_spending_account: false };
-    // Two rows for one address, the non-spending one last. A second spendable
+    const witness = { address: sender, key_type: "aplane.witness-falcon1024.v1", is_witness_key: true };
+    // Two rows for one address, the witness one last. A second spendable
     // row follows as well: the first one is the one chosen, from the fresh
     // list and from the cache alike.
     const signer = {
@@ -552,7 +552,7 @@ describe("cosigned group key record", () => {
     await assert.rejects(attempt(), /signing flow "cosigner10"/);
     assert.equal(signer.fetches, 2);
 
-    // Only a non-spending row for the address: there is no key to sign with.
+    // Only a witness row for the address: there is no key to sign with.
     signer.revision = 3;
     signer.keys = [witness];
     await assert.rejects(attempt(), (err: unknown) => {

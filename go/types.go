@@ -840,7 +840,6 @@ type KeyInfo struct {
 	IsGenericLsig            bool                      `json:"is_generic_lsig,omitempty"`
 	IsWitnessKey             bool                      `json:"is_witness_key,omitempty"`
 	BoundedAuthorization     *BoundedAuthorizationInfo `json:"bounded_authorization,omitempty"`
-	IsSpendingAccount        *bool                     `json:"is_spending_account,omitempty"`
 	SigningArgs              []SigningArg              `json:"signing_args,omitempty"`
 	Parameters               map[string]string         `json:"parameters,omitempty"`
 	TemplateProvenanceStatus string                    `json:"template_provenance_status,omitempty"`
@@ -872,12 +871,11 @@ type KeyTypesResponse struct {
 
 // GenerateResult is the response from key generation.
 type GenerateResult struct {
-	Address           string            `json:"address,omitempty"`
-	PublicKeyHex      string            `json:"public_key_hex,omitempty"`
-	KeyType           string            `json:"key_type,omitempty"`
-	IsWitnessKey      bool              `json:"is_witness_key,omitempty"`
-	IsSpendingAccount *bool             `json:"is_spending_account,omitempty"`
-	Parameters        map[string]string `json:"parameters,omitempty"`
+	Address      string            `json:"address,omitempty"`
+	PublicKeyHex string            `json:"public_key_hex,omitempty"`
+	KeyType      string            `json:"key_type,omitempty"`
+	IsWitnessKey bool              `json:"is_witness_key,omitempty"`
+	Parameters   map[string]string `json:"parameters,omitempty"`
 }
 
 // generateRequest is the request payload for key generation.

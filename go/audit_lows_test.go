@@ -270,7 +270,6 @@ func (k *keysetSigner) client(t *testing.T) (*SignerClient, func()) {
 func TestCosignedGroupTakesTheSpendableKeyFromTheSigner(t *testing.T) {
 	txn := verifyTestPayment(t, 41, 42, 1)
 	sender := txn.Sender.String()
-	notSpending := false
 	attempt := func(client *SignerClient) error {
 		_, err := SignPreparedCosignedGroup(PreparedCosignedGroupOptions{
 			UserClient:    client,
@@ -279,15 +278,15 @@ func TestCosignedGroupTakesTheSpendableKeyFromTheSigner(t *testing.T) {
 		return err
 	}
 
-	// Two rows for one address, the non-spending one last. The spendable row
+	// Two rows for one address, the witness one last. The spendable row
 	// decides the flow, on the fresh read and again from the cache.
 	// A second spendable row follows as well: the first one is the one
 	// chosen, from the fresh list and from the cache alike.
 	signer := &keysetSigner{revision: 1, keys: []KeyInfo{
-		{Address: sender, KeyType: KeyTypeWitnessFalcon1024, IsSpendingAccount: &notSpending, SigningFlow: "witness8"},
+		{Address: sender, KeyType: KeyTypeWitnessFalcon1024, IsWitnessKey: true, SigningFlow: "witness8"},
 		{Address: sender, KeyType: "ed25519", SigningFlow: "cosigner9"},
 		{Address: sender, KeyType: "ed25519", SigningFlow: "cosigner11"},
-		{Address: sender, KeyType: KeyTypeWitnessFalcon1024, IsSpendingAccount: &notSpending, SigningFlow: "witness9"},
+		{Address: sender, KeyType: KeyTypeWitnessFalcon1024, IsWitnessKey: true, SigningFlow: "witness9"},
 	}}
 	client, closeServer := signer.client(t)
 	defer closeServer()
@@ -320,9 +319,9 @@ func TestCosignedGroupTakesTheSpendableKeyFromTheSigner(t *testing.T) {
 		t.Fatalf("/keys was fetched %d times after one keyset change, want 2", signer.fetches)
 	}
 
-	// Only a non-spending row for the address: there is no key to sign with.
+	// Only a witness row for the address: there is no key to sign with.
 	signer.revision = 3
-	signer.keys = []KeyInfo{{Address: sender, KeyType: KeyTypeWitnessFalcon1024, IsSpendingAccount: &notSpending}}
+	signer.keys = []KeyInfo{{Address: sender, KeyType: KeyTypeWitnessFalcon1024, IsWitnessKey: true}}
 	if err := attempt(client); !errors.Is(err, ErrKeyNotFound) {
 		t.Fatalf("a witness-only address: error = %v, want ErrKeyNotFound", err)
 	}

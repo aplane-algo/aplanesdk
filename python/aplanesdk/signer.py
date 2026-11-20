@@ -1164,7 +1164,6 @@ _KEY_INFO_SHAPE: Dict[str, Any] = {
     "is_generic_lsig": "bool",
     "is_witness_key": "bool",
     "bounded_authorization": _BOUNDED_AUTHORIZATION_SHAPE,
-    "is_spending_account": ("ptr", "bool"),
     "signing_args": ("list", _RUNTIME_ARG_SHAPE),
     "parameters": "str_map",
     "template_provenance_status": "str",
@@ -1234,7 +1233,6 @@ _GENERATE_RESULT_SHAPE: Dict[str, Any] = {
     "public_key_hex": "str",
     "key_type": "str",
     "is_witness_key": "bool",
-    "is_spending_account": ("ptr", "bool"),
     "parameters": "str_map",
 }
 _CANCEL_SIGN_RESPONSE_SHAPE: Dict[str, Any] = {
@@ -1435,7 +1433,6 @@ class KeyInfo:
     is_generic_lsig: bool = False
     is_witness_key: bool = False
     bounded_authorization: Optional[BoundedAuthorizationInfo] = None
-    is_spending_account: Optional[bool] = None
     signing_args: Optional[List[SigningArg]] = None  # Key-file args required for LogicSigs
     parameters: Optional[Dict[str, str]] = None
     template_provenance_status: str = ""
@@ -2152,7 +2149,6 @@ class GenerateResult:
     key_type: str
     public_key_hex: str = ""
     is_witness_key: bool = False
-    is_spending_account: Optional[bool] = None
     parameters: Optional[Dict[str, str]] = None
 
 
@@ -3900,7 +3896,7 @@ def _find_spendable_key(keys: List[KeyInfo], address: str) -> Optional[KeyInfo]:
     otherwise, so only address is canonicalised here."""
     wanted = _address_key(address)
     for key in keys:
-        if key.address == wanted and key.is_spending_account is not False:
+        if key.address == wanted and not key.is_witness_key:
             return key
     return None
 
@@ -5625,7 +5621,6 @@ class SignerClient:
                 is_generic_lsig=k.get("is_generic_lsig", False),
                 is_witness_key=k.get("is_witness_key", False),
                 bounded_authorization=_parse_bounded_authorization(k.get("bounded_authorization")),
-                is_spending_account=k.get("is_spending_account"),
                 signing_args=_parse_runtime_args(k.get("signing_args")),
                 # Read by its shape, parameters left out is {}: none.
                 parameters=k.get("parameters") or None,
@@ -5644,9 +5639,7 @@ class SignerClient:
             # _find_spendable_key picks from the list itself, so a lookup
             # answers the same from a fresh list and from the cache.
             kept = self._key_cache.get(key_info.address)
-            if kept is not None and (
-                kept.is_spending_account is not False or key_info.is_spending_account is False
-            ):
+            if kept is not None and (not kept.is_witness_key or key_info.is_witness_key):
                 continue
             self._key_cache[key_info.address] = key_info
 
@@ -6717,7 +6710,6 @@ class SignerClient:
             key_type=data["key_type"],
             public_key_hex=data["public_key_hex"],
             is_witness_key=data["is_witness_key"],
-            is_spending_account=data["is_spending_account"],
             parameters=data["parameters"] or None,
         )
 

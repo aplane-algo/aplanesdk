@@ -243,7 +243,7 @@ describe("sendPrepared", () => {
       },
       {
         name: "witness record is not a spending key",
-        keys: [{ address: sender, is_spending_account: false }],
+        keys: [{ address: sender, is_witness_key: true }],
         group: preparedFor(txn),
         want: KeyNotFoundError,
         text: "not available for signing",

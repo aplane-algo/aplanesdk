@@ -822,7 +822,7 @@ _UNSIGNED_ANSWER_CALLS = {
 # For each, an answer with one field of the wrong type.
 _WRONG_TYPED_ANSWERS = {
     "status": b'{"state":"unlocked","keyset_revision":"4"}',
-    "keys": b'{"count":1,"keys":[{"address":"ADDR1","key_type":"ed25519","is_spending_account":"no"}]}',
+    "keys": b'{"count":1,"keys":[{"address":"ADDR1","key_type":"ed25519","is_witness_key":"no"}]}',
     "key types": b'{"key_types":[{"key_type":"ed25519","creation_params":[{"name":"n","min":-1}]}]}',
     "plan": b'{"transactions":"5458aa"}',
     "key generation": b'{"address":"NEWADDR","key_type":"ed25519","parameters":{"a":1}}',
@@ -1009,7 +1009,7 @@ class TestAnswersReadByShape:
             },
         ]
         assert bounded["max_fee"] is None and bounded["spend_effects"] == []
-        assert record["is_spending_account"] is None and record["parameters"] == {}
+        assert record["is_witness_key"] is False and record["parameters"] == {}
 
     def test_parsed_records_keep_their_defaults_for_fields_left_out(self):
         # Fields left out now read as zero values; the records built from them

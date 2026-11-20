@@ -129,10 +129,9 @@ func resolveAuthAddressWithKeys(address, authAddr string, keys []KeyInfo) (*Reso
 }
 
 // isSpendableKey reports whether a key record is one that signs for its
-// address. A witness or cosigner record is listed with is_spending_account
-// false and does not.
+// address. A witness record, listed with is_witness_key, does not.
 func isSpendableKey(key KeyInfo) bool {
-	return key.IsSpendingAccount == nil || *key.IsSpendingAccount
+	return !key.IsWitnessKey
 }
 
 func findSpendableKey(keys []KeyInfo, address string) (KeyInfo, bool) {

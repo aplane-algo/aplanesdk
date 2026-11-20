@@ -288,7 +288,7 @@ def _refusal_cases():
         ),
         (
             "witness record is not a spending key",
-            [key(sender, is_spending_account=False)],
+            [key(sender, is_witness_key=True)],
             prepared_for(txn),
             KeyNotFoundError,
             "not available for signing",
@@ -1463,7 +1463,6 @@ class TestAddressSpellings:
                 witness_id,
                 key_type=KEY_TYPE_WITNESS_FALCON1024,
                 is_witness_key=True,
-                is_spending_account=False,
             ),
             key("PLACEHOLDER"),
             key(""),

@@ -4108,7 +4108,7 @@ describe("SignerClient", () => {
         '{"keyset_revision":-1}', '{"warnings":["a",7]}', '{"rotating":[{"account":5}]}', '{"protocol_version":2}',
       ]],
       ["/keys", () => client().listKeys(true), [
-        "", "null", '{"keys":"x"}', '{"keys":[{"address":42}]}', '{"keys":[{"is_spending_account":"no"}]}',
+        "", "null", '{"keys":"x"}', '{"keys":[{"address":42}]}', '{"keys":[{"is_witness_key":"no"}]}',
         '{"count":"1"}', '{"keys":[{"bounded_authorization":{"max_fee":"1000"}}]}',
         '{"keys":[{"valid_rekey_target":"true"}]}', '{"keys":[{"valid_rekey_target":1}]}',
       ]],

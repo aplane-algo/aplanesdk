@@ -422,7 +422,6 @@ describe("signer API contract fixtures", () => {
     const component = (await client.listKeys(true))[0];
     assert.equal(component.keyType, "aplane.witness-falcon1024.v1");
     assert.equal(component.isWitnessKey, true);
-    assert.equal(component.isSpendingAccount, false);
     // Witness rows are not spending accounts, so the signer omits the field.
     assert.equal(component.authorizationKind, undefined);
 
@@ -524,7 +523,6 @@ describe("signer API contract fixtures", () => {
     assert.match(generated.publicKeyHex, /^0+$/);
     assert.equal(generated.keyType, "aplane.witness-falcon1024.v1");
     assert.equal(generated.isWitnessKey, true);
-    assert.equal(generated.isSpendingAccount, false);
   });
 
   it("round-trips cosigner component and assembly fixture DTOs", () => {

@@ -1811,7 +1811,7 @@ function extractAuthAddress(accountInfo: AccountInfoResult): string {
 
 function findSpendableKey(keys: KeyInfo[], address: string): KeyInfo | undefined {
   return keys.find((key) => (
-    key.address === address && key.isSpendingAccount !== false
+    key.address === address && !key.isWitnessKey
   ));
 }
 
@@ -3079,7 +3079,6 @@ export class SignerClient {
         logicSigResources: mapLogicSigResourceProfile(raw.logic_sig_resources),
         isGenericLsig: raw.is_generic_lsig,
         isWitnessKey: raw.is_witness_key,
-        isSpendingAccount: raw.is_spending_account,
         boundedAuthorization: mapBoundedAuthorization(raw.bounded_authorization),
         signingArgs: raw.signing_args ? raw.signing_args.map(mapRuntimeArg) : undefined,
         parameters: raw.parameters,
@@ -3093,7 +3092,7 @@ export class SignerClient {
       // from the list itself, so a lookup answers the same from a fresh list
       // and from the cache.
       const kept = this.keyCache.get(keyInfo.address);
-      if (kept && (kept.isSpendingAccount !== false || keyInfo.isSpendingAccount === false)) {
+      if (kept && (!kept.isWitnessKey || keyInfo.isWitnessKey)) {
         continue;
       }
       this.keyCache.set(keyInfo.address, keyInfo);
@@ -4114,7 +4113,6 @@ export class SignerClient {
       publicKeyHex: data.public_key_hex || undefined,
       keyType: data.key_type,
       isWitnessKey: data.is_witness_key,
-      isSpendingAccount: data.is_spending_account,
       parameters: data.parameters,
     };
   }
