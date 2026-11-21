@@ -2020,7 +2020,6 @@ describe("an approval request that is never posted", () => {
     group_bytes_hex: groupHex(),
     targets: [{
       target_index: 0,
-      kind: "bounded-cosigner",
       auth_address: fakeAddress(21),
       base_signatures: ["base-sig"],
       assembly_receipt: "receipt",

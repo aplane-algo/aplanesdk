@@ -174,12 +174,6 @@ type ComponentResponse struct {
 	Components []Component `json:"components"`
 }
 
-type AssemblyTargetKind string
-
-const (
-	AssemblyTargetKindBoundedCosigner AssemblyTargetKind = "bounded-cosigner"
-)
-
 // AssemblyRequest is the shared request payload for POST /sign/assemble.
 type AssemblyRequest struct {
 	RequestID     string                    `json:"request_id,omitempty"`
@@ -189,9 +183,8 @@ type AssemblyRequest struct {
 }
 
 type AssemblyTarget struct {
-	TargetIndex int                `json:"target_index"`
-	Kind        AssemblyTargetKind `json:"kind"`
-	AuthAddress string             `json:"auth_address"`
+	TargetIndex int    `json:"target_index"`
+	AuthAddress string `json:"auth_address"`
 
 	BaseSignatures      []string          `json:"base_signatures,omitempty"`
 	BoundedRuntimeArgs  map[string]string `json:"bounded_runtime_args,omitempty"`
@@ -495,16 +488,11 @@ func (r AssemblyRequest) Validate() error {
 		if err := validateSignRequestID(target.CosignerSourceRequestID); err != nil {
 			return fmt.Errorf("target %d: cosigner_source_request_id: %w", i+1, err)
 		}
-		switch target.Kind {
-		case AssemblyTargetKindBoundedCosigner:
-			if len(target.BaseSignatures) == 0 || target.AssemblyReceipt == "" {
-				return fmt.Errorf("target %d: base_signatures and assembly_receipt are required for bounded-cosigner target", i+1)
-			}
-			if err := validateSignRequestID(target.BaseSourceRequestID); err != nil {
-				return fmt.Errorf("target %d: base_source_request_id: %w", i+1, err)
-			}
-		default:
-			return fmt.Errorf("target %d: invalid kind %q", i+1, target.Kind)
+		if len(target.BaseSignatures) == 0 || target.AssemblyReceipt == "" {
+			return fmt.Errorf("target %d: base_signatures and assembly_receipt are required", i+1)
+		}
+		if err := validateSignRequestID(target.BaseSourceRequestID); err != nil {
+			return fmt.Errorf("target %d: base_source_request_id: %w", i+1, err)
 		}
 	}
 	for i, item := range r.Passthrough {

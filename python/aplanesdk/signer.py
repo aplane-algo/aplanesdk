@@ -1779,15 +1779,11 @@ class ComponentResponse:
     components: List[Dict[str, Any]]
 
 
-ASSEMBLY_TARGET_KIND_BOUNDED_COSIGNER = "bounded-cosigner"
-
-
 @dataclass
 class AssemblyTarget:
-    """One discriminated target for /sign/assemble."""
+    """One target for /sign/assemble."""
 
     target_index: int
-    kind: str
     auth_address: str
     # Required on every bounded-cosigner target except a listed rekey, which
     # takes none.
@@ -3652,13 +3648,9 @@ def _validate_assembly_request(data: Dict[str, Any]) -> None:
             raise ValueError(f"target {i}: auth_address is required")
         if not target.get("cosigner_signature") and target.get("cosigner_source_request_id"):
             raise ValueError(f"target {i}: cosigner_source_request_id needs a cosigner_signature")
-        kind = target.get("kind")
-        if kind == ASSEMBLY_TARGET_KIND_BOUNDED_COSIGNER:
-            if not target.get("base_signatures") or not target.get("assembly_receipt"):
-                raise ValueError(f"target {i}: base_signatures and assembly_receipt are required for bounded-cosigner target")
-            _validate_sign_request_id(str(target.get("base_source_request_id", "")))
-        else:
-            raise ValueError(f"target {i}: invalid kind")
+        if not target.get("base_signatures") or not target.get("assembly_receipt"):
+            raise ValueError(f"target {i}: base_signatures and assembly_receipt are required")
+        _validate_sign_request_id(str(target.get("base_source_request_id", "")))
         _validate_sign_request_id(str(target.get("cosigner_source_request_id", "")))
 
     for i, item in enumerate(passthrough, start=1):
@@ -9714,7 +9706,6 @@ def sign_prepared_cosigned_group(
             assembly_targets.append(
                 AssemblyTarget(
                     target_index=index,
-                    kind=ASSEMBLY_TARGET_KIND_BOUNDED_COSIGNER,
                     auth_address=component["auth_address"],
                     base_signatures=list(component.get("base_signatures") or []),
                     bounded_runtime_args=dict(component.get("runtime_args") or {}) or None,

@@ -669,7 +669,7 @@ func TestApprovalRequestWithEndedContextSendsNothing(t *testing.T) {
 			_, err := c.RequestAssembleWithContext(ctx, AssemblyRequest{
 				GroupBytesHex: []string{"5458aa"},
 				Targets: []AssemblyTarget{{
-					TargetIndex: 0, Kind: AssemblyTargetKindBoundedCosigner, AuthAddress: "BOUNDED",
+					TargetIndex: 0, AuthAddress: "BOUNDED",
 					BaseSignatures: []string{"aabb"}, AssemblyReceipt: "eeff", CosignerSignature: "bbcc",
 				}},
 			})
@@ -1367,7 +1367,7 @@ func TestRequestAssemblePostsToAssembleEndpoint(t *testing.T) {
 		if req.RequestID == "" {
 			t.Fatal("request_id was not populated")
 		}
-		if len(req.Targets) != 1 || req.Targets[0].Kind != AssemblyTargetKindBoundedCosigner || req.Targets[0].AuthAddress != "BOUNDED" {
+		if len(req.Targets) != 1 || req.Targets[0].AuthAddress != "BOUNDED" {
 			t.Fatalf("assembly targets = %+v", req.Targets)
 		}
 		json.NewEncoder(w).Encode(AssemblyResponse{
@@ -1381,7 +1381,6 @@ func TestRequestAssemblePostsToAssembleEndpoint(t *testing.T) {
 		GroupBytesHex: []string{"5458aa"},
 		Targets: []AssemblyTarget{{
 			TargetIndex:       0,
-			Kind:              AssemblyTargetKindBoundedCosigner,
 			AuthAddress:       "BOUNDED",
 			BaseSignatures:    []string{"aabb"},
 			AssemblyReceipt:   "eeff",
@@ -1402,7 +1401,6 @@ func TestRequestAssembleRejectsMissingCoverage(t *testing.T) {
 		GroupBytesHex: []string{"5458aa", "5458bb"},
 		Targets: []AssemblyTarget{{
 			TargetIndex:       0,
-			Kind:              AssemblyTargetKindBoundedCosigner,
 			AuthAddress:       "BOUNDED",
 			BaseSignatures:    []string{"aabb"},
 			AssemblyReceipt:   "eeff",
@@ -1424,7 +1422,6 @@ func TestRequestAssembleUnavailable(t *testing.T) {
 		GroupBytesHex: []string{"5458aa"},
 		Targets: []AssemblyTarget{{
 			TargetIndex:       0,
-			Kind:              AssemblyTargetKindBoundedCosigner,
 			AuthAddress:       "BOUNDED",
 			BaseSignatures:    []string{"aabb"},
 			AssemblyReceipt:   "eeff",

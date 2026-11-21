@@ -530,7 +530,7 @@ describe("signer API contract fixtures", () => {
     assert.ok(unifiedComponentResp.components[0].assembly_receipt);
 
     const unifiedReq = fixture("assembly_request_mixed.json") as AssemblyRequest;
-    assert.equal(unifiedReq.targets?.[0].kind, "bounded-cosigner");
+    assert.equal(unifiedReq.targets !== undefined && "kind" in unifiedReq.targets[0], false);
     // A listed rekey assembles without a cosigner signature.
     assert.equal(unifiedReq.targets?.[0].cosigner_signature, undefined);
     const unifiedResp = fixture("assembly_response.json") as AssemblyResponse;

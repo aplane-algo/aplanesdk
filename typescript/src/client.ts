@@ -822,7 +822,6 @@ export async function signPreparedCosignedGroup(
       }
       const assemblyTarget: AssemblyTarget = {
         target_index: target.targetIndex,
-        kind: "bounded-cosigner",
         auth_address: component.auth_address || "",
         base_signatures: [...(component.base_signatures || [])],
         bounded_runtime_args: component.runtime_args ? { ...component.runtime_args } : undefined,
@@ -1288,14 +1287,10 @@ function validateAssemblyRequest(request: AssemblyRequest): void {
     if (!target.cosigner_signature && target.cosigner_source_request_id) {
       throw new SignerError(`target ${item}: cosigner_source_request_id needs a cosigner_signature`);
     }
-    if (target.kind === "bounded-cosigner") {
-      if (!target.base_signatures?.length || !target.assembly_receipt) {
-        throw new SignerError(`target ${item}: base_signatures and assembly_receipt are required for bounded-cosigner target`);
-      }
-      validateSignRequestId(target.base_source_request_id || "");
-    } else {
-      throw new SignerError(`target ${item}: invalid kind`);
+    if (!target.base_signatures?.length || !target.assembly_receipt) {
+      throw new SignerError(`target ${item}: base_signatures and assembly_receipt are required`);
     }
+    validateSignRequestId(target.base_source_request_id || "");
     validateSignRequestId(target.cosigner_source_request_id || "");
   });
 

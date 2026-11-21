@@ -725,11 +725,8 @@ export interface ComponentResponse {
   components: Component[];
 }
 
-export type AssemblyTargetKind = "bounded-cosigner";
-
 export interface AssemblyTarget {
   target_index: number;
-  kind: AssemblyTargetKind;
   auth_address: string;
   base_signatures?: string[];
   bounded_runtime_args?: Record<string, string>;

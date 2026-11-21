@@ -555,7 +555,7 @@ def test_cosigner_dtos_round_trip_fixtures():
     assert unified_component_resp.components[0]["assembly_receipt"]
 
     unified_req = AssemblyRequest(**fixture("assembly_request_mixed.json"))
-    assert unified_req.targets[0]["kind"] == "bounded-cosigner"
+    assert "kind" not in unified_req.targets[0]
     # A listed rekey assembles without a cosigner signature.
     assert "cosigner_signature" not in unified_req.targets[0]
     unified_resp = AssemblyResponse(**fixture("assembly_response.json"))

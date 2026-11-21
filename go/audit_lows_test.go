@@ -202,7 +202,7 @@ func TestRequestAssembleRefusesAnotherRequestsAnswer(t *testing.T) {
 		RequestID:     "sdk-mine",
 		GroupBytesHex: []string{"5458aa"},
 		Targets: []AssemblyTarget{{
-			TargetIndex: 0, Kind: AssemblyTargetKindBoundedCosigner, AuthAddress: "BOUNDED",
+			TargetIndex: 0, AuthAddress: "BOUNDED",
 			BaseSignatures: []string{"aabb"}, AssemblyReceipt: "eeff", CosignerSignature: "bbcc",
 		}},
 	}

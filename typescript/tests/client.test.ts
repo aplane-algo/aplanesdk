@@ -1793,7 +1793,6 @@ describe("SignerClient", () => {
         targets: [
           {
             target_index: 0,
-            kind: "bounded-cosigner" as const,
             auth_address: "BOUNDED",
             base_signatures: ["aabb"],
             assembly_receipt: "eeff",
@@ -1818,7 +1817,7 @@ describe("SignerClient", () => {
       assert.equal(mockFetch.mock.calls[0][0], "http://localhost:11270/sign/assemble");
       const body = JSON.parse(mockFetch.mock.calls[0][1].body);
       assert.match(body.request_id, /^sdk-/);
-      assert.equal(body.targets[0].kind, "bounded-cosigner");
+      assert.equal("kind" in body.targets[0], false);
       assert.equal(body.targets[0].auth_address, "BOUNDED");
     });
 
@@ -1830,7 +1829,6 @@ describe("SignerClient", () => {
           targets: [
             {
               target_index: 0,
-              kind: "bounded-cosigner",
               auth_address: "BOUNDED",
               base_signatures: ["aabb"],
               assembly_receipt: "eeff",
@@ -1887,7 +1885,6 @@ describe("SignerClient", () => {
         group_bytes_hex: ["5458aa"],
         targets: [{
           target_index: 0,
-          kind: "bounded-cosigner",
           auth_address: "BOUNDED",
           base_signatures: ["base-sig"],
           assembly_receipt: "receipt",

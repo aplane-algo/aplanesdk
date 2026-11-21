@@ -185,7 +185,6 @@ export type {
   ComponentTarget,
   Component,
   ComponentResponse,
-  AssemblyTargetKind,
   AssemblyRequest,
   AssemblyTarget,
   AssemblyResponse,

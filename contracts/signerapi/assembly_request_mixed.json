@@ -8,7 +8,6 @@
   "targets": [
     {
       "target_index": 0,
-      "kind": "bounded-cosigner",
       "auth_address": "PLAIN_HOST_ACCOUNT",
       "base_signatures": [
         "aa"
@@ -17,7 +16,6 @@
     },
     {
       "target_index": 1,
-      "kind": "bounded-cosigner",
       "auth_address": "BOUNDED_ACCOUNT",
       "base_signatures": [
         "cc"

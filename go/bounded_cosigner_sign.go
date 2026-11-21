@@ -251,7 +251,6 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 		component := components[target.TargetIndex]
 		assemblyTarget := AssemblyTarget{
 			TargetIndex:         target.TargetIndex,
-			Kind:                AssemblyTargetKindBoundedCosigner,
 			AuthAddress:         target.CosignedAccount,
 			BaseSignatures:      append([]string(nil), component.BaseSignatures...),
 			BoundedRuntimeArgs:  cloneStringMap(component.RuntimeArgs),

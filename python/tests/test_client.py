@@ -49,7 +49,6 @@ from aplanesdk.signer import (
     PreparedGroup,
     COMPONENT_TARGET_KIND_BOUNDED_BASE,
     COMPONENT_PATH_LISTED_REKEY,
-    ASSEMBLY_TARGET_KIND_BOUNDED_COSIGNER,
     KEY_TYPE_WITNESS_FALCON1024,
     SIGNING_FLOW_COSIGNED1,
     EnrollmentError,
@@ -111,7 +110,6 @@ def component_response(*, request_id, signatures, component_key=""):
 def cosigned_assembly_target(*, target_index, account, cosigner_signature):
     return AssemblyTarget(
         target_index=target_index,
-        kind="bounded-cosigner",
         auth_address=account,
         base_signatures=["aabb"],
         assembly_receipt="eeff",
@@ -1313,7 +1311,7 @@ class TestSpecializedLowLevelEndpoints:
         assert mock_post.call_args.args[0] == "http://localhost:11270/sign/assemble"
         body = fake_signer.posted_json(mock_post.call_args.kwargs)
         assert body["request_id"].startswith("sdk-")
-        assert body["targets"][0]["kind"] == "bounded-cosigner"
+        assert "kind" not in body["targets"][0]
         assert body["targets"][0]["auth_address"] == "BOUNDED"
 
     def test_request_assemble_rejects_missing_coverage(self):
@@ -1369,7 +1367,6 @@ class TestSpecializedLowLevelEndpoints:
                 "group_bytes_hex": ["5458aa"],
                 "targets": [{
                     "target_index": 0,
-                    "kind": ASSEMBLY_TARGET_KIND_BOUNDED_COSIGNER,
                     "auth_address": "BOUNDED",
                     "base_signatures": ["base-sig"],
                     "assembly_receipt": "receipt",

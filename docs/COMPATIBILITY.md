@@ -75,6 +75,12 @@ The SDKs read only the current signer wire and client file formats:
 - `invalid_passphrase` is not a signer HTTP error code: no HTTP route takes a
   passphrase. `ErrCodeInvalidPassphrase` (Go), `ErrorCodes.InvalidPassphrase`
   (TypeScript) and `ERR_CODE_INVALID_PASSPHRASE` (Python) are gone.
+- `/sign/assemble` targets carry no `kind`: every target is a cosigned
+  account's, so `base_signatures` and `assembly_receipt` are required on each.
+  `AssemblyTargetKind` and `AssemblyTargetKindBoundedCosigner` (Go), the
+  `AssemblyTargetKind` type (TypeScript), `ASSEMBLY_TARGET_KIND_BOUNDED_COSIGNER`
+  (Python) and the `kind` field of each language's assembly target are gone.
+  The signer refuses a target that still sends `kind` as an unknown field.
 
 Package source files retain placeholder versions. The publish workflow derives
 the released Python and TypeScript package versions from the requested `vX.Y.Z`

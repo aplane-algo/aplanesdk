@@ -406,7 +406,6 @@ class TestABodyThatCannotBeEncoded:
         client = signer_client(recorder.http.url)
         target = {
             "target_index": 0,
-            "kind": "bounded-cosigner",
             "auth_address": fake_signer.account(41),
             "base_signatures": ["aa"],
             "assembly_receipt": "bb",
