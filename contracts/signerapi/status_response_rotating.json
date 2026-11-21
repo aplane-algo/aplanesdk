@@ -1,13 +1,8 @@
 {
   "node_role": "signer",
-  "protocol_version": {
-    "major": 2,
-    "minor": 0
-  },
   "build_version": "v0.43.0 (commit: fixture, built: 2026-01-01T00:00:00Z, linux/amd64)",
   "state": "unlocked",
   "signer_locked": false,
-  "ready_for_signing": true,
   "key_count": 3,
   "keyset_revision": 9,
   "approval_wait_seconds": 60,

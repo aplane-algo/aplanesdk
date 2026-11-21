@@ -90,12 +90,10 @@ func resolveYAMLAlias(node *yaml.Node) *yaml.Node {
 
 // configFile has exactly the config.yaml field names apshell knows, at every
 // depth. The SDK reads network, networks_allowed, theme and networks;
-// schema_version and signer_status_poll_interval are apshell's own settings,
-// decoded for their names only, and their values are not validated as
-// apshell validates them. Any other field, the retired endpoint, ssh and
+// signer_status_poll_interval is apshell's own setting, decoded for its name
+// only, and its value is not validated as apshell validates it. Any other field, the retired endpoint, ssh and
 // signer_port routing included, is refused as apshell refuses it.
 type configFile struct {
-	SchemaVersion            int            `yaml:"schema_version"`
 	Network                  string         `yaml:"network"`
 	NetworksAllowed          []string       `yaml:"networks_allowed"`
 	Theme                    string         `yaml:"theme"`

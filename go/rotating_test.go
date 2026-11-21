@@ -120,7 +120,7 @@ func (s *rotatingSigner) handle(w http.ResponseWriter, r *http.Request) {
 	case "/status":
 		json.NewEncoder(w).Encode(StatusResponse{State: "unlocked"})
 	case "/keys":
-		json.NewEncoder(w).Encode(KeysResponse{Count: 1, Keys: []KeyInfo{{
+		json.NewEncoder(w).Encode(KeysResponse{Keys: []KeyInfo{{
 			Address: s.account, KeyType: "aplane.rotating-triple-wotsc.v1", SigningFlow: SigningFlowRotating1,
 		}}})
 	case "/sign/rotating/prepare":
@@ -1067,7 +1067,7 @@ func TestPrepareHelpersBuildARotatingWindow(t *testing.T) {
 		case "/status":
 			json.NewEncoder(w).Encode(StatusResponse{State: "unlocked"})
 		case "/keys":
-			json.NewEncoder(w).Encode(KeysResponse{Count: len(keys), Keys: keys})
+			json.NewEncoder(w).Encode(KeysResponse{Keys: keys})
 		default:
 			t.Errorf("unexpected signer path %s", r.URL.Path)
 		}
@@ -1434,7 +1434,7 @@ func TestResolveAuthAddressReportsTheChainAuthorizer(t *testing.T) {
 		case "/status":
 			json.NewEncoder(w).Encode(StatusResponse{State: "unlocked"})
 		case "/keys":
-			json.NewEncoder(w).Encode(KeysResponse{Count: 2, Keys: []KeyInfo{{Address: sender}, {Address: holder}}})
+			json.NewEncoder(w).Encode(KeysResponse{Keys: []KeyInfo{{Address: sender}, {Address: holder}}})
 		}
 	})
 	defer server.Close()

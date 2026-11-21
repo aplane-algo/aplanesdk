@@ -61,7 +61,7 @@ func (s *sendSigner) handle(w http.ResponseWriter, r *http.Request) {
 	case "/status":
 		json.NewEncoder(w).Encode(StatusResponse{State: "unlocked"})
 	case "/keys":
-		json.NewEncoder(w).Encode(KeysResponse{Count: len(s.keys), Keys: s.keys})
+		json.NewEncoder(w).Encode(KeysResponse{Keys: s.keys})
 	case "/sign":
 		if s.sign != nil {
 			s.sign(w, r)
@@ -481,9 +481,9 @@ func TestClassifySendRoutesWholeGroup(t *testing.T) {
 		secondFlow  string
 		wantGroupAs string
 	}{
-		{"ordinary and bounded", "", SigningFlowBounded1, ""},
+		{"two ordinary", "", "", ""},
 		{"cosigned first", SigningFlowCosigned1, "", SigningFlowCosigned1},
-		{"cosigned last", SigningFlowBounded1, SigningFlowCosigned1, SigningFlowCosigned1},
+		{"cosigned last", "", SigningFlowCosigned1, SigningFlowCosigned1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1111,7 +1111,7 @@ func cosignedSendFixtureFor(t *testing.T, fault string, primary bool, cosignerKe
 		case "/status":
 			json.NewEncoder(w).Encode(StatusResponse{State: "unlocked", ApprovalWaitSeconds: 60})
 		case "/keys":
-			json.NewEncoder(w).Encode(KeysResponse{Count: len(keys), Keys: keys})
+			json.NewEncoder(w).Encode(KeysResponse{Keys: keys})
 		case "/plan":
 			var req GroupSignRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1153,7 +1153,7 @@ func cosignedSendFixtureFor(t *testing.T, fault string, primary bool, cosignerKe
 		if r.URL.Path == "/keys" {
 			// What discovery reads: the cosigner's witness key.
 			publicKey, _ := hex.DecodeString(cosignerPublicKeyHex)
-			json.NewEncoder(w).Encode(KeysResponse{Count: 1, Keys: []KeyInfo{witnessRecord(cosignerKeyType, publicKey)}})
+			json.NewEncoder(w).Encode(KeysResponse{Keys: []KeyInfo{witnessRecord(cosignerKeyType, publicKey)}})
 			return
 		}
 		f.mu.Lock()

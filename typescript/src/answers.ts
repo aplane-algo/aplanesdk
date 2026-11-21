@@ -289,11 +289,9 @@ const ROTATING_ACCOUNT_STATUS: AnswerShape = {
 export const STATUS_ANSWER: AnswerShape = {
   fields: {
     node_role: "string",
-    protocol_version: { fields: { major: "int", minor: "int" } },
     build_version: "string",
     state: "string",
     signer_locked: "bool",
-    ready_for_signing: "bool",
     key_count: "int",
     keyset_revision: "uint",
     approval_wait_seconds: "int",
@@ -387,7 +385,7 @@ const KEY_INFO: AnswerShape = {
 
 /** /keys */
 export const KEYS_ANSWER: AnswerShape = {
-  fields: { count: "int", keys: { list: KEY_INFO } },
+  fields: { keys: { list: KEY_INFO } },
 };
 
 const CREATION_PARAM: AnswerShape = {

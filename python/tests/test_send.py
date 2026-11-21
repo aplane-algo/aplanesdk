@@ -23,7 +23,6 @@ from aplanesdk import (
     KEY_TYPE_WITNESS_FALCON1024,
     SEND_OUTCOME_CONFIRMED,
     SEND_OUTCOME_SUBMITTED,
-    SIGNING_FLOW_BOUNDED1,
     SIGNING_FLOW_COSIGNED1,
     SIGNING_FLOW_ROTATING1,
     KeyNotFoundError,
@@ -314,11 +313,11 @@ def test_send_prepared_refuses_before_signing(fakes, keys, group, want, text):
 @pytest.mark.parametrize(
     "first_flow,second_flow,want",
     [
-        ("", SIGNING_FLOW_BOUNDED1, ""),
+        ("", "", ""),
         (SIGNING_FLOW_COSIGNED1, "", SIGNING_FLOW_COSIGNED1),
-        (SIGNING_FLOW_BOUNDED1, SIGNING_FLOW_COSIGNED1, SIGNING_FLOW_COSIGNED1),
+        ("", SIGNING_FLOW_COSIGNED1, SIGNING_FLOW_COSIGNED1),
     ],
-    ids=["ordinary and bounded", "cosigned first", "cosigned last"],
+    ids=["two ordinary", "cosigned first", "cosigned last"],
 )
 def test_classify_send_routes_whole_group(fakes, first_flow, second_flow, want):
     first = fake_signer.payment(41, 42)
@@ -406,7 +405,6 @@ class TestABodyThatCannotBeEncoded:
         client = signer_client(recorder.http.url)
         target = {
             "target_index": 0,
-            "kind": "bounded-cosigner",
             "auth_address": fake_signer.account(41),
             "base_signatures": ["aa"],
             "assembly_receipt": "bb",
@@ -795,7 +793,7 @@ class CosignedFixture:
         if path == "/status":
             return reply(200, status_body(approval_wait_seconds=60))
         if path == "/keys":
-            return reply(200, {"count": len(self.keys), "keys": self.keys})
+            return reply(200, {"keys": self.keys})
         if path == "/sign/cancel":
             return reply(200, {"state": "canceled"})
         request = json.loads(body)

@@ -81,7 +81,6 @@ def test_live_signer_ed25519_workflow():
         assert client.health() is True
 
         before = client.get_status()
-        assert before.ready_for_signing is True
         assert before.signer_locked is False
 
         key_types = client.list_key_types()

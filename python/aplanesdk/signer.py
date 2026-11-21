@@ -128,9 +128,6 @@ AUTHORIZATION_KIND_LOGIC_SIG = "logic_sig"
 # signing_flow and must fail fast on labels they do not implement; an empty
 # signing_flow means the ordinary /sign path.
 #
-# The transaction-aware LogicSig choreography: the signer classifies and signs
-# a bounded account without a cosigner on the ordinary /sign path.
-SIGNING_FLOW_BOUNDED1 = "bounded1"
 # The cosigned account choreography: a target may be a spend or a rekey, and each
 # base component names the path the signer classified. A listed rekey takes no
 # cosigner component. It replaces bounded-cosigner1, which carried spends only.
@@ -201,7 +198,6 @@ ERR_CODE_UNAUTHORIZED = "unauthorized"
 ERR_CODE_FORBIDDEN = "forbidden"
 ERR_CODE_LOCKED = "locked"
 ERR_CODE_NOT_FOUND = "not_found"
-ERR_CODE_INVALID_PASSPHRASE = "invalid_passphrase"
 ERR_CODE_UNAVAILABLE = "unavailable"
 ERR_CODE_CACHE_REFRESH = "cache_refresh"
 ERR_CODE_INTERNAL = "internal"
@@ -1044,7 +1040,6 @@ _ASSEMBLY_RESPONSE_SHAPE: Dict[str, Any] = {
 # The wire types of the answers that release no signature, as the Go SDK's
 # structs declare them (go/types.go). Each answer is read whole against its
 # shape: a field of another type makes it unreadable, a plain SignerError.
-_PROTOCOL_VERSION_SHAPE: Dict[str, Any] = {"major": "int", "minor": "int"}
 _ROTATING_STAGE_LOOKUP_STATUS_SHAPE: Dict[str, Any] = {
     "outcome": "str",
     "stage": ("ptr", "uint64"),
@@ -1082,11 +1077,9 @@ _ROTATING_ACCOUNT_STATUS_SHAPE: Dict[str, Any] = {
 }
 _STATUS_RESPONSE_SHAPE: Dict[str, Any] = {
     "node_role": "str",
-    "protocol_version": _PROTOCOL_VERSION_SHAPE,
     "build_version": "str",
     "state": "str",
     "signer_locked": "bool",
-    "ready_for_signing": "bool",
     "key_count": "int",
     "keyset_revision": "uint64",
     "approval_wait_seconds": "int",
@@ -1164,7 +1157,6 @@ _KEY_INFO_SHAPE: Dict[str, Any] = {
     "valid_rekey_target": "bool",
 }
 _KEYS_RESPONSE_SHAPE: Dict[str, Any] = {
-    "count": "int",
     "keys": ("list", _KEY_INFO_SHAPE),
 }
 _CREATION_PARAM_SHAPE: Dict[str, Any] = {
@@ -1554,14 +1546,6 @@ def _declared_fields(cls: Any, data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @dataclass
-class ProtocolVersion:
-    """Signer wire-protocol version."""
-
-    major: int = 0
-    minor: int = 0
-
-
-@dataclass
 class RotatingStageLookupStatus:
     """The chain lookup a recovery search began with: the stage the
     account's last confirmed rekey read, through the signer's Indexer, and
@@ -1674,10 +1658,8 @@ class StatusResponse:
 
     state: str
     signer_locked: bool
-    ready_for_signing: bool
     key_count: int
     keyset_revision: int
-    protocol_version: Optional[ProtocolVersion] = None
     build_version: str = ""
     approval_wait_seconds: int = 0
     node_role: str = ""
@@ -1689,10 +1671,6 @@ class StatusResponse:
     rotating: List[RotatingAccountStatus] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        if isinstance(self.protocol_version, dict):
-            self.protocol_version = ProtocolVersion(
-                **_declared_fields(ProtocolVersion, self.protocol_version)
-            )
         self.rotating = [
             (
                 RotatingAccountStatus(**_declared_fields(RotatingAccountStatus, entry))
@@ -1780,15 +1758,11 @@ class ComponentResponse:
     components: List[Dict[str, Any]]
 
 
-ASSEMBLY_TARGET_KIND_BOUNDED_COSIGNER = "bounded-cosigner"
-
-
 @dataclass
 class AssemblyTarget:
-    """One discriminated target for /sign/assemble."""
+    """One target for /sign/assemble."""
 
     target_index: int
-    kind: str
     auth_address: str
     # Required on every bounded-cosigner target except a listed rekey, which
     # takes none.
@@ -2228,11 +2202,10 @@ def load_config(data_dir: str) -> ClientConfig:
 
 
 # The fields apshell reads from config.yaml. The SDK reads network,
-# networks_allowed and theme; schema_version, signer_status_poll_interval
-# and networks are apshell's own settings, which the SDK checks only for
-# apshell's field names, never for their values.
+# networks_allowed and theme; signer_status_poll_interval and networks are
+# apshell's own settings, which the SDK checks only for apshell's field names,
+# never for their values.
 _APSHELL_CONFIG_FIELDS = {
-    "schema_version",
     "network",
     "networks_allowed",
     "theme",
@@ -3653,13 +3626,9 @@ def _validate_assembly_request(data: Dict[str, Any]) -> None:
             raise ValueError(f"target {i}: auth_address is required")
         if not target.get("cosigner_signature") and target.get("cosigner_source_request_id"):
             raise ValueError(f"target {i}: cosigner_source_request_id needs a cosigner_signature")
-        kind = target.get("kind")
-        if kind == ASSEMBLY_TARGET_KIND_BOUNDED_COSIGNER:
-            if not target.get("base_signatures") or not target.get("assembly_receipt"):
-                raise ValueError(f"target {i}: base_signatures and assembly_receipt are required for bounded-cosigner target")
-            _validate_sign_request_id(str(target.get("base_source_request_id", "")))
-        else:
-            raise ValueError(f"target {i}: invalid kind")
+        if not target.get("base_signatures") or not target.get("assembly_receipt"):
+            raise ValueError(f"target {i}: base_signatures and assembly_receipt are required")
+        _validate_sign_request_id(str(target.get("base_source_request_id", "")))
         _validate_sign_request_id(str(target.get("cosigner_source_request_id", "")))
 
     for i, item in enumerate(passthrough, start=1):
@@ -4251,7 +4220,7 @@ def _rekey_target_flow_check(rekey_to: str, flow: str) -> None:
     SDK does not know is refused too, so a future flow fails closed here
     rather than at the signer.
     """
-    if flow in ("", SIGNING_FLOW_BOUNDED1, SIGNING_FLOW_COSIGNED1):
+    if flow in ("", SIGNING_FLOW_COSIGNED1):
         return
     if flow == SIGNING_FLOW_ROTATING1:
         raise SignerError(
@@ -5525,10 +5494,8 @@ class SignerClient:
             node_role=data["node_role"],
             state=data["state"],
             signer_locked=data["signer_locked"],
-            ready_for_signing=data["ready_for_signing"],
             key_count=data["key_count"],
             keyset_revision=data["keyset_revision"],
-            protocol_version=data["protocol_version"],
             build_version=data["build_version"],
             approval_wait_seconds=data["approval_wait_seconds"],
             warnings=list(data["warnings"]),
@@ -8113,7 +8080,7 @@ class SignerClient:
                 raise KeyNotFoundError(
                     f"prepared transaction {index}: {auth} is not available for signing"
                 )
-            if key.signing_flow in ("", SIGNING_FLOW_BOUNDED1):
+            if key.signing_flow == "":
                 continue
             if key.signing_flow == SIGNING_FLOW_COSIGNED1:
                 flow = SIGNING_FLOW_COSIGNED1
@@ -9505,7 +9472,7 @@ def sign_prepared_cosigned_group(
                 }
             )
             continue
-        if key.signing_flow not in ("", SIGNING_FLOW_BOUNDED1):
+        if key.signing_flow != "":
             raise ValueError(
                 f"prepared transaction {index}: signer key requires signing flow "
                 f"{key.signing_flow!r}, which this SDK does not support; upgrade the SDK"
@@ -9715,7 +9682,6 @@ def sign_prepared_cosigned_group(
             assembly_targets.append(
                 AssemblyTarget(
                     target_index=index,
-                    kind=ASSEMBLY_TARGET_KIND_BOUNDED_COSIGNER,
                     auth_address=component["auth_address"],
                     base_signatures=list(component.get("base_signatures") or []),
                     bounded_runtime_args=dict(component.get("runtime_args") or {}) or None,
@@ -10553,16 +10519,15 @@ def request_enrollment(
 
     command = f"{SSH_ENROLLMENT_COMMAND} {label}" if label else SSH_ENROLLMENT_COMMAND
     try:
-        # Run the enrollment command; the signer answers at once.
-        stdin, stdout, stderr = client.exec_command(command, timeout=300)
+        # Run the enrollment command; the signer answers at once, writing
+        # every reply, an ERROR: line included, to stdout.
+        _, stdout, _ = client.exec_command(command, timeout=300)
 
         # Wait for command to complete
         exit_status = stdout.channel.recv_exit_status()
 
         if exit_status != 0:
-            error_msg = stderr.read().decode().strip()
-            if not error_msg:
-                error_msg = stdout.read().decode().strip()
+            error_msg = stdout.read().decode().strip()
             if error_msg.startswith("ERROR: "):
                 error_msg = error_msg[len("ERROR: "):]
             raise EnrollmentError(error_msg or "Enrollment rejected")

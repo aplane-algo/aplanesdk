@@ -240,8 +240,8 @@ func TestBoundedInventoryUsesStructuredResources(t *testing.T) {
 		t.Fatalf("bounded key count = %d, want 2", len(response.Keys))
 	}
 	key := response.Keys[0]
-	if key.SigningFlow != SigningFlowBounded1 {
-		t.Fatalf("signing flow = %q, want %q", key.SigningFlow, SigningFlowBounded1)
+	if key.SigningFlow != "" {
+		t.Fatalf("signing flow = %q, want none: an account without a cosigner signs on /sign", key.SigningFlow)
 	}
 	if key.LogicSigResources == nil || key.LogicSigResources.Spend == nil || key.LogicSigResources.Spend.ProgramBytes != 5169 || key.LogicSigResources.Spend.ArgumentBytes != 1423 {
 		t.Fatalf("spend resources = %#v", key.LogicSigResources)
@@ -379,9 +379,6 @@ func TestGoSDKContractStatusMetadata(t *testing.T) {
 	}
 	if resp.NodeRole != "signer" {
 		t.Fatalf("NodeRole = %q, want signer", resp.NodeRole)
-	}
-	if resp.ProtocolVersion.Major != 2 || resp.ProtocolVersion.Minor != 0 {
-		t.Fatalf("ProtocolVersion = %d.%d, want 2.0", resp.ProtocolVersion.Major, resp.ProtocolVersion.Minor)
 	}
 	if !strings.Contains(resp.BuildVersion, "v0.30.0") {
 		t.Fatalf("BuildVersion = %q, want v0.30.0 fixture", resp.BuildVersion)
@@ -526,7 +523,6 @@ func TestGoSDKContractKeyAuthorizationKind(t *testing.T) {
 
 func TestGoSDKMapsTemplateProvenanceFields(t *testing.T) {
 	raw := []byte(`{
-		"count": 1,
 		"keys": [{
 			"address": "ADDR1",
 			"public_key_hex": "abcd",
@@ -549,7 +545,6 @@ func TestGoSDKMapsTemplateProvenanceFields(t *testing.T) {
 
 func TestGoSDKIgnoresRetiredTemplateAliases(t *testing.T) {
 	raw := []byte(`{
-		"count": 1,
 		"keys": [{
 			"address": "ADDR1",
 			"public_key_hex": "abcd",
@@ -629,7 +624,6 @@ func signerAPIErrorCodes(t *testing.T) []string {
 		ErrCodeForbidden,
 		ErrCodeLocked,
 		ErrCodeNotFound,
-		ErrCodeInvalidPassphrase,
 		ErrCodeUnavailable,
 		ErrCodeCacheRefresh,
 		ErrCodeInternal,

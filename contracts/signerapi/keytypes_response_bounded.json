@@ -9,7 +9,6 @@
       "mnemonic_word_count": 0,
       "mnemonic_import": false,
       "mnemonic_scheme": "",
-      "signing_flow": "bounded1",
       "bounded_authorization": {
         "contract": "bounded2",
         "base_signature_arg_layout": {

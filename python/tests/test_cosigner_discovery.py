@@ -89,7 +89,7 @@ class Endpoint:
                 time.sleep(self.delay)
             if self.answer is not None:
                 return self.answer
-            return reply(200, {"count": len(self.keys), "keys": self.keys})
+            return reply(200, {"keys": self.keys})
         if path == "/sign/component":
             import json
 

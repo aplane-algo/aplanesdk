@@ -486,7 +486,7 @@ func TestUnifiedBoundedAssemblyRejectsMissingCoverage(t *testing.T) {
 	req := AssemblyRequest{
 		GroupBytesHex: []string{"5458aa", "5458bb"},
 		Targets: []AssemblyTarget{{
-			TargetIndex: 0, Kind: AssemblyTargetKindBoundedCosigner, AuthAddress: "BOUNDED", BaseSignatures: []string{"base"},
+			TargetIndex: 0, AuthAddress: "BOUNDED", BaseSignatures: []string{"base"},
 			AssemblyReceipt: "receipt", CosignerSignature: "cosigner",
 		}},
 	}
@@ -502,11 +502,11 @@ func TestUnifiedAssemblyRejectsMalformedSourceRequestIDs(t *testing.T) {
 		want   string
 	}{
 		{name: "cosigner", target: AssemblyTarget{
-			TargetIndex: 0, Kind: AssemblyTargetKindBoundedCosigner, AuthAddress: "BOUNDED",
+			TargetIndex: 0, AuthAddress: "BOUNDED",
 			BaseSignatures: []string{"base"}, AssemblyReceipt: "receipt", CosignerSignature: "cosigner", CosignerSourceRequestID: "bad id",
 		}, want: "cosigner_source_request_id"},
 		{name: "bounded base", target: AssemblyTarget{
-			TargetIndex: 0, Kind: AssemblyTargetKindBoundedCosigner, AuthAddress: "BOUNDED",
+			TargetIndex: 0, AuthAddress: "BOUNDED",
 			BaseSignatures: []string{"base"}, AssemblyReceipt: "receipt", BaseSourceRequestID: "bad id", CosignerSignature: "cosigner",
 		}, want: "base_source_request_id"},
 	}

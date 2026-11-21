@@ -62,7 +62,6 @@ import type {
 } from "./types.js";
 import {
   ErrorCodes,
-  SIGNING_FLOW_BOUNDED1,
   SIGNING_FLOW_COSIGNED1,
   BOUNDED_CONTRACT_BOUNDED2,
   BOUNDED_CONTRACT_PLAIN1,
@@ -630,7 +629,7 @@ export async function signPreparedCosignedGroup(
       });
       continue;
     }
-    if (key.signingFlow && key.signingFlow !== SIGNING_FLOW_BOUNDED1) {
+    if (key.signingFlow) {
       throw new SignerError(
         `prepared transaction ${index}: signer key requires signing flow "${key.signingFlow}", which this SDK does not support; upgrade the SDK`,
       );
@@ -822,7 +821,6 @@ export async function signPreparedCosignedGroup(
       }
       const assemblyTarget: AssemblyTarget = {
         target_index: target.targetIndex,
-        kind: "bounded-cosigner",
         auth_address: component.auth_address || "",
         base_signatures: [...(component.base_signatures || [])],
         bounded_runtime_args: component.runtime_args ? { ...component.runtime_args } : undefined,
@@ -1288,14 +1286,10 @@ function validateAssemblyRequest(request: AssemblyRequest): void {
     if (!target.cosigner_signature && target.cosigner_source_request_id) {
       throw new SignerError(`target ${item}: cosigner_source_request_id needs a cosigner_signature`);
     }
-    if (target.kind === "bounded-cosigner") {
-      if (!target.base_signatures?.length || !target.assembly_receipt) {
-        throw new SignerError(`target ${item}: base_signatures and assembly_receipt are required for bounded-cosigner target`);
-      }
-      validateSignRequestId(target.base_source_request_id || "");
-    } else {
-      throw new SignerError(`target ${item}: invalid kind`);
+    if (!target.base_signatures?.length || !target.assembly_receipt) {
+      throw new SignerError(`target ${item}: base_signatures and assembly_receipt are required`);
     }
+    validateSignRequestId(target.base_source_request_id || "");
     validateSignRequestId(target.cosigner_source_request_id || "");
   });
 
@@ -2311,7 +2305,6 @@ function rekeyChecks(accountInfo: AccountInfoResult | Record<string, any>, rekey
 function rekeyTargetFlowCheck(rekeyTo: string, flow: string | undefined): void {
   switch (flow ?? "") {
     case "":
-    case SIGNING_FLOW_BOUNDED1:
     case SIGNING_FLOW_COSIGNED1:
       return;
     case SIGNING_FLOW_ROTATING1:
@@ -2976,13 +2969,9 @@ export class SignerClient {
     const data = await readSignerAnswer<Record<string, any>>(response, STATUS_ANSWER);
     const status: StatusResponse = {
       nodeRole: data.node_role || undefined,
-      protocolVersion: data.protocol_version
-        ? { major: data.protocol_version.major, minor: data.protocol_version.minor }
-        : undefined,
       buildVersion: data.build_version || undefined,
       state: data.state,
       signerLocked: data.signer_locked,
-      readyForSigning: data.ready_for_signing,
       keyCount: data.key_count,
       keysetRevision: data.keyset_revision,
       approvalWaitSeconds: data.approval_wait_seconds || undefined,
@@ -5007,7 +4996,6 @@ export class SignerClient {
       }
       switch (key.signingFlow ?? "") {
         case "":
-        case SIGNING_FLOW_BOUNDED1:
           break;
         case SIGNING_FLOW_COSIGNED1:
           flow = SIGNING_FLOW_COSIGNED1;

@@ -339,11 +339,9 @@ describe("signer API contract fixtures", () => {
     const status = await client.getStatus();
 
     assert.equal(status.nodeRole, "signer");
-    assert.deepEqual(status.protocolVersion, { major: 2, minor: 0 });
     assert.match(status.buildVersion || "", /^v0\.30\.0 /);
     assert.equal(status.state, "unlocked");
     assert.equal(status.signerLocked, false);
-    assert.equal(status.readyForSigning, true);
     assert.equal(status.keyCount, 37);
     assert.equal(status.keysetRevision, 4);
     assert.equal(status.approvalWaitSeconds, 60);
@@ -363,7 +361,6 @@ describe("signer API contract fixtures", () => {
       status: 200,
       ok: true,
       json: async () => ({
-        count: 1,
         keys: [
           {
             address: "ADDR1",
@@ -388,7 +385,6 @@ describe("signer API contract fixtures", () => {
       status: 200,
       ok: true,
       json: async () => ({
-        count: 1,
         keys: [
           {
             address: "ADDR1",
@@ -530,7 +526,7 @@ describe("signer API contract fixtures", () => {
     assert.ok(unifiedComponentResp.components[0].assembly_receipt);
 
     const unifiedReq = fixture("assembly_request_mixed.json") as AssemblyRequest;
-    assert.equal(unifiedReq.targets?.[0].kind, "bounded-cosigner");
+    assert.equal(unifiedReq.targets !== undefined && "kind" in unifiedReq.targets[0], false);
     // A listed rekey assembles without a cosigner signature.
     assert.equal(unifiedReq.targets?.[0].cosigner_signature, undefined);
     const unifiedResp = fixture("assembly_response.json") as AssemblyResponse;
@@ -619,7 +615,7 @@ describe("signer API contract fixtures", () => {
     const client = new SignerClient("http://localhost:11270");
     const keys = await client.listKeys(true);
     const key = keys[0];
-    assert.equal(key.signingFlow, "bounded1");
+    assert.equal(key.signingFlow, undefined);
     assert.equal(key.logicSigResources?.spend?.programBytes, 5169);
     assert.equal(key.logicSigResources?.spend?.argumentBytes, 1423);
     assert.equal(key.boundedAuthorization?.layer3Policy, "fixed_allowlist");

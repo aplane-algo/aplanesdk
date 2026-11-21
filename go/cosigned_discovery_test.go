@@ -38,7 +38,7 @@ func TestSendPreparedCosignedFindsTheCosignerByDefault(t *testing.T) {
 					t.Errorf("the endpoint of the other key type was asked for %s", r.URL.Path)
 					return
 				}
-				json.NewEncoder(w).Encode(KeysResponse{Count: 1, Keys: []KeyInfo{witnessRecord(tc.other, publicKey)}})
+				json.NewEncoder(w).Encode(KeysResponse{Keys: []KeyInfo{witnessRecord(tc.other, publicKey)}})
 			})
 			defer otherServer.Close()
 			resolver := NewEndpointCosignerResolverFromRegistry(&ClientEndpointRegistry{Endpoints: map[string]ClientEndpointConfig{

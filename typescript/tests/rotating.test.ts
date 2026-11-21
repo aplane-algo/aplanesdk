@@ -158,7 +158,6 @@ class RotatingSigner {
       case "/keys":
         return {
           body: {
-            count: 1,
             keys: [{ address: this.account, key_type: "aplane.rotating-triple-wotsc.v1", signing_flow: SIGNING_FLOW_ROTATING1 }],
           },
         };
@@ -1311,7 +1310,7 @@ describe("prepare helpers and rotating accounts", () => {
     restore = installSigners({
       [SIGNER]: (path) => {
         if (path === "/status") return { body: statusBody() };
-        return { body: { count: 2, keys: [{ address: sender }, { address: holder }] } };
+        return { body: { keys: [{ address: sender }, { address: holder }] } };
       },
     });
     const client = new SignerClient(SIGNER);

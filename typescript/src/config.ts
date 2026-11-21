@@ -123,12 +123,11 @@ export function loadConfig(dataDir: string): ClientConfig {
 
 /**
  * The fields apshell reads from config.yaml, at every depth. The SDK reads
- * network, networks_allowed and theme; schema_version,
- * signer_status_poll_interval and networks are apshell's own settings, which
+ * network, networks_allowed and theme; signer_status_poll_interval and
+ * networks are apshell's own settings, which
  * the SDK checks only for apshell's field names, never for their values.
  */
 const APSHELL_CONFIG_FIELDS = [
-  "schema_version",
   "network",
   "networks_allowed",
   "theme",

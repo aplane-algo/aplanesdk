@@ -122,7 +122,7 @@ func (f *fakeCosigners) connect(ctx context.Context, endpoint ClientEndpointConf
 			answer(w, r)
 			return
 		}
-		json.NewEncoder(w).Encode(KeysResponse{Count: len(keys), Keys: keys})
+		json.NewEncoder(w).Encode(KeysResponse{Keys: keys})
 	})
 	f.t.Cleanup(server.Close)
 	// A tunnel whose closing can be seen.

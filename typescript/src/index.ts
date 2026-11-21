@@ -138,7 +138,6 @@ export type {
   InputModeInfo,
   CreationParam,
   KeyTypeInfo,
-  ProtocolVersion,
   StatusResponse,
   GenerateResult,
   ClientConfig,
@@ -185,7 +184,6 @@ export type {
   ComponentTarget,
   Component,
   ComponentResponse,
-  AssemblyTargetKind,
   AssemblyRequest,
   AssemblyTarget,
   AssemblyResponse,
@@ -197,7 +195,6 @@ export type {
 } from "./types.js";
 
 export {
-  SIGNING_FLOW_BOUNDED1,
   SIGNING_FLOW_COSIGNED1,
   BOUNDED_CONTRACT_BOUNDED2,
   BOUNDED_CONTRACT_PLAIN1,

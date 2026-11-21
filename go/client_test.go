@@ -413,7 +413,6 @@ func TestGetStatus_Success(t *testing.T) {
 		}
 		json.NewEncoder(w).Encode(StatusResponse{
 			State:               "unlocked",
-			ReadyForSigning:     true,
 			KeyCount:            37,
 			KeysetRevision:      4,
 			ApprovalWaitSeconds: 60,
@@ -436,11 +435,10 @@ func TestGetStatus_Success(t *testing.T) {
 func TestGetStatus_LockedStateIsSuccess(t *testing.T) {
 	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(StatusResponse{
-			State:           "locked",
-			SignerLocked:    true,
-			ReadyForSigning: false,
-			KeyCount:        0,
-			KeysetRevision:  2,
+			State:          "locked",
+			SignerLocked:   true,
+			KeyCount:       0,
+			KeysetRevision: 2,
 		})
 	})
 	defer server.Close()
@@ -669,7 +667,7 @@ func TestApprovalRequestWithEndedContextSendsNothing(t *testing.T) {
 			_, err := c.RequestAssembleWithContext(ctx, AssemblyRequest{
 				GroupBytesHex: []string{"5458aa"},
 				Targets: []AssemblyTarget{{
-					TargetIndex: 0, Kind: AssemblyTargetKindBoundedCosigner, AuthAddress: "BOUNDED",
+					TargetIndex: 0, AuthAddress: "BOUNDED",
 					BaseSignatures: []string{"aabb"}, AssemblyReceipt: "eeff", CosignerSignature: "bbcc",
 				}},
 			})
@@ -749,8 +747,7 @@ func TestSignRequestsStatusFailureFallsBackToSign(t *testing.T) {
 func TestListKeys_Success(t *testing.T) {
 	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(keysResponse{
-			Count: 1,
-			Keys:  []KeyInfo{{Address: sdkTestAddress(0xA3), KeyType: "ed25519", PublicKeyHex: "abcd"}},
+			Keys: []KeyInfo{{Address: sdkTestAddress(0xA3), KeyType: "ed25519", PublicKeyHex: "abcd"}},
 		})
 	})
 	defer server.Close()
@@ -794,8 +791,7 @@ func TestListKeys_Locked(t *testing.T) {
 func TestGetKeyInfo_NotFound(t *testing.T) {
 	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(keysResponse{
-			Count: 1,
-			Keys:  []KeyInfo{{Address: sdkTestAddress(0xA3), KeyType: "ed25519", PublicKeyHex: "abcd"}},
+			Keys: []KeyInfo{{Address: sdkTestAddress(0xA3), KeyType: "ed25519", PublicKeyHex: "abcd"}},
 		})
 	})
 	defer server.Close()
@@ -816,8 +812,8 @@ func TestListKeysRefusesNullAndTrailingData(t *testing.T) {
 	for name, body := range map[string]string{
 		"null":          "null",
 		"spaced null":   " null\n",
-		"trailing data": `{"count":1,"keys":[` + key + `]}{"count":0,"keys":[]}`,
-		"trailing junk": `{"count":1,"keys":[` + key + `]} x`,
+		"trailing data": `{"keys":[` + key + `]}{"keys":[]}`,
+		"trailing junk": `{"keys":[` + key + `]} x`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
@@ -865,7 +861,7 @@ func TestListKeysRefusesAnAddressSpelledAnotherWay(t *testing.T) {
 			for i, address := range addresses {
 				keys[i] = KeyInfo{Address: address, KeyType: "ed25519"}
 			}
-			json.NewEncoder(w).Encode(KeysResponse{Count: len(keys), Keys: keys})
+			json.NewEncoder(w).Encode(KeysResponse{Keys: keys})
 		}
 	}
 
@@ -1041,7 +1037,7 @@ func TestValidRekeyTargetIsRead(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run("keys "+tc.name, func(t *testing.T) {
-			body := `{"count":1,"keys":[{"address":"` + address + `","key_type":"ed25519"` + tc.field + `}]}`
+			body := `{"keys":[{"address":"` + address + `","key_type":"ed25519"` + tc.field + `}]}`
 			client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(body)) })
 			defer server.Close()
 			keys, err := client.ListKeys(true)
@@ -1067,7 +1063,7 @@ func TestValidRekeyTargetIsRead(t *testing.T) {
 	}
 	for _, wrong := range []string{`"true"`, `1`, `{}`} {
 		t.Run("keys wrong type "+wrong, func(t *testing.T) {
-			body := `{"count":1,"keys":[{"address":"` + address + `","key_type":"ed25519","valid_rekey_target":` + wrong + `}]}`
+			body := `{"keys":[{"address":"` + address + `","key_type":"ed25519","valid_rekey_target":` + wrong + `}]}`
 			client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(body)) })
 			defer server.Close()
 			if result, err := client.GetKeysResponseWithContext(context.Background()); err == nil || !strings.Contains(err.Error(), "failed to decode response") {
@@ -1367,7 +1363,7 @@ func TestRequestAssemblePostsToAssembleEndpoint(t *testing.T) {
 		if req.RequestID == "" {
 			t.Fatal("request_id was not populated")
 		}
-		if len(req.Targets) != 1 || req.Targets[0].Kind != AssemblyTargetKindBoundedCosigner || req.Targets[0].AuthAddress != "BOUNDED" {
+		if len(req.Targets) != 1 || req.Targets[0].AuthAddress != "BOUNDED" {
 			t.Fatalf("assembly targets = %+v", req.Targets)
 		}
 		json.NewEncoder(w).Encode(AssemblyResponse{
@@ -1381,7 +1377,6 @@ func TestRequestAssemblePostsToAssembleEndpoint(t *testing.T) {
 		GroupBytesHex: []string{"5458aa"},
 		Targets: []AssemblyTarget{{
 			TargetIndex:       0,
-			Kind:              AssemblyTargetKindBoundedCosigner,
 			AuthAddress:       "BOUNDED",
 			BaseSignatures:    []string{"aabb"},
 			AssemblyReceipt:   "eeff",
@@ -1402,7 +1397,6 @@ func TestRequestAssembleRejectsMissingCoverage(t *testing.T) {
 		GroupBytesHex: []string{"5458aa", "5458bb"},
 		Targets: []AssemblyTarget{{
 			TargetIndex:       0,
-			Kind:              AssemblyTargetKindBoundedCosigner,
 			AuthAddress:       "BOUNDED",
 			BaseSignatures:    []string{"aabb"},
 			AssemblyReceipt:   "eeff",
@@ -1424,7 +1418,6 @@ func TestRequestAssembleUnavailable(t *testing.T) {
 		GroupBytesHex: []string{"5458aa"},
 		Targets: []AssemblyTarget{{
 			TargetIndex:       0,
-			Kind:              AssemblyTargetKindBoundedCosigner,
 			AuthAddress:       "BOUNDED",
 			BaseSignatures:    []string{"aabb"},
 			AssemblyReceipt:   "eeff",

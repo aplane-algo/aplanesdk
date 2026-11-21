@@ -34,7 +34,6 @@ from aplanesdk.signer import (
     ERR_CODE_ROTATING_STAGE_CHANGED,
     ERR_CODE_ROTATING_WINDOW_NOT_CURRENT,
     ERR_CODE_REKEY_TARGET_NOT_VALID,
-    ERR_CODE_INVALID_PASSPHRASE,
     ERR_CODE_LOCKED,
     ERR_CODE_NOT_FOUND,
     ERR_CODE_UNAUTHORIZED,
@@ -104,7 +103,6 @@ def sdk_error_codes() -> list[str]:
         ERR_CODE_FORBIDDEN,
         ERR_CODE_LOCKED,
         ERR_CODE_NOT_FOUND,
-        ERR_CODE_INVALID_PASSPHRASE,
         ERR_CODE_UNAVAILABLE,
         ERR_CODE_CACHE_REFRESH,
         ERR_CODE_INTERNAL,
@@ -365,13 +363,9 @@ def test_status_fixture_maps_metadata():
     status = StatusResponse(**data)
 
     assert status.node_role == "signer"
-    assert status.protocol_version is not None
-    assert status.protocol_version.major == 2
-    assert status.protocol_version.minor == 0
     assert status.build_version.startswith("v0.30.0 ")
     assert status.state == "unlocked"
     assert status.signer_locked is False
-    assert status.ready_for_signing is True
     assert status.key_count == 37
     assert status.keyset_revision == 4
     assert status.approval_wait_seconds == 60
@@ -392,7 +386,6 @@ def test_list_keys_maps_template_provenance_fields():
     resp = mock_response(
         200,
         {
-            "count": 1,
             "keys": [
                 {
                     "address": "ADDR1",
@@ -417,7 +410,6 @@ def test_list_keys_ignores_retired_template_aliases():
     resp = mock_response(
         200,
         {
-            "count": 1,
             "keys": [
                 {
                     "address": "ADDR1",
@@ -557,7 +549,7 @@ def test_cosigner_dtos_round_trip_fixtures():
     assert unified_component_resp.components[0]["assembly_receipt"]
 
     unified_req = AssemblyRequest(**fixture("assembly_request_mixed.json"))
-    assert unified_req.targets[0]["kind"] == "bounded-cosigner"
+    assert "kind" not in unified_req.targets[0]
     # A listed rekey assembles without a cosigner signature.
     assert "cosigner_signature" not in unified_req.targets[0]
     unified_resp = AssemblyResponse(**fixture("assembly_response.json"))
@@ -577,7 +569,7 @@ def test_bounded_inventory_projects_layer3_policy():
     ):
         keys = client.list_keys(refresh=True)
         key = keys[0]
-    assert key.signing_flow == "bounded1"
+    assert key.signing_flow == ""
     assert key.logic_sig_resources.spend == LogicSigResourceUsage(5169, 1423, 20000)
     assert key.bounded_authorization.layer3_policy == "fixed_allowlist"
     assert key.bounded_authorization.spend_effects == ["pay", "axfer", "asset_opt_in"]
@@ -635,10 +627,8 @@ def test_status_tolerates_fields_from_a_newer_signer():
     status = StatusResponse(
         state="unlocked",
         signer_locked=False,
-        ready_for_signing=True,
         key_count=1,
         keyset_revision=1,
-        protocol_version={"major": 1, "minor": 2, "patch": 3},
         rotating=[
             {
                 "account": "ROTATINGADDR",
@@ -649,8 +639,6 @@ def test_status_tolerates_fields_from_a_newer_signer():
             }
         ],
     )
-    assert status.protocol_version is not None
-    assert status.protocol_version.minor == 2
     (entry,) = status.rotating
     assert entry.cached_entries == 0
     assert entry.preparation == ""

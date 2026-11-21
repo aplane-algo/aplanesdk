@@ -6,7 +6,6 @@
     "forbidden",
     "locked",
     "not_found",
-    "invalid_passphrase",
     "unavailable",
     "cache_refresh",
     "internal",

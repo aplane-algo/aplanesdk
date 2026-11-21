@@ -4,15 +4,10 @@
 import type { Transaction, modelsv2 } from "algosdk";
 import { SignerError } from "./errors.js";
 
-/**
- * Signing choreography labels name a frozen client flow. Clients route on
- * signing_flow and must fail fast on labels they do not implement; an empty
- * signing_flow means the ordinary /sign path.
- *
- * The transaction-aware LogicSig choreography: the signer classifies and signs
- * a bounded account without a cosigner on the ordinary /sign path.
- */
-export const SIGNING_FLOW_BOUNDED1 = "bounded1";
+// Signing choreography labels name a frozen client flow. Clients route on
+// signing_flow and must fail fast on labels they do not implement; an empty
+// signing_flow means the ordinary /sign path.
+
 /**
  * Cosigned account choreography: a target may be a spend or a rekey, and each
  * base component names the path the signer classified. A listed rekey takes no
@@ -422,31 +417,17 @@ export interface KeyTypeInfo {
 }
 
 /**
- * Signer wire-protocol version.
- */
-export interface ProtocolVersion {
-  /** Protocol major version */
-  major: number;
-  /** Protocol minor version */
-  minor: number;
-}
-
-/**
  * Response from the /status endpoint.
  */
 export interface StatusResponse {
   /** Signer node role, such as "signer" or "cosigner", when reported */
   nodeRole?: string;
-  /** Signer protocol version, when reported */
-  protocolVersion?: ProtocolVersion;
   /** Signer build version, when reported */
   buildVersion?: string;
   /** Current lock state: "locked", "unlocked", or "unknown" */
   state: string;
   /** True when the signer is locked */
   signerLocked: boolean;
-  /** True when the signer can currently sign */
-  readyForSigning: boolean;
   /** Number of currently loaded keys */
   keyCount: number;
   /** Process-local keyset revision for refresh decisions */
@@ -725,11 +706,8 @@ export interface ComponentResponse {
   components: Component[];
 }
 
-export type AssemblyTargetKind = "bounded-cosigner";
-
 export interface AssemblyTarget {
   target_index: number;
-  kind: AssemblyTargetKind;
   auth_address: string;
   base_signatures?: string[];
   bounded_runtime_args?: Record<string, string>;
@@ -1283,7 +1261,6 @@ export const ErrorCodes = {
   Forbidden: "forbidden",
   Locked: "locked",
   NotFound: "not_found",
-  InvalidPassphrase: "invalid_passphrase",
   Unavailable: "unavailable",
   CacheRefresh: "cache_refresh",
   BoundedCosignerRequired: "bounded_cosigner_required",
@@ -1315,8 +1292,6 @@ export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];
  * Response from the /keys endpoint.
  */
 export interface KeysResponse {
-  /** Number of keys */
-  count: number;
   /** Array of key information */
   keys: KeyInfo[];
 }

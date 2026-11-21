@@ -202,7 +202,7 @@ func TestRequestAssembleRefusesAnotherRequestsAnswer(t *testing.T) {
 		RequestID:     "sdk-mine",
 		GroupBytesHex: []string{"5458aa"},
 		Targets: []AssemblyTarget{{
-			TargetIndex: 0, Kind: AssemblyTargetKindBoundedCosigner, AuthAddress: "BOUNDED",
+			TargetIndex: 0, AuthAddress: "BOUNDED",
 			BaseSignatures: []string{"aabb"}, AssemblyReceipt: "eeff", CosignerSignature: "bbcc",
 		}},
 	}
@@ -254,7 +254,7 @@ func (k *keysetSigner) client(t *testing.T) (*SignerClient, func()) {
 			json.NewEncoder(w).Encode(StatusResponse{State: "unlocked", KeysetRevision: k.revision})
 		case "/keys":
 			k.fetches++
-			json.NewEncoder(w).Encode(KeysResponse{Count: len(k.keys), Keys: k.keys})
+			json.NewEncoder(w).Encode(KeysResponse{Keys: k.keys})
 		default:
 			t.Errorf("unexpected request %s: the flow must stop at the signer's key record", r.URL.Path)
 		}

@@ -49,7 +49,6 @@ from aplanesdk.signer import (
     PreparedGroup,
     COMPONENT_TARGET_KIND_BOUNDED_BASE,
     COMPONENT_PATH_LISTED_REKEY,
-    ASSEMBLY_TARGET_KIND_BOUNDED_COSIGNER,
     KEY_TYPE_WITNESS_FALCON1024,
     SIGNING_FLOW_COSIGNED1,
     EnrollmentError,
@@ -111,7 +110,6 @@ def component_response(*, request_id, signatures, component_key=""):
 def cosigned_assembly_target(*, target_index, account, cosigner_signature):
     return AssemblyTarget(
         target_index=target_index,
-        kind="bounded-cosigner",
         auth_address=account,
         base_signatures=["aabb"],
         assembly_receipt="eeff",
@@ -315,7 +313,6 @@ class TestGetStatus:
         resp = mock_response(200, {
             "state": "unlocked",
             "signer_locked": False,
-            "ready_for_signing": True,
             "key_count": 37,
             "keyset_revision": 4,
             "approval_wait_seconds": 60,
@@ -336,7 +333,6 @@ class TestGetStatus:
         resp = mock_response(200, {
             "state": "locked",
             "signer_locked": True,
-            "ready_for_signing": False,
             "key_count": 0,
             "keyset_revision": 2,
         })
@@ -346,7 +342,6 @@ class TestGetStatus:
 
         assert status.state == "locked"
         assert status.signer_locked is True
-        assert status.ready_for_signing is False
 
     def test_null_approval_wait_defaults_to_zero(self):
         client = make_client()
@@ -387,7 +382,6 @@ class TestListKeys:
     def test_returns_keys(self):
         client = make_client()
         resp = mock_response(200, {
-            "count": 2,
             "keys": [
                 {"address": "ADDR1", "key_type": "ed25519", "public_key_hex": "abcd"},
                 {
@@ -436,7 +430,6 @@ class TestListKeys:
     def test_cache(self):
         client = make_client()
         resp = mock_response(200, {
-            "count": 1,
             "keys": [{"address": "ADDR1", "key_type": "ed25519"}],
         })
         with patch.object(client.session, "get", return_value=resp) as mock_get:
@@ -450,14 +443,12 @@ class TestListKeys:
     def test_refresh_clears_stale_cache_entries(self):
         client = make_client()
         first = mock_response(200, {
-            "count": 2,
             "keys": [
                 {"address": "ADDR1", "key_type": "ed25519"},
                 {"address": "ADDR2", "key_type": "ed25519"},
             ],
         })
         second = mock_response(200, {
-            "count": 1,
             "keys": [
                 {"address": "ADDR1", "key_type": "ed25519"},
             ],
@@ -473,7 +464,7 @@ class TestListKeys:
 
     def test_uses_client_timeout(self):
         client = make_client()
-        with patch.object(client.session, "get", return_value=mock_response(200, {"count": 0, "keys": []})) as mock_get:
+        with patch.object(client.session, "get", return_value=mock_response(200, {"keys": []})) as mock_get:
             client.list_keys(refresh=True)
         assert mock_get.call_args.kwargs["timeout"] == 10
 
@@ -483,14 +474,12 @@ class TestAuthResolution:
         return mock_response(200, {
             "state": "unlocked",
             "signer_locked": False,
-            "ready_for_signing": True,
             "key_count": 1,
             "keyset_revision": revision,
         })
 
     def _keys(self, *addresses):
         return mock_response(200, {
-            "count": len(addresses),
             "keys": [
                 {"address": address, "key_type": "ed25519"}
                 for address in addresses
@@ -822,7 +811,7 @@ _UNSIGNED_ANSWER_CALLS = {
 # For each, an answer with one field of the wrong type.
 _WRONG_TYPED_ANSWERS = {
     "status": b'{"state":"unlocked","keyset_revision":"4"}',
-    "keys": b'{"count":1,"keys":[{"address":"ADDR1","key_type":"ed25519","is_witness_key":"no"}]}',
+    "keys": b'{"keys":[{"address":"ADDR1","key_type":"ed25519","is_witness_key":"no"}]}',
     "key types": b'{"key_types":[{"key_type":"ed25519","creation_params":[{"name":"n","min":-1}]}]}',
     "plan": b'{"transactions":"5458aa"}',
     "key generation": b'{"address":"NEWADDR","key_type":"ed25519","parameters":{"a":1}}',
@@ -866,7 +855,7 @@ class TestAnswersReadByShape:
     def test_valid_rekey_target_of_the_wrong_type_is_a_plain_error(self, what, wrong):
         method, call = _UNSIGNED_ANSWER_CALLS[what]
         if what == "keys":
-            body = b'{"count":1,"keys":[{"address":"ADDR1","valid_rekey_target":' + wrong + b"}]}"
+            body = b'{"keys":[{"address":"ADDR1","valid_rekey_target":' + wrong + b"}]}"
         else:
             body = b'{"key_types":[{"key_type":"ed25519","valid_rekey_target":' + wrong + b"}]}"
         client = make_client()
@@ -879,7 +868,6 @@ class TestAnswersReadByShape:
 
     def test_valid_rekey_target_is_read_as_sent_and_false_when_left_out(self):
         keys = raw_response(200, json.dumps({
-            "count": 4,
             "keys": [
                 {"address": "ADDR1", "key_type": "ed25519", "valid_rekey_target": True},
                 {"address": "ADDR2", "key_type": "aplane.htlc.v1", "valid_rekey_target": False},
@@ -906,7 +894,7 @@ class TestAnswersReadByShape:
 
     def test_a_failed_key_list_read_keeps_the_cache(self):
         client = make_client()
-        good = mock_response(200, {"count": 1, "keys": [{"address": "ADDR1", "key_type": "ed25519"}]})
+        good = mock_response(200, {"keys": [{"address": "ADDR1", "key_type": "ed25519"}]})
         with patch.object(client.session, "get", side_effect=[good, raw_response(200, b"[]")]):
             client.list_keys()
             with pytest.raises(SignerError):
@@ -1016,7 +1004,6 @@ class TestAnswersReadByShape:
         # keep the defaults they had: a runtime argument's type is bytes, and
         # no parameters or options are None.
         keys = mock_response(200, {
-            "count": 1,
             "keys": [{"address": "ADDR1", "signing_args": [{"name": "proof"}, None]}],
         })
         client = make_client()
@@ -1313,7 +1300,7 @@ class TestSpecializedLowLevelEndpoints:
         assert mock_post.call_args.args[0] == "http://localhost:11270/sign/assemble"
         body = fake_signer.posted_json(mock_post.call_args.kwargs)
         assert body["request_id"].startswith("sdk-")
-        assert body["targets"][0]["kind"] == "bounded-cosigner"
+        assert "kind" not in body["targets"][0]
         assert body["targets"][0]["auth_address"] == "BOUNDED"
 
     def test_request_assemble_rejects_missing_coverage(self):
@@ -1369,7 +1356,6 @@ class TestSpecializedLowLevelEndpoints:
                 "group_bytes_hex": ["5458aa"],
                 "targets": [{
                     "target_index": 0,
-                    "kind": ASSEMBLY_TARGET_KIND_BOUNDED_COSIGNER,
                     "auth_address": "BOUNDED",
                     "base_signatures": ["base-sig"],
                     "assembly_receipt": "receipt",
@@ -3207,14 +3193,12 @@ class TestPrepHelpers:
         return mock_response(200, {
             "state": "unlocked",
             "signer_locked": False,
-            "ready_for_signing": True,
             "key_count": 1,
             "keyset_revision": 1,
         })
 
     def _keys(self, address):
         return mock_response(200, {
-            "count": 1,
             "keys": [{"address": address, "key_type": "ed25519"}],
         })
 
@@ -3434,7 +3418,6 @@ class TestPrepHelpers:
         })
         client = make_client()
         keys = mock_response(200, {
-            "count": 2,
             "keys": [
                 {"address": sender, "key_type": "ed25519"},
                 {"address": rekey_to, "key_type": "test.rotating", "signing_flow": flow},
@@ -4143,7 +4126,7 @@ class TestLoadConfig:
         "body,unknown",
         [
             (
-                "schema_version: 1\nnetwork: testnet\nnetworks_allowed: [testnet]\ntheme: dark\n"
+                "network: testnet\nnetworks_allowed: [testnet]\ntheme: dark\n"
                 "signer_status_poll_interval: 10s\nnetworks:\n  testnet:\n    algod:\n"
                 "      server: http://localhost:4001\n      token: t\n",
                 "",
@@ -4153,13 +4136,24 @@ class TestLoadConfig:
             ("network: testnet\nsigner_port: 11270\n", "signer_port"),
             ("algod:\n  testnet:\n    server: http://localhost:4001\n", "algod"),
             ("network: testnet\nfoo: 1\n", "foo"),
+            ("schema_version: 1\nnetwork: testnet\n", "schema_version"),
             ("networks:\n  testnet:\n    indexer:\n      server: http://localhost:8980\n", "indexer"),
             (
                 "networks:\n  testnet:\n    algod:\n      server: http://localhost:4001\n      headers: {}\n",
                 "headers",
             ),
         ],
-        ids=["apshell fields", "endpoint", "ssh", "signer_port", "top-level algod", "foo", "indexer", "headers"],
+        ids=[
+            "apshell fields",
+            "endpoint",
+            "ssh",
+            "signer_port",
+            "top-level algod",
+            "foo",
+            "schema_version",
+            "indexer",
+            "headers",
+        ],
     )
     def test_reads_the_fields_apshell_knows(self, tmp_path, body, unknown):
         (tmp_path / "config.yaml").write_text(body)

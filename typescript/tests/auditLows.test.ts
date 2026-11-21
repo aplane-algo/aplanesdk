@@ -46,8 +46,8 @@ afterEach(() => {
 function signerHolding(address: string): void {
   globalThis.fetch = (async (url: string) => {
     const body = String(url).endsWith("/status")
-      ? { state: "unlocked", ready_for_signing: true, key_count: 1, keyset_revision: 1 }
-      : { count: 1, keys: [{ address, key_type: "ed25519" }] };
+      ? { state: "unlocked", key_count: 1, keyset_revision: 1 }
+      : { keys: [{ address, key_type: "ed25519" }] };
     return { status: 200, ok: true, json: async () => body };
   }) as any;
 }
@@ -186,8 +186,8 @@ describe("group ALGO balance", () => {
   const holdingBoth = () => {
     globalThis.fetch = (async (url: string) => {
       const body = String(url).endsWith("/status")
-        ? { state: "unlocked", ready_for_signing: true, key_count: 2, keyset_revision: 1 }
-        : { count: 2, keys: [{ address: sender, key_type: "ed25519" }, { address: receiver, key_type: "ed25519" }] };
+        ? { state: "unlocked", key_count: 2, keyset_revision: 1 }
+        : { keys: [{ address: sender, key_type: "ed25519" }, { address: receiver, key_type: "ed25519" }] };
       return { status: 200, ok: true, json: async () => body };
     }) as any;
   };
@@ -522,7 +522,7 @@ describe("cosigned group key record", () => {
         body = { state: "unlocked", keyset_revision: signer.revision };
       } else if (path === "/keys") {
         signer.fetches++;
-        body = { count: signer.keys.length, keys: signer.keys };
+        body = { keys: signer.keys };
       } else {
         assert.fail(`unexpected request ${url}: the flow must stop at the key record`);
       }

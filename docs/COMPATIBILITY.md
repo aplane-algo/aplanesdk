@@ -47,7 +47,8 @@ The SDKs read only the current signer wire and client file formats:
 - `/keys` template provenance is read only from `template_provenance_status`
   and `template_provenance_note`; the `template_status` and
   `template_warning` aliases are gone.
-- `endpoints.yaml` must declare `schema_version: 2`.
+- `endpoints.yaml` must declare `schema_version: 2`. `config.yaml` has no
+  `schema_version`: like apshell, the SDKs refuse it as an unknown field.
 - `bounded_authorization.contract` is `bounded2` or `plain1`, and `max_fee` is
   optional: required on `bounded2`, absent on `plain1` (a plain host, which has
   no fee ceiling). The cosigned helpers refuse an account with any other
@@ -72,6 +73,33 @@ The SDKs read only the current signer wire and client file formats:
   may now have a cosigner and signs through `cosigned1` like a Falcon one.
 - Key types may carry `boundary_schema`, the boundary file grammar a per-key
   type's requests take; it is absent on a plain host.
+- `invalid_passphrase` is not a signer HTTP error code: no HTTP route takes a
+  passphrase. `ErrCodeInvalidPassphrase` (Go), `ErrorCodes.InvalidPassphrase`
+  (TypeScript) and `ERR_CODE_INVALID_PASSPHRASE` (Python) are gone.
+- `/sign/assemble` targets carry no `kind`: every target is a cosigned
+  account's, so `base_signatures` and `assembly_receipt` are required on each.
+  `AssemblyTargetKind` and `AssemblyTargetKindBoundedCosigner` (Go), the
+  `AssemblyTargetKind` type (TypeScript), `ASSEMBLY_TARGET_KIND_BOUNDED_COSIGNER`
+  (Python) and the `kind` field of each language's assembly target are gone.
+  The signer refuses a target that still sends `kind` as an unknown field.
+- `/health` and `/status` carry no `protocol_version` and no
+  `ready_for_signing` (`!signer_locked` gives the same answer on both: the
+  signer reports `signer_locked: true` whenever it cannot sign), `/health` no
+  `ssh_enabled` or `ipc_enabled` (both transports are mandatory), and `/keys`
+  no top-level `count` (the length of `keys`). The `ProtocolVersion` type in
+  each language is gone, with `ProtocolVersion`/`ReadyForSigning` on Go's
+  `StatusResponse` and `ProtocolVersion`, `ReadyForSigning`, `SSHEnabled` and
+  `IPCEnabled` on its `HealthResponse`, `protocolVersion` and
+  `readyForSigning` on TypeScript's `StatusResponse`, and `protocol_version`
+  and `ready_for_signing` on Python's. Go's `KeysResponse.Count` and the
+  TypeScript `KeysResponse.count` are gone too. Read `SignerLocked` (Go),
+  `signerLocked` (TypeScript) or `signer_locked` (Python) instead of the
+  ready flag, and the length of the key list instead of the count.
+- The `bounded1` signing flow is gone: a bounded or plain-host account without
+  a cosigner advertises no `signing_flow` on `/keys` and `/keytypes` and signs
+  through ordinary `/sign`. `SigningFlowBounded1` (Go) and
+  `SIGNING_FLOW_BOUNDED1` (TypeScript and Python) are gone, and `bounded1` is
+  now an unknown flow, so an SDK refuses such a key before sending anything.
 
 Package source files retain placeholder versions. The publish workflow derives
 the released Python and TypeScript package versions from the requested `vX.Y.Z`
@@ -83,9 +111,9 @@ Sparse rotating recovery requires the matching signer change: status uses
 at the last observation (`locating`, `preparing_successor`, `ready`, or
 `unresolved`). Neither the observed stage nor the entry count measures complete
 rotation history. No legacy `cached_stages` field is provided. The Python SDK
-ignores fields it does not declare inside `/status` rotating entries, their
-recovery state and `protocol_version`, and leaves `preparation` empty when the
-signer does not report it.
+ignores fields it does not declare inside `/status` rotating entries and their
+recovery state, and leaves `preparation` empty when the signer does not report
+it.
 
 Each key record in `/keys` and each key type in `/keytypes` carries
 `valid_rekey_target` (`ValidRekeyTarget` in Go, `validRekeyTarget` in

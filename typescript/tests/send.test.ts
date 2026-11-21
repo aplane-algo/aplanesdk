@@ -24,7 +24,6 @@ import {
   errorText,
 } from "../src/errors.js";
 import {
-  SIGNING_FLOW_BOUNDED1,
   SIGNING_FLOW_COSIGNED1,
   SIGNING_FLOW_ROTATING1,
   KEY_TYPE_WITNESS_FALCON1024,
@@ -270,9 +269,9 @@ describe("sendPrepared", () => {
       ],
     };
     const cases: Array<[string, string | undefined, string | undefined, string]> = [
-      ["ordinary and bounded", undefined, SIGNING_FLOW_BOUNDED1, ""],
+      ["two ordinary", undefined, undefined, ""],
       ["cosigned first", SIGNING_FLOW_COSIGNED1, undefined, SIGNING_FLOW_COSIGNED1],
-      ["cosigned last", SIGNING_FLOW_BOUNDED1, SIGNING_FLOW_COSIGNED1, SIGNING_FLOW_COSIGNED1],
+      ["cosigned last", undefined, SIGNING_FLOW_COSIGNED1, SIGNING_FLOW_COSIGNED1],
     ];
     for (const [name, firstFlow, secondFlow, want] of cases) {
       it(name, async () => {
@@ -1528,7 +1527,7 @@ function cosignedFixture(
       case "/status":
         return { body: statusBody() };
       case "/keys":
-        return { body: { count: 1, keys: [key] } };
+        return { body: { keys: [key] } };
       case "/plan":
         return { body: { transactions: [body.requests[0].txn_bytes_hex] } };
       case "/sign/component":
@@ -1834,7 +1833,7 @@ describe("sendPrepared with a cosigned account", () => {
           case "/status":
             return { body: statusBody() };
           case "/keys":
-            return { body: { count: 2, keys: wireKeys } };
+            return { body: { keys: wireKeys } };
           case "/plan":
             return { body: planResponse(body.requests) };
           case "/sign/component":
@@ -2020,7 +2019,6 @@ describe("an approval request that is never posted", () => {
     group_bytes_hex: groupHex(),
     targets: [{
       target_index: 0,
-      kind: "bounded-cosigner",
       auth_address: fakeAddress(21),
       base_signatures: ["base-sig"],
       assembly_receipt: "receipt",

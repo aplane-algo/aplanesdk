@@ -50,7 +50,6 @@ def _status():
         {
             "state": "unlocked",
             "signer_locked": False,
-            "ready_for_signing": True,
             "key_count": 1,
             "keyset_revision": 1,
         },
@@ -58,7 +57,7 @@ def _status():
 
 
 def _keys(address):
-    return mock_response(200, {"count": 1, "keys": [{"address": address, "key_type": "ed25519"}]})
+    return mock_response(200, {"keys": [{"address": address, "key_type": "ed25519"}]})
 
 
 def _signer(client, address):
@@ -204,7 +203,6 @@ def _keys_for(*addresses):
     return mock_response(
         200,
         {
-            "count": len(addresses),
             "keys": [{"address": address, "key_type": "ed25519"} for address in addresses],
         },
     )
@@ -353,7 +351,6 @@ def test_lsig_resource_numbers_are_not_coerced():
 
     client = make_client()
     keys = {
-        "count": 1,
         "keys": [
             {
                 "address": SENDER,
@@ -644,7 +641,7 @@ class _KeysetSigner:
             return mock_response(json_data={"state": "unlocked", "keyset_revision": self.revision})
         if url.endswith("/keys"):
             self.fetches += 1
-            return mock_response(json_data={"count": len(self.keys), "keys": self.keys})
+            return mock_response(json_data={"keys": self.keys})
         raise AssertionError(f"unexpected request {url}")
 
 
