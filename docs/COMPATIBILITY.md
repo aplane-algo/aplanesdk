@@ -47,7 +47,8 @@ The SDKs read only the current signer wire and client file formats:
 - `/keys` template provenance is read only from `template_provenance_status`
   and `template_provenance_note`; the `template_status` and
   `template_warning` aliases are gone.
-- `endpoints.yaml` must declare `schema_version: 2`.
+- `endpoints.yaml` must declare `schema_version: 2`. `config.yaml` has no
+  `schema_version`: like apshell, the SDKs refuse it as an unknown field.
 - `bounded_authorization.contract` is `bounded2` or `plain1`, and `max_fee` is
   optional: required on `bounded2`, absent on `plain1` (a plain host, which has
   no fee ceiling). The cosigned helpers refuse an account with any other

@@ -4337,12 +4337,13 @@ describe("loadConfig", () => {
   // accepted, and any other, the retired signer routing included, is refused
   // as an unknown field with apshell's words.
   for (const [name, body, unknown] of [
-    ["apshell's fields", "schema_version: 1\nnetwork: testnet\nnetworks_allowed: [testnet]\ntheme: dark\nsigner_status_poll_interval: 10s\nnetworks:\n  testnet:\n    algod:\n      server: http://localhost:4001\n      token: t\n", ""],
+    ["apshell's fields", "network: testnet\nnetworks_allowed: [testnet]\ntheme: dark\nsigner_status_poll_interval: 10s\nnetworks:\n  testnet:\n    algod:\n      server: http://localhost:4001\n      token: t\n", ""],
     ["endpoint routing", "endpoint:\n  ssh:\n    host: signer.example.com\n", "endpoint"],
     ["ssh routing", "ssh:\n  host: signer.example.com\n", "ssh"],
     ["signer_port routing", "network: testnet\nsigner_port: 11270\n", "signer_port"],
     ["top-level algod", "algod:\n  testnet:\n    server: http://localhost:4001\n", "algod"],
     ["another unknown field", "network: testnet\nfoo: 1\n", "foo"],
+    ["the retired schema_version", "schema_version: 1\nnetwork: testnet\n", "schema_version"],
     ["an unknown network setting", "networks:\n  testnet:\n    indexer:\n      server: http://localhost:8980\n", "indexer"],
     ["an unknown algod setting", "networks:\n  testnet:\n    algod:\n      server: http://localhost:4001\n      headers: {}\n", "headers"],
   ] as const) {

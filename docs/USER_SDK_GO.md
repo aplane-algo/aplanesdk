@@ -159,11 +159,11 @@ This path:
 - resolves the client data dir
 - accepts exactly apshell's `config.yaml` field names, at every depth, and
   refuses any other with apshell's words: the retired `endpoint`, `ssh` and
-  `signer_port` routing among them, and a top-level `algod` (algod settings
-  go under `networks.<network>.algod`). It validates only the values it reads
-  (`network`, `networks_allowed`, `theme` and `networks`), so some files
-  apshell refuses still load here: an empty file, `schema_version: 2`, or a
-  bad `signer_status_poll_interval`
+  `signer_port` routing and `schema_version` among them, and a top-level
+  `algod` (algod settings go under `networks.<network>.algod`). It validates
+  only the values it reads (`network`, `networks_allowed`, `theme` and
+  `networks`), so some files apshell refuses still load here: an empty file,
+  or a bad `signer_status_poll_interval`
 - loads and selects an endpoint from `endpoints.yaml`
 - resolves SSH paths relative to the client data dir
 - establishes the SSH tunnel automatically

@@ -4126,7 +4126,7 @@ class TestLoadConfig:
         "body,unknown",
         [
             (
-                "schema_version: 1\nnetwork: testnet\nnetworks_allowed: [testnet]\ntheme: dark\n"
+                "network: testnet\nnetworks_allowed: [testnet]\ntheme: dark\n"
                 "signer_status_poll_interval: 10s\nnetworks:\n  testnet:\n    algod:\n"
                 "      server: http://localhost:4001\n      token: t\n",
                 "",
@@ -4136,13 +4136,24 @@ class TestLoadConfig:
             ("network: testnet\nsigner_port: 11270\n", "signer_port"),
             ("algod:\n  testnet:\n    server: http://localhost:4001\n", "algod"),
             ("network: testnet\nfoo: 1\n", "foo"),
+            ("schema_version: 1\nnetwork: testnet\n", "schema_version"),
             ("networks:\n  testnet:\n    indexer:\n      server: http://localhost:8980\n", "indexer"),
             (
                 "networks:\n  testnet:\n    algod:\n      server: http://localhost:4001\n      headers: {}\n",
                 "headers",
             ),
         ],
-        ids=["apshell fields", "endpoint", "ssh", "signer_port", "top-level algod", "foo", "indexer", "headers"],
+        ids=[
+            "apshell fields",
+            "endpoint",
+            "ssh",
+            "signer_port",
+            "top-level algod",
+            "foo",
+            "schema_version",
+            "indexer",
+            "headers",
+        ],
     )
     def test_reads_the_fields_apshell_knows(self, tmp_path, body, unknown):
         (tmp_path / "config.yaml").write_text(body)
