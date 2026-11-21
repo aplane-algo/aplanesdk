@@ -569,7 +569,7 @@ def test_bounded_inventory_projects_layer3_policy():
     ):
         keys = client.list_keys(refresh=True)
         key = keys[0]
-    assert key.signing_flow == "bounded1"
+    assert key.signing_flow == ""
     assert key.logic_sig_resources.spend == LogicSigResourceUsage(5169, 1423, 20000)
     assert key.bounded_authorization.layer3_policy == "fixed_allowlist"
     assert key.bounded_authorization.spend_effects == ["pay", "axfer", "asset_opt_in"]

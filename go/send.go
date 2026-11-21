@@ -442,7 +442,7 @@ func (c *SignerClient) classifySend(ctx context.Context, group PreparedGroup) (f
 			return "", nil, fmt.Errorf("prepared transaction %d: %w: %s is not available for signing", i, ErrKeyNotFound, item.AuthAddress)
 		}
 		switch key.SigningFlow {
-		case "", SigningFlowBounded1:
+		case "":
 		case SigningFlowCosigned1:
 			flow = SigningFlowCosigned1
 		case SigningFlowRotating1:

@@ -615,7 +615,7 @@ describe("signer API contract fixtures", () => {
     const client = new SignerClient("http://localhost:11270");
     const keys = await client.listKeys(true);
     const key = keys[0];
-    assert.equal(key.signingFlow, "bounded1");
+    assert.equal(key.signingFlow, undefined);
     assert.equal(key.logicSigResources?.spend?.programBytes, 5169);
     assert.equal(key.logicSigResources?.spend?.argumentBytes, 1423);
     assert.equal(key.boundedAuthorization?.layer3Policy, "fixed_allowlist");

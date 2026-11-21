@@ -723,9 +723,6 @@ type KeyTypeInfo struct {
 	RuntimeArgs      []RuntimeArg    `json:"runtime_args"`
 }
 
-// SigningFlowBounded1 names the transaction-aware LogicSig choreography.
-const SigningFlowBounded1 = "bounded1"
-
 // SigningFlowCosigned1 names the cosigned account choreography: user-signer base
 // release, cosigner component signing, and source-bound assembly. A target may
 // be a spend or a rekey. Each base component names the path the signer

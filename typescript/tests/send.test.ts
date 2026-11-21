@@ -24,7 +24,6 @@ import {
   errorText,
 } from "../src/errors.js";
 import {
-  SIGNING_FLOW_BOUNDED1,
   SIGNING_FLOW_COSIGNED1,
   SIGNING_FLOW_ROTATING1,
   KEY_TYPE_WITNESS_FALCON1024,
@@ -270,9 +269,9 @@ describe("sendPrepared", () => {
       ],
     };
     const cases: Array<[string, string | undefined, string | undefined, string]> = [
-      ["ordinary and bounded", undefined, SIGNING_FLOW_BOUNDED1, ""],
+      ["two ordinary", undefined, undefined, ""],
       ["cosigned first", SIGNING_FLOW_COSIGNED1, undefined, SIGNING_FLOW_COSIGNED1],
-      ["cosigned last", SIGNING_FLOW_BOUNDED1, SIGNING_FLOW_COSIGNED1, SIGNING_FLOW_COSIGNED1],
+      ["cosigned last", undefined, SIGNING_FLOW_COSIGNED1, SIGNING_FLOW_COSIGNED1],
     ];
     for (const [name, firstFlow, secondFlow, want] of cases) {
       it(name, async () => {

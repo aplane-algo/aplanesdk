@@ -128,9 +128,6 @@ AUTHORIZATION_KIND_LOGIC_SIG = "logic_sig"
 # signing_flow and must fail fast on labels they do not implement; an empty
 # signing_flow means the ordinary /sign path.
 #
-# The transaction-aware LogicSig choreography: the signer classifies and signs
-# a bounded account without a cosigner on the ordinary /sign path.
-SIGNING_FLOW_BOUNDED1 = "bounded1"
 # The cosigned account choreography: a target may be a spend or a rekey, and each
 # base component names the path the signer classified. A listed rekey takes no
 # cosigner component. It replaces bounded-cosigner1, which carried spends only.
@@ -4224,7 +4221,7 @@ def _rekey_target_flow_check(rekey_to: str, flow: str) -> None:
     SDK does not know is refused too, so a future flow fails closed here
     rather than at the signer.
     """
-    if flow in ("", SIGNING_FLOW_BOUNDED1, SIGNING_FLOW_COSIGNED1):
+    if flow in ("", SIGNING_FLOW_COSIGNED1):
         return
     if flow == SIGNING_FLOW_ROTATING1:
         raise SignerError(
@@ -8084,7 +8081,7 @@ class SignerClient:
                 raise KeyNotFoundError(
                     f"prepared transaction {index}: {auth} is not available for signing"
                 )
-            if key.signing_flow in ("", SIGNING_FLOW_BOUNDED1):
+            if key.signing_flow == "":
                 continue
             if key.signing_flow == SIGNING_FLOW_COSIGNED1:
                 flow = SIGNING_FLOW_COSIGNED1
@@ -9476,7 +9473,7 @@ def sign_prepared_cosigned_group(
                 }
             )
             continue
-        if key.signing_flow not in ("", SIGNING_FLOW_BOUNDED1):
+        if key.signing_flow != "":
             raise ValueError(
                 f"prepared transaction {index}: signer key requires signing flow "
                 f"{key.signing_flow!r}, which this SDK does not support; upgrade the SDK"

@@ -240,8 +240,8 @@ func TestBoundedInventoryUsesStructuredResources(t *testing.T) {
 		t.Fatalf("bounded key count = %d, want 2", len(response.Keys))
 	}
 	key := response.Keys[0]
-	if key.SigningFlow != SigningFlowBounded1 {
-		t.Fatalf("signing flow = %q, want %q", key.SigningFlow, SigningFlowBounded1)
+	if key.SigningFlow != "" {
+		t.Fatalf("signing flow = %q, want none: an account without a cosigner signs on /sign", key.SigningFlow)
 	}
 	if key.LogicSigResources == nil || key.LogicSigResources.Spend == nil || key.LogicSigResources.Spend.ProgramBytes != 5169 || key.LogicSigResources.Spend.ArgumentBytes != 1423 {
 		t.Fatalf("spend resources = %#v", key.LogicSigResources)

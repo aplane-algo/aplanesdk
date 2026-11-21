@@ -93,6 +93,11 @@ The SDKs read only the current signer wire and client file formats:
   TypeScript `KeysResponse.count` are gone too. Read `SignerLocked` (Go),
   `signerLocked` (TypeScript) or `signer_locked` (Python) instead of the
   ready flag, and the length of the key list instead of the count.
+- The `bounded1` signing flow is gone: a bounded or plain-host account without
+  a cosigner advertises no `signing_flow` on `/keys` and `/keytypes` and signs
+  through ordinary `/sign`. `SigningFlowBounded1` (Go) and
+  `SIGNING_FLOW_BOUNDED1` (TypeScript and Python) are gone, and `bounded1` is
+  now an unknown flow, so an SDK refuses such a key before sending anything.
 
 Package source files retain placeholder versions. The publish workflow derives
 the released Python and TypeScript package versions from the requested `vX.Y.Z`

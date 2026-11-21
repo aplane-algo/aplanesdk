@@ -23,7 +23,6 @@ from aplanesdk import (
     KEY_TYPE_WITNESS_FALCON1024,
     SEND_OUTCOME_CONFIRMED,
     SEND_OUTCOME_SUBMITTED,
-    SIGNING_FLOW_BOUNDED1,
     SIGNING_FLOW_COSIGNED1,
     SIGNING_FLOW_ROTATING1,
     KeyNotFoundError,
@@ -314,11 +313,11 @@ def test_send_prepared_refuses_before_signing(fakes, keys, group, want, text):
 @pytest.mark.parametrize(
     "first_flow,second_flow,want",
     [
-        ("", SIGNING_FLOW_BOUNDED1, ""),
+        ("", "", ""),
         (SIGNING_FLOW_COSIGNED1, "", SIGNING_FLOW_COSIGNED1),
-        (SIGNING_FLOW_BOUNDED1, SIGNING_FLOW_COSIGNED1, SIGNING_FLOW_COSIGNED1),
+        ("", SIGNING_FLOW_COSIGNED1, SIGNING_FLOW_COSIGNED1),
     ],
-    ids=["ordinary and bounded", "cosigned first", "cosigned last"],
+    ids=["two ordinary", "cosigned first", "cosigned last"],
 )
 def test_classify_send_routes_whole_group(fakes, first_flow, second_flow, want):
     first = fake_signer.payment(41, 42)

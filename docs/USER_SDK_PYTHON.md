@@ -1248,8 +1248,8 @@ is signed with these calls and you submit it.
 Cosigned accounts (signing flow `cosigned1`) need component signatures from both
 the user signer and a cosigner signer. A cosigned account is a plain host such
 as `aplane.falcon1024.v1` created with a cosigner, or a bounded account with
-one, such as Corridor. Either kind without a cosigner advertises `bounded1` and
-signs through ordinary `/sign`. Cosigner component selectors are public policy keys, not
+one, such as Corridor. Either kind without a cosigner advertises no signing flow
+and signs through ordinary `/sign`. Cosigner component selectors are public policy keys, not
 Algorand spending accounts, and must not be used as senders, receivers, auth
 addresses, or rekey targets.
 

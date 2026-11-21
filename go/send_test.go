@@ -481,9 +481,9 @@ func TestClassifySendRoutesWholeGroup(t *testing.T) {
 		secondFlow  string
 		wantGroupAs string
 	}{
-		{"ordinary and bounded", "", SigningFlowBounded1, ""},
+		{"two ordinary", "", "", ""},
 		{"cosigned first", SigningFlowCosigned1, "", SigningFlowCosigned1},
-		{"cosigned last", SigningFlowBounded1, SigningFlowCosigned1, SigningFlowCosigned1},
+		{"cosigned last", "", SigningFlowCosigned1, SigningFlowCosigned1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

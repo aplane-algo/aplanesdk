@@ -95,7 +95,7 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 				MayTakeListedPath:        !item.Transaction.RekeyTo.IsZero() && key.BoundedAuthorization.RekeyList != nil,
 			})
 		default:
-			if key.SigningFlow != "" && key.SigningFlow != SigningFlowBounded1 {
+			if key.SigningFlow != "" {
 				return nil, fmt.Errorf("prepared transaction %d: signer key requires signing flow %q, which this SDK does not support; upgrade the SDK", i, key.SigningFlow)
 			}
 			// The signer holds this position's key, so it is sent as the

@@ -1092,7 +1092,7 @@ func rekeyChecks(target models.Account, rekeyTo string) ([]PreparedCheck, error)
 // future flow fails closed here rather than at the signer.
 func rekeyTargetFlowCheck(rekeyTo, flow string) error {
 	switch flow {
-	case "", SigningFlowBounded1, SigningFlowCosigned1:
+	case "", SigningFlowCosigned1:
 		return nil
 	case SigningFlowRotating1:
 		return fmt.Errorf("cannot rekey to %s: it is a rotating account, and its address is a one-time stage key; an account rekeyed to it would be stuck on that stage, and every signature would reuse that key", rekeyTo)

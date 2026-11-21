@@ -4,15 +4,10 @@
 import type { Transaction, modelsv2 } from "algosdk";
 import { SignerError } from "./errors.js";
 
-/**
- * Signing choreography labels name a frozen client flow. Clients route on
- * signing_flow and must fail fast on labels they do not implement; an empty
- * signing_flow means the ordinary /sign path.
- *
- * The transaction-aware LogicSig choreography: the signer classifies and signs
- * a bounded account without a cosigner on the ordinary /sign path.
- */
-export const SIGNING_FLOW_BOUNDED1 = "bounded1";
+// Signing choreography labels name a frozen client flow. Clients route on
+// signing_flow and must fail fast on labels they do not implement; an empty
+// signing_flow means the ordinary /sign path.
+
 /**
  * Cosigned account choreography: a target may be a spend or a rekey, and each
  * base component names the path the signer classified. A listed rekey takes no

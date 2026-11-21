@@ -62,7 +62,6 @@ import type {
 } from "./types.js";
 import {
   ErrorCodes,
-  SIGNING_FLOW_BOUNDED1,
   SIGNING_FLOW_COSIGNED1,
   BOUNDED_CONTRACT_BOUNDED2,
   BOUNDED_CONTRACT_PLAIN1,
@@ -630,7 +629,7 @@ export async function signPreparedCosignedGroup(
       });
       continue;
     }
-    if (key.signingFlow && key.signingFlow !== SIGNING_FLOW_BOUNDED1) {
+    if (key.signingFlow) {
       throw new SignerError(
         `prepared transaction ${index}: signer key requires signing flow "${key.signingFlow}", which this SDK does not support; upgrade the SDK`,
       );
@@ -2306,7 +2305,6 @@ function rekeyChecks(accountInfo: AccountInfoResult | Record<string, any>, rekey
 function rekeyTargetFlowCheck(rekeyTo: string, flow: string | undefined): void {
   switch (flow ?? "") {
     case "":
-    case SIGNING_FLOW_BOUNDED1:
     case SIGNING_FLOW_COSIGNED1:
       return;
     case SIGNING_FLOW_ROTATING1:
@@ -4998,7 +4996,6 @@ export class SignerClient {
       }
       switch (key.signingFlow ?? "") {
         case "":
-        case SIGNING_FLOW_BOUNDED1:
           break;
         case SIGNING_FLOW_COSIGNED1:
           flow = SIGNING_FLOW_COSIGNED1;
