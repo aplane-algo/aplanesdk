@@ -81,6 +81,18 @@ The SDKs read only the current signer wire and client file formats:
   `AssemblyTargetKind` type (TypeScript), `ASSEMBLY_TARGET_KIND_BOUNDED_COSIGNER`
   (Python) and the `kind` field of each language's assembly target are gone.
   The signer refuses a target that still sends `kind` as an unknown field.
+- `/health` and `/status` carry no `protocol_version` and no
+  `ready_for_signing` (it always equalled `!signer_locked`), `/health` no
+  `ssh_enabled` or `ipc_enabled` (both transports are mandatory), and `/keys`
+  no top-level `count` (the length of `keys`). The `ProtocolVersion` type in
+  each language is gone, with `ProtocolVersion`/`ReadyForSigning` on Go's
+  `StatusResponse` and `ProtocolVersion`, `ReadyForSigning`, `SSHEnabled` and
+  `IPCEnabled` on its `HealthResponse`, `protocolVersion` and
+  `readyForSigning` on TypeScript's `StatusResponse`, and `protocol_version`
+  and `ready_for_signing` on Python's. Go's `KeysResponse.Count` and the
+  TypeScript `KeysResponse.count` are gone too. Read `SignerLocked` (Go),
+  `signerLocked` (TypeScript) or `signer_locked` (Python) instead of the
+  ready flag, and the length of the key list instead of the count.
 
 Package source files retain placeholder versions. The publish workflow derives
 the released Python and TypeScript package versions from the requested `vX.Y.Z`
@@ -92,9 +104,9 @@ Sparse rotating recovery requires the matching signer change: status uses
 at the last observation (`locating`, `preparing_successor`, `ready`, or
 `unresolved`). Neither the observed stage nor the entry count measures complete
 rotation history. No legacy `cached_stages` field is provided. The Python SDK
-ignores fields it does not declare inside `/status` rotating entries, their
-recovery state and `protocol_version`, and leaves `preparation` empty when the
-signer does not report it.
+ignores fields it does not declare inside `/status` rotating entries and their
+recovery state, and leaves `preparation` empty when the signer does not report
+it.
 
 Each key record in `/keys` and each key type in `/keytypes` carries
 `valid_rekey_target` (`ValidRekeyTarget` in Go, `validRekeyTarget` in

@@ -30,9 +30,8 @@ func newPrepTestClients(t *testing.T, sender string, receiver string, senderAmou
 		switch {
 		case r.URL.Path == "/status":
 			json.NewEncoder(w).Encode(StatusResponse{
-				State:           "unlocked",
-				ReadyForSigning: true,
-				KeysetRevision:  1,
+				State:          "unlocked",
+				KeysetRevision: 1,
 			})
 		case r.URL.Path == "/keys":
 			keys := append([]KeyInfo{{
@@ -40,8 +39,7 @@ func newPrepTestClients(t *testing.T, sender string, receiver string, senderAmou
 				KeyType: "ed25519",
 			}}, extraKeys...)
 			json.NewEncoder(w).Encode(KeysResponse{
-				Count: len(keys),
-				Keys:  keys,
+				Keys: keys,
 			})
 		case r.URL.Path == "/v2/transactions/params":
 			json.NewEncoder(w).Encode(map[string]any{
@@ -311,9 +309,9 @@ func newKeyRegTestClientsWithBalance(t *testing.T, sender string, incentiveEligi
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/status":
-			json.NewEncoder(w).Encode(StatusResponse{State: "unlocked", ReadyForSigning: true, KeysetRevision: 1})
+			json.NewEncoder(w).Encode(StatusResponse{State: "unlocked", KeysetRevision: 1})
 		case r.URL.Path == "/keys":
-			json.NewEncoder(w).Encode(KeysResponse{Count: 1, Keys: []KeyInfo{{Address: sender, KeyType: "ed25519"}}})
+			json.NewEncoder(w).Encode(KeysResponse{Keys: []KeyInfo{{Address: sender, KeyType: "ed25519"}}})
 		case r.URL.Path == "/v2/transactions/params":
 			json.NewEncoder(w).Encode(map[string]any{
 				"fee":               1000,

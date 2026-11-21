@@ -380,9 +380,6 @@ func TestGoSDKContractStatusMetadata(t *testing.T) {
 	if resp.NodeRole != "signer" {
 		t.Fatalf("NodeRole = %q, want signer", resp.NodeRole)
 	}
-	if resp.ProtocolVersion.Major != 2 || resp.ProtocolVersion.Minor != 0 {
-		t.Fatalf("ProtocolVersion = %d.%d, want 2.0", resp.ProtocolVersion.Major, resp.ProtocolVersion.Minor)
-	}
 	if !strings.Contains(resp.BuildVersion, "v0.30.0") {
 		t.Fatalf("BuildVersion = %q, want v0.30.0 fixture", resp.BuildVersion)
 	}
@@ -526,7 +523,6 @@ func TestGoSDKContractKeyAuthorizationKind(t *testing.T) {
 
 func TestGoSDKMapsTemplateProvenanceFields(t *testing.T) {
 	raw := []byte(`{
-		"count": 1,
 		"keys": [{
 			"address": "ADDR1",
 			"public_key_hex": "abcd",
@@ -549,7 +545,6 @@ func TestGoSDKMapsTemplateProvenanceFields(t *testing.T) {
 
 func TestGoSDKIgnoresRetiredTemplateAliases(t *testing.T) {
 	raw := []byte(`{
-		"count": 1,
 		"keys": [{
 			"address": "ADDR1",
 			"public_key_hex": "abcd",

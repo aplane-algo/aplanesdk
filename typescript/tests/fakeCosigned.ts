@@ -51,7 +51,7 @@ export class CosignerEndpoint {
     this.paths.push(path);
     switch (path) {
       case "/keys":
-        return this.keysReply ? this.keysReply() : { body: { count: this.keys.length, keys: this.keys } };
+        return this.keysReply ? this.keysReply() : { body: { keys: this.keys } };
       case "/sign/component":
         this.componentRequests.push(body);
         return {
@@ -140,7 +140,7 @@ export class CosignedUser {
       case "/status":
         return { body: statusBody() };
       case "/keys":
-        return { body: { count: this.keys.length, keys: this.keys } };
+        return { body: { keys: this.keys } };
       case "/plan":
         return { body: planResponse(body.requests) };
       case "/sign/component":

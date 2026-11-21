@@ -456,10 +456,10 @@ describe("EndpointCosignerResolver", () => {
     const failures: Array<[string, (endpoint: CosignerEndpoint) => void, string]> = [
       // A body that does not arrive whole is not an unreadable answer.
       ["b-cut-off", (endpoint) => {
-        endpoint.keysReply = () => ({ brokenAfter: '{"count": 1, "keys": [' });
+        endpoint.keysReply = () => ({ brokenAfter: '{"keys": [' });
       }, "unreachable"],
       ["c-unreadable", (endpoint) => {
-        endpoint.keysReply = () => ({ raw: '{"count": 1, "keys": [' });
+        endpoint.keysReply = () => ({ raw: '{"keys": [' });
       }, "invalid cosigner metadata"],
     ];
     for (const [alias, set] of failures) set(net.add(alias, [witnessRecord(WITNESS_B)]));
@@ -488,7 +488,7 @@ describe("EndpointCosignerResolver", () => {
       }, "unreachable"],
       ["c-hangs", () => net.behaviour.set("c-hangs", () => new Promise<SignerClient>(() => undefined)), "unreachable"],
       ["c2-body-stalls", (endpoint) => {
-        endpoint.keysReply = () => ({ stallsAfter: '{"count": 1, "keys": [' });
+        endpoint.keysReply = () => ({ stallsAfter: '{"keys": [' });
       }, "unreachable"],
       ["d-bad-hex", (endpoint) => {
         endpoint.keys.push({ ...witnessRecord(WITNESS_C), public_key_hex: "a1b" });
@@ -758,7 +758,7 @@ describe("EndpointCosignerResolver's cache", () => {
     let alphaReads = 0;
     alpha.keysReply = () => (++alphaReads === 1
       ? { status: 403, body: { error: "signer is locked", code: "locked" } }
-      : { body: { count: 1, keys: alpha.keys } });
+      : { body: { keys: alpha.keys } });
     const resolved = await resolver.resolve(target(WITNESS_B));
     assert.equal(resolved.client, net.clients.get("beta")?.[1], "beta was not connected afresh");
     assert.deepEqual([...net.connects].sort(), ["alpha", "alpha", "beta", "beta"], `connects: ${net.connects.join(", ")}`);
@@ -778,7 +778,7 @@ describe("EndpointCosignerResolver's cache", () => {
     const controller = new AbortController();
     beta.keysReply = () => {
       controller.abort();
-      return { body: { count: 0, keys: [] } };
+      return { body: { keys: [] } };
     };
     await assert.rejects(
       resolver.resolve(target(WITNESS_C), { signal: controller.signal }),

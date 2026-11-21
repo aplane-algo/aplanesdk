@@ -82,7 +82,6 @@ test(
       assert.equal(await client.health(), true);
 
       const before = await client.getStatus();
-      assert.equal(before.readyForSigning, true);
       assert.equal(before.signerLocked, false);
 
       const keyTypes = await client.listKeyTypes();

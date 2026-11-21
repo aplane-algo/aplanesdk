@@ -713,10 +713,7 @@ func (c *SignerClient) GetKeysResponseWithContext(ctx context.Context) (*KeysRes
 	c.keyMu.Unlock()
 
 	return &KeysResult{
-		KeysResponse: KeysResponse{
-			Count: keysResp.Count,
-			Keys:  keysResp.Keys,
-		},
+		KeysResponse: KeysResponse{Keys: keysResp.Keys},
 	}, nil
 }
 

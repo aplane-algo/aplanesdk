@@ -84,7 +84,6 @@ export function statusBody(approvalWaitSeconds = 60): unknown {
   return {
     state: "unlocked",
     signer_locked: false,
-    ready_for_signing: true,
     key_count: 1,
     keyset_revision: 1,
     approval_wait_seconds: approvalWaitSeconds,
@@ -115,7 +114,7 @@ export class SendSigner {
       case "/status":
         return { body: statusBody() };
       case "/keys":
-        return { body: { count: this.keys.length, keys: this.keys } };
+        return { body: { keys: this.keys } };
       case "/sign":
         if (this.sign) return this.sign(body);
         return { body: signResponse(body.requests as SignRequest[], this.behaviour) };

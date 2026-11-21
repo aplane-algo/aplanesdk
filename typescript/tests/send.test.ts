@@ -1528,7 +1528,7 @@ function cosignedFixture(
       case "/status":
         return { body: statusBody() };
       case "/keys":
-        return { body: { count: 1, keys: [key] } };
+        return { body: { keys: [key] } };
       case "/plan":
         return { body: { transactions: [body.requests[0].txn_bytes_hex] } };
       case "/sign/component":
@@ -1834,7 +1834,7 @@ describe("sendPrepared with a cosigned account", () => {
           case "/status":
             return { body: statusBody() };
           case "/keys":
-            return { body: { count: 2, keys: wireKeys } };
+            return { body: { keys: wireKeys } };
           case "/plan":
             return { body: planResponse(body.requests) };
           case "/sign/component":

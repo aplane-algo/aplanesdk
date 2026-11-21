@@ -2971,13 +2971,9 @@ export class SignerClient {
     const data = await readSignerAnswer<Record<string, any>>(response, STATUS_ANSWER);
     const status: StatusResponse = {
       nodeRole: data.node_role || undefined,
-      protocolVersion: data.protocol_version
-        ? { major: data.protocol_version.major, minor: data.protocol_version.minor }
-        : undefined,
       buildVersion: data.build_version || undefined,
       state: data.state,
       signerLocked: data.signer_locked,
-      readyForSigning: data.ready_for_signing,
       keyCount: data.key_count,
       keysetRevision: data.keyset_revision,
       approvalWaitSeconds: data.approval_wait_seconds || undefined,

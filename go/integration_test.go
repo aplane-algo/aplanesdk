@@ -113,8 +113,8 @@ func TestIntegrationLiveSignerEd25519Workflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get identity before generate: %v", err)
 	}
-	if !before.ReadyForSigning || before.SignerLocked {
-		t.Fatalf("signer is not ready: state=%s locked=%v ready=%v", before.State, before.SignerLocked, before.ReadyForSigning)
+	if before.SignerLocked {
+		t.Fatalf("signer is not ready: state=%s locked=%v", before.State, before.SignerLocked)
 	}
 
 	keyTypes, err := client.ListKeyTypes()

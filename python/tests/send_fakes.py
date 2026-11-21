@@ -117,7 +117,6 @@ def status_body(approval_wait_seconds: int = 0) -> Dict[str, Any]:
     return {
         "state": "unlocked",
         "signer_locked": False,
-        "ready_for_signing": True,
         "key_count": 1,
         "keyset_revision": 1,
         "approval_wait_seconds": approval_wait_seconds,
@@ -154,7 +153,7 @@ class SendSigner:
         if path == "/status":
             return reply(200, status_body())
         if path == "/keys":
-            return reply(200, {"count": len(self.keys), "keys": self.keys})
+            return reply(200, {"keys": self.keys})
         if path == "/sign/cancel":
             return reply(200, {"state": "canceled"})
         if path == "/sign":
@@ -416,7 +415,7 @@ class RotatingSigner:
             return reply(200, status_body())
         if path == "/keys":
             keys = [key(self.account, "rotating1", key_type=ROTATING_KEY_TYPE)] + self.extra_keys
-            return reply(200, {"count": len(keys), "keys": keys})
+            return reply(200, {"keys": keys})
         if path == "/sign/cancel":
             return reply(200, {"state": "canceled"})
         if path == "/sign/rotating/prepare":

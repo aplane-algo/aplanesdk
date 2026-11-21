@@ -339,11 +339,9 @@ describe("signer API contract fixtures", () => {
     const status = await client.getStatus();
 
     assert.equal(status.nodeRole, "signer");
-    assert.deepEqual(status.protocolVersion, { major: 2, minor: 0 });
     assert.match(status.buildVersion || "", /^v0\.30\.0 /);
     assert.equal(status.state, "unlocked");
     assert.equal(status.signerLocked, false);
-    assert.equal(status.readyForSigning, true);
     assert.equal(status.keyCount, 37);
     assert.equal(status.keysetRevision, 4);
     assert.equal(status.approvalWaitSeconds, 60);
@@ -363,7 +361,6 @@ describe("signer API contract fixtures", () => {
       status: 200,
       ok: true,
       json: async () => ({
-        count: 1,
         keys: [
           {
             address: "ADDR1",
@@ -388,7 +385,6 @@ describe("signer API contract fixtures", () => {
       status: 200,
       ok: true,
       json: async () => ({
-        count: 1,
         keys: [
           {
             address: "ADDR1",

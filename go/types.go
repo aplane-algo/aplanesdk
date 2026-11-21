@@ -621,37 +621,25 @@ type PlanGroupResponse struct {
 	Mutations    *MutationReport `json:"mutations,omitempty"`    // Modifications that would be made by server
 }
 
-// ProtocolVersion identifies a signer wire-protocol version.
-type ProtocolVersion struct {
-	Major int `json:"major"`
-	Minor int `json:"minor"`
-}
-
 // HealthResponse is the response from the /health endpoint.
 type HealthResponse struct {
-	Status          string          `json:"status"`
-	Service         string          `json:"service"`
-	ProtocolVersion ProtocolVersion `json:"protocol_version"`
-	BuildVersion    string          `json:"build_version"`
-	SignerLocked    bool            `json:"signer_locked"`
-	ReadyForSigning bool            `json:"ready_for_signing"`
-	SSHEnabled      bool            `json:"ssh_enabled"`
-	IPCEnabled      bool            `json:"ipc_enabled"`
-	Warnings        []string        `json:"warnings,omitempty"`
+	Status       string   `json:"status"`
+	Service      string   `json:"service"`
+	BuildVersion string   `json:"build_version"`
+	SignerLocked bool     `json:"signer_locked"`
+	Warnings     []string `json:"warnings,omitempty"`
 }
 
 // StatusResponse is the response from the /status endpoint.
 type StatusResponse struct {
-	NodeRole            string          `json:"node_role,omitempty"`
-	ProtocolVersion     ProtocolVersion `json:"protocol_version"`
-	BuildVersion        string          `json:"build_version"`
-	State               string          `json:"state"`
-	SignerLocked        bool            `json:"signer_locked"`
-	ReadyForSigning     bool            `json:"ready_for_signing"`
-	KeyCount            int             `json:"key_count"`
-	KeysetRevision      uint64          `json:"keyset_revision"`
-	ApprovalWaitSeconds int64           `json:"approval_wait_seconds,omitempty"`
-	Warnings            []string        `json:"warnings,omitempty"`
+	NodeRole            string   `json:"node_role,omitempty"`
+	BuildVersion        string   `json:"build_version"`
+	State               string   `json:"state"`
+	SignerLocked        bool     `json:"signer_locked"`
+	KeyCount            int      `json:"key_count"`
+	KeysetRevision      uint64   `json:"keyset_revision"`
+	ApprovalWaitSeconds int64    `json:"approval_wait_seconds,omitempty"`
+	Warnings            []string `json:"warnings,omitempty"`
 	// Notes are informational status lines that need no action, such as a
 	// rotating account's release still in flight.
 	Notes []string `json:"notes,omitempty"`
@@ -840,8 +828,7 @@ type KeyInfo struct {
 
 // KeysResponse is the response from the /keys endpoint.
 type KeysResponse struct {
-	Count int       `json:"count"`
-	Keys  []KeyInfo `json:"keys"`
+	Keys []KeyInfo `json:"keys"`
 }
 
 // KeysResult wraps /keys with local locked-signer state. Locked is derived from

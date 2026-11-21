@@ -422,31 +422,17 @@ export interface KeyTypeInfo {
 }
 
 /**
- * Signer wire-protocol version.
- */
-export interface ProtocolVersion {
-  /** Protocol major version */
-  major: number;
-  /** Protocol minor version */
-  minor: number;
-}
-
-/**
  * Response from the /status endpoint.
  */
 export interface StatusResponse {
   /** Signer node role, such as "signer" or "cosigner", when reported */
   nodeRole?: string;
-  /** Signer protocol version, when reported */
-  protocolVersion?: ProtocolVersion;
   /** Signer build version, when reported */
   buildVersion?: string;
   /** Current lock state: "locked", "unlocked", or "unknown" */
   state: string;
   /** True when the signer is locked */
   signerLocked: boolean;
-  /** True when the signer can currently sign */
-  readyForSigning: boolean;
   /** Number of currently loaded keys */
   keyCount: number;
   /** Process-local keyset revision for refresh decisions */
@@ -1311,8 +1297,6 @@ export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];
  * Response from the /keys endpoint.
  */
 export interface KeysResponse {
-  /** Number of keys */
-  count: number;
   /** Array of key information */
   keys: KeyInfo[];
 }

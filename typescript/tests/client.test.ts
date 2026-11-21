@@ -171,7 +171,6 @@ function queueStatusResponse(
     json: async () => ({
       state: "unlocked",
       signer_locked: false,
-      ready_for_signing: true,
       key_count: 37,
       keyset_revision: keysetRevision,
       approval_wait_seconds: approvalWaitSeconds,
@@ -293,7 +292,6 @@ describe("SignerClient", () => {
         json: async () => ({
           state: "unlocked",
           signer_locked: false,
-          ready_for_signing: true,
           key_count: 37,
           keyset_revision: 4,
           approval_wait_seconds: 60,
@@ -318,7 +316,6 @@ describe("SignerClient", () => {
         json: async () => ({
           state: "locked",
           signer_locked: true,
-          ready_for_signing: false,
           key_count: 0,
           keyset_revision: 2,
         }),
@@ -329,7 +326,6 @@ describe("SignerClient", () => {
 
       assert.equal(status.state, "locked");
       assert.equal(status.signerLocked, true);
-      assert.equal(status.readyForSigning, false);
     });
 
     it("throws AuthenticationError on 401", async () => {
@@ -346,7 +342,6 @@ describe("SignerClient", () => {
   describe("listKeys", () => {
     it("returns list of keys", async () => {
       const mockKeys = {
-        count: 2,
         keys: [
           {
             address: "ADDR1",
@@ -391,7 +386,6 @@ describe("SignerClient", () => {
         status: 200,
         ok: true,
         json: async () => ({
-          count: 4,
           keys: [
             { address: "ADDR1", key_type: "ed25519", valid_rekey_target: true },
             { address: "ADDR2", key_type: "aplane.htlc.v1", valid_rekey_target: false },
@@ -429,7 +423,6 @@ describe("SignerClient", () => {
 
     it("uses cache on subsequent calls", async () => {
       const mockKeys = {
-        count: 1,
         keys: [{ address: "ADDR1", key_type: "ed25519" }],
       };
 
@@ -466,7 +459,6 @@ describe("SignerClient", () => {
       status: 200,
       ok: true,
       json: async () => ({
-        count: addresses.length,
         keys: addresses.map((address) => ({ address, key_type: "ed25519" })),
       }),
     });
@@ -620,7 +612,6 @@ describe("SignerClient", () => {
       status: 200,
       ok: true,
       json: async () => ({
-        count: 1,
         keys: [{ address, key_type: "ed25519" }],
       }),
     });
@@ -928,7 +919,6 @@ describe("SignerClient", () => {
           status: 200,
           ok: true,
           json: async () => ({
-            count: 2,
             keys: [
               { address: sender, key_type: "ed25519" },
               { address: rekeyTo, key_type: "test.rotating", signing_flow: flow },
@@ -3648,7 +3638,6 @@ describe("SignerClient", () => {
             json: async () => ({
               state: "unlocked",
               signer_locked: false,
-              ready_for_signing: true,
               key_count: 37,
               keyset_revision: 4,
               approval_wait_seconds: 60,
@@ -4101,12 +4090,12 @@ describe("SignerClient", () => {
     const txn = fakePayment();
     const cases: Array<[string, () => Promise<unknown>, string[]]> = [
       ["/status", () => client().getStatus(), [
-        "", "null", "[]", '"ok"', '{"signer_locked":"yes"}', '{"ready_for_signing":1}', '{"key_count":"3"}',
-        '{"keyset_revision":-1}', '{"warnings":["a",7]}', '{"rotating":[{"account":5}]}', '{"protocol_version":2}',
+        "", "null", "[]", '"ok"', '{"signer_locked":"yes"}', '{"key_count":"3"}',
+        '{"keyset_revision":-1}', '{"warnings":["a",7]}', '{"rotating":[{"account":5}]}',
       ]],
       ["/keys", () => client().listKeys(true), [
         "", "null", '{"keys":"x"}', '{"keys":[{"address":42}]}', '{"keys":[{"is_witness_key":"no"}]}',
-        '{"count":"1"}', '{"keys":[{"bounded_authorization":{"max_fee":"1000"}}]}',
+        '{"keys":[{"bounded_authorization":{"max_fee":"1000"}}]}',
         '{"keys":[{"valid_rekey_target":"true"}]}', '{"keys":[{"valid_rekey_target":1}]}',
       ]],
       ["/keytypes", () => client().listKeyTypes(), [
@@ -4155,7 +4144,6 @@ describe("SignerClient", () => {
       assert.equal(status.state, "");
       assert.equal(status.keyCount, 0);
       assert.equal(status.signerLocked, false);
-      assert.equal(status.readyForSigning, false);
       assert.equal(status.rotating?.[0].stage, undefined, "a null stage is left out, not stage 0");
       assert.equal(status.rotating?.[0].cached_entries, 0);
       assert.equal(status.rotating?.[0].recovery?.active, false);
@@ -4179,7 +4167,7 @@ describe("SignerClient", () => {
     it("a 200 from /admin/generate or DELETE /admin/keys drops the key cache, whatever its body", async () => {
       // The signer may have created or deleted the key even when its answer
       // cannot be read or is refused, so the next listKeys() asks it again.
-      const keysAnswer = (address: string) => JSON.stringify({ count: 1, keys: [{ address, key_type: "ed25519" }] });
+      const keysAnswer = (address: string) => JSON.stringify({ keys: [{ address, key_type: "ed25519" }] });
       const mutations: Array<[string, (signer: SignerClient) => Promise<unknown>, string]> = [
         ["/admin/generate", (signer) => signer.generateKey("ed25519"), ""],
         ["/admin/generate", (signer) => signer.generateKey("ed25519"), '{"address":5}'],
@@ -4240,7 +4228,6 @@ describe("SignerClient", () => {
     describe("/keys addresses", () => {
       const real = fakeAccount(5);
       const keys = (...addresses: unknown[]) => JSON.stringify({
-        count: addresses.length,
         keys: addresses.map((address) => ({ address, key_type: "ed25519" })),
       });
       const BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";

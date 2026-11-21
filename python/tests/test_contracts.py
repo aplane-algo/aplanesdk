@@ -363,13 +363,9 @@ def test_status_fixture_maps_metadata():
     status = StatusResponse(**data)
 
     assert status.node_role == "signer"
-    assert status.protocol_version is not None
-    assert status.protocol_version.major == 2
-    assert status.protocol_version.minor == 0
     assert status.build_version.startswith("v0.30.0 ")
     assert status.state == "unlocked"
     assert status.signer_locked is False
-    assert status.ready_for_signing is True
     assert status.key_count == 37
     assert status.keyset_revision == 4
     assert status.approval_wait_seconds == 60
@@ -390,7 +386,6 @@ def test_list_keys_maps_template_provenance_fields():
     resp = mock_response(
         200,
         {
-            "count": 1,
             "keys": [
                 {
                     "address": "ADDR1",
@@ -415,7 +410,6 @@ def test_list_keys_ignores_retired_template_aliases():
     resp = mock_response(
         200,
         {
-            "count": 1,
             "keys": [
                 {
                     "address": "ADDR1",
@@ -633,10 +627,8 @@ def test_status_tolerates_fields_from_a_newer_signer():
     status = StatusResponse(
         state="unlocked",
         signer_locked=False,
-        ready_for_signing=True,
         key_count=1,
         keyset_revision=1,
-        protocol_version={"major": 1, "minor": 2, "patch": 3},
         rotating=[
             {
                 "account": "ROTATINGADDR",
@@ -647,8 +639,6 @@ def test_status_tolerates_fields_from_a_newer_signer():
             }
         ],
     )
-    assert status.protocol_version is not None
-    assert status.protocol_version.minor == 2
     (entry,) = status.rotating
     assert entry.cached_entries == 0
     assert entry.preparation == ""

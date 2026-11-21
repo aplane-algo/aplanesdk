@@ -17,13 +17,11 @@ func TestResolveAuthAddressSelfSigning(t *testing.T) {
 		switch r.URL.Path {
 		case "/status":
 			json.NewEncoder(w).Encode(StatusResponse{
-				State:           "unlocked",
-				ReadyForSigning: true,
-				KeysetRevision:  1,
+				State:          "unlocked",
+				KeysetRevision: 1,
 			})
 		case "/keys":
 			json.NewEncoder(w).Encode(KeysResponse{
-				Count: 1,
 				Keys: []KeyInfo{{
 					Address: "SENDER",
 					KeyType: "ed25519",
@@ -54,13 +52,11 @@ func TestResolveAuthAddressRekeyedAccount(t *testing.T) {
 		switch r.URL.Path {
 		case "/status":
 			json.NewEncoder(w).Encode(StatusResponse{
-				State:           "unlocked",
-				ReadyForSigning: true,
-				KeysetRevision:  1,
+				State:          "unlocked",
+				KeysetRevision: 1,
 			})
 		case "/keys":
 			json.NewEncoder(w).Encode(KeysResponse{
-				Count: 1,
 				Keys: []KeyInfo{{
 					Address: "AUTH",
 					KeyType: "ed25519",
@@ -88,13 +84,11 @@ func TestResolveAuthAddressRejectsRekeyedNotSignable(t *testing.T) {
 		switch r.URL.Path {
 		case "/status":
 			json.NewEncoder(w).Encode(StatusResponse{
-				State:           "unlocked",
-				ReadyForSigning: true,
-				KeysetRevision:  1,
+				State:          "unlocked",
+				KeysetRevision: 1,
 			})
 		case "/keys":
 			json.NewEncoder(w).Encode(KeysResponse{
-				Count: 1,
 				Keys: []KeyInfo{{
 					Address: "SENDER",
 					KeyType: "ed25519",
@@ -125,14 +119,12 @@ func TestListKeysIfKeysetChangedUsesRevision(t *testing.T) {
 		switch r.URL.Path {
 		case "/status":
 			json.NewEncoder(w).Encode(StatusResponse{
-				State:           "unlocked",
-				ReadyForSigning: true,
-				KeysetRevision:  revision,
+				State:          "unlocked",
+				KeysetRevision: revision,
 			})
 		case "/keys":
 			keyCalls++
 			json.NewEncoder(w).Encode(KeysResponse{
-				Count: 1,
 				Keys: []KeyInfo{{
 					Address: keyAddress,
 					KeyType: "ed25519",

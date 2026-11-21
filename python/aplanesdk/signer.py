@@ -1043,7 +1043,6 @@ _ASSEMBLY_RESPONSE_SHAPE: Dict[str, Any] = {
 # The wire types of the answers that release no signature, as the Go SDK's
 # structs declare them (go/types.go). Each answer is read whole against its
 # shape: a field of another type makes it unreadable, a plain SignerError.
-_PROTOCOL_VERSION_SHAPE: Dict[str, Any] = {"major": "int", "minor": "int"}
 _ROTATING_STAGE_LOOKUP_STATUS_SHAPE: Dict[str, Any] = {
     "outcome": "str",
     "stage": ("ptr", "uint64"),
@@ -1081,11 +1080,9 @@ _ROTATING_ACCOUNT_STATUS_SHAPE: Dict[str, Any] = {
 }
 _STATUS_RESPONSE_SHAPE: Dict[str, Any] = {
     "node_role": "str",
-    "protocol_version": _PROTOCOL_VERSION_SHAPE,
     "build_version": "str",
     "state": "str",
     "signer_locked": "bool",
-    "ready_for_signing": "bool",
     "key_count": "int",
     "keyset_revision": "uint64",
     "approval_wait_seconds": "int",
@@ -1163,7 +1160,6 @@ _KEY_INFO_SHAPE: Dict[str, Any] = {
     "valid_rekey_target": "bool",
 }
 _KEYS_RESPONSE_SHAPE: Dict[str, Any] = {
-    "count": "int",
     "keys": ("list", _KEY_INFO_SHAPE),
 }
 _CREATION_PARAM_SHAPE: Dict[str, Any] = {
@@ -1553,14 +1549,6 @@ def _declared_fields(cls: Any, data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @dataclass
-class ProtocolVersion:
-    """Signer wire-protocol version."""
-
-    major: int = 0
-    minor: int = 0
-
-
-@dataclass
 class RotatingStageLookupStatus:
     """The chain lookup a recovery search began with: the stage the
     account's last confirmed rekey read, through the signer's Indexer, and
@@ -1673,10 +1661,8 @@ class StatusResponse:
 
     state: str
     signer_locked: bool
-    ready_for_signing: bool
     key_count: int
     keyset_revision: int
-    protocol_version: Optional[ProtocolVersion] = None
     build_version: str = ""
     approval_wait_seconds: int = 0
     node_role: str = ""
@@ -1688,10 +1674,6 @@ class StatusResponse:
     rotating: List[RotatingAccountStatus] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        if isinstance(self.protocol_version, dict):
-            self.protocol_version = ProtocolVersion(
-                **_declared_fields(ProtocolVersion, self.protocol_version)
-            )
         self.rotating = [
             (
                 RotatingAccountStatus(**_declared_fields(RotatingAccountStatus, entry))
@@ -5516,10 +5498,8 @@ class SignerClient:
             node_role=data["node_role"],
             state=data["state"],
             signer_locked=data["signer_locked"],
-            ready_for_signing=data["ready_for_signing"],
             key_count=data["key_count"],
             keyset_revision=data["keyset_revision"],
-            protocol_version=data["protocol_version"],
             build_version=data["build_version"],
             approval_wait_seconds=data["approval_wait_seconds"],
             warnings=list(data["warnings"]),

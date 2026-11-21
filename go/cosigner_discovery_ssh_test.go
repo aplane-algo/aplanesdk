@@ -163,7 +163,7 @@ func witnessKeysBackend(publicKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/keys":
-			json.NewEncoder(w).Encode(KeysResponse{Count: 1, Keys: []KeyInfo{witnessRecord(KeyTypeWitnessFalcon1024, publicKey)}})
+			json.NewEncoder(w).Encode(KeysResponse{Keys: []KeyInfo{witnessRecord(KeyTypeWitnessFalcon1024, publicKey)}})
 		default:
 			http.NotFound(w, r)
 		}

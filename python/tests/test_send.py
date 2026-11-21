@@ -794,7 +794,7 @@ class CosignedFixture:
         if path == "/status":
             return reply(200, status_body(approval_wait_seconds=60))
         if path == "/keys":
-            return reply(200, {"count": len(self.keys), "keys": self.keys})
+            return reply(200, {"keys": self.keys})
         if path == "/sign/cancel":
             return reply(200, {"state": "canceled"})
         request = json.loads(body)
