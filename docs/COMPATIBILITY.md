@@ -83,7 +83,8 @@ The SDKs read only the current signer wire and client file formats:
   (Python) and the `kind` field of each language's assembly target are gone.
   The signer refuses a target that still sends `kind` as an unknown field.
 - `/health` and `/status` carry no `protocol_version` and no
-  `ready_for_signing` (it always equalled `!signer_locked`), `/health` no
+  `ready_for_signing` (`!signer_locked` gives the same answer on both: the
+  signer reports `signer_locked: true` whenever it cannot sign), `/health` no
   `ssh_enabled` or `ipc_enabled` (both transports are mandatory), and `/keys`
   no top-level `count` (the length of `keys`). The `ProtocolVersion` type in
   each language is gone, with `ProtocolVersion`/`ReadyForSigning` on Go's
