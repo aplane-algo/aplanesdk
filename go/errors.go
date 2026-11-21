@@ -63,7 +63,6 @@ const (
 	ErrCodeForbidden               = "forbidden"
 	ErrCodeLocked                  = "locked"
 	ErrCodeNotFound                = "not_found"
-	ErrCodeInvalidPassphrase       = "invalid_passphrase"
 	ErrCodeUnavailable             = "unavailable"
 	ErrCodeCacheRefresh            = "cache_refresh"
 	ErrCodeInternal                = "internal"

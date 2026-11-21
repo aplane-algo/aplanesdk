@@ -72,6 +72,9 @@ The SDKs read only the current signer wire and client file formats:
   may now have a cosigner and signs through `cosigned1` like a Falcon one.
 - Key types may carry `boundary_schema`, the boundary file grammar a per-key
   type's requests take; it is absent on a plain host.
+- `invalid_passphrase` is not a signer HTTP error code: no HTTP route takes a
+  passphrase. `ErrCodeInvalidPassphrase` (Go), `ErrorCodes.InvalidPassphrase`
+  (TypeScript) and `ERR_CODE_INVALID_PASSPHRASE` (Python) are gone.
 
 Package source files retain placeholder versions. The publish workflow derives
 the released Python and TypeScript package versions from the requested `vX.Y.Z`

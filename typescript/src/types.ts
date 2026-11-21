@@ -1283,7 +1283,6 @@ export const ErrorCodes = {
   Forbidden: "forbidden",
   Locked: "locked",
   NotFound: "not_found",
-  InvalidPassphrase: "invalid_passphrase",
   Unavailable: "unavailable",
   CacheRefresh: "cache_refresh",
   BoundedCosignerRequired: "bounded_cosigner_required",
