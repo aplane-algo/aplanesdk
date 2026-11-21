@@ -119,11 +119,8 @@ func RequestEnrollmentWithContext(ctx context.Context, host, sshKeyPath, label s
 	})
 	defer stop()
 
+	// The node writes every reply, an ERROR: line included, to stdout.
 	stdout, err := session.StdoutPipe()
-	if err != nil {
-		return EnrollmentResult{}, fmt.Errorf("%w: %v", ErrEnrollment, err)
-	}
-	stderr, err := session.StderrPipe()
 	if err != nil {
 		return EnrollmentResult{}, fmt.Errorf("%w: %v", ErrEnrollment, err)
 	}
@@ -138,16 +135,7 @@ func RequestEnrollmentWithContext(ctx context.Context, host, sshKeyPath, label s
 		return EnrollmentResult{}, fmt.Errorf("%w: failed to start enrollment: %v", ErrEnrollment, err)
 	}
 
-	// Drain both pipes concurrently: reading them in sequence can deadlock
-	// when the remote fills the unread pipe's window before closing the other.
-	var errOutput []byte
-	stderrDone := make(chan struct{})
-	go func() {
-		defer close(stderrDone)
-		errOutput, _ = io.ReadAll(stderr)
-	}()
 	output, err := io.ReadAll(stdout)
-	<-stderrDone
 	if ctx.Err() != nil {
 		return EnrollmentResult{}, ctx.Err()
 	}
@@ -158,11 +146,7 @@ func RequestEnrollmentWithContext(ctx context.Context, host, sshKeyPath, label s
 		if ctx.Err() != nil {
 			return EnrollmentResult{}, ctx.Err()
 		}
-		message := strings.TrimSpace(string(errOutput))
-		if message == "" {
-			message = strings.TrimSpace(string(output))
-		}
-		message = strings.TrimPrefix(message, "ERROR: ")
+		message := strings.TrimPrefix(strings.TrimSpace(string(output)), "ERROR: ")
 		if message == "" {
 			message = err.Error()
 		}

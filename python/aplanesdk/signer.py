@@ -10523,16 +10523,15 @@ def request_enrollment(
 
     command = f"{SSH_ENROLLMENT_COMMAND} {label}" if label else SSH_ENROLLMENT_COMMAND
     try:
-        # Run the enrollment command; the signer answers at once.
-        stdin, stdout, stderr = client.exec_command(command, timeout=300)
+        # Run the enrollment command; the signer answers at once, writing
+        # every reply, an ERROR: line included, to stdout.
+        _, stdout, _ = client.exec_command(command, timeout=300)
 
         # Wait for command to complete
         exit_status = stdout.channel.recv_exit_status()
 
         if exit_status != 0:
-            error_msg = stderr.read().decode().strip()
-            if not error_msg:
-                error_msg = stdout.read().decode().strip()
+            error_msg = stdout.read().decode().strip()
             if error_msg.startswith("ERROR: "):
                 error_msg = error_msg[len("ERROR: "):]
             raise EnrollmentError(error_msg or "Enrollment rejected")

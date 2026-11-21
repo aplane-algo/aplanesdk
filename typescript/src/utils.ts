@@ -209,23 +209,18 @@ export async function requestEnrollment(
           return;
         }
 
+        // The node writes every reply, an ERROR: line included, to stdout.
         let stdout = "";
-        let stderr = "";
 
         channel.on("data", (data: Buffer) => {
           stdout += data.toString();
-        });
-
-        channel.stderr.on("data", (data: Buffer) => {
-          stderr += data.toString();
         });
 
         channel.on("close", (code: number) => {
           client.end();
           finish(() => {
             if (code !== 0) {
-              const errorMsg = (stderr.trim() || stdout.trim() || "Enrollment rejected")
-                .replace(/^ERROR: /, "");
+              const errorMsg = (stdout.trim() || "Enrollment rejected").replace(/^ERROR: /, "");
               reject(new EnrollmentError(errorMsg));
               return;
             }
