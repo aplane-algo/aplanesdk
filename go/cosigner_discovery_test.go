@@ -109,15 +109,8 @@ func (f *fakeCosigners) connect(ctx context.Context, endpoint ClientEndpointConf
 		}
 		f.mu.Lock()
 		f.reads[alias]++
-		f.inFlight++
-		f.maxFlight = max(f.maxFlight, f.inFlight)
 		answer, keys := f.answer[alias], f.keys[alias]
 		f.mu.Unlock()
-		defer func() {
-			f.mu.Lock()
-			f.inFlight--
-			f.mu.Unlock()
-		}()
 		if answer != nil {
 			answer(w, r)
 			return
@@ -125,6 +118,7 @@ func (f *fakeCosigners) connect(ctx context.Context, endpoint ClientEndpointConf
 		json.NewEncoder(w).Encode(KeysResponse{Keys: keys})
 	})
 	f.t.Cleanup(server.Close)
+	client.client = &http.Client{Transport: flightCounter{f}}
 	// A tunnel whose closing can be seen.
 	tunnel := &sshTunnel{}
 	client.sshTunnel = tunnel
@@ -132,6 +126,25 @@ func (f *fakeCosigners) connect(ctx context.Context, endpoint ClientEndpointConf
 	f.tunnels = append(f.tunnels, tunnel)
 	f.mu.Unlock()
 	return client, nil
+}
+
+// flightCounter counts the requests the resolver has out at once. It counts
+// where the resolver sends them: a handler learns of a request the resolver
+// gave up on only some time after the resolver has sent its next one, so a
+// count kept by the handlers can exceed what the resolver ever had out.
+type flightCounter struct{ f *fakeCosigners }
+
+func (c flightCounter) RoundTrip(r *http.Request) (*http.Response, error) {
+	c.f.mu.Lock()
+	c.f.inFlight++
+	c.f.maxFlight = max(c.f.maxFlight, c.f.inFlight)
+	c.f.mu.Unlock()
+	defer func() {
+		c.f.mu.Lock()
+		c.f.inFlight--
+		c.f.mu.Unlock()
+	}()
+	return http.DefaultTransport.RoundTrip(r)
 }
 
 // open counts the clients the resolver has not closed.
