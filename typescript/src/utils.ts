@@ -115,17 +115,102 @@ export function parseEnrollmentReply(reply: string, clientFingerprint: string): 
   } else if (reply.startsWith("enrolled ")) {
     result = { fingerprint: reply.slice("enrolled ".length), pending: false };
   } else {
-    throw new EnrollmentError(`Unexpected enrollment response: ${JSON.stringify(reply)}`);
+    throw new EnrollmentError(`Unexpected enrollment response: "${safeEnrollmentText(reply)}"`);
   }
   if (!result.fingerprint) {
-    throw new EnrollmentError(`Unexpected enrollment response: ${JSON.stringify(reply)}`);
+    throw new EnrollmentError(`Unexpected enrollment response: "${safeEnrollmentText(reply)}"`);
   }
   if (result.fingerprint !== clientFingerprint) {
     throw new EnrollmentError(
-      `Signer answered for ${result.fingerprint}, but this client authenticated with ${clientFingerprint}`
+      `Signer answered for ${safeEnrollmentText(result.fingerprint)}, ` +
+      `but this client authenticated with ${clientFingerprint}`
     );
   }
   return result;
+}
+
+/** What is read of the signer's enrollment answer; a real one is one short line. */
+export const MAX_ENROLLMENT_REPLY_BYTES = 4096;
+/** How much of the signer's text an enrollment error carries. */
+export const MAX_ENROLLMENT_ERROR_BYTES = 256;
+
+const GO_SHORT_ESCAPES: Record<number, string> = {
+  0x07: "\\a", 0x08: "\\b", 0x0c: "\\f", 0x0a: "\\n", 0x0d: "\\r", 0x09: "\\t", 0x0b: "\\v",
+};
+// Go's unicode.IsPrint: letters, marks, numbers, punctuation, symbols and
+// the ASCII space.
+const PRINTABLE = /^[\p{L}\p{M}\p{N}\p{P}\p{S} ]$/u;
+
+/**
+ * The signer's text as an error may carry it: every character that does not
+ * print as itself (controls, formatting characters such as bidirectional
+ * overrides) escaped as Go escapes it, a byte that is not UTF-8 as \\xNN, and
+ * the result cut to MAX_ENROLLMENT_ERROR_BYTES between characters, so an
+ * escape is never cut in half. An error message is often printed to a
+ * terminal, and this text comes from the server.
+ */
+export function safeEnrollmentText(text: string | Buffer): string {
+  const bytes = typeof text === "string" ? Buffer.from(text, "utf8") : text;
+  let out = "";
+  let size = 0;
+  for (let i = 0; i < bytes.length;) {
+    const [code, width] = decodeUtf8(bytes, i);
+    let piece: string;
+    if (code < 0) {
+      piece = `\\x${bytes[i].toString(16).padStart(2, "0")}`;
+    } else {
+      const ch = String.fromCodePoint(code);
+      if (PRINTABLE.test(ch)) {
+        piece = ch;
+      } else if (code in GO_SHORT_ESCAPES) {
+        piece = GO_SHORT_ESCAPES[code];
+      } else if (code < 0x20 || code === 0x7f) {
+        piece = `\\x${code.toString(16).padStart(2, "0")}`;
+      } else if (code < 0x10000) {
+        piece = `\\u${code.toString(16).padStart(4, "0")}`;
+      } else {
+        piece = `\\U${code.toString(16).padStart(8, "0")}`;
+      }
+    }
+    const pieceSize = Buffer.byteLength(piece, "utf8");
+    if (size + pieceSize > MAX_ENROLLMENT_ERROR_BYTES) {
+      return out + "...";
+    }
+    out += piece;
+    size += pieceSize;
+    i += code < 0 ? 1 : width;
+  }
+  return out;
+}
+
+/**
+ * The code point that starts at bytes[i] and its length, or -1 when the bytes
+ * there are not UTF-8 (a stray byte, an overlong form, a surrogate, a value
+ * past U+10FFFF), as Go's utf8.DecodeRune reports one invalid byte.
+ */
+function decodeUtf8(bytes: Buffer, i: number): [number, number] {
+  const lead = bytes[i];
+  if (lead < 0x80) return [lead, 1];
+  let width: number;
+  let code: number;
+  let min: number;
+  if (lead >= 0xc2 && lead <= 0xdf) {
+    [width, code, min] = [2, lead & 0x1f, 0x80];
+  } else if (lead >= 0xe0 && lead <= 0xef) {
+    [width, code, min] = [3, lead & 0x0f, 0x800];
+  } else if (lead >= 0xf0 && lead <= 0xf4) {
+    [width, code, min] = [4, lead & 0x07, 0x10000];
+  } else {
+    return [-1, 1];
+  }
+  if (i + width > bytes.length) return [-1, 1];
+  for (let k = 1; k < width; k++) {
+    const next = bytes[i + k];
+    if ((next & 0xc0) !== 0x80) return [-1, 1];
+    code = (code << 6) | (next & 0x3f);
+  }
+  if (code < min || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return [-1, 1];
+  return [code, width];
 }
 
 /**
@@ -175,7 +260,25 @@ export async function requestEnrollment(
   if (parsedKey instanceof Error) {
     throw new SignerError(`failed to parse SSH key ${expandedKeyPath}: ${parsedKey.message}`);
   }
+  if (!parsedKey.isPrivateKey()) {
+    throw new SignerError(`SSH key ${expandedKeyPath} is not a private key`);
+  }
   const clientFingerprint = sshFingerprintSHA256(parsedKey.getPublicSSH());
+  // A server can let a client in without asking for a key. Its answer would
+  // then speak for a key this client never proved it holds, so note each
+  // signature the key makes while authenticating.
+  let keySigned = false;
+  const signWithKey = parsedKey.sign.bind(parsedKey);
+  parsedKey.sign = (data: Buffer | string, algo?: string): Buffer => {
+    const signature: Buffer | Error = signWithKey(data, algo);
+    if (!(signature instanceof Error)) keySigned = true;
+    return signature as Buffer;
+  };
+  const publicKeyAuth: import("ssh2").PublicKeyAuthMethod = {
+    type: "publickey",
+    username: SSH_ENROLLMENT_USERNAME,
+    key: parsedKey,
+  };
   const command = label ? `${SSH_ENROLLMENT_COMMAND} ${label}` : SSH_ENROLLMENT_COMMAND;
 
   return new Promise((resolve, reject) => {
@@ -202,30 +305,49 @@ export async function requestEnrollment(
     options.signal?.addEventListener("abort", abortSetup, { once: true });
 
     client.on("ready", () => {
+      if (!keySigned) {
+        client.end();
+        finish(() => reject(new EnrollmentError("The signer did not authenticate this client's SSH key")));
+        return;
+      }
       client.exec(command, (err: Error | undefined, channel: import("ssh2").ClientChannel) => {
         if (err) {
           client.end();
-          finish(() => reject(new EnrollmentError(`Failed to start enrollment: ${err.message}`)));
+          finish(() => reject(new EnrollmentError(`Failed to start enrollment: ${safeEnrollmentText(err.message)}`)));
           return;
         }
 
         // The node writes every reply, an ERROR: line included, to stdout.
-        let stdout = "";
+        const chunks: Buffer[] = [];
+        let received = 0;
 
         channel.on("data", (data: Buffer) => {
-          stdout += data.toString();
+          if (settled) return;
+          received += data.length;
+          if (received > MAX_ENROLLMENT_REPLY_BYTES) {
+            // Not waiting for the exit status: a server that streams without
+            // end may never exit.
+            finish(() => reject(new EnrollmentError(
+              `Enrollment response exceeded ${MAX_ENROLLMENT_REPLY_BYTES} bytes`
+            )));
+            client.destroy();
+            return;
+          }
+          chunks.push(data);
         });
 
         channel.on("close", (code: number) => {
           client.end();
           finish(() => {
+            const output = Buffer.concat(chunks);
             if (code !== 0) {
-              const errorMsg = (stdout.trim() || "Enrollment rejected").replace(/^ERROR: /, "");
-              reject(new EnrollmentError(errorMsg));
+              let message = trimBytes(output);
+              if (message.subarray(0, 7).toString("latin1") === "ERROR: ") message = message.subarray(7);
+              reject(new EnrollmentError(message.length ? safeEnrollmentText(message) : "Enrollment rejected"));
               return;
             }
             try {
-              resolve(parseEnrollmentReply(stdout.trim(), clientFingerprint));
+              resolve(parseEnrollmentReply(output.toString("utf8").trim(), clientFingerprint));
             } catch (error) {
               reject(error);
             }
@@ -252,7 +374,8 @@ export async function requestEnrollment(
       host,
       port: sshPort,
       username: SSH_ENROLLMENT_USERNAME,
-      privateKey,
+      // The parsed key, so the signatures it makes can be seen.
+      authHandler: [publicKeyAuth],
       readyTimeout: setupTimeout,
       hostVerifier: (key: Buffer): boolean => {
         const storedKey = loadKnownHostKey(knownHostsPath, host, sshPort);
@@ -279,6 +402,16 @@ export async function requestEnrollment(
       },
     });
   });
+}
+
+/** bytes without leading and trailing ASCII whitespace. */
+function trimBytes(bytes: Buffer): Buffer {
+  let start = 0;
+  let end = bytes.length;
+  const space = (b: number) => b === 0x20 || (b >= 0x09 && b <= 0x0d);
+  while (start < end && space(bytes[start])) start++;
+  while (end > start && space(bytes[end - 1])) end--;
+  return bytes.subarray(start, end);
 }
 
 /** SHA256 fingerprint of an SSH public key in wire format, as OpenSSH prints it. */

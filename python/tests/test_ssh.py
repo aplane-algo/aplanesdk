@@ -10,6 +10,7 @@ import socket
 import threading
 import time
 from pathlib import Path
+from typing import Optional
 
 import paramiko
 import pytest
@@ -203,6 +204,157 @@ def test_enrollment_host_key_prompt_does_not_consume_setup_deadline(tmp_path, mo
         done.set()
         listener.close()
         thread.join(timeout=2)
+
+
+class _EnrollmentServer(paramiko.ServerInterface):
+    """Accepts any client key, and with no_client_auth any client at all."""
+
+    def __init__(self, no_client_auth: bool):
+        self.no_client_auth = no_client_auth
+        self.exec_requested = threading.Event()
+
+    def get_allowed_auths(self, username):
+        return "none,publickey" if self.no_client_auth else "publickey"
+
+    def check_auth_none(self, username):
+        if self.no_client_auth:
+            return paramiko.AUTH_SUCCESSFUL
+        return paramiko.AUTH_FAILED
+
+    def check_auth_publickey(self, username, key):
+        return paramiko.AUTH_SUCCESSFUL
+
+    def check_channel_request(self, kind, chanid):
+        if kind == "session":
+            return paramiko.OPEN_SUCCEEDED
+        return paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
+
+    def check_channel_exec_request(self, channel, command):
+        self.exec_requested.set()
+        return True
+
+
+def _start_enrollment_peer(reply: Optional[bytes], status: int, no_client_auth: bool = False):
+    """Answer one enroll exec with reply on stdout and exit status, as the
+    node does (status 1 when it refuses a request). With reply None the peer
+    never answers."""
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    host_key = paramiko.ECDSAKey.generate()
+    server = _EnrollmentServer(no_client_auth)
+
+    def serve():
+        try:
+            conn, _ = listener.accept()
+        except OSError:
+            return
+        transport = paramiko.Transport(conn)
+        transport.add_server_key(host_key)
+        try:
+            transport.start_server(server=server)
+            channel = transport.accept(5)
+            if channel is None or not server.exec_requested.wait(5):
+                return
+            if reply is None:
+                # Say nothing and keep the session open.
+                transport.join(5)
+                return
+            channel.sendall(reply)
+            channel.send_exit_status(status)
+            channel.close()
+            # Closing first would reset a connection with unread data and
+            # could drop the exit status the client is waiting for.
+            transport.join(5)
+        except Exception:
+            pass
+        finally:
+            transport.close()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    return listener, thread
+
+
+def _enroll_against_peer(tmp_path, reply: Optional[bytes], status: int, no_client_auth: bool = False):
+    key = paramiko.ECDSAKey.generate()
+    key_path = tmp_path / "id_ecdsa"
+    key.write_private_key_file(str(key_path))
+    if reply is not None:
+        reply = reply.replace(b"{fp}", _ssh_fingerprint_sha256(key).encode())
+    listener, thread = _start_enrollment_peer(reply, status, no_client_auth)
+    try:
+        return request_enrollment(
+            "127.0.0.1",
+            str(key_path),
+            ssh_port=listener.getsockname()[1],
+            known_hosts_path=str(tmp_path / "known_hosts"),
+            auto_add_host=True,
+            setup_timeout=5,
+        )
+    finally:
+        listener.close()
+        thread.join(timeout=5)
+
+
+def test_enrollment_accepts_an_answer_for_the_authenticated_key(tmp_path):
+    result = _enroll_against_peer(tmp_path, b"pending {fp}\n", 0)
+    assert result.pending
+    assert result.fingerprint.startswith("SHA256:")
+
+
+def test_enrollment_refuses_a_server_that_skips_key_authentication(tmp_path, monkeypatch):
+    # paramiko always signs with the key it is given, so stand in for a
+    # client library that lets the server skip that step.
+    monkeypatch.setattr(
+        paramiko.Transport,
+        "auth_publickey",
+        lambda self, username, key, event=None: self.auth_none(username),
+    )
+    with pytest.raises(EnrollmentError, match="did not authenticate this client's SSH key"):
+        _enroll_against_peer(tmp_path, b"pending {fp}\n", 0, no_client_auth=True)
+
+
+def test_enrollment_reports_a_silent_signer_as_an_enrollment_error(tmp_path, monkeypatch):
+    exec_command = paramiko.SSHClient.exec_command
+    monkeypatch.setattr(
+        paramiko.SSHClient,
+        "exec_command",
+        lambda self, command, **kwargs: exec_command(self, command, **{**kwargs, "timeout": 0.2}),
+    )
+    with pytest.raises(EnrollmentError, match="Timed out waiting for the signer's enrollment answer"):
+        _enroll_against_peer(tmp_path, None, 0)
+
+
+def test_enrollment_refuses_an_oversized_reply(tmp_path):
+    with pytest.raises(EnrollmentError, match="exceeded 4096 bytes"):
+        _enroll_against_peer(tmp_path, b"x" * 4097, 0)
+
+
+def test_enrollment_escapes_and_caps_the_refusal_text(tmp_path):
+    reply = "ERROR: \x1b[2Jqueue\u202efull ".encode() + b"\xff" + b"y" * 400 + b"\n"
+    with pytest.raises(EnrollmentError) as excinfo:
+        _enroll_against_peer(tmp_path, reply, 1)
+    message = str(excinfo.value)
+    assert message.startswith("\\x1b[2Jqueue\\u202efull \\xffyyy")
+    assert "\x1b" not in message and "\u202e" not in message
+    assert message.endswith("...")
+    assert len(message.encode()) == signer_module.MAX_ENROLLMENT_ERROR_BYTES + len("...")
+
+
+def test_safe_enrollment_text():
+    safe = signer_module._safe_enrollment_text
+    assert safe("queue is full") == "queue is full"
+    assert safe("tab\there\nnewline") == "tab\\there\\nnewline"
+    assert safe("bell\a esc\x1b del\x7f") == "bell\\a esc\\x1b del\\x7f"
+    assert safe("c1\u0085 bidi\u202e zero-width\u200b") == "c1\\u0085 bidi\\u202e zero-width\\u200b"
+    assert safe(b"bad\xffbyte".decode("utf-8", "surrogateescape")) == "bad\\xffbyte"
+    assert safe("caf\u00e9 \u2713") == "caf\u00e9 \u2713"
+    # The cut falls between characters: neither an escape nor a multi-byte
+    # character is split.
+    limit = signer_module.MAX_ENROLLMENT_ERROR_BYTES
+    assert safe("a" * (limit - 2) + "\x1b") == "a" * (limit - 2) + "..."
+    assert safe("a" * (limit - 1) + "\u00e9") == "a" * (limit - 1) + "..."
 
 
 # -----------------------------------------------------------------------------

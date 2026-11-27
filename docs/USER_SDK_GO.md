@@ -218,6 +218,12 @@ authentication with the enrolled key is the only credential. The explicit form
 of enrollment is `aplane.RequestEnrollment(host, keyPath, label,
 &aplane.EnrollmentOptions{KnownHostsPath: ...})`.
 
+Enrollment fails with `aplane.ErrEnrollment` when the signer lets the client in without
+asking for its key's signature, so an answer can't speak for a key the client
+never proved it holds, and when the answer is longer than 4096 bytes. The
+signer's own text in an enrollment error is escaped and cut to 256 bytes, since
+the error may be printed to a terminal.
+
 This is useful when:
 
 - you do not want to depend on `APCLIENT_DATA`
