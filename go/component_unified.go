@@ -117,7 +117,7 @@ func (r ComponentResponse) Validate() error {
 			switch component.Path {
 			case ComponentPathSpend, ComponentPathSpendingRekey, ComponentPathListedRekey:
 			default:
-				return fmt.Errorf("component %d has unknown bounded path %q", i+1, component.Path)
+				return fmt.Errorf("component %d has unknown path %q", i+1, component.Path)
 			}
 		default:
 			return fmt.Errorf("component %d has unsupported kind %q", i+1, component.Kind)

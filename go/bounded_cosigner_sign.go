@@ -40,7 +40,7 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 	}
 	for i, item := range prepared {
 		if len(item.SignedTransaction) != 0 {
-			return nil, fmt.Errorf("prepared transaction %d: passthrough entries are not supported in prepared bounded-cosigner groups", i)
+			return nil, fmt.Errorf("prepared transaction %d: passthrough entries are not supported in prepared cosigned groups", i)
 		}
 		if item.Transaction == nil {
 			return nil, fmt.Errorf("prepared transaction %d: transaction is required", i)
@@ -66,7 +66,7 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 				return nil, fmt.Errorf("prepared transaction %d: %w", i, err)
 			}
 			if resources == nil {
-				return nil, fmt.Errorf("prepared transaction %d: bounded LogicSig resources are unavailable", i)
+				return nil, fmt.Errorf("prepared transaction %d: host LogicSig resources are unavailable", i)
 			}
 			req, err := item.SignRequest()
 			if err != nil {
@@ -118,7 +118,7 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 		}
 	}
 	if len(targets) == 0 {
-		return nil, fmt.Errorf("prepared group has no bounded-cosigner targets")
+		return nil, fmt.Errorf("prepared group has no cosigned targets")
 	}
 	// Every cosigner a target is sure to need is found before anything is
 	// asked to sign, so a cosigner that cannot be found fails the call with
@@ -139,11 +139,11 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 
 	planResp, err := opts.UserClient.PlanRequestsWithContext(ctx, requests)
 	if err != nil {
-		return nil, fmt.Errorf("bounded group planning failed: %w", err)
+		return nil, fmt.Errorf("cosigned group planning failed: %w", err)
 	}
 	planned, err := decodeCanonicalGroup(planResp.Transactions)
 	if err != nil {
-		return nil, fmt.Errorf("signer returned invalid bounded canonical group: %w", err)
+		return nil, fmt.Errorf("signer returned invalid cosigned canonical group: %w", err)
 	}
 	// PlanRequestsWithContext has already checked the plan against the
 	// requests: only reported fee raises and group assignment on original
@@ -179,17 +179,17 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 	for _, component := range componentResp.Components {
 		target, ok := targetsByIndex[component.TargetIndex]
 		if !ok || component.Kind != ComponentTargetKindBase || component.AuthAddress != target.CosignedAccount {
-			return nil, fmt.Errorf("signer returned unexpected bounded component target %d", component.TargetIndex)
+			return nil, fmt.Errorf("signer returned unexpected base component target %d", component.TargetIndex)
 		}
 		if _, duplicate := components[component.TargetIndex]; duplicate {
-			return nil, fmt.Errorf("signer returned duplicate bounded component target %d", component.TargetIndex)
+			return nil, fmt.Errorf("signer returned duplicate base component target %d", component.TargetIndex)
 		}
 		components[component.TargetIndex] = component
 	}
 	for _, target := range targets {
 		component, ok := components[target.TargetIndex]
 		if !ok {
-			return nil, fmt.Errorf("signer returned no bounded component for target index %d", target.TargetIndex)
+			return nil, fmt.Errorf("signer returned no base component for target index %d", target.TargetIndex)
 		}
 		// Budget the position on the path the signer named, which only the
 		// signer can choose: whether a rekey target is listed is not public.
@@ -274,7 +274,7 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 		Passthrough:   passthrough,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("bounded-cosigner assembly failed: %w", err)
+		return nil, fmt.Errorf("cosigned assembly failed: %w", err)
 	}
 	if err := verifyAssembledGroup(planResp.Transactions, assemblyResp.SignedGroup); err != nil {
 		return nil, err
@@ -292,7 +292,7 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 // base component named.
 func componentPathResources(key *KeyInfo, path string) (*LogicSigResourceUsage, error) {
 	if key == nil || key.LogicSigResources == nil {
-		return nil, fmt.Errorf("bounded LogicSig resources are unavailable")
+		return nil, fmt.Errorf("host LogicSig resources are unavailable")
 	}
 	var selected *LogicSigResourceUsage
 	switch path {
@@ -344,7 +344,7 @@ func requestBoundedPrimaryPassthrough(
 		default:
 			target, ok := primaryByIndex[i]
 			if !ok {
-				return nil, fmt.Errorf("group position %d has no bounded or primary target", i)
+				return nil, fmt.Errorf("group position %d has no cosigned or primary target", i)
 			}
 			requests[i] = SignRequest{
 				AuthAddress: target.AuthAddress,
@@ -356,7 +356,7 @@ func requestBoundedPrimaryPassthrough(
 	}
 	response, err := client.SignGroupWithContext(ctx, GroupSignRequest{Requests: requests})
 	if err != nil {
-		return nil, fmt.Errorf("signing non-bounded group positions failed: %w", err)
+		return nil, fmt.Errorf("signing non-cosigned group positions failed: %w", err)
 	}
 	passthrough := make([]AssemblyPassthroughItem, 0, len(primaryByIndex))
 	for index := range primaryByIndex {
@@ -441,7 +441,7 @@ func boundedFeeCeiling(info *HostInfo) (uint64, bool, error) {
 func validateBoundedTargetFees(planned []types.Transaction, maxFees map[int]uint64) error {
 	for index, maxFee := range maxFees {
 		if index < 0 || index >= len(planned) {
-			return fmt.Errorf("bounded target index %d is outside planned group", index)
+			return fmt.Errorf("cosigned target index %d is outside planned group", index)
 		}
 		if fee := uint64(planned[index].Fee); fee > maxFee {
 			return fmt.Errorf("bounded target %d fee %d exceeds advertised max_fee %d", index, fee, maxFee)

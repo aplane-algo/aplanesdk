@@ -215,7 +215,7 @@ func selectedPreparedResources(key *KeyInfo, txn *types.Transaction) (*LogicSigR
 		case key.Host.Rekey == "refused":
 			return nil, fmt.Errorf("the account refuses rekeys")
 		default:
-			return nil, fmt.Errorf("bounded rekey authorization metadata is unavailable")
+			return nil, fmt.Errorf("rekey authorization metadata is unavailable")
 		}
 	}
 	if selected == nil {

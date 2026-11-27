@@ -424,7 +424,7 @@ function validateBoundedTargetFees(
 ): void {
   for (const [index, maxFee] of maxFees) {
     if (index < 0 || index >= planned.length) {
-      throw new SignerError(`bounded target index ${index} is outside planned group`);
+      throw new SignerError(`cosigned target index ${index} is outside planned group`);
     }
     const ceiling = wholeNumber(maxFee);
     if (ceiling === undefined || ceiling < 0n) {
@@ -487,13 +487,13 @@ async function requestBoundedPrimaryPassthrough(
       return {
         txn_bytes_hex: txnHex,
         lsig_resources: wireLogicSigResources(
-          requireLogicSigResources(targetResources.get(index), `bounded target ${index}`),
+          requireLogicSigResources(targetResources.get(index), `cosigned target ${index}`),
         ),
       };
     }
     const target = primaryByIndex.get(index);
     if (!target) {
-      throw new SignerError(`group position ${index} has no bounded or primary target`);
+      throw new SignerError(`group position ${index} has no cosigned or primary target`);
     }
     return {
       txn_bytes_hex: txnHex,
@@ -583,7 +583,7 @@ export async function signPreparedCosignedGroup(
     const item = prepared[index];
     if (preparedSignedTransaction(item, `prepared transaction ${index}: signedTransaction`)) {
       throw new SignerError(
-        `prepared transaction ${index}: passthrough entries are not supported in prepared bounded-cosigner groups`,
+        `prepared transaction ${index}: passthrough entries are not supported in prepared cosigned groups`,
       );
     }
     if (!item.transaction) {
@@ -605,7 +605,7 @@ export async function signPreparedCosignedGroup(
     if (key.signingFlow === SIGNING_FLOW_COSIGNED1) {
       const requiredResources = requireLogicSigResources(
         selectedPreparedResources(key, item.transaction),
-        `prepared transaction ${index}: bounded`,
+        `prepared transaction ${index}: host`,
       );
       requests.push(preparedSignRequest(item, index));
       targetResources.set(index, requiredResources);
@@ -649,7 +649,7 @@ export async function signPreparedCosignedGroup(
     });
   }
   if (targets.length === 0) {
-    throw new SignerError("prepared group has no bounded-cosigner targets");
+    throw new SignerError("prepared group has no cosigned targets");
   }
 
   // A target that cannot take the listed-rekey path needs the cosigner
@@ -670,7 +670,7 @@ export async function signPreparedCosignedGroup(
   const frozenGroup = [...(planResponse.transactions || [])];
   if (frozenGroup.length < prepared.length) {
     throw new SignerError(
-      `signer returned ${frozenGroup.length} bounded group positions, want at least ${prepared.length}`,
+      `signer returned ${frozenGroup.length} cosigned group positions, want at least ${prepared.length}`,
     );
   }
   const planned = decodeCanonicalGroup(frozenGroup);
@@ -715,17 +715,17 @@ export async function signPreparedCosignedGroup(
       const target = targetsByIndex.get(component.target_index);
       if (!target || component.kind !== "base" ||
           component.auth_address !== target.cosignedAccount) {
-        throw new SignerError(`signer returned unexpected bounded component target ${component.target_index}`);
+        throw new SignerError(`signer returned unexpected base component target ${component.target_index}`);
       }
       if (components.has(component.target_index)) {
-        throw new SignerError(`signer returned duplicate bounded component target ${component.target_index}`);
+        throw new SignerError(`signer returned duplicate base component target ${component.target_index}`);
       }
       components.set(component.target_index, component);
     }
     for (const target of targets) {
       const component = components.get(target.targetIndex);
       if (!component) {
-        throw new SignerError(`signer returned no bounded component for target index ${target.targetIndex}`);
+        throw new SignerError(`signer returned no base component for target index ${target.targetIndex}`);
       }
       // Budget the position on the path the signer named, which only the signer
       // can choose: whether a rekey target is listed is not public.
@@ -1040,7 +1040,7 @@ function validateComponentResponse(response: ComponentResponse, request?: Compon
       }
       if (component.path !== COMPONENT_PATH_SPEND && component.path !== COMPONENT_PATH_SPENDING_REKEY &&
           component.path !== COMPONENT_PATH_LISTED_REKEY) {
-        throw new SignerError(`component ${index + 1} has unknown bounded path ${JSON.stringify(component.path)}`);
+        throw new SignerError(`component ${index + 1} has unknown path ${JSON.stringify(component.path)}`);
       }
     } else {
       throw new SignerError(`component ${index + 1} has unsupported kind`);
@@ -1191,7 +1191,7 @@ function selectedPreparedResources(
     } else if (bounded.rekey === "refused") {
       throw new SignerError("the account refuses rekeys");
     } else {
-      throw new SignerError("bounded rekey authorization metadata is unavailable");
+      throw new SignerError("rekey authorization metadata is unavailable");
     }
   }
   return selected ? { ...selected } : undefined;
