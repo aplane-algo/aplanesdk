@@ -788,15 +788,15 @@ size hint for a position the signer holds: it names the position's
 put the group's authorization charge on it. Setting `pq_scheme` or
 `lsig_resources` on such a position is an error.
 
-`bounded_authorization.rekey` is a bounded account's rekey setting:
+`host.rekey` is a host account's rekey setting:
 `spending_key` lets the spending key rekey the account, and `refused` means the
 account refuses rekeys, except to an address on its rekey-to list when it has
-one. The SDK fails a rekey on a bounded key that has neither. `bounded_authorization.contract`
+one. The SDK fails a rekey on a host key that has neither. `host.contract`
 is `bounded2` on a bounded host, or `plain1` on a plain host such as
 `aplane.falcon1024.v1`, which has no host rules: every transaction that doesn't
-rekey is a spend, closes included. `bounded_authorization.max_fee` is the bounded host's fee
-ceiling and is optional: a plain host has none, so it is `None`. Never read
-its absence as zero.
+rekey is a spend, closes included. `host.bounds` holds a bounded host's rules and is
+`None` on a plain host. `host.bounds.max_fee` is the fee ceiling, and zero is a ceiling of
+zero: read "no ceiling" from the absence of the bounds, never from the number.
 
 If you need one cached entry by address:
 
@@ -1351,7 +1351,7 @@ is picked up by the next call. An address with no spendable key is
 refused with `KeyNotFoundError`.
 
 For manual orchestration, use `request_components()` on the user client with a
-bounded-base target and on the cosigner client, then `request_assemble()` on the
+base target and on the cosigner client, then `request_assemble()` on the
 user client. Finish the user side (the base components and any ordinary-position
 signing) before requesting cosigner components, so a cosigner never sees a group
 the user signer rejects.
@@ -1382,7 +1382,7 @@ Pass `cosigner_client` and `cosigner_component_key`, or `cosigner_resolver`,
 to name the cosigner yourself.
 
 The sequence is `/plan`, user approval and base-component release through
-`request_components()` with a bounded-base target, signing of ordinary group
+`request_components()` with a base target, signing of ordinary group
 positions, cosigner signing over the frozen group, and final
 `request_assemble()` on the user signer. Before requesting any additional
 signature, the SDK accepts only
@@ -1395,7 +1395,7 @@ also public for applications that own the orchestration.
 The signer planner owns fee selection, authorization-resource sizing, and any
 reported group mutations for the cosigned flow.
 
-Base-component signing (the user signer's bounded-base request) runs the
+Base-component signing (the user signer's base request) runs the
 signer-domain approval gates and can block on a manual operator decision. The
 SDK automatically discovers the signer's `approval_wait_seconds` and sizes the
 request deadline accordingly, exactly like `/sign`; cosigner-role component

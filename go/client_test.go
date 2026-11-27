@@ -652,7 +652,7 @@ func TestApprovalRequestWithEndedContextSendsNothing(t *testing.T) {
 			_, err := c.RequestComponentsWithContext(ctx, ComponentRequest{
 				RequestID:     "ended-context-id",
 				GroupBytesHex: []string{"545801"},
-				Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindBoundedBase, AuthAddress: "AUTH"}},
+				Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindBase, AuthAddress: "AUTH"}},
 			})
 			return err
 		},
@@ -1317,7 +1317,7 @@ func TestRequestComponentsRejectsUnrequestedTargetKind(t *testing.T) {
 		json.NewEncoder(w).Encode(ComponentResponse{
 			RequestID: req.RequestID,
 			Components: []Component{{
-				TargetIndex: 0, Kind: ComponentTargetKindBoundedBase, AuthAddress: "BOUNDED",
+				TargetIndex: 0, Kind: ComponentTargetKindBase, AuthAddress: "BOUNDED",
 				BaseSignatures: []string{"aabb"}, AssemblyReceipt: "ccdd", SignatureScheme: KeyTypeWitnessFalcon1024,
 				Path: ComponentPathSpend,
 			}},

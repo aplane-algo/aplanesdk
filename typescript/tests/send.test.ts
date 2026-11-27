@@ -1479,9 +1479,9 @@ function cosignedKey(address: string): WireKey {
       spend: { program_bytes: 5308, argument_bytes: 3358, max_opcode_cost: 20000 },
     },
     cosigner_component_key_type: KEY_TYPE_WITNESS_FALCON1024,
-    bounded_authorization: {
+    host: {
       contract: "bounded2",
-      max_fee: 1000,
+      bounds: { spend_effects: ["pay"], max_fee: 1000, layer3_policy: "none" },
       cosigner: { component_key_type: KEY_TYPE_WITNESS_FALCON1024, public_key_hex: "aabb" },
     },
   };
@@ -1489,8 +1489,8 @@ function cosignedKey(address: string): WireKey {
 
 /** Give a cosigned key a rekey list, with spending-key rekeys allowed. */
 function listedRekeyKey(key: WireKey): void {
-  (key.bounded_authorization as any).rekey = "spending_key";
-  (key.bounded_authorization as any).rekey_list = { contract: "rekey_list1", depth: 4, root: "00".repeat(32) };
+  (key.host as any).rekey = "spending_key";
+  (key.host as any).rekey_list = { contract: "rekey_list1", depth: 4, root: "00".repeat(32) };
   (key.logic_sig_resources as any).spending_rekey = { program_bytes: 5308, argument_bytes: 3358, max_opcode_cost: 20000 };
   (key.logic_sig_resources as any).listed_rekey = { program_bytes: 5308, argument_bytes: 3500, max_opcode_cost: 20000 };
 }
@@ -1536,7 +1536,7 @@ function cosignedFixture(
             request_id: body.request_id,
             components: [{
               target_index: 0,
-              kind: "bounded-base",
+              kind: "base",
               auth_address: bounded,
               base_signatures: ["base-sig"],
               runtime_args: { proof: "aabb" },
@@ -1842,7 +1842,7 @@ describe("sendPrepared with a cosigned account", () => {
                 request_id: body.request_id,
                 components: [{
                   target_index: 0,
-                  kind: "bounded-base",
+                  kind: "base",
                   auth_address: txn.sender.toString(),
                   base_signatures: ["base-sig"],
                   assembly_receipt: "receipt",
@@ -2009,7 +2009,7 @@ describe("an approval request that is never posted", () => {
   const groupHex = () => [encodeTransaction(fakePayment(41, 42, 1))];
   const baseRequest = (): ComponentRequest => ({
     group_bytes_hex: groupHex(),
-    targets: [{ target_index: 0, kind: "bounded-base", auth_address: fakeAddress(21) }],
+    targets: [{ target_index: 0, kind: "base", auth_address: fakeAddress(21) }],
   });
   const cosignerRequest = (): ComponentRequest => ({
     group_bytes_hex: groupHex(),
@@ -2047,7 +2047,7 @@ describe("an approval request that is never posted", () => {
     return true;
   };
   const calls: Array<[string, (client: SignerClient, signal: AbortSignal) => Promise<unknown>]> = [
-    ["a bounded-base component request", (client, signal) => client.requestComponents(baseRequest(), { signal })],
+    ["a base component request", (client, signal) => client.requestComponents(baseRequest(), { signal })],
     ["a cosigner component request", (client, signal) => client.requestComponents(cosignerRequest(), { signal })],
     ["an assembly request", (client, signal) => client.requestAssemble(assemblyRequest(), { signal })],
     ["a /sign request", (client, signal) => client.signRequests(signEntries(fakePayment(41, 42, 1)), { signal })],
@@ -2063,7 +2063,7 @@ describe("an approval request that is never posted", () => {
     });
   }
 
-  it("a bounded-base component request whose signal aborts during the approval-wait discovery posts nothing", async () => {
+  it("a base component request whose signal aborts during the approval-wait discovery posts nothing", async () => {
     const controller = new AbortController();
     const { client, paths } = recording(controller);
     await assert.rejects(client.requestComponents(baseRequest(), { signal: controller.signal }), plainStop);
@@ -2077,7 +2077,7 @@ describe("an approval request that is never posted", () => {
     })],
     ["an assembly request", (client) => client.requestAssemble({
       ...assemblyRequest(),
-      targets: [{ ...assemblyRequest().targets![0], bounded_runtime_args: { proof: 1n } as any }],
+      targets: [{ ...assemblyRequest().targets![0], runtime_args: { proof: 1n } as any }],
     })],
   ];
   for (const [name, call] of unencodable) {

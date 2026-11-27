@@ -16,7 +16,7 @@ import {
   ErrorCodes,
   KEY_TYPE_WITNESS_FALCON1024,
   SIGNING_FLOW_COSIGNED1,
-  type BoundedAuthorizationInfo,
+  type HostInfo,
 } from "../src/types.js";
 import {
   AuthenticationError,
@@ -398,6 +398,24 @@ describe("SignerClient", () => {
       const keys = await new SignerClient("http://localhost:11270").listKeys(true);
 
       assert.deepEqual(keys.map((key) => key.validRekeyTarget), [true, false, false, false]);
+    });
+
+    it("reads bounds without max_fee as the tightest ceiling, and absent bounds as none", async () => {
+      mockFetch.mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: async () => ({
+          keys: [
+            { address: "ADDR1", key_type: "aplane.falcon1024.v1", host: { contract: "bounded2", bounds: {} } },
+            { address: "ADDR2", key_type: "aplane.falcon1024.v1", host: { contract: "plain1" } },
+          ],
+        }),
+      });
+
+      const keys = await new SignerClient("http://localhost:11270").listKeys(true);
+
+      assert.equal(keys[0].host?.bounds?.maxFee, 0);
+      assert.equal(keys[1].host?.bounds, undefined);
     });
 
     it("throws AuthenticationError on 401", async () => {
@@ -1837,11 +1855,11 @@ describe("SignerClient", () => {
         status: 200,
         ok: true,
         json: async () => ({
-          request_id: "bounded-base-id",
+          request_id: "base-id",
           transactions: ["5458aa"],
           components: [{
             target_index: 0,
-            kind: "bounded-base",
+            kind: "base",
             auth_address: "BOUNDED",
             base_signatures: ["base-sig"],
             assembly_receipt: "receipt",
@@ -1866,9 +1884,9 @@ describe("SignerClient", () => {
 
       const client = new SignerClient("http://localhost:11270");
       const component = await client.requestComponents({
-        request_id: "bounded-base-id",
+        request_id: "base-id",
         group_bytes_hex: ["5458aa"],
-        targets: [{ target_index: 0, kind: "bounded-base", auth_address: "BOUNDED" }],
+        targets: [{ target_index: 0, kind: "base", auth_address: "BOUNDED" }],
       });
       const assembly = await client.requestAssemble({
         request_id: "bounded-assembly-id",
@@ -1904,7 +1922,7 @@ describe("SignerClient", () => {
         client.requestComponents({
           request_id: "bounded-cancel-id",
           group_bytes_hex: ["5458aa"],
-          targets: [{ target_index: 0, kind: "bounded-base", auth_address: "BOUNDED" }],
+          targets: [{ target_index: 0, kind: "base", auth_address: "BOUNDED" }],
         }),
         SignerUnavailableError,
       );
@@ -1931,7 +1949,7 @@ describe("SignerClient", () => {
         client.requestComponents({
           request_id: "bounded-not-found",
           group_bytes_hex: ["5458aa"],
-          targets: [{ target_index: 0, kind: "bounded-base", auth_address: "BOUNDED" }],
+          targets: [{ target_index: 0, kind: "base", auth_address: "BOUNDED" }],
         }),
         KeyNotFoundError,
       );
@@ -1941,9 +1959,9 @@ describe("SignerClient", () => {
       const client = new SignerClient("http://localhost:11270");
       await assert.rejects(
         client.requestComponents({
-          request_id: "bounded-base-id",
+          request_id: "base-id",
           group_bytes_hex: [],
-          targets: [{ target_index: 0, kind: "bounded-base", auth_address: "BOUNDED" }],
+          targets: [{ target_index: 0, kind: "base", auth_address: "BOUNDED" }],
         }),
         /group_bytes_hex is empty/,
       );
@@ -1962,9 +1980,9 @@ describe("SignerClient", () => {
       const client = new SignerClient("http://localhost:11270");
       await assert.rejects(
         client.requestComponents({
-          request_id: "bounded-base-id",
+          request_id: "base-id",
           group_bytes_hex: ["5458aa"],
-          targets: [{ target_index: 0, kind: "bounded-base", auth_address: "BOUNDED" }],
+          targets: [{ target_index: 0, kind: "base", auth_address: "BOUNDED" }],
         }),
         (error: unknown) => error instanceof SignerError &&
           error.message === "Server returned invalid JSON",
@@ -1975,7 +1993,7 @@ describe("SignerClient", () => {
       queueStatusResponse();
       const component = {
         target_index: 0,
-        kind: "bounded-base",
+        kind: "base",
         auth_address: "BOUNDED",
         base_signatures: ["base"],
         assembly_receipt: "receipt",
@@ -1986,7 +2004,7 @@ describe("SignerClient", () => {
         status: 200,
         ok: true,
         json: async () => ({
-          request_id: "bounded-base-id",
+          request_id: "base-id",
           transactions: ["5458aa"],
           components: [component, component],
         }),
@@ -1994,9 +2012,9 @@ describe("SignerClient", () => {
       const client = new SignerClient("http://localhost:11270");
       await assert.rejects(
         client.requestComponents({
-          request_id: "bounded-base-id",
+          request_id: "base-id",
           group_bytes_hex: ["5458aa"],
-          targets: [{ target_index: 0, kind: "bounded-base", auth_address: "BOUNDED" }],
+          targets: [{ target_index: 0, kind: "base", auth_address: "BOUNDED" }],
         }),
         /invalid or duplicate target_index/,
       );
@@ -2028,15 +2046,13 @@ describe("SignerClient", () => {
           spend: { programBytes: 1612, argumentBytes: 1423, maxOpcodeCost: 20000 },
         },
         isGenericLsig: false,
-        boundedAuthorization: {
+        host: {
           contract: "plain1",
           baseSignatureArgLayout: { count: 1, maxSizes: [1280] },
-          spendEffects: [],
           rekey: "refused",
           runtimeArgs: [],
           derivedArgs: [],
           argumentLayout: [],
-          layer3Policy: "none",
           cosigner: {
             contract: "cosigner1",
             componentKeyType: KEY_TYPE_WITNESS_FALCON1024,
@@ -2099,7 +2115,7 @@ describe("SignerClient", () => {
         request_id: "base-id",
         components: [{
           target_index: 0,
-          kind: "bounded-base",
+          kind: "base",
           auth_address: bounded,
           base_signatures: ["base-sig"],
           assembly_receipt: "receipt",
@@ -2150,11 +2166,9 @@ describe("SignerClient", () => {
                 listedRekey: { programBytes: 5308, argumentBytes: 1583, maxOpcodeCost: 20000 },
               },
               isGenericLsig: false,
-              boundedAuthorization: {
+              host: {
                 contract: "bounded2",
                 baseSignatureArgLayout: { count: 1, maxSizes: [1280] },
-                spendEffects: ["pay"],
-                maxFee: 1000,
                 rekey: "spending_key",
                 rekeyList: { contract: "rekey_list1", depth: 4 },
                 cosigner: {
@@ -2167,7 +2181,7 @@ describe("SignerClient", () => {
                 runtimeArgs: [],
                 derivedArgs: [],
                 argumentLayout: [],
-                layer3Policy: "merkle_allowlist",
+                bounds: { spendEffects: ["pay"], maxFee: 1000, layer3Policy: "merkle_allowlist" },
               },
             })],
         },
@@ -2214,10 +2228,9 @@ describe("SignerClient", () => {
           listedRekey: { programBytes: 5308, argumentBytes: 1583, maxOpcodeCost: 20000 },
         },
         isGenericLsig: false,
-        boundedAuthorization: {
+        host: {
           contract: "plain1",
           baseSignatureArgLayout: { count: 1, maxSizes: [1280] },
-          spendEffects: [],
           rekey: "spending_key",
           rekeyList: { contract: "rekey_list1", depth: 4 },
           cosigner: {
@@ -2230,12 +2243,11 @@ describe("SignerClient", () => {
           runtimeArgs: [],
           derivedArgs: [],
           argumentLayout: [],
-          layer3Policy: "",
         },
       });
       const base = (index: number, account: string, path: string) => ({
         target_index: index,
-        kind: "bounded-base",
+        kind: "base",
         auth_address: account,
         base_signatures: ["base-sig"],
         assembly_receipt: "receipt",
@@ -2371,7 +2383,7 @@ describe("SignerClient", () => {
           request_id: "base-id",
           components: [{
             target_index: 0,
-            kind: "bounded-base",
+            kind: "base",
             auth_address: bounded,
             base_signatures: ["base-sig"],
             runtime_args: { proof: "aabb" },
@@ -2448,11 +2460,9 @@ describe("SignerClient", () => {
                 spend: { programBytes: 5308, argumentBytes: 3358, maxOpcodeCost: 20000 },
               },
               isGenericLsig: false,
-              boundedAuthorization: {
+              host: {
                 contract: "bounded2",
                 baseSignatureArgLayout: { count: 1, maxSizes: [1280] },
-                spendEffects: ["pay"],
-                maxFee: 1000,
                 rekey: "refused",
                 cosigner: {
                   contract: "cosigner1",
@@ -2464,7 +2474,7 @@ describe("SignerClient", () => {
                 runtimeArgs: [],
                 derivedArgs: [],
                 argumentLayout: [],
-                layer3Policy: "merkle_allowlist",
+                bounds: { spendEffects: ["pay"], maxFee: 1000, layer3Policy: "merkle_allowlist" },
               },
             })],
         },
@@ -2674,7 +2684,7 @@ describe("SignerClient", () => {
           request_id: `component-${item.name}`,
           components: [{
             target_index: 0,
-            kind: "bounded-base",
+            kind: "base",
             auth_address: bounded,
             base_signatures: ["base-sig"],
             assembly_receipt: "receipt",
@@ -2702,11 +2712,9 @@ describe("SignerClient", () => {
                   cosignerComponentKeyType: KEY_TYPE_WITNESS_FALCON1024,
                   logicSigResources: profiles,
                   isGenericLsig: false,
-                  boundedAuthorization: {
+                  host: {
                     contract: "bounded2",
                     baseSignatureArgLayout: { count: 1, maxSizes: [1423] },
-                    spendEffects: ["pay"],
-                    maxFee: 1000,
                     rekey: item.rekeySetting,
                     rekeyList: item.rekeyList ? { contract: "rekey_list1", depth: 4 } : undefined,
                     cosigner: {
@@ -2719,7 +2727,7 @@ describe("SignerClient", () => {
                     runtimeArgs: [],
                     derivedArgs: [],
                     argumentLayout: [],
-                    layer3Policy: "fixed_allowlist",
+                    bounds: { spendEffects: ["pay"], maxFee: 1000, layer3Policy: "fixed_allowlist" },
                   },
                 })],
             },
@@ -2870,7 +2878,7 @@ describe("SignerClient", () => {
           request_id: "base-id",
           components: [{
             target_index: 0,
-            kind: "bounded-base",
+            kind: "base",
             auth_address: bounded,
             base_signatures: ["base-sig"],
             assembly_receipt: "receipt",
@@ -2919,11 +2927,9 @@ describe("SignerClient", () => {
                   spend: { programBytes: 5308, argumentBytes: 3358, maxOpcodeCost: 20000 },
                 },
                 isGenericLsig: false,
-                boundedAuthorization: {
+                host: {
                   contract: "bounded2",
                   baseSignatureArgLayout: { count: 1, maxSizes: [1280] },
-                  spendEffects: ["pay"],
-                  maxFee: 1000,
                   rekey: "refused",
                   cosigner: {
                     contract: "cosigner1",
@@ -2935,6 +2941,7 @@ describe("SignerClient", () => {
                   runtimeArgs: [],
                   derivedArgs: [],
                   argumentLayout: [],
+                  bounds: { spendEffects: ["pay"], maxFee: 1000, layer3Policy: "" },
                 },
               }),
             held({
@@ -3034,7 +3041,7 @@ describe("SignerClient", () => {
           request_id: "base-id",
           components: [{
             target_index: 0,
-            kind: "bounded-base",
+            kind: "base",
             auth_address: bounded,
             base_signatures: ["base-sig"],
             assembly_receipt: "receipt",
@@ -3090,11 +3097,9 @@ describe("SignerClient", () => {
                 logicSigResources: {
                   spend: { programBytes: 5308, argumentBytes: 3358, maxOpcodeCost: 20000 },
                 },
-                boundedAuthorization: {
+                host: {
                   contract: "bounded2",
                   baseSignatureArgLayout: { count: 1, maxSizes: [1280] },
-                  spendEffects: ["pay"],
-                  maxFee: 1000,
                   rekey: "refused",
                   cosigner: {
                     contract: "cosigner1",
@@ -3106,6 +3111,7 @@ describe("SignerClient", () => {
                   runtimeArgs: [],
                   derivedArgs: [],
                   argumentLayout: [],
+                  bounds: { spendEffects: ["pay"], maxFee: 1000, layer3Policy: "" },
                 },
               }),
             held({
@@ -4095,7 +4101,7 @@ describe("SignerClient", () => {
       ]],
       ["/keys", () => client().listKeys(true), [
         "", "null", '{"keys":"x"}', '{"keys":[{"address":42}]}', '{"keys":[{"is_witness_key":"no"}]}',
-        '{"keys":[{"bounded_authorization":{"max_fee":"1000"}}]}',
+        '{"keys":[{"host":{"bounds":{"max_fee":"1000"}}}]}',
         '{"keys":[{"valid_rekey_target":"true"}]}', '{"keys":[{"valid_rekey_target":1}]}',
       ]],
       ["/keytypes", () => client().listKeyTypes(), [
@@ -5197,22 +5203,22 @@ describe("sign return format", () => {
 });
 
 describe("boundedFeeCeiling", () => {
-  const info = (contract: string, maxFee?: number): BoundedAuthorizationInfo => ({
+  const info = (contract: string, maxFee?: number): HostInfo => ({
     contract,
     baseSignatureArgLayout: { count: 1, maxSizes: [1280] },
-    spendEffects: [],
-    maxFee,
     rekey: "refused",
     runtimeArgs: [],
     derivedArgs: [],
     argumentLayout: [],
-    layer3Policy: "none",
+    bounds: maxFee === undefined ? undefined : { spendEffects: [], maxFee, layer3Policy: "none" },
   });
 
   it("follows the contract", () => {
     assert.equal(boundedFeeCeiling(info("bounded2", 10_000)), 10_000);
+    // A ceiling of zero is a ceiling, not an absent one.
+    assert.equal(boundedFeeCeiling(info("bounded2", 0)), 0);
     assert.equal(boundedFeeCeiling(info("plain1")), undefined);
-    assert.throws(() => boundedFeeCeiling(info("bounded2")), /has no max_fee/);
+    assert.throws(() => boundedFeeCeiling(info("bounded2")), /has no bounds/);
     assert.throws(() => boundedFeeCeiling(info("plain1", 0)), /never has/);
     assert.throws(() => boundedFeeCeiling(info("bounded3", 1)), /not supported/);
   });

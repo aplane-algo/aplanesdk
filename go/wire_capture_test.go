@@ -13,7 +13,7 @@ type capturedComponentRole string
 
 const (
 	capturedComponentRoleCosigner capturedComponentRole = "cosigner"
-	capturedComponentRoleBase     capturedComponentRole = "bounded-base"
+	capturedComponentRoleBase     capturedComponentRole = "base"
 )
 
 type capturedComponentRequest struct {
@@ -38,7 +38,7 @@ func (r *capturedComponentRequest) UnmarshalJSON(data []byte) error {
 	for _, target := range unified.Targets {
 		r.TargetIndices = append(r.TargetIndices, target.TargetIndex)
 		r.TargetAppInfo[target.TargetIndex] = target.AppCallInfo
-		if target.Kind == ComponentTargetKindBoundedBase {
+		if target.Kind == ComponentTargetKindBase {
 			r.Role, r.ComponentKey = capturedComponentRoleBase, target.AuthAddress
 		} else {
 			r.Role, r.ComponentKey = capturedComponentRoleCosigner, target.ComponentKey

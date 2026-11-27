@@ -15,10 +15,10 @@ import { SignerError } from "./errors.js";
  */
 export const SIGNING_FLOW_COSIGNED1 = "cosigned1";
 
-/** A bounded host's contract: it has a fee ceiling. */
-export const BOUNDED_CONTRACT_BOUNDED2 = "bounded2";
-/** A plain host's contract: it has no fee ceiling. */
-export const BOUNDED_CONTRACT_PLAIN1 = "plain1";
+/** A bounded host's contract: it has bounds, and so a fee ceiling. */
+export const HOST_CONTRACT_BOUNDED2 = "bounded2";
+/** A plain host's contract: it has no bounds. */
+export const HOST_CONTRACT_PLAIN1 = "plain1";
 /**
  * Rotating account choreography (/sign/rotating/prepare then
  * /sign/rotating/sign), in which the signer rekeys the account to a fresh
@@ -112,40 +112,40 @@ export interface RuntimeArg {
  */
 export type SigningArg = RuntimeArg;
 
-export interface BoundedSignatureArgLayout {
+export interface HostSignatureArgLayout {
   count: number;
   maxSizes: number[];
 }
 
-export interface BoundedDerivedArgInfo {
+export interface HostDerivedArgInfo {
   name: string;
   kind: string;
   parameter: string;
   maxSize: number;
 }
 
-export interface BoundedArgumentPathMask {
+export interface HostArgumentPathMask {
   spend: string;
   spendingRekey: string;
   listedRekey: string;
 }
 
-/** A bounded account's rekey-to list. The entries are never published. */
-export interface BoundedRekeyListInfo {
+/** A host account's rekey-to list. The entries are never published. */
+export interface HostRekeyListInfo {
   contract: string;
   depth: number;
   rootHex?: string;
 }
 
-export interface BoundedArgumentSlotInfo {
+export interface HostArgumentSlotInfo {
   index: number;
   name: string;
   source: string;
   maxSize: number;
-  paths: BoundedArgumentPathMask;
+  paths: HostArgumentPathMask;
 }
 
-export interface BoundedCosignerAuthorizationInfo {
+export interface HostCosignerInfo {
   contract: string;
   componentKeyType: string;
   publicKeyHex?: string;
@@ -154,21 +154,28 @@ export interface BoundedCosignerAuthorizationInfo {
   requiredOn: string[];
 }
 
-export interface BoundedAuthorizationInfo {
-  contract: string;
-  baseSignatureArgLayout: BoundedSignatureArgLayout;
+/** What a bounded host's program enforces on a spend. A plain host has none. */
+export interface HostBoundsInfo {
   spendEffects: string[];
-  /** A bounded host's fee ceiling; absent on a plain host, which has none. */
-  maxFee?: number;
+  /** The fee ceiling. Zero is a ceiling of zero, not an absent one. */
+  maxFee: number;
+  layer3Policy: string;
+}
+
+/** A host account's signing contract. */
+export interface HostInfo {
+  contract: string;
+  baseSignatureArgLayout: HostSignatureArgLayout;
   /** "refused" or "spending_key" */
   rekey: string;
   /** With rekey "refused": "only these", a rekey may go only to a listed address. */
-  rekeyList?: BoundedRekeyListInfo;
-  cosigner?: BoundedCosignerAuthorizationInfo;
+  rekeyList?: HostRekeyListInfo;
+  cosigner?: HostCosignerInfo;
   runtimeArgs: RuntimeArg[];
-  derivedArgs: BoundedDerivedArgInfo[];
-  argumentLayout: BoundedArgumentSlotInfo[];
-  layer3Policy: string;
+  derivedArgs: HostDerivedArgInfo[];
+  argumentLayout: HostArgumentSlotInfo[];
+  /** Present on a bounded host; absent on a plain host, which has no fee ceiling. */
+  bounds?: HostBoundsInfo;
 }
 
 /**
@@ -198,7 +205,7 @@ export interface KeyInfo {
   /** True when this is a witness key, not a spending account */
   isWitnessKey?: boolean;
   /** Transaction-authorization capability and instance metadata */
-  boundedAuthorization?: BoundedAuthorizationInfo;
+  host?: HostInfo;
   /** Key-file-owned signing arguments for LogicSigs */
   signingArgs?: SigningArg[];
   /** Non-secret key parameters such as cosigned-account cosigner_public_key */
@@ -403,7 +410,7 @@ export interface KeyTypeInfo {
    */
   boundarySchema?: string;
   /** Definition-level transaction-authorization capability */
-  boundedAuthorization?: BoundedAuthorizationInfo;
+  host?: HostInfo;
   /**
    * The type's declaration of whether an aplane key of this type may be the
    * signing authority an account is rekeyed to, its own account included.
@@ -650,7 +657,7 @@ export interface CancelSignResponse {
   state?: SignCancelState;
 }
 
-export type ComponentTargetKind = "cosigner" | "bounded-base";
+export type ComponentTargetKind = "cosigner" | "base";
 
 export interface ComponentRequest {
   request_id?: string;
@@ -670,7 +677,7 @@ export interface ComponentTarget {
   app_call_info?: AppCallInfo;
 }
 
-/** Bounded-base component paths: the path the signer classified a target on. */
+/** Base component paths: the path the signer classified a target on. */
 export const COMPONENT_PATH_SPEND = "spend";
 export const COMPONENT_PATH_SPENDING_REKEY = "spending_rekey";
 export const COMPONENT_PATH_LISTED_REKEY = "listed_rekey";
@@ -689,14 +696,14 @@ export interface Component {
   runtime_args?: Record<string, string>;
   assembly_receipt?: string;
   /**
-   * The path the signer classified a bounded-base target on. A listed rekey
+   * The path the signer classified a base target on. A listed rekey
    * takes no cosigner component; it routes the request only, since assembly
    * classifies again.
    */
   path?: ComponentPath;
 }
 
-/** Whether a bounded-base component's path takes a cosigner component. */
+/** Whether a base component's path takes a cosigner component. */
 export function componentNeedsCosigner(component: Component): boolean {
   return component.path !== COMPONENT_PATH_LISTED_REKEY;
 }
@@ -710,7 +717,7 @@ export interface AssemblyTarget {
   target_index: number;
   auth_address: string;
   base_signatures?: string[];
-  bounded_runtime_args?: Record<string, string>;
+  runtime_args?: Record<string, string>;
   assembly_receipt?: string;
   base_source_request_id?: string;
   /**
@@ -1263,8 +1270,8 @@ export const ErrorCodes = {
   NotFound: "not_found",
   Unavailable: "unavailable",
   CacheRefresh: "cache_refresh",
-  BoundedCosignerRequired: "bounded_cosigner_required",
-  BoundedRekeyTargetNotListed: "bounded_rekey_target_not_listed",
+  CosignerRequired: "cosigner_required",
+  RekeyTargetNotListed: "rekey_target_not_listed",
   /** A rotating account (rotating1) was sent to an ordinary signing endpoint. */
   RotatingSigningRequired: "rotating_signing_required",
   /** 409, temporary: the signer has not yet found the account's live stage. */

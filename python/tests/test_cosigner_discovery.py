@@ -899,9 +899,9 @@ class TestCosignedFlow:
 def _cosigned_key(address, public_key_hex):
     from aplanesdk import (
         SIGNING_FLOW_COSIGNED1,
-        BoundedAuthorizationInfo,
-        BoundedCosignerAuthorizationInfo,
-        BoundedSignatureArgLayout,
+        HostInfo,
+        HostCosignerInfo,
+        HostSignatureArgLayout,
         KeyInfo,
         LogicSigResourceProfile,
         LogicSigResourceUsage,
@@ -913,17 +913,14 @@ def _cosigned_key(address, public_key_hex):
         signing_flow=SIGNING_FLOW_COSIGNED1,
         cosigner_component_key_type=WITNESS,
         logic_sig_resources=LogicSigResourceProfile(spend=LogicSigResourceUsage(5308, 3358, 20000)),
-        bounded_authorization=BoundedAuthorizationInfo(
+        host=HostInfo(
             contract="plain1",
-            base_signature_arg_layout=BoundedSignatureArgLayout(count=1, max_sizes=[1280]),
-            spend_effects=[],
-            max_fee=None,
+            base_signature_arg_layout=HostSignatureArgLayout(count=1, max_sizes=[1280]),
             rekey="refused",
             runtime_args=[],
             derived_args=[],
             argument_layout=[],
-            layer3_policy="",
-            cosigner=BoundedCosignerAuthorizationInfo(
+            cosigner=HostCosignerInfo(
                 contract="cosigner1", component_key_type=WITNESS, public_key_hex=public_key_hex
             ),
         ),
@@ -975,7 +972,7 @@ class TestCosignedOrder:
                 components=[
                     {
                         "target_index": index,
-                        "kind": "bounded-base",
+                        "kind": "base",
                         "auth_address": account,
                         "base_signatures": ["base-sig"],
                         "assembly_receipt": "receipt",

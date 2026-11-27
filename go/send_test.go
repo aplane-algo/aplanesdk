@@ -1070,9 +1070,9 @@ func cosignedSendFixtureFor(t *testing.T, fault string, primary bool, cosignerKe
 			Spend: &LogicSigResourceUsage{ProgramBytes: 5308, ArgumentBytes: 3358, MaxOpcodeCost: 20000},
 		},
 		CosignerComponentKeyType: cosignerKeyType,
-		BoundedAuthorization: &BoundedAuthorizationInfo{
-			Contract: BoundedContractBounded2, MaxFee: new(uint64(1000)),
-			Cosigner: &BoundedCosignerAuthorizationInfo{ComponentKeyType: cosignerKeyType, PublicKeyHex: cosignerPublicKeyHex},
+		Host: &HostInfo{
+			Contract: HostContractBounded2, Bounds: &HostBoundsInfo{MaxFee: 1000},
+			Cosigner: &HostCosignerInfo{ComponentKeyType: cosignerKeyType, PublicKeyHex: cosignerPublicKeyHex},
 		},
 	}
 	keys := []KeyInfo{key}
@@ -1133,7 +1133,7 @@ func cosignedSendFixtureFor(t *testing.T, fault string, primary bool, cosignerKe
 				return
 			}
 			json.NewEncoder(w).Encode(ComponentResponse{RequestID: req.RequestID, Components: []Component{{
-				TargetIndex: 0, Kind: ComponentTargetKindBoundedBase, AuthAddress: bounded,
+				TargetIndex: 0, Kind: ComponentTargetKindBase, AuthAddress: bounded,
 				BaseSignatures: []string{"base-sig"}, RuntimeArgs: map[string]string{"proof": "aabb"},
 				AssemblyReceipt: "receipt", SignatureScheme: "aplane.falcon1024.v1", Path: ComponentPathSpend,
 			}}})

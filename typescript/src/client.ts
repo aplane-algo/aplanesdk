@@ -51,7 +51,7 @@ import type {
   AssemblyResponse,
   CosignedPassthroughItem,
   ErrorResponse,
-  BoundedAuthorizationInfo,
+  HostInfo,
   LogicSigResourceUsage,
   LogicSigResourceProfile,
   AppCallInfo,
@@ -63,8 +63,8 @@ import type {
 import {
   ErrorCodes,
   SIGNING_FLOW_COSIGNED1,
-  BOUNDED_CONTRACT_BOUNDED2,
-  BOUNDED_CONTRACT_PLAIN1,
+  HOST_CONTRACT_BOUNDED2,
+  HOST_CONTRACT_PLAIN1,
   SIGNING_FLOW_ROTATING1,
   COMPONENT_PATH_SPEND,
   COMPONENT_PATH_SPENDING_REKEY,
@@ -354,7 +354,7 @@ function setsRekeyTo(txn: Transaction | null | undefined): boolean {
  * the base component answer says whether it does.
  */
 function mayTakeListedPath(key: KeyInfo | undefined, txn: Transaction | null | undefined): boolean {
-  return setsRekeyTo(txn) && key?.boundedAuthorization?.rekeyList !== undefined;
+  return setsRekeyTo(txn) && key?.host?.rekeyList !== undefined;
 }
 
 /** Order targets by the witness key they need: key type, then lowercase public key hex. */
@@ -458,11 +458,11 @@ function verifyBoundedAssembledGroup(
 }
 
 function boundedCosignerPublicKey(key: KeyInfo): string {
-  return key.boundedAuthorization?.cosigner?.publicKeyHex || key.parameters?.cosigner_public_key || "";
+  return key.host?.cosigner?.publicKeyHex || key.parameters?.cosigner_public_key || "";
 }
 
 function boundedCosignerComponentKeyType(key: KeyInfo): string {
-  return key.cosignerComponentKeyType || key.boundedAuthorization?.cosigner?.componentKeyType || "";
+  return key.cosignerComponentKeyType || key.host?.cosigner?.componentKeyType || "";
 }
 
 async function requestBoundedPrimaryPassthrough(
@@ -610,12 +610,12 @@ export async function signPreparedCosignedGroup(
       requests.push(preparedSignRequest(item, index));
       targetResources.set(index, requiredResources);
       targetKeys.set(index, key);
-      if (!key.boundedAuthorization) {
+      if (!key.host) {
         throw new SignerError(
-          `prepared transaction ${index}: bounded authorization metadata is required`,
+          `prepared transaction ${index}: host metadata is required`,
         );
       }
-      const ceiling = boundedFeeCeiling(key.boundedAuthorization);
+      const ceiling = boundedFeeCeiling(key.host);
       if (ceiling !== undefined) {
         targetMaxFees.set(index, ceiling);
       }
@@ -688,7 +688,7 @@ export async function signPreparedCosignedGroup(
       group_bytes_hex: frozenGroup,
       targets: requests.flatMap((request, index) => targetIndices.has(index) ? [{
         target_index: index,
-        kind: "bounded-base",
+        kind: "base",
         auth_address: request.auth_address || "",
         lsig_args: request.lsig_args,
         app_call_info: request.app_call_info,
@@ -713,7 +713,7 @@ export async function signPreparedCosignedGroup(
   try {
     for (const component of componentResponse.components) {
       const target = targetsByIndex.get(component.target_index);
-      if (!target || component.kind !== "bounded-base" ||
+      if (!target || component.kind !== "base" ||
           component.auth_address !== target.cosignedAccount) {
         throw new SignerError(`signer returned unexpected bounded component target ${component.target_index}`);
       }
@@ -817,13 +817,13 @@ export async function signPreparedCosignedGroup(
     const assemblyTargets: AssemblyTarget[] = targets.map((target) => {
       const component = components.get(target.targetIndex);
       if (!component) {
-        throw new SignerError(`missing bounded base component for target ${target.targetIndex}`);
+        throw new SignerError(`missing base component for target ${target.targetIndex}`);
       }
       const assemblyTarget: AssemblyTarget = {
         target_index: target.targetIndex,
         auth_address: component.auth_address || "",
         base_signatures: [...(component.base_signatures || [])],
-        bounded_runtime_args: component.runtime_args ? { ...component.runtime_args } : undefined,
+        runtime_args: component.runtime_args ? { ...component.runtime_args } : undefined,
         assembly_receipt: component.assembly_receipt || "",
         base_source_request_id: componentResponse.request_id,
       };
@@ -952,9 +952,9 @@ function validateComponentRequest(request: ComponentRequest): void {
       if (index > 0 && target.component_key !== targets[0].component_key) {
         throw new SignerError("cosigner targets must share one component_key");
       }
-    } else if (kind === "bounded-base") {
+    } else if (kind === "base") {
       if (!target.auth_address || target.component_key) {
-        throw new SignerError(`target ${index + 1}: bounded-base target requires auth_address and forbids component_key`);
+        throw new SignerError(`target ${index + 1}: base target requires auth_address and forbids component_key`);
       }
     } else {
       throw new SignerError(`target ${index + 1}: unsupported component kind`);
@@ -978,11 +978,11 @@ function validateComponentRequest(request: ComponentRequest): void {
   });
   contextual.forEach((position, index) => {
     // auth_address marks one of the signer's own accounts. Only a
-    // bounded-base request sizes the group, so only it takes the field.
+    // base request sizes the group, so only it takes the field.
     const hasLsigArgs = position.lsig_args !== undefined && Object.keys(position.lsig_args).length > 0;
-    if ((position.auth_address || hasLsigArgs) && kind !== "bounded-base") {
+    if ((position.auth_address || hasLsigArgs) && kind !== "base") {
       throw new SignerError(
-        `contextual position ${index + 1}: auth_address and lsig_args are allowed only on a bounded-base request`,
+        `contextual position ${index + 1}: auth_address and lsig_args are allowed only on a base request`,
       );
     }
     // The signer sizes its own account from its records: it takes no hint.
@@ -1034,9 +1034,9 @@ function validateComponentResponse(response: ComponentResponse, request?: Compon
       if (!component.signature || !component.signature_scheme || component.base_signatures?.length || component.assembly_receipt || component.path) {
         throw new SignerError(`component ${index + 1} has invalid signature material`);
       }
-    } else if (component.kind === "bounded-base") {
+    } else if (component.kind === "base") {
       if (!component.auth_address || !component.base_signatures?.length || !component.assembly_receipt || !component.signature_scheme || component.signature) {
-        throw new SignerError(`component ${index + 1} has invalid bounded-base material`);
+        throw new SignerError(`component ${index + 1} has invalid base material`);
       }
       if (component.path !== COMPONENT_PATH_SPEND && component.path !== COMPONENT_PATH_SPENDING_REKEY &&
           component.path !== COMPONENT_PATH_LISTED_REKEY) {
@@ -1062,31 +1062,31 @@ function mapRuntimeArg(raw: any): RuntimeArg {
 }
 
 /**
- * An account's on-chain fee ceiling: a bounded host must advertise one, a plain
- * host never has one, and a contract this SDK doesn't know fails closed.
+ * An account's on-chain fee ceiling: a bounded host has one, in its bounds, a
+ * plain host has no bounds, and a contract this SDK doesn't know fails closed.
  */
-export function boundedFeeCeiling(info: BoundedAuthorizationInfo): number | undefined {
+export function boundedFeeCeiling(info: HostInfo): number | undefined {
   switch (info.contract) {
-    case BOUNDED_CONTRACT_BOUNDED2:
-      if (info.maxFee === undefined) {
-        throw new SignerError(`bounded authorization ${info.contract} has no max_fee`);
+    case HOST_CONTRACT_BOUNDED2:
+      if (info.bounds === undefined) {
+        throw new SignerError(`host contract ${info.contract} has no bounds`);
       }
-      return info.maxFee;
-    case BOUNDED_CONTRACT_PLAIN1:
-      if (info.maxFee !== undefined) {
+      return info.bounds.maxFee;
+    case HOST_CONTRACT_PLAIN1:
+      if (info.bounds !== undefined) {
         throw new SignerError(
-          `bounded authorization ${info.contract} has a max_fee, which a plain host never has`,
+          `host contract ${info.contract} has bounds, which a plain host never has`,
         );
       }
       return undefined;
     default:
       throw new SignerError(
-        `bounded authorization contract "${info.contract}" is not supported by this SDK; upgrade it`,
+        `host contract "${info.contract}" is not supported by this SDK; upgrade it`,
       );
   }
 }
 
-function mapBoundedAuthorization(raw: any): BoundedAuthorizationInfo | undefined {
+function mapHost(raw: any): HostInfo | undefined {
   if (!raw) return undefined;
   return {
     contract: raw.contract || "",
@@ -1094,9 +1094,6 @@ function mapBoundedAuthorization(raw: any): BoundedAuthorizationInfo | undefined
       count: raw.base_signature_arg_layout?.count || 0,
       maxSizes: raw.base_signature_arg_layout?.max_sizes || [],
     },
-    spendEffects: raw.spend_effects || [],
-    // Absent on a plain host: never turned into a zero ceiling.
-    maxFee: raw.max_fee ?? undefined,
     rekey: raw.rekey || "",
     rekeyList: raw.rekey_list
       ? {
@@ -1133,7 +1130,15 @@ function mapBoundedAuthorization(raw: any): BoundedAuthorizationInfo | undefined
         listedRekey: slot.paths?.listed_rekey || "",
       },
     })),
-    layer3Policy: raw.layer3_policy || "",
+    // No bounds stays no bounds, never a ceiling of zero. Bounds that arrive
+    // without max_fee get the tightest ceiling.
+    bounds: raw.bounds
+      ? {
+          spendEffects: raw.bounds.spend_effects || [],
+          maxFee: raw.bounds.max_fee ?? 0,
+          layer3Policy: raw.bounds.layer3_policy || "",
+        }
+      : undefined,
   };
 }
 
@@ -1174,8 +1179,8 @@ function selectedPreparedResources(
   const profile = key?.logicSigResources;
   if (!profile) return undefined;
   let selected = profile.spend || profile.default;
-  if (key?.boundedAuthorization && txn?.rekeyTo !== undefined) {
-    const bounded = key.boundedAuthorization;
+  if (key?.host && txn?.rekeyTo !== undefined) {
+    const bounded = key.host;
     if (bounded.rekeyList && bounded.rekey === "refused") {
       // Only these addresses: the signer checks the target and adds the proof.
       selected = profile.listedRekey;
@@ -3068,7 +3073,7 @@ export class SignerClient {
         logicSigResources: mapLogicSigResourceProfile(raw.logic_sig_resources),
         isGenericLsig: raw.is_generic_lsig,
         isWitnessKey: raw.is_witness_key,
-        boundedAuthorization: mapBoundedAuthorization(raw.bounded_authorization),
+        host: mapHost(raw.host),
         signingArgs: raw.signing_args ? raw.signing_args.map(mapRuntimeArg) : undefined,
         parameters: raw.parameters,
         templateProvenanceStatus: raw.template_provenance_status || undefined,
@@ -4042,7 +4047,7 @@ export class SignerClient {
         cosignerComponentKeyTypes: kt.cosigner_component_key_types?.length ? kt.cosigner_component_key_types : undefined,
         perKeyContract: kt.per_key_contract || undefined,
         boundarySchema: kt.boundary_schema || undefined,
-        boundedAuthorization: mapBoundedAuthorization(kt.bounded_authorization),
+        host: mapHost(kt.host),
         validRekeyTarget: kt.valid_rekey_target,
         creationParams,
         runtimeArgs,

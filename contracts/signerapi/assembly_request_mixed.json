@@ -20,7 +20,7 @@
       "base_signatures": [
         "cc"
       ],
-      "bounded_runtime_args": {
+      "runtime_args": {
         "proof": "dd"
       },
       "assembly_receipt": "ee",

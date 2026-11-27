@@ -24,7 +24,7 @@
           "max_opcode_cost": 20000
         }
       },
-      "bounded_authorization": {
+      "host": {
         "contract": "plain1",
         "base_signature_arg_layout": {
           "count": 1,
@@ -32,7 +32,7 @@
             1423
           ]
         },
-        "spend_effects": [],
+        "rekey": "spending_key",
         "cosigner": {
           "contract": "cosigner1",
           "component_key_type": "aplane.witness-falcon1024.v1",
@@ -69,9 +69,7 @@
               "listed_rekey": "forbidden"
             }
           }
-        ],
-        "layer3_policy": "none",
-        "rekey": "spending_key"
+        ]
       },
       "parameters": {
         "cosigner_public_key": "11223344556677889900aabbccddeeff"

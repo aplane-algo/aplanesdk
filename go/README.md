@@ -797,7 +797,7 @@ submitted, err := userClient.SubmitSignedGroup(ctx, algodClient, result.SignedGr
 
 The SDK first freezes the complete canonical group through `/plan`; the user
 signer then approves those bytes through `RequestComponents` with
-`kind: "bounded-base"`. It then signs ordinary positions, and only after
+`kind: "base"`. It then signs ordinary positions, and only after
 the user side is complete does it request cosigner signatures over the same
 bytes and call `RequestAssemble`. Before
 signing anything, the SDK compares the

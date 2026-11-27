@@ -49,15 +49,29 @@ The SDKs read only the current signer wire and client file formats:
   `template_warning` aliases are gone.
 - `endpoints.yaml` must declare `schema_version: 2`. `config.yaml` has no
   `schema_version`: like apshell, the SDKs refuse it as an unknown field.
-- `bounded_authorization.contract` is `bounded2` or `plain1`, and `max_fee` is
-  optional: required on `bounded2`, absent on `plain1` (a plain host, which has
-  no fee ceiling). The cosigned helpers refuse an account with any other
-  contract, or with a ceiling that contradicts its contract, before any request.
+- `/keys` and `/keytypes` carry a host account's contract as `host`, where it
+  was `bounded_authorization`. `host.contract` is `bounded2` or `plain1`.
+  `spend_effects`, `max_fee` and `layer3_policy` are in `host.bounds`, which a
+  `bounded2` account has and a `plain1` account (a plain host, which has no fee
+  ceiling) doesn't; inside it `max_fee` is always present, and `0` is a ceiling
+  of zero, which is also what the SDKs read from bounds that arrive without
+  `max_fee`. The cosigned helpers refuse an account with any other contract, or
+  with bounds that contradict its contract, before any request. The SDK types
+  follow: `HostInfo` and `HostBoundsInfo`, with the other `Bounded*Info` types
+  renamed `Host*`, and the key's field is `Host` (Go) or `host` (Python,
+  TypeScript).
+- The `/sign/component` kind `bounded-base` is `base`, a `/sign/assemble`
+  target's `bounded_runtime_args` is `runtime_args`, and the error codes
+  `bounded_cosigner_required` and `bounded_rekey_target_not_listed` are
+  `cosigner_required` and `rekey_target_not_listed`. The SDK constants follow,
+  with no aliases. These need the matching signer release: an SDK from before
+  this change cannot use cosigned accounts on a signer from after it, or the
+  reverse.
 - The `cosigner1` signing flow, the `user` component target kind, the
   `guarded` assembly target kind and the explicit-group signing API are gone.
   `cosigner1` is an unknown flow, so an SDK refuses such a key before sending
   anything; the string survives only as the cosigner contract label in
-  `bounded_authorization.cosigner.contract`.
+  `host.cosigner.contract`.
 - The prepared cosigned API is renamed, with no aliases: `SignPreparedGuardedGroup`
   and `SimulatePreparedGuardedGroup` (and their context forms) are
   `SignPreparedCosignedGroup` and `SimulatePreparedCosignedGroup`; Python's
@@ -68,7 +82,7 @@ The SDKs read only the current signer wire and client file formats:
   `Guarded*` type is `Cosigned*`. No wire value changes.
 - Bounded accounts are plain hosts: `aplane.falcon1024-b.v1` is retired, and a bounded
   account in `/keys` is `aplane.falcon1024.v1` or `aplane.ed25519.v1` with
-  `bounded_authorization.contract` `bounded2`. The SDKs route on the contract and the
+  `host.contract` `bounded2`. The SDKs route on the contract and the
   signing flow, never the key type name, so no code changes; an Ed25519 bounded account
   may now have a cosigner and signs through `cosigned1` like a Falcon one.
 - Key types may carry `boundary_schema`, the boundary file grammar a per-key

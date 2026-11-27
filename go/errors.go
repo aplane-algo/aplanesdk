@@ -58,18 +58,18 @@ var (
 // These mirror the signer wire contract (pkg/signerapi/error_codes.go in the
 // aplane repo). Every apsigner error response carries a non-empty code.
 const (
-	ErrCodeBadRequest              = "bad_request"
-	ErrCodeUnauthorized            = "unauthorized"
-	ErrCodeForbidden               = "forbidden"
-	ErrCodeLocked                  = "locked"
-	ErrCodeNotFound                = "not_found"
-	ErrCodeUnavailable             = "unavailable"
-	ErrCodeCacheRefresh            = "cache_refresh"
-	ErrCodeInternal                = "internal"
-	ErrCodeBoundedCosignerRequired = "bounded_cosigner_required"
-	// ErrCodeBoundedRekeyTargetNotListed: the account refuses every rekey but
+	ErrCodeBadRequest       = "bad_request"
+	ErrCodeUnauthorized     = "unauthorized"
+	ErrCodeForbidden        = "forbidden"
+	ErrCodeLocked           = "locked"
+	ErrCodeNotFound         = "not_found"
+	ErrCodeUnavailable      = "unavailable"
+	ErrCodeCacheRefresh     = "cache_refresh"
+	ErrCodeInternal         = "internal"
+	ErrCodeCosignerRequired = "cosigner_required"
+	// ErrCodeRekeyTargetNotListed: the account refuses every rekey but
 	// one to an address on its rekey-to list, and the target is not on it.
-	ErrCodeBoundedRekeyTargetNotListed = "bounded_rekey_target_not_listed"
+	ErrCodeRekeyTargetNotListed = "rekey_target_not_listed"
 	// ErrCodeRotatingSigningRequired: a rotating account (signing_flow
 	// rotating1) was sent to an ordinary signing endpoint. Use SendPrepared
 	// or the PrepareRotating and SignPreparedRotating calls.

@@ -100,8 +100,8 @@ func (b *SignBatch) validate() error {
 type ComponentTargetKind string
 
 const (
-	ComponentTargetKindCosigner    ComponentTargetKind = "cosigner"
-	ComponentTargetKindBoundedBase ComponentTargetKind = "bounded-base"
+	ComponentTargetKindCosigner ComponentTargetKind = "cosigner"
+	ComponentTargetKindBase     ComponentTargetKind = "base"
 )
 
 type ComponentRequest struct {
@@ -149,13 +149,13 @@ type Component struct {
 	BaseSignatures  []string            `json:"base_signatures,omitempty"`
 	RuntimeArgs     map[string]string   `json:"runtime_args,omitempty"`
 	AssemblyReceipt string              `json:"assembly_receipt,omitempty"`
-	// Path is the path the signer classified a bounded-base target on: spend,
+	// Path is the path the signer classified a base target on: spend,
 	// spending_rekey or listed_rekey. A listed rekey takes no cosigner
 	// component. It routes the request only: assembly classifies again.
 	Path string `json:"path,omitempty"`
 }
 
-// Bounded-base component paths, the names argument path masks and resource
+// Base component paths, the names argument path masks and resource
 // profiles use.
 const (
 	ComponentPathSpend         = "spend"
@@ -163,7 +163,7 @@ const (
 	ComponentPathListedRekey   = "listed_rekey"
 )
 
-// NeedsCosigner reports whether a bounded-base component's path takes a cosigner
+// NeedsCosigner reports whether a base component's path takes a cosigner
 // component. A path this SDK does not name fails validation first.
 func (c Component) NeedsCosigner() bool {
 	return c.Path != ComponentPathListedRekey
@@ -187,7 +187,7 @@ type AssemblyTarget struct {
 	AuthAddress string `json:"auth_address"`
 
 	BaseSignatures      []string          `json:"base_signatures,omitempty"`
-	BoundedRuntimeArgs  map[string]string `json:"bounded_runtime_args,omitempty"`
+	RuntimeArgs         map[string]string `json:"runtime_args,omitempty"`
 	AssemblyReceipt     string            `json:"assembly_receipt,omitempty"`
 	BaseSourceRequestID string            `json:"base_source_request_id,omitempty"`
 
@@ -713,8 +713,8 @@ type KeyTypeInfo struct {
 	// BoundarySchema names the boundary file grammar a per-key type's requests
 	// take ("aplane.boundary.v1"), and is empty for one that takes none, such as
 	// a plain host.
-	BoundarySchema       string                    `json:"boundary_schema,omitempty"`
-	BoundedAuthorization *BoundedAuthorizationInfo `json:"bounded_authorization,omitempty"`
+	BoundarySchema string    `json:"boundary_schema,omitempty"`
+	Host           *HostInfo `json:"host,omitempty"`
 	// ValidRekeyTarget is the type's declaration of whether an aplane key of
 	// this type may be the signing authority an account is rekeyed to, its own
 	// account included. False when the signer does not report it.
@@ -737,43 +737,43 @@ const SigningFlowCosigned1 = "cosigned1"
 // PrepareRotating and SignPreparedRotating are its steps.
 const SigningFlowRotating1 = "rotating1"
 
-type BoundedSignatureArgLayout struct {
+type HostSignatureArgLayout struct {
 	Count    int   `json:"count"`
 	MaxSizes []int `json:"max_sizes"`
 }
 
-type BoundedDerivedArgInfo struct {
+type HostDerivedArgInfo struct {
 	Name      string `json:"name"`
 	Kind      string `json:"kind"`
 	Parameter string `json:"parameter"`
 	MaxSize   int    `json:"max_size"`
 }
 
-type BoundedArgumentPathMask struct {
+type HostArgumentPathMask struct {
 	Spend         string `json:"spend"`
 	SpendingRekey string `json:"spending_rekey"`
 	ListedRekey   string `json:"listed_rekey"`
 }
 
-// BoundedRekeyListInfo says that a bounded account has a rekey-to list, and
+// HostRekeyListInfo says that a host account has a rekey-to list, and
 // commits to it. The entries are never published.
-type BoundedRekeyListInfo struct {
+type HostRekeyListInfo struct {
 	Contract string `json:"contract"`
 	Depth    int    `json:"depth"`
 	RootHex  string `json:"root,omitempty"`
 }
 
-type BoundedArgumentSlotInfo struct {
-	Index   int                     `json:"index"`
-	Name    string                  `json:"name"`
-	Source  string                  `json:"source"`
-	MaxSize int                     `json:"max_size"`
-	Paths   BoundedArgumentPathMask `json:"paths"`
+type HostArgumentSlotInfo struct {
+	Index   int                  `json:"index"`
+	Name    string               `json:"name"`
+	Source  string               `json:"source"`
+	MaxSize int                  `json:"max_size"`
+	Paths   HostArgumentPathMask `json:"paths"`
 }
 
-// BoundedCosignerAuthorizationInfo is the public non-secret projection of the
-// optional cosigner authority embedded in a bounded account.
-type BoundedCosignerAuthorizationInfo struct {
+// HostCosignerInfo is the public non-secret projection of the
+// optional cosigner authority embedded in a host account.
+type HostCosignerInfo struct {
 	Contract         string   `json:"contract"`
 	ComponentKeyType string   `json:"component_key_type"`
 	PublicKeyHex     string   `json:"public_key_hex,omitempty"`
@@ -782,40 +782,47 @@ type BoundedCosignerAuthorizationInfo struct {
 	RequiredOn       []string `json:"required_on"`
 }
 
-type BoundedAuthorizationInfo struct {
-	Contract               string                    `json:"contract"`
-	BaseSignatureArgLayout BoundedSignatureArgLayout `json:"base_signature_arg_layout"`
-	SpendEffects           []string                  `json:"spend_effects"`
-	// MaxFee is a bounded host's fee ceiling. A plain host (contract
-	// "plain1") has none, and the field is absent.
-	MaxFee *uint64 `json:"max_fee,omitempty"`
-	Rekey  string  `json:"rekey"` // "refused" or "spending_key"
+// HostBoundsInfo is what a bounded host's program enforces on a spend. A
+// plain host has none.
+type HostBoundsInfo struct {
+	SpendEffects []string `json:"spend_effects"`
+	MaxFee       uint64   `json:"max_fee"`
+	Layer3Policy string   `json:"layer3_policy"`
+}
+
+// HostInfo is a host account's signing contract. Contract is "bounded2" for a
+// bounded host, which has Bounds, or "plain1" for a plain host, which has none.
+type HostInfo struct {
+	Contract               string                 `json:"contract"`
+	BaseSignatureArgLayout HostSignatureArgLayout `json:"base_signature_arg_layout"`
+	Rekey                  string                 `json:"rekey"` // "refused" or "spending_key"
 	// RekeyList, with Rekey "refused", is "only these": a rekey may go only to
 	// an address on the account's rekey-to list.
-	RekeyList      *BoundedRekeyListInfo             `json:"rekey_list,omitempty"`
-	Cosigner       *BoundedCosignerAuthorizationInfo `json:"cosigner,omitempty"`
-	RuntimeArgs    []RuntimeArg                      `json:"runtime_args"`
-	DerivedArgs    []BoundedDerivedArgInfo           `json:"derived_args"`
-	ArgumentLayout []BoundedArgumentSlotInfo         `json:"argument_layout"`
-	Layer3Policy   string                            `json:"layer3_policy"`
+	RekeyList      *HostRekeyListInfo     `json:"rekey_list,omitempty"`
+	Cosigner       *HostCosignerInfo      `json:"cosigner,omitempty"`
+	RuntimeArgs    []RuntimeArg           `json:"runtime_args"`
+	DerivedArgs    []HostDerivedArgInfo   `json:"derived_args"`
+	ArgumentLayout []HostArgumentSlotInfo `json:"argument_layout"`
+	// Bounds is nil for a plain host, which has no fee ceiling.
+	Bounds *HostBoundsInfo `json:"bounds,omitempty"`
 }
 
 // KeyInfo represents a key returned from the /keys endpoint.
 type KeyInfo struct {
-	Address                  string                    `json:"address"`
-	PublicKeyHex             string                    `json:"public_key_hex"`
-	KeyType                  string                    `json:"key_type"`
-	AuthorizationKind        string                    `json:"authorization_kind,omitempty"` // account authorization envelope; empty = not reported or not a spending account
-	SigningFlow              string                    `json:"signing_flow,omitempty"`
-	CosignerComponentKeyType string                    `json:"cosigner_component_key_type,omitempty"`
-	LogicSigResources        *LogicSigResourceProfile  `json:"logic_sig_resources,omitempty"`
-	IsGenericLsig            bool                      `json:"is_generic_lsig,omitempty"`
-	IsWitnessKey             bool                      `json:"is_witness_key,omitempty"`
-	BoundedAuthorization     *BoundedAuthorizationInfo `json:"bounded_authorization,omitempty"`
-	SigningArgs              []SigningArg              `json:"signing_args,omitempty"`
-	Parameters               map[string]string         `json:"parameters,omitempty"`
-	TemplateProvenanceStatus string                    `json:"template_provenance_status,omitempty"`
-	TemplateProvenanceNote   string                    `json:"template_provenance_note,omitempty"`
+	Address                  string                   `json:"address"`
+	PublicKeyHex             string                   `json:"public_key_hex"`
+	KeyType                  string                   `json:"key_type"`
+	AuthorizationKind        string                   `json:"authorization_kind,omitempty"` // account authorization envelope; empty = not reported or not a spending account
+	SigningFlow              string                   `json:"signing_flow,omitempty"`
+	CosignerComponentKeyType string                   `json:"cosigner_component_key_type,omitempty"`
+	LogicSigResources        *LogicSigResourceProfile `json:"logic_sig_resources,omitempty"`
+	IsGenericLsig            bool                     `json:"is_generic_lsig,omitempty"`
+	IsWitnessKey             bool                     `json:"is_witness_key,omitempty"`
+	Host                     *HostInfo                `json:"host,omitempty"`
+	SigningArgs              []SigningArg             `json:"signing_args,omitempty"`
+	Parameters               map[string]string        `json:"parameters,omitempty"`
+	TemplateProvenanceStatus string                   `json:"template_provenance_status,omitempty"`
+	TemplateProvenanceNote   string                   `json:"template_provenance_note,omitempty"`
 	// ValidRekeyTarget is the value this aplane key recorded when it was
 	// created: whether it may be the signing authority an account is rekeyed
 	// to, its own account included. A rekey to it when it is false is refused

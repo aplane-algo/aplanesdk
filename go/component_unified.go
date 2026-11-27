@@ -37,9 +37,9 @@ func (r ComponentRequest) Validate() error {
 			if i > 0 && target.ComponentKey != r.Targets[0].ComponentKey {
 				return fmt.Errorf("cosigner targets must share one component_key")
 			}
-		case ComponentTargetKindBoundedBase:
+		case ComponentTargetKindBase:
 			if target.AuthAddress == "" || target.ComponentKey != "" {
-				return fmt.Errorf("target %d: bounded-base target requires auth_address and forbids component_key", i+1)
+				return fmt.Errorf("target %d: base target requires auth_address and forbids component_key", i+1)
 			}
 		default:
 			return fmt.Errorf("target %d: unsupported component kind %q", i+1, target.Kind)
@@ -51,11 +51,11 @@ func (r ComponentRequest) Validate() error {
 		}
 		covered[position.TargetIndex] = true
 		// auth_address marks one of the signer's own accounts. Only a
-		// bounded-base request sizes the group, so only it takes the field,
+		// base request sizes the group, so only it takes the field,
 		// and the signer sizes that account from its records: it takes no hint.
 		if position.AuthAddress != "" || len(position.LsigArgs) != 0 {
-			if kind != ComponentTargetKindBoundedBase {
-				return fmt.Errorf("contextual position %d: auth_address and lsig_args are allowed only on a bounded-base request", i+1)
+			if kind != ComponentTargetKindBase {
+				return fmt.Errorf("contextual position %d: auth_address and lsig_args are allowed only on a base request", i+1)
 			}
 			if position.AuthAddress == "" {
 				return fmt.Errorf("contextual position %d: lsig_args requires auth_address", i+1)
@@ -110,9 +110,9 @@ func (r ComponentResponse) Validate() error {
 			if component.Signature == "" || component.SignatureScheme == "" || len(component.BaseSignatures) != 0 || component.AssemblyReceipt != "" || component.Path != "" {
 				return fmt.Errorf("component %d has invalid signature material", i+1)
 			}
-		case ComponentTargetKindBoundedBase:
+		case ComponentTargetKindBase:
 			if component.AuthAddress == "" || len(component.BaseSignatures) == 0 || component.AssemblyReceipt == "" || component.SignatureScheme == "" || component.Signature != "" {
-				return fmt.Errorf("component %d has invalid bounded-base material", i+1)
+				return fmt.Errorf("component %d has invalid base material", i+1)
 			}
 			switch component.Path {
 			case ComponentPathSpend, ComponentPathSpendingRekey, ComponentPathListedRekey:

@@ -59,7 +59,7 @@ func TestSignPreparedCosignedGroupOneTarget(t *testing.T) {
 				RequestID: req.RequestID,
 				Components: []Component{{
 					TargetIndex:     0,
-					Kind:            ComponentTargetKindBoundedBase,
+					Kind:            ComponentTargetKindBase,
 					AuthAddress:     bounded,
 					BaseSignatures:  []string{"base-sig"},
 					RuntimeArgs:     map[string]string{"proof": "aabb"},
@@ -132,9 +132,9 @@ func TestSignPreparedCosignedGroupOneTarget(t *testing.T) {
 				Spend: &LogicSigResourceUsage{ProgramBytes: 5308, ArgumentBytes: 3358, MaxOpcodeCost: 20000},
 			},
 			CosignerComponentKeyType: KeyTypeWitnessFalcon1024,
-			BoundedAuthorization: &BoundedAuthorizationInfo{
-				Contract: BoundedContractBounded2, MaxFee: new(uint64(1000)),
-				Cosigner: &BoundedCosignerAuthorizationInfo{
+			Host: &HostInfo{
+				Contract: HostContractBounded2, Bounds: &HostBoundsInfo{MaxFee: 1000},
+				Cosigner: &HostCosignerInfo{
 					ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: "aabb",
 				},
 			},
@@ -149,7 +149,7 @@ func TestSignPreparedCosignedGroupOneTarget(t *testing.T) {
 		t.Fatalf("result = %+v", result)
 	}
 	componentCalls = 0
-	testHeldKeys[bounded].BoundedAuthorization.MaxFee = new(uint64(999))
+	testHeldKeys[bounded].Host.Bounds.MaxFee = 999
 	if _, err := signCosignedWithHeldKeys(options); err == nil ||
 		!strings.Contains(err.Error(), "exceeds advertised max_fee") {
 		t.Fatalf("SignPreparedCosignedGroup() error = %v, want max_fee rejection", err)
@@ -184,7 +184,7 @@ func TestSignPreparedCosignedGroupSkipsTheCosignerOnAListedRekey(t *testing.T) {
 			json.NewEncoder(w).Encode(ComponentResponse{
 				RequestID: req.RequestID,
 				Components: []Component{{
-					TargetIndex: 0, Kind: ComponentTargetKindBoundedBase, AuthAddress: bounded,
+					TargetIndex: 0, Kind: ComponentTargetKindBase, AuthAddress: bounded,
 					BaseSignatures: []string{"base-sig"}, AssemblyReceipt: "receipt",
 					SignatureScheme: "aplane.falcon1024.v1", Path: ComponentPathListedRekey,
 				}},
@@ -229,10 +229,10 @@ func TestSignPreparedCosignedGroupSkipsTheCosignerOnAListedRekey(t *testing.T) {
 			ListedRekey:   &LogicSigResourceUsage{ProgramBytes: 5308, ArgumentBytes: 1583, MaxOpcodeCost: 20000},
 		},
 		CosignerComponentKeyType: KeyTypeWitnessFalcon1024,
-		BoundedAuthorization: &BoundedAuthorizationInfo{
-			Contract: BoundedContractBounded2, MaxFee: new(uint64(1000)), Rekey: "spending_key",
-			RekeyList: &BoundedRekeyListInfo{Contract: "rekey_list1", Depth: 4},
-			Cosigner:  &BoundedCosignerAuthorizationInfo{ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: "aabb"},
+		Host: &HostInfo{
+			Contract: HostContractBounded2, Bounds: &HostBoundsInfo{MaxFee: 1000}, Rekey: "spending_key",
+			RekeyList: &HostRekeyListInfo{Contract: "rekey_list1", Depth: 4},
+			Cosigner:  &HostCosignerInfo{ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: "aabb"},
 		},
 	}
 	result, err := signCosignedWithHeldKeys(PreparedCosignedGroupOptions{
@@ -338,7 +338,7 @@ func TestSignPreparedCosignedGroupSendsAHeldPrimaryAsTheSignersOwn(t *testing.T)
 						RequestID: req.RequestID,
 						Components: []Component{{
 							TargetIndex:     0,
-							Kind:            ComponentTargetKindBoundedBase,
+							Kind:            ComponentTargetKindBase,
 							AuthAddress:     bounded,
 							BaseSignatures:  []string{"base-sig"},
 							AssemblyReceipt: "receipt",
@@ -417,9 +417,9 @@ func TestSignPreparedCosignedGroupSendsAHeldPrimaryAsTheSignersOwn(t *testing.T)
 							Spend: &LogicSigResourceUsage{ProgramBytes: 5308, ArgumentBytes: 3358, MaxOpcodeCost: 20000},
 						},
 						CosignerComponentKeyType: KeyTypeWitnessFalcon1024,
-						BoundedAuthorization: &BoundedAuthorizationInfo{
-							Contract: BoundedContractBounded2, MaxFee: new(uint64(1000)),
-							Cosigner: &BoundedCosignerAuthorizationInfo{
+						Host: &HostInfo{
+							Contract: HostContractBounded2, Bounds: &HostBoundsInfo{MaxFee: 1000},
+							Cosigner: &HostCosignerInfo{
 								ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: "aabb",
 							},
 						},
@@ -472,7 +472,7 @@ func TestComponentRequestRejectsASizeHintOnTheSignersOwnPosition(t *testing.T) {
 	} {
 		req := ComponentRequest{
 			GroupBytesHex:       []string{"5458aa", "5458bb"},
-			Targets:             []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindBoundedBase, AuthAddress: "BOUNDED"}},
+			Targets:             []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindBase, AuthAddress: "BOUNDED"}},
 			ContextualPositions: []ComponentContextPosition{position},
 		}
 		want := "contextual position 1: lsig_resources and pq_scheme are allowed only without auth_address"
@@ -536,7 +536,7 @@ func TestComponentResponseValidateForRequestRejectsOutOfGroupIndex(t *testing.T)
 func TestUnifiedBoundedComponentRejectsMissingFrozenGroup(t *testing.T) {
 	err := (ComponentRequest{
 		RequestID: "bounded-request",
-		Targets:   []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindBoundedBase, AuthAddress: "AUTH"}},
+		Targets:   []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindBase, AuthAddress: "AUTH"}},
 	}).Validate()
 	if err == nil || !strings.Contains(err.Error(), "group_bytes_hex") {
 		t.Fatalf("Validate() error = %v, want frozen group rejection", err)
@@ -545,7 +545,7 @@ func TestUnifiedBoundedComponentRejectsMissingFrozenGroup(t *testing.T) {
 
 func TestUnifiedBoundedComponentResponseRejectsMalformedTargets(t *testing.T) {
 	valid := Component{
-		TargetIndex: 0, Kind: ComponentTargetKindBoundedBase, AuthAddress: "BOUNDED",
+		TargetIndex: 0, Kind: ComponentTargetKindBase, AuthAddress: "BOUNDED",
 		BaseSignatures: []string{"base"}, AssemblyReceipt: "receipt",
 		SignatureScheme: "aplane.falcon1024.v1", Path: ComponentPathSpend,
 	}
@@ -566,7 +566,7 @@ func TestUnifiedBoundedComponentResponseRejectsMalformedTargets(t *testing.T) {
 				item.AssemblyReceipt = ""
 				return item
 			}()},
-			want: "invalid bounded-base material",
+			want: "invalid base material",
 		},
 		{
 			name: "no path",
@@ -623,7 +623,7 @@ func TestRequestBoundedKindCancelsApprovalWhenContextCanceled(t *testing.T) {
 		_, err := client.RequestComponentsWithContext(ctx, ComponentRequest{
 			RequestID:     "bounded-cancel-id",
 			GroupBytesHex: []string{"545801"},
-			Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindBoundedBase, AuthAddress: "AUTH"}},
+			Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindBase, AuthAddress: "AUTH"}},
 		})
 		result <- err
 	}()
@@ -670,7 +670,7 @@ func TestBoundedEndpointClassifiesNotFound(t *testing.T) {
 	_, err := client.RequestComponents(ComponentRequest{
 		RequestID:     "bounded-not-found",
 		GroupBytesHex: []string{"545801"},
-		Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindBoundedBase, AuthAddress: "AUTH"}},
+		Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindBase, AuthAddress: "AUTH"}},
 	})
 	if !errors.Is(err, ErrKeyNotFound) {
 		t.Fatalf("RequestComponents() error = %v, want ErrKeyNotFound", err)
@@ -862,21 +862,40 @@ func TestValidateBoundedTargetFees(t *testing.T) {
 	}
 }
 
+// Bounds that arrive without max_fee get the tightest ceiling, and absent
+// bounds stay absent.
+func TestHostBoundsWithoutMaxFeeReadAsZero(t *testing.T) {
+	var bare, plain HostInfo
+	if err := json.Unmarshal([]byte(`{"contract":"bounded2","bounds":{}}`), &bare); err != nil {
+		t.Fatal(err)
+	}
+	if ceiling, has, err := boundedFeeCeiling(&bare); err != nil || !has || ceiling != 0 {
+		t.Fatalf("bounds without max_fee: ceiling = %d, %v, %v, want 0, true", ceiling, has, err)
+	}
+	if err := json.Unmarshal([]byte(`{"contract":"plain1"}`), &plain); err != nil {
+		t.Fatal(err)
+	}
+	if plain.Bounds != nil {
+		t.Fatalf("a plain host decoded bounds: %+v", plain.Bounds)
+	}
+}
+
 // A plain host has no fee ceiling; a bounded host must advertise one; a contract
 // this SDK doesn't know fails closed.
 func TestBoundedFeeCeilingFollowsTheContract(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
-		info    BoundedAuthorizationInfo
+		info    HostInfo
 		ceiling uint64
 		has     bool
 		err     string
 	}{
-		{"bounded host", BoundedAuthorizationInfo{Contract: BoundedContractBounded2, MaxFee: new(uint64(10_000))}, 10_000, true, ""},
-		{"bounded host without a ceiling", BoundedAuthorizationInfo{Contract: BoundedContractBounded2}, 0, false, "has no max_fee"},
-		{"plain host", BoundedAuthorizationInfo{Contract: BoundedContractPlain1}, 0, false, ""},
-		{"plain host with a ceiling", BoundedAuthorizationInfo{Contract: BoundedContractPlain1, MaxFee: new(uint64(0))}, 0, false, "never has"},
-		{"unknown contract", BoundedAuthorizationInfo{Contract: "bounded3", MaxFee: new(uint64(1))}, 0, false, "not supported"},
+		{"bounded host", HostInfo{Contract: HostContractBounded2, Bounds: &HostBoundsInfo{MaxFee: 10_000}}, 10_000, true, ""},
+		{"bounded host with a ceiling of zero", HostInfo{Contract: HostContractBounded2, Bounds: &HostBoundsInfo{MaxFee: 0}}, 0, true, ""},
+		{"bounded host without bounds", HostInfo{Contract: HostContractBounded2}, 0, false, "has no bounds"},
+		{"plain host", HostInfo{Contract: HostContractPlain1}, 0, false, ""},
+		{"plain host with bounds", HostInfo{Contract: HostContractPlain1, Bounds: &HostBoundsInfo{MaxFee: 0}}, 0, false, "never has"},
+		{"unknown contract", HostInfo{Contract: "bounded3", Bounds: &HostBoundsInfo{MaxFee: 1}}, 0, false, "not supported"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ceiling, has, err := boundedFeeCeiling(&tc.info)
@@ -943,7 +962,7 @@ func TestSignPreparedCosignedGroupMixedPaths(t *testing.T) {
 					}
 					base := func(index int, account, path string) Component {
 						return Component{
-							TargetIndex: index, Kind: ComponentTargetKindBoundedBase, AuthAddress: account,
+							TargetIndex: index, Kind: ComponentTargetKindBase, AuthAddress: account,
 							BaseSignatures: []string{"base-sig"}, AssemblyReceipt: "receipt",
 							SignatureScheme: "aplane.falcon1024.v1", Path: path,
 						}
@@ -1033,10 +1052,10 @@ func TestSignPreparedCosignedGroupMixedPaths(t *testing.T) {
 				return &KeyInfo{
 					Address: address, KeyType: "aplane.falcon1024.v1", SigningFlow: SigningFlowCosigned1,
 					LogicSigResources: resources, CosignerComponentKeyType: KeyTypeWitnessFalcon1024,
-					BoundedAuthorization: &BoundedAuthorizationInfo{
-						Contract: BoundedContractPlain1, Rekey: "spending_key",
-						RekeyList: &BoundedRekeyListInfo{Contract: "rekey_list1", Depth: 4},
-						Cosigner:  &BoundedCosignerAuthorizationInfo{ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: "aabb"},
+					Host: &HostInfo{
+						Contract: HostContractPlain1, Rekey: "spending_key",
+						RekeyList: &HostRekeyListInfo{Contract: "rekey_list1", Depth: 4},
+						Cosigner:  &HostCosignerInfo{ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: "aabb"},
 					},
 				}
 			}
