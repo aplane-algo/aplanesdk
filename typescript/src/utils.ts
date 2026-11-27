@@ -108,25 +108,35 @@ export interface EnrollmentResult {
  * queued for the operator, "enrolled <fingerprint>" when the key was already
  * enrolled. The fingerprint must be the key this client authenticated with.
  */
-export function parseEnrollmentReply(reply: string, clientFingerprint: string): EnrollmentResult {
-  let result: EnrollmentResult;
-  if (reply.startsWith("pending ")) {
-    result = { fingerprint: reply.slice("pending ".length), pending: true };
-  } else if (reply.startsWith("enrolled ")) {
-    result = { fingerprint: reply.slice("enrolled ".length), pending: false };
+export function parseEnrollmentReply(reply: string | Buffer, clientFingerprint: string): EnrollmentResult {
+  // The reply is read as bytes, so text that is not UTF-8 is reported as
+  // \xNN escapes, as Go and Python report it, rather than decoded to U+FFFD.
+  const bytes = trimBytes(typeof reply === "string" ? Buffer.from(reply, "utf8") : reply);
+  const unexpected = () => new EnrollmentError(`Unexpected enrollment response: "${safeEnrollmentText(bytes)}"`);
+  let fingerprint: Buffer;
+  let pending: boolean;
+  if (startsWithText(bytes, "pending ")) {
+    [fingerprint, pending] = [bytes.subarray("pending ".length), true];
+  } else if (startsWithText(bytes, "enrolled ")) {
+    [fingerprint, pending] = [bytes.subarray("enrolled ".length), false];
   } else {
-    throw new EnrollmentError(`Unexpected enrollment response: "${safeEnrollmentText(reply)}"`);
+    throw unexpected();
   }
-  if (!result.fingerprint) {
-    throw new EnrollmentError(`Unexpected enrollment response: "${safeEnrollmentText(reply)}"`);
+  if (fingerprint.length === 0) {
+    throw unexpected();
   }
-  if (result.fingerprint !== clientFingerprint) {
+  if (!fingerprint.equals(Buffer.from(clientFingerprint, "utf8"))) {
     throw new EnrollmentError(
-      `Signer answered for ${safeEnrollmentText(result.fingerprint)}, ` +
+      `Signer answered for ${safeEnrollmentText(fingerprint)}, ` +
       `but this client authenticated with ${clientFingerprint}`
     );
   }
-  return result;
+  return { fingerprint: clientFingerprint, pending };
+}
+
+function startsWithText(bytes: Buffer, prefix: string): boolean {
+  const wanted = Buffer.from(prefix, "utf8");
+  return bytes.length >= wanted.length && bytes.subarray(0, wanted.length).equals(wanted);
 }
 
 /** What is read of the signer's enrollment answer; a real one is one short line. */
@@ -260,6 +270,10 @@ export async function requestEnrollment(
   if (parsedKey instanceof Error) {
     throw new SignerError(`failed to parse SSH key ${expandedKeyPath}: ${parsedKey.message}`);
   }
+  // ssh2 can parse an OpenSSH file that holds no key to undefined.
+  if (!parsedKey) {
+    throw new SignerError(`failed to parse SSH key ${expandedKeyPath}: it holds no key`);
+  }
   if (!parsedKey.isPrivateKey()) {
     throw new SignerError(`SSH key ${expandedKeyPath} is not a private key`);
   }
@@ -347,7 +361,7 @@ export async function requestEnrollment(
               return;
             }
             try {
-              resolve(parseEnrollmentReply(output.toString("utf8").trim(), clientFingerprint));
+              resolve(parseEnrollmentReply(output, clientFingerprint));
             } catch (error) {
               reject(error);
             }
