@@ -9,7 +9,7 @@
       "mnemonic_word_count": 0,
       "mnemonic_import": false,
       "mnemonic_scheme": "",
-      "bounded_authorization": {
+      "host": {
         "contract": "bounded2",
         "base_signature_arg_layout": {
           "count": 1,
@@ -17,12 +17,7 @@
             1423
           ]
         },
-        "spend_effects": [
-          "pay",
-          "axfer",
-          "asset_opt_in"
-        ],
-        "max_fee": 10000,
+        "rekey": "refused",
         "runtime_args": [],
         "derived_args": [],
         "argument_layout": [
@@ -38,8 +33,15 @@
             }
           }
         ],
-        "layer3_policy": "fixed_allowlist",
-        "rekey": "refused"
+        "bounds": {
+          "spend_effects": [
+            "pay",
+            "axfer",
+            "asset_opt_in"
+          ],
+          "max_fee": 10000,
+          "layer3_policy": "fixed_allowlist"
+        }
       },
       "valid_rekey_target": false,
       "creation_params": [
@@ -67,7 +69,7 @@
       "cosigner_component_key_types": [
         "aplane.witness-falcon1024.v1"
       ],
-      "bounded_authorization": {
+      "host": {
         "contract": "bounded2",
         "base_signature_arg_layout": {
           "count": 1,
@@ -75,12 +77,11 @@
             1423
           ]
         },
-        "spend_effects": [
-          "pay",
-          "axfer",
-          "asset_opt_in"
-        ],
-        "max_fee": 10000,
+        "rekey": "refused",
+        "rekey_list": {
+          "contract": "rekey_list1",
+          "depth": 4
+        },
         "cosigner": {
           "contract": "cosigner1",
           "component_key_type": "aplane.witness-falcon1024.v1",
@@ -88,10 +89,6 @@
           "required_on": [
             "spend"
           ]
-        },
-        "rekey_list": {
-          "contract": "rekey_list1",
-          "depth": 4
         },
         "runtime_args": [],
         "derived_args": [
@@ -154,8 +151,15 @@
             }
           }
         ],
-        "layer3_policy": "merkle_allowlist",
-        "rekey": "refused"
+        "bounds": {
+          "spend_effects": [
+            "pay",
+            "axfer",
+            "asset_opt_in"
+          ],
+          "max_fee": 10000,
+          "layer3_policy": "merkle_allowlist"
+        }
       },
       "valid_rekey_target": true,
       "creation_params": [

@@ -428,9 +428,9 @@ describe("signer API contract fixtures", () => {
     assert.equal(plain.keyType, "aplane.falcon1024.v1");
     assert.equal(plain.authorizationKind, "logic_sig");
     assert.ok(plain.parameters?.cosigner_public_key);
-    // A plain host has no fee ceiling: max_fee is absent, never zero.
-    assert.equal(plain.boundedAuthorization?.contract, "plain1");
-    assert.equal(plain.boundedAuthorization?.maxFee, undefined);
+    // A plain host has no bounds, and so no fee ceiling: never a zero one.
+    assert.equal(plain.host?.contract, "plain1");
+    assert.equal(plain.host?.bounds, undefined);
   });
 
   it("maps authorizationKind for a native-PQ spending key", async () => {
@@ -521,7 +521,7 @@ describe("signer API contract fixtures", () => {
 
   it("round-trips cosigner component and assembly fixture DTOs", () => {
     const unifiedComponentReq = fixture("component_request.json") as ComponentRequest;
-    assert.equal(unifiedComponentReq.targets[0].kind, "bounded-base");
+    assert.equal(unifiedComponentReq.targets[0].kind, "base");
     const unifiedComponentResp = fixture("component_response.json") as ComponentResponse;
     assert.ok(unifiedComponentResp.components[0].assembly_receipt);
 
@@ -567,7 +567,7 @@ describe("signer API contract fixtures", () => {
 
     const client = new SignerClient("http://localhost:11270");
     const response = await client.requestComponents(fixture("component_request.json") as ComponentRequest);
-    assert.equal(response.components[0].kind, "bounded-base");
+    assert.equal(response.components[0].kind, "base");
   });
 
   it("refuses a component request whose batch label names no place in a batch", async () => {
@@ -603,7 +603,7 @@ describe("signer API contract fixtures", () => {
     const client = new SignerClient("http://localhost:11270");
     const request = { ...(fixture("component_request.json") as ComponentRequest), batch: null } as unknown as ComponentRequest;
     const response = await client.requestComponents(request);
-    assert.equal(response.components[0].kind, "bounded-base");
+    assert.equal(response.components[0].kind, "base");
   });
 
   it("projects bounded inventory layer3 policy", async () => {
@@ -618,16 +618,19 @@ describe("signer API contract fixtures", () => {
     assert.equal(key.signingFlow, undefined);
     assert.equal(key.logicSigResources?.spend?.programBytes, 5169);
     assert.equal(key.logicSigResources?.spend?.argumentBytes, 1423);
-    assert.equal(key.boundedAuthorization?.layer3Policy, "fixed_allowlist");
-    assert.deepEqual(key.boundedAuthorization?.spendEffects, ["pay", "axfer", "asset_opt_in"]);
-    assert.equal(key.boundedAuthorization?.contract, "bounded2");
-    assert.equal(key.boundedAuthorization?.rekey, "refused");
+    assert.deepEqual(key.host?.bounds, {
+      spendEffects: ["pay", "axfer", "asset_opt_in"],
+      maxFee: 10000,
+      layer3Policy: "fixed_allowlist",
+    });
+    assert.equal(key.host?.contract, "bounded2");
+    assert.equal(key.host?.rekey, "refused");
     assert.deepEqual(
-      key.boundedAuthorization?.argumentLayout.map((slot) => slot.source),
+      key.host?.argumentLayout.map((slot) => slot.source),
       ["base_signature"],
     );
     assert.equal(key.logicSigResources?.spendingRekey?.argumentBytes, 1423);
-    assert.deepEqual(key.boundedAuthorization?.argumentLayout[0].paths, {
+    assert.deepEqual(key.host?.argumentLayout[0].paths, {
       spend: "required",
       spendingRekey: "required",
       listedRekey: "required",
@@ -636,11 +639,11 @@ describe("signer API contract fixtures", () => {
     const corridor = keys[1];
     assert.equal(corridor.signingFlow, "cosigned1");
     assert.equal(corridor.cosignerComponentKeyType, "aplane.witness-falcon1024.v1");
-    assert.ok(corridor.boundedAuthorization?.cosigner?.publicKeyHex);
-    assert.ok(corridor.boundedAuthorization?.cosigner?.componentKeyId);
-    assert.deepEqual(corridor.boundedAuthorization?.cosigner?.requiredOn, ["spend"]);
-    assert.equal(corridor.boundedAuthorization?.contract, "bounded2");
-    assert.equal(corridor.boundedAuthorization?.rekey, "refused");
+    assert.ok(corridor.host?.cosigner?.publicKeyHex);
+    assert.ok(corridor.host?.cosigner?.componentKeyId);
+    assert.deepEqual(corridor.host?.cosigner?.requiredOn, ["spend"]);
+    assert.equal(corridor.host?.contract, "bounded2");
+    assert.equal(corridor.host?.rekey, "refused");
 
     mockFetch.mockResolvedValueOnce({
       status: 200,
@@ -649,15 +652,15 @@ describe("signer API contract fixtures", () => {
     });
     const keyTypes = await client.listKeyTypes();
     const keyType = keyTypes[0];
-    assert.equal(keyType.boundedAuthorization?.layer3Policy, "fixed_allowlist");
-    assert.equal(keyType.boundedAuthorization?.contract, "bounded2");
-    assert.equal(keyType.boundedAuthorization?.rekey, "refused");
+    assert.equal(keyType.host?.bounds?.layer3Policy, "fixed_allowlist");
+    assert.equal(keyType.host?.contract, "bounded2");
+    assert.equal(keyType.host?.rekey, "refused");
     const corridorType = keyTypes[1];
     assert.equal(corridorType.signingFlow, "cosigned1");
     assert.equal(corridorType.perKeyContract, undefined);
     assert.deepEqual(corridorType.cosignerComponentKeyTypes, ["aplane.witness-falcon1024.v1"]);
-    assert.deepEqual(corridorType.boundedAuthorization?.cosigner?.requiredOn, ["spend"]);
-    assert.equal(corridorType.boundedAuthorization?.rekey, "refused");
+    assert.deepEqual(corridorType.host?.cosigner?.requiredOn, ["spend"]);
+    assert.equal(corridorType.host?.rekey, "refused");
 
     mockFetch.mockResolvedValueOnce({
       status: 200,
@@ -667,7 +670,7 @@ describe("signer API contract fixtures", () => {
     const [perKeyType] = await client.listKeyTypes();
     assert.equal(perKeyType.perKeyContract, true);
     assert.equal(perKeyType.signingFlow, undefined);
-    assert.equal(perKeyType.boundedAuthorization, undefined);
+    assert.equal(perKeyType.host, undefined);
     assert.deepEqual(perKeyType.cosignerComponentKeyTypes, [
       "aplane.witness-falcon1024.v1",
       "aplane.witness-ed25519.v1",

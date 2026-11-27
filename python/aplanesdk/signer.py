@@ -133,10 +133,10 @@ AUTHORIZATION_KIND_LOGIC_SIG = "logic_sig"
 # cosigner component. It replaces bounded-cosigner1, which carried spends only.
 SIGNING_FLOW_COSIGNED1 = "cosigned1"
 
-# Bounded authorization contracts this SDK signs for: a bounded host, with a
+# Host contracts this SDK signs for: a bounded host, with bounds and so a
 # fee ceiling, and a plain host, which has none.
-BOUNDED_CONTRACT_BOUNDED2 = "bounded2"
-BOUNDED_CONTRACT_PLAIN1 = "plain1"
+HOST_CONTRACT_BOUNDED2 = "bounded2"
+HOST_CONTRACT_PLAIN1 = "plain1"
 # Rotating account choreography (/sign/rotating/prepare then
 # /sign/rotating/sign), in which the signer rekeys the account to a fresh
 # stage on every spend. send_prepared runs it; prepare_rotating and
@@ -201,10 +201,10 @@ ERR_CODE_NOT_FOUND = "not_found"
 ERR_CODE_UNAVAILABLE = "unavailable"
 ERR_CODE_CACHE_REFRESH = "cache_refresh"
 ERR_CODE_INTERNAL = "internal"
-ERR_CODE_BOUNDED_COSIGNER_REQUIRED = "bounded_cosigner_required"
+ERR_CODE_COSIGNER_REQUIRED = "cosigner_required"
 # The account refuses every rekey but one to an address on its rekey-to list,
 # and the target is not on it.
-ERR_CODE_BOUNDED_REKEY_TARGET_NOT_LISTED = "bounded_rekey_target_not_listed"
+ERR_CODE_REKEY_TARGET_NOT_LISTED = "rekey_target_not_listed"
 # A rotating account (rotating1) was sent to an ordinary signing endpoint. Use
 # send_prepared, or prepare_rotating and sign_prepared_rotating.
 ERR_CODE_ROTATING_SIGNING_REQUIRED = "rotating_signing_required"
@@ -1107,11 +1107,9 @@ _LSIG_RESOURCE_PROFILE_SHAPE: Dict[str, Any] = {
     "spending_rekey": _LSIG_RESOURCE_USAGE_SHAPE,
     "listed_rekey": _LSIG_RESOURCE_USAGE_SHAPE,
 }
-_BOUNDED_AUTHORIZATION_SHAPE: Dict[str, Any] = {
+_HOST_SHAPE: Dict[str, Any] = {
     "contract": "str",
     "base_signature_arg_layout": {"count": "int", "max_sizes": "ints"},
-    "spend_effects": "strs",
-    "max_fee": ("ptr", "uint64"),
     "rekey": "str",
     "rekey_list": {"contract": "str", "depth": "int", "root": "str"},
     "cosigner": {
@@ -1137,7 +1135,7 @@ _BOUNDED_AUTHORIZATION_SHAPE: Dict[str, Any] = {
             "paths": {"spend": "str", "spending_rekey": "str", "listed_rekey": "str"},
         },
     ),
-    "layer3_policy": "str",
+    "bounds": {"spend_effects": "strs", "max_fee": "uint64", "layer3_policy": "str"},
 }
 _KEY_INFO_SHAPE: Dict[str, Any] = {
     "address": "str",
@@ -1149,7 +1147,7 @@ _KEY_INFO_SHAPE: Dict[str, Any] = {
     "logic_sig_resources": _LSIG_RESOURCE_PROFILE_SHAPE,
     "is_generic_lsig": "bool",
     "is_witness_key": "bool",
-    "bounded_authorization": _BOUNDED_AUTHORIZATION_SHAPE,
+    "host": _HOST_SHAPE,
     "signing_args": ("list", _RUNTIME_ARG_SHAPE),
     "parameters": "str_map",
     "template_provenance_status": "str",
@@ -1201,7 +1199,7 @@ _KEY_TYPES_RESPONSE_SHAPE: Dict[str, Any] = {
             "cosigner_component_key_types": "strs",
             "per_key_contract": "bool",
             "boundary_schema": "str",
-            "bounded_authorization": _BOUNDED_AUTHORIZATION_SHAPE,
+            "host": _HOST_SHAPE,
             "valid_rekey_target": "bool",
             "creation_params": ("list", _CREATION_PARAM_SHAPE),
             "runtime_args": ("list", _RUNTIME_ARG_SHAPE),
@@ -1315,13 +1313,13 @@ SigningArg = RuntimeArg
 
 
 @dataclass
-class BoundedSignatureArgLayout:
+class HostSignatureArgLayout:
     count: int
     max_sizes: List[int]
 
 
 @dataclass
-class BoundedDerivedArgInfo:
+class HostDerivedArgInfo:
     name: str
     kind: str
     parameter: str
@@ -1329,15 +1327,15 @@ class BoundedDerivedArgInfo:
 
 
 @dataclass
-class BoundedArgumentPathMask:
+class HostArgumentPathMask:
     spend: str
     spending_rekey: str
     listed_rekey: str = ""
 
 
 @dataclass
-class BoundedRekeyListInfo:
-    """A bounded account's rekey-to list. The entries are never published."""
+class HostRekeyListInfo:
+    """A host account's rekey-to list. The entries are never published."""
 
     contract: str
     depth: int
@@ -1345,17 +1343,17 @@ class BoundedRekeyListInfo:
 
 
 @dataclass
-class BoundedArgumentSlotInfo:
+class HostArgumentSlotInfo:
     index: int
     name: str
     source: str
     max_size: int
-    paths: BoundedArgumentPathMask
+    paths: HostArgumentPathMask
 
 
 @dataclass
-class BoundedCosignerAuthorizationInfo:
-    """Public cosigner authority embedded in a bounded account."""
+class HostCosignerInfo:
+    """Public cosigner authority embedded in a host account."""
 
     contract: str
     component_key_type: str
@@ -1386,19 +1384,27 @@ class LogicSigResourceProfile:
 
 
 @dataclass
-class BoundedAuthorizationInfo:
-    contract: str
-    base_signature_arg_layout: BoundedSignatureArgLayout
+class HostBoundsInfo:
+    """What a bounded host's program enforces on a spend."""
+
     spend_effects: List[str]
-    max_fee: Optional[int]  # None on a plain host, which has no fee ceiling
+    max_fee: int  # the fee ceiling; 0 is a ceiling of zero
+    layer3_policy: str
+
+
+@dataclass
+class HostInfo:
+    contract: str
+    base_signature_arg_layout: HostSignatureArgLayout
     rekey: str  # "refused" or "spending_key"
     runtime_args: List[RuntimeArg]
-    derived_args: List[BoundedDerivedArgInfo]
-    argument_layout: List[BoundedArgumentSlotInfo]
-    layer3_policy: str
-    cosigner: Optional[BoundedCosignerAuthorizationInfo] = None
+    derived_args: List[HostDerivedArgInfo]
+    argument_layout: List[HostArgumentSlotInfo]
+    cosigner: Optional[HostCosignerInfo] = None
     # With rekey "refused": "only these", a rekey may go only to a listed address.
-    rekey_list: Optional[BoundedRekeyListInfo] = None
+    rekey_list: Optional[HostRekeyListInfo] = None
+    # None on a plain host, which has no bounds and so no fee ceiling.
+    bounds: Optional[HostBoundsInfo] = None
 
 
 @dataclass
@@ -1416,7 +1422,7 @@ class KeyInfo:
     logic_sig_resources: Optional[LogicSigResourceProfile] = None
     is_generic_lsig: bool = False
     is_witness_key: bool = False
-    bounded_authorization: Optional[BoundedAuthorizationInfo] = None
+    host: Optional[HostInfo] = None
     signing_args: Optional[List[SigningArg]] = None  # Key-file args required for LogicSigs
     parameters: Optional[Dict[str, str]] = None
     template_provenance_status: str = ""
@@ -1529,7 +1535,7 @@ class KeyTypeInfo:
     # The boundary file grammar a per-key type's requests take ("aplane.boundary.v1"),
     # or "" for one that takes none, such as a plain host.
     boundary_schema: str = ""
-    bounded_authorization: Optional[BoundedAuthorizationInfo] = None
+    host: Optional[HostInfo] = None
     # The type's declaration of whether an aplane key of this type may be the
     # signing authority an account is rekeyed to, its own account included.
     # False when the signer does not report it.
@@ -1723,8 +1729,8 @@ class SimulationResult:
 
 
 COMPONENT_TARGET_KIND_COSIGNER = "cosigner"
-COMPONENT_TARGET_KIND_BOUNDED_BASE = "bounded-base"
-# Bounded-base component paths: the path the signer classified a target on. A
+COMPONENT_TARGET_KIND_BASE = "base"
+# Base component paths: the path the signer classified a target on. A
 # listed rekey takes no cosigner component; every other path does.
 COMPONENT_PATH_SPEND = "spend"
 COMPONENT_PATH_SPENDING_REKEY = "spending_rekey"
@@ -1733,7 +1739,7 @@ COMPONENT_PATHS = (COMPONENT_PATH_SPEND, COMPONENT_PATH_SPENDING_REKEY, COMPONEN
 
 
 def component_needs_cosigner(component: Dict[str, Any]) -> bool:
-    """Whether a bounded-base component's path takes a cosigner component."""
+    """Whether a base component's path takes a cosigner component."""
     return component.get("path") != COMPONENT_PATH_LISTED_REKEY
 
 
@@ -1768,7 +1774,7 @@ class AssemblyTarget:
     # takes none.
     cosigner_signature: str = ""
     base_signatures: Optional[List[str]] = None
-    bounded_runtime_args: Optional[Dict[str, str]] = None
+    runtime_args: Optional[Dict[str, str]] = None
     assembly_receipt: str = ""
     base_source_request_id: str = ""
     cosigner_source_request_id: str = ""
@@ -3474,8 +3480,8 @@ def _selected_prepared_resources(
         return None
     profile = key.logic_sig_resources
     selected = profile.spend or profile.default
-    if key.bounded_authorization and txn is not None and txn.rekey_to is not None:
-        bounded = key.bounded_authorization
+    if key.host and txn is not None and txn.rekey_to is not None:
+        bounded = key.host
         if bounded.rekey_list is not None and bounded.rekey == "refused":
             # Only these addresses: the signer checks the target and adds the proof.
             selected = profile.listed_rekey
@@ -3537,33 +3543,41 @@ def _parse_runtime_args(items: Any) -> Optional[List[RuntimeArg]]:
     return [_parse_runtime_arg(item) for item in items]
 
 
-def _parse_bounded_authorization(data: Any) -> Optional[BoundedAuthorizationInfo]:
+def _parse_host(data: Any) -> Optional[HostInfo]:
     if not isinstance(data, dict):
         return None
-    # A plain host has no fee ceiling, so max_fee may be absent; signing checks
-    # that the contract agrees (_bounded_fee_ceiling).
-    max_fee = data.get("max_fee")
-    if max_fee is not None and (
-        isinstance(max_fee, bool) or not isinstance(max_fee, int) or max_fee < 0
-    ):
-        raise SignerError("invalid bounded_authorization: max_fee must be a non-negative integer")
+    # A plain host has no bounds; signing checks that the contract agrees
+    # (_bounded_fee_ceiling).
+    bounds = data.get("bounds")
+    if bounds is not None and not isinstance(bounds, dict):
+        raise SignerError("invalid host: bounds must be an object")
+    parsed_bounds: Optional[HostBoundsInfo] = None
+    if bounds is not None:
+        max_fee = bounds.get("max_fee")
+        if max_fee is None:
+            max_fee = 0
+        if isinstance(max_fee, bool) or not isinstance(max_fee, int) or max_fee < 0:
+            raise SignerError("invalid host: bounds.max_fee must be a non-negative integer")
+        parsed_bounds = HostBoundsInfo(
+            spend_effects=list(bounds.get("spend_effects") or []),
+            max_fee=max_fee,
+            layer3_policy=bounds.get("layer3_policy") or "",
+        )
     layout = data.get("base_signature_arg_layout") or {}
     runtime_args = data.get("runtime_args") or []
     derived_args = data.get("derived_args") or []
     argument_layout = data.get("argument_layout") or []
     cosigner = data.get("cosigner")
     rekey_list = data.get("rekey_list")
-    return BoundedAuthorizationInfo(
+    return HostInfo(
         contract=data.get("contract", ""),
-        base_signature_arg_layout=BoundedSignatureArgLayout(
+        base_signature_arg_layout=HostSignatureArgLayout(
             count=layout.get("count", 0), max_sizes=list(layout.get("max_sizes") or [])
         ),
-        spend_effects=list(data.get("spend_effects") or []),
-        max_fee=max_fee,
         rekey=data.get("rekey", ""),
         runtime_args=[_parse_runtime_arg(item) for item in runtime_args],
         derived_args=[
-            BoundedDerivedArgInfo(
+            HostDerivedArgInfo(
                 name=item.get("name", ""),
                 kind=item.get("kind", ""),
                 parameter=item.get("parameter", ""),
@@ -3572,12 +3586,12 @@ def _parse_bounded_authorization(data: Any) -> Optional[BoundedAuthorizationInfo
             for item in derived_args
         ],
         argument_layout=[
-            BoundedArgumentSlotInfo(
+            HostArgumentSlotInfo(
                 index=item.get("index", 0),
                 name=item.get("name", ""),
                 source=item.get("source", ""),
                 max_size=item.get("max_size", 0),
-                paths=BoundedArgumentPathMask(
+                paths=HostArgumentPathMask(
                     spend=(item.get("paths") or {}).get("spend", ""),
                     spending_rekey=(item.get("paths") or {}).get("spending_rekey", ""),
                     listed_rekey=(item.get("paths") or {}).get("listed_rekey", ""),
@@ -3585,9 +3599,9 @@ def _parse_bounded_authorization(data: Any) -> Optional[BoundedAuthorizationInfo
             )
             for item in argument_layout
         ],
-        layer3_policy=data.get("layer3_policy", ""),
+        bounds=parsed_bounds,
         cosigner=(
-            BoundedCosignerAuthorizationInfo(
+            HostCosignerInfo(
                 contract=cosigner.get("contract", ""),
                 component_key_type=cosigner.get("component_key_type", ""),
                 public_key_hex=cosigner.get("public_key_hex", ""),
@@ -3599,7 +3613,7 @@ def _parse_bounded_authorization(data: Any) -> Optional[BoundedAuthorizationInfo
             else None
         ),
         rekey_list=(
-            BoundedRekeyListInfo(
+            HostRekeyListInfo(
                 contract=rekey_list.get("contract", ""),
                 depth=rekey_list.get("depth", 0),
                 root_hex=rekey_list.get("root", ""),
@@ -3759,19 +3773,19 @@ def _validate_component_request(data: Dict[str, Any]) -> None:
                 raise ValueError(f"target {index}: cosigner target forbids auth_address and lsig_args")
             if index > 1 and target.get("component_key") != targets[0].get("component_key"):
                 raise ValueError("cosigner targets must share one component_key")
-        elif kind == COMPONENT_TARGET_KIND_BOUNDED_BASE:
+        elif kind == COMPONENT_TARGET_KIND_BASE:
             if not target.get("auth_address") or target.get("component_key"):
-                raise ValueError(f"target {index}: bounded-base target requires auth_address and forbids component_key")
+                raise ValueError(f"target {index}: base target requires auth_address and forbids component_key")
         else:
             raise ValueError(f"target {index}: unsupported component kind {kind!r}")
-    # auth_address marks one of the signer's own accounts. Only a bounded-base
+    # auth_address marks one of the signer's own accounts. Only a base
     # request sizes the group, so only it takes the field.
-    if kind != COMPONENT_TARGET_KIND_BOUNDED_BASE:
+    if kind != COMPONENT_TARGET_KIND_BASE:
         for index, position in enumerate(context, start=1):
             if position.get("auth_address") or position.get("lsig_args"):
                 raise ValueError(
                     f"contextual position {index}: auth_address and lsig_args "
-                    "are allowed only on a bounded-base request"
+                    "are allowed only on a base request"
                 )
     probe = {
         "request_id": data.get("request_id", ""),
@@ -3806,11 +3820,11 @@ def _validate_component_response(
                     or component.get("base_signatures") or component.get("assembly_receipt")
                     or component.get("path")):
                 raise ValueError(f"component {index} has invalid signature material")
-        elif kind == COMPONENT_TARGET_KIND_BOUNDED_BASE:
+        elif kind == COMPONENT_TARGET_KIND_BASE:
             if (not component.get("auth_address") or not component.get("base_signatures")
                     or not component.get("assembly_receipt")
                     or not component.get("signature_scheme") or component.get("signature")):
-                raise ValueError(f"component {index} has invalid bounded-base material")
+                raise ValueError(f"component {index} has invalid base material")
             if component.get("path") not in COMPONENT_PATHS:
                 raise ValueError(f"component {index} has unknown bounded path {component.get('path')!r}")
         else:
@@ -5599,7 +5613,7 @@ class SignerClient:
                 logic_sig_resources=_parse_lsig_resource_profile(k.get("logic_sig_resources")),
                 is_generic_lsig=k.get("is_generic_lsig", False),
                 is_witness_key=k.get("is_witness_key", False),
-                bounded_authorization=_parse_bounded_authorization(k.get("bounded_authorization")),
+                host=_parse_host(k.get("host")),
                 signing_args=_parse_runtime_args(k.get("signing_args")),
                 # Read by its shape, parameters left out is {}: none.
                 parameters=k.get("parameters") or None,
@@ -6623,8 +6637,8 @@ class SignerClient:
                     cosigner_component_key_types=list(kt.get("cosigner_component_key_types") or []),
                     per_key_contract=kt.get("per_key_contract", False),
                     boundary_schema=kt.get("boundary_schema", ""),
-                    bounded_authorization=_parse_bounded_authorization(
-                        kt.get("bounded_authorization")
+                    host=_parse_host(
+                        kt.get("host")
                     ),
                     valid_rekey_target=kt.get("valid_rekey_target", False),
                     creation_params=creation_params,
@@ -9211,24 +9225,24 @@ def _decode_canonical_group(group_bytes_hex: List[str]) -> List[transaction.Tran
     return result
 
 
-def _bounded_fee_ceiling(info: BoundedAuthorizationInfo) -> Optional[int]:
+def _bounded_fee_ceiling(info: HostInfo) -> Optional[int]:
     """Return an account's on-chain fee ceiling, or None for a plain host.
 
-    A bounded host must advertise one; a plain host never has one; a contract
-    this SDK does not know fails closed.
+    A bounded host has one, in its bounds; a plain host has no bounds; a
+    contract this SDK does not know fails closed.
     """
-    if info.contract == BOUNDED_CONTRACT_BOUNDED2:
-        if info.max_fee is None:
-            raise SignerError(f"bounded authorization {info.contract} has no max_fee")
-        return info.max_fee
-    if info.contract == BOUNDED_CONTRACT_PLAIN1:
-        if info.max_fee is not None:
+    if info.contract == HOST_CONTRACT_BOUNDED2:
+        if info.bounds is None:
+            raise SignerError(f"host contract {info.contract} has no bounds")
+        return info.bounds.max_fee
+    if info.contract == HOST_CONTRACT_PLAIN1:
+        if info.bounds is not None:
             raise SignerError(
-                f"bounded authorization {info.contract} has a max_fee, which a plain host never has"
+                f"host contract {info.contract} has bounds, which a plain host never has"
             )
         return None
     raise SignerError(
-        f"bounded authorization contract {info.contract!r} is not supported by this SDK; upgrade it"
+        f"host contract {info.contract!r} is not supported by this SDK; upgrade it"
     )
 
 
@@ -9285,17 +9299,17 @@ def _verify_signed_transaction_matches_canonical(
 
 
 def _bounded_cosigner_public_key(key: KeyInfo) -> str:
-    if key.bounded_authorization and key.bounded_authorization.cosigner:
-        if key.bounded_authorization.cosigner.public_key_hex:
-            return key.bounded_authorization.cosigner.public_key_hex
+    if key.host and key.host.cosigner:
+        if key.host.cosigner.public_key_hex:
+            return key.host.cosigner.public_key_hex
     return (key.parameters or {}).get("cosigner_public_key", "")
 
 
 def _bounded_cosigner_component_key_type(key: KeyInfo) -> str:
     if key.cosigner_component_key_type:
         return key.cosigner_component_key_type
-    if key.bounded_authorization and key.bounded_authorization.cosigner:
-        return key.bounded_authorization.cosigner.component_key_type
+    if key.host and key.host.cosigner:
+        return key.host.cosigner.component_key_type
     return ""
 
 
@@ -9449,17 +9463,17 @@ def sign_prepared_cosigned_group(
             requests_data.append(_prepared_sign_request(item, index))
             target_resources[index] = resources
             target_keys[index] = key
-            if key.bounded_authorization is None:
+            if key.host is None:
                 raise ValueError(
-                    f"prepared transaction {index}: bounded authorization " "metadata is required"
+                    f"prepared transaction {index}: host metadata is required"
                 )
-            ceiling = _bounded_fee_ceiling(key.bounded_authorization)
+            ceiling = _bounded_fee_ceiling(key.host)
             if ceiling is not None:
                 target_max_fees[index] = ceiling
             # Only a rekey of an account with a rekey list can take the listed
             # path, which needs no cosigner; whether it does, only the signer's
             # base component says.
-            if _rekeys(item.transaction) and key.bounded_authorization.rekey_list is not None:
+            if _rekeys(item.transaction) and key.host.rekey_list is not None:
                 may_take_listed_path.add(index)
             targets.append(
                 {
@@ -9530,7 +9544,7 @@ def sign_prepared_cosigned_group(
             component_targets.append(
                 {
                     "target_index": index,
-                    "kind": COMPONENT_TARGET_KIND_BOUNDED_BASE,
+                    "kind": COMPONENT_TARGET_KIND_BASE,
                     "auth_address": request["auth_address"],
                     "lsig_args": request.get("lsig_args"),
                     "app_call_info": request.get("app_call_info"),
@@ -9565,7 +9579,7 @@ def sign_prepared_cosigned_group(
     try:
         for component in component_response.components:
             target = target_by_index.get(component["target_index"])
-            if (target is None or component.get("kind") != COMPONENT_TARGET_KIND_BOUNDED_BASE
+            if (target is None or component.get("kind") != COMPONENT_TARGET_KIND_BASE
                     or component.get("auth_address") != target["cosigned_account"]):
                 raise SignerError(
                     f"signer returned unexpected bounded component target "
@@ -9684,7 +9698,7 @@ def sign_prepared_cosigned_group(
                     target_index=index,
                     auth_address=component["auth_address"],
                     base_signatures=list(component.get("base_signatures") or []),
-                    bounded_runtime_args=dict(component.get("runtime_args") or {}) or None,
+                    runtime_args=dict(component.get("runtime_args") or {}) or None,
                     assembly_receipt=component["assembly_receipt"],
                     base_source_request_id=component_response.request_id,
                     cosigner_signature=cosigner["signature"],

@@ -23,7 +23,7 @@ func TestComponentRequestTimeoutKeepsTwoMinuteFloor(t *testing.T) {
 	}
 }
 
-func TestRequestComponentsBoundedBaseDiscoversApprovalWait(t *testing.T) {
+func TestRequestComponentsBaseDiscoversApprovalWait(t *testing.T) {
 	var paths []string
 	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
@@ -39,7 +39,7 @@ func TestRequestComponentsBoundedBaseDiscoversApprovalWait(t *testing.T) {
 				t.Fatalf("decode component request: %v", err)
 			}
 			component := Component{Kind: req.Targets[0].Kind, TargetIndex: 0, SignatureScheme: KeyTypeWitnessFalcon1024}
-			if component.Kind == ComponentTargetKindBoundedBase {
+			if component.Kind == ComponentTargetKindBase {
 				component.AuthAddress, component.BaseSignatures = req.Targets[0].AuthAddress, []string{"base"}
 				component.AssemblyReceipt, component.Path = "receipt", ComponentPathSpend
 			} else {
@@ -54,13 +54,13 @@ func TestRequestComponentsBoundedBaseDiscoversApprovalWait(t *testing.T) {
 
 	baseReq := ComponentRequest{
 		GroupBytesHex: []string{"5458a16374786ea0"},
-		Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindBoundedBase, AuthAddress: "BOUNDED"}},
+		Targets:       []ComponentTarget{{TargetIndex: 0, Kind: ComponentTargetKindBase, AuthAddress: "BOUNDED"}},
 	}
 	if _, err := client.RequestComponents(baseReq); err != nil {
-		t.Fatalf("RequestComponents(bounded-base) error = %v", err)
+		t.Fatalf("RequestComponents(base) error = %v", err)
 	}
 	if len(paths) != 2 || paths[0] != "/status" || paths[1] != "/sign/component" {
-		t.Fatalf("bounded-base request paths = %v, want approval-wait discovery before component signing", paths)
+		t.Fatalf("base request paths = %v, want approval-wait discovery before component signing", paths)
 	}
 
 	paths = nil

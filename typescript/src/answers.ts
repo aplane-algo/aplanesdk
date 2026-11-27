@@ -326,12 +326,10 @@ const LOGIC_SIG_RESOURCE_PROFILE: AnswerShape = {
   },
 };
 
-const BOUNDED_AUTHORIZATION: AnswerShape = {
+const HOST: AnswerShape = {
   fields: {
     contract: "string",
     base_signature_arg_layout: { fields: { count: "int", max_sizes: { list: "int" } } },
-    spend_effects: { list: "string" },
-    max_fee: { optional: "uint" },
     rekey: "string",
     rekey_list: { fields: { contract: "string", depth: "int", root: "string" } },
     cosigner: {
@@ -359,7 +357,9 @@ const BOUNDED_AUTHORIZATION: AnswerShape = {
         },
       },
     },
-    layer3_policy: "string",
+    bounds: {
+      fields: { spend_effects: { list: "string" }, max_fee: "uint", layer3_policy: "string" },
+    },
   },
 };
 
@@ -374,7 +374,7 @@ const KEY_INFO: AnswerShape = {
     logic_sig_resources: LOGIC_SIG_RESOURCE_PROFILE,
     is_generic_lsig: "bool",
     is_witness_key: "bool",
-    bounded_authorization: BOUNDED_AUTHORIZATION,
+    host: HOST,
     signing_args: { list: RUNTIME_ARG },
     parameters: { map: "string" },
     template_provenance_status: "string",
@@ -438,7 +438,7 @@ export const KEYTYPES_ANSWER: AnswerShape = {
           cosigner_component_key_types: { list: "string" },
           per_key_contract: "bool",
           boundary_schema: "string",
-          bounded_authorization: BOUNDED_AUTHORIZATION,
+          host: HOST,
           valid_rekey_target: "bool",
           creation_params: { list: CREATION_PARAM },
           runtime_args: { list: RUNTIME_ARG },

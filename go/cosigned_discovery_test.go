@@ -151,7 +151,7 @@ func TestCosignedListedRekeyNeedsNoCosignerUpFront(t *testing.T) {
 						var req ComponentRequest
 						json.NewDecoder(r.Body).Decode(&req)
 						json.NewEncoder(w).Encode(ComponentResponse{RequestID: req.RequestID, Components: []Component{{
-							TargetIndex: 0, Kind: ComponentTargetKindBoundedBase, AuthAddress: bounded,
+							TargetIndex: 0, Kind: ComponentTargetKindBase, AuthAddress: bounded,
 							BaseSignatures: []string{"base-sig"}, AssemblyReceipt: "receipt",
 							SignatureScheme: "aplane.falcon1024.v1", Path: path,
 						}}})
@@ -182,10 +182,10 @@ func TestCosignedListedRekeyNeedsNoCosignerUpFront(t *testing.T) {
 						ListedRekey:   &LogicSigResourceUsage{ProgramBytes: 5308, ArgumentBytes: 1583, MaxOpcodeCost: 20000},
 					},
 					CosignerComponentKeyType: KeyTypeWitnessFalcon1024,
-					BoundedAuthorization: &BoundedAuthorizationInfo{
-						Contract: BoundedContractBounded2, MaxFee: new(uint64(1000)), Rekey: "spending_key",
-						RekeyList: &BoundedRekeyListInfo{Contract: "rekey_list1", Depth: 4},
-						Cosigner:  &BoundedCosignerAuthorizationInfo{ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: cosignerPublicKeyHex},
+					Host: &HostInfo{
+						Contract: HostContractBounded2, Bounds: &HostBoundsInfo{MaxFee: 1000}, Rekey: "spending_key",
+						RekeyList: &HostRekeyListInfo{Contract: "rekey_list1", Depth: 4},
+						Cosigner:  &HostCosignerInfo{ComponentKeyType: KeyTypeWitnessFalcon1024, PublicKeyHex: cosignerPublicKeyHex},
 					},
 				}
 				opts := PreparedCosignedGroupOptions{
@@ -288,7 +288,7 @@ func TestCosignedResolvesInKeyOrderAndRequestsInPositionOrder(t *testing.T) {
 					var components []Component
 					for _, target := range req.Targets {
 						components = append(components, Component{
-							TargetIndex: target.TargetIndex, Kind: ComponentTargetKindBoundedBase, AuthAddress: accounts[target.TargetIndex],
+							TargetIndex: target.TargetIndex, Kind: ComponentTargetKindBase, AuthAddress: accounts[target.TargetIndex],
 							BaseSignatures: []string{"base-sig"}, AssemblyReceipt: "receipt", SignatureScheme: "aplane.falcon1024.v1", Path: path,
 						})
 					}
@@ -354,10 +354,10 @@ func TestCosignedResolvesInKeyOrderAndRequestsInPositionOrder(t *testing.T) {
 				positions[i] = held(PreparedTransaction{Transaction: &txns[i], AuthAddress: accounts[i]}, &KeyInfo{
 					Address: accounts[i], KeyType: "aplane.falcon1024.v1", SigningFlow: SigningFlowCosigned1,
 					LogicSigResources: resources, CosignerComponentKeyType: refs[i].keyType,
-					BoundedAuthorization: &BoundedAuthorizationInfo{
-						Contract: BoundedContractPlain1, Rekey: "spending_key",
-						RekeyList: &BoundedRekeyListInfo{Contract: "rekey_list1", Depth: 4},
-						Cosigner:  &BoundedCosignerAuthorizationInfo{ComponentKeyType: refs[i].keyType, PublicKeyHex: refs[i].publicKeyHex},
+					Host: &HostInfo{
+						Contract: HostContractPlain1, Rekey: "spending_key",
+						RekeyList: &HostRekeyListInfo{Contract: "rekey_list1", Depth: 4},
+						Cosigner:  &HostCosignerInfo{ComponentKeyType: refs[i].keyType, PublicKeyHex: refs[i].publicKeyHex},
 					},
 				})
 			}

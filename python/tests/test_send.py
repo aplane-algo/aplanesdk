@@ -392,7 +392,7 @@ class TestABodyThatCannotBeEncoded:
         client = signer_client(recorder.http.url)
         target = {
             "target_index": 0,
-            "kind": "bounded-base",
+            "kind": "base",
             "auth_address": fake_signer.account(41),
             "app_call_info": {"method": float("nan")},
         }
@@ -408,7 +408,7 @@ class TestABodyThatCannotBeEncoded:
             "auth_address": fake_signer.account(41),
             "base_signatures": ["aa"],
             "assembly_receipt": "bb",
-            "bounded_runtime_args": {"a": float("nan")},
+            "runtime_args": {"a": float("nan")},
         }
         with pytest.raises(ValueError, match="failed to encode assembly request"):
             client.request_assemble({"group_bytes_hex": ["5458aa"], "targets": [target]})
@@ -750,7 +750,7 @@ class CosignedFixture:
         usage = {"program_bytes": 5308, "argument_bytes": 3358, "max_opcode_cost": 20000}
         authorization = {
             "contract": "bounded2",
-            "max_fee": 1000,
+            "bounds": {"spend_effects": ["pay"], "max_fee": 1000, "layer3_policy": "none"},
             "rekey": "refused",
             "cosigner": {
                 "component_key_type": cosigner_key_type,
@@ -766,7 +766,7 @@ class CosignedFixture:
             key_type="aplane.falcon1024.v1",
             logic_sig_resources={"spend": usage, "spending_rekey": usage, "listed_rekey": usage},
             cosigner_component_key_type=cosigner_key_type,
-            bounded_authorization=authorization,
+            host=authorization,
         )
         self.keys = [bounded_key]
         self.user = fakes(_Fake(self.user_app))
@@ -809,7 +809,7 @@ class CosignedFixture:
                     "components": [
                         {
                             "target_index": 0,
-                            "kind": "bounded-base",
+                            "kind": "base",
                             "auth_address": self.bounded,
                             "base_signatures": ["base-sig"],
                             "runtime_args": {"proof": "aabb"},

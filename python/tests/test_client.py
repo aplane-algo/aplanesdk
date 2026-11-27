@@ -41,13 +41,14 @@ from aplanesdk.signer import (
     KeyInfo,
     LogicSigResourceProfile,
     LogicSigResourceUsage,
-    BoundedCosignerAuthorizationInfo,
-    BoundedAuthorizationInfo,
-    BoundedRekeyListInfo,
-    BoundedSignatureArgLayout,
+    HostCosignerInfo,
+    HostBoundsInfo,
+    HostInfo,
+    HostRekeyListInfo,
+    HostSignatureArgLayout,
     PreparedTransaction,
     PreparedGroup,
-    COMPONENT_TARGET_KIND_BOUNDED_BASE,
+    COMPONENT_TARGET_KIND_BASE,
     COMPONENT_PATH_LISTED_REKEY,
     KEY_TYPE_WITNESS_FALCON1024,
     SIGNING_FLOW_COSIGNED1,
@@ -158,16 +159,16 @@ def bounded_resource_test_key(rekey):
             spend=LogicSigResourceUsage(1001, 101, 10001),
             spending_rekey=LogicSigResourceUsage(2002, 202, 20002),
         ),
-        bounded_authorization=BoundedAuthorizationInfo(
+        host=HostInfo(
             contract="bounded2",
-            base_signature_arg_layout=BoundedSignatureArgLayout(1, [1423]),
-            spend_effects=["pay"],
-            max_fee=1000,
+            base_signature_arg_layout=HostSignatureArgLayout(1, [1423]),
             rekey=rekey,
             runtime_args=[],
             derived_args=[],
             argument_layout=[],
-            layer3_policy="fixed_allowlist",
+            bounds=HostBoundsInfo(
+                spend_effects=["pay"], max_fee=1000, layer3_policy="fixed_allowlist"
+            ),
         ),
     )
 
@@ -180,7 +181,7 @@ def bounded_resource_test_key(rekey):
         (sdk_test_address(2), "spending_key", 2002),
     ],
 )
-def test_selected_prepared_resources_uses_bounded_authorization_path(
+def test_selected_prepared_resources_uses_the_host_path(
     rekey_to, rekey, expected_program_bytes
 ):
     key = bounded_resource_test_key(rekey)
@@ -199,7 +200,7 @@ def test_selected_prepared_resources_uses_bounded_authorization_path(
 def test_selected_prepared_resources_uses_the_listed_path_for_only_these():
     key = bounded_resource_test_key("refused")
     key.logic_sig_resources.listed_rekey = LogicSigResourceUsage(1001, 1583, 20003)
-    key.bounded_authorization.rekey_list = BoundedRekeyListInfo(contract="rekey_list1", depth=4)
+    key.host.rekey_list = HostRekeyListInfo(contract="rekey_list1", depth=4)
 
     listed = _selected_prepared_resources(key, MagicMock(rekey_to=sdk_test_address(2)))
     assert listed == LogicSigResourceUsage(1001, 1583, 20003)
@@ -975,7 +976,7 @@ class TestAnswersReadByShape:
             "keys": [{
                 "address": "ADDR1",
                 "signing_args": [None],
-                "bounded_authorization": {
+                "host": {
                     "contract": "bounded2",
                     "runtime_args": [None],
                     "argument_layout": [None, {"index": 1, "paths": {"spend": "x"}}],
@@ -984,7 +985,7 @@ class TestAnswersReadByShape:
         }).encode())
         record = _read_answer(keys, _KEYS_RESPONSE_SHAPE, "keys")["keys"][0]
         assert record["signing_args"] == [self._ZERO_RUNTIME_ARG]
-        bounded = record["bounded_authorization"]
+        bounded = record["host"]
         assert bounded["runtime_args"] == [self._ZERO_RUNTIME_ARG]
         assert bounded["argument_layout"] == [
             {"index": 0, "name": "", "source": "", "max_size": 0, "paths": None},
@@ -996,7 +997,7 @@ class TestAnswersReadByShape:
                 "paths": {"spend": "x", "spending_rekey": "", "listed_rekey": ""},
             },
         ]
-        assert bounded["max_fee"] is None and bounded["spend_effects"] == []
+        assert bounded["bounds"] is None
         assert record["is_witness_key"] is False and record["parameters"] == {}
 
     def test_parsed_records_keep_their_defaults_for_fields_left_out(self):
@@ -1325,10 +1326,10 @@ class TestSpecializedLowLevelEndpoints:
         component_response = mock_response(
             200,
             {
-                "request_id": "bounded-base-id",
+                "request_id": "base-id",
                 "components": [{
                     "target_index": 0,
-                    "kind": "bounded-base",
+                    "kind": "base",
                     "auth_address": "BOUNDED",
                     "base_signatures": ["base-sig"],
                     "assembly_receipt": "receipt",
@@ -1347,9 +1348,9 @@ class TestSpecializedLowLevelEndpoints:
             side_effect=[component_response, assembly_response],
         ) as mock_post, patch.object(client, "_discover_approval_wait"):
             component = client.request_components(ComponentRequest(
-                request_id="bounded-base-id",
+                request_id="base-id",
                 group_bytes_hex=["5458aa"],
-                targets=[{"target_index": 0, "kind": COMPONENT_TARGET_KIND_BOUNDED_BASE, "auth_address": "BOUNDED"}],
+                targets=[{"target_index": 0, "kind": COMPONENT_TARGET_KIND_BASE, "auth_address": "BOUNDED"}],
             ))
             assembly = client.request_assemble({
                 "request_id": "bounded-assembly-id",
@@ -1388,7 +1389,7 @@ class TestSpecializedLowLevelEndpoints:
                 client.request_components(ComponentRequest(
                     request_id="bounded-cancel-id",
                     group_bytes_hex=["5458aa"],
-                    targets=[{"target_index": 0, "kind": COMPONENT_TARGET_KIND_BOUNDED_BASE, "auth_address": "BOUNDED"}],
+                    targets=[{"target_index": 0, "kind": COMPONENT_TARGET_KIND_BASE, "auth_address": "BOUNDED"}],
                 ))
 
         assert mock_post.call_args_list[0].args[0].endswith(
@@ -1411,7 +1412,7 @@ class TestSpecializedLowLevelEndpoints:
                 client.request_components(ComponentRequest(
                     request_id="bounded-not-found",
                     group_bytes_hex=["5458aa"],
-                    targets=[{"target_index": 0, "kind": COMPONENT_TARGET_KIND_BOUNDED_BASE, "auth_address": "BOUNDED"}],
+                    targets=[{"target_index": 0, "kind": COMPONENT_TARGET_KIND_BASE, "auth_address": "BOUNDED"}],
                 ))
 
 
@@ -1483,17 +1484,14 @@ class TestSignPreparedCosignedGroup:
             logic_sig_resources=LogicSigResourceProfile(
                 spend=LogicSigResourceUsage(1612, 1423, 20000)
             ),
-            bounded_authorization=BoundedAuthorizationInfo(
+            host=HostInfo(
                 contract="plain1",
-                base_signature_arg_layout=BoundedSignatureArgLayout(count=1, max_sizes=[1280]),
-                spend_effects=[],
-                max_fee=None,
+                base_signature_arg_layout=HostSignatureArgLayout(count=1, max_sizes=[1280]),
                 rekey="refused",
                 runtime_args=[],
                 derived_args=[],
                 argument_layout=[],
-                layer3_policy="none",
-                cosigner=BoundedCosignerAuthorizationInfo(
+                cosigner=HostCosignerInfo(
                     contract="cosigner1",
                     component_key_type=KEY_TYPE_WITNESS_FALCON1024,
                     public_key_hex="aabbcc",
@@ -1740,7 +1738,7 @@ class TestSignPreparedCosignedGroup:
         user.request_components = MagicMock(return_value=ComponentResponse(
             request_id="base-id",
             components=[{
-                "target_index": 0, "kind": COMPONENT_TARGET_KIND_BOUNDED_BASE,
+                "target_index": 0, "kind": COMPONENT_TARGET_KIND_BASE,
                 "auth_address": bounded, "base_signatures": ["base-sig"],
                 "assembly_receipt": "receipt", "signature_scheme": "aplane.falcon1024.v1",
                 "path": COMPONENT_PATH_LISTED_REKEY,
@@ -1778,22 +1776,22 @@ class TestSignPreparedCosignedGroup:
                 spending_rekey=LogicSigResourceUsage(5308, 2846, 20000),
                 listed_rekey=LogicSigResourceUsage(5308, 1583, 20000),
             ),
-            bounded_authorization=BoundedAuthorizationInfo(
+            host=HostInfo(
                 contract="bounded2",
-                base_signature_arg_layout=BoundedSignatureArgLayout(count=1, max_sizes=[1280]),
-                spend_effects=["pay"],
-                max_fee=1000,
+                base_signature_arg_layout=HostSignatureArgLayout(count=1, max_sizes=[1280]),
                 rekey="spending_key",
                 runtime_args=[],
                 derived_args=[],
                 argument_layout=[],
-                layer3_policy="merkle_allowlist",
-                cosigner=BoundedCosignerAuthorizationInfo(
+                bounds=HostBoundsInfo(
+                    spend_effects=["pay"], max_fee=1000, layer3_policy="merkle_allowlist"
+                ),
+                cosigner=HostCosignerInfo(
                     contract="cosigner1",
                     component_key_type=KEY_TYPE_WITNESS_FALCON1024,
                     public_key_hex="aabb",
                 ),
-                rekey_list=BoundedRekeyListInfo(contract="rekey_list1", depth=4),
+                rekey_list=HostRekeyListInfo(contract="rekey_list1", depth=4),
             ),
         )
         result = sign_prepared_cosigned_group(
@@ -1846,28 +1844,25 @@ class TestSignPreparedCosignedGroup:
                     spending_rekey=LogicSigResourceUsage(5308, 2846, 20000),
                     listed_rekey=LogicSigResourceUsage(5308, 1583, 20000),
                 ),
-                bounded_authorization=BoundedAuthorizationInfo(
+                host=HostInfo(
                     contract="plain1",
-                    base_signature_arg_layout=BoundedSignatureArgLayout(count=1, max_sizes=[1280]),
-                    spend_effects=[],
-                    max_fee=None,
+                    base_signature_arg_layout=HostSignatureArgLayout(count=1, max_sizes=[1280]),
                     rekey="spending_key",
                     runtime_args=[],
                     derived_args=[],
                     argument_layout=[],
-                    layer3_policy="",
-                    cosigner=BoundedCosignerAuthorizationInfo(
+                    cosigner=HostCosignerInfo(
                         contract="cosigner1",
                         component_key_type=KEY_TYPE_WITNESS_FALCON1024,
                         public_key_hex="aabb",
                     ),
-                    rekey_list=BoundedRekeyListInfo(contract="rekey_list1", depth=4),
+                    rekey_list=HostRekeyListInfo(contract="rekey_list1", depth=4),
                 ),
             )
 
         def base(index, account, path):
             return {
-                "target_index": index, "kind": COMPONENT_TARGET_KIND_BOUNDED_BASE,
+                "target_index": index, "kind": COMPONENT_TARGET_KIND_BASE,
                 "auth_address": account, "base_signatures": ["base-sig"],
                 "assembly_receipt": "receipt", "signature_scheme": "aplane.falcon1024.v1",
                 "path": path,
@@ -1969,7 +1964,7 @@ class TestSignPreparedCosignedGroup:
             return ComponentResponse(
                 request_id="base-id",
                 components=[{
-                    "target_index": 0, "kind": COMPONENT_TARGET_KIND_BOUNDED_BASE,
+                    "target_index": 0, "kind": COMPONENT_TARGET_KIND_BASE,
                     "auth_address": bounded, "base_signatures": ["base-sig"],
                     "runtime_args": {"proof": "aabb"}, "assembly_receipt": "receipt",
                     "signature_scheme": "aplane.falcon1024.v1", "path": "spend",
@@ -2033,19 +2028,19 @@ class TestSignPreparedCosignedGroup:
                         logic_sig_resources=LogicSigResourceProfile(
                             spend=LogicSigResourceUsage(5308, 3358, 20000)
                         ),
-                        bounded_authorization=BoundedAuthorizationInfo(
+                        host=HostInfo(
                             contract="bounded2",
-                            base_signature_arg_layout=BoundedSignatureArgLayout(
+                            base_signature_arg_layout=HostSignatureArgLayout(
                                 count=1, max_sizes=[1280]
                             ),
-                            spend_effects=["pay"],
-                            max_fee=1000,
                             rekey="refused",
                             runtime_args=[],
                             derived_args=[],
                             argument_layout=[],
-                            layer3_policy="merkle_allowlist",
-                            cosigner=BoundedCosignerAuthorizationInfo(
+                            bounds=HostBoundsInfo(
+                                spend_effects=["pay"], max_fee=1000, layer3_policy="merkle_allowlist"
+                            ),
+                            cosigner=HostCosignerInfo(
                                 contract="cosigner1",
                                 component_key_type=KEY_TYPE_WITNESS_FALCON1024,
                                 public_key_hex="aabb",
@@ -2085,7 +2080,7 @@ class TestSignPreparedCosignedGroup:
         assert cosigner_req.targets[0]["app_call_info"] == {"mode": "raw"}
 
         user.request_components.reset_mock()
-        HELD_KEYS[prepared_group.transactions[0].auth_address].bounded_authorization.max_fee = 999
+        HELD_KEYS[prepared_group.transactions[0].auth_address].host.bounds.max_fee = 999
         with pytest.raises(SignerError, match="exceeds advertised max_fee"):
             sign_prepared_cosigned_group(
                 user_client=user,
@@ -2144,7 +2139,7 @@ class TestSignPreparedCosignedGroup:
             return ComponentResponse(
                 request_id="base-id",
                 components=[{
-                    "target_index": 0, "kind": COMPONENT_TARGET_KIND_BOUNDED_BASE,
+                    "target_index": 0, "kind": COMPONENT_TARGET_KIND_BASE,
                     "auth_address": bounded, "base_signatures": ["base-sig"],
                     "assembly_receipt": "receipt",
                     "signature_scheme": "aplane.falcon1024.v1", "path": "spend",
@@ -2217,19 +2212,19 @@ class TestSignPreparedCosignedGroup:
                             logic_sig_resources=LogicSigResourceProfile(
                                 spend=LogicSigResourceUsage(5308, 3358, 20000)
                             ),
-                            bounded_authorization=BoundedAuthorizationInfo(
+                            host=HostInfo(
                                 contract="bounded2",
-                                base_signature_arg_layout=BoundedSignatureArgLayout(
+                                base_signature_arg_layout=HostSignatureArgLayout(
                                     count=1, max_sizes=[1280]
                                 ),
-                                spend_effects=["pay"],
-                                max_fee=1000,
                                 rekey="refused",
                                 runtime_args=[],
                                 derived_args=[],
                                 argument_layout=[],
-                                layer3_policy="merkle_allowlist",
-                                cosigner=BoundedCosignerAuthorizationInfo(
+                                bounds=HostBoundsInfo(
+                                    spend_effects=["pay"], max_fee=1000, layer3_policy="merkle_allowlist"
+                                ),
+                                cosigner=HostCosignerInfo(
                                     contract="cosigner1",
                                     component_key_type=KEY_TYPE_WITNESS_FALCON1024,
                                     public_key_hex="aabb",
@@ -4350,18 +4345,20 @@ class TestApplyPrepFee:
 
 
 def _bounded_info(contract, max_fee):
-    from aplanesdk.signer import BoundedAuthorizationInfo, BoundedSignatureArgLayout
+    from aplanesdk.signer import HostBoundsInfo, HostInfo, HostSignatureArgLayout
 
-    return BoundedAuthorizationInfo(
+    return HostInfo(
         contract=contract,
-        base_signature_arg_layout=BoundedSignatureArgLayout(1, [1280]),
-        spend_effects=[],
-        max_fee=max_fee,
+        base_signature_arg_layout=HostSignatureArgLayout(1, [1280]),
         rekey="refused",
         runtime_args=[],
         derived_args=[],
         argument_layout=[],
-        layer3_policy="none",
+        bounds=(
+            None
+            if max_fee is None
+            else HostBoundsInfo(spend_effects=[], max_fee=max_fee, layer3_policy="none")
+        ),
     )
 
 
@@ -4369,7 +4366,8 @@ def _bounded_info(contract, max_fee):
     ("contract", "max_fee", "ceiling", "error"),
     [
         ("bounded2", 10_000, 10_000, None),
-        ("bounded2", None, None, "has no max_fee"),
+        ("bounded2", 0, 0, None),
+        ("bounded2", None, None, "has no bounds"),
         ("plain1", None, None, None),
         ("plain1", 0, None, "never has"),
         ("bounded3", 1, None, "not supported"),
@@ -4386,13 +4384,21 @@ def test_bounded_fee_ceiling_follows_the_contract(contract, max_fee, ceiling, er
         assert _bounded_fee_ceiling(info) == ceiling
 
 
-def test_bounded_authorization_parses_an_absent_fee_ceiling():
-    from aplanesdk.signer import _parse_bounded_authorization
+def test_host_parses_absent_bounds_and_a_zero_ceiling():
+    from aplanesdk.signer import _parse_host
 
-    info = _parse_bounded_authorization({"contract": "plain1", "rekey": "refused", "layer3_policy": "none"})
-    assert info is not None and info.max_fee is None
+    info = _parse_host({"contract": "plain1", "rekey": "refused"})
+    assert info is not None and info.bounds is None
+    zero = _parse_host({"contract": "bounded2", "bounds": {"spend_effects": ["pay"], "max_fee": 0}})
+    assert zero is not None and zero.bounds is not None and zero.bounds.max_fee == 0
+    assert zero.bounds.spend_effects == ["pay"]
+    # Bounds that arrive without max_fee get the tightest ceiling.
+    bare = _parse_host({"contract": "bounded2", "bounds": {}})
+    assert bare is not None and bare.bounds is not None and bare.bounds.max_fee == 0
     with pytest.raises(SignerError, match="non-negative integer"):
-        _parse_bounded_authorization({"contract": "bounded2", "max_fee": -1})
+        _parse_host({"contract": "bounded2", "bounds": {"max_fee": -1}})
+    with pytest.raises(SignerError, match="must be an object"):
+        _parse_host({"contract": "bounded2", "bounds": [1]})
 
 
 # Exactly the opcodes the dummy program uses: the immediate bytes each takes and

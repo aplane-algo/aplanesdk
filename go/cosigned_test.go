@@ -23,11 +23,11 @@ func boundedResourceTestKey(spend, spendingRekey *LogicSigResourceUsage, rekey s
 		LogicSigResources: &LogicSigResourceProfile{
 			Spend: spend, SpendingRekey: spendingRekey,
 		},
-		BoundedAuthorization: &BoundedAuthorizationInfo{Rekey: rekey},
+		Host: &HostInfo{Rekey: rekey},
 	}
 }
 
-func TestSelectedPreparedResourcesUsesBoundedAuthorizationPath(t *testing.T) {
+func TestSelectedPreparedResourcesUsesTheHostPath(t *testing.T) {
 	spend := &LogicSigResourceUsage{ProgramBytes: 1001, ArgumentBytes: 101, MaxOpcodeCost: 10001}
 	spendingRekey := &LogicSigResourceUsage{ProgramBytes: 2002, ArgumentBytes: 202, MaxOpcodeCost: 20002}
 	var rekeyTo types.Address
@@ -237,7 +237,7 @@ func TestSelectedPreparedResourcesUsesTheListedPathForOnlyThese(t *testing.T) {
 	listed := &LogicSigResourceUsage{ProgramBytes: 1001, ArgumentBytes: 1583, MaxOpcodeCost: 20003}
 	key := boundedResourceTestKey(spend, spend, "refused")
 	key.LogicSigResources.ListedRekey = listed
-	key.BoundedAuthorization.RekeyList = &BoundedRekeyListInfo{Contract: "rekey_list1", Depth: 4}
+	key.Host.RekeyList = &HostRekeyListInfo{Contract: "rekey_list1", Depth: 4}
 	var rekeyTo types.Address
 	rekeyTo[31] = 1
 	got, err := selectedPreparedResources(key, &types.Transaction{Header: types.Header{RekeyTo: rekeyTo}})

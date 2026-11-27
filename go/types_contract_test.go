@@ -246,22 +246,23 @@ func TestBoundedInventoryUsesStructuredResources(t *testing.T) {
 	if key.LogicSigResources == nil || key.LogicSigResources.Spend == nil || key.LogicSigResources.Spend.ProgramBytes != 5169 || key.LogicSigResources.Spend.ArgumentBytes != 1423 {
 		t.Fatalf("spend resources = %#v", key.LogicSigResources)
 	}
-	if key.BoundedAuthorization == nil {
-		t.Fatal("bounded authorization is missing")
+	if key.Host == nil {
+		t.Fatal("host is missing")
 	}
-	if len(key.BoundedAuthorization.SpendEffects) != 3 || len(key.BoundedAuthorization.ArgumentLayout) != 1 {
-		t.Fatalf("bounded authorization = %+v, want effects and static slots", key.BoundedAuthorization)
+	if key.Host.Bounds == nil || len(key.Host.Bounds.SpendEffects) != 3 || key.Host.Bounds.MaxFee != 10_000 ||
+		key.Host.Bounds.Layer3Policy != "fixed_allowlist" || len(key.Host.ArgumentLayout) != 1 {
+		t.Fatalf("host = %+v, want bounds and static slots", key.Host)
 	}
-	if key.BoundedAuthorization.Contract != "bounded2" {
-		t.Fatalf("bounded contract = %q, want bounded2", key.BoundedAuthorization.Contract)
+	if key.Host.Contract != "bounded2" {
+		t.Fatalf("bounded contract = %q, want bounded2", key.Host.Contract)
 	}
-	if key.BoundedAuthorization.Rekey != "refused" {
-		t.Fatalf("bounded rekey = %q, want refused", key.BoundedAuthorization.Rekey)
+	if key.Host.Rekey != "refused" {
+		t.Fatalf("bounded rekey = %q, want refused", key.Host.Rekey)
 	}
 	if key.LogicSigResources.SpendingRekey == nil {
 		t.Fatalf("spending_rekey resources = %#v, want them decoded", key.LogicSigResources)
 	}
-	if paths := key.BoundedAuthorization.ArgumentLayout[0].Paths; paths.Spend != "required" || paths.SpendingRekey != "required" {
+	if paths := key.Host.ArgumentLayout[0].Paths; paths.Spend != "required" || paths.SpendingRekey != "required" {
 		t.Fatalf("argument path mask = %+v, want spend and spending_rekey required", paths)
 	}
 
@@ -270,15 +271,15 @@ func TestBoundedInventoryUsesStructuredResources(t *testing.T) {
 		corridor.CosignerComponentKeyType != KeyTypeWitnessFalcon1024 {
 		t.Fatalf("Corridor routing = %q/%q, want bounded cosigner flow", corridor.SigningFlow, corridor.CosignerComponentKeyType)
 	}
-	if corridor.BoundedAuthorization == nil || corridor.BoundedAuthorization.Cosigner == nil {
-		t.Fatalf("Corridor bounded authorization = %+v, want cosigner metadata", corridor.BoundedAuthorization)
+	if corridor.Host == nil || corridor.Host.Cosigner == nil {
+		t.Fatalf("Corridor host = %+v, want cosigner metadata", corridor.Host)
 	}
-	if cosigner := corridor.BoundedAuthorization.Cosigner; cosigner.PublicKeyHex == "" ||
+	if cosigner := corridor.Host.Cosigner; cosigner.PublicKeyHex == "" ||
 		cosigner.ComponentKeyID == "" || len(cosigner.RequiredOn) != 1 || cosigner.RequiredOn[0] != "spend" {
 		t.Fatalf("Corridor cosigner metadata = %+v, want routable spend authorization", cosigner)
 	}
-	if corridor.BoundedAuthorization.Contract != "bounded2" || corridor.BoundedAuthorization.Rekey != "refused" {
-		t.Fatalf("Corridor contract/rekey = %q/%q, want bounded2/refused", corridor.BoundedAuthorization.Contract, corridor.BoundedAuthorization.Rekey)
+	if corridor.Host.Contract != "bounded2" || corridor.Host.Rekey != "refused" {
+		t.Fatalf("Corridor contract/rekey = %q/%q, want bounded2/refused", corridor.Host.Contract, corridor.Host.Rekey)
 	}
 
 	raw, err = os.ReadFile(sdkContractFixturePath(t, "keytypes_response_bounded.json"))
@@ -293,15 +294,15 @@ func TestBoundedInventoryUsesStructuredResources(t *testing.T) {
 		t.Fatalf("bounded key type count = %d, want 2", len(keyTypes.KeyTypes))
 	}
 	for _, keyType := range keyTypes.KeyTypes {
-		if authorization := keyType.BoundedAuthorization; authorization == nil ||
+		if authorization := keyType.Host; authorization == nil ||
 			authorization.Contract != "bounded2" || authorization.Rekey != "refused" {
-			t.Fatalf("%s bounded authorization = %+v, want bounded2 with rekeys refused", keyType.KeyType, authorization)
+			t.Fatalf("%s host = %+v, want bounded2 with rekeys refused", keyType.KeyType, authorization)
 		}
 	}
 	corridorType := keyTypes.KeyTypes[1]
 	if corridorType.SigningFlow != SigningFlowCosigned1 ||
 		!reflect.DeepEqual(corridorType.CosignerComponentKeyTypes, []string{KeyTypeWitnessFalcon1024}) ||
-		corridorType.BoundedAuthorization == nil || corridorType.BoundedAuthorization.Cosigner == nil {
+		corridorType.Host == nil || corridorType.Host.Cosigner == nil {
 		t.Fatalf("Corridor key type routing = %+v, want bounded cosigner metadata", corridorType)
 	}
 
@@ -317,7 +318,7 @@ func TestBoundedInventoryUsesStructuredResources(t *testing.T) {
 		t.Fatal("per-key keytypes fixture is empty")
 	}
 	perKeyType := perKeyTypes.KeyTypes[0]
-	if !perKeyType.PerKeyContract || perKeyType.SigningFlow != "" || perKeyType.BoundedAuthorization != nil {
+	if !perKeyType.PerKeyContract || perKeyType.SigningFlow != "" || perKeyType.Host != nil {
 		t.Fatalf("per-key key type = %+v, want per-key contract with no fixed flow or profile", perKeyType)
 	}
 	if want := []string{KeyTypeWitnessFalcon1024, KeyTypeWitnessEd25519}; !reflect.DeepEqual(perKeyType.CosignerComponentKeyTypes, want) {
@@ -490,8 +491,8 @@ func TestGoSDKContractCosignerKeyMetadata(t *testing.T) {
 		t.Fatalf("plain host AuthorizationKind = %q, want %q", got, AuthorizationKindLogicSig)
 	}
 	// A plain host has no fee ceiling: max_fee is absent, never zero.
-	if key.SigningFlow != SigningFlowCosigned1 || key.BoundedAuthorization == nil ||
-		key.BoundedAuthorization.Contract != BoundedContractPlain1 || key.BoundedAuthorization.MaxFee != nil {
+	if key.SigningFlow != SigningFlowCosigned1 || key.Host == nil ||
+		key.Host.Contract != HostContractPlain1 || key.Host.Bounds != nil {
 		t.Fatalf("plain host key = %+v", key)
 	}
 }
@@ -627,8 +628,8 @@ func signerAPIErrorCodes(t *testing.T) []string {
 		ErrCodeUnavailable,
 		ErrCodeCacheRefresh,
 		ErrCodeInternal,
-		ErrCodeBoundedCosignerRequired,
-		ErrCodeBoundedRekeyTargetNotListed,
+		ErrCodeCosignerRequired,
+		ErrCodeRekeyTargetNotListed,
 		ErrCodeRotatingSigningRequired,
 		ErrCodeRotatingStageUnproven,
 		ErrCodeRotatingStageChanged,

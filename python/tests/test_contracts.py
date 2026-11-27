@@ -22,13 +22,13 @@ from aplanesdk.signer import (
     ComponentResponse,
     AssemblyRequest,
     AssemblyResponse,
-    BoundedArgumentPathMask,
+    HostArgumentPathMask,
     ERR_CODE_BAD_REQUEST,
     ERR_CODE_CACHE_REFRESH,
     ERR_CODE_FORBIDDEN,
     ERR_CODE_INTERNAL,
-    ERR_CODE_BOUNDED_COSIGNER_REQUIRED,
-    ERR_CODE_BOUNDED_REKEY_TARGET_NOT_LISTED,
+    ERR_CODE_COSIGNER_REQUIRED,
+    ERR_CODE_REKEY_TARGET_NOT_LISTED,
     ERR_CODE_ROTATING_SIGNING_REQUIRED,
     ERR_CODE_ROTATING_STAGE_UNPROVEN,
     ERR_CODE_ROTATING_STAGE_CHANGED,
@@ -106,8 +106,8 @@ def sdk_error_codes() -> list[str]:
         ERR_CODE_UNAVAILABLE,
         ERR_CODE_CACHE_REFRESH,
         ERR_CODE_INTERNAL,
-        ERR_CODE_BOUNDED_COSIGNER_REQUIRED,
-    ERR_CODE_BOUNDED_REKEY_TARGET_NOT_LISTED,
+        ERR_CODE_COSIGNER_REQUIRED,
+        ERR_CODE_REKEY_TARGET_NOT_LISTED,
         ERR_CODE_ROTATING_SIGNING_REQUIRED,
         ERR_CODE_ROTATING_STAGE_UNPROVEN,
         ERR_CODE_ROTATING_STAGE_CHANGED,
@@ -450,10 +450,10 @@ def test_list_keys_maps_component_and_cosigned_metadata():
     assert plain.key_type == "aplane.falcon1024.v1"
     assert plain.parameters is not None
     assert plain.parameters["cosigner_public_key"]
-    # A plain host has no fee ceiling: max_fee is absent, never zero.
-    assert plain.bounded_authorization is not None
-    assert plain.bounded_authorization.contract == "plain1"
-    assert plain.bounded_authorization.max_fee is None
+    # A plain host has no bounds, and so no fee ceiling: never a zero one.
+    assert plain.host is not None
+    assert plain.host.contract == "plain1"
+    assert plain.host.bounds is None
 
 
 def test_plan_group_returns_wire_mutation_report():
@@ -544,7 +544,7 @@ def test_cosigner_dtos_round_trip_fixtures():
         bad["batch"] = batch
         with pytest.raises(ValueError, match="batch"):
             _validate_component_request(bad)
-    assert unified_component_req.targets[0]["kind"] == "bounded-base"
+    assert unified_component_req.targets[0]["kind"] == "base"
     unified_component_resp = ComponentResponse(**fixture("component_response.json"))
     assert unified_component_resp.components[0]["assembly_receipt"]
 
@@ -557,7 +557,7 @@ def test_cosigner_dtos_round_trip_fixtures():
 
     assert aplanesdk.ComponentRequest is ComponentRequest
     assert aplanesdk.ComponentResponse is ComponentResponse
-    assert aplanesdk.COMPONENT_TARGET_KIND_BOUNDED_BASE == "bounded-base"
+    assert aplanesdk.COMPONENT_TARGET_KIND_BASE == "base"
 
 
 def test_bounded_inventory_projects_layer3_policy():
@@ -571,26 +571,28 @@ def test_bounded_inventory_projects_layer3_policy():
         key = keys[0]
     assert key.signing_flow == ""
     assert key.logic_sig_resources.spend == LogicSigResourceUsage(5169, 1423, 20000)
-    assert key.bounded_authorization.layer3_policy == "fixed_allowlist"
-    assert key.bounded_authorization.spend_effects == ["pay", "axfer", "asset_opt_in"]
-    assert key.bounded_authorization.contract == "bounded2"
-    assert key.bounded_authorization.rekey == "refused"
-    assert [slot.source for slot in key.bounded_authorization.argument_layout] == [
+    assert key.host.bounds is not None
+    assert key.host.bounds.layer3_policy == "fixed_allowlist"
+    assert key.host.bounds.spend_effects == ["pay", "axfer", "asset_opt_in"]
+    assert key.host.bounds.max_fee == 10_000
+    assert key.host.contract == "bounded2"
+    assert key.host.rekey == "refused"
+    assert [slot.source for slot in key.host.argument_layout] == [
         "base_signature"
     ]
     assert key.logic_sig_resources.spending_rekey == LogicSigResourceUsage(5169, 1423, 20000)
     assert key.logic_sig_resources.listed_rekey == LogicSigResourceUsage(5169, 1423, 20000)
-    assert key.bounded_authorization.argument_layout[0].paths == BoundedArgumentPathMask(
+    assert key.host.argument_layout[0].paths == HostArgumentPathMask(
         spend="required", spending_rekey="required", listed_rekey="required"
     )
     corridor = keys[1]
     assert corridor.signing_flow == "cosigned1"
     assert corridor.cosigner_component_key_type == "aplane.witness-falcon1024.v1"
-    assert corridor.bounded_authorization.cosigner.public_key_hex
-    assert corridor.bounded_authorization.cosigner.component_key_id
-    assert corridor.bounded_authorization.cosigner.required_on == ["spend"]
-    assert corridor.bounded_authorization.contract == "bounded2"
-    assert corridor.bounded_authorization.rekey == "refused"
+    assert corridor.host.cosigner.public_key_hex
+    assert corridor.host.cosigner.component_key_id
+    assert corridor.host.cosigner.required_on == ["spend"]
+    assert corridor.host.contract == "bounded2"
+    assert corridor.host.rekey == "refused"
 
     with patch.object(
         client.session,
@@ -599,14 +601,15 @@ def test_bounded_inventory_projects_layer3_policy():
     ):
         key_types = client.list_key_types()
         key_type = key_types[0]
-    assert key_type.bounded_authorization.layer3_policy == "fixed_allowlist"
-    assert key_type.bounded_authorization.contract == "bounded2"
-    assert key_type.bounded_authorization.rekey == "refused"
+    assert key_type.host.bounds is not None
+    assert key_type.host.bounds.layer3_policy == "fixed_allowlist"
+    assert key_type.host.contract == "bounded2"
+    assert key_type.host.rekey == "refused"
     corridor_type = key_types[1]
     assert corridor_type.signing_flow == "cosigned1"
     assert corridor_type.cosigner_component_key_types == ["aplane.witness-falcon1024.v1"]
-    assert corridor_type.bounded_authorization.cosigner.required_on == ["spend"]
-    assert corridor_type.bounded_authorization.rekey == "refused"
+    assert corridor_type.host.cosigner.required_on == ["spend"]
+    assert corridor_type.host.rekey == "refused"
 
     with patch.object(
         client.session,
@@ -616,7 +619,7 @@ def test_bounded_inventory_projects_layer3_policy():
         per_key_type = client.list_key_types()[0]
     assert per_key_type.per_key_contract is True
     assert per_key_type.signing_flow == ""
-    assert per_key_type.bounded_authorization is None
+    assert per_key_type.host is None
     assert per_key_type.cosigner_component_key_types == [
         "aplane.witness-falcon1024.v1",
         "aplane.witness-ed25519.v1",

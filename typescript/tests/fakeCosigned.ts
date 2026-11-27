@@ -90,15 +90,15 @@ export function cosignedKey(
     signing_flow: SIGNING_FLOW_COSIGNED1,
     logic_sig_resources: { spend: usage, spending_rekey: usage, listed_rekey: usage },
     cosigner_component_key_type: cosignerKeyType,
-    bounded_authorization: {
+    host: {
       contract: "bounded2",
-      max_fee: 1000,
+      bounds: { spend_effects: ["pay"], max_fee: 1000, layer3_policy: "none" },
       rekey: "spending_key",
       cosigner: { component_key_type: cosignerKeyType, public_key_hex: witnessHex },
     },
   };
   if (rekeyList) {
-    key.bounded_authorization.rekey_list = { contract: "rekey_list1", depth: 4, root: "00".repeat(32) };
+    key.host.rekey_list = { contract: "rekey_list1", depth: 4, root: "00".repeat(32) };
   }
   return key;
 }
@@ -149,7 +149,7 @@ export class CosignedUser {
             request_id: body.request_id,
             components: body.targets.map((item: any) => ({
               target_index: item.target_index,
-              kind: "bounded-base",
+              kind: "base",
               auth_address: item.auth_address,
               base_signatures: ["base-sig"],
               runtime_args: { proof: "aabb" },

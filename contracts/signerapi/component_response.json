@@ -3,7 +3,7 @@
   "components": [
     {
       "target_index": 0,
-      "kind": "bounded-base",
+      "kind": "base",
       "signature_scheme": "aplane.falcon1024.v1",
       "auth_address": "BOUNDEDADDR000000000000000000000000000000000000000000000",
       "base_signatures": ["aabbcc"],

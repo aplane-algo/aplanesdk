@@ -75,10 +75,10 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 			requests[i] = req
 			targetResources[i] = resources
 			targetKeys[i] = key
-			if key.BoundedAuthorization == nil {
-				return nil, fmt.Errorf("prepared transaction %d: bounded authorization metadata is required", i)
+			if key.Host == nil {
+				return nil, fmt.Errorf("prepared transaction %d: host metadata is required", i)
 			}
-			maxFee, hasCeiling, err := boundedFeeCeiling(key.BoundedAuthorization)
+			maxFee, hasCeiling, err := boundedFeeCeiling(key.Host)
 			if err != nil {
 				return nil, fmt.Errorf("prepared transaction %d: %w", i, err)
 			}
@@ -92,7 +92,7 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 				CosignerComponentKeyType: boundedCosignerComponentKeyType(key),
 				LogicSigResources:        resources,
 				AppCallInfo:              item.AppCallInfo,
-				MayTakeListedPath:        !item.Transaction.RekeyTo.IsZero() && key.BoundedAuthorization.RekeyList != nil,
+				MayTakeListedPath:        !item.Transaction.RekeyTo.IsZero() && key.Host.RekeyList != nil,
 			})
 		default:
 			if key.SigningFlow != "" {
@@ -158,7 +158,7 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 	}
 	for i, request := range requests {
 		if targetSet[i] {
-			componentReq.Targets = append(componentReq.Targets, ComponentTarget{TargetIndex: i, Kind: ComponentTargetKindBoundedBase, AuthAddress: request.AuthAddress, LsigArgs: request.LsigArgs, AppCallInfo: request.AppCallInfo})
+			componentReq.Targets = append(componentReq.Targets, ComponentTarget{TargetIndex: i, Kind: ComponentTargetKindBase, AuthAddress: request.AuthAddress, LsigArgs: request.LsigArgs, AppCallInfo: request.AppCallInfo})
 		} else {
 			// The user signer's approval shows the other positions' app calls.
 			componentReq.ContextualPositions = append(componentReq.ContextualPositions, ComponentContextPosition{TargetIndex: i, AuthAddress: request.AuthAddress, LsigArgs: request.LsigArgs, AppCallInfo: appCallInfo[i]})
@@ -169,7 +169,7 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 	}
 	componentResp, err := opts.UserClient.RequestComponentsWithContext(ctx, componentReq)
 	if err != nil {
-		return nil, fmt.Errorf("bounded base component signing failed: %w", err)
+		return nil, fmt.Errorf("base component signing failed: %w", err)
 	}
 	components := make(map[int]Component, len(componentResp.Components))
 	targetsByIndex := make(map[int]cosignedSignTarget, len(targets))
@@ -178,7 +178,7 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 	}
 	for _, component := range componentResp.Components {
 		target, ok := targetsByIndex[component.TargetIndex]
-		if !ok || component.Kind != ComponentTargetKindBoundedBase || component.AuthAddress != target.CosignedAccount {
+		if !ok || component.Kind != ComponentTargetKindBase || component.AuthAddress != target.CosignedAccount {
 			return nil, fmt.Errorf("signer returned unexpected bounded component target %d", component.TargetIndex)
 		}
 		if _, duplicate := components[component.TargetIndex]; duplicate {
@@ -253,7 +253,7 @@ func signPreparedCosignedGroup(ctx context.Context, opts PreparedCosignedGroupOp
 			TargetIndex:         target.TargetIndex,
 			AuthAddress:         target.CosignedAccount,
 			BaseSignatures:      append([]string(nil), component.BaseSignatures...),
-			BoundedRuntimeArgs:  cloneStringMap(component.RuntimeArgs),
+			RuntimeArgs:         cloneStringMap(component.RuntimeArgs),
 			AssemblyReceipt:     component.AssemblyReceipt,
 			BaseSourceRequestID: componentResp.RequestID,
 		}
@@ -412,29 +412,29 @@ func decodeCanonicalGroup(groupHex []string) ([]types.Transaction, error) {
 	return txns, nil
 }
 
-// Bounded authorization contracts this SDK signs for.
+// Host contracts this SDK signs for.
 const (
-	BoundedContractBounded2 = "bounded2"
-	BoundedContractPlain1   = "plain1"
+	HostContractBounded2 = "bounded2"
+	HostContractPlain1   = "plain1"
 )
 
 // boundedFeeCeiling returns an account's on-chain fee ceiling. A bounded host
-// has one; a plain host has none. A contract this SDK doesn't know, or a
-// bounded host without its ceiling, fails closed.
-func boundedFeeCeiling(info *BoundedAuthorizationInfo) (uint64, bool, error) {
+// has one, in its bounds; a plain host has no bounds. A contract this SDK
+// doesn't know, or bounds on the wrong contract, fails closed.
+func boundedFeeCeiling(info *HostInfo) (uint64, bool, error) {
 	switch info.Contract {
-	case BoundedContractBounded2:
-		if info.MaxFee == nil {
-			return 0, false, fmt.Errorf("bounded authorization %s has no max_fee", info.Contract)
+	case HostContractBounded2:
+		if info.Bounds == nil {
+			return 0, false, fmt.Errorf("host contract %s has no bounds", info.Contract)
 		}
-		return *info.MaxFee, true, nil
-	case BoundedContractPlain1:
-		if info.MaxFee != nil {
-			return 0, false, fmt.Errorf("bounded authorization %s has a max_fee, which a plain host never has", info.Contract)
+		return info.Bounds.MaxFee, true, nil
+	case HostContractPlain1:
+		if info.Bounds != nil {
+			return 0, false, fmt.Errorf("host contract %s has bounds, which a plain host never has", info.Contract)
 		}
 		return 0, false, nil
 	default:
-		return 0, false, fmt.Errorf("bounded authorization contract %q is not supported by this SDK; upgrade it", info.Contract)
+		return 0, false, fmt.Errorf("host contract %q is not supported by this SDK; upgrade it", info.Contract)
 	}
 }
 
@@ -451,9 +451,9 @@ func validateBoundedTargetFees(planned []types.Transaction, maxFees map[int]uint
 }
 
 func boundedCosignerPublicKey(key *KeyInfo) string {
-	if key != nil && key.BoundedAuthorization != nil && key.BoundedAuthorization.Cosigner != nil &&
-		key.BoundedAuthorization.Cosigner.PublicKeyHex != "" {
-		return key.BoundedAuthorization.Cosigner.PublicKeyHex
+	if key != nil && key.Host != nil && key.Host.Cosigner != nil &&
+		key.Host.Cosigner.PublicKeyHex != "" {
+		return key.Host.Cosigner.PublicKeyHex
 	}
 	if key == nil || key.Parameters == nil {
 		return ""
@@ -468,8 +468,8 @@ func boundedCosignerComponentKeyType(key *KeyInfo) string {
 	if key.CosignerComponentKeyType != "" {
 		return key.CosignerComponentKeyType
 	}
-	if key.BoundedAuthorization != nil && key.BoundedAuthorization.Cosigner != nil {
-		return key.BoundedAuthorization.Cosigner.ComponentKeyType
+	if key.Host != nil && key.Host.Cosigner != nil {
+		return key.Host.Cosigner.ComponentKeyType
 	}
 	return ""
 }
