@@ -575,7 +575,7 @@ func TestUnifiedBoundedComponentResponseRejectsMalformedTargets(t *testing.T) {
 				item.Path = ""
 				return item
 			}()},
-			want: "unknown bounded path",
+			want: "unknown path",
 		},
 	}
 	for _, tt := range tests {

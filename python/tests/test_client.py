@@ -214,8 +214,8 @@ def test_selected_prepared_resources_uses_the_listed_path_for_only_these():
 # authorization) are unavailable metadata.
 @pytest.mark.parametrize("rekey,message", [
     ("refused", "the account refuses rekeys"),
-    ("", "bounded rekey authorization metadata is unavailable"),
-    ("admin_key", "bounded rekey authorization metadata is unavailable"),
+    ("", "rekey authorization metadata is unavailable"),
+    ("admin_key", "rekey authorization metadata is unavailable"),
 ])
 def test_selected_prepared_resources_rejects_rekey_without_spending_key_authorization(rekey, message):
     key = bounded_resource_test_key(rekey)

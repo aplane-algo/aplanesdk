@@ -75,8 +75,8 @@ func TestSelectedPreparedResourcesRejectsRekeyWithoutSpendingKeyAuthorization(t 
 	// authorization) are unavailable metadata.
 	for rekey, want := range map[string]string{
 		"refused":   "the account refuses rekeys",
-		"":          "bounded rekey authorization metadata is unavailable",
-		"admin_key": "bounded rekey authorization metadata is unavailable",
+		"":          "rekey authorization metadata is unavailable",
+		"admin_key": "rekey authorization metadata is unavailable",
 	} {
 		t.Run(fmt.Sprintf("rekey=%q", rekey), func(t *testing.T) {
 			got, err := selectedPreparedResources(boundedResourceTestKey(spend, spendingRekey, rekey), txn)

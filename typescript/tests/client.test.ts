@@ -2353,7 +2353,7 @@ describe("SignerClient", () => {
       }
     });
 
-    it("routes prepared bounded-cosigner groups through the user-first flow", async () => {
+    it("routes prepared cosigned groups through the user-first flow", async () => {
       const bounded = testAddress(11);
       const receiver = testAddress(12);
       const user = new SignerClient("http://localhost:11270");
@@ -2645,7 +2645,7 @@ describe("SignerClient", () => {
         spendingRekey: { programBytes: 2002, argumentBytes: 202, maxOpcodeCost: 20002 },
         listedRekey: { programBytes: 1001, argumentBytes: 1583, maxOpcodeCost: 20003 },
       };
-      const unavailable = /bounded rekey authorization metadata is unavailable/;
+      const unavailable = /rekey authorization metadata is unavailable/;
       const cases: Array<{
         name: string;
         rekeySetting: string;

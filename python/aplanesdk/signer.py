@@ -3492,7 +3492,7 @@ def _selected_prepared_resources(
         elif bounded.rekey == "refused":
             raise ValueError("the account refuses rekeys")
         else:
-            raise ValueError("bounded rekey authorization metadata is unavailable")
+            raise ValueError("rekey authorization metadata is unavailable")
     return LogicSigResourceUsage(**vars(selected)) if selected else None
 
 
@@ -3826,7 +3826,7 @@ def _validate_component_response(
                     or not component.get("signature_scheme") or component.get("signature")):
                 raise ValueError(f"component {index} has invalid base material")
             if component.get("path") not in COMPONENT_PATHS:
-                raise ValueError(f"component {index} has unknown bounded path {component.get('path')!r}")
+                raise ValueError(f"component {index} has unknown path {component.get('path')!r}")
         else:
             raise ValueError(f"component {index} has unsupported kind")
 
@@ -9252,7 +9252,7 @@ def _validate_bounded_target_fees(
 ) -> None:
     for index, max_fee in max_fees.items():
         if index < 0 or index >= len(planned):
-            raise SignerError(f"bounded target index {index} is outside planned group")
+            raise SignerError(f"cosigned target index {index} is outside planned group")
         if isinstance(max_fee, bool) or not isinstance(max_fee, int) or max_fee < 0:
             raise SignerError(f"bounded target {index} has invalid advertised max_fee")
         fee = planned[index].fee
@@ -9342,7 +9342,7 @@ def _request_bounded_primary_passthrough(
         elif index in bounded_indices:
             resources = _require_lsig_resources(
                 target_resources.get(index),
-                f"bounded target {index}",
+                f"cosigned target {index}",
             )
             requests_data.append(
                 {
@@ -9353,7 +9353,7 @@ def _request_bounded_primary_passthrough(
         else:
             target = primary_by_index.get(index)
             if target is None:
-                raise ValueError(f"group position {index} has no bounded or primary target")
+                raise ValueError(f"group position {index} has no cosigned or primary target")
             request = {
                 "txn_bytes_hex": txn_hex,
                 "auth_address": target["auth_address"],
@@ -9439,7 +9439,7 @@ def sign_prepared_cosigned_group(
         if item.signed_transaction:
             raise ValueError(
                 f"prepared transaction {index}: passthrough entries are not "
-                "supported in prepared bounded-cosigner groups"
+                "supported in prepared cosigned groups"
             )
         if item.transaction is None:
             raise ValueError(f"prepared transaction {index}: transaction is required")
@@ -9458,7 +9458,7 @@ def sign_prepared_cosigned_group(
         if key.signing_flow == SIGNING_FLOW_COSIGNED1:
             resources = _require_lsig_resources(
                 _selected_prepared_resources(key, item.transaction),
-                f"prepared transaction {index}: bounded",
+                f"prepared transaction {index}: host",
             )
             requests_data.append(_prepared_sign_request(item, index))
             target_resources[index] = resources
@@ -9507,7 +9507,7 @@ def sign_prepared_cosigned_group(
             }
         )
     if not targets:
-        raise ValueError("prepared group has no bounded-cosigner targets")
+        raise ValueError("prepared group has no cosigned targets")
 
     def resolve_cosigner(target: Dict[str, Any]) -> tuple:
         return _resolve_cosigner_for_target(
@@ -9529,7 +9529,7 @@ def sign_prepared_cosigned_group(
     planned = _decode_canonical_group(frozen_group)
     if len(planned) < len(prepared):
         raise SignerError(
-            f"signer returned {len(planned)} bounded group positions, "
+            f"signer returned {len(planned)} cosigned group positions, "
             f"want at least {len(prepared)}"
         )
     # plan_requests has already checked the plan against the requests: only
@@ -9582,19 +9582,19 @@ def sign_prepared_cosigned_group(
             if (target is None or component.get("kind") != COMPONENT_TARGET_KIND_BASE
                     or component.get("auth_address") != target["cosigned_account"]):
                 raise SignerError(
-                    f"signer returned unexpected bounded component target "
+                    f"signer returned unexpected base component target "
                     f"{component['target_index']}"
                 )
             if component["target_index"] in components:
                 raise SignerError(
-                    f"signer returned duplicate bounded component target "
+                    f"signer returned duplicate base component target "
                     f"{component['target_index']}"
                 )
             components[component["target_index"]] = component
         for target in targets:
             if target["target_index"] not in components:
                 raise SignerError(
-                    f"signer returned no bounded component for target index "
+                    f"signer returned no base component for target index "
                     f"{target['target_index']}"
                 )
             # Budget the position on the path the signer named, which only the
