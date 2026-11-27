@@ -87,6 +87,10 @@ SSH_ENROLLMENT_USERNAME = "enroll"
 # label the signer accepts with it.
 SSH_ENROLLMENT_COMMAND = "enroll"
 MAX_ENROLLMENT_LABEL_BYTES = 64
+# What is read of the signer's enrollment answer (a real one is one short
+# line), and how much of the signer's text an enrollment error carries.
+MAX_ENROLLMENT_REPLY_BYTES = 4096
+MAX_ENROLLMENT_ERROR_BYTES = 256
 DEFAULT_SSH_SETUP_TIMEOUT = 60.0
 CLIENT_ENDPOINTS_FILE = "endpoints.yaml"
 CLIENT_ENDPOINT_SCHEMA_VERSION = 2
@@ -10401,6 +10405,8 @@ def request_enrollment(
 
     pkey = _load_client_ssh_key(ssh_key_path)
     client_fingerprint = _ssh_fingerprint_sha256(pkey)
+    key_signed = threading.Event()
+    _observe_auth_signatures(pkey, key_signed.set)
 
     # Set up host key policy
     known_hosts_path = os.path.expanduser(known_hosts_path)
@@ -10533,23 +10539,83 @@ def request_enrollment(
 
     command = f"{SSH_ENROLLMENT_COMMAND} {label}" if label else SSH_ENROLLMENT_COMMAND
     try:
+        # A server can let a client in without asking for a key. Its answer
+        # would then speak for a key this client never proved it holds.
+        if not key_signed.is_set():
+            raise EnrollmentError("The signer did not authenticate this client's SSH key")
+
         # Run the enrollment command; the signer answers at once, writing
         # every reply, an ERROR: line included, to stdout.
         _, stdout, _ = client.exec_command(command, timeout=300)
 
-        # Wait for command to complete
-        exit_status = stdout.channel.recv_exit_status()
+        try:
+            output = stdout.read(MAX_ENROLLMENT_REPLY_BYTES + 1)
+        except socket.timeout as e:
+            raise EnrollmentError("Timed out waiting for the signer's enrollment answer") from e
+        if len(output) > MAX_ENROLLMENT_REPLY_BYTES:
+            # Not waiting for the exit status: a server that streams without
+            # end may never exit. Closing the client ends the session.
+            raise EnrollmentError(
+                f"Enrollment response exceeded {MAX_ENROLLMENT_REPLY_BYTES} bytes"
+            )
+        reply = output.decode("utf-8", "surrogateescape").strip()
 
-        if exit_status != 0:
-            error_msg = stdout.read().decode().strip()
-            if error_msg.startswith("ERROR: "):
-                error_msg = error_msg[len("ERROR: "):]
-            raise EnrollmentError(error_msg or "Enrollment rejected")
+        if stdout.channel.recv_exit_status() != 0:
+            if reply.startswith("ERROR: "):
+                reply = reply[len("ERROR: "):]
+            raise EnrollmentError(_safe_enrollment_text(reply) if reply else "Enrollment rejected")
 
-        return _parse_enrollment_reply(stdout.read().decode().strip(), client_fingerprint)
+        return _parse_enrollment_reply(reply, client_fingerprint)
 
     finally:
         client.close()
+
+
+def _observe_auth_signatures(pkey: Any, signed: Callable[[], None]) -> None:
+    """Call signed after each signature pkey makes, so the caller learns
+    that the server asked for the key's signature during authentication."""
+    sign = pkey.sign_ssh_data
+
+    def observed(*args: Any, **kwargs: Any) -> Any:
+        signature = sign(*args, **kwargs)
+        signed()
+        return signature
+
+    pkey.sign_ssh_data = observed
+
+
+def _safe_enrollment_text(text: str) -> str:
+    """The signer's text as an error may carry it: every character that does
+    not print as itself (controls, formatting characters such as
+    bidirectional overrides) escaped as Go escapes it, an undecodable byte as
+    \\xNN, and the result cut to MAX_ENROLLMENT_ERROR_BYTES between
+    characters, so an escape is never cut in half. An error message is often
+    printed to a terminal, and this text comes from the server."""
+    out: List[str] = []
+    size = 0
+    for ch in text:
+        code = ord(ch)
+        if 0xDC80 <= code <= 0xDCFF:
+            # A byte surrogateescape could not decode.
+            piece = f"\\x{code - 0xDC00:02x}"
+        elif 0xD800 <= code <= 0xDFFF:
+            piece = "".join(f"\\x{byte:02x}" for byte in ch.encode("utf-8", "surrogatepass"))
+        elif ch.isprintable():
+            piece = ch
+        elif ch in _GO_SHORT_ESCAPES:
+            piece = _GO_SHORT_ESCAPES[ch]
+        elif code < 0x20 or code == 0x7F:
+            piece = f"\\x{code:02x}"
+        elif code < 0x10000:
+            piece = f"\\u{code:04x}"
+        else:
+            piece = f"\\U{code:08x}"
+        piece_size = len(piece.encode("utf-8"))
+        if size + piece_size > MAX_ENROLLMENT_ERROR_BYTES:
+            return "".join(out) + "..."
+        out.append(piece)
+        size += piece_size
+    return "".join(out)
 
 
 def _parse_enrollment_reply(reply: str, client_fingerprint: str) -> EnrollmentResult:
@@ -10562,13 +10628,13 @@ def _parse_enrollment_reply(reply: str, client_fingerprint: str) -> EnrollmentRe
     elif reply.startswith("enrolled "):
         result = EnrollmentResult(fingerprint=reply[len("enrolled "):], pending=False)
     else:
-        raise EnrollmentError(f"Unexpected enrollment response: {reply!r}")
+        raise EnrollmentError(f'Unexpected enrollment response: "{_safe_enrollment_text(reply)}"')
     if not result.fingerprint:
-        raise EnrollmentError(f"Unexpected enrollment response: {reply!r}")
+        raise EnrollmentError(f'Unexpected enrollment response: "{_safe_enrollment_text(reply)}"')
     if result.fingerprint != client_fingerprint:
         raise EnrollmentError(
-            f"Signer answered for {result.fingerprint}, but this client authenticated "
-            f"with {client_fingerprint}"
+            f"Signer answered for {_safe_enrollment_text(result.fingerprint)}, but this "
+            f"client authenticated with {client_fingerprint}"
         )
     return result
 

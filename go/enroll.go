@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -96,9 +99,11 @@ func RequestEnrollmentWithContext(ctx context.Context, host, sshKeyPath, label s
 	}
 	clientFingerprint := ssh.FingerprintSHA256(signer.PublicKey())
 
+	// The handshake runs on this goroutine, so the flag needs no lock.
+	keySigned := false
 	config := &ssh.ClientConfig{
 		User:            enrollmentSSHUsername,
-		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
+		Auth:            []ssh.AuthMethod{ssh.PublicKeys(observeAuthSigner(signer, func() { keySigned = true }))},
 		HostKeyCallback: hostKeyCallback,
 	}
 	addr := fmt.Sprintf("%s:%d", host, sshPort)
@@ -107,6 +112,11 @@ func RequestEnrollmentWithContext(ctx context.Context, host, sshKeyPath, label s
 		return EnrollmentResult{}, fmt.Errorf("%w: failed to connect to SSH server: %v", ErrEnrollment, err)
 	}
 	defer func() { _ = client.Close() }()
+	// A server can let a client in without asking for a key. Its answer would
+	// then speak for a key this client never proved it holds.
+	if !keySigned {
+		return EnrollmentResult{}, fmt.Errorf("%w: the signer did not authenticate this client's SSH key", ErrEnrollment)
+	}
 
 	session, err := client.NewSession()
 	if err != nil {
@@ -135,12 +145,17 @@ func RequestEnrollmentWithContext(ctx context.Context, host, sshKeyPath, label s
 		return EnrollmentResult{}, fmt.Errorf("%w: failed to start enrollment: %v", ErrEnrollment, err)
 	}
 
-	output, err := io.ReadAll(stdout)
+	output, err := io.ReadAll(io.LimitReader(stdout, maxEnrollmentReplyBytes+1))
 	if ctx.Err() != nil {
 		return EnrollmentResult{}, ctx.Err()
 	}
 	if err != nil {
 		return EnrollmentResult{}, fmt.Errorf("%w: failed to read response: %v", ErrEnrollment, err)
+	}
+	if len(output) > maxEnrollmentReplyBytes {
+		// No Wait: a server that streams without end may never exit. The
+		// deferred closes end the session.
+		return EnrollmentResult{}, fmt.Errorf("%w: response exceeded %d bytes", ErrEnrollment, maxEnrollmentReplyBytes)
 	}
 	if err := session.Wait(); err != nil {
 		if ctx.Err() != nil {
@@ -148,9 +163,10 @@ func RequestEnrollmentWithContext(ctx context.Context, host, sshKeyPath, label s
 		}
 		message := strings.TrimPrefix(strings.TrimSpace(string(output)), "ERROR: ")
 		if message == "" {
+			// An exit signal's name and message are the server's text too.
 			message = err.Error()
 		}
-		return EnrollmentResult{}, fmt.Errorf("%w: %s", ErrEnrollment, message)
+		return EnrollmentResult{}, fmt.Errorf("%w: %s", ErrEnrollment, safeEnrollmentText(message))
 	}
 
 	result, err := parseEnrollmentReply(strings.TrimSpace(string(output)), clientFingerprint)
@@ -172,15 +188,50 @@ func parseEnrollmentReply(reply, clientFingerprint string) (EnrollmentResult, er
 	case strings.HasPrefix(reply, "enrolled "):
 		result = EnrollmentResult{Fingerprint: strings.TrimPrefix(reply, "enrolled ")}
 	default:
-		return EnrollmentResult{}, fmt.Errorf("%w: unexpected response %q", ErrEnrollment, reply)
+		return EnrollmentResult{}, fmt.Errorf("%w: unexpected response \"%s\"", ErrEnrollment, safeEnrollmentText(reply))
 	}
 	if result.Fingerprint == "" {
-		return EnrollmentResult{}, fmt.Errorf("%w: unexpected response %q", ErrEnrollment, reply)
+		return EnrollmentResult{}, fmt.Errorf("%w: unexpected response \"%s\"", ErrEnrollment, safeEnrollmentText(reply))
 	}
 	if result.Fingerprint != clientFingerprint {
-		return EnrollmentResult{}, fmt.Errorf("%w: signer answered for %s, but this client authenticated with %s", ErrEnrollment, result.Fingerprint, clientFingerprint)
+		return EnrollmentResult{}, fmt.Errorf("%w: signer answered for %s, but this client authenticated with %s", ErrEnrollment, safeEnrollmentText(result.Fingerprint), clientFingerprint)
 	}
 	return result, nil
+}
+
+const (
+	// maxEnrollmentReplyBytes caps what is read of the signer's answer; a
+	// real one is one short line.
+	maxEnrollmentReplyBytes = 4096
+	// maxEnrollmentErrorBytes caps the signer's text in an enrollment error.
+	maxEnrollmentErrorBytes = 256
+)
+
+// safeEnrollmentText is the signer's text as an error may carry it: every
+// character that does not print as itself (controls, invalid UTF-8,
+// formatting characters such as bidirectional overrides) escaped as Go
+// escapes it, and the result cut to maxEnrollmentErrorBytes at a character
+// boundary, so an escape is never cut in half. An error message is often
+// printed to a terminal, and this text comes from the server.
+func safeEnrollmentText(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		piece := s[i : i+size]
+		switch {
+		case r == utf8.RuneError && size == 1:
+			piece = fmt.Sprintf(`\x%02x`, s[i])
+		case !unicode.IsPrint(r):
+			quoted := strconv.QuoteRuneToASCII(r)
+			piece = quoted[1 : len(quoted)-1]
+		}
+		if b.Len()+len(piece) > maxEnrollmentErrorBytes {
+			return b.String() + "..."
+		}
+		b.WriteString(piece)
+		i += size
+	}
+	return b.String()
 }
 
 // RequestEnrollmentFromEnv asks the endpoint selected by opts (the default

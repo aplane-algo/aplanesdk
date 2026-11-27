@@ -263,6 +263,12 @@ authentication with the enrolled key is the only credential. The explicit form
 of enrollment is `request_enrollment(host, ssh_key_path,
 known_hosts_path=..., label=...)`.
 
+Enrollment fails with `EnrollmentError` when the signer lets the client in without
+asking for its key's signature, so an answer can't speak for a key the client
+never proved it holds, and when the answer is longer than 4096 bytes. The
+signer's own text in an enrollment error is escaped and cut to 256 bytes, since
+the error may be printed to a terminal.
+
 ### Advanced: Caller-Managed Tunnel
 
 The low-level constructor `SignerClient(base_url, timeout=...)` sends plain
