@@ -25,33 +25,67 @@ const { Server, Client } = ssh2;
 const ESC = String.fromCharCode(0x1b);
 const RLO = String.fromCharCode(0x202e);
 
-async function enrollAgainstServer(
-  reply: Buffer | string,
-  status: number,
-  noClientAuth = false,
-): Promise<EnrollmentResult> {
+/** How the fake node answers the enroll exec; fingerprint is the client key's. */
+type Respond = (stream: ssh2.ServerChannel, fingerprint: string) => void;
+
+/** Write reply ({fp} is the client key's fingerprint) and exit with status. */
+function answer(reply: Buffer | string, status: number): Respond {
+  return (stream, fingerprint) => {
+    stream.write(Buffer.isBuffer(reply) ? reply : Buffer.from(reply.replaceAll("{fp}", fingerprint)));
+    stream.exit(status);
+    stream.end();
+  };
+}
+
+/** Write reply and then say nothing, leaving the session open. */
+function writeAndHold(reply: string): Respond {
+  return (stream) => {
+    stream.write(reply);
+  };
+}
+
+const streamWithoutEnd: Respond = (stream) => {
+  const chunk = Buffer.alloc(1024, "x");
+  let closed = false;
+  stream.on("close", () => { closed = true; });
+  const pump = () => {
+    while (!closed && stream.write(chunk)) { /* keep writing until the window fills */ }
+    if (!closed) stream.once("drain", pump);
+  };
+  pump();
+};
+
+interface FakeNode {
+  respond: Respond;
+  noClientAuth?: boolean;
+  /** The client's private key; RSA when unset. */
+  clientKey?: string;
+  /** Exec requests the node received. */
+  execs?: number;
+}
+
+async function enrollAgainstServer(node: FakeNode): Promise<EnrollmentResult> {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-enroll-"));
-  const clientKey = rsaPem();
-  const keyPath = path.join(tmpDir, "id_rsa");
+  const clientKey = node.clientKey ?? rsaPem();
+  const keyPath = path.join(tmpDir, "id_client");
   fs.writeFileSync(keyPath, clientKey, { mode: 0o600 });
   const fingerprint = "SHA256:" +
     createHash("sha256").update(publicBlob(clientKey)).digest("base64").replace(/=+$/, "");
-  const answer = Buffer.isBuffer(reply) ? reply : Buffer.from(reply.replaceAll("{fp}", fingerprint));
+  node.execs = 0;
 
   const server = new Server({ hostKeys: [rsaPem()] }, (connection) => {
     connection.on("error", () => {});
     connection.on("authentication", (ctx) => {
-      if (ctx.method === "none" && noClientAuth) return ctx.accept();
+      if (ctx.method === "none" && node.noClientAuth) return ctx.accept();
       if (ctx.method === "publickey") return ctx.accept();
       ctx.reject(["publickey"]);
     });
     connection.on("session", (acceptSession) => {
       acceptSession().on("exec", (acceptExec) => {
+        node.execs = (node.execs ?? 0) + 1;
         const stream = acceptExec();
         stream.on("error", () => {});
-        stream.write(answer);
-        stream.exit(status);
-        stream.end();
+        node.respond(stream, fingerprint);
       });
     });
   });
@@ -73,9 +107,22 @@ async function enrollAgainstServer(
 
 describe("requestEnrollment against a node", () => {
   it("accepts an answer for the key it authenticated with", async () => {
-    const result = await enrollAgainstServer("pending {fp}\n", 0);
+    const result = await enrollAgainstServer({ respond: answer("pending {fp}\n", 0) });
     assert.equal(result.pending, true);
     assert.match(result.fingerprint, /^SHA256:/);
+  });
+
+  it("enrolls with an Ed25519 key, the signer's default", async () => {
+    const clientKey = ssh2.utils.generateKeyPairSync("ed25519").private;
+    const result = await enrollAgainstServer({ respond: answer("enrolled {fp}\n", 0), clientKey });
+    assert.equal(result.pending, false);
+  });
+
+  it("accepts an answer of exactly the cap", async () => {
+    // "pending SHA256:" plus 43 base64 characters, padded to the cap.
+    const padding = 4096 - "pending SHA256:".length - 43 - 1;
+    const result = await enrollAgainstServer({ respond: answer("pending {fp}" + " ".repeat(padding) + "\n", 0) });
+    assert.equal(result.pending, true);
   });
 
   it("refuses a server that lets it in without its key's signature", async (t) => {
@@ -85,10 +132,9 @@ describe("requestEnrollment against a node", () => {
     t.mock.method(Client.prototype, "connect", function (this: InstanceType<typeof Client>, config: ssh2.ConnectConfig) {
       return connect.call(this, { ...config, authHandler: ["none"] });
     });
-    await assert.rejects(
-      enrollAgainstServer("pending {fp}\n", 0, true),
-      /did not authenticate this client's SSH key/,
-    );
+    const node: FakeNode = { respond: answer("pending {fp}\n", 0), noClientAuth: true };
+    await assert.rejects(enrollAgainstServer(node), /did not authenticate this client's SSH key/);
+    assert.equal(node.execs, 0, "the client sent the enroll command anyway");
   });
 
   it("escapes an unexpected answer", () => {
@@ -115,8 +161,43 @@ describe("requestEnrollment against a node", () => {
     }
   });
 
-  it("refuses an oversized reply", async () => {
-    await assert.rejects(enrollAgainstServer("x".repeat(4097), 0), /exceeded 4096 bytes/);
+  for (const [name, respond] of [
+    ["exits", answer("x".repeat(4097), 0)],
+    ["goes silent", writeAndHold("x".repeat(4097))],
+    ["streams without end", streamWithoutEnd],
+  ] as Array<[string, Respond]>) {
+    it(`refuses an oversized reply from a node that ${name}`, async () => {
+      const started = Date.now();
+      await assert.rejects(enrollAgainstServer({ respond }), /exceeded 4096 bytes/);
+      assert.ok(Date.now() - started < 3_000, "the refusal waited on the node");
+    });
+  }
+
+  it("reports a reply that is not UTF-8 as escaped bytes", async () => {
+    const reply = Buffer.concat([Buffer.from("pending SHA256:"), Buffer.from([0xff]), Buffer.from("\n")]);
+    await assert.rejects(enrollAgainstServer({ respond: answer(reply, 0) }), (error: Error) => {
+      assert.match(error.message, /^Signer answered for SHA256:\\xff, but this client/);
+      return true;
+    });
+  });
+
+  it("refuses a key file that holds no key", async () => {
+    const field = (b: Buffer) => Buffer.concat([Buffer.from([0, 0, 0, b.length]), b]);
+    const blob = Buffer.concat([
+      Buffer.from("openssh-key-v1\0"), field(Buffer.from("none")), field(Buffer.from("none")),
+      field(Buffer.alloc(0)), Buffer.from([0, 0, 0, 0]), field(Buffer.alloc(0)),
+    ]);
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aplane-enroll-empty-"));
+    const keyPath = path.join(tmpDir, "id_empty");
+    fs.writeFileSync(keyPath, `-----BEGIN OPENSSH PRIVATE KEY-----\n${blob.toString("base64")}\n-----END OPENSSH PRIVATE KEY-----\n`);
+    try {
+      await assert.rejects(
+        requestEnrollment("127.0.0.1", keyPath, { sshPort: 1, knownHostsPath: path.join(tmpDir, "known_hosts") }),
+        /it holds no key/,
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
   });
 
   it("escapes and caps the refusal text", async () => {
@@ -125,7 +206,7 @@ describe("requestEnrollment against a node", () => {
       Buffer.from([0xff]),
       Buffer.from("y".repeat(400) + "\n"),
     ]);
-    await assert.rejects(enrollAgainstServer(reply, 1), (error: Error) => {
+    await assert.rejects(enrollAgainstServer({ respond: answer(reply, 1) }), (error: Error) => {
       assert.ok(error.message.startsWith("\\x1b[2Jqueue\\u202efull \\xffyyy"), error.message);
       assert.ok(!error.message.includes(ESC) && !error.message.includes(RLO));
       assert.ok(error.message.endsWith("..."));

@@ -270,6 +270,8 @@ asking for its key's signature, so an answer can't speak for a key the client
 never proved it holds, and when the answer is longer than 4096 bytes. The
 signer's own text in an enrollment error is escaped and cut to 256 bytes, since
 the error may be printed to a terminal.
+The wait for the signer's answer has no limit of its own: to bound it, pass
+an `AbortSignal` as `signal`.
 
 This is useful when:
 

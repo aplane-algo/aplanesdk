@@ -207,10 +207,12 @@ def test_enrollment_host_key_prompt_does_not_consume_setup_deadline(tmp_path, mo
 
 
 class _EnrollmentServer(paramiko.ServerInterface):
-    """Accepts any client key, and with no_client_auth any client at all."""
+    """Accepts any client key, and with no_client_auth any client at all.
+    With refuse_exec it refuses the enroll command."""
 
-    def __init__(self, no_client_auth: bool):
+    def __init__(self, no_client_auth: bool = False, refuse_exec: bool = False):
         self.no_client_auth = no_client_auth
+        self.refuse_exec = refuse_exec
         self.exec_requested = threading.Event()
 
     def get_allowed_auths(self, username):
@@ -231,18 +233,60 @@ class _EnrollmentServer(paramiko.ServerInterface):
 
     def check_channel_exec_request(self, channel, command):
         self.exec_requested.set()
-        return True
+        return not self.refuse_exec
 
 
-def _start_enrollment_peer(reply: Optional[bytes], status: int, no_client_auth: bool = False):
-    """Answer one enroll exec with reply on stdout and exit status, as the
-    node does (status 1 when it refuses a request). With reply None the peer
-    never answers."""
+def _answer(reply: bytes, status: int):
+    """Write reply and exit with status, as the node does (status 1 when it
+    refuses a request)."""
+
+    def respond(channel, transport):
+        channel.sendall(reply)
+        channel.send_exit_status(status)
+        channel.close()
+        # Closing first would reset a connection with unread data and could
+        # drop the exit status the client is waiting for.
+        transport.join(5)
+
+    return respond
+
+
+def _end_output_and_hold(reply: bytes):
+    """Write reply and end the output, but never exit or close."""
+
+    def respond(channel, transport):
+        channel.sendall(reply)
+        channel.shutdown_write()
+        transport.join(5)
+
+    return respond
+
+
+def _write_and_hold(reply: bytes):
+    """Write reply and say nothing more, leaving the output open."""
+
+    def respond(channel, transport):
+        if reply:
+            channel.sendall(reply)
+        transport.join(5)
+
+    return respond
+
+
+def _stream_without_end(channel, transport):
+    try:
+        while transport.is_active():
+            channel.sendall(b"x" * 1024)
+    except Exception:
+        pass
+
+
+def _start_enrollment_peer(server: _EnrollmentServer, respond):
+    """Serve one enroll session, answering its exec with respond."""
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.bind(("127.0.0.1", 0))
     listener.listen(1)
     host_key = paramiko.ECDSAKey.generate()
-    server = _EnrollmentServer(no_client_auth)
 
     def serve():
         try:
@@ -254,18 +298,10 @@ def _start_enrollment_peer(reply: Optional[bytes], status: int, no_client_auth: 
         try:
             transport.start_server(server=server)
             channel = transport.accept(5)
-            if channel is None or not server.exec_requested.wait(5):
-                return
-            if reply is None:
-                # Say nothing and keep the session open.
+            if channel is None or not server.exec_requested.wait(5) or server.refuse_exec:
                 transport.join(5)
                 return
-            channel.sendall(reply)
-            channel.send_exit_status(status)
-            channel.close()
-            # Closing first would reset a connection with unread data and
-            # could drop the exit status the client is waiting for.
-            transport.join(5)
+            respond(channel, transport)
         except Exception:
             pass
         finally:
@@ -276,13 +312,15 @@ def _start_enrollment_peer(reply: Optional[bytes], status: int, no_client_auth: 
     return listener, thread
 
 
-def _enroll_against_peer(tmp_path, reply: Optional[bytes], status: int, no_client_auth: bool = False):
+def _enroll_against_peer(tmp_path, respond=None, server: Optional[_EnrollmentServer] = None, reply: bytes = b""):
+    """Enroll against a peer; {fp} in reply is the client key's fingerprint,
+    and respond defaults to answering reply with exit status 0."""
     key = paramiko.ECDSAKey.generate()
     key_path = tmp_path / "id_ecdsa"
     key.write_private_key_file(str(key_path))
-    if reply is not None:
-        reply = reply.replace(b"{fp}", _ssh_fingerprint_sha256(key).encode())
-    listener, thread = _start_enrollment_peer(reply, status, no_client_auth)
+    if respond is None:
+        respond = _answer(reply.replace(b"{fp}", _ssh_fingerprint_sha256(key).encode()), 0)
+    listener, thread = _start_enrollment_peer(server or _EnrollmentServer(), respond)
     try:
         return request_enrollment(
             "127.0.0.1",
@@ -298,9 +336,17 @@ def _enroll_against_peer(tmp_path, reply: Optional[bytes], status: int, no_clien
 
 
 def test_enrollment_accepts_an_answer_for_the_authenticated_key(tmp_path):
-    result = _enroll_against_peer(tmp_path, b"pending {fp}\n", 0)
+    result = _enroll_against_peer(tmp_path, reply=b"pending {fp}\n")
     assert result.pending
     assert result.fingerprint.startswith("SHA256:")
+
+
+def test_enrollment_accepts_an_answer_of_exactly_the_cap(tmp_path):
+    # "pending SHA256:" plus 43 base64 characters, padded to the cap.
+    line = b"pending {fp}"
+    padding = signer_module.MAX_ENROLLMENT_REPLY_BYTES - (len(b"pending SHA256:") + 43) - 1
+    result = _enroll_against_peer(tmp_path, reply=line + b" " * padding + b"\n")
+    assert result.pending
 
 
 def test_enrollment_refuses_a_server_that_skips_key_authentication(tmp_path, monkeypatch):
@@ -311,30 +357,51 @@ def test_enrollment_refuses_a_server_that_skips_key_authentication(tmp_path, mon
         "auth_publickey",
         lambda self, username, key, event=None: self.auth_none(username),
     )
+    server = _EnrollmentServer(no_client_auth=True)
     with pytest.raises(EnrollmentError, match="did not authenticate this client's SSH key"):
-        _enroll_against_peer(tmp_path, b"pending {fp}\n", 0, no_client_auth=True)
+        _enroll_against_peer(tmp_path, server=server, reply=b"pending {fp}\n")
+    assert not server.exec_requested.is_set()
 
 
-def test_enrollment_reports_a_silent_signer_as_an_enrollment_error(tmp_path, monkeypatch):
-    exec_command = paramiko.SSHClient.exec_command
-    monkeypatch.setattr(
-        paramiko.SSHClient,
-        "exec_command",
-        lambda self, command, **kwargs: exec_command(self, command, **{**kwargs, "timeout": 0.2}),
-    )
+def test_enrollment_reports_a_refused_command_as_an_enrollment_error(tmp_path):
+    with pytest.raises(EnrollmentError, match="Failed to start enrollment"):
+        _enroll_against_peer(tmp_path, server=_EnrollmentServer(refuse_exec=True))
+
+
+@pytest.mark.parametrize(
+    "respond",
+    [
+        pytest.param(_write_and_hold(b""), id="silent"),
+        pytest.param(_end_output_and_hold(b"pending SHA256:x\n"), id="output-ended-no-exit-status"),
+    ],
+)
+def test_enrollment_times_out_a_signer_that_never_finishes(tmp_path, monkeypatch, respond):
+    monkeypatch.setattr(signer_module, "ENROLLMENT_ANSWER_TIMEOUT", 0.3)
+    started = time.monotonic()
     with pytest.raises(EnrollmentError, match="Timed out waiting for the signer's enrollment answer"):
-        _enroll_against_peer(tmp_path, None, 0)
+        _enroll_against_peer(tmp_path, respond)
+    assert time.monotonic() - started < 3
 
 
-def test_enrollment_refuses_an_oversized_reply(tmp_path):
+@pytest.mark.parametrize(
+    "respond",
+    [
+        pytest.param(_answer(b"x" * 4097, 0), id="exits"),
+        pytest.param(_write_and_hold(b"x" * 4097), id="goes-silent"),
+        pytest.param(_stream_without_end, id="streams-without-end"),
+    ],
+)
+def test_enrollment_refuses_an_oversized_reply(tmp_path, respond):
+    started = time.monotonic()
     with pytest.raises(EnrollmentError, match="exceeded 4096 bytes"):
-        _enroll_against_peer(tmp_path, b"x" * 4097, 0)
+        _enroll_against_peer(tmp_path, respond)
+    assert time.monotonic() - started < 3
 
 
 def test_enrollment_escapes_and_caps_the_refusal_text(tmp_path):
     reply = "ERROR: \x1b[2Jqueue\u202efull ".encode() + b"\xff" + b"y" * 400 + b"\n"
     with pytest.raises(EnrollmentError) as excinfo:
-        _enroll_against_peer(tmp_path, reply, 1)
+        _enroll_against_peer(tmp_path, _answer(reply, 1))
     message = str(excinfo.value)
     assert message.startswith("\\x1b[2Jqueue\\u202efull \\xffyyy")
     assert "\x1b" not in message and "\u202e" not in message

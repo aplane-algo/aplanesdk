@@ -91,6 +91,9 @@ MAX_ENROLLMENT_LABEL_BYTES = 64
 # line), and how much of the signer's text an enrollment error carries.
 MAX_ENROLLMENT_REPLY_BYTES = 4096
 MAX_ENROLLMENT_ERROR_BYTES = 256
+# How long the signer has to answer an enrollment request in full, exit status
+# included. It answers at once; this only ends a session that never does.
+ENROLLMENT_ANSWER_TIMEOUT = 300.0
 DEFAULT_SSH_SETUP_TIMEOUT = 60.0
 CLIENT_ENDPOINTS_FILE = "endpoints.yaml"
 CLIENT_ENDPOINT_SCHEMA_VERSION = 2
@@ -10546,21 +10549,17 @@ def request_enrollment(
 
         # Run the enrollment command; the signer answers at once, writing
         # every reply, an ERROR: line included, to stdout.
-        _, stdout, _ = client.exec_command(command, timeout=300)
-
         try:
-            output = stdout.read(MAX_ENROLLMENT_REPLY_BYTES + 1)
-        except socket.timeout as e:
-            raise EnrollmentError("Timed out waiting for the signer's enrollment answer") from e
-        if len(output) > MAX_ENROLLMENT_REPLY_BYTES:
-            # Not waiting for the exit status: a server that streams without
-            # end may never exit. Closing the client ends the session.
+            _, stdout, _ = client.exec_command(command, timeout=ENROLLMENT_ANSWER_TIMEOUT)
+        except paramiko.SSHException as e:
             raise EnrollmentError(
-                f"Enrollment response exceeded {MAX_ENROLLMENT_REPLY_BYTES} bytes"
-            )
+                f"Failed to start enrollment: {_safe_enrollment_text(str(e))}"
+            ) from e
+
+        output, exit_status = _read_enrollment_answer(stdout.channel)
         reply = output.decode("utf-8", "surrogateescape").strip()
 
-        if stdout.channel.recv_exit_status() != 0:
+        if exit_status != 0:
             if reply.startswith("ERROR: "):
                 reply = reply[len("ERROR: "):]
             raise EnrollmentError(_safe_enrollment_text(reply) if reply else "Enrollment rejected")
@@ -10569,6 +10568,41 @@ def request_enrollment(
 
     finally:
         client.close()
+
+
+def _read_enrollment_answer(channel: Any) -> "tuple[bytes, int]":
+    """The signer's answer on channel and its exit status, all within
+    ENROLLMENT_ANSWER_TIMEOUT. The channel timeout alone bounds each read,
+    not the whole answer, and paramiko's recv_exit_status() waits without
+    one, so a signer that ended its output but held the session open would
+    block it for good."""
+    deadline = time.monotonic() + ENROLLMENT_ANSWER_TIMEOUT
+    timed_out = "Timed out waiting for the signer's enrollment answer"
+
+    def remaining() -> float:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise EnrollmentError(timed_out)
+        return left
+
+    output = bytearray()
+    while len(output) <= MAX_ENROLLMENT_REPLY_BYTES:
+        channel.settimeout(remaining())
+        try:
+            chunk = channel.recv(MAX_ENROLLMENT_REPLY_BYTES + 1 - len(output))
+        except socket.timeout as e:
+            raise EnrollmentError(timed_out) from e
+        if not chunk:
+            break
+        output += chunk
+    if len(output) > MAX_ENROLLMENT_REPLY_BYTES:
+        # Not waiting for the exit status: a server that streams without end
+        # may never exit. Closing the client ends the session.
+        raise EnrollmentError(f"Enrollment response exceeded {MAX_ENROLLMENT_REPLY_BYTES} bytes")
+    while not channel.exit_status_ready():
+        remaining()
+        time.sleep(0.05)
+    return bytes(output), channel.recv_exit_status()
 
 
 def _observe_auth_signatures(pkey: Any, signed: Callable[[], None]) -> None:

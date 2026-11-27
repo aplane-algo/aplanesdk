@@ -268,6 +268,8 @@ asking for its key's signature, so an answer can't speak for a key the client
 never proved it holds, and when the answer is longer than 4096 bytes. The
 signer's own text in an enrollment error is escaped and cut to 256 bytes, since
 the error may be printed to a terminal.
+The signer has 300 seconds to answer in full, exit status included; one that
+doesn't fails the request with `EnrollmentError`.
 
 ### Advanced: Caller-Managed Tunnel
 
